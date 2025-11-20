@@ -1,0 +1,8 @@
+pipecat-ai[google,assemblyai,silero,local-smart-turn-v3]
+sounddevice
+keyboard
+pyautogui
+python-dotenv
+google-generativeai
+elevenlabs
+loguru
