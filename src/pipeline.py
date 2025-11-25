@@ -1,5 +1,4 @@
 import asyncio
-import sys
 from loguru import logger
 
 from pipecat.pipeline.pipeline import Pipeline
@@ -11,9 +10,6 @@ try:
     from pipecat.audio.streams.input import SoundDeviceAudioInputStream
 except ImportError:
     SoundDeviceAudioInputStream = None
-
-from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.audio.vad.vad_analyzer import VADParams
 
 # SmartTurn
 try:
@@ -48,7 +44,6 @@ from pipecat.services.aws.stt import AWSTranscribeSTTService
 from src.config import Config
 from src.injector import TextInjector
 from src.microphone import MicrophoneInput
-from src.vad_processor import VADProcessor # Helper to wrap VAD
 
 class ScriberPipeline:
     def __init__(self, service_name=Config.DEFAULT_STT_SERVICE, on_status_change=None):
@@ -65,7 +60,7 @@ class ScriberPipeline:
             if not Config.SONIOX_API_KEY:
                 logger.warning("Soniox API Key missing. Ensure SONIOX_API_KEY is set.")
             if not SonioxSTTService:
-                 raise ImportError("SonioxSTTService not available")
+                raise ImportError("SonioxSTTService not available")
 
             # Parse custom vocab
             params = None
@@ -81,7 +76,7 @@ class ScriberPipeline:
 
         elif self.service_name == "assemblyai":
             if not Config.ASSEMBLYAI_API_KEY:
-                 logger.warning("AssemblyAI API Key missing")
+                logger.warning("AssemblyAI API Key missing")
             return AssemblyAISTTService(api_key=Config.ASSEMBLYAI_API_KEY or "test")
 
         elif self.service_name == "google":
@@ -154,22 +149,11 @@ class ScriberPipeline:
             # STT
             stt_service = self._create_stt_service()
 
-            # VAD Analyzer
-            vad_analyzer = SileroVADAnalyzer(params=VADParams(
-                stop_secs=0.5,
-                start_secs=0.2,
-                confidence=0.5
-            ))
-
-            # Wrap VAD in a Processor so it can be in the pipeline
-            vad_processor = VADProcessor(vad_analyzer)
-
             # Injector
             text_injector = TextInjector()
 
             steps = [
                 self.audio_input,
-                vad_processor,
                 stt_service,
                 text_injector
             ]
@@ -217,7 +201,7 @@ class ScriberPipeline:
 
         logger.info("Stopping Scriber Pipeline")
         if self.task:
-             await self.task.cancel()
+            await self.task.cancel()
 
         self.is_active = False
         if self.on_status_change:

@@ -24,7 +24,7 @@ Scriber is a high-performance, AI-driven voice dictation application for Windows
     *   **Speechmatics**: Specialized ASR.
     *   **Google Cloud STT**: Enterprise-grade recognition.
     *   **ElevenLabs**: Scribe model integration.
-*   **Smart Turn Detection**: Uses VAD and AI models to detect natural pauses.
+*   **Smart Turn Detection**: Optional pause detection when supported by the environment.
 *   **One-Click Setup**: Automated `start.bat` script for easy installation.
 
 ## Manual Installation

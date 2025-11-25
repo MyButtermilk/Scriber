@@ -23,6 +23,32 @@ class Config:
     HOTKEY = os.getenv("SCRIBER_HOTKEY", "ctrl+alt+s")
     DEFAULT_STT_SERVICE = os.getenv("SCRIBER_DEFAULT_STT", "soniox")
 
+    SERVICE_API_KEY_MAP = {
+        "soniox": "SONIOX_API_KEY",
+        "assemblyai": "ASSEMBLYAI_API_KEY",
+        "elevenlabs": "ELEVENLABS_API_KEY",
+        "deepgram": "DEEPGRAM_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "azure": "AZURE_SPEECH_KEY",
+        "gladia": "GLADIA_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "speechmatics": "SPEECHMATICS_API_KEY",
+    }
+
+    SERVICE_LABELS = {
+        "soniox": "Soniox",
+        "assemblyai": "AssemblyAI",
+        "google": "Google Cloud",
+        "elevenlabs": "ElevenLabs",
+        "deepgram": "Deepgram",
+        "openai": "OpenAI",
+        "azure": "Azure",
+        "gladia": "Gladia",
+        "groq": "Groq",
+        "speechmatics": "Speechmatics",
+        "aws": "AWS Transcribe",
+    }
+
     # Mode: "toggle" (default) or "push_to_talk"
     MODE = os.getenv("SCRIBER_MODE", "toggle").lower()
 
@@ -33,3 +59,32 @@ class Config:
     # Audio settings
     SAMPLE_RATE = 16000
     CHANNELS = 1
+
+    @classmethod
+    def get_api_key(cls, service_name: str) -> str:
+        attr = cls.SERVICE_API_KEY_MAP.get(service_name)
+        if not attr:
+            return ""
+        return getattr(cls, attr, "") or ""
+
+    @classmethod
+    def set_api_key(cls, service_name: str, value: str) -> None:
+        attr = cls.SERVICE_API_KEY_MAP.get(service_name)
+        if attr:
+            setattr(cls, attr, value.strip())
+            os.environ[attr] = value.strip()
+
+    @classmethod
+    def set_hotkey(cls, hotkey: str) -> None:
+        cls.HOTKEY = hotkey.strip()
+        os.environ["SCRIBER_HOTKEY"] = cls.HOTKEY
+
+    @classmethod
+    def set_mode(cls, mode: str) -> None:
+        cls.MODE = mode.lower().strip()
+        os.environ["SCRIBER_MODE"] = cls.MODE
+
+    @classmethod
+    def set_default_service(cls, service: str) -> None:
+        cls.DEFAULT_STT_SERVICE = service
+        os.environ["SCRIBER_DEFAULT_STT"] = service
