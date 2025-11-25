@@ -1,4 +1,4 @@
-pipecat-ai[google,assemblyai,silero,local-smart-turn-v3]
+pipecat-ai[google,assemblyai,silero,local-smart-turn-v3,deepgram,openai,azure,gladia,groq,speechmatics,aws,elevenlabs]
 sounddevice
 keyboard
 pyautogui
@@ -6,3 +6,6 @@ python-dotenv
 google-generativeai
 elevenlabs
 loguru
+pytest
+pytest-asyncio
+pytest-mock

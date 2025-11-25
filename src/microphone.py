@@ -1,25 +1,27 @@
 import asyncio
-import sounddevice as sd
-import numpy as np
 from loguru import logger
 from pipecat.frames.frames import AudioRawFrame
+
+try:
+    import sounddevice as sd
+    HAS_SOUNDDEVICE = True
+except Exception:
+    sd = None
+    HAS_SOUNDDEVICE = False
+    logger.warning("Sounddevice not available. Microphone input will be disabled.")
 
 try:
     from pipecat.transports.base_input import BaseInputTransport
     PARENT_CLASS = BaseInputTransport
 except ImportError:
-    # Fallback or handle if Pipecat structure is different
-    # In some versions, it might be an InputAudioStream or similar.
-    # Let's assume we need a processor that produces AudioRawFrames.
     from pipecat.processors.frame_processor import FrameProcessor
     PARENT_CLASS = FrameProcessor
 
-# Since Pipecat 0.0.95, the structure is usually pipeline tasks reading from a source.
-# A simple source is just an async generator or a processor that pushes frames.
-# Let's implement a simple Microphone Source as a FrameProcessor/Transport.
-
 class MicrophoneInput(PARENT_CLASS):
     def __init__(self, sample_rate=16000, channels=1, block_size=1024):
+        if not HAS_SOUNDDEVICE:
+            raise RuntimeError("Sounddevice is not available, cannot use MicrophoneInput.")
+
         super().__init__(params=None) if hasattr(PARENT_CLASS, "params") else super().__init__()
         self.sample_rate = sample_rate
         self.channels = channels
@@ -30,7 +32,6 @@ class MicrophoneInput(PARENT_CLASS):
         self._queue = asyncio.Queue()
 
     async def start(self, frame_processor):
-        # This signature matches BaseInputTransport.start(frame_processor)
         self._loop = asyncio.get_running_loop()
         self._running = True
 
@@ -63,9 +64,9 @@ class MicrophoneInput(PARENT_CLASS):
         if status:
             logger.warning(f"Audio status: {status}")
         if self._running:
-            # indata is numpy array. Convert to bytes.
             self._loop.call_soon_threadsafe(self._queue.put_nowait, indata.tobytes())
 
     async def stop(self):
         self._running = False
-        self._queue.put_nowait(None)
+        if self._queue:
+            self._queue.put_nowait(None)
