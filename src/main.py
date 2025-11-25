@@ -9,7 +9,7 @@ from loguru import logger
 try:
     import keyboard
     HAS_KEYBOARD = True
-except Exception as e:  # pragma: no cover - environment dependent
+except Exception as e:
     logger.warning(f"Keyboard hotkeys not available: {e}")
     keyboard = None
     HAS_KEYBOARD = False
@@ -18,7 +18,6 @@ from src.config import Config
 from src.pipeline import ScriberPipeline
 from src.ui import ScriberUI
 
-# Global state
 loop: Optional[asyncio.AbstractEventLoop] = None
 pipeline: Optional[ScriberPipeline] = None
 pipeline_task: Optional[asyncio.Task] = None
@@ -26,11 +25,9 @@ ptt_task: Optional[asyncio.Future] = None
 is_listening: bool = False
 ui: Optional[ScriberUI] = None
 
-
 def handle_status(status: str):
     if ui:
         ui.update_status(status)
-
 
 def _ensure_loop():
     global loop
@@ -38,17 +35,14 @@ def _ensure_loop():
         loop = asyncio.new_event_loop()
     return loop
 
-
 def _run_event_loop():
     asyncio.set_event_loop(_ensure_loop())
     loop.run_forever()
-
 
 def _start_background_loop():
     thread = threading.Thread(target=_run_event_loop, daemon=True)
     thread.start()
     return thread
-
 
 def _on_pipeline_done(task: asyncio.Task):
     global is_listening, pipeline, pipeline_task
@@ -56,35 +50,34 @@ def _on_pipeline_done(task: asyncio.Task):
         task.result()
     except asyncio.CancelledError:
         pass
-    except Exception as exc:  # pragma: no cover - runtime
+    except Exception as exc:
         logger.error(f"Pipeline error: {exc}")
         handle_status("Error")
     is_listening = False
     pipeline = None
     pipeline_task = None
 
-
 async def start_listening():
     global pipeline, pipeline_task, is_listening
     if is_listening:
         return
-
     try:
         pipeline = ScriberPipeline(service_name=Config.DEFAULT_STT_SERVICE, on_status_change=handle_status)
         pipeline_task = asyncio.create_task(pipeline.start())
         pipeline_task.add_done_callback(_on_pipeline_done)
         is_listening = True
         handle_status("Listening")
-    except Exception as exc:  # pragma: no cover - runtime
-        logger.error(f"Failed to start listening: {exc}")
+    except (ValueError, ImportError) as e:
+        logger.error(f"Configuration error: {e}")
+        handle_status(f"Error: {e}")
+    except Exception as e:
+        logger.error(f"Failed to start listening: {e}")
         handle_status("Error")
-
 
 async def stop_listening():
     global pipeline, pipeline_task, is_listening
     if not is_listening:
         return
-
     try:
         if pipeline:
             await pipeline.stop()
@@ -100,13 +93,11 @@ async def stop_listening():
         pipeline = None
         pipeline_task = None
 
-
 async def toggle_listening():
     if is_listening:
         await stop_listening()
     else:
         await start_listening()
-
 
 async def _ptt_loop():
     last_state = False
@@ -122,14 +113,13 @@ async def _ptt_loop():
             pass
         await asyncio.sleep(0.05)
 
-
 def register_hotkey():
     global ptt_task
     if not HAS_KEYBOARD:
-        logger.warning("Hotkeys deaktiviert (keyboard Modul fehlt oder Headless-Umgebung).")
+        logger.warning("Hotkeys disabled (keyboard module missing or headless env).")
         return
 
-    if ptt_task:
+    if ptt_task and not ptt_task.cancelled():
         ptt_task.cancel()
         ptt_task = None
 
@@ -137,13 +127,12 @@ def register_hotkey():
         keyboard.clear_all_hotkeys()
         if Config.MODE == "push_to_talk":
             ptt_task = asyncio.run_coroutine_threadsafe(_ptt_loop(), loop)
-            logger.info(f"Push-to-Talk aktiv: {Config.HOTKEY}")
+            logger.info(f"Push-to-Talk active: {Config.HOTKEY}")
         else:
             keyboard.add_hotkey(Config.HOTKEY, lambda: asyncio.run_coroutine_threadsafe(toggle_listening(), loop))
-            logger.info(f"Hotkey registriert: {Config.HOTKEY} (Toggle)")
-    except Exception as exc:  # pragma: no cover - runtime
-        logger.error(f"Fehler bei Hotkey-Registrierung: {exc}")
-
+            logger.info(f"Hotkey registered: {Config.HOTKEY} (Toggle)")
+    except Exception as exc:
+        logger.error(f"Failed to register hotkey: {exc}")
 
 def save_settings():
     Config.set_default_service(ui.service_var.get())
@@ -153,8 +142,7 @@ def save_settings():
     Config.CUSTOM_VOCAB = ui.custom_vocab_var.get().strip()
 
     register_hotkey()
-    ui.update_status("Einstellungen gespeichert")
-
+    ui.update_status("Settings saved")
 
 async def shutdown():
     if ptt_task:
@@ -163,18 +151,15 @@ async def shutdown():
     if loop and loop.is_running():
         loop.call_soon_threadsafe(loop.stop)
 
-
 def start_from_ui():
     save_settings()
     asyncio.run_coroutine_threadsafe(start_listening(), loop)
 
-
 def stop_from_ui():
     asyncio.run_coroutine_threadsafe(stop_listening(), loop)
 
-
 def _handle_exit():
-    logger.info("Beende Anwendung...")
+    logger.info("Exiting application...")
     future = asyncio.run_coroutine_threadsafe(shutdown(), loop)
     try:
         future.result(timeout=2)
@@ -183,12 +168,11 @@ def _handle_exit():
     if ui:
         ui.root.quit()
 
-
 def main():
     global ui, loop
 
-    logger.info("Scriber - Voice Dictation UI")
-    logger.info(f"Service: {Config.DEFAULT_STT_SERVICE}")
+    logger.add(sys.stderr, level="INFO")
+    logger.info("Scriber - Voice Dictation")
 
     loop = _ensure_loop()
     _start_background_loop()
@@ -198,16 +182,14 @@ def main():
         on_stop=stop_from_ui,
         on_save_settings=save_settings,
     )
-
     register_hotkey()
 
     signal.signal(signal.SIGINT, lambda *_: _handle_exit())
-    if sys.platform == "win32":  # pragma: no cover - platform guard
+    if sys.platform == "win32":
         signal.signal(signal.SIGBREAK, lambda *_: _handle_exit())
 
     ui.root.protocol("WM_DELETE_WINDOW", _handle_exit)
     ui.run()
-
 
 if __name__ == "__main__":
     main()
