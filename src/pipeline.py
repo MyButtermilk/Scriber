@@ -26,6 +26,12 @@ except ImportError:
     SonioxInputParams = None
     SonioxContextObject = None
 
+# Fallback params object if older pipecat build lacks SonioxInputParams
+class _SonioxParamsFallback:
+    def __init__(self, context=None, vad_enabled=True):
+        self.context = context
+        self.vad_enabled = vad_enabled
+
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.google.stt import GoogleSTTService
 from pipecat.services.elevenlabs.stt import ElevenLabsSTTService
@@ -59,12 +65,12 @@ class ScriberPipeline:
         if self.service_name == "soniox":
             if not _get_api_key("soniox"): raise ValueError("Soniox API Key is missing.")
             if not SonioxSTTService: raise ImportError("SonioxSTTService not available.")
-            params = SonioxInputParams() if SonioxInputParams else None
-            if Config.CUSTOM_VOCAB and SonioxInputParams and SonioxContextObject:
+            params = SonioxInputParams() if SonioxInputParams else _SonioxParamsFallback()
+            if Config.CUSTOM_VOCAB and SonioxContextObject:
                 terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
                 if terms:
                     logger.info(f"Applying custom vocabulary: {terms}")
-                    params = SonioxInputParams(context=SonioxContextObject(terms=terms))
+                    params = SonioxInputParams(context=SonioxContextObject(terms=terms)) if SonioxInputParams else _SonioxParamsFallback(context=SonioxContextObject(terms=terms))
             return SonioxSTTService(api_key=_get_api_key("soniox"), params=params)
 
         elif self.service_name == "assemblyai":
