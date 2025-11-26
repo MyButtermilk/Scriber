@@ -1,6 +1,6 @@
 import asyncio
 from loguru import logger
-from pipecat.frames.frames import AudioRawFrame
+from pipecat.frames.frames import InputAudioRawFrame, StartFrame, EndFrame
 
 try:
     import sounddevice as sd
@@ -45,8 +45,11 @@ class MicrophoneInput(PARENT_CLASS):
         self._running = False
         self._loop = None
         self._queue = asyncio.Queue()
+        self._consumer_task = None
 
-    async def start(self, frame_processor):
+    async def start(self, frame: StartFrame):
+        """Start audio capture and feed frames into the transport queue."""
+        await super().start(frame)
         self._loop = asyncio.get_running_loop()
         self._running = True
 
@@ -56,24 +59,14 @@ class MicrophoneInput(PARENT_CLASS):
                 channels=self._target_channels,
                 blocksize=self.block_size,
                 dtype="int16",
-                callback=self._audio_callback
+                callback=self._audio_callback,
             )
             self.stream.start()
             logger.info("Microphone stream started")
-
-            while self._running:
-                data = await self._queue.get()
-                if data is None:
-                    break
-                frame = AudioRawFrame(audio=data, sample_rate=self._target_sample_rate, num_channels=self._target_channels)
-                await frame_processor.process_frame(frame)
-
+            self._consumer_task = asyncio.create_task(self._drain_queue())
         except Exception as e:
             logger.error(f"Microphone error: {e}")
-        finally:
-            if self.stream:
-                self.stream.stop()
-                self.stream.close()
+            await self.stop(frame=EndFrame())
 
     def _audio_callback(self, indata, frames, time, status):
         if status:
@@ -81,7 +74,27 @@ class MicrophoneInput(PARENT_CLASS):
         if self._running:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, indata.tobytes())
 
-    async def stop(self):
+    async def _drain_queue(self):
+        while self._running:
+            data = await self._queue.get()
+            if data is None:
+                break
+            frame = InputAudioRawFrame(
+                audio=data,
+                sample_rate=self._target_sample_rate,
+                num_channels=self._target_channels,
+            )
+            await self.push_audio_frame(frame)
+
+    async def stop(self, frame: EndFrame):
         self._running = False
+        if self.stream:
+            self.stream.stop()
+            self.stream.close()
+            self.stream = None
         if self._queue:
             self._queue.put_nowait(None)
+        if self._consumer_task:
+            await self.cancel_task(self._consumer_task)
+            self._consumer_task = None
+        await super().stop(frame)
