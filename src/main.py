@@ -119,6 +119,18 @@ def register_hotkey():
         logger.warning("Hotkeys disabled (keyboard module missing or headless env).")
         return
 
+    # Some keyboard builds lack blocking_hotkeys attribute; create a stub to avoid attribute errors.
+    try:
+        if hasattr(keyboard, "_listener") and not hasattr(keyboard._listener, "blocking_hotkeys"):
+            keyboard._listener.blocking_hotkeys = set()
+    except Exception:
+        logger.warning("Keyboard listener is missing; hotkeys may be unavailable.")
+        return
+
+    if not hasattr(keyboard, "add_hotkey") or not hasattr(keyboard, "clear_all_hotkeys"):
+        logger.warning("Keyboard hotkey methods unavailable; skipping hotkey registration.")
+        return
+
     if ptt_task and not ptt_task.cancelled():
         ptt_task.cancel()
         ptt_task = None

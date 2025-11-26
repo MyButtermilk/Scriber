@@ -13,16 +13,23 @@ except Exception:
 try:
     from pipecat.transports.base_input import BaseInputTransport
     PARENT_CLASS = BaseInputTransport
+    PARENT_NEEDS_PARAMS = True
 except ImportError:
     from pipecat.processors.frame_processor import FrameProcessor
     PARENT_CLASS = FrameProcessor
+    PARENT_NEEDS_PARAMS = False
+
 
 class MicrophoneInput(PARENT_CLASS):
     def __init__(self, sample_rate=16000, channels=1, block_size=1024):
         if not HAS_SOUNDDEVICE:
             raise RuntimeError("Sounddevice is not available, cannot use MicrophoneInput.")
 
-        super().__init__(params=None) if hasattr(PARENT_CLASS, "params") else super().__init__()
+        # Some pipecat versions require an explicit params argument on BaseInputTransport.
+        if PARENT_NEEDS_PARAMS:
+            super().__init__(params=None)
+        else:
+            super().__init__()
         self.sample_rate = sample_rate
         self.channels = channels
         self.block_size = block_size
