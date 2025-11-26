@@ -53,11 +53,17 @@ class SonioxAsyncProcessor(FrameProcessor):
         self.model = model
         self.session = session
         self._buffer = bytearray()
+        self._sample_rate = None
+        self._channels = None
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, InputAudioRawFrame):
+            if not self._sample_rate:
+                self._sample_rate = frame.sample_rate
+            if not self._channels:
+                self._channels = frame.num_channels
             self._buffer.extend(frame.audio)
             await self.push_frame(frame, direction)
         elif isinstance(frame, EndFrame):
@@ -81,9 +87,9 @@ class SonioxAsyncProcessor(FrameProcessor):
 
     async def _transcribe_async(self, audio_bytes: bytes) -> str:
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        # Upload file
+        file_bytes, content_type, filename = await self._encode_webm(audio_bytes)
         data = aiohttp.FormData()
-        data.add_field("file", audio_bytes, filename="audio.wav", content_type="audio/wav")
+        data.add_field("file", file_bytes, filename=filename, content_type=content_type)
         async with self.session.post(f"{self.BASE_URL}/files", data=data, headers=headers) as resp:
             resp.raise_for_status()
             file_id = (await resp.json())["id"]
@@ -112,6 +118,55 @@ class SonioxAsyncProcessor(FrameProcessor):
             r3.raise_for_status()
             transcript_payload = await r3.json()
             return transcript_payload.get("text", "")
+
+    async def _encode_webm(self, audio_bytes: bytes):
+        """
+        Try to transcode raw PCM to WebM/Opus using ffmpeg to save bandwidth.
+        Falls back to WAV if ffmpeg is unavailable.
+        """
+        import tempfile, subprocess, os, wave, contextlib
+
+        sr = self._sample_rate or 16000
+        ch = self._channels or 1
+
+        # First write wav to temp file
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
+            with contextlib.closing(wave.open(wav_file, "wb")) as wf:
+                wf.setnchannels(ch)
+                wf.setsampwidth(2)  # int16
+                wf.setframerate(sr)
+                wf.writeframes(audio_bytes)
+            wav_path = wav_file.name
+
+        webm_path = wav_path.replace(".wav", ".webm")
+        try:
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                wav_path,
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "32k",
+                webm_path,
+            ]
+            # Run quietly
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            with open(webm_path, "rb") as f:
+                webm_bytes = f.read()
+            return webm_bytes, "audio/webm", "audio.webm"
+        except Exception:
+            # Fallback to wav
+            with open(wav_path, "rb") as f:
+                wav_bytes = f.read()
+            return wav_bytes, "audio/wav", "audio.wav"
+        finally:
+            for p in (wav_path, webm_path):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
 
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.google.stt import GoogleSTTService
