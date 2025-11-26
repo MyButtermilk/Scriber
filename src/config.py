@@ -22,6 +22,8 @@ class Config:
     # Application settings
     HOTKEY = os.getenv("SCRIBER_HOTKEY", "ctrl+alt+s")
     DEFAULT_STT_SERVICE = os.getenv("SCRIBER_DEFAULT_STT", "soniox")
+    SONIOX_MODE = os.getenv("SCRIBER_SONIOX_MODE", "realtime").lower()  # realtime | async
+    SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", "stt-async-preview")
 
     SERVICE_API_KEY_MAP = {
         "soniox": "SONIOX_API_KEY",
@@ -88,3 +90,8 @@ class Config:
     def set_default_service(cls, service: str) -> None:
         cls.DEFAULT_STT_SERVICE = service
         os.environ["SCRIBER_DEFAULT_STT"] = service
+
+    @classmethod
+    def set_soniox_mode(cls, mode: str) -> None:
+        cls.SONIOX_MODE = mode.lower().strip()
+        os.environ["SCRIBER_SONIOX_MODE"] = cls.SONIOX_MODE

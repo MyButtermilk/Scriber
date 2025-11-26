@@ -157,6 +157,7 @@ def save_settings():
     Config.set_api_key(ui.service_var.get(), ui.api_key_var.get())
     Config.set_hotkey(ui.hotkey_var.get())
     Config.set_mode(ui.mode_var.get())
+    Config.set_soniox_mode(ui.soniox_mode_var.get())
     Config.CUSTOM_VOCAB = ui.custom_vocab_var.get().strip()
 
     register_hotkey()

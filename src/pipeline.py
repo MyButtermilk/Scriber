@@ -5,6 +5,14 @@ from loguru import logger
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.pipeline.runner import PipelineRunner
+from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.frames.frames import (
+    InputAudioRawFrame,
+    TranscriptionFrame,
+    EndFrame,
+    StartFrame,
+)
+from pipecat.utils.time import time_now_iso8601
 
 try:
     from pipecat.audio.streams.input import SoundDeviceAudioInputStream
@@ -31,6 +39,79 @@ class _SonioxParamsFallback:
     def __init__(self, context=None, vad_enabled=True):
         self.context = context
         self.vad_enabled = vad_enabled
+
+
+class SonioxAsyncProcessor(FrameProcessor):
+    """Async Soniox transcription using REST API; buffers audio and submits on EndFrame."""
+
+    BASE_URL = "https://api.soniox.com/v1"
+
+    def __init__(self, api_key: str, custom_vocab: str = "", model: str = "stt-async-preview", session: aiohttp.ClientSession = None):
+        super().__init__()
+        self.api_key = api_key
+        self.custom_vocab = custom_vocab
+        self.model = model
+        self.session = session
+        self._buffer = bytearray()
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, InputAudioRawFrame):
+            self._buffer.extend(frame.audio)
+            await self.push_frame(frame, direction)
+        elif isinstance(frame, EndFrame):
+            try:
+                text = await self._transcribe_async(bytes(self._buffer))
+                await self.push_frame(
+                    TranscriptionFrame(
+                        text=text,
+                        user_id="user",
+                        timestamp=time_now_iso8601(),
+                        result=None,
+                    ),
+                    direction,
+                )
+            except Exception as e:
+                logger.error(f"Soniox async transcription failed: {e}")
+            await self.push_frame(frame, direction)
+            self._buffer = bytearray()
+        else:
+            await self.push_frame(frame, direction)
+
+    async def _transcribe_async(self, audio_bytes: bytes) -> str:
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        # Upload file
+        data = aiohttp.FormData()
+        data.add_field("file", audio_bytes, filename="audio.wav", content_type="audio/wav")
+        async with self.session.post(f"{self.BASE_URL}/files", data=data, headers=headers) as resp:
+            resp.raise_for_status()
+            file_id = (await resp.json())["id"]
+
+        payload = {"file_id": file_id, "model": self.model}
+        if self.custom_vocab:
+            payload["context"] = self.custom_vocab
+
+        async with self.session.post(f"{self.BASE_URL}/transcriptions", json=payload, headers=headers) as resp2:
+            resp2.raise_for_status()
+            transcription_id = (await resp2.json())["id"]
+
+        # Poll status
+        while True:
+            async with self.session.get(f"{self.BASE_URL}/transcriptions/{transcription_id}", headers=headers) as r:
+                r.raise_for_status()
+                status_payload = await r.json()
+                status = status_payload.get("status")
+                if status == "completed":
+                    break
+                if status == "error":
+                    raise RuntimeError(status_payload.get("error_message", "Soniox async error"))
+            await asyncio.sleep(1)
+
+        async with self.session.get(f"{self.BASE_URL}/transcriptions/{transcription_id}/transcript", headers=headers) as r3:
+            r3.raise_for_status()
+            transcript_payload = await r3.json()
+            return transcript_payload.get("text", "")
 
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.google.stt import GoogleSTTService
@@ -64,6 +145,14 @@ class ScriberPipeline:
 
         if self.service_name == "soniox":
             if not _get_api_key("soniox"): raise ValueError("Soniox API Key is missing.")
+            if Config.SONIOX_MODE == "async":
+                logger.info("Using Soniox async transcription mode")
+                return SonioxAsyncProcessor(
+                    api_key=_get_api_key("soniox"),
+                    custom_vocab=Config.CUSTOM_VOCAB,
+                    model=Config.SONIOX_ASYNC_MODEL,
+                    session=session,
+                )
             if not SonioxSTTService: raise ImportError("SonioxSTTService not available.")
             params = SonioxInputParams() if SonioxInputParams else _SonioxParamsFallback()
             if Config.CUSTOM_VOCAB and SonioxContextObject:

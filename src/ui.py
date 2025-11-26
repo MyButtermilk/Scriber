@@ -27,6 +27,7 @@ class ScriberUI:
         self.hotkey_var = tk.StringVar(value=Config.HOTKEY)
         self.service_var = tk.StringVar(value=Config.DEFAULT_STT_SERVICE)
         self.mode_var = tk.StringVar(value=Config.MODE)
+        self.soniox_mode_var = tk.StringVar(value=Config.SONIOX_MODE)
         self.api_key_var = tk.StringVar(value=Config.get_api_key(Config.DEFAULT_STT_SERVICE))
         self.custom_vocab_var = tk.StringVar(value=Config.CUSTOM_VOCAB)
 
@@ -75,9 +76,18 @@ class ScriberUI:
         )
         mode_combo.grid(row=3, column=1, sticky="ew", padx=4, pady=4)
 
-        ttk.Label(settings_frame, text="Custom Vocab").grid(row=4, column=0, sticky="w", padx=4, pady=4)
+        ttk.Label(settings_frame, text="Soniox Mode").grid(row=4, column=0, sticky="w", padx=4, pady=4)
+        soniox_mode_combo = ttk.Combobox(
+            settings_frame,
+            values=["realtime", "async"],
+            textvariable=self.soniox_mode_var,
+            state="readonly",
+        )
+        soniox_mode_combo.grid(row=4, column=1, sticky="ew", padx=4, pady=4)
+
+        ttk.Label(settings_frame, text="Custom Vocab").grid(row=5, column=0, sticky="w", padx=4, pady=4)
         vocab_entry = ttk.Entry(settings_frame, textvariable=self.custom_vocab_var)
-        vocab_entry.grid(row=4, column=1, sticky="ew", padx=4, pady=4)
+        vocab_entry.grid(row=5, column=1, sticky="ew", padx=4, pady=4)
 
         settings_frame.columnconfigure(1, weight=1)
 
