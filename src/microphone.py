@@ -22,7 +22,7 @@ except ImportError:
 
 
 class MicrophoneInput(PARENT_CLASS):
-    def __init__(self, sample_rate=16000, channels=1, block_size=1024):
+    def __init__(self, sample_rate=16000, channels=1, block_size=1024, turn_analyzer=None):
         if not HAS_SOUNDDEVICE:
             raise RuntimeError("Sounddevice is not available, cannot use MicrophoneInput.")
 
@@ -33,6 +33,7 @@ class MicrophoneInput(PARENT_CLASS):
                 audio_in_sample_rate=sample_rate,
                 audio_in_channels=channels,
                 audio_in_passthrough=True,
+                turn_analyzer=turn_analyzer,
             )
             super().__init__(params=params)
         else:
@@ -40,6 +41,7 @@ class MicrophoneInput(PARENT_CLASS):
         self._target_sample_rate = sample_rate  # avoid clashing with BaseInputTransport.sample_rate property
         self._target_channels = channels
         self.block_size = block_size
+        self.turn_analyzer = turn_analyzer
         self.stream = None
         self._running = False
         self._loop = None

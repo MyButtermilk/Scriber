@@ -109,22 +109,24 @@ class ScriberPipeline:
             return
         logger.info(f"Starting Scriber Pipeline with {self.service_name}")
         try:
-            if SoundDeviceAudioInputStream:
-                self.audio_input = SoundDeviceAudioInputStream(sample_rate=Config.SAMPLE_RATE, channels=Config.CHANNELS)
-            else:
-                self.audio_input = MicrophoneInput(sample_rate=Config.SAMPLE_RATE, channels=Config.CHANNELS)
-
-            text_injector = TextInjector()
-
             async with aiohttp.ClientSession() as session:
                 stt_service = self._create_stt_service(session)
-                steps = [self.audio_input, stt_service, text_injector]
+                smart_turn = LocalSmartTurnAnalyzerV3() if HAS_SMART_TURN else None
+                if smart_turn:
+                    logger.info("Enabling SmartTurn V3")
 
-                if HAS_SMART_TURN:
-                    logger.info("Enabling SmartTurn V3 via UserIdleProcessor")
-                    smart_turn = LocalSmartTurnAnalyzerV3()
-                    user_idle = UserIdleProcessor(callback=None, timeout=2.0, analyzer=smart_turn)
-                    steps.insert(1, user_idle)
+                if SoundDeviceAudioInputStream:
+                    # If the built-in stream is available, prefer it and configure turn analyzer via params if supported.
+                    self.audio_input = SoundDeviceAudioInputStream(sample_rate=Config.SAMPLE_RATE, channels=Config.CHANNELS)
+                else:
+                    self.audio_input = MicrophoneInput(
+                        sample_rate=Config.SAMPLE_RATE,
+                        channels=Config.CHANNELS,
+                        turn_analyzer=smart_turn,
+                    )
+
+                text_injector = TextInjector()
+                steps = [self.audio_input, stt_service, text_injector]
 
                 self.pipeline = Pipeline(steps)
                 self.task = PipelineTask(self.pipeline, params=PipelineParams(allow_interruptions=True))
