@@ -26,13 +26,12 @@ class TextInjector(FrameProcessor):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, TranscriptionFrame):
-            self._clear_interim()
             self._inject_text(frame.text + " ")
             self._last_interim_len = 0
         elif isinstance(frame, InterimTranscriptionFrame):
-            self._clear_interim()
-            self._inject_text(frame.text)
-            self._last_interim_len = len(frame.text)
+            # Skip interim injections to avoid cursor jitter in target apps.
+            await self.push_frame(frame, direction)
+            return
 
         await self.push_frame(frame, direction)
 
