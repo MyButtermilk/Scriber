@@ -46,6 +46,7 @@ class MicrophoneInput(PARENT_CLASS):
         self._loop = None
         self._queue = asyncio.Queue()
         self._consumer_task = None
+        self._stopped = asyncio.Event()
 
     async def start(self, frame: StartFrame):
         """Start audio capture and feed frames into the transport queue."""
@@ -63,7 +64,7 @@ class MicrophoneInput(PARENT_CLASS):
             )
             self.stream.start()
             logger.info("Microphone stream started")
-            self._consumer_task = asyncio.create_task(self._drain_queue())
+            self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")
         except Exception as e:
             logger.error(f"Microphone error: {e}")
             await self.stop(frame=EndFrame())
@@ -108,7 +109,8 @@ class MicrophoneInput(PARENT_CLASS):
             except Exception:
                 pass
         if self._consumer_task:
-            self._consumer_task.cancel()
-            await asyncio.gather(self._consumer_task, return_exceptions=True)
-            self._consumer_task = None
+            task, self._consumer_task = self._consumer_task, None
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._stopped.set()
         await super().stop(frame)
