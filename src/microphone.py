@@ -28,17 +28,17 @@ class MicrophoneInput(PARENT_CLASS):
 
         # Some pipecat versions require an explicit TransportParams on BaseInputTransport.
         if PARENT_NEEDS_PARAMS:
-            params = TransportParams(
-                audio_in_enabled=True,
-                audio_in_sample_rate=sample_rate,
-                audio_in_channels=channels,
-                audio_in_passthrough=True,
-            )
+        params = TransportParams(
+            audio_in_enabled=True,
+            audio_in_sample_rate=sample_rate,
+            audio_in_channels=channels,
+            audio_in_passthrough=True,
+        )
             super().__init__(params=params)
         else:
             super().__init__()
-        self.sample_rate = sample_rate
-        self.channels = channels
+        self._target_sample_rate = sample_rate  # avoid clashing with BaseInputTransport.sample_rate property
+        self._target_channels = channels
         self.block_size = block_size
         self.stream = None
         self._running = False
@@ -51,8 +51,8 @@ class MicrophoneInput(PARENT_CLASS):
 
         try:
             self.stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=self.channels,
+                samplerate=self._target_sample_rate,
+                channels=self._target_channels,
                 blocksize=self.block_size,
                 dtype="int16",
                 callback=self._audio_callback
@@ -64,7 +64,7 @@ class MicrophoneInput(PARENT_CLASS):
                 data = await self._queue.get()
                 if data is None:
                     break
-                frame = AudioRawFrame(audio=data, sample_rate=self.sample_rate, num_channels=self.channels)
+                frame = AudioRawFrame(audio=data, sample_rate=self._target_sample_rate, num_channels=self._target_channels)
                 await frame_processor.process_frame(frame)
 
         except Exception as e:
