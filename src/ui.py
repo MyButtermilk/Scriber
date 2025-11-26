@@ -37,6 +37,12 @@ class ScriberUI:
 
         self._build_controls()
 
+    def _autosave(self):
+        try:
+            self.on_save_settings()
+        except Exception:
+            pass
+
     def _build_controls(self):
         padding_opts = {"padx": 10, "pady": 6}
 
@@ -57,7 +63,7 @@ class ScriberUI:
         services = list(Config.SERVICE_LABELS.keys())
         service_combo = ttk.Combobox(settings_frame, values=[Config.SERVICE_LABELS[s] for s in services], state="readonly")
         service_combo.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
-        service_combo.bind("<<ComboboxSelected>>", lambda _: self._on_service_changed(services[service_combo.current()]))
+        service_combo.bind("<<ComboboxSelected>>", lambda _: (self._on_service_changed(services[service_combo.current()]), self._autosave()))
         current_index = services.index(Config.DEFAULT_STT_SERVICE) if Config.DEFAULT_STT_SERVICE in services else 0
         service_combo.current(current_index)
 
@@ -70,15 +76,17 @@ class ScriberUI:
         ttk.Label(settings_frame, text="Modus").grid(row=3, column=0, sticky="w", padx=4, pady=4)
         mode_combo = ttk.Combobox(settings_frame, values=["toggle", "push_to_talk"], textvariable=self.mode_var, state="readonly")
         mode_combo.grid(row=3, column=1, sticky="ew", padx=4, pady=4)
+        mode_combo.bind("<<ComboboxSelected>>", lambda _: self._autosave())
 
         ttk.Label(settings_frame, text="Soniox Mode").grid(row=4, column=0, sticky="w", padx=4, pady=4)
         soniox_mode_combo = ttk.Combobox(settings_frame, values=["realtime", "async"], textvariable=self.soniox_mode_var, state="readonly")
         soniox_mode_combo.grid(row=4, column=1, sticky="ew", padx=4, pady=4)
+        soniox_mode_combo.bind("<<ComboboxSelected>>", lambda _: self._autosave())
 
         ttk.Label(settings_frame, text="Custom Vocab").grid(row=5, column=0, sticky="w", padx=4, pady=4)
         ttk.Entry(settings_frame, textvariable=self.custom_vocab_var).grid(row=5, column=1, sticky="ew", padx=4, pady=4)
 
-        ttk.Checkbutton(settings_frame, text="Debug logging", variable=self.debug_var).grid(row=6, column=0, columnspan=2, sticky="w", padx=4, pady=4)
+        ttk.Checkbutton(settings_frame, text="Debug logging", variable=self.debug_var, command=self._autosave).grid(row=6, column=0, columnspan=2, sticky="w", padx=4, pady=4)
 
         ttk.Label(settings_frame, text="Sprache / Language").grid(row=7, column=0, sticky="w", padx=4, pady=4)
         languages = [
@@ -98,7 +106,7 @@ class ScriberUI:
         except ValueError:
             lang_idx = 0
         lang_combo.current(lang_idx)
-        lang_combo.bind("<<ComboboxSelected>>", lambda _: self.language_var.set(languages[lang_combo.current()][0]))
+        lang_combo.bind("<<ComboboxSelected>>", lambda _: (self.language_var.set(languages[lang_combo.current()][0]), self._autosave()))
         self.language_var.set(languages[lang_idx][0])
 
         ttk.Label(settings_frame, text="Microphone").grid(row=8, column=0, sticky="w", padx=4, pady=4)
@@ -110,10 +118,10 @@ class ScriberUI:
         except ValueError:
             mic_idx = 0
         mic_combo.current(mic_idx)
-        mic_combo.bind("<<ComboboxSelected>>", lambda _: self.mic_device_var.set(devices[mic_combo.current()][0]))
+        mic_combo.bind("<<ComboboxSelected>>", lambda _: (self.mic_device_var.set(devices[mic_combo.current()][0]), self._autosave()))
         self.mic_device_var.set(devices[mic_idx][0])
 
-        ttk.Checkbutton(settings_frame, text="Mic always on (faster start)", variable=self.mic_always_on_var).grid(row=9, column=0, columnspan=2, sticky="w", padx=4, pady=4)
+        ttk.Checkbutton(settings_frame, text="Mic always on (faster start)", variable=self.mic_always_on_var, command=self._autosave).grid(row=9, column=0, columnspan=2, sticky="w", padx=4, pady=4)
 
         settings_frame.columnconfigure(1, weight=1)
 
