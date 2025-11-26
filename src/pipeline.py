@@ -121,52 +121,53 @@ class SonioxAsyncProcessor(FrameProcessor):
 
     async def _encode_webm(self, audio_bytes: bytes):
         """
-        Try to transcode raw PCM to WebM/Opus using ffmpeg to save bandwidth.
-        Falls back to WAV if ffmpeg is unavailable.
+        Encode raw PCM directly to WebM/Opus via ffmpeg pipe (no temp wav).
+        Falls back to raw PCM (wav) if ffmpeg is unavailable.
         """
-        import tempfile, subprocess, os, wave, contextlib
+        import subprocess, shutil, io, wave, contextlib
 
         sr = self._sample_rate or 16000
         ch = self._channels or 1
 
-        # First write wav to temp file
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
-            with contextlib.closing(wave.open(wav_file, "wb")) as wf:
-                wf.setnchannels(ch)
-                wf.setsampwidth(2)  # int16
-                wf.setframerate(sr)
-                wf.writeframes(audio_bytes)
-            wav_path = wav_file.name
+        if shutil.which("ffmpeg"):
+            try:
+                cmd = [
+                    "ffmpeg",
+                    "-f",
+                    "s16le",
+                    "-ar",
+                    str(sr),
+                    "-ac",
+                    str(ch),
+                    "-i",
+                    "pipe:0",
+                    "-c:a",
+                    "libopus",
+                    "-b:a",
+                    "32k",
+                    "-f",
+                    "webm",
+                    "pipe:1",
+                ]
+                result = subprocess.run(
+                    cmd,
+                    input=audio_bytes,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                )
+                return result.stdout, "audio/webm", "audio.webm"
+            except Exception:
+                pass  # fall through to wav fallback
 
-        webm_path = wav_path.replace(".wav", ".webm")
-        try:
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                wav_path,
-                "-c:a",
-                "libopus",
-                "-b:a",
-                "32k",
-                webm_path,
-            ]
-            # Run quietly
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            with open(webm_path, "rb") as f:
-                webm_bytes = f.read()
-            return webm_bytes, "audio/webm", "audio.webm"
-        except Exception:
-            # Fallback to wav
-            with open(wav_path, "rb") as f:
-                wav_bytes = f.read()
-            return wav_bytes, "audio/wav", "audio.wav"
-        finally:
-            for p in (wav_path, webm_path):
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
+        # Fallback: wrap PCM in WAV container
+        buf = io.BytesIO()
+        with contextlib.closing(wave.open(buf, "wb")) as wf:
+            wf.setnchannels(ch)
+            wf.setsampwidth(2)  # int16
+            wf.setframerate(sr)
+            wf.writeframes(audio_bytes)
+        return buf.getvalue(), "audio/wav", "audio.wav"
 
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.google.stt import GoogleSTTService
