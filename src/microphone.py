@@ -11,6 +11,7 @@ except Exception:
     logger.warning("Sounddevice not available. Microphone input will be disabled.")
 
 try:
+    from pipecat.transports.base_transport import TransportParams
     from pipecat.transports.base_input import BaseInputTransport
     PARENT_CLASS = BaseInputTransport
     PARENT_NEEDS_PARAMS = True
@@ -25,9 +26,15 @@ class MicrophoneInput(PARENT_CLASS):
         if not HAS_SOUNDDEVICE:
             raise RuntimeError("Sounddevice is not available, cannot use MicrophoneInput.")
 
-        # Some pipecat versions require an explicit params argument on BaseInputTransport.
+        # Some pipecat versions require an explicit TransportParams on BaseInputTransport.
         if PARENT_NEEDS_PARAMS:
-            super().__init__(params=None)
+            params = TransportParams(
+                audio_in_enabled=True,
+                audio_in_sample_rate=sample_rate,
+                audio_in_channels=channels,
+                audio_in_passthrough=True,
+            )
+            super().__init__(params=params)
         else:
             super().__init__()
         self.sample_rate = sample_rate
