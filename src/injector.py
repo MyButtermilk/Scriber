@@ -3,7 +3,7 @@ import asyncio
 import os
 from loguru import logger
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.frames.frames import Frame, TextFrame, TranscriptionFrame, InterimTranscriptionFrame
+from pipecat.frames.frames import Frame, TextFrame, TranscriptionFrame, InterimTranscriptionFrame, StartFrame, EndFrame
 
 try:
     if sys.platform.startswith("linux") and "DISPLAY" not in os.environ:
