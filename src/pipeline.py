@@ -320,7 +320,11 @@ class ScriberPipeline:
             return
         logger.info("Stopping Scriber Pipeline")
         if self.task:
-            await self.task.cancel()
+            try:
+                await self.task.stop_when_done()
+            except Exception:
+                # Fallback to cancel if graceful stop fails
+                await self.task.cancel()
         self.is_active = False
         if self.on_status_change:
             self.on_status_change("Stopped")
