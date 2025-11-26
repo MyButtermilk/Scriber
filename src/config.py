@@ -24,6 +24,7 @@ class Config:
     DEFAULT_STT_SERVICE = os.getenv("SCRIBER_DEFAULT_STT", "soniox")
     SONIOX_MODE = os.getenv("SCRIBER_SONIOX_MODE", "realtime").lower()  # realtime | async
     SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", "stt-async-preview")
+    DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
 
     SERVICE_API_KEY_MAP = {
         "soniox": "SONIOX_API_KEY",
@@ -99,6 +100,11 @@ class Config:
         os.environ["SCRIBER_SONIOX_MODE"] = cls.SONIOX_MODE
 
     @classmethod
+    def set_debug(cls, enabled: bool) -> None:
+        cls.DEBUG = bool(enabled)
+        os.environ["SCRIBER_DEBUG"] = "1" if enabled else "0"
+
+    @classmethod
     def persist_to_env_file(cls, path: str = ".env") -> None:
         """Persist current settings and API keys to the .env file."""
         lines = []
@@ -122,6 +128,7 @@ class Config:
         add("SCRIBER_SONIOX_MODE", cls.SONIOX_MODE)
         add("SCRIBER_SONIOX_ASYNC_MODEL", cls.SONIOX_ASYNC_MODEL)
         add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
+        add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
 
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

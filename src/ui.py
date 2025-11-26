@@ -28,6 +28,7 @@ class ScriberUI:
         self.service_var = tk.StringVar(value=Config.DEFAULT_STT_SERVICE)
         self.mode_var = tk.StringVar(value=Config.MODE)
         self.soniox_mode_var = tk.StringVar(value=Config.SONIOX_MODE)
+        self.debug_var = tk.BooleanVar(value=Config.DEBUG)
         self.api_key_var = tk.StringVar(value=Config.get_api_key(Config.DEFAULT_STT_SERVICE))
         self.custom_vocab_var = tk.StringVar(value=Config.CUSTOM_VOCAB)
 
@@ -88,6 +89,9 @@ class ScriberUI:
         ttk.Label(settings_frame, text="Custom Vocab").grid(row=5, column=0, sticky="w", padx=4, pady=4)
         vocab_entry = ttk.Entry(settings_frame, textvariable=self.custom_vocab_var)
         vocab_entry.grid(row=5, column=1, sticky="ew", padx=4, pady=4)
+
+        debug_check = ttk.Checkbutton(settings_frame, text="Debug logging", variable=self.debug_var)
+        debug_check.grid(row=6, column=0, columnspan=2, sticky="w", padx=4, pady=4)
 
         settings_frame.columnconfigure(1, weight=1)
 

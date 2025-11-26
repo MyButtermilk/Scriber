@@ -98,6 +98,8 @@ class SonioxAsyncProcessor(FrameProcessor):
         for prefer_webm in (True, False):
             try:
                 file_bytes, content_type, filename = await self._encode_audio(audio_bytes, prefer_webm=prefer_webm)
+                if Config.DEBUG:
+                    logger.info(f"Soniox async upload using {'WebM' if prefer_webm else 'WAV'} ({len(file_bytes)} bytes)")
                 data = aiohttp.FormData()
                 data.add_field("file", file_bytes, filename=filename, content_type=content_type)
                 async with self.session.post(f"{self.BASE_URL}/files", data=data, headers=headers) as resp:
