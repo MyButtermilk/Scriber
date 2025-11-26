@@ -199,9 +199,10 @@ class ScriberPipeline:
         def _get_api_key(service):
             return Config.get_api_key(service)
 
-        if self.service_name == "soniox":
+        if self.service_name in ("soniox", "soniox_async"):
             if not _get_api_key("soniox"): raise ValueError("Soniox API Key is missing.")
-            if Config.SONIOX_MODE == "async":
+            use_async = self.service_name == "soniox_async" or Config.SONIOX_MODE == "async"
+            if use_async:
                 logger.info("Using Soniox async transcription mode")
                 return SonioxAsyncProcessor(
                     api_key=_get_api_key("soniox"),

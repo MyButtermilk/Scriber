@@ -27,6 +27,7 @@ class Config:
 
     SERVICE_API_KEY_MAP = {
         "soniox": "SONIOX_API_KEY",
+        "soniox_async": "SONIOX_API_KEY",
         "assemblyai": "ASSEMBLYAI_API_KEY",
         "elevenlabs": "ELEVENLABS_API_KEY",
         "deepgram": "DEEPGRAM_API_KEY",
@@ -39,6 +40,7 @@ class Config:
 
     SERVICE_LABELS = {
         "soniox": "Soniox",
+        "soniox_async": "Soniox (Async)",
         "assemblyai": "AssemblyAI",
         "google": "Google Cloud",
         "elevenlabs": "ElevenLabs",
