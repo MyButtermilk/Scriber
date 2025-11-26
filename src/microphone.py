@@ -28,12 +28,12 @@ class MicrophoneInput(PARENT_CLASS):
 
         # Some pipecat versions require an explicit TransportParams on BaseInputTransport.
         if PARENT_NEEDS_PARAMS:
-        params = TransportParams(
-            audio_in_enabled=True,
-            audio_in_sample_rate=sample_rate,
-            audio_in_channels=channels,
-            audio_in_passthrough=True,
-        )
+            params = TransportParams(
+                audio_in_enabled=True,
+                audio_in_sample_rate=sample_rate,
+                audio_in_channels=channels,
+                audio_in_passthrough=True,
+            )
             super().__init__(params=params)
         else:
             super().__init__()
