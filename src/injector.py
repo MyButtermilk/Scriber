@@ -20,7 +20,7 @@ except (ImportError, KeyError, OSError) as e:
 class TextInjector(FrameProcessor):
     def __init__(self):
         super().__init__()
-        self._buffer = []
+        self._latest_final = ""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -30,15 +30,15 @@ class TextInjector(FrameProcessor):
             await self.push_frame(frame, direction)
             return
         if isinstance(frame, TranscriptionFrame):
-            # Accumulate final pieces; inject later.
-            self._buffer.append(frame.text)
+            # Keep only the latest finalized transcript.
+            self._latest_final = frame.text
         elif isinstance(frame, StartFrame):
-            self._buffer = []
+            self._latest_final = ""
         elif isinstance(frame, EndFrame):
-            if self._buffer:
-                full_text = " ".join(self._buffer).strip() + " "
+            if self._latest_final:
+                full_text = self._latest_final.strip() + " "
                 self._inject_text(full_text)
-                self._buffer = []
+                self._latest_final = ""
 
         await self.push_frame(frame, direction)
 
