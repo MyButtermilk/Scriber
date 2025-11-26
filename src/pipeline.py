@@ -130,7 +130,8 @@ class ScriberPipeline:
 
                 self.pipeline = Pipeline(steps)
                 self.task = PipelineTask(self.pipeline, params=PipelineParams(allow_interruptions=True))
-                self.runner = PipelineRunner()
+                # Disable signal handling because runner executes in background thread
+                self.runner = PipelineRunner(handle_sigint=False, handle_sigterm=False)
                 self.is_active = True
 
                 if self.on_status_change:
