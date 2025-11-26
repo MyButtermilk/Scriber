@@ -82,16 +82,19 @@ class MicrophoneInput(PARENT_CLASS):
         while not hasattr(self, "_audio_in_queue") or self._audio_in_queue is None:
             await asyncio.sleep(0.01)
 
-        while self._running:
-            data = await self._queue.get()
-            if data is None:
-                break
-            frame = InputAudioRawFrame(
-                audio=data,
-                sample_rate=self._target_sample_rate,
-                num_channels=self._target_channels,
-            )
-            await self.push_audio_frame(frame)
+        try:
+            while self._running:
+                data = await self._queue.get()
+                if data is None:
+                    break
+                frame = InputAudioRawFrame(
+                    audio=data,
+                    sample_rate=self._target_sample_rate,
+                    num_channels=self._target_channels,
+                )
+                await self.push_audio_frame(frame)
+        except asyncio.CancelledError:
+            pass
 
     async def stop(self, frame: EndFrame):
         self._running = False
@@ -102,6 +105,7 @@ class MicrophoneInput(PARENT_CLASS):
         if self._queue:
             self._queue.put_nowait(None)
         if self._consumer_task:
-            await self.cancel_task(self._consumer_task)
+            self._consumer_task.cancel()
+            await asyncio.gather(self._consumer_task, return_exceptions=True)
             self._consumer_task = None
         await super().stop(frame)
