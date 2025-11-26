@@ -14,6 +14,7 @@ from pipecat.frames.frames import (
     StopFrame,
     CancelFrame,
 )
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.utils.time import time_now_iso8601
 
 try:
