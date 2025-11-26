@@ -87,10 +87,18 @@ if not exist ".env" (
     echo [INFO] .env file created. You can edit it later.
 )
 
+REM Read hotkey from .env for display
+set "HOTKEY_DISPLAY=Ctrl+Alt+S"
+if exist ".env" (
+    for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
+        if /I "%%a"=="SCRIBER_HOTKEY" set "HOTKEY_DISPLAY=%%b"
+    )
+)
+
 REM 6. Run the App
 echo.
 echo [INFO] Starting Scriber...
-echo        Press Ctrl+Alt+S to dictate.
+echo        Press !HOTKEY_DISPLAY! to dictate.
 echo.
 
 REM Run as a module to handle imports correctly
