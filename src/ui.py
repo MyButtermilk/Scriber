@@ -111,7 +111,7 @@ class ScriberUI:
 
         ttk.Label(settings_frame, text="Microphone").grid(row=8, column=0, sticky="w", padx=4, pady=4)
         devices = self._get_microphones()
-        mic_combo = ttk.Combobox(settings_frame, values=[d[1] for d in devices], state="readonly", width=48)
+        mic_combo = ttk.Combobox(settings_frame, values=[d[1] for d in devices], state="readonly", width=70)
         mic_combo.grid(row=8, column=1, sticky="ew", padx=4, pady=4)
         try:
             mic_idx = [d[0] for d in devices].index(Config.MIC_DEVICE)
