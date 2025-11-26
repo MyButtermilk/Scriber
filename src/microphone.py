@@ -75,6 +75,13 @@ class MicrophoneInput(PARENT_CLASS):
             self._loop.call_soon_threadsafe(self._queue.put_nowait, indata.tobytes())
 
     async def _drain_queue(self):
+        # Ensure audio queue exists (BaseInputTransport creates it in _create_audio_task)
+        if not hasattr(self, "_audio_in_queue") or self._audio_in_queue is None:
+            self._create_audio_task()
+        # Wait for queue to be available
+        while not hasattr(self, "_audio_in_queue") or self._audio_in_queue is None:
+            await asyncio.sleep(0.01)
+
         while self._running:
             data = await self._queue.get()
             if data is None:
