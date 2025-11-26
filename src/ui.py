@@ -20,7 +20,7 @@ class ScriberUI:
 
         self.root = tk.Tk()
         self.root.title("Scriber Controller")
-        self.root.geometry("420x440")
+        self.root.geometry("420x500")
         self.root.resizable(False, False)
 
         self.status_var = tk.StringVar(value="Bereit")
@@ -30,6 +30,8 @@ class ScriberUI:
         self.soniox_mode_var = tk.StringVar(value=Config.SONIOX_MODE)
         self.debug_var = tk.BooleanVar(value=Config.DEBUG)
         self.language_var = tk.StringVar(value=Config.LANGUAGE)
+        self.mic_device_var = tk.StringVar(value=Config.MIC_DEVICE)
+        self.mic_always_on_var = tk.BooleanVar(value=Config.MIC_ALWAYS_ON)
         self.api_key_var = tk.StringVar(value=Config.get_api_key(Config.DEFAULT_STT_SERVICE))
         self.custom_vocab_var = tk.StringVar(value=Config.CUSTOM_VOCAB)
 
@@ -45,10 +47,8 @@ class ScriberUI:
 
         control_frame = ttk.LabelFrame(self.root, text="Steuerung")
         control_frame.pack(fill="x", **padding_opts)
-        start_button = ttk.Button(control_frame, text="Start", command=self.on_start)
-        start_button.pack(side="left", padx=5, pady=8)
-        stop_button = ttk.Button(control_frame, text="Stop", command=self.on_stop)
-        stop_button.pack(side="left", padx=5, pady=8)
+        ttk.Button(control_frame, text="Start", command=self.on_start).pack(side="left", padx=5, pady=8)
+        ttk.Button(control_frame, text="Stop", command=self.on_stop).pack(side="left", padx=5, pady=8)
 
         settings_frame = ttk.LabelFrame(self.root, text="Einstellungen")
         settings_frame.pack(fill="x", **padding_opts)
@@ -62,37 +62,23 @@ class ScriberUI:
         service_combo.current(current_index)
 
         ttk.Label(settings_frame, text="API Key").grid(row=1, column=0, sticky="w", padx=4, pady=4)
-        api_entry = ttk.Entry(settings_frame, textvariable=self.api_key_var, show="*")
-        api_entry.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Entry(settings_frame, textvariable=self.api_key_var, show="*").grid(row=1, column=1, sticky="ew", padx=4, pady=4)
 
         ttk.Label(settings_frame, text="Hotkey").grid(row=2, column=0, sticky="w", padx=4, pady=4)
-        hotkey_entry = ttk.Entry(settings_frame, textvariable=self.hotkey_var)
-        hotkey_entry.grid(row=2, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Entry(settings_frame, textvariable=self.hotkey_var).grid(row=2, column=1, sticky="ew", padx=4, pady=4)
 
         ttk.Label(settings_frame, text="Modus").grid(row=3, column=0, sticky="w", padx=4, pady=4)
-        mode_combo = ttk.Combobox(
-            settings_frame,
-            values=["toggle", "push_to_talk"],
-            textvariable=self.mode_var,
-            state="readonly",
-        )
+        mode_combo = ttk.Combobox(settings_frame, values=["toggle", "push_to_talk"], textvariable=self.mode_var, state="readonly")
         mode_combo.grid(row=3, column=1, sticky="ew", padx=4, pady=4)
 
         ttk.Label(settings_frame, text="Soniox Mode").grid(row=4, column=0, sticky="w", padx=4, pady=4)
-        soniox_mode_combo = ttk.Combobox(
-            settings_frame,
-            values=["realtime", "async"],
-            textvariable=self.soniox_mode_var,
-            state="readonly",
-        )
+        soniox_mode_combo = ttk.Combobox(settings_frame, values=["realtime", "async"], textvariable=self.soniox_mode_var, state="readonly")
         soniox_mode_combo.grid(row=4, column=1, sticky="ew", padx=4, pady=4)
 
         ttk.Label(settings_frame, text="Custom Vocab").grid(row=5, column=0, sticky="w", padx=4, pady=4)
-        vocab_entry = ttk.Entry(settings_frame, textvariable=self.custom_vocab_var)
-        vocab_entry.grid(row=5, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Entry(settings_frame, textvariable=self.custom_vocab_var).grid(row=5, column=1, sticky="ew", padx=4, pady=4)
 
-        debug_check = ttk.Checkbutton(settings_frame, text="Debug logging", variable=self.debug_var)
-        debug_check.grid(row=6, column=0, columnspan=2, sticky="w", padx=4, pady=4)
+        ttk.Checkbutton(settings_frame, text="Debug logging", variable=self.debug_var).grid(row=6, column=0, columnspan=2, sticky="w", padx=4, pady=4)
 
         ttk.Label(settings_frame, text="Sprache / Language").grid(row=7, column=0, sticky="w", padx=4, pady=4)
         languages = [
@@ -105,31 +91,63 @@ class ScriberUI:
             ("pt", "🇵🇹 Português"),
             ("nl", "🇳🇱 Nederlands"),
         ]
-        lang_combo = ttk.Combobox(
-            settings_frame,
-            values=[label for _, label in languages],
-            state="readonly",
-        )
+        lang_combo = ttk.Combobox(settings_frame, values=[label for _, label in languages], state="readonly")
         lang_combo.grid(row=7, column=1, sticky="ew", padx=4, pady=4)
-        # set current
         try:
-            idx = [code for code, _ in languages].index(Config.LANGUAGE)
+            lang_idx = [code for code, _ in languages].index(Config.LANGUAGE)
         except ValueError:
-            idx = 0
-        lang_combo.current(idx)
+            lang_idx = 0
+        lang_combo.current(lang_idx)
         lang_combo.bind("<<ComboboxSelected>>", lambda _: self.language_var.set(languages[lang_combo.current()][0]))
-        self.language_var.set(languages[idx][0])
+        self.language_var.set(languages[lang_idx][0])
+
+        ttk.Label(settings_frame, text="Microphone").grid(row=8, column=0, sticky="w", padx=4, pady=4)
+        devices = self._get_microphones()
+        mic_combo = ttk.Combobox(settings_frame, values=[d[1] for d in devices], state="readonly")
+        mic_combo.grid(row=8, column=1, sticky="ew", padx=4, pady=4)
+        try:
+            mic_idx = [d[0] for d in devices].index(Config.MIC_DEVICE)
+        except ValueError:
+            mic_idx = 0
+        mic_combo.current(mic_idx)
+        mic_combo.bind("<<ComboboxSelected>>", lambda _: self.mic_device_var.set(devices[mic_combo.current()][0]))
+        self.mic_device_var.set(devices[mic_idx][0])
+
+        ttk.Checkbutton(settings_frame, text="Mic always on (faster start)", variable=self.mic_always_on_var).grid(row=9, column=0, columnspan=2, sticky="w", padx=4, pady=4)
 
         settings_frame.columnconfigure(1, weight=1)
 
-        save_button = ttk.Button(self.root, text="Einstellungen speichern", command=self.on_save_settings)
-        save_button.pack(fill="x", padx=12, pady=10)
+        ttk.Button(self.root, text="Einstellungen speichern", command=self.on_save_settings).pack(fill="x", padx=12, pady=10)
 
         info_text = (
             "Hotkey Toggle: Start/Stop.\n"
             "Push-to-Talk: Halten Sie den Hotkey gedrückt, um aufzunehmen."
         )
         ttk.Label(self.root, text=info_text, wraplength=380, foreground="#555").pack(fill="x", padx=12, pady=4)
+
+    def _get_microphones(self):
+        try:
+            import sounddevice as sd
+            devices = []
+            default = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
+            devices.append(("default", "🎙️ System default"))
+            for idx, dev in enumerate(sd.query_devices()):
+                if dev.get("max_input_channels", 0) > 0:
+                    label = f"{dev.get('name','Device')} (id {idx})"
+                    prefix = "🎤 "
+                    if idx == default:
+                        label = f"{prefix}{label} • default"
+                    devices.append((str(idx), f"{prefix}{label}"))
+            uniq = []
+            seen = set()
+            for k, v in devices:
+                if k in seen:
+                    continue
+                seen.add(k)
+                uniq.append((k, v))
+            return uniq
+        except Exception:
+            return [("default", "🎙️ System default")]
 
     def _on_service_changed(self, service_name: str):
         self.service_var.set(service_name)

@@ -343,6 +343,8 @@ class ScriberPipeline:
                         sample_rate=Config.SAMPLE_RATE,
                         channels=Config.CHANNELS,
                         turn_analyzer=smart_turn,
+                        device=Config.MIC_DEVICE,
+                        keep_alive=Config.MIC_ALWAYS_ON,
                     )
 
                 text_injector = TextInjector()

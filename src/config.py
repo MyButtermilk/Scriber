@@ -26,6 +26,8 @@ class Config:
     SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", "stt-async-preview")
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
     LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "auto")
+    MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
+    MIC_ALWAYS_ON = os.getenv("SCRIBER_MIC_ALWAYS_ON", "0") in ("1", "true", "True")
 
     SERVICE_API_KEY_MAP = {
         "soniox": "SONIOX_API_KEY",
@@ -111,6 +113,16 @@ class Config:
         os.environ["SCRIBER_LANGUAGE"] = code
 
     @classmethod
+    def set_mic_device(cls, device: str) -> None:
+        cls.MIC_DEVICE = device
+        os.environ["SCRIBER_MIC_DEVICE"] = device
+
+    @classmethod
+    def set_mic_always_on(cls, enabled: bool) -> None:
+        cls.MIC_ALWAYS_ON = bool(enabled)
+        os.environ["SCRIBER_MIC_ALWAYS_ON"] = "1" if enabled else "0"
+
+    @classmethod
     def persist_to_env_file(cls, path: str = ".env") -> None:
         """Persist current settings and API keys to the .env file."""
         lines = []
@@ -136,6 +148,8 @@ class Config:
         add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)
+        add("SCRIBER_MIC_DEVICE", cls.MIC_DEVICE)
+        add("SCRIBER_MIC_ALWAYS_ON", "1" if cls.MIC_ALWAYS_ON else "0")
 
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

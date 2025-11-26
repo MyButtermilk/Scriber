@@ -22,7 +22,7 @@ except ImportError:
 
 
 class MicrophoneInput(PARENT_CLASS):
-    def __init__(self, sample_rate=16000, channels=1, block_size=1024, turn_analyzer=None):
+    def __init__(self, sample_rate=16000, channels=1, block_size=1024, turn_analyzer=None, device="default", keep_alive=False):
         if not HAS_SOUNDDEVICE:
             raise RuntimeError("Sounddevice is not available, cannot use MicrophoneInput.")
 
@@ -41,6 +41,8 @@ class MicrophoneInput(PARENT_CLASS):
         self._target_sample_rate = sample_rate  # avoid clashing with BaseInputTransport.sample_rate property
         self._target_channels = channels
         self.block_size = block_size
+        self.device = device
+        self.keep_alive = keep_alive
         self.stream = None
         self._running = False
         self._loop = None
@@ -55,14 +57,17 @@ class MicrophoneInput(PARENT_CLASS):
         self._running = True
 
         try:
-            self.stream = sd.InputStream(
-                samplerate=self._target_sample_rate,
-                channels=self._target_channels,
-                blocksize=self.block_size,
-                dtype="int16",
-                callback=self._audio_callback,
-            )
-            self.stream.start()
+            if not self.stream:
+                self.stream = sd.InputStream(
+                    samplerate=self._target_sample_rate,
+                    channels=self._target_channels,
+                    blocksize=self.block_size,
+                    dtype="int16",
+                    callback=self._audio_callback,
+                    device=None if self.device == "default" else int(self.device),
+                )
+            if not self.stream.active:
+                self.stream.start()
             logger.info("Microphone stream started")
             # Ensure transport audio queue exists before we push frames
             self._create_audio_task()
@@ -101,7 +106,7 @@ class MicrophoneInput(PARENT_CLASS):
 
     async def stop(self, frame: EndFrame):
         self._running = False
-        if self.stream:
+        if self.stream and not self.keep_alive:
             self.stream.stop()
             self.stream.close()
             self.stream = None
