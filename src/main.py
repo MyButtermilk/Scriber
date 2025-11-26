@@ -192,6 +192,8 @@ def _handle_exit():
 def main():
     global ui, loop
 
+    # Avoid duplicate log lines if main is invoked multiple times; start with a clean sink list.
+    logger.remove()
     logger.add(sys.stderr, level="INFO")
     logger.info("Scriber - Voice Dictation")
 
