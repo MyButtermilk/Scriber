@@ -138,45 +138,53 @@ class SonioxAsyncProcessor(FrameProcessor):
 
     async def _encode_audio(self, audio_bytes: bytes, prefer_webm: bool = True):
         """
-        Encode raw PCM to WebM/Opus (if available) otherwise WAV.
+        Encode raw PCM to WebM/Opus (preferred) or WAV.
+        For WebM we first wrap the PCM into a temp WAV so ffmpeg knows the duration
+        and writes proper metadata (more reliable than piping raw PCM).
         """
-        import subprocess, shutil, io, wave, contextlib, struct
+        import subprocess, shutil, io, wave, contextlib, tempfile, os
 
         sr = self._sample_rate or 16000
         ch = self._channels or 1
 
         if prefer_webm and shutil.which("ffmpeg"):
             try:
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
+                    with contextlib.closing(wave.open(wav_file, "wb")) as wf:
+                        wf.setnchannels(ch)
+                        wf.setsampwidth(2)  # int16
+                        wf.setframerate(sr)
+                        wf.writeframes(audio_bytes)
+                    wav_path = wav_file.name
+
+                webm_path = wav_path.replace(".wav", ".webm")
                 cmd = [
                     "ffmpeg",
-                    "-f",
-                    "s16le",
-                    "-ar",
-                    str(sr),
-                    "-ac",
-                    str(ch),
+                    "-y",
                     "-i",
-                    "pipe:0",
+                    wav_path,
                     "-c:a",
                     "libopus",
                     "-b:a",
                     "32k",
                     "-f",
                     "webm",
-                    "pipe:1",
+                    webm_path,
                 ]
-                result = subprocess.run(
-                    cmd,
-                    input=audio_bytes,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    check=True,
-                )
-                webm_bytes = self._fix_webm_duration(result.stdout, len(audio_bytes), sr, ch)
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                with open(webm_path, "rb") as f:
+                    webm_bytes = f.read()
                 return webm_bytes, "audio/webm", "audio.webm"
-            except Exception:
-                # fall back to WAV
-                pass
+            except Exception as e:
+                logger.warning(f"WebM encode failed ({e}); falling back to WAV")
+            finally:
+                for p in ("wav_path", "webm_path"):
+                    try:
+                        fp = locals().get(p)
+                        if fp and os.path.exists(fp):
+                            os.remove(fp)
+                    except Exception:
+                        pass
 
         # WAV fallback
         buf = io.BytesIO()
@@ -186,33 +194,6 @@ class SonioxAsyncProcessor(FrameProcessor):
             wf.setframerate(sr)
             wf.writeframes(audio_bytes)
         return buf.getvalue(), "audio/wav", "audio.wav"
-
-    def _fix_webm_duration(self, webm_bytes: bytes, pcm_len: int, sr: int, ch: int) -> bytes:
-        """
-        Best-effort fix to embed duration in WebM container (similar to fix-webm-duration).
-        If patching fails, return original bytes.
-        """
-        try:
-            duration_sec = pcm_len / (sr * ch * 2)  # 16-bit PCM
-            duration_elem = b"\x44\x89" + b"\x88" + struct.pack(">d", duration_sec)  # ID + size(8) + float64
-
-            # Locate Segment Info (0x15 0x49 0xA9 0x66)
-            seg_info = webm_bytes.find(b"\x15\x49\xa9\x66")
-            if seg_info == -1:
-                return webm_bytes
-
-            insert_pos = seg_info + 4  # after the Segment Info ID; inside its payload
-            # Try to place after TimecodeScale (0x2A D7 B1) if present
-            tcs_idx = webm_bytes.find(b"\x2a\xd7\xb1", seg_info)
-            if tcs_idx != -1:
-                # skip id + size (assume 1-byte size)
-                insert_pos = tcs_idx + 2
-                if insert_pos < len(webm_bytes):
-                    insert_pos += 1
-
-            return webm_bytes[:insert_pos] + duration_elem + webm_bytes[insert_pos:]
-        except Exception:
-            return webm_bytes
 
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.google.stt import GoogleSTTService
