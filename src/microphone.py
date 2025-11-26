@@ -103,7 +103,10 @@ class MicrophoneInput(PARENT_CLASS):
             self.stream.close()
             self.stream = None
         if self._queue:
-            self._queue.put_nowait(None)
+            try:
+                self._queue.put_nowait(None)
+            except Exception:
+                pass
         if self._consumer_task:
             self._consumer_task.cancel()
             await asyncio.gather(self._consumer_task, return_exceptions=True)

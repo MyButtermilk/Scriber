@@ -11,6 +11,7 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
     EndFrame,
     StartFrame,
+    StopFrame,
 )
 from pipecat.utils.time import time_now_iso8601
 
@@ -66,7 +67,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 self._channels = frame.num_channels
             self._buffer.extend(frame.audio)
             await self.push_frame(frame, direction)
-        elif isinstance(frame, EndFrame):
+        elif isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
             try:
                 text = await self._transcribe_async(bytes(self._buffer))
                 await self.push_frame(
