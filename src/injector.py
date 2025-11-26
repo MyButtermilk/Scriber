@@ -20,30 +20,27 @@ except (ImportError, KeyError, OSError) as e:
 class TextInjector(FrameProcessor):
     def __init__(self):
         super().__init__()
-        self._last_interim_len = 0
+        self._buffer = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, TranscriptionFrame):
-            self._inject_text(frame.text + " ")
-            self._last_interim_len = 0
-        elif isinstance(frame, InterimTranscriptionFrame):
-            # Skip interim injections to avoid cursor jitter in target apps.
+        if isinstance(frame, InterimTranscriptionFrame):
+            # Skip interim injections to avoid cursor jitter.
             await self.push_frame(frame, direction)
             return
+        if isinstance(frame, TranscriptionFrame):
+            # Accumulate final pieces; inject later.
+            self._buffer.append(frame.text)
+        elif isinstance(frame, StartFrame):
+            self._buffer = []
+        elif isinstance(frame, EndFrame):
+            if self._buffer:
+                full_text = " ".join(self._buffer).strip() + " "
+                self._inject_text(full_text)
+                self._buffer = []
 
         await self.push_frame(frame, direction)
-
-    def _clear_interim(self):
-        if not HAS_GUI or self._last_interim_len == 0:
-            return
-        try:
-            for _ in range(self._last_interim_len):
-                keyboard.press_and_release('backspace')
-        except Exception:
-            logger.error("Failed to clear interim text.")
-        self._last_interim_len = 0
 
     def _inject_text(self, text: str):
         if not HAS_GUI:
