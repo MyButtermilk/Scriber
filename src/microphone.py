@@ -81,7 +81,7 @@ class MicrophoneInput(PARENT_CLASS):
         # Ensure audio queue exists (BaseInputTransport creates it in _create_audio_task)
         if not hasattr(self, "_audio_in_queue") or self._audio_in_queue is None:
             self._create_audio_task()
-        # Wait for queue to be available
+        # Wait for queue to be available and start frame delivered downstream
         while not hasattr(self, "_audio_in_queue") or self._audio_in_queue is None:
             await asyncio.sleep(0.01)
 

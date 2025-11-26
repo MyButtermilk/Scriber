@@ -12,6 +12,7 @@ from pipecat.frames.frames import (
     EndFrame,
     StartFrame,
     StopFrame,
+    CancelFrame,
 )
 from pipecat.utils.time import time_now_iso8601
 
