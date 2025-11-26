@@ -379,6 +379,11 @@ class ScriberPipeline:
             except Exception:
                 # Fallback to cancel if graceful stop fails
                 await self.task.cancel()
+        if self.runner:
+            try:
+                await self.runner.cancel()
+            except Exception as e:
+                logger.debug(f"Runner cancel warning: {e}")
         self.is_active = False
         if self.on_status_change:
             self.on_status_change("Stopped")
