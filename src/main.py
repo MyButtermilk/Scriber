@@ -159,6 +159,8 @@ def save_settings():
     Config.set_mode(ui.mode_var.get())
     Config.set_soniox_mode(ui.soniox_mode_var.get())
     Config.CUSTOM_VOCAB = ui.custom_vocab_var.get().strip()
+    # Persist current settings to .env so they are remembered.
+    Config.persist_to_env_file(".env")
 
     register_hotkey()
     ui.update_status("Settings saved")

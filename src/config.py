@@ -97,3 +97,31 @@ class Config:
     def set_soniox_mode(cls, mode: str) -> None:
         cls.SONIOX_MODE = mode.lower().strip()
         os.environ["SCRIBER_SONIOX_MODE"] = cls.SONIOX_MODE
+
+    @classmethod
+    def persist_to_env_file(cls, path: str = ".env") -> None:
+        """Persist current settings and API keys to the .env file."""
+        lines = []
+        def add(k, v): lines.append(f"{k}={v}")
+
+        add("SONIOX_API_KEY", cls.SONIOX_API_KEY or "")
+        add("ASSEMBLYAI_API_KEY", cls.ASSEMBLYAI_API_KEY or "")
+        add("ELEVENLABS_API_KEY", cls.ELEVENLABS_API_KEY or "")
+        add("GOOGLE_APPLICATION_CREDENTIALS", cls.GOOGLE_APPLICATION_CREDENTIALS or "")
+        add("DEEPGRAM_API_KEY", cls.DEEPGRAM_API_KEY or "")
+        add("OPENAI_API_KEY", cls.OPENAI_API_KEY or "")
+        add("AZURE_SPEECH_KEY", cls.AZURE_SPEECH_KEY or "")
+        add("AZURE_SPEECH_REGION", cls.AZURE_SPEECH_REGION or "")
+        add("GLADIA_API_KEY", cls.GLADIA_API_KEY or "")
+        add("GROQ_API_KEY", cls.GROQ_API_KEY or "")
+        add("SPEECHMATICS_API_KEY", cls.SPEECHMATICS_API_KEY or "")
+
+        add("SCRIBER_HOTKEY", cls.HOTKEY)
+        add("SCRIBER_DEFAULT_STT", cls.DEFAULT_STT_SERVICE)
+        add("SCRIBER_MODE", cls.MODE)
+        add("SCRIBER_SONIOX_MODE", cls.SONIOX_MODE)
+        add("SCRIBER_SONIOX_ASYNC_MODEL", cls.SONIOX_ASYNC_MODEL)
+        add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
