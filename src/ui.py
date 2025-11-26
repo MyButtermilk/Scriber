@@ -29,6 +29,7 @@ class ScriberUI:
         self.mode_var = tk.StringVar(value=Config.MODE)
         self.soniox_mode_var = tk.StringVar(value=Config.SONIOX_MODE)
         self.debug_var = tk.BooleanVar(value=Config.DEBUG)
+        self.language_var = tk.StringVar(value=Config.LANGUAGE)
         self.api_key_var = tk.StringVar(value=Config.get_api_key(Config.DEFAULT_STT_SERVICE))
         self.custom_vocab_var = tk.StringVar(value=Config.CUSTOM_VOCAB)
 
@@ -92,6 +93,31 @@ class ScriberUI:
 
         debug_check = ttk.Checkbutton(settings_frame, text="Debug logging", variable=self.debug_var)
         debug_check.grid(row=6, column=0, columnspan=2, sticky="w", padx=4, pady=4)
+
+        ttk.Label(settings_frame, text="Sprache / Language").grid(row=7, column=0, sticky="w", padx=4, pady=4)
+        languages = [
+            ("en", "🇺🇸 English"),
+            ("de", "🇩🇪 Deutsch"),
+            ("fr", "🇫🇷 Français"),
+            ("es", "🇪🇸 Español"),
+            ("it", "🇮🇹 Italiano"),
+            ("pt", "🇵🇹 Português"),
+            ("nl", "🇳🇱 Nederlands"),
+        ]
+        lang_combo = ttk.Combobox(
+            settings_frame,
+            values=[label for _, label in languages],
+            state="readonly",
+        )
+        lang_combo.grid(row=7, column=1, sticky="ew", padx=4, pady=4)
+        # set current
+        try:
+            idx = [code for code, _ in languages].index(Config.LANGUAGE)
+        except ValueError:
+            idx = 0
+        lang_combo.current(idx)
+        lang_combo.bind("<<ComboboxSelected>>", lambda _: self.language_var.set(languages[lang_combo.current()][0]))
+        self.language_var.set(languages[idx][0])
 
         settings_frame.columnconfigure(1, weight=1)
 

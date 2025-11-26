@@ -5,7 +5,7 @@ from loguru import logger
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.pipeline.runner import PipelineRunner
-from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import (
     InputAudioRawFrame,
     TranscriptionFrame,
@@ -14,7 +14,7 @@ from pipecat.frames.frames import (
     StopFrame,
     CancelFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 try:
@@ -241,6 +241,19 @@ from src.config import Config
 from src.injector import TextInjector
 from src.microphone import MicrophoneInput
 
+LANGUAGE_MAP = {
+    "en": Language.EN,
+    "de": Language.DE,
+    "fr": Language.FR,
+    "es": Language.ES,
+    "it": Language.IT,
+    "pt": Language.PT,
+    "nl": Language.NL,
+}
+
+def _selected_language():
+    return LANGUAGE_MAP.get(Config.LANGUAGE, Language.EN)
+
 class ScriberPipeline:
     def __init__(self, service_name=Config.DEFAULT_STT_SERVICE, on_status_change=None):
         self.service_name = service_name
@@ -268,17 +281,17 @@ class ScriberPipeline:
                     session=session,
                 )
             if not SonioxSTTService: raise ImportError("SonioxSTTService not available.")
-            params = SonioxInputParams() if SonioxInputParams else _SonioxParamsFallback()
+            params = SonioxInputParams(language_hints=[_selected_language()]) if SonioxInputParams else _SonioxParamsFallback()
             if Config.CUSTOM_VOCAB and SonioxContextObject:
                 terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
                 if terms:
                     logger.info(f"Applying custom vocabulary: {terms}")
-                    params = SonioxInputParams(context=SonioxContextObject(terms=terms)) if SonioxInputParams else _SonioxParamsFallback(context=SonioxContextObject(terms=terms))
+                    params = SonioxInputParams(context=SonioxContextObject(terms=terms), language_hints=[_selected_language()]) if SonioxInputParams else _SonioxParamsFallback(context=SonioxContextObject(terms=terms))
             return SonioxSTTService(api_key=_get_api_key("soniox"), params=params)
 
         elif self.service_name == "assemblyai":
             if not _get_api_key("assemblyai"): raise ValueError("AssemblyAI API Key is missing.")
-            return AssemblyAISTTService(api_key=_get_api_key("assemblyai"), aiohttp_session=session)
+            return AssemblyAISTTService(api_key=_get_api_key("assemblyai"), aiohttp_session=session, language=_selected_language())
         elif self.service_name == "google":
             return GoogleSTTService()
         elif self.service_name == "elevenlabs":
@@ -289,16 +302,17 @@ class ScriberPipeline:
             return DeepgramSTTService(api_key=_get_api_key("deepgram"))
         elif self.service_name == "openai":
             if not _get_api_key("openai"): raise ValueError("OpenAI API Key is missing.")
-            return OpenAISTTService(api_key=_get_api_key("openai"), aiohttp_session=session)
+            return OpenAISTTService(api_key=_get_api_key("openai"), aiohttp_session=session, language=_selected_language())
         elif self.service_name == "azure":
             if not Config.AZURE_SPEECH_KEY or not Config.AZURE_SPEECH_REGION: raise ValueError("Azure Speech Key or Region is missing.")
-            return AzureSTTService(api_key=Config.AZURE_SPEECH_KEY, region=Config.AZURE_SPEECH_REGION)
+            lang = Language.EN_US if Config.LANGUAGE == "en" else _selected_language()
+            return AzureSTTService(api_key=Config.AZURE_SPEECH_KEY, region=Config.AZURE_SPEECH_REGION, language=lang)
         elif self.service_name == "gladia":
             if not _get_api_key("gladia"): raise ValueError("Gladia API Key is missing.")
             return GladiaSTTService(api_key=_get_api_key("gladia"), aiohttp_session=session)
         elif self.service_name == "groq":
             if not _get_api_key("groq"): raise ValueError("Groq API Key is missing.")
-            return GroqSTTService(api_key=_get_api_key("groq"), aiohttp_session=session)
+            return GroqSTTService(api_key=_get_api_key("groq"), aiohttp_session=session, language=_selected_language())
         elif self.service_name == "speechmatics":
             if not _get_api_key("speechmatics"): raise ValueError("Speechmatics API Key is missing.")
             return SpeechmaticsSTTService(api_key=_get_api_key("speechmatics"))
