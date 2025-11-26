@@ -103,7 +103,7 @@ class ScriberUI:
 
         ttk.Label(settings_frame, text="Microphone").grid(row=8, column=0, sticky="w", padx=4, pady=4)
         devices = self._get_microphones()
-        mic_combo = ttk.Combobox(settings_frame, values=[d[1] for d in devices], state="readonly")
+        mic_combo = ttk.Combobox(settings_frame, values=[d[1] for d in devices], state="readonly", width=48)
         mic_combo.grid(row=8, column=1, sticky="ew", padx=4, pady=4)
         try:
             mic_idx = [d[0] for d in devices].index(Config.MIC_DEVICE)
@@ -131,21 +131,22 @@ class ScriberUI:
             devices = []
             default = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
             devices.append(("default", "🎙️ System default"))
+            seen_labels = set()
             for idx, dev in enumerate(sd.query_devices()):
-                if dev.get("max_input_channels", 0) > 0:
-                    label = f"{dev.get('name','Device')} (id {idx})"
-                    prefix = "🎤 "
-                    if idx == default:
-                        label = f"{prefix}{label} • default"
-                    devices.append((str(idx), f"{prefix}{label}"))
-            uniq = []
-            seen = set()
-            for k, v in devices:
-                if k in seen:
+                if dev.get("max_input_channels", 0) <= 0:
                     continue
-                seen.add(k)
-                uniq.append((k, v))
-            return uniq
+                name = dev.get("name", f"Device {idx}")
+                label = f"{name} (id {idx})"
+                if label in seen_labels:
+                    continue
+                seen_labels.add(label)
+                prefix = "🎤 "
+                if idx == default:
+                    label = f"{prefix}{label} • default"
+                else:
+                    label = f"{prefix}{label}"
+                devices.append((str(idx), label))
+            return devices
         except Exception:
             return [("default", "🎙️ System default")]
 

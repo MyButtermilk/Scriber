@@ -68,7 +68,7 @@ class MicrophoneInput(PARENT_CLASS):
                 )
             if not self.stream.active:
                 self.stream.start()
-            logger.info("Microphone stream started")
+            logger.info(f"Microphone stream started (device={self.device})")
             # Ensure transport audio queue exists before we push frames
             self._create_audio_task()
             self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")
