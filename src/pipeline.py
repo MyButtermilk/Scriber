@@ -88,50 +88,64 @@ class SonioxAsyncProcessor(FrameProcessor):
             await self.push_frame(frame, direction)
 
     async def _transcribe_async(self, audio_bytes: bytes) -> str:
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        file_bytes, content_type, filename = await self._encode_webm(audio_bytes)
-        data = aiohttp.FormData()
-        data.add_field("file", file_bytes, filename=filename, content_type=content_type)
-        async with self.session.post(f"{self.BASE_URL}/files", data=data, headers=headers) as resp:
-            resp.raise_for_status()
-            file_id = (await resp.json())["id"]
-
-        payload = {"file_id": file_id, "model": self.model}
-        if self.custom_vocab:
-            payload["context"] = self.custom_vocab
-
-        async with self.session.post(f"{self.BASE_URL}/transcriptions", json=payload, headers=headers) as resp2:
-            resp2.raise_for_status()
-            transcription_id = (await resp2.json())["id"]
-
-        # Poll status
-        while True:
-            async with self.session.get(f"{self.BASE_URL}/transcriptions/{transcription_id}", headers=headers) as r:
-                r.raise_for_status()
-                status_payload = await r.json()
-                status = status_payload.get("status")
-                if status == "completed":
-                    break
-                if status == "error":
-                    raise RuntimeError(status_payload.get("error_message", "Soniox async error"))
-            await asyncio.sleep(1)
-
-        async with self.session.get(f"{self.BASE_URL}/transcriptions/{transcription_id}/transcript", headers=headers) as r3:
-            r3.raise_for_status()
-            transcript_payload = await r3.json()
-            return transcript_payload.get("text", "")
-
-    async def _encode_webm(self, audio_bytes: bytes):
         """
-        Encode raw PCM directly to WebM/Opus via ffmpeg pipe (no temp wav).
-        Falls back to raw PCM (wav) if ffmpeg is unavailable.
+        Upload audio to Soniox async API. Prefer WebM/Opus; retry with WAV if Soniox rejects.
+        """
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+
+        # Two-pass strategy: webm first, wav fallback for duration/format errors
+        for prefer_webm in (True, False):
+            try:
+                file_bytes, content_type, filename = await self._encode_audio(audio_bytes, prefer_webm=prefer_webm)
+                data = aiohttp.FormData()
+                data.add_field("file", file_bytes, filename=filename, content_type=content_type)
+                async with self.session.post(f"{self.BASE_URL}/files", data=data, headers=headers) as resp:
+                    resp.raise_for_status()
+                    file_id = (await resp.json())["id"]
+
+                payload = {"file_id": file_id, "model": self.model}
+                if self.custom_vocab:
+                    payload["context"] = self.custom_vocab
+
+                async with self.session.post(f"{self.BASE_URL}/transcriptions", json=payload, headers=headers) as resp2:
+                    resp2.raise_for_status()
+                    transcription_id = (await resp2.json())["id"]
+
+                # Poll status
+                while True:
+                    async with self.session.get(f"{self.BASE_URL}/transcriptions/{transcription_id}", headers=headers) as r:
+                        r.raise_for_status()
+                        status_payload = await r.json()
+                        status = status_payload.get("status")
+                        if status == "completed":
+                            break
+                        if status == "error":
+                            raise RuntimeError(status_payload.get("error_message", "Soniox async error"))
+                    await asyncio.sleep(1)
+
+                async with self.session.get(f"{self.BASE_URL}/transcriptions/{transcription_id}/transcript", headers=headers) as r3:
+                    r3.raise_for_status()
+                    transcript_payload = await r3.json()
+                    return transcript_payload.get("text", "")
+
+            except Exception as e:
+                if prefer_webm:
+                    logger.warning(f"WebM upload failed ({e}); retrying with WAV fallback")
+                    continue
+                raise
+
+        raise RuntimeError("Async transcription failed in all attempts.")
+
+    async def _encode_audio(self, audio_bytes: bytes, prefer_webm: bool = True):
+        """
+        Encode raw PCM to WebM/Opus (if available) otherwise WAV.
         """
         import subprocess, shutil, io, wave, contextlib
 
         sr = self._sample_rate or 16000
         ch = self._channels or 1
 
-        if shutil.which("ffmpeg"):
+        if prefer_webm and shutil.which("ffmpeg"):
             try:
                 cmd = [
                     "ffmpeg",
@@ -160,9 +174,10 @@ class SonioxAsyncProcessor(FrameProcessor):
                 )
                 return result.stdout, "audio/webm", "audio.webm"
             except Exception:
-                pass  # fall through to wav fallback
+                # fall back to WAV
+                pass
 
-        # Fallback: wrap PCM in WAV container
+        # WAV fallback
         buf = io.BytesIO()
         with contextlib.closing(wave.open(buf, "wb")) as wf:
             wf.setnchannels(ch)
