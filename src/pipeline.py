@@ -59,7 +59,7 @@ class ScriberPipeline:
         if self.service_name == "soniox":
             if not _get_api_key("soniox"): raise ValueError("Soniox API Key is missing.")
             if not SonioxSTTService: raise ImportError("SonioxSTTService not available.")
-            params = None
+            params = SonioxInputParams() if SonioxInputParams else None
             if Config.CUSTOM_VOCAB and SonioxInputParams and SonioxContextObject:
                 terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
                 if terms:
