@@ -339,9 +339,6 @@ class ScriberPipeline:
                     self.on_status_change("Listening")
 
                 await self.runner.run(self.task)
-                # If async mode, ensure any buffered audio gets finalized
-                if isinstance(stt_service, SonioxAsyncProcessor):
-                    await stt_service.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
 
         except (ValueError, ImportError) as e:
             logger.error(f"Configuration error: {e}")
