@@ -158,6 +158,8 @@ class SonioxAsyncProcessor(FrameProcessor):
                     wav_path = wav_file.name
 
                 webm_path = wav_path.replace(".wav", ".webm")
+                remux_path = wav_path.replace(".wav", ".fixed.webm")
+
                 cmd = [
                     "ffmpeg",
                     "-y",
@@ -172,13 +174,32 @@ class SonioxAsyncProcessor(FrameProcessor):
                     webm_path,
                 ]
                 subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-                with open(webm_path, "rb") as f:
+
+                # Remux to ensure duration metadata is present (similar to fix-webm-duration)
+                remux_cmd = [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    webm_path,
+                    "-c",
+                    "copy",
+                    "-map",
+                    "0",
+                    remux_path,
+                ]
+                try:
+                    subprocess.run(remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                    chosen_path = remux_path
+                except Exception:
+                    chosen_path = webm_path
+
+                with open(chosen_path, "rb") as f:
                     webm_bytes = f.read()
                 return webm_bytes, "audio/webm", "audio.webm"
             except Exception as e:
                 logger.warning(f"WebM encode failed ({e}); falling back to WAV")
             finally:
-                for p in ("wav_path", "webm_path"):
+                for p in ("wav_path", "webm_path", "remux_path"):
                     try:
                         fp = locals().get(p)
                         if fp and os.path.exists(fp):
