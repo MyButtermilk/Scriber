@@ -382,6 +382,11 @@ class ScriberPipeline:
             except Exception:
                 # Fallback to cancel if graceful stop fails
                 await self.task.cancel()
+            # Ensure background tasks (e.g., Soniox keepalive) are torn down.
+            try:
+                await self.task.cancel()
+            except Exception as e:
+                logger.debug(f"Task cancel warning: {e}")
         if self.runner:
             try:
                 await self.runner.cancel()
