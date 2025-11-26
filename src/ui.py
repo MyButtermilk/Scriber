@@ -96,6 +96,7 @@ class ScriberUI:
 
         ttk.Label(settings_frame, text="Sprache / Language").grid(row=7, column=0, sticky="w", padx=4, pady=4)
         languages = [
+            ("auto", "🌐 Auto"),
             ("en", "🇺🇸 English"),
             ("de", "🇩🇪 Deutsch"),
             ("fr", "🇫🇷 Français"),

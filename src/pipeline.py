@@ -242,6 +242,7 @@ from src.injector import TextInjector
 from src.microphone import MicrophoneInput
 
 LANGUAGE_MAP = {
+    "auto": None,
     "en": Language.EN,
     "de": Language.DE,
     "fr": Language.FR,
@@ -252,7 +253,8 @@ LANGUAGE_MAP = {
 }
 
 def _selected_language():
-    return LANGUAGE_MAP.get(Config.LANGUAGE, Language.EN)
+    lang = LANGUAGE_MAP.get(Config.LANGUAGE)
+    return lang if lang else None
 
 class ScriberPipeline:
     def __init__(self, service_name=Config.DEFAULT_STT_SERVICE, on_status_change=None):
@@ -281,12 +283,13 @@ class ScriberPipeline:
                     session=session,
                 )
             if not SonioxSTTService: raise ImportError("SonioxSTTService not available.")
-            params = SonioxInputParams(language_hints=[_selected_language()]) if SonioxInputParams else _SonioxParamsFallback()
+            lang_hint = _selected_language()
+            params = SonioxInputParams(language_hints=[lang_hint] if lang_hint else None) if SonioxInputParams else _SonioxParamsFallback()
             if Config.CUSTOM_VOCAB and SonioxContextObject:
                 terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
                 if terms:
                     logger.info(f"Applying custom vocabulary: {terms}")
-                    params = SonioxInputParams(context=SonioxContextObject(terms=terms), language_hints=[_selected_language()]) if SonioxInputParams else _SonioxParamsFallback(context=SonioxContextObject(terms=terms))
+                    params = SonioxInputParams(context=SonioxContextObject(terms=terms), language_hints=[lang_hint] if lang_hint else None) if SonioxInputParams else _SonioxParamsFallback(context=SonioxContextObject(terms=terms))
             return SonioxSTTService(api_key=_get_api_key("soniox"), params=params)
 
         elif self.service_name == "assemblyai":

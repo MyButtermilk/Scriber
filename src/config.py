@@ -25,7 +25,7 @@ class Config:
     SONIOX_MODE = os.getenv("SCRIBER_SONIOX_MODE", "realtime").lower()  # realtime | async
     SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", "stt-async-preview")
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
-    LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "en")
+    LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "auto")
 
     SERVICE_API_KEY_MAP = {
         "soniox": "SONIOX_API_KEY",
