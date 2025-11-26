@@ -392,6 +392,15 @@ class ScriberPipeline:
                 await self.runner.cancel()
             except Exception as e:
                 logger.debug(f"Runner cancel warning: {e}")
+
+        # Explicitly cleanup Soniox service if present to clear dangling tasks
+        try:
+            if self.pipeline and self.pipeline.steps:
+                for step in self.pipeline.steps:
+                    if step.__class__.__name__ == "SonioxSTTService" and hasattr(step, "_cleanup"):
+                        await step._cleanup()
+        except Exception as e:
+            logger.debug(f"Soniox cleanup warning: {e}")
         self.is_active = False
         if self.on_status_change:
             self.on_status_change("Stopped")
