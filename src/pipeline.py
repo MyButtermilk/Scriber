@@ -140,7 +140,7 @@ class SonioxAsyncProcessor(FrameProcessor):
         """
         Encode raw PCM to WebM/Opus (if available) otherwise WAV.
         """
-        import subprocess, shutil, io, wave, contextlib
+        import subprocess, shutil, io, wave, contextlib, struct
 
         sr = self._sample_rate or 16000
         ch = self._channels or 1
@@ -172,7 +172,8 @@ class SonioxAsyncProcessor(FrameProcessor):
                     stderr=subprocess.DEVNULL,
                     check=True,
                 )
-                return result.stdout, "audio/webm", "audio.webm"
+                webm_bytes = self._fix_webm_duration(result.stdout, len(audio_bytes), sr, ch)
+                return webm_bytes, "audio/webm", "audio.webm"
             except Exception:
                 # fall back to WAV
                 pass
@@ -185,6 +186,33 @@ class SonioxAsyncProcessor(FrameProcessor):
             wf.setframerate(sr)
             wf.writeframes(audio_bytes)
         return buf.getvalue(), "audio/wav", "audio.wav"
+
+    def _fix_webm_duration(self, webm_bytes: bytes, pcm_len: int, sr: int, ch: int) -> bytes:
+        """
+        Best-effort fix to embed duration in WebM container (similar to fix-webm-duration).
+        If patching fails, return original bytes.
+        """
+        try:
+            duration_sec = pcm_len / (sr * ch * 2)  # 16-bit PCM
+            duration_elem = b"\x44\x89" + b"\x88" + struct.pack(">d", duration_sec)  # ID + size(8) + float64
+
+            # Locate Segment Info (0x15 0x49 0xA9 0x66)
+            seg_info = webm_bytes.find(b"\x15\x49\xa9\x66")
+            if seg_info == -1:
+                return webm_bytes
+
+            insert_pos = seg_info + 4  # after the Segment Info ID; inside its payload
+            # Try to place after TimecodeScale (0x2A D7 B1) if present
+            tcs_idx = webm_bytes.find(b"\x2a\xd7\xb1", seg_info)
+            if tcs_idx != -1:
+                # skip id + size (assume 1-byte size)
+                insert_pos = tcs_idx + 2
+                if insert_pos < len(webm_bytes):
+                    insert_pos += 1
+
+            return webm_bytes[:insert_pos] + duration_elem + webm_bytes[insert_pos:]
+        except Exception:
+            return webm_bytes
 
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.google.stt import GoogleSTTService
