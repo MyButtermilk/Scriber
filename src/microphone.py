@@ -41,7 +41,6 @@ class MicrophoneInput(PARENT_CLASS):
         self._target_sample_rate = sample_rate  # avoid clashing with BaseInputTransport.sample_rate property
         self._target_channels = channels
         self.block_size = block_size
-        self.turn_analyzer = turn_analyzer
         self.stream = None
         self._running = False
         self._loop = None
