@@ -64,6 +64,8 @@ class MicrophoneInput(PARENT_CLASS):
             )
             self.stream.start()
             logger.info("Microphone stream started")
+            # Ensure transport audio queue exists before we push frames
+            self._create_audio_task()
             self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")
         except Exception as e:
             logger.error(f"Microphone error: {e}")
