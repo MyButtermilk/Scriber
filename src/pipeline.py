@@ -347,11 +347,17 @@ class ScriberPipeline:
                         keep_alive=Config.MIC_ALWAYS_ON,
                     )
 
-                text_injector = TextInjector()
+                inject_immediately = self.service_name == "soniox" and not (self.service_name == "soniox_async" or Config.SONIOX_MODE == "async")
+                text_injector = TextInjector(inject_immediately=inject_immediately)
+                self.text_injector = text_injector
                 steps = [self.audio_input, stt_service, text_injector]
 
                 self.pipeline = Pipeline(steps)
-                self.task = PipelineTask(self.pipeline, params=PipelineParams(allow_interruptions=True))
+                self.task = PipelineTask(
+                    self.pipeline,
+                    params=PipelineParams(allow_interruptions=True),
+                    check_dangling_tasks=False,  # suppress false-positive dangling task warnings (e.g., Soniox keepalive)
+                )
                 # Disable signal handling because runner executes in background thread
                 self.runner = PipelineRunner(handle_sigint=False, handle_sigterm=False)
                 self.is_active = True
@@ -378,6 +384,13 @@ class ScriberPipeline:
         if not self.is_active:
             return
         logger.info("Stopping Scriber Pipeline")
+        soniox_steps = []
+        try:
+            if self.pipeline and self.pipeline.steps:
+                soniox_steps = [s for s in self.pipeline.steps if s.__class__.__name__ == "SonioxSTTService"]
+        except Exception:
+            soniox_steps = []
+
         if self.task:
             try:
                 await self.task.stop_when_done()
@@ -389,20 +402,46 @@ class ScriberPipeline:
                 await self.task.cancel()
             except Exception as e:
                 logger.debug(f"Task cancel warning: {e}")
+        # Flush any buffered transcription before tearing down to avoid losing text.
+        try:
+            if hasattr(self, "text_injector") and self.text_injector:
+                self.text_injector.flush()
+        except Exception as e:
+            logger.debug(f"TextInjector flush warning: {e}")
+        # Explicitly cleanup Soniox service if present to clear dangling tasks
+        for step in soniox_steps:
+            try:
+                if hasattr(step, "_cleanup"):
+                    await step._cleanup()
+                # Belt-and-suspenders: cancel lingering tasks if attributes exist
+                for attr in ("_keepalive_task", "_receive_task"):
+                    t = getattr(step, attr, None)
+                    if t:
+                        try:
+                            t.cancel()
+                            await asyncio.gather(t, return_exceptions=True)
+                        except Exception as e:
+                            logger.debug(f"Soniox task cancel warning ({attr}): {e}")
+            except Exception as e:
+                logger.debug(f"Soniox cleanup warning: {e}")
+
         if self.runner:
             try:
                 await self.runner.cancel()
             except Exception as e:
                 logger.debug(f"Runner cancel warning: {e}")
-
-        # Explicitly cleanup Soniox service if present to clear dangling tasks
-        try:
-            if self.pipeline and self.pipeline.steps:
-                for step in self.pipeline.steps:
-                    if step.__class__.__name__ == "SonioxSTTService" and hasattr(step, "_cleanup"):
-                        await step._cleanup()
-        except Exception as e:
-            logger.debug(f"Soniox cleanup warning: {e}")
+        # Cancel any leftover tasks registered on the pipeline task manager to avoid dangling warnings.
+        if self.task and hasattr(self.task, "_task_manager"):
+            try:
+                tm = getattr(self.task, "_task_manager")
+                leftover = list(tm.current_tasks())
+                for t in leftover:
+                    if not t.done():
+                        t.cancel()
+                if leftover:
+                    await asyncio.gather(*leftover, return_exceptions=True)
+            except Exception as e:
+                logger.debug(f"Pipeline task manager cleanup warning: {e}")
         self.is_active = False
         if self.on_status_change:
             self.on_status_change("Stopped")

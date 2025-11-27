@@ -3,7 +3,16 @@ import asyncio
 import os
 from loguru import logger
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.frames.frames import Frame, TextFrame, TranscriptionFrame, InterimTranscriptionFrame, StartFrame, EndFrame
+from pipecat.frames.frames import (
+    Frame,
+    TextFrame,
+    TranscriptionFrame,
+    InterimTranscriptionFrame,
+    StartFrame,
+    EndFrame,
+    StopFrame,
+    CancelFrame,
+)
 
 try:
     if sys.platform.startswith("linux") and "DISPLAY" not in os.environ:
@@ -18,8 +27,10 @@ except (ImportError, KeyError, OSError) as e:
     logger.warning(f"GUI libraries not available: {e}. Text injection will be mocked.")
 
 class TextInjector(FrameProcessor):
-    def __init__(self):
+    def __init__(self, inject_immediately: bool = False):
         super().__init__()
+        self.inject_immediately = inject_immediately
+        self._buffer = []
         self._last_injected = ""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -30,16 +41,28 @@ class TextInjector(FrameProcessor):
             await self.push_frame(frame, direction)
             return
         if isinstance(frame, TranscriptionFrame):
-            # Inject each new finalized transcript segment immediately.
             if frame.text and frame.text != self._last_injected:
-                self._inject_text(frame.text.strip() + " ")
+                if self.inject_immediately:
+                    self._inject_text(frame.text.strip() + " ")
+                else:
+                    # Buffer finalized transcript segments; inject as one block at end of utterance.
+                    self._buffer.append(frame.text.strip())
                 self._last_injected = frame.text
         elif isinstance(frame, StartFrame):
+            self._buffer = []
             self._last_injected = ""
-        elif isinstance(frame, EndFrame):
-            self._last_injected = ""
+        elif isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
+            self.flush()
 
         await self.push_frame(frame, direction)
+
+    def flush(self):
+        if self._buffer:
+            text = " ".join(self._buffer).strip()
+            if text:
+                self._inject_text(text + " ")
+        self._buffer = []
+        self._last_injected = ""
 
     def _inject_text(self, text: str):
         if not HAS_GUI:

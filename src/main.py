@@ -153,18 +153,25 @@ def register_hotkey():
         logger.error(f"Failed to register hotkey: {exc}")
 
 def save_settings():
-    Config.set_default_service(ui.service_var.get())
+    old_hotkey = Config.HOTKEY
+    old_mode = Config.MODE
+    # Normalize Soniox selection: keep single service name; async handled via SONIOX_MODE.
+    chosen_service = ui.service_var.get()
+    Config.set_default_service("soniox" if chosen_service == "soniox" else chosen_service)
     Config.set_api_key(ui.service_var.get(), ui.api_key_var.get())
     Config.set_hotkey(ui.hotkey_var.get())
     Config.set_mode(ui.mode_var.get())
     Config.set_soniox_mode(ui.soniox_mode_var.get())
     Config.set_debug(ui.debug_var.get())
     Config.set_language(ui.language_var.get())
+    Config.set_mic_device(ui.mic_device_var.get())
+    Config.set_mic_always_on(ui.mic_always_on_var.get())
     Config.CUSTOM_VOCAB = ui.custom_vocab_var.get().strip()
     # Persist current settings to .env so they are remembered.
     Config.persist_to_env_file(".env")
 
-    register_hotkey()
+    if Config.HOTKEY != old_hotkey or Config.MODE != old_mode:
+        register_hotkey()
     ui.update_status("Settings saved")
 
 async def shutdown():
