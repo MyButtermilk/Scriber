@@ -13,31 +13,26 @@ except Exception:
 try:
     from pipecat.transports.base_transport import TransportParams
     from pipecat.transports.base_input import BaseInputTransport
-    PARENT_CLASS = BaseInputTransport
-    PARENT_NEEDS_PARAMS = True
-except ImportError:
-    from pipecat.processors.frame_processor import FrameProcessor
-    PARENT_CLASS = FrameProcessor
-    PARENT_NEEDS_PARAMS = False
+except ImportError as exc:  # pragma: no cover - defensive fallback
+    raise ImportError(
+        "MicrophoneInput requires pipecat.transports.base_input.BaseInputTransport. "
+        "Upgrade pipecat to a version that includes BaseInputTransport."
+    ) from exc
 
 
-class MicrophoneInput(PARENT_CLASS):
+class MicrophoneInput(BaseInputTransport):
     def __init__(self, sample_rate=16000, channels=1, block_size=1024, turn_analyzer=None, device="default", keep_alive=False):
         if not HAS_SOUNDDEVICE:
             raise RuntimeError("Sounddevice is not available, cannot use MicrophoneInput.")
 
-        # Some pipecat versions require an explicit TransportParams on BaseInputTransport.
-        if PARENT_NEEDS_PARAMS:
-            params = TransportParams(
-                audio_in_enabled=True,
-                audio_in_sample_rate=sample_rate,
-                audio_in_channels=channels,
-                audio_in_passthrough=True,
-                turn_analyzer=turn_analyzer,
-            )
-            super().__init__(params=params)
-        else:
-            super().__init__()
+        params = TransportParams(
+            audio_in_enabled=True,
+            audio_in_sample_rate=sample_rate,
+            audio_in_channels=channels,
+            audio_in_passthrough=True,
+            turn_analyzer=turn_analyzer,
+        )
+        super().__init__(params=params)
         self._target_sample_rate = sample_rate  # avoid clashing with BaseInputTransport.sample_rate property
         self._target_channels = channels
         self.block_size = block_size
