@@ -57,6 +57,12 @@ def _on_pipeline_done(task: asyncio.Task):
     pipeline = None
     pipeline_task = None
 
+def _reset_pipeline_state():
+    global pipeline, pipeline_task, is_listening
+    pipeline = None
+    pipeline_task = None
+    is_listening = False
+
 async def start_listening():
     global pipeline, pipeline_task, is_listening
     if is_listening:
@@ -70,9 +76,11 @@ async def start_listening():
     except (ValueError, ImportError) as e:
         logger.error(f"Configuration error: {e}")
         handle_status(f"Error: {e}")
+        _reset_pipeline_state()
     except Exception as e:
         logger.error(f"Failed to start listening: {e}")
         handle_status("Error")
+        _reset_pipeline_state()
 
 async def stop_listening():
     global pipeline, pipeline_task, is_listening
