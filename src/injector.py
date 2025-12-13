@@ -62,7 +62,6 @@ class TextInjector(FrameProcessor):
             if text:
                 self._inject_text(text + " ")
         self._buffer = []
-        self._last_injected = ""
 
     def _inject_text(self, text: str):
         if not HAS_GUI:
