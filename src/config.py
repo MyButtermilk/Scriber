@@ -28,6 +28,11 @@ class Config:
     LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "auto")
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
     MIC_ALWAYS_ON = os.getenv("SCRIBER_MIC_ALWAYS_ON", "0") in ("1", "true", "True")
+    # Text injection method: "type" (keystrokes), "paste" (clipboard + Ctrl+V), or "auto" (choose by app/window).
+    INJECT_METHOD = os.getenv("SCRIBER_INJECT_METHOD", "auto").lower()  # auto | type | paste
+    # Clipboard paste tuning (Windows). Some apps (Word/Outlook) process paste asynchronously.
+    PASTE_PRE_DELAY_MS = int(os.getenv("SCRIBER_PASTE_PRE_DELAY_MS", "80"))
+    PASTE_RESTORE_DELAY_MS = int(os.getenv("SCRIBER_PASTE_RESTORE_DELAY_MS", "1500"))
 
     SERVICE_API_KEY_MAP = {
         "soniox": "SONIOX_API_KEY",
@@ -150,6 +155,9 @@ class Config:
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)
         add("SCRIBER_MIC_DEVICE", cls.MIC_DEVICE)
         add("SCRIBER_MIC_ALWAYS_ON", "1" if cls.MIC_ALWAYS_ON else "0")
+        add("SCRIBER_INJECT_METHOD", cls.INJECT_METHOD)
+        add("SCRIBER_PASTE_PRE_DELAY_MS", str(cls.PASTE_PRE_DELAY_MS))
+        add("SCRIBER_PASTE_RESTORE_DELAY_MS", str(cls.PASTE_RESTORE_DELAY_MS))
 
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

@@ -64,6 +64,9 @@ GOOGLE_APPLICATION_CREDENTIALS=path/to/json
 SCRIBER_HOTKEY=ctrl+alt+s
 SCRIBER_DEFAULT_STT=soniox  # Options: soniox, assemblyai, deepgram, openai, azure, gladia, groq, speechmatics, google, elevenlabs
 SCRIBER_MODE=toggle         # toggle or push_to_talk
+SCRIBER_INJECT_METHOD=auto  # auto (paste for Word/Outlook), type, paste
+SCRIBER_PASTE_PRE_DELAY_MS=80
+SCRIBER_PASTE_RESTORE_DELAY_MS=1500
 SCRIBER_CUSTOM_VOCAB=Scriber, Pipecat, Soniox
 ```
 

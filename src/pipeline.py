@@ -70,6 +70,10 @@ class SonioxAsyncProcessor(FrameProcessor):
             self._buffer.extend(frame.audio)
             await self.push_frame(frame, direction)
         elif isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
+            if not self._buffer:
+                logger.debug("Soniox async: no audio buffered; skipping transcription")
+                await self.push_frame(frame, direction)
+                return
             try:
                 text = await self._transcribe_async(bytes(self._buffer))
                 await self.push_frame(
@@ -92,7 +96,17 @@ class SonioxAsyncProcessor(FrameProcessor):
         """
         Upload audio to Soniox async API. Prefer WebM/Opus; retry with WAV if Soniox rejects.
         """
+        if not audio_bytes:
+            return ""
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        done_statuses = {"completed", "done", "succeeded", "success"}
+        error_statuses = {"error", "failed", "canceled", "cancelled"}
+        poll_start = asyncio.get_running_loop().time()
+        # Heuristic: allow at least 60s, or up to ~3x audio duration (min 2m, max 10m)
+        sr = self._sample_rate or 16000
+        ch = self._channels or 1
+        audio_secs = len(audio_bytes) / max(1, (sr * ch * 2))
+        poll_timeout = min(600.0, max(120.0, max(60.0, audio_secs * 3.0)))
 
         # Two-pass strategy: webm first, wav fallback for duration/format errors
         for prefer_webm in (True, False):
@@ -102,7 +116,12 @@ class SonioxAsyncProcessor(FrameProcessor):
                     logger.info(f"Soniox async upload using {'WebM' if prefer_webm else 'WAV'} ({len(file_bytes)} bytes)")
                 data = aiohttp.FormData()
                 data.add_field("file", file_bytes, filename=filename, content_type=content_type)
-                async with self.session.post(f"{self.BASE_URL}/files", data=data, headers=headers) as resp:
+                async with self.session.post(
+                    f"{self.BASE_URL}/files",
+                    data=data,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
                     resp.raise_for_status()
                     file_id = (await resp.json())["id"]
 
@@ -110,23 +129,38 @@ class SonioxAsyncProcessor(FrameProcessor):
                 if self.custom_vocab:
                     payload["context"] = self.custom_vocab
 
-                async with self.session.post(f"{self.BASE_URL}/transcriptions", json=payload, headers=headers) as resp2:
+                async with self.session.post(
+                    f"{self.BASE_URL}/transcriptions",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp2:
                     resp2.raise_for_status()
                     transcription_id = (await resp2.json())["id"]
 
                 # Poll status
                 while True:
-                    async with self.session.get(f"{self.BASE_URL}/transcriptions/{transcription_id}", headers=headers) as r:
+                    if asyncio.get_running_loop().time() - poll_start > poll_timeout:
+                        raise TimeoutError("Soniox async transcription polling timed out")
+                    async with self.session.get(
+                        f"{self.BASE_URL}/transcriptions/{transcription_id}",
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as r:
                         r.raise_for_status()
                         status_payload = await r.json()
-                        status = status_payload.get("status")
-                        if status == "completed":
+                        status = (status_payload.get("status") or "").lower()
+                        if status in done_statuses:
                             break
-                        if status == "error":
+                        if status in error_statuses:
                             raise RuntimeError(status_payload.get("error_message", "Soniox async error"))
                     await asyncio.sleep(1)
 
-                async with self.session.get(f"{self.BASE_URL}/transcriptions/{transcription_id}/transcript", headers=headers) as r3:
+                async with self.session.get(
+                    f"{self.BASE_URL}/transcriptions/{transcription_id}/transcript",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as r3:
                     r3.raise_for_status()
                     transcript_payload = await r3.json()
                     return transcript_payload.get("text", "")
@@ -265,6 +299,8 @@ class ScriberPipeline:
         self.runner = None
         self.audio_input = None
         self.is_active = False
+        self._start_done = asyncio.Event()
+        self._start_done.set()
 
     def _create_stt_service(self, session: aiohttp.ClientSession):
 
@@ -328,6 +364,7 @@ class ScriberPipeline:
         if self.is_active:
             return
         logger.info(f"Starting Scriber Pipeline with {self.service_name}")
+        self._start_done.clear()
         try:
             async with aiohttp.ClientSession() as session:
                 stt_service = self._create_stt_service(session)
@@ -379,69 +416,77 @@ class ScriberPipeline:
             if self.on_status_change:
                 self.on_status_change("Error")
             raise
+        finally:
+            # Ensure stop() can always unblock, even if start() exits due to an error or cancellation.
+            self.is_active = False
+            self._start_done.set()
 
-    async def stop(self):
+    async def stop(self, timeout_secs: float | None = None):
+        if self.task and self.task.has_finished():
+            self.is_active = False
+            if self.on_status_change:
+                self.on_status_change("Stopped")
+            return
         if not self.is_active:
             return
         logger.info("Stopping Scriber Pipeline")
+
+        is_soniox_async = (
+            self.service_name == "soniox_async"
+            or (self.service_name == "soniox" and Config.SONIOX_MODE == "async")
+        )
+        if self.on_status_change:
+            self.on_status_change("Transcribing..." if is_soniox_async else "Stopping...")
+
+        # Request a graceful stop so processors can flush final results (Soniox async needs EndFrame).
+        if self.task and not self.task.has_finished():
+            await self.task.stop_when_done()
+
+        wait_timeout = timeout_secs
+        if wait_timeout is None:
+            wait_timeout = 600.0 if is_soniox_async else 30.0
+
+        try:
+            await asyncio.wait_for(self._start_done.wait(), timeout=wait_timeout)
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout while stopping pipeline (>{wait_timeout}s); cancelling")
+            try:
+                if self.task and not self.task.has_finished():
+                    await self.task.cancel(reason="stop timeout")
+            except Exception as e:
+                logger.debug(f"Task cancel warning: {e}")
+            try:
+                if self.runner:
+                    await self.runner.cancel()
+            except Exception as e:
+                logger.debug(f"Runner cancel warning: {e}")
+
+        # Flush any buffered transcription as a last resort.
+        try:
+            if hasattr(self, "text_injector") and self.text_injector:
+                self.text_injector.flush()
+        except Exception as e:
+            logger.debug(f"TextInjector flush warning: {e}")
+
+        # Explicitly cleanup Soniox realtime service if present to clear dangling tasks.
         soniox_steps = []
         try:
             if self.pipeline and self.pipeline.steps:
                 soniox_steps = [s for s in self.pipeline.steps if s.__class__.__name__ == "SonioxSTTService"]
         except Exception:
             soniox_steps = []
-
-        if self.task:
-            try:
-                await self.task.stop_when_done()
-            except Exception:
-                # Fallback to cancel if graceful stop fails
-                await self.task.cancel()
-            # Ensure background tasks (e.g., Soniox keepalive) are torn down.
-            try:
-                await self.task.cancel()
-            except Exception as e:
-                logger.debug(f"Task cancel warning: {e}")
-        # Flush any buffered transcription before tearing down to avoid losing text.
-        try:
-            if hasattr(self, "text_injector") and self.text_injector:
-                self.text_injector.flush()
-        except Exception as e:
-            logger.debug(f"TextInjector flush warning: {e}")
-        # Explicitly cleanup Soniox service if present to clear dangling tasks
         for step in soniox_steps:
             try:
                 if hasattr(step, "_cleanup"):
                     await step._cleanup()
-                # Belt-and-suspenders: cancel lingering tasks if attributes exist
                 for attr in ("_keepalive_task", "_receive_task"):
                     t = getattr(step, attr, None)
                     if t:
-                        try:
-                            t.cancel()
-                            await asyncio.gather(t, return_exceptions=True)
-                        except Exception as e:
-                            logger.debug(f"Soniox task cancel warning ({attr}): {e}")
+                        t.cancel()
+                        await asyncio.gather(t, return_exceptions=True)
             except Exception as e:
                 logger.debug(f"Soniox cleanup warning: {e}")
 
-        if self.runner:
-            try:
-                await self.runner.cancel()
-            except Exception as e:
-                logger.debug(f"Runner cancel warning: {e}")
-        # Cancel any leftover tasks registered on the pipeline task manager to avoid dangling warnings.
-        if self.task and hasattr(self.task, "_task_manager"):
-            try:
-                tm = getattr(self.task, "_task_manager")
-                leftover = list(tm.current_tasks())
-                for t in leftover:
-                    if not t.done():
-                        t.cancel()
-                if leftover:
-                    await asyncio.gather(*leftover, return_exceptions=True)
-            except Exception as e:
-                logger.debug(f"Pipeline task manager cleanup warning: {e}")
         self.is_active = False
         if self.on_status_change:
             self.on_status_change("Stopped")
