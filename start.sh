@@ -19,11 +19,32 @@ fi
 # 3. Activate Virtual Environment
 source venv/bin/activate
 
-# 4. Install Dependencies
-if [ ! -f "venv/installed.flag" ]; then
+# 4. Install Dependencies (re-run when requirements.txt changes)
+REQ_HASH_FILE="venv/requirements.sha256"
+REQ_HASH=""
+
+if command -v sha256sum &> /dev/null; then
+    REQ_HASH=$(sha256sum requirements.txt | awk '{print $1}')
+elif command -v shasum &> /dev/null; then
+    REQ_HASH=$(shasum -a 256 requirements.txt | awk '{print $1}')
+fi
+
+NEED_INSTALL=1
+if [ -n "$REQ_HASH" ] && [ -f "$REQ_HASH_FILE" ]; then
+    OLD_HASH=$(cat "$REQ_HASH_FILE")
+    if [ "$OLD_HASH" = "$REQ_HASH" ]; then
+        NEED_INSTALL=0
+    fi
+fi
+
+if [ "$NEED_INSTALL" -eq 1 ]; then
     echo "[INFO] Installing dependencies..."
     pip install -r requirements.txt
-    touch venv/installed.flag
+    if [ -n "$REQ_HASH" ]; then
+        echo "$REQ_HASH" > "$REQ_HASH_FILE"
+    fi
+else
+    echo "[INFO] Dependencies up to date. Skipping..."
 fi
 
 # 5. Configuration Setup

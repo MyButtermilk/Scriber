@@ -35,8 +35,23 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-REM 4. Install Dependencies
-if not exist "venv\installed.flag" (
+REM 4. Install Dependencies (re-run when requirements.txt changes)
+set "REQ_HASH="
+for /f %%h in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-FileHash -Algorithm SHA256 requirements.txt).Hash"') do set "REQ_HASH=%%h"
+set "HASH_FILE=venv\requirements.sha256"
+set "OLD_HASH="
+if exist "%HASH_FILE%" (
+    set /p OLD_HASH=<"%HASH_FILE%"
+)
+if "%REQ_HASH%"=="" (
+    echo [WARN] Could not compute requirements hash. Installing dependencies...
+    pip install -r requirements.txt
+    if %errorlevel% neq 0 (
+        echo [ERROR] Failed to install dependencies.
+        pause
+        exit /b
+    )
+) else if /I not "!OLD_HASH!"=="!REQ_HASH!" (
     echo [INFO] Installing dependencies... This may take a minute.
     pip install -r requirements.txt
     if %errorlevel% neq 0 (
@@ -44,9 +59,9 @@ if not exist "venv\installed.flag" (
         pause
         exit /b
     )
-    echo done > venv\installed.flag
+    echo !REQ_HASH! > "%HASH_FILE%"
 ) else (
-    echo [INFO] Dependencies already installed. Skipping...
+    echo [INFO] Dependencies up to date. Skipping...
 )
 
 REM 5. Configuration Setup
