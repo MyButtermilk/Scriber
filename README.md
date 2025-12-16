@@ -9,6 +9,21 @@ Scriber is a high-performance, AI-driven voice dictation application for Windows
     *   It will automatically set up the environment, install dependencies, and prompt you for API keys.
 3.  **Dictate**: Press `Ctrl+Alt+S` to start/stop listening.
 
+## Web UI (React) - Live Mic + Settings
+
+There is a newer web-based UI under `Frontend/` that can control the existing Python backend.
+
+1. Start the Python backend API + WebSocket:
+   - `python -m src.web_api`
+2. Start the frontend:
+   - `cd Frontend`
+   - `npm install`
+   - `npm run dev:client` (opens on `http://localhost:5000`)
+
+Notes:
+- For now, only **Live Mic** and **Settings** are wired; **Youtube** and **File** are intentionally hidden.
+- The frontend connects to the backend on `http://127.0.0.1:8765` by default (override with `VITE_BACKEND_URL`).
+
 ## Features
 
 *   **System-Wide Dictation**: Works in any application (Word, IDEs, Browser, etc.).
@@ -59,6 +74,7 @@ GROQ_API_KEY=your_key
 SPEECHMATICS_API_KEY=your_key
 ELEVENLABS_API_KEY=your_key
 GOOGLE_APPLICATION_CREDENTIALS=path/to/json
+YOUTUBE_API_KEY=your_key
 
 # App Settings
 SCRIBER_HOTKEY=ctrl+alt+s

@@ -98,12 +98,63 @@ if exist ".env" (
 REM 6. Run the App
 echo.
 echo [INFO] Starting Scriber...
-echo        Press !HOTKEY_DISPLAY! to dictate.
+echo        Hotkey: !HOTKEY_DISPLAY!
 echo.
 
-REM Run as a module to handle imports correctly
-python -m src.main
+REM Prefer the new Web UI (React) if Node.js is available; fall back to Tkinter UI otherwise.
+node --version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [WARN] Node.js not found. Starting legacy desktop UI - Tkinter...
+    echo.
+    python -m src.main
+    goto :after_run
+)
 
+if not exist "Frontend" (
+    echo [WARN] Frontend folder not found. Starting legacy desktop UI - Tkinter...
+    echo.
+    python -m src.main
+    goto :after_run
+)
+
+REM Install frontend dependencies if needed
+if not exist "Frontend\\node_modules" (
+    echo [INFO] Installing frontend dependencies... This may take a minute.
+    pushd Frontend
+    npm install
+    if %errorlevel% neq 0 (
+        echo [ERROR] Failed to install frontend dependencies.
+        popd
+        pause
+        exit /b
+    )
+    popd
+) else (
+    echo [INFO] Frontend dependencies already installed. Skipping...
+)
+
+echo.
+echo [INFO] Starting backend (Python) on http://127.0.0.1:8765 ...
+start "Scriber Backend" cmd /c "python -m src.web_api || pause"
+
+echo [INFO] Waiting for backend to become ready...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$u='http://127.0.0.1:8765/api/health'; for($i=0;$i -lt 40;$i++){ try { $r=Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 $u; if($r.StatusCode -eq 200){ exit 0 } } catch { } Start-Sleep -Milliseconds 250 }; exit 1"
+if %errorlevel% neq 0 (
+    echo [ERROR] Backend did not start.
+    echo        Check the Scriber Backend window for errors.
+    pause
+    exit /b 1
+)
+
+echo [INFO] Starting Web UI on http://localhost:5000 ...
+echo.
+pushd Frontend
+set "VITE_BACKEND_URL=http://127.0.0.1:8765"
+start "" http://localhost:5000
+npm run dev:client
+popd
+
+:after_run
 if %errorlevel% neq 0 (
     echo [ERROR] Application crashed or stopped with error.
     pause

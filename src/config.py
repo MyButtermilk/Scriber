@@ -10,6 +10,7 @@ class Config:
     ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") # For Gemini
     GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") # For Cloud STT
+    YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")  # For Youtube Data API (future Youtube tab)
 
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -137,6 +138,8 @@ class Config:
         add("ASSEMBLYAI_API_KEY", cls.ASSEMBLYAI_API_KEY or "")
         add("ELEVENLABS_API_KEY", cls.ELEVENLABS_API_KEY or "")
         add("GOOGLE_APPLICATION_CREDENTIALS", cls.GOOGLE_APPLICATION_CREDENTIALS or "")
+        add("GOOGLE_API_KEY", getattr(cls, "GOOGLE_API_KEY", "") or "")
+        add("YOUTUBE_API_KEY", getattr(cls, "YOUTUBE_API_KEY", "") or "")
         add("DEEPGRAM_API_KEY", cls.DEEPGRAM_API_KEY or "")
         add("OPENAI_API_KEY", cls.OPENAI_API_KEY or "")
         add("AZURE_SPEECH_KEY", cls.AZURE_SPEECH_KEY or "")

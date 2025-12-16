@@ -1,6 +1,7 @@
 import asyncio
 import aiohttp
 from loguru import logger
+from typing import Callable, Optional
 
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask, PipelineParams
@@ -8,6 +9,7 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import (
     InputAudioRawFrame,
+    InterimTranscriptionFrame,
     TranscriptionFrame,
     EndFrame,
     StartFrame,
@@ -290,11 +292,43 @@ def _selected_language():
     lang = LANGUAGE_MAP.get(Config.LANGUAGE)
     return lang if lang else None
 
+
+class TranscriptionCallbackProcessor(FrameProcessor):
+    """Emits interim/final transcription updates via a lightweight callback."""
+
+    def __init__(self, on_transcription: Optional[Callable[[str, bool], None]]):
+        super().__init__()
+        self.on_transcription = on_transcription
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+
+        cb = self.on_transcription
+        if cb:
+            try:
+                if isinstance(frame, InterimTranscriptionFrame):
+                    if frame.text:
+                        cb(frame.text, False)
+                elif isinstance(frame, TranscriptionFrame):
+                    if frame.text:
+                        cb(frame.text, True)
+            except Exception:
+                pass
+
+        await self.push_frame(frame, direction)
+
 class ScriberPipeline:
-    def __init__(self, service_name=Config.DEFAULT_STT_SERVICE, on_status_change=None, on_audio_level=None):
+    def __init__(
+        self,
+        service_name=Config.DEFAULT_STT_SERVICE,
+        on_status_change=None,
+        on_audio_level=None,
+        on_transcription: Optional[Callable[[str, bool], None]] = None,
+    ):
         self.service_name = service_name
         self.on_status_change = on_status_change
         self.on_audio_level = on_audio_level
+        self.on_transcription = on_transcription
         self.pipeline = None
         self.task = None
         self.runner = None
@@ -386,7 +420,13 @@ class ScriberPipeline:
                 inject_immediately = self.service_name == "soniox" and not (self.service_name == "soniox_async" or Config.SONIOX_MODE == "async")
                 text_injector = TextInjector(inject_immediately=inject_immediately)
                 self.text_injector = text_injector
-                steps = [self.audio_input, stt_service, text_injector]
+                transcript_cb = (
+                    TranscriptionCallbackProcessor(self.on_transcription) if self.on_transcription else None
+                )
+                steps = [self.audio_input, stt_service]
+                if transcript_cb:
+                    steps.append(transcript_cb)
+                steps.append(text_injector)
 
                 self.pipeline = Pipeline(steps)
                 self.task = PipelineTask(
