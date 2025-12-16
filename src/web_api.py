@@ -5,6 +5,7 @@ import signal
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 from uuid import uuid4
 
@@ -14,9 +15,10 @@ from loguru import logger
 from src.config import Config
 from src.pipeline import ScriberPipeline
 from src.youtube_api import YouTubeApiError, search_youtube_videos
+from src.youtube_download import YouTubeDownloadError, download_youtube_audio
 
 TranscriptStatus = Literal["completed", "processing", "failed", "recording"]
-TranscriptType = Literal["mic"]
+TranscriptType = Literal["mic", "youtube", "file"]
 
 
 def _format_duration(seconds: float) -> str:
@@ -89,6 +91,9 @@ class TranscriptRecord:
     status: TranscriptStatus
     type: TranscriptType
     language: str
+    source_url: str = ""
+    channel: str = ""
+    thumbnail_url: str = ""
     content: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -105,6 +110,9 @@ class TranscriptRecord:
             "status": self.status,
             "type": self.type,
             "language": self.language,
+            "sourceUrl": self.source_url,
+            "channel": self.channel,
+            "thumbnailUrl": self.thumbnail_url,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
         }
@@ -144,6 +152,7 @@ class ScriberWebController:
         self._pipeline: Optional[ScriberPipeline] = None
         self._pipeline_task: Optional[asyncio.Task] = None
         self._ptt_task: Optional[asyncio.Task] = None
+        self._youtube_tasks: dict[str, asyncio.Task] = {}
         self._keyboard = None
 
         self._is_listening = False
@@ -152,6 +161,8 @@ class ScriberWebController:
         self._current: Optional[TranscriptRecord] = None
         self._history: list[TranscriptRecord] = []
         self._last_audio_broadcast = 0.0
+
+        self._downloads_dir = Path(os.getenv("SCRIBER_DOWNLOADS_DIR", "downloads")).resolve()
 
     def get_state(self) -> dict[str, Any]:
         return {
@@ -231,6 +242,79 @@ class ScriberWebController:
             self._is_listening = False
             self._pipeline = None
             self._pipeline_task = None
+
+    def _touch_history(self) -> None:
+        self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self.broadcast({"type": "history_updated"})))
+
+    async def start_youtube_transcription(self, payload: dict[str, Any]) -> TranscriptRecord:
+        url = (payload.get("url") if isinstance(payload.get("url"), str) else "") or ""
+        url = url.strip()
+        if not url:
+            raise ValueError("Missing video URL")
+
+        title = (payload.get("title") if isinstance(payload.get("title"), str) else "").strip() or "YouTube"
+        channel = (payload.get("channelTitle") if isinstance(payload.get("channelTitle"), str) else "").strip()
+        thumbnail = (payload.get("thumbnailUrl") if isinstance(payload.get("thumbnailUrl"), str) else "").strip()
+        duration = (payload.get("duration") if isinstance(payload.get("duration"), str) else "").strip() or "00:00"
+
+        started_at = datetime.now()
+        rec = TranscriptRecord(
+            id=uuid4().hex,
+            title=title,
+            date=_format_date_label(started_at),
+            duration=duration,
+            status="processing",
+            type="youtube",
+            language=Config.LANGUAGE or "auto",
+            source_url=url,
+            channel=channel,
+            thumbnail_url=thumbnail,
+        )
+        self._history.insert(0, rec)
+        await self.broadcast({"type": "history_updated"})
+
+        async def _runner() -> None:
+            try:
+                await self._run_youtube_transcription(rec)
+            finally:
+                self._youtube_tasks.pop(rec.id, None)
+
+        task = asyncio.create_task(_runner(), name=f"youtube_transcribe_{rec.id}")
+        self._youtube_tasks[rec.id] = task
+        return rec
+
+    async def _run_youtube_transcription(self, rec: TranscriptRecord) -> None:
+        rec.updated_at = datetime.now().isoformat()
+        try:
+            out_dir = self._downloads_dir / "youtube" / rec.id
+            audio_path = await download_youtube_audio(rec.source_url, output_dir=out_dir, audio_format="mp3")
+
+            def on_transcription(text: str, is_final: bool) -> None:
+                if not is_final:
+                    return
+                rec.append_final_text(text)
+
+            pipeline = ScriberPipeline(
+                service_name=Config.DEFAULT_STT_SERVICE,
+                on_status_change=None,
+                on_audio_level=None,
+                on_transcription=on_transcription,
+            )
+            await pipeline.transcribe_file(str(audio_path))
+            rec.status = "completed"
+        except (ValueError, ImportError) as exc:
+            rec.status = "failed"
+            rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
+        except YouTubeDownloadError as exc:
+            rec.status = "failed"
+            rec.content = (rec.content + "\n" if rec.content else "") + f"[Download error] {exc}"
+        except Exception as exc:
+            logger.exception("YouTube transcription failed")
+            rec.status = "failed"
+            rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
+        finally:
+            rec.updated_at = datetime.now().isoformat()
+            await self.broadcast({"type": "history_updated"})
 
     async def start_listening(self) -> None:
         if self._is_listening:
@@ -653,6 +737,23 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         return web.json_response(payload)
 
+    async def youtube_transcribe(request: web.Request):
+        ctl: ScriberWebController = request.app["controller"]
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"message": "Invalid JSON"}, status=400)
+
+        try:
+            rec = await ctl.start_youtube_transcription(payload if isinstance(payload, dict) else {})
+        except ValueError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Failed to start YouTube transcription")
+            return web.json_response({"message": str(exc) or "Failed to start YouTube transcription"}, status=500)
+
+        return web.json_response(rec.to_public(include_content=True))
+
     app.router.add_get("/api/health", health)
     app.router.add_get("/ws", ws_handler)
 
@@ -669,6 +770,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/transcripts/{id}", transcript_detail)
 
     app.router.add_get("/api/youtube/search", youtube_search)
+    app.router.add_post("/api/youtube/transcribe", youtube_transcribe)
 
     return app
 

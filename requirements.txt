@@ -12,3 +12,4 @@ pytest-mock
 customtkinter
 pillow
 numpy
+yt-dlp

@@ -21,7 +21,8 @@ There is a newer web-based UI under `Frontend/` that can control the existing Py
    - `npm run dev:client` (opens on `http://localhost:5000`)
 
 Notes:
-- For now, only **Live Mic** and **Settings** are wired; **Youtube** and **File** are intentionally hidden.
+- **Live Mic**, **Settings**, and **YouTube** (search + audio transcription) are wired.
+- YouTube transcription requires `YOUTUBE_API_KEY` and `ffmpeg` on your `PATH` (audio download uses `yt-dlp`).
 - The frontend connects to the backend on `http://127.0.0.1:8765` by default (override with `VITE_BACKEND_URL`).
 
 ## Features

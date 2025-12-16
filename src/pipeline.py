@@ -276,6 +276,7 @@ from pipecat.services.aws.stt import AWSTranscribeSTTService
 from src.config import Config
 from src.injector import TextInjector
 from src.microphone import MicrophoneInput
+from src.audio_file_input import FfmpegAudioFileInput
 
 LANGUAGE_MAP = {
     "auto": None,
@@ -457,6 +458,69 @@ class ScriberPipeline:
             raise
         finally:
             # Ensure stop() can always unblock, even if start() exits due to an error or cancellation.
+            self.is_active = False
+            self._start_done.set()
+
+    async def transcribe_file(self, file_path: str) -> None:
+        if self.is_active:
+            return
+        logger.info(f"Transcribing audio file with {self.service_name}: {file_path}")
+        self._start_done.clear()
+        file_input: FfmpegAudioFileInput | None = None
+        try:
+            async with aiohttp.ClientSession() as session:
+                stt_service = self._create_stt_service(session)
+
+                file_input = FfmpegAudioFileInput(
+                    file_path,
+                    sample_rate=Config.SAMPLE_RATE,
+                    channels=Config.CHANNELS,
+                )
+
+                transcript_cb = (
+                    TranscriptionCallbackProcessor(self.on_transcription) if self.on_transcription else None
+                )
+                steps = [file_input, stt_service]
+                if transcript_cb:
+                    steps.append(transcript_cb)
+
+                self.pipeline = Pipeline(steps)
+                self.task = PipelineTask(
+                    self.pipeline,
+                    params=PipelineParams(allow_interruptions=False),
+                    check_dangling_tasks=False,
+                )
+                self.runner = PipelineRunner(handle_sigint=False, handle_sigterm=False)
+                self.is_active = True
+
+                if self.on_status_change:
+                    self.on_status_change("Transcribing...")
+
+                run_task = asyncio.create_task(self.runner.run(self.task), name="scriber_file_pipeline")
+
+                # Wait until the input transport has finished feeding (and its internal audio queue has drained),
+                # then end the pipeline gracefully so providers can flush final transcripts.
+                await file_input.done.wait()
+                await self.task.stop_when_done()
+
+                await run_task
+
+                if file_input.error:
+                    raise RuntimeError(file_input.error)
+
+        except (ValueError, ImportError) as e:
+            logger.error(f"Configuration error: {e}")
+            self.is_active = False
+            if self.on_status_change:
+                self.on_status_change(f"Error: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error transcribing file: {e}")
+            self.is_active = False
+            if self.on_status_change:
+                self.on_status_change("Error")
+            raise
+        finally:
             self.is_active = False
             self._start_done.set()
 
