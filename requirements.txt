@@ -9,3 +9,6 @@ loguru
 pytest
 pytest-asyncio
 pytest-mock
+customtkinter
+pillow
+numpy

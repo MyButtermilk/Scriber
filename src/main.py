@@ -29,6 +29,10 @@ def handle_status(status: str):
     if ui:
         ui.update_status(status)
 
+def handle_audio_level(level: float):
+    if ui:
+        ui.update_amplitude(level)
+
 def _ensure_loop():
     global loop
     if loop is None:
@@ -56,6 +60,8 @@ def _on_pipeline_done(task: asyncio.Task):
     is_listening = False
     pipeline = None
     pipeline_task = None
+    if ui:
+        ui.set_mic_preview_enabled(True)
 
 def _reset_pipeline_state():
     global pipeline, pipeline_task, is_listening
@@ -68,7 +74,13 @@ async def start_listening():
     if is_listening:
         return
     try:
-        pipeline = ScriberPipeline(service_name=Config.DEFAULT_STT_SERVICE, on_status_change=handle_status)
+        if ui:
+            ui.set_mic_preview_enabled(False)
+        pipeline = ScriberPipeline(
+            service_name=Config.DEFAULT_STT_SERVICE,
+            on_status_change=handle_status,
+            on_audio_level=handle_audio_level
+        )
         pipeline_task = asyncio.create_task(pipeline.start())
         pipeline_task.add_done_callback(_on_pipeline_done)
         is_listening = True
@@ -76,10 +88,14 @@ async def start_listening():
     except (ValueError, ImportError) as e:
         logger.error(f"Configuration error: {e}")
         handle_status(f"Error: {e}")
+        if ui:
+            ui.set_mic_preview_enabled(True)
         _reset_pipeline_state()
     except Exception as e:
         logger.error(f"Failed to start listening: {e}")
         handle_status("Error")
+        if ui:
+            ui.set_mic_preview_enabled(True)
         _reset_pipeline_state()
 
 async def stop_listening():
@@ -97,6 +113,8 @@ async def stop_listening():
                 pass
         handle_status("Stopped")
     finally:
+        if ui:
+            ui.set_mic_preview_enabled(True)
         is_listening = False
         pipeline = None
         pipeline_task = None
@@ -204,7 +222,7 @@ def _handle_exit():
     except Exception:
         pass
     if ui:
-        ui.root.quit()
+        ui.quit()
 
 def main():
     global ui, loop
@@ -228,7 +246,7 @@ def main():
     if sys.platform == "win32":
         signal.signal(signal.SIGBREAK, lambda *_: _handle_exit())
 
-    ui.root.protocol("WM_DELETE_WINDOW", _handle_exit)
+    ui.protocol("WM_DELETE_WINDOW", _handle_exit)
     ui.run()
 
 if __name__ == "__main__":

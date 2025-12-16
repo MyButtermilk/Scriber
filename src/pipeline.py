@@ -291,9 +291,10 @@ def _selected_language():
     return lang if lang else None
 
 class ScriberPipeline:
-    def __init__(self, service_name=Config.DEFAULT_STT_SERVICE, on_status_change=None):
+    def __init__(self, service_name=Config.DEFAULT_STT_SERVICE, on_status_change=None, on_audio_level=None):
         self.service_name = service_name
         self.on_status_change = on_status_change
+        self.on_audio_level = on_audio_level
         self.pipeline = None
         self.task = None
         self.runner = None
@@ -372,17 +373,15 @@ class ScriberPipeline:
                 if smart_turn:
                     logger.info("Enabling SmartTurn V3")
 
-                if SoundDeviceAudioInputStream:
-                    # If the built-in stream is available, prefer it and configure turn analyzer via params if supported.
-                    self.audio_input = SoundDeviceAudioInputStream(sample_rate=Config.SAMPLE_RATE, channels=Config.CHANNELS)
-                else:
-                    self.audio_input = MicrophoneInput(
-                        sample_rate=Config.SAMPLE_RATE,
-                        channels=Config.CHANNELS,
-                        turn_analyzer=smart_turn,
-                        device=Config.MIC_DEVICE,
-                        keep_alive=Config.MIC_ALWAYS_ON,
-                    )
+                # Always use our custom MicrophoneInput to support on_audio_level callback
+                self.audio_input = MicrophoneInput(
+                    sample_rate=Config.SAMPLE_RATE,
+                    channels=Config.CHANNELS,
+                    turn_analyzer=smart_turn,
+                    device=Config.MIC_DEVICE,
+                    keep_alive=Config.MIC_ALWAYS_ON,
+                    on_audio_level=self.on_audio_level,
+                )
 
                 inject_immediately = self.service_name == "soniox" and not (self.service_name == "soniox_async" or Config.SONIOX_MODE == "async")
                 text_injector = TextInjector(inject_immediately=inject_immediately)

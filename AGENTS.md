@@ -2,7 +2,11 @@
 
 ## Project Structure & Modules
 - `src/`: App code. Key modules: `main.py` (entrypoint/UI wiring), `pipeline.py` (STT pipeline orchestration), `injector.py` (text injection), `config.py` (env-driven settings), `microphone.py` (audio input), `ui.py` (Tkinter UI), `gemini_transcribe.py` (Gemini helper).
-- `tests/`: Pytest-compatible tests (`test_config.py`, `test_injector.py`) plus `conftest.py` for path setup.
+- `tests/`: Pytest-compatible tests.
+    - `test_config.py`: Configuration tests.
+    - `test_injector.py`, `test_injector_paste.py`: Text injection logic tests.
+    - `test_pipeline_stop.py`: Pipeline shutdown logic tests.
+    - `conftest.py`: Path setup and fixtures.
 - Root scripts: `start.bat` (Windows bootstrap), `start.sh` (Linux/macOS bootstrap), `check_imports.py` (quick dependency presence check).
 
 ## Build, Test, and Development Commands
@@ -29,7 +33,19 @@
 - PRs: include problem statement, summary, tests run (`pytest`, hotkey/manual checks), note new env vars/hotkeys; screenshots for UI tweaks (`ui.py`).
 
 ## Configuration & Security
-- Secrets in `.env` (`SONIOX_API_KEY`, `OPENAI_API_KEY`, etc.); never commit `.env`.
-- Settings persisted via UI to `.env`: hotkey, STT service/mode (realtime/async), language (or auto), debug flag, custom vocab, mic device, mic always-on, API keys.
+- Secrets in `.env` (never commit this file).
+- Settings persisted via UI to `.env`: hotkey, STT service/mode, language, debug flag, custom vocab, mic device, mic always-on, API keys.
+- Supported STT Services (Env Vars):
+    - Soniox (`SONIOX_API_KEY`)
+    - AssemblyAI (`ASSEMBLYAI_API_KEY`)
+    - Deepgram (`DEEPGRAM_API_KEY`)
+    - OpenAI (`OPENAI_API_KEY`)
+    - Azure (`AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`)
+    - Gladia (`GLADIA_API_KEY`)
+    - Groq (`GROQ_API_KEY`)
+    - Speechmatics (`SPEECHMATICS_API_KEY`)
+    - Google Cloud (`GOOGLE_APPLICATION_CREDENTIALS`)
+    - ElevenLabs (`ELEVENLABS_API_KEY`)
+    - AWS Transcribe (standard AWS env vars)
 - Default hotkey `ctrl+alt+s`, mode `toggle`; update docs when changing defaults.
 - When adding providers, update `Config.SERVICE_API_KEY_MAP` and `SERVICE_LABELS`; pass language hints if supported.

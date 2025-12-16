@@ -21,7 +21,7 @@ except ImportError as exc:  # pragma: no cover - defensive fallback
 
 
 class MicrophoneInput(BaseInputTransport):
-    def __init__(self, sample_rate=16000, channels=1, block_size=1024, turn_analyzer=None, device="default", keep_alive=False):
+    def __init__(self, sample_rate=16000, channels=1, block_size=1024, turn_analyzer=None, device="default", keep_alive=False, on_audio_level=None):
         if not HAS_SOUNDDEVICE:
             raise RuntimeError("Sounddevice is not available, cannot use MicrophoneInput.")
 
@@ -33,11 +33,12 @@ class MicrophoneInput(BaseInputTransport):
             turn_analyzer=turn_analyzer,
         )
         super().__init__(params=params)
-        self._target_sample_rate = sample_rate  # avoid clashing with BaseInputTransport.sample_rate property
+        self._target_sample_rate = sample_rate
         self._target_channels = channels
         self.block_size = block_size
         self.device = device
         self.keep_alive = keep_alive
+        self.on_audio_level = on_audio_level
         self.stream = None
         self._running = False
         self._loop = None
@@ -53,13 +54,29 @@ class MicrophoneInput(BaseInputTransport):
 
         try:
             if not self.stream:
+                device_index = None if self.device == "default" else int(self.device)
+                
+                # Auto-detect channels supported by the device to avoid PaErrorCode -9998
+                try:
+                    dev_info = sd.query_devices(device=device_index, kind='input')
+                    max_channels = int(dev_info.get('max_input_channels', 1))
+                    
+                    chosen_channels = max_channels
+                    if self._target_channels != chosen_channels:
+                        logger.info(f"Overriding configured channels {self._target_channels} with device native {chosen_channels}")
+                        self._target_channels = chosen_channels
+
+                except Exception as e:
+                    logger.warning(f"Could not query device info ({e}); falling back to configured channels.")
+                    device_index = None if self.device == "default" else int(self.device)
+
                 self.stream = sd.InputStream(
                     samplerate=self._target_sample_rate,
                     channels=self._target_channels,
                     blocksize=self.block_size,
                     dtype="int16",
                     callback=self._audio_callback,
-                    device=None if self.device == "default" else int(self.device),
+                    device=device_index,
                 )
             if not self.stream.active:
                 self.stream.start()
@@ -76,6 +93,20 @@ class MicrophoneInput(BaseInputTransport):
             logger.warning(f"Audio status: {status}")
         if self._running:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, indata.tobytes())
+            
+            if self.on_audio_level:
+                try:
+                    import numpy as np
+                    # Robust RMS regardless of backend dtype (int16/float32/etc).
+                    raw = indata
+                    floats = raw.astype(np.float32, copy=False)
+                    if np.issubdtype(raw.dtype, np.integer):
+                        denom = float(np.iinfo(raw.dtype).max) or 32768.0
+                        floats = floats / denom
+                    rms = float(np.sqrt(np.mean(floats * floats))) if floats.size else 0.0
+                    self.on_audio_level(rms)
+                except Exception:
+                    pass
 
     async def _drain_queue(self):
         # Ensure audio queue exists (BaseInputTransport creates it in _create_audio_task)
