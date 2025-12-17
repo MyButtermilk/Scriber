@@ -91,6 +91,7 @@ class TranscriptRecord:
     status: TranscriptStatus
     type: TranscriptType
     language: str
+    step: str = ""
     source_url: str = ""
     channel: str = ""
     thumbnail_url: str = ""
@@ -110,6 +111,7 @@ class TranscriptRecord:
             "status": self.status,
             "type": self.type,
             "language": self.language,
+            "step": self.step,
             "sourceUrl": self.source_url,
             "channel": self.channel,
             "thumbnailUrl": self.thumbnail_url,
@@ -266,6 +268,7 @@ class ScriberWebController:
             status="processing",
             type="youtube",
             language=Config.LANGUAGE or "auto",
+            step="Queued",
             source_url=url,
             channel=channel,
             thumbnail_url=thumbnail,
@@ -284,7 +287,9 @@ class ScriberWebController:
         return rec
 
     async def _run_youtube_transcription(self, rec: TranscriptRecord) -> None:
+        rec.step = "Downloading audio..."
         rec.updated_at = datetime.now().isoformat()
+        await self.broadcast({"type": "history_updated"})
         try:
             out_dir = self._downloads_dir / "youtube" / rec.id
             audio_path = await download_youtube_audio(rec.source_url, output_dir=out_dir, audio_format="mp3")
@@ -293,28 +298,163 @@ class ScriberWebController:
                 if not is_final:
                     return
                 rec.append_final_text(text)
+                logger.debug(f"YouTube transcription received: {len(text)} chars, total: {len(rec.content)} chars")
+
+            def on_progress(step: str) -> None:
+                rec.step = step
+                rec.updated_at = datetime.now().isoformat()
+                self._loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(self.broadcast({"type": "history_updated"}))
+                )
+
+            rec.step = "Transcribing..."
+            rec.updated_at = datetime.now().isoformat()
+            await self.broadcast({"type": "history_updated"})
 
             pipeline = ScriberPipeline(
                 service_name=Config.DEFAULT_STT_SERVICE,
                 on_status_change=None,
                 on_audio_level=None,
                 on_transcription=on_transcription,
+                on_progress=on_progress,
             )
-            await pipeline.transcribe_file(str(audio_path))
+            # Use direct file upload to Soniox (bypasses PCM conversion)
+            await pipeline.transcribe_file_direct(str(audio_path))
+
+            logger.info(f"YouTube transcription completed: {len(rec.content)} chars")
             rec.status = "completed"
+            rec.step = "Completed"
+            logger.debug(f"YouTube record updated: status={rec.status}, step={rec.step}")
         except (ValueError, ImportError) as exc:
             rec.status = "failed"
+            rec.step = "Failed"
             rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
         except YouTubeDownloadError as exc:
             rec.status = "failed"
+            rec.step = "Failed"
             rec.content = (rec.content + "\n" if rec.content else "") + f"[Download error] {exc}"
         except Exception as exc:
             logger.exception("YouTube transcription failed")
             rec.status = "failed"
+            rec.step = "Failed"
             rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
         finally:
             rec.updated_at = datetime.now().isoformat()
             await self.broadcast({"type": "history_updated"})
+            # Cleanup: delete the downloaded audio file and directory
+            try:
+                import shutil
+                if out_dir.exists():
+                    shutil.rmtree(out_dir)
+                    logger.debug(f"Cleaned up YouTube download directory: {out_dir}")
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to cleanup YouTube download: {cleanup_err}")
+
+    async def start_file_transcription(self, file_path: Path, original_filename: str) -> TranscriptRecord:
+        """Start transcription of an uploaded audio/video file."""
+        if not file_path.exists():
+            raise ValueError("Uploaded file not found")
+
+        title = original_filename or file_path.name
+        # Get file size for display
+        try:
+            file_size_bytes = file_path.stat().st_size
+            if file_size_bytes >= 1_000_000_000:
+                file_size = f"{file_size_bytes / 1_000_000_000:.1f}GB"
+            elif file_size_bytes >= 1_000_000:
+                file_size = f"{file_size_bytes / 1_000_000:.1f}MB"
+            elif file_size_bytes >= 1_000:
+                file_size = f"{file_size_bytes / 1_000:.1f}KB"
+            else:
+                file_size = f"{file_size_bytes}B"
+        except Exception:
+            file_size = ""
+
+        started_at = datetime.now()
+        rec = TranscriptRecord(
+            id=uuid4().hex,
+            title=title,
+            date=_format_date_label(started_at),
+            duration="--:--",
+            status="processing",
+            type="file",
+            language=Config.LANGUAGE or "auto",
+            step="Queued",
+            source_url=str(file_path),
+        )
+        # Store file size in content temporarily for display
+        if file_size:
+            rec.channel = file_size  # Reuse channel field for file size display
+        self._history.insert(0, rec)
+        await self.broadcast({"type": "history_updated"})
+
+        async def _runner() -> None:
+            try:
+                await self._run_file_transcription(rec, file_path)
+            finally:
+                self._youtube_tasks.pop(rec.id, None)
+
+        task = asyncio.create_task(_runner(), name=f"file_transcribe_{rec.id}")
+        self._youtube_tasks[rec.id] = task  # Reuse youtube_tasks dict for file tasks too
+        return rec
+
+    async def _run_file_transcription(self, rec: TranscriptRecord, file_path: Path) -> None:
+        """Run transcription on an uploaded file."""
+        rec.step = "Preparing audio..."
+        rec.updated_at = datetime.now().isoformat()
+        await self.broadcast({"type": "history_updated"})
+        try:
+            def on_transcription(text: str, is_final: bool) -> None:
+                if not is_final:
+                    return
+                rec.append_final_text(text)
+                logger.debug(f"File transcription received: {len(text)} chars, total: {len(rec.content)} chars")
+
+            def on_progress(step: str) -> None:
+                rec.step = step
+                rec.updated_at = datetime.now().isoformat()
+                self._loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(self.broadcast({"type": "history_updated"}))
+                )
+
+            rec.step = "Transcribing..."
+            rec.updated_at = datetime.now().isoformat()
+            await self.broadcast({"type": "history_updated"})
+
+            pipeline = ScriberPipeline(
+                service_name=Config.DEFAULT_STT_SERVICE,
+                on_status_change=None,
+                on_audio_level=None,
+                on_transcription=on_transcription,
+                on_progress=on_progress,
+            )
+            # Use direct file upload to Soniox (bypasses PCM conversion)
+            await pipeline.transcribe_file_direct(str(file_path))
+
+            logger.info(f"File transcription completed: {len(rec.content)} chars")
+            rec.status = "completed"
+            rec.step = "Completed"
+        except (ValueError, ImportError) as exc:
+            rec.status = "failed"
+            rec.step = "Failed"
+            rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
+        except Exception as exc:
+            logger.exception("File transcription failed")
+            rec.status = "failed"
+            rec.step = "Failed"
+            rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
+        finally:
+            rec.updated_at = datetime.now().isoformat()
+            await self.broadcast({"type": "history_updated"})
+            # Cleanup: delete the uploaded file and its directory
+            try:
+                import shutil
+                file_dir = file_path.parent
+                if file_dir.exists() and file_dir.name != "files":  # Don't delete the root files dir
+                    shutil.rmtree(file_dir)
+                    logger.debug(f"Cleaned up uploaded file directory: {file_dir}")
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to cleanup uploaded file: {cleanup_err}")
 
     async def start_listening(self) -> None:
         if self._is_listening:
@@ -754,6 +894,82 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         return web.json_response(rec.to_public(include_content=True))
 
+    async def file_transcribe(request: web.Request):
+        ctl: ScriberWebController = request.app["controller"]
+
+        # Check content type for multipart upload
+        if not request.content_type.startswith("multipart/"):
+            return web.json_response({"message": "Expected multipart/form-data"}, status=400)
+
+        try:
+            reader = await request.multipart()
+            file_field = None
+            original_filename = "uploaded_file"
+
+            async for field in reader:
+                if field.name == "file":
+                    file_field = field
+                    original_filename = field.filename or "uploaded_file"
+                    break
+
+            if file_field is None:
+                return web.json_response({"message": "No file uploaded"}, status=400)
+
+            # Validate file extension
+            allowed_extensions = {".mp3", ".m4a", ".wav", ".mp4", ".mov", ".webm", ".ogg", ".flac", ".aac"}
+            ext = Path(original_filename).suffix.lower()
+            if ext not in allowed_extensions:
+                return web.json_response(
+                    {"message": f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(allowed_extensions))}"},
+                    status=400,
+                )
+
+            # Generate unique ID and save file
+            file_id = uuid4().hex
+            save_dir = ctl._downloads_dir / "files" / file_id
+            save_dir.mkdir(parents=True, exist_ok=True)
+            save_path = save_dir / original_filename
+
+            # Stream file to disk
+            with open(save_path, "wb") as f:
+                while True:
+                    chunk = await file_field.read_chunk(size=1024 * 1024)  # 1MB chunks
+                    if not chunk:
+                        break
+                    f.write(chunk)
+
+            # Start transcription
+            rec = await ctl.start_file_transcription(save_path, original_filename)
+            return web.json_response(rec.to_public(include_content=True))
+
+        except ValueError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Failed to process file upload")
+            return web.json_response({"message": str(exc) or "Failed to process file upload"}, status=500)
+
+    async def delete_transcript(request: web.Request):
+        ctl: ScriberWebController = request.app["controller"]
+        transcript_id = request.match_info.get("id", "")
+        if not transcript_id:
+            return web.json_response({"message": "Missing transcript ID"}, status=400)
+
+        # Find and remove the transcript from history
+        found = None
+        for i, rec in enumerate(ctl._history):
+            if rec.id == transcript_id:
+                found = ctl._history.pop(i)
+                break
+
+        if not found:
+            return web.json_response({"message": "Transcript not found"}, status=404)
+
+        # Broadcast update to clients
+        await ctl.broadcast({"type": "history_updated"})
+        logger.info(f"Deleted transcript: {found.title} ({transcript_id})")
+
+        return web.json_response({"success": True, "id": transcript_id})
+
     app.router.add_get("/api/health", health)
     app.router.add_get("/ws", ws_handler)
 
@@ -768,9 +984,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     app.router.add_get("/api/transcripts", transcripts)
     app.router.add_get("/api/transcripts/{id}", transcript_detail)
+    app.router.add_delete("/api/transcripts/{id}", delete_transcript)
 
     app.router.add_get("/api/youtube/search", youtube_search)
     app.router.add_post("/api/youtube/transcribe", youtube_transcribe)
+    app.router.add_post("/api/file/transcribe", file_transcribe)
 
     return app
 

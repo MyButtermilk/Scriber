@@ -51,12 +51,20 @@ class SonioxAsyncProcessor(FrameProcessor):
 
     BASE_URL = "https://api.soniox.com/v1"
 
-    def __init__(self, api_key: str, custom_vocab: str = "", model: str = "stt-async-preview", session: aiohttp.ClientSession = None):
+    def __init__(
+        self,
+        api_key: str,
+        custom_vocab: str = "",
+        model: str = "stt-async-preview",
+        session: aiohttp.ClientSession = None,
+        on_progress: Optional[Callable[[str], None]] = None,
+    ):
         super().__init__()
         self.api_key = api_key
         self.custom_vocab = custom_vocab
         self.model = model
         self.session = session
+        self.on_progress = on_progress
         self._buffer = bytearray()
         self._sample_rate = None
         self._channels = None
@@ -94,6 +102,14 @@ class SonioxAsyncProcessor(FrameProcessor):
         else:
             await self.push_frame(frame, direction)
 
+    def _report_progress(self, msg: str) -> None:
+        """Report progress to callback if set."""
+        if self.on_progress:
+            try:
+                self.on_progress(msg)
+            except Exception:
+                pass
+
     async def _transcribe_async(self, audio_bytes: bytes) -> str:
         """
         Upload audio to Soniox async API. Prefer WebM/Opus; retry with WAV if Soniox rejects.
@@ -109,6 +125,8 @@ class SonioxAsyncProcessor(FrameProcessor):
         ch = self._channels or 1
         audio_secs = len(audio_bytes) / max(1, (sr * ch * 2))
         poll_timeout = min(600.0, max(120.0, max(60.0, audio_secs * 3.0)))
+
+        self._report_progress("Uploading audio...")
 
         # Two-pass strategy: webm first, wav fallback for duration/format errors
         for prefer_webm in (True, False):
@@ -141,6 +159,8 @@ class SonioxAsyncProcessor(FrameProcessor):
                     transcription_id = (await resp2.json())["id"]
 
                 # Poll status
+                self._report_progress("Processing transcription...")
+                poll_count = 0
                 while True:
                     if asyncio.get_running_loop().time() - poll_start > poll_timeout:
                         raise TimeoutError("Soniox async transcription polling timed out")
@@ -156,8 +176,14 @@ class SonioxAsyncProcessor(FrameProcessor):
                             break
                         if status in error_statuses:
                             raise RuntimeError(status_payload.get("error_message", "Soniox async error"))
+                    poll_count += 1
+                    # Update progress periodically (every 5 polls = ~5 seconds)
+                    if poll_count % 5 == 0:
+                        elapsed = int(asyncio.get_running_loop().time() - poll_start)
+                        self._report_progress(f"Processing transcription... ({elapsed}s)")
                     await asyncio.sleep(1)
 
+                self._report_progress("Retrieving transcript...")
                 async with self.session.get(
                     f"{self.BASE_URL}/transcriptions/{transcription_id}/transcript",
                     headers=headers,
@@ -165,7 +191,11 @@ class SonioxAsyncProcessor(FrameProcessor):
                 ) as r3:
                     r3.raise_for_status()
                     transcript_payload = await r3.json()
-                    return transcript_payload.get("text", "")
+                    text = transcript_payload.get("text", "")
+                    if text:
+                        logger.info(f"Soniox async transcription completed ({len(text)} chars)")
+                    self._report_progress("Completed")
+                    return text
 
             except Exception as e:
                 if prefer_webm:
@@ -309,12 +339,14 @@ class TranscriptionCallbackProcessor(FrameProcessor):
             try:
                 if isinstance(frame, InterimTranscriptionFrame):
                     if frame.text:
+                        logger.debug(f"TranscriptionCallback: interim text ({len(frame.text)} chars)")
                         cb(frame.text, False)
                 elif isinstance(frame, TranscriptionFrame):
                     if frame.text:
+                        logger.info(f"TranscriptionCallback: final text ({len(frame.text)} chars)")
                         cb(frame.text, True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"TranscriptionCallback error: {e}")
 
         await self.push_frame(frame, direction)
 
@@ -325,11 +357,13 @@ class ScriberPipeline:
         on_status_change=None,
         on_audio_level=None,
         on_transcription: Optional[Callable[[str, bool], None]] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
     ):
         self.service_name = service_name
         self.on_status_change = on_status_change
         self.on_audio_level = on_audio_level
         self.on_transcription = on_transcription
+        self.on_progress = on_progress
         self.pipeline = None
         self.task = None
         self.runner = None
@@ -353,6 +387,7 @@ class ScriberPipeline:
                     custom_vocab=Config.CUSTOM_VOCAB,
                     model=Config.SONIOX_ASYNC_MODEL,
                     session=session,
+                    on_progress=self.on_progress,
                 )
             if not SonioxSTTService: raise ImportError("SonioxSTTService not available.")
             lang_hint = _selected_language()
@@ -523,6 +558,148 @@ class ScriberPipeline:
         finally:
             self.is_active = False
             self._start_done.set()
+
+    async def transcribe_file_direct(self, file_path: str) -> None:
+        """
+        Transcribe audio/video file by uploading directly to Soniox async API.
+        This bypasses the PCM conversion pipeline and uploads the original file format.
+        Much more efficient for file transcription since Soniox accepts MP3, WAV, M4A, etc.
+        """
+        from pathlib import Path
+        import mimetypes
+
+        if self.is_active:
+            return
+
+        path = Path(file_path)
+        if not path.exists():
+            raise ValueError(f"File not found: {file_path}")
+
+        logger.info(f"Transcribing file directly with Soniox async: {file_path}")
+        self.is_active = True
+
+        try:
+            # Determine content type from extension
+            ext = path.suffix.lower()
+            content_type_map = {
+                ".mp3": "audio/mpeg",
+                ".wav": "audio/wav",
+                ".m4a": "audio/mp4",
+                ".mp4": "video/mp4",
+                ".mov": "video/quicktime",
+                ".webm": "audio/webm",
+                ".ogg": "audio/ogg",
+                ".flac": "audio/flac",
+                ".aac": "audio/aac",
+            }
+            content_type = content_type_map.get(ext, mimetypes.guess_type(str(path))[0] or "application/octet-stream")
+
+            api_key = Config.get_api_key("soniox")
+            if not api_key:
+                raise ValueError("Soniox API key is missing")
+
+            headers = {"Authorization": f"Bearer {api_key}"}
+            base_url = "https://api.soniox.com/v1"
+            model = Config.SONIOX_ASYNC_MODEL or "stt-async-preview"
+
+            if self.on_progress:
+                self.on_progress("Uploading audio...")
+
+            async with aiohttp.ClientSession() as session:
+                # Upload file directly
+                with open(path, "rb") as f:
+                    file_bytes = f.read()
+
+                logger.info(f"Uploading {path.name} ({len(file_bytes)} bytes, {content_type})")
+
+                data = aiohttp.FormData()
+                data.add_field("file", file_bytes, filename=path.name, content_type=content_type)
+
+                async with session.post(
+                    f"{base_url}/files",
+                    data=data,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=300),  # 5 min for large files
+                ) as resp:
+                    resp.raise_for_status()
+                    file_id = (await resp.json())["id"]
+
+                # Start transcription
+                payload = {"file_id": file_id, "model": model}
+                if Config.CUSTOM_VOCAB:
+                    payload["context"] = Config.CUSTOM_VOCAB
+
+                async with session.post(
+                    f"{base_url}/transcriptions",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp2:
+                    resp2.raise_for_status()
+                    transcription_id = (await resp2.json())["id"]
+
+                # Poll for completion
+                if self.on_progress:
+                    self.on_progress("Processing transcription...")
+
+                done_statuses = {"completed", "done", "succeeded", "success"}
+                error_statuses = {"error", "failed", "canceled", "cancelled"}
+                poll_start = asyncio.get_running_loop().time()
+                poll_timeout = 600.0  # 10 minutes max
+                poll_count = 0
+
+                while True:
+                    elapsed = asyncio.get_running_loop().time() - poll_start
+                    if elapsed > poll_timeout:
+                        raise TimeoutError("Soniox transcription timed out")
+
+                    async with session.get(
+                        f"{base_url}/transcriptions/{transcription_id}",
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as r:
+                        r.raise_for_status()
+                        status_payload = await r.json()
+                        status = (status_payload.get("status") or "").lower()
+
+                        if status in done_statuses:
+                            break
+                        if status in error_statuses:
+                            raise RuntimeError(status_payload.get("error_message", "Soniox transcription error"))
+
+                    poll_count += 1
+                    if poll_count % 5 == 0 and self.on_progress:
+                        self.on_progress(f"Processing transcription... ({int(elapsed)}s)")
+
+                    await asyncio.sleep(1)
+
+                # Get transcript
+                if self.on_progress:
+                    self.on_progress("Retrieving transcript...")
+
+                async with session.get(
+                    f"{base_url}/transcriptions/{transcription_id}/transcript",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as r3:
+                    r3.raise_for_status()
+                    transcript_payload = await r3.json()
+                    text = transcript_payload.get("text", "")
+
+                if text and self.on_transcription:
+                    logger.info(f"Soniox direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+
+        except Exception as e:
+            logger.error(f"Direct file transcription failed: {e}")
+            if self.on_status_change:
+                self.on_status_change("Error")
+            raise
+        finally:
+            self.is_active = False
 
     async def stop(self, timeout_secs: float | None = None):
         if self.task and self.task.has_finished():
