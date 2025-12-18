@@ -147,7 +147,7 @@ async def search_youtube_videos(
     durations: dict[str, dict[str, Any]] = {}
     if ordered_video_ids:
         videos_params: dict[str, str] = {
-            "part": "contentDetails",
+            "part": "contentDetails,statistics",
             "id": ",".join(ordered_video_ids),
             "key": api_key,
         }
@@ -161,14 +161,24 @@ async def search_youtube_videos(
             content_details = v.get("contentDetails") if isinstance(v.get("contentDetails"), dict) else {}
             iso = content_details.get("duration") if isinstance(content_details.get("duration"), str) else ""
             seconds = parse_iso8601_duration(iso)
-            durations[vid] = {"duration": format_duration(seconds), "durationSeconds": seconds}
+            
+            statistics = v.get("statistics") if isinstance(v.get("statistics"), dict) else {}
+            view_count = int(statistics.get("viewCount") or 0)
+            like_count = int(statistics.get("likeCount") or 0)
+            
+            durations[vid] = {
+                "duration": format_duration(seconds),
+                "durationSeconds": seconds,
+                "viewCount": view_count,
+                "likeCount": like_count,
+            }
 
     out_items: list[dict[str, Any]] = []
     for vid in ordered_video_ids:
         payload = base.get(vid)
         if not payload:
             continue
-        payload.update(durations.get(vid, {"duration": "", "durationSeconds": 0}))
+        payload.update(durations.get(vid, {"duration": "", "durationSeconds": 0, "viewCount": 0, "likeCount": 0}))
         out_items.append(payload)
 
     page_info = search.get("pageInfo") if isinstance(search.get("pageInfo"), dict) else {}
@@ -181,3 +191,78 @@ async def search_youtube_videos(
         "items": out_items,
     }
 
+
+async def get_video_by_id(
+    api_key: str,
+    video_id: str,
+    *,
+    session: ClientSession,
+) -> dict[str, Any] | None:
+    """Fetch video details by video ID. Returns None if video not found."""
+    api_key = (api_key or "").strip()
+    video_id = (video_id or "").strip()
+    if not api_key:
+        raise ValueError("Missing API key")
+    if not video_id:
+        raise ValueError("Missing video ID")
+
+    videos_params: dict[str, str] = {
+        "part": "snippet,contentDetails,statistics",
+        "id": video_id,
+        "key": api_key,
+    }
+    videos = await _request_json(session, YOUTUBE_VIDEOS_URL, videos_params)
+    items = videos.get("items") if isinstance(videos.get("items"), list) else []
+    
+    if not items:
+        return None
+    
+    v = items[0]
+    if not isinstance(v, dict):
+        return None
+    
+    vid = v.get("id")
+    if not isinstance(vid, str) or not vid.strip():
+        return None
+    
+    snippet = v.get("snippet") if isinstance(v.get("snippet"), dict) else {}
+    content_details = v.get("contentDetails") if isinstance(v.get("contentDetails"), dict) else {}
+    statistics = v.get("statistics") if isinstance(v.get("statistics"), dict) else {}
+    
+    iso = content_details.get("duration") if isinstance(content_details.get("duration"), str) else ""
+    seconds = parse_iso8601_duration(iso)
+    view_count = int(statistics.get("viewCount") or 0)
+    like_count = int(statistics.get("likeCount") or 0)
+    
+    return {
+        "videoId": vid.strip(),
+        "url": f"https://www.youtube.com/watch?v={vid.strip()}",
+        "title": (snippet.get("title") if isinstance(snippet.get("title"), str) else "").strip(),
+        "description": (snippet.get("description") if isinstance(snippet.get("description"), str) else "").strip(),
+        "channelTitle": (snippet.get("channelTitle") if isinstance(snippet.get("channelTitle"), str) else "").strip(),
+        "publishedAt": (snippet.get("publishedAt") if isinstance(snippet.get("publishedAt"), str) else "").strip(),
+        "thumbnailUrl": _best_thumbnail_url(snippet.get("thumbnails")),
+        "duration": format_duration(seconds),
+        "durationSeconds": seconds,
+        "viewCount": view_count,
+        "likeCount": like_count,
+    }
+
+
+def extract_youtube_video_id(url: str) -> str | None:
+    """Extract video ID from various YouTube URL formats."""
+    url = (url or "").strip()
+    if not url:
+        return None
+    
+    # Handle youtube.com/watch?v=VIDEO_ID, /embed/, /v/, and /shorts/
+    match = re.search(r'(?:youtube\.com/watch\?.*v=|youtube\.com/embed/|youtube\.com/v/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
+    # Handle youtu.be/VIDEO_ID
+    match = re.search(r'youtu\.be/([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
+    return None

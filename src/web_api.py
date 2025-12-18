@@ -14,7 +14,7 @@ from loguru import logger
 
 from src.config import Config
 from src.pipeline import ScriberPipeline
-from src.youtube_api import YouTubeApiError, search_youtube_videos
+from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
 
 TranscriptStatus = Literal["completed", "processing", "failed", "recording"]
@@ -98,6 +98,7 @@ class TranscriptRecord:
     content: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    summary: str = ""
 
     _started_at_monotonic: float | None = None
     _segments: list[str] = field(default_factory=list)
@@ -120,6 +121,7 @@ class TranscriptRecord:
         }
         if include_content:
             data["content"] = self.content
+            data["summary"] = self.summary
         return data
 
     def start(self) -> None:
@@ -141,7 +143,7 @@ class TranscriptRecord:
         if self._segments and self._segments[-1] == cleaned:
             return
         self._segments.append(cleaned)
-        self.content = " ".join(self._segments).strip()
+        self.content = "\n\n".join(self._segments).strip()
         self.updated_at = datetime.now().isoformat()
 
 
@@ -325,6 +327,20 @@ class ScriberWebController:
             rec.status = "completed"
             rec.step = "Completed"
             logger.debug(f"YouTube record updated: status={rec.status}, step={rec.step}")
+
+            # Auto-summarize if enabled
+            if Config.AUTO_SUMMARIZE and rec.content:
+                try:
+                    from src.summarization import summarize_text
+                    rec.step = "Summarizing..."
+                    rec.updated_at = datetime.now().isoformat()
+                    await self.broadcast({"type": "history_updated"})
+                    rec.summary = await summarize_text(rec.content, Config.SUMMARIZATION_MODEL)
+                    rec.step = "Completed"
+                    logger.info(f"YouTube auto-summarization completed: {len(rec.summary)} chars")
+                except Exception as sum_err:
+                    logger.warning(f"Auto-summarization failed: {sum_err}")
+                    rec.step = "Completed"
         except (ValueError, ImportError) as exc:
             rec.status = "failed"
             rec.step = "Failed"
@@ -434,6 +450,20 @@ class ScriberWebController:
             logger.info(f"File transcription completed: {len(rec.content)} chars")
             rec.status = "completed"
             rec.step = "Completed"
+
+            # Auto-summarize if enabled
+            if Config.AUTO_SUMMARIZE and rec.content:
+                try:
+                    from src.summarization import summarize_text
+                    rec.step = "Summarizing..."
+                    rec.updated_at = datetime.now().isoformat()
+                    await self.broadcast({"type": "history_updated"})
+                    rec.summary = await summarize_text(rec.content, Config.SUMMARIZATION_MODEL)
+                    rec.step = "Completed"
+                    logger.info(f"File auto-summarization completed: {len(rec.summary)} chars")
+                except Exception as sum_err:
+                    logger.warning(f"Auto-summarization failed: {sum_err}")
+                    rec.step = "Completed"
         except (ValueError, ImportError) as exc:
             rec.status = "failed"
             rec.step = "Failed"
@@ -590,6 +620,9 @@ class ScriberWebController:
             "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
             "debug": bool(Config.DEBUG),
             "customVocab": Config.CUSTOM_VOCAB or "",
+            "summarizationPrompt": Config.SUMMARIZATION_PROMPT or "",
+            "summarizationModel": Config.SUMMARIZATION_MODEL or "gemini-flash-latest",
+            "autoSummarize": bool(Config.AUTO_SUMMARIZE),
             "apiKeys": {
                 "soniox": Config.SONIOX_API_KEY or "",
                 "assemblyai": Config.ASSEMBLYAI_API_KEY or "",
@@ -646,6 +679,17 @@ class ScriberWebController:
         if "customVocab" in payload and isinstance(payload["customVocab"], str):
             Config.CUSTOM_VOCAB = payload["customVocab"].strip()
             os.environ["SCRIBER_CUSTOM_VOCAB"] = Config.CUSTOM_VOCAB
+
+        if "summarizationPrompt" in payload and isinstance(payload["summarizationPrompt"], str):
+            Config.set_summarization_prompt(payload["summarizationPrompt"])
+
+        if "summarizationModel" in payload and isinstance(payload["summarizationModel"], str):
+            Config.SUMMARIZATION_MODEL = payload["summarizationModel"].strip()
+            os.environ["SCRIBER_SUMMARIZATION_MODEL"] = Config.SUMMARIZATION_MODEL
+
+        if "autoSummarize" in payload:
+            Config.AUTO_SUMMARIZE = bool(payload["autoSummarize"])
+            os.environ["SCRIBER_AUTO_SUMMARIZE"] = "1" if Config.AUTO_SUMMARIZE else "0"
 
         api_keys = payload.get("apiKeys")
         if isinstance(api_keys, dict):
@@ -877,6 +921,40 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         return web.json_response(payload)
 
+    async def youtube_video(request: web.Request):
+        """Fetch video details by video ID or URL."""
+        video_id = (request.query.get("id") or "").strip()
+        url_param = (request.query.get("url") or "").strip()
+        
+        # If URL provided, extract video ID from it
+        if url_param and not video_id:
+            video_id = extract_youtube_video_id(url_param) or ""
+        
+        if not video_id:
+            return web.json_response({"message": "Missing video ID or URL parameter"}, status=400)
+
+        api_key = getattr(Config, "YOUTUBE_API_KEY", "") or ""
+        if not api_key.strip():
+            return web.json_response(
+                {"message": "Missing YouTube API key. Set YOUTUBE_API_KEY or save it in Settings."}, status=400
+            )
+
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=30)) as session:
+                video = await get_video_by_id(api_key, video_id, session=session)
+        except ValueError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        except YouTubeApiError as exc:
+            return web.json_response({"message": str(exc), "details": exc.details}, status=exc.status)
+        except Exception:
+            logger.exception("YouTube video fetch failed")
+            return web.json_response({"message": "YouTube video fetch failed"}, status=500)
+
+        if not video:
+            return web.json_response({"message": "Video not found"}, status=404)
+
+        return web.json_response(video)
+
     async def youtube_transcribe(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
         try:
@@ -970,6 +1048,45 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         return web.json_response({"success": True, "id": transcript_id})
 
+    async def summarize_transcript(request: web.Request):
+        """Summarize a transcript using the configured LLM model."""
+        from src.summarization import summarize_text
+        
+        ctl: ScriberWebController = request.app["controller"]
+        transcript_id = request.match_info.get("id", "")
+        if not transcript_id:
+            return web.json_response({"message": "Missing transcript ID"}, status=400)
+
+        # Find the transcript
+        rec = None
+        for r in ctl._history:
+            if r.id == transcript_id:
+                rec = r
+                break
+
+        if not rec:
+            return web.json_response({"message": "Transcript not found"}, status=404)
+
+        if not rec.content or not rec.content.strip():
+            return web.json_response({"message": "Transcript has no content to summarize"}, status=400)
+
+        if rec.status != "completed":
+            return web.json_response({"message": "Transcript is not yet completed"}, status=400)
+
+        try:
+            model = getattr(Config, "SUMMARIZATION_MODEL", "gemini-2.0-flash")
+            summary = await summarize_text(rec.content, model)
+            rec.summary = summary
+            rec.updated_at = datetime.now().isoformat()
+            await ctl.broadcast({"type": "history_updated"})
+            logger.info(f"Summarized transcript: {rec.title} ({len(summary)} chars)")
+            return web.json_response({"success": True, "summary": summary})
+        except ValueError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Summarization failed")
+            return web.json_response({"message": str(exc) or "Summarization failed"}, status=500)
+
     app.router.add_get("/api/health", health)
     app.router.add_get("/ws", ws_handler)
 
@@ -985,8 +1102,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/transcripts", transcripts)
     app.router.add_get("/api/transcripts/{id}", transcript_detail)
     app.router.add_delete("/api/transcripts/{id}", delete_transcript)
+    app.router.add_post("/api/transcripts/{id}/summarize", summarize_transcript)
 
     app.router.add_get("/api/youtube/search", youtube_search)
+    app.router.add_get("/api/youtube/video", youtube_video)
     app.router.add_post("/api/youtube/transcribe", youtube_transcribe)
     app.router.add_post("/api/file/transcribe", file_transcribe)
 

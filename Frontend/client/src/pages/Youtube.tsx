@@ -1,10 +1,11 @@
-import { ArrowRight, Clock, MoreHorizontal, PlayCircle, Youtube as YoutubeIcon, Loader2, Trash2, CheckCircle2 } from "lucide-react";
+import { ArrowRight, Clock, MoreHorizontal, PlayCircle, Youtube as YoutubeIcon, Loader2, Trash2, CheckCircle2, ThumbsUp, Eye } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useLocation } from "wouter";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { apiUrl, wsUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -19,7 +20,11 @@ type YouTubeSearchItem = {
   thumbnailUrl: string;
   duration: string;
   durationSeconds: number;
+  viewCount?: number;
+  likeCount?: number;
 };
+
+type SortOption = "date" | "likes" | "views";
 
 export default function Youtube() {
   const [, setLocation] = useLocation();
@@ -30,7 +35,25 @@ export default function Youtube() {
   const [isSearching, setIsSearching] = useState(false);
   const [startingVideoId, setStartingVideoId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<SortOption>("date");
   const queryClient = useQueryClient();
+
+  // Sort search results
+  const sortedResults = useMemo(() => {
+    if (!searchResults.length) return [];
+    return [...searchResults].sort((a, b) => {
+      switch (sortBy) {
+        case "date":
+          return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
+        case "likes":
+          return (b.likeCount || 0) - (a.likeCount || 0);
+        case "views":
+          return (b.viewCount || 0) - (a.viewCount || 0);
+        default:
+          return 0;
+      }
+    });
+  }, [searchResults, sortBy]);
 
   const transcriptsQuery = useQuery({
     queryKey: ["/api/transcripts"],
@@ -64,6 +87,11 @@ export default function Youtube() {
     };
   }, [queryClient]);
 
+  // Helper to detect if input is a YouTube URL
+  const isYouTubeUrl = (input: string): boolean => {
+    return /(?:youtube\.com\/watch\?.*v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/)/i.test(input);
+  };
+
   const runSearch = async () => {
     const q = query.trim();
     if (!q || isSearching) return;
@@ -72,21 +100,39 @@ export default function Youtube() {
     setSearchError("");
 
     try {
-      const url = apiUrl(`/api/youtube/search?q=${encodeURIComponent(q)}&maxResults=10`);
-      const res = await fetch(url, { credentials: "include" });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || res.statusText);
+      // Check if input is a YouTube URL
+      if (isYouTubeUrl(q)) {
+        // Fetch video directly by URL
+        const url = apiUrl(`/api/youtube/video?url=${encodeURIComponent(q)}`);
+        const res = await fetch(url, { credentials: "include" });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.message || res.statusText);
+        }
+        const video = await res.json();
+        if (video && video.videoId) {
+          setSearchResults([video as YouTubeSearchItem]);
+        } else {
+          setSearchError("Video not found.");
+        }
+      } else {
+        // Regular search
+        const url = apiUrl(`/api/youtube/search?q=${encodeURIComponent(q)}&maxResults=10`);
+        const res = await fetch(url, { credentials: "include" });
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || res.statusText);
+        }
+        const payload = await res.json();
+        const items = (payload?.items || []) as YouTubeSearchItem[];
+        setSearchResults(items);
+        if (!items.length) setSearchError("No results found.");
       }
-      const payload = await res.json();
-      const items = (payload?.items || []) as YouTubeSearchItem[];
-      setSearchResults(items);
-      if (!items.length) setSearchError("No results found.");
     } catch (e: any) {
       const msg = String(e?.message || e);
       setSearchError(msg);
       toast({
-        title: "YouTube search failed",
+        title: "YouTube lookup failed",
         description: msg,
         duration: 4000,
       });
@@ -204,16 +250,42 @@ export default function Youtube() {
         <div className="space-y-4 mb-8">
           <div className="flex items-center justify-between px-2">
             <h2 className="text-lg font-semibold">Search Results</h2>
-            {isSearching && <span className="text-xs text-muted-foreground">Searching…</span>}
+            <div className="flex items-center gap-2">
+              {isSearching && <span className="text-xs text-muted-foreground">Searching…</span>}
+              {searchResults.length > 0 && !isSearching && (
+                <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortOption)}>
+                  <SelectTrigger className="w-[140px] h-8 text-xs">
+                    <SelectValue placeholder="Sort by" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="date">
+                      <span className="flex items-center gap-2">
+                        <Clock className="w-3 h-3" /> Most Recent
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="likes">
+                      <span className="flex items-center gap-2">
+                        <ThumbsUp className="w-3 h-3" /> Most Liked
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="views">
+                      <span className="flex items-center gap-2">
+                        <Eye className="w-3 h-3" /> Most Viewed
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
           </div>
 
           {!isSearching && searchError && (
             <p className="text-sm text-muted-foreground px-2">{searchError}</p>
           )}
 
-          {searchResults.length > 0 && (
+          {sortedResults.length > 0 && (
             <div className="grid gap-4">
-              {searchResults.map((item) => {
+              {sortedResults.map((item) => {
                 const published = item.publishedAt ? new Date(item.publishedAt).toLocaleDateString() : "";
                 const isStarting = startingVideoId === item.videoId;
                 return (
@@ -263,6 +335,16 @@ export default function Youtube() {
                           <span className="flex items-center gap-1">
                             <Clock className="w-3 h-3" /> {item.duration || "—"}
                           </span>
+                          {item.viewCount !== undefined && item.viewCount > 0 && (
+                            <span className="flex items-center gap-1">
+                              <Eye className="w-3 h-3" /> {item.viewCount.toLocaleString()}
+                            </span>
+                          )}
+                          {item.likeCount !== undefined && item.likeCount > 0 && (
+                            <span className="flex items-center gap-1">
+                              <ThumbsUp className="w-3 h-3" /> {item.likeCount.toLocaleString()}
+                            </span>
+                          )}
                         </div>
                       </div>
 

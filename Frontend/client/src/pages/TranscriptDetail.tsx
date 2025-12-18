@@ -1,14 +1,57 @@
 import { useParams, Link } from "wouter";
-import { ArrowLeft, Share2, Download, Copy, Play, Search, Clock, Calendar, Pencil, Check, Loader2 } from "lucide-react";
+import { ArrowLeft, Share2, Download, Copy, Play, Search, Clock, Calendar, Pencil, Check, Loader2, Sparkles, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MOCK_TRANSCRIPTS } from "@/lib/mockData";
 import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect } from "react";
-import { wsUrl } from "@/lib/backend";
+import { wsUrl, apiUrl } from "@/lib/backend";
+import ReactMarkdown from "react-markdown";
+
+function SummarizeButton({ transcriptId, onComplete }: { transcriptId: string | undefined; onComplete: () => void }) {
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const { toast } = useToast();
+
+  const handleSummarize = async () => {
+    if (!transcriptId || isSummarizing) return;
+    setIsSummarizing(true);
+    try {
+      const res = await fetch(apiUrl(`/api/transcripts/${transcriptId}/summarize`), {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || res.statusText);
+      }
+      toast({
+        title: "Summary generated",
+        description: "The transcript has been summarized.",
+        duration: 3000,
+      });
+      onComplete();
+    } catch (e: any) {
+      toast({
+        title: "Summarization failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  return (
+    <Button size="sm" variant="outline" onClick={handleSummarize} disabled={isSummarizing}>
+      {isSummarizing ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Sparkles className="w-3 h-3 mr-1" />}
+      {isSummarizing ? "Summarizing..." : "Summarize"}
+    </Button>
+  );
+}
 
 export default function TranscriptDetail() {
   const { id } = useParams();
@@ -24,6 +67,17 @@ export default function TranscriptDetail() {
       return status === "processing" || status === "recording" ? 1000 : false;
     },
   });
+
+  // Fetch settings to check if auto-summarize is enabled
+  const settingsQuery = useQuery({
+    queryKey: ["/api/settings"],
+    queryFn: async () => {
+      const res = await fetch(apiUrl("/api/settings"), { credentials: "include" });
+      if (!res.ok) return {};
+      return res.json();
+    },
+  });
+  const autoSummarize = settingsQuery.data?.autoSummarize === true;
   const mock = MOCK_TRANSCRIPTS.find((t) => t.id === id);
   const transcript: any = transcriptQuery.data || mock || {
     title: "Transcript",
@@ -58,7 +112,7 @@ export default function TranscriptDetail() {
     };
   }, [id, queryClient]);
 
-  const handleCopy = () => {
+  const handleCopyTranscript = () => {
     navigator.clipboard.writeText(transcript?.content || "");
     setCopied(true);
     toast({
@@ -67,6 +121,18 @@ export default function TranscriptDetail() {
       duration: 2000,
     });
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const [copiedSummary, setCopiedSummary] = useState(false);
+  const handleCopySummary = () => {
+    navigator.clipboard.writeText(transcript?.summary || "");
+    setCopiedSummary(true);
+    toast({
+      title: "Copied to Clipboard",
+      description: "Summary has been copied.",
+      duration: 2000,
+    });
+    setTimeout(() => setCopiedSummary(false), 2000);
   };
 
   const getBackLink = () => {
@@ -79,6 +145,18 @@ export default function TranscriptDetail() {
         return "/";
     }
   };
+
+  // Controlled accordion state - reacts when summary becomes available
+  const [accordionValue, setAccordionValue] = useState<string[]>(
+    transcript.summary ? ["summary"] : ["transcript"]
+  );
+
+  // Update accordion when summary becomes available
+  useEffect(() => {
+    if (transcript.summary) {
+      setAccordionValue(["summary"]);
+    }
+  }, [transcript.summary]);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -97,101 +175,110 @@ export default function TranscriptDetail() {
         </div>
 
         <div className="flex items-center gap-2">
+          {transcript.content && (
+            <Button
+              variant={copied ? "default" : "outline"}
+              size="sm"
+              className="hidden md:flex"
+              onClick={handleCopyTranscript}
+            >
+              {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+              {copied ? "Copied!" : "Copy Transcript"}
+            </Button>
+          )}
+          {transcript.summary && (
+            <Button
+              variant={copiedSummary ? "default" : "outline"}
+              size="sm"
+              className="hidden md:flex"
+              onClick={handleCopySummary}
+            >
+              {copiedSummary ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+              {copiedSummary ? "Copied!" : "Copy Summary"}
+            </Button>
+          )}
           <Button variant="outline" size="sm" className="hidden md:flex">
             <Download className="w-4 h-4 mr-2" /> Export
           </Button>
-          <Button variant="outline" size="sm" className="hidden md:flex">
-            <Share2 className="w-4 h-4 mr-2" /> Share
-          </Button>
-          <Button size="sm" className="bg-primary text-primary-foreground">
-            <Play className="w-4 h-4 mr-2" /> Play Audio
-          </Button>
+          {transcript.status === "completed" && !transcript.summary && !autoSummarize && (
+            <SummarizeButton transcriptId={id} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
+          )}
         </div>
       </header>
 
       {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden">
+      <main className="flex-1 overflow-y-auto p-4 md:p-8 md:px-16 lg:px-32">
+        <div className="max-w-3xl mx-auto space-y-6">
 
-        {/* Transcript Area */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-8 md:px-16 lg:px-32">
-          <div className="max-w-3xl mx-auto space-y-8">
+          {/* Meta Card */}
+          <div className="flex flex-wrap gap-2">
+            <Badge variant="secondary" className="px-3 py-1 font-normal"><Clock className="w-3 h-3 mr-1.5" /> {transcript.duration}</Badge>
+            <Badge variant="secondary" className="px-3 py-1 font-normal"><Calendar className="w-3 h-3 mr-1.5" /> {transcript.date}</Badge>
+          </div>
 
-            {/* Meta Card */}
-            <div className="flex flex-wrap gap-2 mb-8">
-              <Badge variant="secondary" className="px-3 py-1 font-normal"><Clock className="w-3 h-3 mr-1.5" /> {transcript.duration}</Badge>
-              <Badge variant="secondary" className="px-3 py-1 font-normal"><Calendar className="w-3 h-3 mr-1.5" /> {transcript.date}</Badge>
-            </div>
-
-            {/* Speaker Blocks */}
-            <div className="space-y-8 text-lg leading-relaxed text-foreground/90">
-              <div className="group">
-                <div className="flex items-baseline justify-between mb-2">
-                  <span className="font-semibold text-sm text-blue-600 uppercase tracking-wide">Transcript</span>
-                  {transcript.status === "processing" && transcript.step && (
-                    <span className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="w-4 h-4 animate-spin" />
+          {/* Accordion with Summary and Transcript */}
+          <Accordion type="multiple" value={accordionValue} onValueChange={setAccordionValue} className="space-y-4">
+            {/* Summary Section */}
+            <AccordionItem value="summary" className="border rounded-lg bg-card">
+              <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-primary" />
+                  <span className="font-semibold">Summary</span>
+                  {transcript.step?.includes("Summariz") && (
+                    <span className="flex items-center gap-1 text-xs text-muted-foreground ml-2">
+                      <Loader2 className="w-3 h-3 animate-spin" />
                       {transcript.step}
                     </span>
                   )}
                 </div>
-                <p className="pl-4 border-l-2 border-border/50 whitespace-pre-wrap">
+              </AccordionTrigger>
+              <AccordionContent className="px-4 pb-4">
+                {transcript.summary ? (
+                  <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/90 leading-relaxed">
+                    <ReactMarkdown>{transcript.summary}</ReactMarkdown>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground italic">
+                    {transcript.status === "completed"
+                      ? "No summary yet. Click 'Summarize' in the header to generate one."
+                      : "Summary will be available after transcription completes."}
+                  </p>
+                )}
+              </AccordionContent>
+            </AccordionItem>
+
+            {/* Transcript Section */}
+            <AccordionItem value="transcript" className="border rounded-lg bg-card">
+              <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-blue-600" />
+                  <span className="font-semibold">Transcript</span>
+                  {transcript.status === "processing" && transcript.step && (
+                    <span className="flex items-center gap-1 text-xs text-muted-foreground ml-2">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      {transcript.step}
+                    </span>
+                  )}
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="px-4 pb-4">
+                <p className="text-foreground/90 leading-relaxed whitespace-pre-wrap">
                   {transcriptQuery.isLoading ? (
                     "Loading..."
                   ) : transcript.status === "processing" ? (
-                    <span className="text-muted-foreground italic">
-                      {transcript.step || "Processing..."}
-                    </span>
+                    <span className="text-muted-foreground italic"></span>
                   ) : transcript.content ? (
                     transcript.content
                   ) : (
                     "No transcript text captured."
                   )}
                 </p>
-              </div>
-            </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
 
-          </div>
-        </main>
-
-        {/* Sidebar (Desktop only) */}
-        <aside className="w-80 border-l border-border bg-secondary/10 hidden xl:block p-6 overflow-y-auto">
-          <div className="space-y-6">
-            <div>
-              <h3 className="text-sm font-semibold mb-3">Summary</h3>
-              <p className="text-sm text-muted-foreground leading-relaxed">
-                The meeting covered the Q4 roadmap updates, with a focus on the simplified navigation hierarchy and mobile responsiveness. Designs have been finalized.
-              </p>
-            </div>
-
-            <Separator />
-
-            <div>
-              <h3 className="text-sm font-semibold mb-3">Keywords</h3>
-              <div className="flex flex-wrap gap-2">
-                {["Roadmap", "Q4", "Navigation", "Mobile", "Design", "Feedback"].map(tag => (
-                  <Badge key={tag} variant="secondary" className="cursor-pointer hover:bg-secondary/80">{tag}</Badge>
-                ))}
-              </div>
-            </div>
-
-            <Separator />
-
-            <div>
-              <h3 className="text-sm font-semibold mb-3">Actions</h3>
-              <Button
-                className="w-full mb-2 transition-all duration-200"
-                variant={copied ? "default" : "outline"}
-                onClick={handleCopy}
-              >
-                {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                {copied ? "Copied!" : "Copy Text"}
-              </Button>
-              <Button className="w-full" variant="outline"><Download className="w-4 h-4 mr-2" /> Download PDF</Button>
-            </div>
-          </div>
-        </aside>
-
-      </div>
+        </div>
+      </main>
     </div>
   );
 }

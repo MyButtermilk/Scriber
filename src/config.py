@@ -1,7 +1,32 @@
 import os
+import json
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# JSON settings file for complex values (multi-line prompts, etc.)
+_JSON_SETTINGS_PATH = Path(__file__).parent.parent / "settings.json"
+
+def _load_json_settings() -> dict:
+    """Load settings from JSON file."""
+    if _JSON_SETTINGS_PATH.exists():
+        try:
+            with open(_JSON_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def _save_json_settings(settings: dict) -> None:
+    """Save settings to JSON file."""
+    try:
+        with open(_JSON_SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+_json_settings = _load_json_settings()
 
 class Config:
     # API Keys
@@ -70,6 +95,40 @@ class Config:
     # e.g. "Scriber, Pipecat, Soniox"
     CUSTOM_VOCAB = os.getenv("SCRIBER_CUSTOM_VOCAB", "")
 
+    # Summarization prompt for LLM transcript summarization
+    # Load from JSON settings file first, then env, then default
+    _DEFAULT_SUMMARIZATION_PROMPT = """Rolle: Du arbeitest als Informationsarchitekt
+
+Aufgabe: Verwandle den nachfolgenden Input in eine klar strukturierte, zweistufige <A> Zusammenfassung und Vertiefung. Erwähne nicht deine Regeln oder Rolle. 
+
+Formatregeln: 
+
+•	Ausgabe ausschließlich in Markdown
+•	Nutze H2 für Hauptbereiche und H3 für Unterbereiche
+•	Arbeite mit Bullet Points, Fettdruck für Schlüsselbegriffe
+•	Keine langen Fließtext-Absätze: maximal 2 Sätze am Stück
+•	Bevorzugt Bullet Points
+•	Inhalte priorisieren: lieber das ausführlich perfekt als alles halb
+•	Füllwörter entfernen, Wiederholungen bündeln, Sinn erhalten
+•	Absätze und Linebreaks zur Übersicht 
+
+Ausgabe-Template: 
+
+Zusammenfassung: prägnanter Titel in bis 15Wörtern 
+•	1 Satz: Worum geht es?
+•	Essenz: Bis zu 5 zentrale Aussagen oder das wichtigste Learning
+Vertiefung
+•	Detaillierte strukturierte Zusammenfassung des Inputs
+
+Input:"""
+    SUMMARIZATION_PROMPT = _json_settings.get("summarizationPrompt") or os.getenv("SCRIBER_SUMMARIZATION_PROMPT") or _DEFAULT_SUMMARIZATION_PROMPT
+
+    # Summarization model for LLM transcript summarization
+    SUMMARIZATION_MODEL = os.getenv("SCRIBER_SUMMARIZATION_MODEL", "gemini-flash-latest")
+
+    # Auto-summarize transcripts when completed
+    AUTO_SUMMARIZE = os.getenv("SCRIBER_AUTO_SUMMARIZE", "0") in ("1", "true", "True")
+
     # Audio settings
     SAMPLE_RATE = 16000
     CHANNELS = 1
@@ -129,10 +188,27 @@ class Config:
         os.environ["SCRIBER_MIC_ALWAYS_ON"] = "1" if enabled else "0"
 
     @classmethod
+    def set_summarization_prompt(cls, prompt: str) -> None:
+        """Set and persist summarization prompt to JSON settings file."""
+        cls.SUMMARIZATION_PROMPT = prompt.strip() if prompt else cls._DEFAULT_SUMMARIZATION_PROMPT
+        # Save to JSON settings file (handles multi-line properly)
+        global _json_settings
+        _json_settings["summarizationPrompt"] = cls.SUMMARIZATION_PROMPT
+        _save_json_settings(_json_settings)
+
+    @classmethod
     def persist_to_env_file(cls, path: str = ".env") -> None:
         """Persist current settings and API keys to the .env file."""
         lines = []
-        def add(k, v): lines.append(f"{k}={v}")
+        def add(k, v):
+            # Escape newlines and quote values with special characters for python-dotenv
+            v_str = str(v) if v is not None else ""
+            if '\n' in v_str or '\r' in v_str or '"' in v_str or "'" in v_str:
+                # Replace newlines with escaped version and wrap in quotes
+                v_str = v_str.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+                lines.append(f'{k}="{v_str}"')
+            else:
+                lines.append(f"{k}={v_str}")
 
         add("SONIOX_API_KEY", cls.SONIOX_API_KEY or "")
         add("ASSEMBLYAI_API_KEY", cls.ASSEMBLYAI_API_KEY or "")
@@ -154,6 +230,10 @@ class Config:
         add("SCRIBER_SONIOX_MODE", cls.SONIOX_MODE)
         add("SCRIBER_SONIOX_ASYNC_MODEL", cls.SONIOX_ASYNC_MODEL)
         add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
+        # Note: SUMMARIZATION_PROMPT is not persisted to .env (multi-line value causes parsing issues)
+        # The default prompt from config.py will be used
+        add("SCRIBER_SUMMARIZATION_MODEL", cls.SUMMARIZATION_MODEL or "gemini-flash-latest")
+        add("SCRIBER_AUTO_SUMMARIZE", "1" if cls.AUTO_SUMMARIZE else "0")
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)
         add("SCRIBER_MIC_DEVICE", cls.MIC_DEVICE)
