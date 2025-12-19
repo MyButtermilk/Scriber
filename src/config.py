@@ -129,6 +129,9 @@ Input:"""
     # Auto-summarize transcripts when completed
     AUTO_SUMMARIZE = os.getenv("SCRIBER_AUTO_SUMMARIZE", "0") in ("1", "true", "True")
 
+    # OpenAI Speech-to-Text model
+    OPENAI_STT_MODEL = os.getenv("SCRIBER_OPENAI_STT_MODEL", "gpt-4o-mini-transcribe-2025-12-15")
+
     # Audio settings
     SAMPLE_RATE = 16000
     CHANNELS = 1
@@ -176,6 +179,11 @@ Input:"""
     def set_language(cls, code: str) -> None:
         cls.LANGUAGE = code
         os.environ["SCRIBER_LANGUAGE"] = code
+
+    @classmethod
+    def set_openai_stt_model(cls, model: str) -> None:
+        cls.OPENAI_STT_MODEL = model.strip()
+        os.environ["SCRIBER_OPENAI_STT_MODEL"] = cls.OPENAI_STT_MODEL
 
     @classmethod
     def set_mic_device(cls, device: str) -> None:
@@ -236,6 +244,7 @@ Input:"""
         add("SCRIBER_AUTO_SUMMARIZE", "1" if cls.AUTO_SUMMARIZE else "0")
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)
+        add("SCRIBER_OPENAI_STT_MODEL", cls.OPENAI_STT_MODEL)
         add("SCRIBER_MIC_DEVICE", cls.MIC_DEVICE)
         add("SCRIBER_MIC_ALWAYS_ON", "1" if cls.MIC_ALWAYS_ON else "0")
         add("SCRIBER_INJECT_METHOD", cls.INJECT_METHOD)

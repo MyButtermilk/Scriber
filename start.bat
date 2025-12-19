@@ -38,10 +38,14 @@ if %errorlevel% neq 0 (
 REM 4. Install Dependencies (re-run when requirements.txt changes)
 set "REQ_HASH="
 for /f %%h in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-FileHash -Algorithm SHA256 requirements.txt).Hash"') do set "REQ_HASH=%%h"
+set "REQ_HASH=!REQ_HASH: =!"
+set "REQ_HASH=!REQ_HASH:	=!"
 set "HASH_FILE=venv\requirements.sha256"
 set "OLD_HASH="
 if exist "%HASH_FILE%" (
-    set /p OLD_HASH=<"%HASH_FILE%"
+    for /f "usebackq delims=" %%h in ("%HASH_FILE%") do set "OLD_HASH=%%h"
+    set "OLD_HASH=!OLD_HASH: =!"
+    set "OLD_HASH=!OLD_HASH:	=!"
 )
 if "%REQ_HASH%"=="" (
     echo [WARN] Could not compute requirements hash. Installing dependencies...
@@ -59,7 +63,7 @@ if "%REQ_HASH%"=="" (
         pause
         exit /b
     )
-    echo !REQ_HASH! > "%HASH_FILE%"
+    > "%HASH_FILE%" (echo(!REQ_HASH!)
 ) else (
     echo [INFO] Dependencies up to date. Skipping...
 )

@@ -1,5 +1,12 @@
 import asyncio
 import aiohttp
+import subprocess
+import shutil
+import io
+import wave
+import contextlib
+import tempfile
+import os
 from loguru import logger
 from typing import Callable, Optional
 
@@ -7,6 +14,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.frames.frames import (
     InputAudioRawFrame,
     InterimTranscriptionFrame,
@@ -31,6 +39,14 @@ try:
 except ImportError:
     HAS_SMART_TURN = False
     logger.warning("LocalSmartTurnAnalyzerV3 or UserIdleProcessor not available")
+
+try:
+    from pipecat.audio.vad.silero import SileroVADAnalyzer
+    HAS_SILERO_VAD = True
+except Exception:
+    SileroVADAnalyzer = None
+    HAS_SILERO_VAD = False
+    logger.warning("Silero VAD not available; segmented STT may produce no transcripts")
 
 try:
     from pipecat.services.soniox.stt import SonioxSTTService, SonioxInputParams, SonioxContextObject
@@ -211,12 +227,14 @@ class SonioxAsyncProcessor(FrameProcessor):
         For WebM we first wrap the PCM into a temp WAV so ffmpeg knows the duration
         and writes proper metadata (more reliable than piping raw PCM).
         """
-        import subprocess, shutil, io, wave, contextlib, tempfile, os
 
         sr = self._sample_rate or 16000
         ch = self._channels or 1
 
         if prefer_webm and shutil.which("ffmpeg"):
+            wav_path = None
+            webm_path = None
+            remux_path = None
             try:
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
                     with contextlib.closing(wave.open(wav_file, "wb")) as wf:
@@ -240,7 +258,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                     "-ar",
                     "48000",
                     "-ac",
-                    str(ch),
+                    "1",  # Always output mono for Opus (multi-channel not well supported)
                     "-b:a",
                     "32k",
                     "-application",
@@ -275,9 +293,9 @@ class SonioxAsyncProcessor(FrameProcessor):
             except Exception as e:
                 logger.warning(f"WebM encode failed ({e}); falling back to WAV")
             finally:
-                for p in ("wav_path", "webm_path", "remux_path"):
+                # Direct variable cleanup - more efficient than locals().get()
+                for fp in (wav_path, webm_path, remux_path):
                     try:
-                        fp = locals().get(p)
                         if fp and os.path.exists(fp):
                             os.remove(fp)
                     except Exception:
@@ -412,7 +430,12 @@ class ScriberPipeline:
             return DeepgramSTTService(api_key=_get_api_key("deepgram"))
         elif self.service_name == "openai":
             if not _get_api_key("openai"): raise ValueError("OpenAI API Key is missing.")
-            return OpenAISTTService(api_key=_get_api_key("openai"), aiohttp_session=session, language=_selected_language())
+            return OpenAISTTService(
+                api_key=_get_api_key("openai"),
+                aiohttp_session=session,
+                language=_selected_language(),
+                model=Config.OPENAI_STT_MODEL,
+            )
         elif self.service_name == "azure":
             if not Config.AZURE_SPEECH_KEY or not Config.AZURE_SPEECH_REGION: raise ValueError("Azure Speech Key or Region is missing.")
             lang = Language.EN_US if Config.LANGUAGE == "en" else _selected_language()
@@ -443,11 +466,19 @@ class ScriberPipeline:
                 if smart_turn:
                     logger.info("Enabling SmartTurn V3")
 
+                vad_analyzer = None
+                if isinstance(stt_service, SegmentedSTTService):
+                    if HAS_SILERO_VAD and SileroVADAnalyzer:
+                        vad_analyzer = SileroVADAnalyzer()
+                    else:
+                        logger.warning("Segmented STT requires VAD; transcripts may be empty.")
+
                 # Always use our custom MicrophoneInput to support on_audio_level callback
                 self.audio_input = MicrophoneInput(
                     sample_rate=Config.SAMPLE_RATE,
                     channels=Config.CHANNELS,
                     turn_analyzer=smart_turn,
+                    vad_analyzer=vad_analyzer,
                     device=Config.MIC_DEVICE,
                     keep_alive=Config.MIC_ALWAYS_ON,
                     on_audio_level=self.on_audio_level,
@@ -506,10 +537,18 @@ class ScriberPipeline:
             async with aiohttp.ClientSession() as session:
                 stt_service = self._create_stt_service(session)
 
+                vad_analyzer = None
+                if isinstance(stt_service, SegmentedSTTService):
+                    if HAS_SILERO_VAD and SileroVADAnalyzer:
+                        vad_analyzer = SileroVADAnalyzer()
+                    else:
+                        logger.warning("Segmented STT requires VAD; transcripts may be empty.")
+
                 file_input = FfmpegAudioFileInput(
                     file_path,
                     sample_rate=Config.SAMPLE_RATE,
                     channels=Config.CHANNELS,
+                    vad_analyzer=vad_analyzer,
                 )
 
                 transcript_cb = (

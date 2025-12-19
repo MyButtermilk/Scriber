@@ -13,3 +13,4 @@ customtkinter
 pillow
 numpy
 yt-dlp
+PySide6

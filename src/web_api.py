@@ -1,12 +1,14 @@
 import asyncio
 import json
 import os
+import re
 import signal
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
@@ -16,9 +18,107 @@ from src.config import Config
 from src.pipeline import ScriberPipeline
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
+from src.overlay import get_overlay, show_recording_overlay, show_transcribing_overlay, hide_recording_overlay, update_overlay_audio
 
 TranscriptStatus = Literal["completed", "processing", "failed", "recording"]
 TranscriptType = Literal["mic", "youtube", "file"]
+
+_ALLOWED_ORIGINS_ENV = "SCRIBER_ALLOWED_ORIGINS"
+_UPLOAD_MAX_BYTES_ENV = "SCRIBER_UPLOAD_MAX_BYTES"
+_UPLOAD_MAX_MB_ENV = "SCRIBER_UPLOAD_MAX_MB"
+_DEFAULT_UPLOAD_MAX_MB = 200
+
+_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9",
+}
+
+
+def _safe_upload_filename(name: str) -> str:
+    raw = (name or "").strip()
+    base = Path(raw).name
+    base = _INVALID_FILENAME_CHARS.sub("_", base).rstrip(" .")
+    if not base or base in {".", ".."}:
+        return "uploaded_file"
+    stem = Path(base).stem
+    if stem.upper() in _WINDOWS_RESERVED_NAMES:
+        base = f"_{base}"
+    return base
+
+
+def _parse_allowed_origins() -> list[str]:
+    raw = os.getenv(_ALLOWED_ORIGINS_ENV, "")
+    if not raw:
+        return []
+    cleaned: list[str] = []
+    for entry in raw.split(","):
+        val = entry.strip().rstrip("/")
+        if val:
+            cleaned.append(val)
+    return cleaned
+
+
+def _origin_allowed(origin: str) -> bool:
+    origin = (origin or "").strip()
+    if not origin:
+        return False
+    allowed = _parse_allowed_origins()
+    if "*" in allowed:
+        return True
+    if allowed:
+        return origin in allowed
+    parsed = urlparse(origin)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _get_upload_max_bytes() -> int:
+    raw_bytes = os.getenv(_UPLOAD_MAX_BYTES_ENV, "").strip()
+    if raw_bytes:
+        try:
+            value = int(raw_bytes)
+            if value > 0:
+                return value
+        except Exception:
+            pass
+    raw_mb = os.getenv(_UPLOAD_MAX_MB_ENV, "").strip()
+    if raw_mb:
+        try:
+            value = float(raw_mb)
+            if value > 0:
+                return int(value * 1024 * 1024)
+        except Exception:
+            pass
+    return _DEFAULT_UPLOAD_MAX_MB * 1024 * 1024
+
+
+def _format_upload_limit(limit_bytes: int) -> str:
+    return f"{limit_bytes / (1024 * 1024):.0f}MB"
 
 
 def _format_duration(seconds: float) -> str:
@@ -168,6 +268,11 @@ class ScriberWebController:
 
         self._downloads_dir = Path(os.getenv("SCRIBER_DOWNLOADS_DIR", "downloads")).resolve()
 
+        # Initialize native overlay for system-wide recording popup
+        self._overlay = get_overlay(on_stop=lambda: self._loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(self.stop_listening())
+        ))
+
     def get_state(self) -> dict[str, Any]:
         return {
             "listening": self._is_listening,
@@ -187,15 +292,22 @@ class ScriberWebController:
         msg = json.dumps(payload, ensure_ascii=False)
         async with self._clients_lock:
             clients = list(self._clients)
-        dead: list[web.WebSocketResponse] = []
-        for ws in clients:
+        if not clients:
+            return
+        
+        async def send_safe(ws: web.WebSocketResponse):
+            """Send message to client, return ws if failed or closed."""
             if ws.closed:
-                dead.append(ws)
-                continue
+                return ws
             try:
                 await ws.send_str(msg)
+                return None
             except Exception:
-                dead.append(ws)
+                return ws
+        
+        # Send to all clients in parallel
+        results = await asyncio.gather(*[send_safe(ws) for ws in clients], return_exceptions=True)
+        dead = [r for r in results if r is not None and isinstance(r, web.WebSocketResponse)]
         if dead:
             async with self._clients_lock:
                 for ws in dead:
@@ -216,6 +328,8 @@ class ScriberWebController:
         if now - self._last_audio_broadcast < 0.05:
             return
         self._last_audio_broadcast = now
+        # Update native overlay waveform
+        update_overlay_audio(rms)
         self._loop.call_soon_threadsafe(
             lambda: asyncio.create_task(self.broadcast({"type": "audio_level", "rms": float(rms)}))
         )
@@ -513,11 +627,18 @@ class ScriberWebController:
         self._pipeline_task.add_done_callback(self._on_pipeline_done)
         self._is_listening = True
         self._set_status("Listening")
+        # Show native overlay
+        show_recording_overlay()
         await self.broadcast({"type": "session_started", "session": rec.to_public(include_content=True)})
 
     async def stop_listening(self) -> None:
         if not self._is_listening:
             return
+        
+        # Show transcribing state before stopping pipeline
+        show_transcribing_overlay()
+        await self.broadcast({"type": "transcribing"})
+        
         try:
             if self._pipeline:
                 await self._pipeline.stop()
@@ -532,6 +653,8 @@ class ScriberWebController:
             self._pipeline = None
             self._pipeline_task = None
             self._set_status("Stopped")
+            # Hide native overlay after transcription complete
+            hide_recording_overlay()
 
             if self._current:
                 self._current.finish("completed")
@@ -623,6 +746,7 @@ class ScriberWebController:
             "summarizationPrompt": Config.SUMMARIZATION_PROMPT or "",
             "summarizationModel": Config.SUMMARIZATION_MODEL or "gemini-flash-latest",
             "autoSummarize": bool(Config.AUTO_SUMMARIZE),
+            "openaiSttModel": Config.OPENAI_STT_MODEL,
             "apiKeys": {
                 "soniox": Config.SONIOX_API_KEY or "",
                 "assemblyai": Config.ASSEMBLYAI_API_KEY or "",
@@ -690,6 +814,9 @@ class ScriberWebController:
         if "autoSummarize" in payload:
             Config.AUTO_SUMMARIZE = bool(payload["autoSummarize"])
             os.environ["SCRIBER_AUTO_SUMMARIZE"] = "1" if Config.AUTO_SUMMARIZE else "0"
+
+        if "openaiSttModel" in payload and isinstance(payload["openaiSttModel"], str):
+            Config.set_openai_stt_model(payload["openaiSttModel"])
 
         api_keys = payload.get("apiKeys")
         if isinstance(api_keys, dict):
@@ -777,6 +904,10 @@ class ScriberWebController:
 
 @web.middleware
 async def cors_middleware(request: web.Request, handler):
+    origin = request.headers.get("Origin")
+    if origin and not _origin_allowed(origin):
+        return web.json_response({"message": "Origin not allowed"}, status=403)
+
     if request.method == "OPTIONS":
         resp = web.Response(status=204)
     else:
@@ -785,7 +916,6 @@ async def cors_middleware(request: web.Request, handler):
         except web.HTTPException as exc:
             resp = exc
 
-    origin = request.headers.get("Origin")
     if origin:
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Vary"] = "Origin"
@@ -814,6 +944,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
         return web.json_response({"ok": True})
 
     async def ws_handler(request: web.Request):
+        origin = request.headers.get("Origin")
+        if origin and not _origin_allowed(origin):
+            return web.json_response({"message": "Origin not allowed"}, status=403)
+
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         ctl: ScriberWebController = request.app["controller"]
@@ -980,6 +1114,13 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Expected multipart/form-data"}, status=400)
 
         try:
+            max_bytes = _get_upload_max_bytes()
+            limit_label = _format_upload_limit(max_bytes)
+            if request.content_length is not None and request.content_length > max_bytes:
+                return web.json_response(
+                    {"message": f"File too large (max {limit_label})."}, status=413
+                )
+
             reader = await request.multipart()
             file_field = None
             original_filename = "uploaded_file"
@@ -995,7 +1136,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
             # Validate file extension
             allowed_extensions = {".mp3", ".m4a", ".wav", ".mp4", ".mov", ".webm", ".ogg", ".flac", ".aac"}
-            ext = Path(original_filename).suffix.lower()
+            safe_filename = _safe_upload_filename(original_filename)
+            ext = Path(safe_filename).suffix.lower()
             if ext not in allowed_extensions:
                 return web.json_response(
                     {"message": f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(allowed_extensions))}"},
@@ -1006,18 +1148,34 @@ def create_app(controller: ScriberWebController) -> web.Application:
             file_id = uuid4().hex
             save_dir = ctl._downloads_dir / "files" / file_id
             save_dir.mkdir(parents=True, exist_ok=True)
-            save_path = save_dir / original_filename
+            save_path = save_dir / safe_filename
 
             # Stream file to disk
+            bytes_read = 0
+            too_large = False
             with open(save_path, "wb") as f:
                 while True:
                     chunk = await file_field.read_chunk(size=1024 * 1024)  # 1MB chunks
                     if not chunk:
                         break
+                    bytes_read += len(chunk)
+                    if bytes_read > max_bytes:
+                        too_large = True
+                        break
                     f.write(chunk)
 
+            if too_large:
+                try:
+                    import shutil
+
+                    if save_dir.exists():
+                        shutil.rmtree(save_dir)
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to cleanup oversized upload: {cleanup_err}")
+                return web.json_response({"message": f"File too large (max {limit_label})."}, status=413)
+
             # Start transcription
-            rec = await ctl.start_file_transcription(save_path, original_filename)
+            rec = await ctl.start_file_transcription(save_path, safe_filename)
             return web.json_response(rec.to_public(include_content=True))
 
         except ValueError as exc:

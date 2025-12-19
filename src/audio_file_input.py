@@ -25,12 +25,14 @@ class FfmpegAudioFileInput(BaseInputTransport):
         sample_rate: int = 16000,
         channels: int = 1,
         block_size: int = 1024,
+        vad_analyzer=None,
     ):
         params = TransportParams(
             audio_in_enabled=True,
             audio_in_sample_rate=int(sample_rate),
             audio_in_channels=int(channels),
             audio_in_passthrough=True,
+            vad_analyzer=vad_analyzer,
         )
         super().__init__(params=params)
         self._file_path = str(Path(file_path).expanduser().resolve())

@@ -1,0 +1,12 @@
+{
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "DeepGraph Vue MCP",
+    "context7"
+  ],
+  "permissions": {
+    "allow": [
+      "Bash(test:*)"
+    ]
+  }
+}
