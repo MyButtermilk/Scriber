@@ -1,208 +1,204 @@
-# Scriber - AI-Powered Voice Transcription & Summarization
+# Scriber
 
-Scriber is a comprehensive AI-driven voice transcription application with a modern web interface. It supports **live microphone dictation**, **YouTube video transcription**, and **audio/video file transcription** with automatic LLM-powered summarization.
+Scriber is an AI-powered voice transcription app with both a modern web UI and a
+simple desktop UI. It supports live dictation, YouTube transcription, and file
+transcription, with optional LLM summaries.
 
-## Features
+## What it does
 
-### 🎤 Live Microphone Recording
-- Real-time speech-to-text with live audio visualization
-- System-wide dictation with global hotkey (`Ctrl+Alt+S`)
-- Multiple injection modes: auto, type, or paste
+- Live microphone dictation with a global hotkey and optional overlay.
+- Text injection into the active app (type, paste, or auto).
+- YouTube transcription via yt-dlp (search or URL).
+- Audio/video file transcription (mp3, wav, m4a, mp4, webm, etc.).
+- Summaries via OpenAI or Google Gemini.
+- Multiple STT providers through a single pipeline.
 
-### 📺 YouTube Transcription
-- Search YouTube videos directly from the app
-- Paste any YouTube URL to transcribe
-- Automatic audio download via `yt-dlp`
+## Quick start
 
-### 📁 File Transcription
-- Upload audio/video files (MP3, WAV, M4A, MP4, WebM, etc.)
-- Drag-and-drop or click to select files
-- Direct upload to STT API for efficient processing
+### Windows (one click)
 
-### ✨ AI Summarization
-- Automatic or manual summarization of transcripts
-- Supports **OpenAI GPT** and **Google Gemini** models
-- Customizable summarization prompt (supports Markdown output)
-- Summaries rendered with proper formatting (headers, bullets, bold text)
+1. Run `start.bat`.
+2. It creates a venv, installs deps, and prompts for API keys on first run.
+3. Web UI opens at `http://localhost:5000`.
 
-### 🎯 Multi-Engine STT Support
-| Service | Type | Notes |
-|---------|------|-------|
-| **Soniox** | Streaming/Async | Ultra-low latency, custom vocabulary |
-| **AssemblyAI** | Streaming | High accuracy with punctuation |
-| **Deepgram** | Streaming | Fast and cost-effective |
-| **OpenAI Whisper** | Batch | High accuracy |
-| **Azure Speech** | Streaming | Microsoft enterprise STT |
-| **Gladia** | Streaming | Audio intelligence API |
-| **Groq** | Batch | Fast Whisper inference |
-| **Speechmatics** | Streaming | Specialized ASR |
-| **Google Cloud STT** | Streaming | Enterprise-grade |
-| **ElevenLabs** | Batch | Scribe model integration |
+### Linux / macOS
 
----
+1. Run `start.sh`.
+2. It creates a venv and installs deps.
+3. Starts the desktop UI by default.
 
-## Quick Start
+### Manual setup
 
-### Windows (One-Click)
-1. Download the repository
-2. Double-click `start.bat`
-   - Automatically sets up Python environment
-   - Installs dependencies
-   - Prompts for API keys
-3. Access the web UI at `http://localhost:5000`
-
-### Manual Installation
 ```bash
-# Clone repository
-git clone https://github.com/YourUsername/Scriber.git
-cd Scriber
+python -m venv venv
+# Windows
+venv\Scripts\activate
+# macOS/Linux
+source venv/bin/activate
 
-# Install Python dependencies
 pip install -r requirements.txt
 
-# Start the backend
+# Web UI backend
 python -m src.web_api
 
-# In a new terminal, start the frontend
+# In another terminal (web UI frontend)
 cd Frontend
 npm install
 npm run dev:client
 ```
 
----
+Backend defaults to `http://127.0.0.1:8765` and the web UI to
+`http://localhost:5000` (see `start.bat`).
 
-## Architecture
+## Usage
+
+- Hotkey mode: `toggle` or `push_to_talk`.
+- Injection: `auto` (Word/Outlook paste), `type`, or `paste`.
+- Summaries: auto or manual per transcript.
+- Transcripts are stored in memory (not persisted) and broadcast via WebSocket.
+
+## Project layout
 
 ```
 Scriber/
-├── src/                    # Python Backend
-│   ├── web_api.py          # HTTP/WebSocket API server (aiohttp)
-│   ├── pipeline.py         # Multi-engine STT pipeline (Pipecat)
-│   ├── summarization.py    # LLM summarization (OpenAI/Gemini)
-│   ├── youtube_api.py      # YouTube Data API integration
-│   ├── youtube_download.py # Audio download via yt-dlp
-│   ├── config.py           # Configuration management
-│   ├── main.py             # Desktop app entry point
-│   └── ...
-├── Frontend/               # React Web UI
-│   └── client/src/pages/
-│       ├── LiveMic.tsx     # Live microphone recording
-│       ├── Youtube.tsx     # YouTube search & transcription
-│       ├── FileTranscribe.tsx # File upload transcription
-│       ├── TranscriptDetail.tsx # View transcript & summary
-│       └── Settings.tsx    # API keys & preferences
-├── settings.json           # Persistent settings (summarization prompt)
-├── .env                    # API keys and configuration
-├── start.bat               # Windows launcher
-└── start.sh                # Linux/Mac launcher
+  src/                  Python backend + desktop UI
+    main.py             Tkinter entry point (desktop UI)
+    web_api.py          aiohttp HTTP + WebSocket API
+    pipeline.py         STT pipeline orchestration (Pipecat)
+    microphone.py       audio input (sounddevice)
+    audio_file_input.py file input (ffmpeg)
+    injector.py         text injection
+    summarization.py    OpenAI/Gemini summaries
+    youtube_api.py      YouTube Data API
+    youtube_download.py yt-dlp integration
+    overlay.py          recording overlay (Qt/Tk fallback)
+    config.py           env + settings.json loader
+  Frontend/             React 19 web UI (Vite 7, Tailwind v4, shadcn/ui)
+  tests/                pytest tests
+  settings.json         multi-line settings (summarization prompt)
+  .env                  local configuration
 ```
-
----
 
 ## Configuration
 
-### API Keys (`.env` file)
+### .env (backend)
+
 ```env
-# STT Services (at least one required)
-SONIOX_API_KEY=your_key
-ASSEMBLYAI_API_KEY=your_key
-DEEPGRAM_API_KEY=your_key
-OPENAI_API_KEY=your_key
-AZURE_SPEECH_KEY=your_key
-AZURE_SPEECH_REGION=westus
-GLADIA_API_KEY=your_key
-GROQ_API_KEY=your_key
-SPEECHMATICS_API_KEY=your_key
-ELEVENLABS_API_KEY=your_key
-GOOGLE_APPLICATION_CREDENTIALS=path/to/json
-GOOGLE_API_KEY=your_gemini_key
+# STT providers
+SONIOX_API_KEY=
+ASSEMBLYAI_API_KEY=
+DEEPGRAM_API_KEY=
+OPENAI_API_KEY=
+AZURE_SPEECH_KEY=
+AZURE_SPEECH_REGION=
+GLADIA_API_KEY=
+GROQ_API_KEY=
+SPEECHMATICS_API_KEY=
+ELEVENLABS_API_KEY=
+GOOGLE_APPLICATION_CREDENTIALS=
+GOOGLE_API_KEY=
+YOUTUBE_API_KEY=
 
-# YouTube (for YouTube tab)
-YOUTUBE_API_KEY=your_key
-
-# App Settings
+# App behavior
 SCRIBER_DEFAULT_STT=soniox
 SCRIBER_HOTKEY=ctrl+alt+s
-SCRIBER_MODE=toggle              # toggle or push_to_talk
-SCRIBER_INJECT_METHOD=auto       # auto, type, paste
-SCRIBER_LANGUAGE=auto            # auto, en, de, fr, es, it, pt, nl
-SCRIBER_AUTO_SUMMARIZE=0         # 1 to enable auto-summarization
+SCRIBER_MODE=toggle
+SCRIBER_INJECT_METHOD=auto
+SCRIBER_LANGUAGE=auto
+SCRIBER_MIC_DEVICE=default
+SCRIBER_MIC_ALWAYS_ON=0
+SCRIBER_DEBUG=0
+
+# OpenAI STT model override
+SCRIBER_OPENAI_STT_MODEL=gpt-4o-mini-transcribe-2025-12-15
+
+# Summarization
+SCRIBER_AUTO_SUMMARIZE=0
 SCRIBER_SUMMARIZATION_MODEL=gemini-flash-latest
+
+# Paste tuning (Windows)
+SCRIBER_PASTE_PRE_DELAY_MS=80
+SCRIBER_PASTE_RESTORE_DELAY_MS=1500
+
+# Web API (optional)
+SCRIBER_WEB_HOST=127.0.0.1
+SCRIBER_WEB_PORT=8765
+SCRIBER_ALLOWED_ORIGINS=
+SCRIBER_UPLOAD_MAX_MB=200
 ```
 
-### Settings JSON (`settings.json`)
-Complex settings like the summarization prompt are stored in JSON for proper multi-line support:
+### settings.json
+
+Used for multi-line values such as the summarization prompt:
+
 ```json
 {
-  "summarizationPrompt": "Your custom prompt here..."
+  "summarizationPrompt": "Your custom prompt here"
 }
 ```
 
----
+## Web API
 
-## Web UI Features
-
-### Transcript Detail View
-- **Summary Section**: Expanded by default when available, with Markdown rendering
-- **Transcript Section**: Full text with paragraph breaks
-- **Copy Buttons**: Separate buttons for copying transcript and summary
-- **Progress Indicators**: Real-time status (Downloading, Transcribing, Summarizing)
-- **Summarize Button**: Manual summarization (hidden when auto-summarize is enabled)
-
-### Settings Page
-- Configure API keys for all STT services
-- Select default STT provider
-- Set hotkey, language, and injection method
-- Enable/disable auto-summarization
-- Choose summarization model (GPT or Gemini)
-- Customize summarization prompt
-
----
-
-## Requirements
-
-- **OS**: Windows 10/11 (recommended), Linux/Mac supported
-- **Python**: 3.10+
-- **Node.js**: 18+ (for frontend)
-- **FFmpeg**: Required for audio processing
-- **yt-dlp**: Required for YouTube audio download
-
----
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/settings` | Get current settings |
-| `PUT` | `/api/settings` | Update settings |
-| `GET` | `/api/microphones` | List available microphones |
-| `GET` | `/api/transcripts` | List all transcripts |
-| `GET` | `/api/transcripts/:id` | Get transcript details |
-| `DELETE` | `/api/transcripts/:id` | Delete a transcript |
-| `POST` | `/api/transcripts/:id/summarize` | Generate summary |
-| `POST` | `/api/youtube/search` | Search YouTube videos |
-| `POST` | `/api/youtube/transcribe` | Start YouTube transcription |
-| `POST` | `/api/transcribe/file` | Upload file for transcription |
-| `WS` | `/ws` | WebSocket for real-time updates |
-
----
+- `GET /api/health`
+- `GET /api/settings`, `PUT /api/settings`
+- `GET /api/microphones`
+- `GET /api/transcripts`
+- `GET /api/transcripts/:id`
+- `DELETE /api/transcripts/:id`
+- `POST /api/transcripts/:id/summarize`
+- `GET /api/youtube/search`
+- `GET /api/youtube/video`
+- `POST /api/youtube/transcribe`
+- `POST /api/file/transcribe`
+- `WS /ws` (realtime updates)
 
 ## Development
 
+### Backend
+
 ```bash
-# Run backend with debug logging
 python -m src.web_api
-
-# Run frontend in development mode
-cd Frontend
-npm run dev:client      # Starts on http://localhost:5000
-
-# Run tests
-pytest tests/
+python -m src.main
+python check_imports.py
+pytest
 ```
 
----
+### Frontend
+
+```bash
+cd Frontend
+npm install
+npm run dev:client
+npm run dev
+npm run check
+npm run build
+npm start
+npm run db:push
+```
+
+## Common tasks
+
+### Add a new STT provider
+
+1. Add SDK to `requirements.txt`.
+2. Add env + labels in `src/config.py`.
+3. Add provider in `ScriberPipeline._create_stt_service()`.
+4. Add UI option and key field in the frontend settings page.
+
+### Change summarization
+
+- Update `settings.json` for the prompt.
+- Set `SCRIBER_SUMMARIZATION_MODEL` in `.env`.
+- Add models in `src/summarization.py` if needed.
+
+## Troubleshooting
+
+- No transcripts: confirm the API key and selected provider, then try with
+  `SCRIBER_DEBUG=1` and check backend logs.
+- Hotkey not working: on Windows, the `keyboard` module may require admin.
+- FFmpeg not found: install FFmpeg and ensure it is on PATH.
+- YouTube download errors: update yt-dlp (`pip install -U yt-dlp`).
 
 ## License
 
-MIT License
+MIT
