@@ -61,9 +61,7 @@ const AudioWaveform = memo(function AudioWaveform({ audioLevels }: { audioLevels
                             height: barHeight,
                         }}
                         transition={{
-                            type: "spring",
-                            stiffness: 300,
-                            damping: 20,
+                            duration: 0,
                         }}
                         style={{
                             width: 2.5,
@@ -132,7 +130,57 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
     const [isTranscribing, setIsTranscribing] = useState(false);
     const [audioLevels, setAudioLevels] = useState<number[]>(Array(BAR_COUNT).fill(0.12));
     const wsRef = useRef<WebSocket | null>(null);
-    const audioLevelsRef = useRef<number[]>(Array(BAR_COUNT).fill(0.12));
+
+    // CAVA-style state refs
+    const levelsRef = useRef<number[]>(Array(BAR_COUNT).fill(0));  // Target levels
+    const displayRef = useRef<number[]>(Array(BAR_COUNT).fill(0.12));  // Displayed levels
+    const fallRef = useRef<number[]>(Array(BAR_COUNT).fill(0));  // Fall velocities
+    const agcRef = useRef(0.02);  // Auto-gain control
+    const animFrameRef = useRef<number | null>(null);
+
+    // CAVA-style animation loop
+    useEffect(() => {
+        const gravity = 0.8;
+        const riseSpeed = 0.6;
+
+        const animate = () => {
+            const levels = levelsRef.current;
+            const display = displayRef.current;
+            const fall = fallRef.current;
+            let changed = false;
+
+            for (let i = 0; i < BAR_COUNT; i++) {
+                const target = levels[i];
+                const current = display[i];
+
+                if (target > current) {
+                    // Fast rise
+                    display[i] = current + (target - current) * riseSpeed;
+                    fall[i] = 0;
+                    changed = true;
+                } else if (current > 0.12) {
+                    // Gravity fall
+                    fall[i] += gravity * 0.016;
+                    display[i] = Math.max(0.12, current - fall[i]);
+                    changed = true;
+                }
+            }
+
+            if (changed) {
+                setAudioLevels([...display]);
+            }
+
+            animFrameRef.current = requestAnimationFrame(animate);
+        };
+
+        animFrameRef.current = requestAnimationFrame(animate);
+
+        return () => {
+            if (animFrameRef.current) {
+                cancelAnimationFrame(animFrameRef.current);
+            }
+        };
+    }, []);
 
     useEffect(() => {
         const ws = new WebSocket(wsUrl("/ws"));
@@ -154,8 +202,11 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
                     case "session_started":
                         setIsRecording(true);
                         setIsTranscribing(false);
-                        audioLevelsRef.current = Array(BAR_COUNT).fill(0.12);
-                        setAudioLevels([...audioLevelsRef.current]);
+                        // Reset all levels
+                        levelsRef.current = Array(BAR_COUNT).fill(0);
+                        displayRef.current = Array(BAR_COUNT).fill(0.12);
+                        fallRef.current = Array(BAR_COUNT).fill(0);
+                        agcRef.current = 0.02;
                         break;
                     case "transcribing":
                         // Recording stopped, now transcribing
@@ -169,9 +220,26 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
                         break;
                     case "audio_level":
                         const rms = Math.min(1, Math.max(0, Number(msg.rms) || 0));
-                        const normalizedLevel = Math.pow(rms, 0.25) * 0.88 + 0.12;
-                        audioLevelsRef.current = [...audioLevelsRef.current.slice(1), normalizedLevel];
-                        setAudioLevels([...audioLevelsRef.current]);
+
+                        // Fast AGC like CAVA
+                        if (rms > agcRef.current) {
+                            agcRef.current = rms;
+                        } else {
+                            agcRef.current = agcRef.current * 0.98 + rms * 0.02;
+                        }
+
+                        // Normalize and apply power curve (25% gain boost)
+                        const norm = Math.pow(rms / (agcRef.current + 1e-6), 0.55) * 1.25;
+
+                        // Distribute across bars with frequency-like pattern
+                        for (let i = 0; i < BAR_COUNT; i++) {
+                            const center = BAR_COUNT / 2;
+                            const dist = Math.abs(i - center) / center;
+                            const freqFactor = 1.0 - (dist * dist * 0.6);
+                            const phase = i * 0.4 + rms * 20;
+                            const wave = 0.85 + 0.15 * Math.sin(phase);
+                            levelsRef.current[i] = norm * freqFactor * wave;
+                        }
                         break;
                 }
             } catch {

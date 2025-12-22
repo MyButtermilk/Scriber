@@ -88,10 +88,17 @@ class QtOverlayWindow(QWidget):
         self._bar_count = Config.VISUALIZER_BAR_COUNT
         self._levels = [0.0] * self._bar_count
         self._display = [0.0] * self._bar_count
+        self._fall = [0.0] * self._bar_count  # CAVA-style fall velocity
+        self._peak = [0.0] * self._bar_count  # Peak hold values
         self._taper = self._build_taper(self._bar_count)
         
         # AGC (Automatic Gain Control) for adaptive level scaling
         self._agc = 0.02
+        
+        # CAVA-style parameters
+        self._noise_reduction = 0.77  # 0-1, smoothing factor
+        self._gravity = 0.8  # Fall-off acceleration
+        self._integral = 0.7  # Weighted average factor
         
         # Stop button hit-test (updated during painting)
         self._stop_center_x = 0.0
@@ -243,38 +250,63 @@ class QtOverlayWindow(QWidget):
         self.update()
         
     def update_audio_level(self, rms: float):
-        """Update audio level with AGC and add to ring buffer."""
+        """Update audio level with CAVA-style processing."""
         if not self._is_recording:
             return
         
+        import math
         rms = max(0.0, min(1.0, float(rms)))
         
-        # Lightweight AGC with slow decay
-        self._agc = max(rms, self._agc * 0.995)
-        norm = rms / (self._agc + 1e-9)
+        # Fast AGC - quick attack, slower decay (CAVA autosens style)
+        if rms > self._agc:
+            self._agc = rms  # Instant attack
+        else:
+            self._agc = self._agc * 0.98 + rms * 0.02  # Slow decay
         
-        # Noise gate in normalized domain
-        gate = 0.12
-        lvl = (norm - gate) / (1.0 - gate)
-        lvl = max(0.0, min(float(lvl), 1.0))
+        # Normalize with AGC
+        norm = rms / (self._agc + 1e-6)
         
-        # Static visualization: update all bars with frequency-like variation
-        # Creates a natural wave pattern across bars
-        import math
+        # Apply power curve for better dynamics (makes quiet parts more visible)
+        # Lower exponent = more gain
+        norm = math.pow(norm, 0.55) * 1.25  # 25% gain boost
+        
+        # Distribute across bars with frequency-like pattern
         for i in range(self._bar_count):
-            # Create natural variation across bars (peaks in middle, lower at edges)
-            center_factor = 1.0 - abs(i - self._bar_count / 2) / (self._bar_count / 2)
-            # Add slight wave pattern for visual interest
-            wave = 0.7 + 0.3 * math.sin(i * 0.5 + self._agc * 10)
-            self._levels[i] = lvl * center_factor * wave
+            # Logarithmic-style distribution (center weighted)
+            center = self._bar_count / 2
+            dist = abs(i - center) / center
+            # Create frequency-like falloff
+            freq_factor = 1.0 - (dist * dist * 0.6)
+            # Add subtle variation for visual interest
+            phase = i * 0.4 + rms * 20
+            wave = 0.85 + 0.15 * math.sin(phase)
+            self._levels[i] = norm * freq_factor * wave
     
     def _tick(self):
-        """Animation tick - smooth interpolation for fluid bar movement."""
-        # Higher alpha = faster response, lower = smoother but laggier
-        # 0.75 for fast, reactive response
-        alpha = 0.75
+        """CAVA-style animation with gravity fall-off and instant rise."""
+        # Check if bar count changed (user updated setting)
+        new_bar_count = Config.VISUALIZER_BAR_COUNT
+        if new_bar_count != self._bar_count:
+            self._bar_count = new_bar_count
+            self._levels = [0.0] * new_bar_count
+            self._display = [0.0] * new_bar_count
+            self._fall = [0.0] * new_bar_count
+            self._peak = [0.0] * new_bar_count
+            self._taper = self._build_taper(new_bar_count)
+        
         for i in range(self._bar_count):
-            self._display[i] += (self._levels[i] - self._display[i]) * alpha
+            target = self._levels[i]
+            current = self._display[i]
+            
+            if target > current:
+                # Fast rise - nearly instant response
+                self._display[i] = current + (target - current) * 0.6
+                self._fall[i] = 0.0  # Reset fall velocity
+            else:
+                # Gravity-based fall (CAVA style)
+                self._fall[i] += self._gravity * 0.016  # Gravity acceleration
+                self._display[i] = max(0.0, current - self._fall[i])
+        
         self.update()
         
     def paintEvent(self, event):

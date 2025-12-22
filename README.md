@@ -1,203 +1,110 @@
 # Scriber
 
-Scriber is an AI-powered voice transcription app with both a modern web UI and a
-simple desktop UI. It supports live dictation, YouTube transcription, and file
-transcription, with optional LLM summaries.
+Scriber is an AI-powered voice transcription app for Windows (and other platforms) featuring a modern web UI, background system tray operation, and local persistence. It supports live dictation, YouTube video transcription, and audio file uploads, with optional LLM-powered summarization.
 
-## What it does
+## Features
 
-- Live microphone dictation with a global hotkey and optional overlay.
-- Text injection into the active app (type, paste, or auto).
-- YouTube transcription via yt-dlp (search or URL).
-- Audio/video file transcription (mp3, wav, m4a, mp4, webm, etc.).
-- Summaries via OpenAI or Google Gemini.
-- Multiple STT providers through a single pipeline.
+- **Live Dictation**: Global hotkey (`Ctrl+Alt+S` default) to toggle recording with a responsive audio visualizer overlay.
+- **System Tray Integration**: Runs silently in the background. Right-click the tray icon to:
+  - View application logs.
+  - Access recent recordings (copy to clipboard instantly).
+  - Open the Web UI.
+  - Restart or Quit the application.
+- **YouTube Transcription**: Paste a YouTube URL or search directly to transcribe videos.
+- **File Transcription**: Upload audio/video files (mp3, wav, mp4, etc.) for processing.
+- **Persistence**: All transcripts are saved to a local SQLite database (`transcripts.db`), so your history is preserved across restarts.
+- **Summarization**: Generates summaries of transcripts using Google Gemini or OpenAI models.
+- **Modern UI**: Built with React 19, Vite, and Tailwind CSS.
+- **Multiple STT Providers**: Support for Soniox, Deepgram, AssemblyAI, OpenAI Whisper, Azure, Gladia, and more.
 
-## Quick start
+## Quick Start (Windows)
 
-### Windows (one click)
+1. **Install Python 3.10+**: Ensure it's in your PATH.
+2. **Run `start.bat`**:
+   - This will automatically install dependencies (backend & frontend).
+   - It will launch the application in the background.
+   - A **Scriber icon** will appear in your system tray (notification area).
+   - The Web UI will open automatically in your browser at `http://localhost:5000`.
 
-1. Run `start.bat`.
-2. It creates a venv, installs deps, and prompts for API keys on first run.
-3. Web UI opens at `http://localhost:5000`.
-
-### Linux / macOS
-
-1. Run `start.sh`.
-2. It creates a venv and installs deps.
-3. Starts the desktop UI by default.
-
-### Manual setup
-
-```bash
-python -m venv venv
-# Windows
-venv\Scripts\activate
-# macOS/Linux
-source venv/bin/activate
-
-pip install -r requirements.txt
-
-# Web UI backend
-python -m src.web_api
-
-# In another terminal (web UI frontend)
-cd Frontend
-npm install
-npm run dev:client
-```
-
-Backend defaults to `http://127.0.0.1:8765` and the web UI to
-`http://localhost:5000` (see `start.bat`).
+**Note:** The command window will close automatically after starting. The app continues running in the background. Use the tray icon to control it.
 
 ## Usage
 
-- Hotkey mode: `toggle` or `push_to_talk`.
-- Injection: `auto` (Word/Outlook paste), `type`, or `paste`.
-- Summaries: auto or manual per transcript.
-- Transcripts are stored in memory (not persisted) and broadcast via WebSocket.
-
-## Project layout
-
-```
-Scriber/
-  src/                  Python backend + desktop UI
-    main.py             Tkinter entry point (desktop UI)
-    web_api.py          aiohttp HTTP + WebSocket API
-    pipeline.py         STT pipeline orchestration (Pipecat)
-    microphone.py       audio input (sounddevice)
-    audio_file_input.py file input (ffmpeg)
-    injector.py         text injection
-    summarization.py    OpenAI/Gemini summaries
-    youtube_api.py      YouTube Data API
-    youtube_download.py yt-dlp integration
-    overlay.py          recording overlay (Qt/Tk fallback)
-    config.py           env + settings.json loader
-  Frontend/             React 19 web UI (Vite 7, Tailwind v4, shadcn/ui)
-  tests/                pytest tests
-  settings.json         multi-line settings (summarization prompt)
-  .env                  local configuration
-```
+- **Toggle Recording**: Press `Ctrl+Alt+S` (or your configured hotkey) to start/stop live dictation anywhere.
+- **Web Interface**:
+  - **Live Mic Tab**: View real-time transcription and visualized audio levels.
+  - **YouTube Tab**: Search/Paste URLs to transcribe.
+  - **Files Tab**: Upload media files.
+  - **Settings**: Configure API keys, hotkeys, and preferences.
+- **Tray Menu**:
+  - **Recent Recordings**: Hover to see the last 5 recordings. Click one to copy its text to your clipboard.
+  - **View Logs**: distinct logs for Backend and Frontend services.
 
 ## Configuration
 
-### .env (backend)
+Scriber uses a `.env` file for configuration. This file is created automatically on first run if it doesn't exist.
+
+**Key Settings:**
 
 ```env
-# STT providers
-SONIOX_API_KEY=
-ASSEMBLYAI_API_KEY=
-DEEPGRAM_API_KEY=
-OPENAI_API_KEY=
-AZURE_SPEECH_KEY=
-AZURE_SPEECH_REGION=
-GLADIA_API_KEY=
-GROQ_API_KEY=
-SPEECHMATICS_API_KEY=
-ELEVENLABS_API_KEY=
-GOOGLE_APPLICATION_CREDENTIALS=
-GOOGLE_API_KEY=
-YOUTUBE_API_KEY=
+# STT API Keys
+SONIOX_API_KEY=...
+OPENAI_API_KEY=...
+DEEPGRAM_API_KEY=...
+# ...and others
 
-# App behavior
-SCRIBER_DEFAULT_STT=soniox
+# App Settings
 SCRIBER_HOTKEY=ctrl+alt+s
-SCRIBER_MODE=toggle
-SCRIBER_INJECT_METHOD=auto
-SCRIBER_LANGUAGE=auto
+SCRIBER_DEFAULT_STT=soniox
 SCRIBER_MIC_DEVICE=default
-SCRIBER_MIC_ALWAYS_ON=0
-SCRIBER_DEBUG=0
-
-# OpenAI STT model override
-SCRIBER_OPENAI_STT_MODEL=gpt-4o-mini-transcribe-2025-12-15
-
-# Summarization
+SCRIBER_VISUALIZER_BAR_COUNT=60
 SCRIBER_AUTO_SUMMARIZE=0
-SCRIBER_SUMMARIZATION_MODEL=gemini-flash-latest
-
-# Paste tuning (Windows)
-SCRIBER_PASTE_PRE_DELAY_MS=80
-SCRIBER_PASTE_RESTORE_DELAY_MS=1500
-
-# Web API (optional)
-SCRIBER_WEB_HOST=127.0.0.1
-SCRIBER_WEB_PORT=8765
-SCRIBER_ALLOWED_ORIGINS=
-SCRIBER_UPLOAD_MAX_MB=200
+SCRIBER_SUMMARIZATION_MODEL=gemini-2.0-flash
 ```
 
-### settings.json
+## Architecture
 
-Used for multi-line values such as the summarization prompt:
+The application is composed of three main parts managed by a central tray application:
 
-```json
-{
-  "summarizationPrompt": "Your custom prompt here"
-}
+1.  **System Tray (`src/tray.py`)**: The entry point. It manages the lifecycle of the backend and frontend processes, handles global hotkeys, and provides the tray menu interface.
+2.  **Backend (`src/web_api.py`)**: A Python `aiohttp` server that handles:
+    -   Speech-to-Text pipeline orchestration.
+    -   WebSocket broadcasting for real-time frontend updates.
+    -   Database operations (SQLite).
+    -   YouTube downloads and file processing.
+3.  **Frontend (`Frontend/`)**: A React/Vite SPA that connects to the backend via WebSocket and REST API.
+
+## Project Structure
+
 ```
-
-## Web API
-
-- `GET /api/health`
-- `GET /api/settings`, `PUT /api/settings`
-- `GET /api/microphones`
-- `GET /api/transcripts`
-- `GET /api/transcripts/:id`
-- `DELETE /api/transcripts/:id`
-- `POST /api/transcripts/:id/summarize`
-- `GET /api/youtube/search`
-- `GET /api/youtube/video`
-- `POST /api/youtube/transcribe`
-- `POST /api/file/transcribe`
-- `WS /ws` (realtime updates)
+Scriber/
+  src/
+    tray.py             # Main entry point & process manager (System Tray)
+    web_api.py          # Backend API & WebSocket server
+    database.py         # SQLite database interface
+    pipeline.py         # STT provider orchestration
+    overlay.py          # Visualizer overlay logic
+    config.py           # Configuration loader
+    ...
+  Frontend/             # React application source
+  transcripts.db        # Local database file (auto-generated)
+  start.bat             # Windows launcher
+```
 
 ## Development
 
-### Backend
+To run manually without `start.bat`:
 
-```bash
-python -m src.web_api
-python -m src.main
-python check_imports.py
-pytest
-```
+1.  Activate virtual environment: `venv\Scripts\activate`
+2.  Run the tray app: `python -m src.tray`
 
-### Frontend
-
-```bash
-cd Frontend
-npm install
-npm run dev:client
-npm run dev
-npm run check
-npm run build
-npm start
-npm run db:push
-```
-
-## Common tasks
-
-### Add a new STT provider
-
-1. Add SDK to `requirements.txt`.
-2. Add env + labels in `src/config.py`.
-3. Add provider in `ScriberPipeline._create_stt_service()`.
-4. Add UI option and key field in the frontend settings page.
-
-### Change summarization
-
-- Update `settings.json` for the prompt.
-- Set `SCRIBER_SUMMARIZATION_MODEL` in `.env`.
-- Add models in `src/summarization.py` if needed.
+This will automatically launch the backend and the frontend (`npm run dev:client`) in background threads/processes.
 
 ## Troubleshooting
 
-- No transcripts: confirm the API key and selected provider, then try with
-  `SCRIBER_DEBUG=1` and check backend logs.
-- Hotkey not working: on Windows, the `keyboard` module may require admin.
-- FFmpeg not found: install FFmpeg and ensure it is on PATH.
-- YouTube download errors: update yt-dlp (`pip install -U yt-dlp`).
+-   **App doesn't start?** Check `start.bat` output or run `python -m src.tray` manually in a terminal to see immediate errors.
+-   **Logs**: Right-click the tray icon and select "View Logs" to debug issues with API keys or devices.
+-   **Copying fails?** The tray app uses direct Windows API calls for clipboard reliability. If it fails, check the logs.
 
 ## License
 

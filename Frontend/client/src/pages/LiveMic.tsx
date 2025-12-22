@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Mic, Square, Clock, MoreVertical, Globe, Timer } from "lucide-react";
+import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -17,6 +17,7 @@ export default function LiveMic() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [finalText, setFinalText] = useState("");
   const [interimText, setInterimText] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
 
@@ -147,6 +148,36 @@ export default function LiveMic() {
     }
   };
 
+  const deleteTranscript = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (deletingId) return;
+
+    setDeletingId(id);
+    try {
+      const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error(res.statusText);
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/transcripts"] });
+      toast({
+        title: "Deleted",
+        description: "Transcript removed successfully.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Delete failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   return (
     <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
       <header className="mb-8 text-center space-y-2">
@@ -156,11 +187,11 @@ export default function LiveMic() {
 
       {/* Main Recording Area */}
       <div className="flex flex-col items-center justify-center space-y-6 mb-10">
-        
+
         {/* Live Text Output */}
         <div className="w-full max-w-lg min-h-[120px] text-center flex items-center justify-center p-6 rounded-2xl bg-secondary/30 border border-border/50 backdrop-blur-sm">
           {isRecording ? (
-            <motion.p 
+            <motion.p
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               className="text-lg md:text-xl font-medium leading-relaxed text-foreground/90"
@@ -194,31 +225,31 @@ export default function LiveMic() {
               />
             ))
           ) : (
-             <div className="w-full h-0.5 bg-border rounded-full" />
+            <div className="w-full h-0.5 bg-border rounded-full" />
           )}
         </div>
 
         {/* Controls */}
         <div className="flex items-center gap-6">
-           <div className="text-sm font-medium text-muted-foreground w-16 text-right">
-             {isRecording && <span className="animate-pulse text-red-500">REC</span>}
-           </div>
+          <div className="text-sm font-medium text-muted-foreground w-16 text-right">
+            {isRecording && <span className="animate-pulse text-red-500">REC</span>}
+          </div>
 
-           <Button
-             size="lg"
-             className={`h-24 w-24 rounded-full shadow-xl transition-all duration-300 ${isRecording ? 'bg-destructive hover:bg-destructive/90 ring-4 ring-destructive/20' : 'bg-primary hover:bg-primary/90 hover:scale-105 shadow-primary/25'}`}
-             onClick={handleToggle}
-           >
-             {isRecording ? (
-               <Square className="w-12 h-12 fill-current" />
-             ) : (
-               <Mic className="w-16 h-16" />
-             )}
-           </Button>
+          <Button
+            size="lg"
+            className={`h-24 w-24 rounded-full shadow-xl transition-all duration-300 ${isRecording ? 'bg-destructive hover:bg-destructive/90 ring-4 ring-destructive/20' : 'bg-primary hover:bg-primary/90 hover:scale-105 shadow-primary/25'}`}
+            onClick={handleToggle}
+          >
+            {isRecording ? (
+              <Square className="w-12 h-12 fill-current" />
+            ) : (
+              <Mic className="w-16 h-16" />
+            )}
+          </Button>
 
-           <div className="text-sm font-mono font-medium text-muted-foreground w-16">
-             {isRecording ? formatTime(elapsed) : "00:00"}
-           </div>
+          <div className="text-sm font-mono font-medium text-muted-foreground w-16">
+            {isRecording ? formatTime(elapsed) : "00:00"}
+          </div>
         </div>
       </div>
 
@@ -231,8 +262,8 @@ export default function LiveMic() {
 
         <div className="grid gap-3">
           {transcripts.filter(t => t.type === 'mic').map((item) => (
-            <Card 
-              key={item.id} 
+            <Card
+              key={item.id}
               className="p-4 hover:shadow-md transition-shadow cursor-pointer border-border/60 bg-card/50 backdrop-blur-sm group"
               onClick={() => setLocation(`/transcript/${item.id}`)}
             >
@@ -250,9 +281,21 @@ export default function LiveMic() {
                     </div>
                   </div>
                 </div>
-                <Button variant="ghost" size="icon" className="opacity-0 group-hover:opacity-100 transition-opacity">
-                  <MoreVertical className="w-4 h-4 text-muted-foreground" />
-                </Button>
+                <div className="flex flex-col justify-center">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                    onClick={(e) => deleteTranscript(e, item.id)}
+                    disabled={deletingId === item.id}
+                  >
+                    {deletingId === item.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" />
+                    )}
+                  </Button>
+                </div>
               </div>
             </Card>
           ))}

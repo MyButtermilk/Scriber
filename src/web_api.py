@@ -135,7 +135,7 @@ def _format_date_label(ts: datetime) -> str:
     now = datetime.now(ts.tzinfo)
     today = now.date()
     if ts.date() == today:
-        return f"Today, {ts.strftime('%-I:%M %p') if os.name != 'nt' else ts.strftime('%#I:%M %p')}"
+        return f"Today, {ts.strftime('%H:%M')}"
     if ts.date() == (today - timedelta(days=1)):
         return "Yesterday"
     return ts.strftime("%Y-%m-%d")
@@ -220,6 +220,14 @@ class TranscriptRecord:
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
         }
+        
+        # Generate 5-word preview
+        words = (self.content or "").strip().split()
+        preview = " ".join(words[:5])
+        if len(words) > 5:
+            preview += "..."
+        data["preview"] = preview or self.title
+
         if include_content:
             data["content"] = self.content
             data["summary"] = self.summary
@@ -365,9 +373,9 @@ class ScriberWebController:
         )
 
     def _on_audio_level(self, rms: float) -> None:
-        # Called from the sounddevice callback thread; throttle broadcasts.
+        # Called from the sounddevice callback thread; throttle broadcasts to ~60fps.
         now = time.monotonic()
-        if now - self._last_audio_broadcast < 0.05:
+        if now - self._last_audio_broadcast < 0.016:  # ~60fps
             return
         self._last_audio_broadcast = now
         # Update native overlay waveform

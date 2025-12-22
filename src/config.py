@@ -136,8 +136,8 @@ Input:"""
     SAMPLE_RATE = 16000
     CHANNELS = 1
     
-    # Visualizer settings (default 45 bars = 30% reduction from 64)
-    VISUALIZER_BAR_COUNT = int(os.getenv("SCRIBER_VISUALIZER_BAR_COUNT", "45"))
+    # Visualizer settings (default 60 bars)
+    VISUALIZER_BAR_COUNT = int(os.getenv("SCRIBER_VISUALIZER_BAR_COUNT", "60"))
 
     @classmethod
     def get_api_key(cls, service_name: str) -> str:

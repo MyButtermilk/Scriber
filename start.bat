@@ -153,25 +153,24 @@ if not exist "Frontend\\node_modules" (
 )
 
 echo.
-echo [INFO] Starting backend (Python) on http://127.0.0.1:8765 ...
-start "Scriber Backend" cmd /c "python -m src.web_api || pause"
+echo [INFO] Starting Scriber services via tray app...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'python' -ArgumentList '-m','src.tray' -WindowStyle Hidden"
 
 echo [INFO] Waiting for backend to become ready...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$u='http://127.0.0.1:8765/api/health'; for($i=0;$i -lt 40;$i++){ try { $r=Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 $u; if($r.StatusCode -eq 200){ exit 0 } } catch { } Start-Sleep -Milliseconds 250 }; exit 1"
 if %errorlevel% neq 0 (
     echo [ERROR] Backend did not start.
-    echo        Check the Scriber Backend window for errors.
     pause
     exit /b 1
 )
 
 echo [INFO] Starting Web UI on http://localhost:5000 ...
+echo [INFO] All services running in background via system tray.
+echo [INFO] This window will close automatically.
 echo.
-pushd Frontend
-set "VITE_BACKEND_URL=http://127.0.0.1:8765"
 start "" http://localhost:5000
-npm run dev:client
-popd
+timeout /t 3 >nul
+exit /b 0
 
 :after_run
 if %errorlevel% neq 0 (

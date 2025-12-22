@@ -133,17 +133,15 @@ class MicrophoneInput(BaseInputTransport):
         if self._running:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, indata.tobytes())
             
-            # Throttled RMS calculation - only every 3rd callback to reduce CPU in audio thread
+            # Calculate RMS on every callback for responsive visualization
             if self.on_audio_level:
-                self._rms_callback_count += 1
-                if self._rms_callback_count % 3 == 0:
-                    try:
-                        # Fast RMS using int32 to avoid overflow, minimal allocations
-                        samples = indata.flatten()
-                        rms = np.sqrt(np.mean(samples.astype(np.int32) ** 2)) / 32768.0
-                        self.on_audio_level(float(rms))
-                    except Exception:
-                        pass
+                try:
+                    # Fast RMS using int32 to avoid overflow, minimal allocations
+                    samples = indata.flatten()
+                    rms = np.sqrt(np.mean(samples.astype(np.int32) ** 2)) / 32768.0
+                    self.on_audio_level(float(rms))
+                except Exception:
+                    pass
 
     async def _drain_queue(self):
         # Ensure audio queue exists (BaseInputTransport creates it in _create_audio_task)

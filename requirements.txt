@@ -14,3 +14,4 @@ pillow
 numpy
 yt-dlp
 PySide6
+pystray
