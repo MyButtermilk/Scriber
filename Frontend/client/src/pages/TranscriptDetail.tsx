@@ -87,6 +87,36 @@ export default function TranscriptDetail() {
     type: "mic",
   };
 
+  // Local elapsed time counter for processing transcripts
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [startTime] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (transcript.status !== "processing") {
+      return;
+    }
+
+    // Update every second
+    const interval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      setElapsedSeconds(elapsed);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [transcript.status, startTime]);
+
+  // Format elapsed time as MM:SS
+  const formatElapsed = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Show elapsed time when processing, otherwise show actual duration
+  const displayDuration = transcript.status === "processing"
+    ? formatElapsed(elapsedSeconds)
+    : transcript.duration;
+
   // WebSocket connection for real-time updates
   useEffect(() => {
     const ws = new WebSocket(wsUrl("/ws"));
@@ -170,7 +200,7 @@ export default function TranscriptDetail() {
           </Link>
           <div>
             <h1 className="font-semibold text-lg leading-tight">{transcript?.title || "Transcript"}</h1>
-            <p className="text-xs text-muted-foreground">{transcript.date} • {transcript.duration}</p>
+            <p className="text-xs text-muted-foreground">{transcript.date} • {displayDuration}</p>
           </div>
         </div>
 
@@ -212,7 +242,6 @@ export default function TranscriptDetail() {
 
           {/* Meta Card */}
           <div className="flex flex-wrap gap-2">
-            <Badge variant="secondary" className="px-3 py-1 font-normal"><Clock className="w-3 h-3 mr-1.5" /> {transcript.duration}</Badge>
             <Badge variant="secondary" className="px-3 py-1 font-normal"><Calendar className="w-3 h-3 mr-1.5" /> {transcript.date}</Badge>
           </div>
 

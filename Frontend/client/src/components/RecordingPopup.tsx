@@ -5,9 +5,35 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Square, Loader2 } from "lucide-react";
 import { wsUrl, apiUrl } from "@/lib/backend";
 
-const BAR_COUNT = 80;
+const BAR_COUNT = 56; // ~30% reduction from 80
 
-// Custom waveform that responds to WebSocket audio levels
+// MIDNIGHT theme colors (blue gradient) - matching backend
+const MIDNIGHT_COLORS = ["#3B82F6", "#1E3A8A", "#172554"];
+
+// Interpolate between gradient colors based on position
+function interpolateColor(colors: string[], factor: number): string {
+    if (colors.length === 1) return colors[0];
+    factor = Math.max(0, Math.min(1, factor));
+    const idx = factor * (colors.length - 1);
+    const i = Math.floor(idx);
+    const f = idx - i;
+    if (i >= colors.length - 1) return colors[colors.length - 1];
+
+    // Parse hex colors
+    const c1 = parseInt(colors[i].slice(1), 16);
+    const c2 = parseInt(colors[i + 1].slice(1), 16);
+
+    const r1 = (c1 >> 16) & 255, g1 = (c1 >> 8) & 255, b1 = c1 & 255;
+    const r2 = (c2 >> 16) & 255, g2 = (c2 >> 8) & 255, b2 = c2 & 255;
+
+    const r = Math.round(r1 + (r2 - r1) * f);
+    const g = Math.round(g1 + (g2 - g1) * f);
+    const b = Math.round(b1 + (b2 - b1) * f);
+
+    return `rgb(${r}, ${g}, ${b})`;
+}
+
+// Custom mirrored waveform that responds to WebSocket audio levels
 // Memoized to prevent re-renders when parent state changes
 const AudioWaveform = memo(function AudioWaveform({ audioLevels }: { audioLevels: number[] }) {
     return (
@@ -22,24 +48,32 @@ const AudioWaveform = memo(function AudioWaveform({ audioLevels }: { audioLevels
                 paddingRight: 24,
             }}
         >
-            {audioLevels.map((level, index) => (
-                <motion.div
-                    key={index}
-                    animate={{
-                        height: Math.max(4, level * 40),
-                    }}
-                    transition={{
-                        type: "spring",
-                        stiffness: 300,
-                        damping: 20,
-                    }}
-                    style={{
-                        width: 2.5,
-                        borderRadius: 2,
-                        backgroundColor: '#5cb85c',
-                    }}
-                />
-            ))}
+            {audioLevels.map((level, index) => {
+                // Apply center-weighted variation for natural look
+                const centerFactor = 1.0 - Math.abs(index - audioLevels.length / 2) / (audioLevels.length / 2);
+                const adjustedLevel = level * (0.5 + 0.5 * centerFactor);
+                const barHeight = Math.max(2, adjustedLevel * 40);
+
+                return (
+                    <motion.div
+                        key={index}
+                        animate={{
+                            height: barHeight,
+                        }}
+                        transition={{
+                            type: "spring",
+                            stiffness: 300,
+                            damping: 20,
+                        }}
+                        style={{
+                            width: 2.5,
+                            borderRadius: 1,
+                            // Color based on height (bright when tall, dark when short)
+                            backgroundColor: interpolateColor(MIDNIGHT_COLORS, 1.0 - Math.min(1.0, adjustedLevel)),
+                        }}
+                    />
+                );
+            })}
         </div>
     );
 });
@@ -64,13 +98,13 @@ function TranscribingText() {
                 style={{
                     width: 20,
                     height: 20,
-                    color: '#5cb85c',
+                    color: '#3B82F6',
                     animation: 'spin 1s linear infinite',
                 }}
             />
             <span
                 style={{
-                    color: '#5cb85c',
+                    color: '#3B82F6',
                     fontSize: 16,
                     fontWeight: 500,
                     fontFamily: 'system-ui, -apple-system, sans-serif',

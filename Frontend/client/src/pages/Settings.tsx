@@ -1,4 +1,4 @@
-import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronRight, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines } from "lucide-react";
+import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronRight, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
+import { Slider } from "@/components/ui/slider";
 import { apiUrl } from "@/lib/backend";
 
 export default function Settings() {
@@ -53,6 +54,7 @@ export default function Settings() {
   const [summarizationModel, setSummarizationModel] = useState("gemini-flash-latest");
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [language, setLanguage] = useState("auto");
+  const [visualizerBarCount, setVisualizerBarCount] = useState(45);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,6 +92,7 @@ export default function Settings() {
         setSummarizationPrompt(settings.summarizationPrompt || "");
         setSummarizationModel(settings.summarizationModel || "gemini-flash-latest");
         setAutoSummarize(settings.autoSummarize === true);
+        setVisualizerBarCount(settings.visualizerBarCount || 45);
 
         setSonioxKey(keys.soniox || "");
         setAssemblyAIKey(keys.assemblyai || "");
@@ -325,6 +328,16 @@ export default function Settings() {
         description: String(e?.message || e),
         duration: 4000,
       });
+    }
+  };
+
+  const handleVisualizerBarCountChange = async (value: number[]) => {
+    const count = value[0];
+    setVisualizerBarCount(count);
+    try {
+      await updateSettings({ visualizerBarCount: count });
+    } catch {
+      // ignore
     }
   };
 
@@ -587,6 +600,28 @@ export default function Settings() {
                 placeholder="e.g. Replit, TypeScript, OpenAI, specific product names..."
                 className="min-h-[80px] font-mono text-sm resize-none bg-secondary/20"
               />
+            </div>
+
+            <Separator />
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label className="text-base">Visualizer Bars</Label>
+                  <p className="text-sm text-muted-foreground">Number of bars in the audio visualizer ({visualizerBarCount})</p>
+                </div>
+                <div className="flex items-center gap-3 w-[200px]">
+                  <BarChart3 className="w-4 h-4 text-muted-foreground" />
+                  <Slider
+                    value={[visualizerBarCount]}
+                    onValueChange={handleVisualizerBarCountChange}
+                    min={16}
+                    max={128}
+                    step={1}
+                    className="flex-1"
+                  />
+                </div>
+              </div>
             </div>
 
             <Separator />

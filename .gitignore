@@ -6,3 +6,6 @@ venv/
 *.log
 src/assets/flags/*.png
 downloads/
+*.db
+transcripts.db
+settings.json

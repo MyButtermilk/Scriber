@@ -38,7 +38,7 @@ except ImportError:
 
 from loguru import logger
 
-BAR_COUNT = 64
+from src.config import Config
 
 
 class QtOverlaySignals(QObject):
@@ -51,7 +51,10 @@ class QtOverlaySignals(QObject):
 
 
 class QtOverlayWindow(QWidget):
-    """Qt-based overlay window with smooth anti-aliased rendering and improved visualization."""
+    """Qt-based overlay window with smooth anti-aliased rendering and CAVA-style bar visualization."""
+    
+    # MIDNIGHT theme colors (blue gradient)
+    MIDNIGHT_COLORS = ["#3B82F6", "#1E3A8A", "#172554"]
     
     stopped = Signal()
     
@@ -80,11 +83,11 @@ class QtOverlayWindow(QWidget):
             self._pill_h + 2 * self._shadow_margin,
         )
         
-        # Wave buffer with ring buffer (levels = target, display = smoothed)
-        self._bar_count = BAR_COUNT
+        # Wave buffer (levels = target, display = smoothed)
+        # Use configurable bar count from settings (default: 45)
+        self._bar_count = Config.VISUALIZER_BAR_COUNT
         self._levels = [0.0] * self._bar_count
         self._display = [0.0] * self._bar_count
-        self._write_idx = 0
         self._taper = self._build_taper(self._bar_count)
         
         # AGC (Automatic Gain Control) for adaptive level scaling
@@ -133,6 +136,23 @@ class QtOverlayWindow(QWidget):
             out.append(0.55 + 0.45 * math.sin(math.pi * t))
         return out
     
+    def _interpolate_color(self, colors: list, factor: float) -> QColor:
+        """Interpolate between gradient colors based on position factor (0.0-1.0)."""
+        if len(colors) == 1:
+            return QColor(colors[0])
+        factor = max(0.0, min(1.0, factor))
+        idx = factor * (len(colors) - 1)
+        i = int(idx)
+        f = idx - i
+        if i >= len(colors) - 1:
+            return QColor(colors[-1])
+        c1 = QColor(colors[i])
+        c2 = QColor(colors[i + 1])
+        r = int(c1.red() + (c2.red() - c1.red()) * f)
+        g = int(c1.green() + (c2.green() - c1.green()) * f)
+        b = int(c1.blue() + (c2.blue() - c1.blue()) * f)
+        return QColor(r, g, b)
+    
     def _position_default(self):
         """Position overlay at bottom-center of screen, just above taskbar."""
         try:
@@ -159,9 +179,10 @@ class QtOverlayWindow(QWidget):
         self._pending_hide = False
         
         # Reset levels
+        self._bar_count = Config.VISUALIZER_BAR_COUNT
         self._levels = [0.0] * self._bar_count
         self._display = [0.0] * self._bar_count
-        self._write_idx = 0
+        self._taper = self._build_taper(self._bar_count)
         self._agc = 0.02
         
         self._position_default()
@@ -237,14 +258,21 @@ class QtOverlayWindow(QWidget):
         lvl = (norm - gate) / (1.0 - gate)
         lvl = max(0.0, min(float(lvl), 1.0))
         
-        # Add to ring buffer
-        self._levels[self._write_idx] = lvl
-        self._write_idx = (self._write_idx + 1) % self._bar_count
+        # Static visualization: update all bars with frequency-like variation
+        # Creates a natural wave pattern across bars
+        import math
+        for i in range(self._bar_count):
+            # Create natural variation across bars (peaks in middle, lower at edges)
+            center_factor = 1.0 - abs(i - self._bar_count / 2) / (self._bar_count / 2)
+            # Add slight wave pattern for visual interest
+            wave = 0.7 + 0.3 * math.sin(i * 0.5 + self._agc * 10)
+            self._levels[i] = lvl * center_factor * wave
     
     def _tick(self):
-        """Animation tick - smooth interpolation."""
-        # Smooth interpolation to remove jitter
-        alpha = 0.35
+        """Animation tick - smooth interpolation for fluid bar movement."""
+        # Higher alpha = faster response, lower = smoother but laggier
+        # 0.75 for fast, reactive response
+        alpha = 0.75
         for i in range(self._bar_count):
             self._display[i] += (self._levels[i] - self._display[i]) * alpha
         self.update()
@@ -284,7 +312,7 @@ class QtOverlayWindow(QWidget):
             self._draw_transcribing_mode(painter, pill)
     
     def _draw_recording_mode(self, painter: QPainter, pill: QRectF):
-        """Draw recording mode: stop button + waveform."""
+        """Draw recording mode: stop button + CAVA-style frequency bars."""
         # Stop button sized relative to pill
         stop_d = pill.height() * 0.68
         self._stop_radius = stop_d / 2.0
@@ -311,50 +339,48 @@ class QtOverlayWindow(QWidget):
         painter.setBrush(QColor(250, 250, 250))
         painter.drawRoundedRect(sq_rect, 4, 4)
         
-        # Waveform area
+        # Waveform area (mirrored bars from center)
         left_pad = pill.height() * 1.08
         right_pad = pill.height() * 0.30
         wave = QRectF(
             pill.left() + left_pad,
-            pill.top() + pill.height() * 0.22,
+            pill.top() + pill.height() * 0.15,
             pill.width() - left_pad - right_pad,
-            pill.height() * 0.56,
+            pill.height() * 0.70,
         )
-        cy = wave.center().y()
-        max_h = wave.height() / 2.0
         
-        # Bar sizing
+        # Bar sizing - stretch to fill available space
         bar_count = self._bar_count
-        gap = 2.0
-        bar_w = (wave.width() - gap * (bar_count - 1)) / bar_count
-        bar_w = max(1.5, min(bar_w, 5.0))
+        # Gap is ~30% of bar width for clean look
+        total_units = bar_count + (bar_count - 1) * 0.3
+        bar_w = wave.width() / total_units
+        gap = bar_w * 0.3
+        bar_w = max(1.5, bar_w)  # Minimum bar width only
         
-        wave_color = QColor(85, 255, 140)
-        pen = QPen(wave_color)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setWidthF(bar_w)
+        # Center line for mirrored bars
+        cy = wave.center().y()
+        max_h = wave.height() / 2.0 * 0.90  # Max height each direction
         
-        dot_threshold = 2.5
-        dot_r = max(1.0, bar_w * 0.45)
+        painter.setPen(Qt.NoPen)
         
-        # Draw bars from ring buffer (oldest left, newest right)
+        # Draw bars (static positions, mirrored from center)
         x0 = wave.left()
         for i in range(bar_count):
-            idx = (self._write_idx + i) % bar_count
-            lvl = self._display[idx] * self._taper[i]
-            h = max_h * lvl
-            x = x0 + i * (bar_w + gap) + bar_w / 2.0
+            lvl = self._display[i] * self._taper[i]
             
-            if h < dot_threshold:
-                # Draw dot for silence/quiet
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(wave_color)
-                painter.drawEllipse(QRectF(x - dot_r, cy - dot_r, dot_r * 2, dot_r * 2))
-            else:
-                # Draw bar
-                painter.setPen(pen)
-                painter.setBrush(Qt.NoBrush)
-                painter.drawLine(QPointF(x, cy - h), QPointF(x, cy + h))
+            # Bar height extends both up and down from center
+            bar_h = max(2.0, lvl * max_h)
+            
+            # Calculate bar position
+            x = x0 + i * (bar_w + gap)
+            
+            # Color based on height/level (bright when tall, dark when short)
+            factor = min(1.0, lvl)  # 0 = first color (bright), 1 = last color (dark)
+            color = self._interpolate_color(self.MIDNIGHT_COLORS, 1.0 - factor)  # Invert so taller = brighter
+            painter.setBrush(color)
+            
+            # Draw mirrored bar (extends up and down from center)
+            painter.drawRect(QRectF(x, cy - bar_h, bar_w - 1, bar_h * 2))
         
     def _draw_transcribing_mode(self, painter: QPainter, pill: QRectF):
         """Draw transcribing mode: spinner + text, centered in pill."""
@@ -380,8 +406,8 @@ class QtOverlayWindow(QWidget):
         spinner_cx = content_start_x + spinner_size / 2
         spinner_cy = center_y
         
-        # Draw spinner arc
-        pen = QPen(QColor(85, 255, 140), 2.5)
+        # Draw spinner arc (use MIDNIGHT blue color)
+        pen = QPen(QColor("#3B82F6"), 2.5)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
@@ -396,9 +422,9 @@ class QtOverlayWindow(QWidget):
         span_angle = 270 * 16
         painter.drawArc(arc_rect, start_angle, span_angle)
         
-        # Draw text
+        # Draw text (MIDNIGHT blue color)
         text_x = content_start_x + spinner_size + spacing
-        painter.setPen(QColor(85, 255, 140))
+        painter.setPen(QColor("#3B82F6"))
         text_rect = QRectF(text_x, pill.top(), text_width + 10, pill.height())
         painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
     

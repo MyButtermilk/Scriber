@@ -135,6 +135,9 @@ Input:"""
     # Audio settings
     SAMPLE_RATE = 16000
     CHANNELS = 1
+    
+    # Visualizer settings (default 45 bars = 30% reduction from 64)
+    VISUALIZER_BAR_COUNT = int(os.getenv("SCRIBER_VISUALIZER_BAR_COUNT", "45"))
 
     @classmethod
     def get_api_key(cls, service_name: str) -> str:
@@ -196,6 +199,11 @@ Input:"""
         os.environ["SCRIBER_MIC_ALWAYS_ON"] = "1" if enabled else "0"
 
     @classmethod
+    def set_visualizer_bar_count(cls, count: int) -> None:
+        cls.VISUALIZER_BAR_COUNT = max(16, min(128, int(count)))
+        os.environ["SCRIBER_VISUALIZER_BAR_COUNT"] = str(cls.VISUALIZER_BAR_COUNT)
+
+    @classmethod
     def set_summarization_prompt(cls, prompt: str) -> None:
         """Set and persist summarization prompt to JSON settings file."""
         cls.SUMMARIZATION_PROMPT = prompt.strip() if prompt else cls._DEFAULT_SUMMARIZATION_PROMPT
@@ -250,6 +258,7 @@ Input:"""
         add("SCRIBER_INJECT_METHOD", cls.INJECT_METHOD)
         add("SCRIBER_PASTE_PRE_DELAY_MS", str(cls.PASTE_PRE_DELAY_MS))
         add("SCRIBER_PASTE_RESTORE_DELAY_MS", str(cls.PASTE_RESTORE_DELAY_MS))
+        add("SCRIBER_VISUALIZER_BAR_COUNT", str(cls.VISUALIZER_BAR_COUNT))
 
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

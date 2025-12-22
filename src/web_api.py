@@ -19,6 +19,7 @@ from src.pipeline import ScriberPipeline
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
 from src.overlay import get_overlay, show_recording_overlay, show_transcribing_overlay, hide_recording_overlay, update_overlay_audio
+from src import database as db
 
 TranscriptStatus = Literal["completed", "processing", "failed", "recording"]
 TranscriptType = Literal["mic", "youtube", "file"]
@@ -272,6 +273,47 @@ class ScriberWebController:
         self._overlay = get_overlay(on_stop=lambda: self._loop.call_soon_threadsafe(
             lambda: asyncio.create_task(self.stop_listening())
         ))
+        
+        # Initialize database and load persisted transcripts
+        db.init_database()
+        self._load_transcripts_from_db()
+    
+    def _load_transcripts_from_db(self) -> None:
+        """Load transcripts from database on startup."""
+        try:
+            saved = db.load_all_transcripts()
+            for data in saved:
+                # Skip processing/recording transcripts (incomplete)
+                if data.get("status") in ("processing", "recording"):
+                    continue
+                rec = TranscriptRecord(
+                    id=data.get("id", ""),
+                    title=data.get("title", ""),
+                    date=data.get("date", ""),
+                    duration=data.get("duration", ""),
+                    status=data.get("status", "completed"),
+                    type=data.get("type", "mic"),
+                    language=data.get("language", ""),
+                    step=data.get("step", ""),
+                    source_url=data.get("sourceUrl", ""),
+                    channel=data.get("channel", ""),
+                    thumbnail_url=data.get("thumbnailUrl", ""),
+                    content=data.get("content", ""),
+                    created_at=data.get("createdAt", ""),
+                    updated_at=data.get("updatedAt", ""),
+                    summary=data.get("summary", ""),
+                )
+                self._history.append(rec)
+            logger.info(f"Loaded {len(self._history)} transcripts from database")
+        except Exception as e:
+            logger.error(f"Failed to load transcripts from database: {e}")
+    
+    def _save_transcript_to_db(self, record: TranscriptRecord) -> None:
+        """Save a transcript to the database."""
+        try:
+            db.save_transcript(record)
+        except Exception as e:
+            logger.error(f"Failed to save transcript to database: {e}")
 
     def get_state(self) -> dict[str, Any]:
         return {
@@ -470,6 +512,7 @@ class ScriberWebController:
             rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
         finally:
             rec.updated_at = datetime.now().isoformat()
+            self._save_transcript_to_db(rec)  # Persist to database
             await self.broadcast({"type": "history_updated"})
             # Cleanup: delete the downloaded audio file and directory
             try:
@@ -589,6 +632,7 @@ class ScriberWebController:
             rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
         finally:
             rec.updated_at = datetime.now().isoformat()
+            self._save_transcript_to_db(rec)  # Persist to database
             await self.broadcast({"type": "history_updated"})
             # Cleanup: delete the uploaded file and its directory
             try:
@@ -661,6 +705,7 @@ class ScriberWebController:
                 self._history.insert(0, self._current)
                 finished = self._current
                 self._current = None
+                self._save_transcript_to_db(finished)  # Persist to database
                 await self.broadcast({"type": "session_finished", "session": finished.to_public(include_content=True)})
                 await self.broadcast({"type": "history_updated"})
 
@@ -747,6 +792,7 @@ class ScriberWebController:
             "summarizationModel": Config.SUMMARIZATION_MODEL or "gemini-flash-latest",
             "autoSummarize": bool(Config.AUTO_SUMMARIZE),
             "openaiSttModel": Config.OPENAI_STT_MODEL,
+            "visualizerBarCount": Config.VISUALIZER_BAR_COUNT,
             "apiKeys": {
                 "soniox": Config.SONIOX_API_KEY or "",
                 "assemblyai": Config.ASSEMBLYAI_API_KEY or "",
@@ -817,6 +863,13 @@ class ScriberWebController:
 
         if "openaiSttModel" in payload and isinstance(payload["openaiSttModel"], str):
             Config.set_openai_stt_model(payload["openaiSttModel"])
+
+        if "visualizerBarCount" in payload:
+            try:
+                count = int(payload["visualizerBarCount"])
+                Config.set_visualizer_bar_count(count)
+            except (ValueError, TypeError):
+                pass
 
         api_keys = payload.get("apiKeys")
         if isinstance(api_keys, dict):
@@ -1199,6 +1252,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         if not found:
             return web.json_response({"message": "Transcript not found"}, status=404)
+
+        # Delete from database
+        db.delete_transcript(transcript_id)
 
         # Broadcast update to clients
         await ctl.broadcast({"type": "history_updated"})
