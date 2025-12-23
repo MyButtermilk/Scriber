@@ -1,4 +1,4 @@
-import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronRight, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3 } from "lucide-react";
+import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronRight, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
@@ -55,6 +55,8 @@ export default function Settings() {
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [language, setLanguage] = useState("auto");
   const [visualizerBarCount, setVisualizerBarCount] = useState(45);
+  const [autostartEnabled, setAutostartEnabled] = useState(false);
+  const [autostartAvailable, setAutostartAvailable] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,9 +72,10 @@ export default function Settings() {
 
     const load = async () => {
       try {
-        const [settingsRes, micsRes] = await Promise.all([
+        const [settingsRes, micsRes, autostartRes] = await Promise.all([
           fetch(apiUrl("/api/settings"), { credentials: "include" }),
           fetch(apiUrl("/api/microphones"), { credentials: "include" }),
+          fetch(apiUrl("/api/autostart"), { credentials: "include" }),
         ]);
 
         if (!settingsRes.ok) throw new Error(await settingsRes.text());
@@ -80,9 +83,12 @@ export default function Settings() {
 
         const settings = await settingsRes.json();
         const mics = await micsRes.json();
+        const autostart = autostartRes.ok ? await autostartRes.json() : { enabled: false, available: false };
         if (cancelled) return;
 
         const keys = settings.apiKeys || {};
+        setAutostartEnabled(autostart.enabled || false);
+        setAutostartAvailable(autostart.available || false);
         setHotkey(settings.hotkey || settings.hotkeyRaw || "");
         setRecordingMode(settings.mode === "push_to_talk" ? "press_hold" : "start_stop");
         setSelectedDeviceId(settings.micDevice || "default");
@@ -341,6 +347,37 @@ export default function Settings() {
     }
   };
 
+  const handleAutostartChange = async (enabled: boolean) => {
+    setAutostartEnabled(enabled);
+    try {
+      const res = await fetch(apiUrl("/api/autostart"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.message || "Failed to update autostart");
+      }
+
+      toast({
+        title: "Saved",
+        description: enabled ? "Autostart enabled" : "Autostart disabled",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      // Revert on error
+      setAutostartEnabled(!enabled);
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
   return (
     <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
       <header className="mb-6 space-y-2">
@@ -353,6 +390,23 @@ export default function Settings() {
         <section className="space-y-4">
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Transcription</h2>
           <div className="bg-card border border-border/60 rounded-xl p-6 space-y-6">
+
+            {autostartAvailable && (
+              <>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label className="text-base">Autostart with Windows</Label>
+                    <p className="text-sm text-muted-foreground">Launch Scriber automatically when you log in</p>
+                  </div>
+                  <Switch
+                    checked={autostartEnabled}
+                    onCheckedChange={handleAutostartChange}
+                  />
+                </div>
+
+                <Separator />
+              </>
+            )}
 
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">

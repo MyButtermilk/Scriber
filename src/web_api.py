@@ -923,32 +923,138 @@ class ScriberWebController:
         return self.get_settings()
 
     def list_microphones(self) -> list[dict[str, str]]:
+        """List available microphone devices.
+        
+        Returns devices with:
+        - deviceId: The device name (stable across reboots, used for persistence)
+        - label: Display label (may include "(Default)" suffix)
+        
+        Uses MME Host API as primary (most compatible with USB devices).
+        """
         try:
             import sounddevice as sd  # type: ignore
         except Exception:  # pragma: no cover - optional runtime dep
             return [{"deviceId": "default", "label": "Default"}]
 
         devices: list[dict[str, str]] = [{"deviceId": "default", "label": "Default"}]
+        
+        try:
+            # Get host APIs - prefer MME (most compatible, especially for USB devices)
+            host_apis = sd.query_hostapis()
+            mme_idx = next((i for i, h in enumerate(host_apis) if h.get('name', '') == 'MME'), None)
+            wasapi_idx = next((i for i, h in enumerate(host_apis) if 'WASAPI' in h.get('name', '')), None)
+            
+            # Use MME for best USB device compatibility
+            preferred_hostapi = mme_idx if mme_idx is not None else wasapi_idx
+        except Exception:
+            preferred_hostapi = None
+
         try:
             default = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
         except Exception:
             default = None
 
-        seen: set[str] = set()
+        # Virtual/system devices to exclude
+        exclude_patterns = [
+            'soundmapper', 'stereo mix', 'stereomix', 'what u hear',
+            'loopback', 'primary sound',
+        ]
+        
+        seen_names: set[str] = set()
+        
         try:
             for idx, dev in enumerate(sd.query_devices()):
+                # Skip if no input channels
                 if int(dev.get("max_input_channels", 0) or 0) <= 0:
                     continue
-                name = str(dev.get("name", f"Device {idx}"))
-                if name in seen:
+                
+                # Only include devices from the preferred host API (MME)
+                hostapi_idx = dev.get('hostapi', 0)
+                if preferred_hostapi is not None and hostapi_idx != preferred_hostapi:
                     continue
-                seen.add(name)
-                label = f"{name} (Default)" if default is not None and idx == default else name
-                devices.append({"deviceId": str(idx), "label": label})
+                
+                name = str(dev.get("name", f"Device {idx}"))
+                name_lower = name.lower()
+                
+                # Skip virtual/system devices
+                if any(pattern in name_lower for pattern in exclude_patterns):
+                    continue
+                
+                # Skip devices that look like outputs
+                if any(word in name_lower for word in ['output', 'speaker', 'lautsprecher', 'headphone']):
+                    continue
+                
+                # Skip duplicates (same name)
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+                
+                is_default = (default is not None and idx == default)
+                label = f"{name} (Default)" if is_default else name
+                # Use device NAME as the ID (stable across reboots)
+                devices.append({"deviceId": name, "label": label})
+                
         except Exception:
             pass
 
         return devices
+
+    def resolve_microphone_device(self, device_name: str) -> str:
+        """Resolve a device name to the current device index.
+        
+        Args:
+            device_name: The saved device name (or "default")
+            
+        Returns:
+            The device index as a string, or "default" if not found.
+            Falls back to Windows default if the saved device is unavailable.
+        """
+        if device_name == "default" or not device_name:
+            return "default"
+        
+        try:
+            import sounddevice as sd
+        except Exception:
+            return "default"
+        
+        try:
+            # Get preferred host API
+            host_apis = sd.query_hostapis()
+            wasapi_idx = next((i for i, h in enumerate(host_apis) if 'WASAPI' in h.get('name', '')), None)
+            mme_idx = next((i for i, h in enumerate(host_apis) if h.get('name', '') == 'MME'), None)
+            preferred_hostapi = wasapi_idx if wasapi_idx is not None else mme_idx
+            
+            # Search for the device by name
+            for idx, dev in enumerate(sd.query_devices()):
+                if int(dev.get("max_input_channels", 0) or 0) <= 0:
+                    continue
+                
+                # Prefer devices from the same host API
+                hostapi_idx = dev.get('hostapi', 0)
+                if preferred_hostapi is not None and hostapi_idx != preferred_hostapi:
+                    continue
+                
+                name = str(dev.get("name", ""))
+                if name == device_name:
+                    logger.info(f"Resolved microphone '{device_name}' to device index {idx}")
+                    return str(idx)
+            
+            # If not found in preferred host API, try any host API
+            for idx, dev in enumerate(sd.query_devices()):
+                if int(dev.get("max_input_channels", 0) or 0) <= 0:
+                    continue
+                name = str(dev.get("name", ""))
+                if name == device_name:
+                    logger.info(f"Resolved microphone '{device_name}' to device index {idx} (different host API)")
+                    return str(idx)
+            
+            # Device not found - fall back to default
+            logger.warning(f"Microphone '{device_name}' not found, falling back to default")
+            return "default"
+            
+        except Exception as e:
+            logger.error(f"Error resolving microphone '{device_name}': {e}")
+            return "default"
 
     def list_transcripts(self, *, include_content: bool = False) -> list[dict[str, Any]]:
         out = []
@@ -1058,6 +1164,69 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Invalid JSON"}, status=400)
         updated = await ctl.update_settings(payload if isinstance(payload, dict) else {})
         return web.json_response(updated)
+
+    async def get_autostart(request: web.Request):
+        """Check if autostart is enabled."""
+        import sys
+        if sys.platform != 'win32':
+            return web.json_response({"enabled": False, "available": False})
+
+        try:
+            import winreg
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
+            try:
+                winreg.QueryValueEx(key, "Scriber")
+                winreg.CloseKey(key)
+                return web.json_response({"enabled": True, "available": True})
+            except FileNotFoundError:
+                winreg.CloseKey(key)
+                return web.json_response({"enabled": False, "available": True})
+        except Exception:
+            return web.json_response({"enabled": False, "available": True})
+
+    async def set_autostart(request: web.Request):
+        """Enable or disable autostart."""
+        import sys
+        if sys.platform != 'win32':
+            return web.json_response({"message": "Autostart only available on Windows"}, status=400)
+
+        try:
+            payload = await request.json()
+            enabled = payload.get("enabled", False)
+        except Exception:
+            return web.json_response({"message": "Invalid JSON"}, status=400)
+
+        try:
+            import winreg
+            from pathlib import Path
+
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+
+            if enabled:
+                # Enable autostart - find tray.py
+                tray_script = Path(__file__).parent / "tray.py"
+                if not tray_script.exists():
+                    winreg.CloseKey(key)
+                    return web.json_response({"message": "tray.py not found"}, status=500)
+
+                python_exe = sys.executable
+                startup_command = f'"{python_exe}" "{str(tray_script.resolve())}"'
+                winreg.SetValueEx(key, "Scriber", 0, winreg.REG_SZ, startup_command)
+                winreg.CloseKey(key)
+                return web.json_response({"enabled": True, "message": "Autostart enabled"})
+            else:
+                # Disable autostart
+                try:
+                    winreg.DeleteValue(key, "Scriber")
+                except FileNotFoundError:
+                    pass
+                winreg.CloseKey(key)
+                return web.json_response({"enabled": False, "message": "Autostart disabled"})
+
+        except Exception as e:
+            return web.json_response({"message": f"Error: {str(e)}"}, status=500)
 
     async def microphones(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
@@ -1319,6 +1488,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     app.router.add_get("/api/settings", get_settings)
     app.router.add_put("/api/settings", put_settings)
+    app.router.add_get("/api/autostart", get_autostart)
+    app.router.add_post("/api/autostart", set_autostart)
     app.router.add_get("/api/microphones", microphones)
 
     app.router.add_get("/api/transcripts", transcripts)

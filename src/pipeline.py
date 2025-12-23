@@ -342,6 +342,65 @@ def _selected_language():
     return lang if lang else None
 
 
+def _resolve_mic_device(device_name: str) -> str:
+    """Resolve a saved device name to the current device index.
+    
+    The mic device setting now stores the device NAME (stable across reboots)
+    instead of the index (which can change). This function looks up the current
+    index for the named device, falling back to 'default' if not found.
+    """
+    if device_name == "default" or not device_name:
+        return "default"
+    
+    # If it's already a numeric index (legacy), assume it might be valid
+    try:
+        int(device_name)
+        return device_name  # Legacy format, MicrophoneInput will handle fallback
+    except ValueError:
+        pass
+    
+    # It's a device name - resolve to index
+    try:
+        import sounddevice as sd
+        
+        # Get preferred host API (MME for best USB device compatibility)
+        host_apis = sd.query_hostapis()
+        mme_idx = next((i for i, h in enumerate(host_apis) if h.get('name', '') == 'MME'), None)
+        wasapi_idx = next((i for i, h in enumerate(host_apis) if 'WASAPI' in h.get('name', '')), None)
+        preferred_hostapi = mme_idx if mme_idx is not None else wasapi_idx
+        
+        # Search for device by name in preferred host API first
+        for idx, dev in enumerate(sd.query_devices()):
+            if int(dev.get("max_input_channels", 0) or 0) <= 0:
+                continue
+            
+            hostapi_idx = dev.get('hostapi', 0)
+            if preferred_hostapi is not None and hostapi_idx != preferred_hostapi:
+                continue
+            
+            name = str(dev.get("name", ""))
+            if name == device_name:
+                logger.info(f"Resolved microphone '{device_name}' to device index {idx}")
+                return str(idx)
+        
+        # Try any host API as fallback
+        for idx, dev in enumerate(sd.query_devices()):
+            if int(dev.get("max_input_channels", 0) or 0) <= 0:
+                continue
+            name = str(dev.get("name", ""))
+            if name == device_name:
+                logger.info(f"Resolved microphone '{device_name}' to device index {idx} (different host API)")
+                return str(idx)
+        
+        # Device not found - fall back to default
+        logger.warning(f"Microphone '{device_name}' not available, falling back to Windows default")
+        return "default"
+        
+    except Exception as e:
+        logger.error(f"Error resolving microphone '{device_name}': {e}")
+        return "default"
+
+
 class TranscriptionCallbackProcessor(FrameProcessor):
     """Emits interim/final transcription updates via a lightweight callback."""
 
@@ -479,7 +538,7 @@ class ScriberPipeline:
                     channels=Config.CHANNELS,
                     turn_analyzer=smart_turn,
                     vad_analyzer=vad_analyzer,
-                    device=Config.MIC_DEVICE,
+                    device=_resolve_mic_device(Config.MIC_DEVICE),
                     keep_alive=Config.MIC_ALWAYS_ON,
                     on_audio_level=self.on_audio_level,
                 )

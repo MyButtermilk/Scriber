@@ -321,38 +321,53 @@ def restart_backend(icon, item):
 
 
 def get_recent_transcripts():
-    """Fetch recent mic transcripts from the database."""
+    """Fetch recent completed transcripts from the database."""
     try:
-        from src.database import load_all_transcripts
+        from src.database import load_all_transcripts, _DB_PATH
+
+        with log_lock:
+            log_buffer.append(f"[Tray] Loading from database: {_DB_PATH}")
 
         # Load all transcripts from database (already sorted by created_at DESC)
         all_transcripts = load_all_transcripts()
 
-        # Filter for completed mic recordings and limit to 5
-        mic_transcripts = []
+        with log_lock:
+            log_buffer.append(f"[Tray] Database returned {len(all_transcripts)} total transcripts")
+            for i, t in enumerate(all_transcripts[:10]):  # Log first 10 for debugging
+                log_buffer.append(f"[Tray]   #{i}: type={t.get('type')!r}, status={t.get('status')!r}, title={t.get('title', '')[:30]!r}")
+
+        # Filter for completed recordings (any type) and limit to 5
+        recent_transcripts = []
         for t in all_transcripts:
-            if t.get("type") == "mic" and t.get("status") == "completed":
+            # Include all completed recordings (mic, youtube, file)
+            if t.get("status") == "completed":
                 # Add preview field for menu display
                 content = t.get("content", "")
                 if content:
-                    # Create preview from first 50 chars of content
-                    preview = content[:50].replace("\n", " ").strip()
-                    if len(content) > 50:
+                    # Create preview from first 5 words of content
+                    words = content.split()[:5]
+                    preview = " ".join(words)
+                    if len(words) >= 5:
                         preview += "..."
-                    t["preview"] = preview
+                    t["preview"] = preview.replace("\n", " ").strip()
                 else:
                     t["preview"] = t.get("title", "Untitled")
 
-                mic_transcripts.append(t)
+                recent_transcripts.append(t)
 
-                if len(mic_transcripts) >= 5:
+                if len(recent_transcripts) >= 5:
                     break
 
-        return mic_transcripts
+        with log_lock:
+            log_buffer.append(f"[Tray] Found {len(recent_transcripts)} completed transcripts for menu")
+
+        return recent_transcripts
     except Exception as e:
         # Log unexpected errors
+        import traceback
         with log_lock:
             log_buffer.append(f"[Tray] Database fetch error: {type(e).__name__}: {e}")
+            log_buffer.append(f"[Tray] Traceback: {traceback.format_exc()}")
         return []
 
 
@@ -393,28 +408,78 @@ def copy_transcript_to_clipboard(transcript_id, label):
             with log_lock:
                 log_buffer.append(f"[Tray] Starting clipboard copy...")
 
-            # Use Windows clipboard API
+            # Use clipboard copy methods
             if sys.platform == 'win32':
                 try:
-                    import win32clipboard
-
-                    max_retries = 5
-                    for attempt in range(max_retries):
+                    # Use Win32 API directly for proper Unicode support
+                    import ctypes
+                    from ctypes import wintypes
+                    
+                    # Windows API constants
+                    CF_UNICODETEXT = 13
+                    GMEM_MOVEABLE = 0x0002
+                    
+                    # Load required functions
+                    user32 = ctypes.windll.user32
+                    kernel32 = ctypes.windll.kernel32
+                    
+                    # Set up function signatures
+                    user32.OpenClipboard.argtypes = [wintypes.HWND]
+                    user32.OpenClipboard.restype = wintypes.BOOL
+                    user32.CloseClipboard.argtypes = []
+                    user32.CloseClipboard.restype = wintypes.BOOL
+                    user32.EmptyClipboard.argtypes = []
+                    user32.EmptyClipboard.restype = wintypes.BOOL
+                    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+                    user32.SetClipboardData.restype = wintypes.HANDLE
+                    
+                    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+                    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+                    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+                    kernel32.GlobalLock.restype = wintypes.LPVOID
+                    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+                    kernel32.GlobalUnlock.restype = wintypes.BOOL
+                    
+                    # Encode as UTF-16 (Windows native Unicode format)
+                    text_utf16 = content.encode('utf-16-le') + b'\x00\x00'  # Null-terminated
+                    
+                    # Allocate global memory
+                    h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(text_utf16))
+                    if not h_mem:
+                        raise ctypes.WinError()
+                    
+                    try:
+                        # Lock memory and copy data
+                        ptr = kernel32.GlobalLock(h_mem)
+                        if not ptr:
+                            raise ctypes.WinError()
+                        
                         try:
-                            win32clipboard.OpenClipboard()
-                            win32clipboard.EmptyClipboard()
-                            win32clipboard.SetClipboardText(content, win32clipboard.CF_UNICODETEXT)
-                            win32clipboard.CloseClipboard()
-
-                            with log_lock:
-                                log_buffer.append(f"[Tray] ✓ Copied to clipboard: {label[:40]}...")
-                            break
-                        except Exception as e:
-                            if attempt < max_retries - 1:
-                                import time
-                                time.sleep(0.1)
-                            else:
-                                raise
+                            ctypes.memmove(ptr, text_utf16, len(text_utf16))
+                        finally:
+                            kernel32.GlobalUnlock(h_mem)
+                        
+                        # Open clipboard and set data
+                        if not user32.OpenClipboard(None):
+                            raise ctypes.WinError()
+                        
+                        try:
+                            user32.EmptyClipboard()
+                            if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
+                                raise ctypes.WinError()
+                            # Memory now owned by clipboard, don't free it
+                            h_mem = None
+                        finally:
+                            user32.CloseClipboard()
+                        
+                        with log_lock:
+                            log_buffer.append(f"[Tray] ✓ Copied to clipboard (Unicode): {label[:40]}...")
+                    
+                    except Exception:
+                        # If anything went wrong and we still own the memory, free it
+                        if h_mem:
+                            kernel32.GlobalFree(h_mem)
+                        raise
 
                 except Exception as win_err:
                     with log_lock:
@@ -521,13 +586,9 @@ def copy_all_logs(icon, item):
             log_buffer.append(f"[Tray] Error copying logs: {e}")
 
 
-def setup_tray():
-    """Setup the system tray icon."""
-    global tray_icon
-    
-    icon_image = load_icon()
-    
-    menu = pystray.Menu(
+def create_menu():
+    """Create the tray menu dynamically (called each time menu is opened)."""
+    return pystray.Menu(
         pystray.MenuItem("Open Scriber", open_browser, default=True),
         pystray.MenuItem("View Logs", show_logs),
         pystray.MenuItem("Copy Logs", copy_all_logs),
@@ -538,14 +599,21 @@ def setup_tray():
         pystray.MenuItem("Restart App", restart_app),
         pystray.MenuItem("Quit", quit_app),
     )
-    
+
+
+def setup_tray():
+    """Setup the system tray icon."""
+    global tray_icon
+
+    icon_image = load_icon()
+
     tray_icon = pystray.Icon(
         "Scriber",
         icon_image,
         "Scriber Backend",
-        menu,
+        create_menu(),  # Create the initial menu
     )
-    
+
     return tray_icon
 
 

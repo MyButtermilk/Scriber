@@ -10,8 +10,9 @@ from datetime import datetime
 
 from loguru import logger
 
-# Database file location (in user's app data or project root)
-_DB_PATH = Path("transcripts.db")
+# Database file location - use absolute path based on project root
+_PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+_DB_PATH = _PROJECT_ROOT / "transcripts.db"
 
 
 def _get_connection() -> sqlite3.Connection:
