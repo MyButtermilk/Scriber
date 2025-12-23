@@ -1,9 +1,10 @@
-import { ArrowRight, Clock, MoreHorizontal, PlayCircle, Youtube as YoutubeIcon, Loader2, Trash2, CheckCircle2, ThumbsUp, Eye } from "lucide-react";
+import { ArrowRight, Clock, MoreHorizontal, PlayCircle, Youtube as YoutubeIcon, Loader2, Trash2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useLocation } from "wouter";
 import { useState, useEffect, useMemo } from "react";
 import { apiUrl, wsUrl } from "@/lib/backend";
@@ -37,6 +38,14 @@ export default function Youtube() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>("date");
   const queryClient = useQueryClient();
+  const [viewMode, setViewMode] = useState<"list" | "grid">(
+    () => (localStorage.getItem("scriber-view-mode") as "list" | "grid") || "list"
+  );
+
+  // Persist view mode
+  useEffect(() => {
+    localStorage.setItem("scriber-view-mode", viewMode);
+  }, [viewMode]);
 
   // Sort search results
   const sortedResults = useMemo(() => {
@@ -364,68 +373,139 @@ export default function Youtube() {
 
       {/* Recent History */}
       <div className="space-y-6">
-        <h2 className="text-lg font-semibold px-2">Recent Videos</h2>
+        <div className="flex items-center justify-between px-2">
+          <h2 className="text-lg font-semibold">Recent Videos</h2>
+          <ToggleGroup
+            type="single"
+            value={viewMode}
+            onValueChange={(val) => val && setViewMode(val as "list" | "grid")}
+            className="bg-secondary/50 rounded-lg p-1"
+          >
+            <ToggleGroupItem value="list" aria-label="List view" className="h-8 w-8 p-0">
+              <LayoutList className="h-4 w-4" />
+            </ToggleGroupItem>
+            <ToggleGroupItem value="grid" aria-label="Grid view" className="h-8 w-8 p-0">
+              <LayoutGrid className="h-4 w-4" />
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
 
         {recentVideos.length === 0 ? (
           <p className="text-muted-foreground text-center py-8">No YouTube videos transcribed yet. Search for a video to get started!</p>
         ) : (
-          <div className="grid gap-4">
+          <div className={viewMode === "grid" ? "grid grid-cols-2 gap-4" : "grid gap-4"}>
             {recentVideos.map((item: any) => (
-              <Card key={item.id} className="overflow-hidden border-border/60 hover:border-primary/50 transition-colors group cursor-pointer" onClick={() => setLocation(`/transcript/${item.id}`)}>
-                <div className="flex gap-4 p-4">
-                  <div className="relative w-32 h-20 bg-muted rounded-md shrink-0 overflow-hidden">
-                    {item.thumbnailUrl ? (
-                      <img
-                        src={item.thumbnailUrl}
-                        alt={item.title || "Thumbnail"}
-                        className="w-full h-full object-cover opacity-90"
-                      />
-                    ) : (
-                      <div className="w-full h-full bg-secondary flex items-center justify-center">
-                        <YoutubeIcon className="w-8 h-8 text-muted-foreground/50" />
-                      </div>
-                    )}
-                    <div className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">
-                      {item.duration}
-                    </div>
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex justify-between items-start">
-                      <h3 className="font-medium text-foreground truncate pr-4 text-base">{item.title}</h3>
-                      {item.status === 'processing' ? (
-                        <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                          {item.step || "Processing"}
-                        </Badge>
-                      ) : item.status === 'failed' ? (
-                        <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
+              <Card key={item.id} className="overflow-hidden bg-white/70 dark:bg-zinc-900/70 backdrop-blur-xl border border-white/20 dark:border-white/10 shadow-md hover:shadow-lg transition-all group cursor-pointer" onClick={() => setLocation(`/transcript/${item.id}`)}>
+                {viewMode === "list" ? (
+                  // List view
+                  <div className="flex gap-4 p-4">
+                    <div className="relative w-32 h-20 bg-muted rounded-md shrink-0 overflow-hidden">
+                      {item.thumbnailUrl ? (
+                        <img
+                          src={item.thumbnailUrl}
+                          alt={item.title || "Thumbnail"}
+                          className="w-full h-full object-cover opacity-90"
+                        />
                       ) : (
-                        <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
-                          <CheckCircle2 className="w-3 h-3" />
-                          Ready
+                        <div className="w-full h-full bg-secondary flex items-center justify-center">
+                          <YoutubeIcon className="w-8 h-8 text-muted-foreground/50" />
                         </div>
                       )}
+                      <div className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">
+                        {item.duration}
+                      </div>
                     </div>
-                    <p className="text-sm text-muted-foreground mt-1">{item.channel || item.channelTitle || "Unknown Channel"} • {item.date}</p>
-                  </div>
 
-                  <div className="flex flex-col justify-center">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={(e) => deleteTranscript(e, item.id)}
-                      disabled={deletingId === item.id}
-                    >
-                      {deletingId === item.id ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="w-4 h-4" />
-                      )}
-                    </Button>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between items-start">
+                        <h3 className="font-medium text-foreground truncate pr-4 text-base">{item.title}</h3>
+                        {item.status === 'processing' ? (
+                          <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            {item.step || "Processing"}
+                          </Badge>
+                        ) : item.status === 'failed' ? (
+                          <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
+                        ) : (
+                          <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
+                            <CheckCircle2 className="w-3 h-3" />
+                            Ready
+                          </div>
+                        )}
+                      </div>
+                      <p className="text-sm text-muted-foreground mt-1">{item.channel || item.channelTitle || "Unknown Channel"} • {item.date}</p>
+                    </div>
+
+                    <div className="flex flex-col justify-center">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={(e) => deleteTranscript(e, item.id)}
+                        disabled={deletingId === item.id}
+                      >
+                        {deletingId === item.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-4 h-4" />
+                        )}
+                      </Button>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  // Grid view
+                  <div className="flex flex-col">
+                    <div className="relative w-full aspect-video bg-muted overflow-hidden">
+                      {item.thumbnailUrl ? (
+                        <img
+                          src={item.thumbnailUrl}
+                          alt={item.title || "Thumbnail"}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                        />
+                      ) : (
+                        <div className="w-full h-full bg-secondary flex items-center justify-center">
+                          <YoutubeIcon className="w-12 h-12 text-muted-foreground/50" />
+                        </div>
+                      )}
+                      <div className="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded">
+                        {item.duration}
+                      </div>
+                      <div className="absolute top-2 right-2">
+                        {item.status === 'processing' ? (
+                          <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50/90 text-[10px] flex items-center gap-1">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          </Badge>
+                        ) : item.status === 'failed' ? (
+                          <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50/90 text-[10px]">Failed</Badge>
+                        ) : (
+                          <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50/90 px-2 py-1 rounded-full">
+                            <CheckCircle2 className="w-3 h-3" />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="p-3">
+                      <h3 className="font-medium text-foreground line-clamp-2 text-sm group-hover:text-primary transition-colors">{item.title}</h3>
+                      <p className="text-xs text-muted-foreground mt-1 truncate">{item.channel || item.channelTitle || "Unknown"}</p>
+                      <div className="flex items-center justify-between mt-2">
+                        <span className="text-xs text-muted-foreground">{item.date}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                          onClick={(e) => deleteTranscript(e, item.id)}
+                          disabled={deletingId === item.id}
+                        >
+                          {deletingId === item.id ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-3 h-3" />
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </Card>
             ))}
           </div>

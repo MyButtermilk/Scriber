@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2 } from "lucide-react";
+import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2, LayoutGrid, LayoutList } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { Transcript } from "@/lib/mockData";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -20,6 +21,14 @@ export default function LiveMic() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
+  const [viewMode, setViewMode] = useState<"list" | "grid">(
+    () => (localStorage.getItem("scriber-view-mode") as "list" | "grid") || "list"
+  );
+
+  // Persist view mode
+  useEffect(() => {
+    localStorage.setItem("scriber-view-mode", viewMode);
+  }, [viewMode]);
 
   const transcriptsQuery = useQuery({
     queryKey: ["/api/transcripts"],
@@ -257,46 +266,93 @@ export default function LiveMic() {
       <div className="space-y-4">
         <div className="flex items-center justify-between px-2">
           <h2 className="text-lg font-semibold text-foreground">Recent Recordings</h2>
-          <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-foreground">View All</Button>
+          <div className="flex items-center gap-2">
+            <ToggleGroup
+              type="single"
+              value={viewMode}
+              onValueChange={(val) => val && setViewMode(val as "list" | "grid")}
+              className="bg-secondary/50 rounded-lg p-1"
+            >
+              <ToggleGroupItem value="list" aria-label="List view" className="h-8 w-8 p-0">
+                <LayoutList className="h-4 w-4" />
+              </ToggleGroupItem>
+              <ToggleGroupItem value="grid" aria-label="Grid view" className="h-8 w-8 p-0">
+                <LayoutGrid className="h-4 w-4" />
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
         </div>
 
-        <div className="grid gap-3">
+        <div className={viewMode === "grid" ? "grid grid-cols-2 gap-3" : "grid gap-3"}>
           {transcripts.filter(t => t.type === 'mic').map((item) => (
             <Card
               key={item.id}
-              className="p-4 hover:shadow-md transition-shadow cursor-pointer border-border/60 bg-card/50 backdrop-blur-sm group"
+              className="p-4 hover:shadow-lg transition-all cursor-pointer bg-white/70 dark:bg-zinc-900/70 backdrop-blur-xl border border-white/20 dark:border-white/10 shadow-md shadow-black/5 dark:shadow-black/20 group"
               onClick={() => setLocation(`/transcript/${item.id}`)}
             >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-full bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center text-primary">
-                    <Mic className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
-                    <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-                      <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
-                      <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
-                      <span className="flex items-center gap-1 bg-secondary px-1.5 py-0.5 rounded-md"><Globe className="w-3 h-3" /> {item.language}</span>
+              {viewMode === "list" ? (
+                // List View
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
+                      <Mic className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
+                      <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
+                        <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
+                        <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
+                        <span className="flex items-center gap-1 bg-secondary px-1.5 py-0.5 rounded-md"><Globe className="w-3 h-3" /> {item.language}</span>
+                      </div>
                     </div>
                   </div>
+                  <div className="flex flex-col justify-center">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                      onClick={(e) => deleteTranscript(e, item.id)}
+                      disabled={deletingId === item.id}
+                    >
+                      {deletingId === item.id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex flex-col justify-center">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
-                    onClick={(e) => deleteTranscript(e, item.id)}
-                    disabled={deletingId === item.id}
-                  >
-                    {deletingId === item.id ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Trash2 className="w-4 h-4" />
-                    )}
-                  </Button>
+              ) : (
+                // Grid View
+                <div className="flex flex-col h-full">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
+                      <Mic className="w-6 h-6" />
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive h-8 w-8"
+                      onClick={(e) => deleteTranscript(e, item.id)}
+                      disabled={deletingId === item.id}
+                    >
+                      {deletingId === item.id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                    </Button>
+                  </div>
+                  <h3 className="font-medium text-foreground group-hover:text-primary transition-colors line-clamp-2 mb-2">{item.title}</h3>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
+                    <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
+                    <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
+                  </div>
+                  <div className="mt-2">
+                    <span className="inline-flex items-center gap-1 bg-secondary/50 px-2 py-1 rounded-md text-xs"><Globe className="w-3 h-3" /> {item.language}</span>
+                  </div>
                 </div>
-              </div>
+              )}
             </Card>
           ))}
         </div>

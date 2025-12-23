@@ -1,10 +1,11 @@
 import { useCallback, useState, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileAudio, FileVideo, CheckCircle2, Clock, MoreVertical, Loader2, XCircle, Trash2 } from "lucide-react";
+import { UploadCloud, FileAudio, FileVideo, CheckCircle2, Clock, MoreVertical, Loader2, XCircle, Trash2, LayoutGrid, LayoutList } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiUrl, wsUrl } from "@/lib/backend";
@@ -18,6 +19,14 @@ export default function FileTranscribe() {
   const [uploadingFileName, setUploadingFileName] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const queryClient = useQueryClient();
+  const [viewMode, setViewMode] = useState<"list" | "grid">(
+    () => (localStorage.getItem("scriber-view-mode") as "list" | "grid") || "list"
+  );
+
+  // Persist view mode
+  useEffect(() => {
+    localStorage.setItem("scriber-view-mode", viewMode);
+  }, [viewMode]);
 
   const transcriptsQuery = useQuery({
     queryKey: ["/api/transcripts"],
@@ -229,56 +238,116 @@ export default function FileTranscribe() {
 
       {/* History */}
       <div className="space-y-4">
-        <h2 className="text-lg font-semibold px-1">Recent Files</h2>
+        <div className="flex items-center justify-between px-1">
+          <h2 className="text-lg font-semibold">Recent Files</h2>
+          <ToggleGroup
+            type="single"
+            value={viewMode}
+            onValueChange={(val) => val && setViewMode(val as "list" | "grid")}
+            className="bg-secondary/50 rounded-lg p-1"
+          >
+            <ToggleGroupItem value="list" aria-label="List view" className="h-8 w-8 p-0">
+              <LayoutList className="h-4 w-4" />
+            </ToggleGroupItem>
+            <ToggleGroupItem value="grid" aria-label="Grid view" className="h-8 w-8 p-0">
+              <LayoutGrid className="h-4 w-4" />
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
         {completedItems.length === 0 ? (
           <p className="text-muted-foreground text-center py-8">No files transcribed yet. Upload a file to get started!</p>
         ) : (
-          <div className="grid gap-3">
+          <div className={viewMode === "grid" ? "grid grid-cols-2 gap-3" : "grid gap-3"}>
             {completedItems.map((item: any) => (
-              <Card key={item.id} className="p-4 hover:shadow-md transition-shadow cursor-pointer group" onClick={() => setLocation(`/transcript/${item.id}`)}>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${item.status === 'failed'
-                      ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
-                      : 'bg-green-50 dark:bg-green-900/20 text-green-600'
-                      }`}>
-                      {item.status === 'failed' ? <XCircle className="w-5 h-5" /> : <FileAudio className="w-5 h-5" />}
-                    </div>
-                    <div>
-                      <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
-                      <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-                        {item.channel && <span>{item.channel}</span>}
-                        {item.channel && <span>•</span>}
-                        <span>{item.duration}</span>
-                        <span>•</span>
-                        <span>{item.date}</span>
+              <Card key={item.id} className="p-4 hover:shadow-lg transition-all cursor-pointer bg-white/70 dark:bg-zinc-900/70 backdrop-blur-xl border border-white/20 dark:border-white/10 shadow-md group" onClick={() => setLocation(`/transcript/${item.id}`)}>
+                {viewMode === "list" ? (
+                  // List view
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${item.status === 'failed'
+                        ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
+                        : 'bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600'
+                        }`}>
+                        {item.status === 'failed' ? <XCircle className="w-5 h-5" /> : <FileAudio className="w-5 h-5" />}
+                      </div>
+                      <div>
+                        <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
+                          {item.channel && <span>{item.channel}</span>}
+                          {item.channel && <span>•</span>}
+                          <span>{item.duration}</span>
+                          <span>•</span>
+                          <span>{item.date}</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {item.status === 'failed' ? (
-                      <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
-                    ) : (
-                      <div className="hidden sm:flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
-                        <CheckCircle2 className="w-3 h-3" />
-                        Ready
-                      </div>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
-                      onClick={(e) => deleteTranscript(e, item.id)}
-                      disabled={deletingId === item.id}
-                    >
-                      {deletingId === item.id ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
+                    <div className="flex items-center gap-2">
+                      {item.status === 'failed' ? (
+                        <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
                       ) : (
-                        <Trash2 className="w-4 h-4" />
+                        <div className="hidden sm:flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
+                          <CheckCircle2 className="w-3 h-3" />
+                          Ready
+                        </div>
                       )}
-                    </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                        onClick={(e) => deleteTranscript(e, item.id)}
+                        disabled={deletingId === item.id}
+                      >
+                        {deletingId === item.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-4 h-4" />
+                        )}
+                      </Button>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  // Grid view
+                  <div className="flex flex-col h-full">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${item.status === 'failed'
+                        ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
+                        : 'bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600'
+                        }`}>
+                        {item.status === 'failed' ? <XCircle className="w-6 h-6" /> : <FileAudio className="w-6 h-6" />}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {item.status === 'failed' ? (
+                          <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
+                        ) : (
+                          <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
+                            <CheckCircle2 className="w-3 h-3" />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <h3 className="font-medium text-foreground group-hover:text-primary transition-colors line-clamp-2 mb-2">{item.title}</h3>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
+                      <span>{item.duration}</span>
+                      <span>•</span>
+                      <span>{item.date}</span>
+                    </div>
+                    <div className="flex items-center justify-end mt-2">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                        onClick={(e) => deleteTranscript(e, item.id)}
+                        disabled={deletingId === item.id}
+                      >
+                        {deletingId === item.id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-3 h-3" />
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </Card>
             ))}
           </div>
