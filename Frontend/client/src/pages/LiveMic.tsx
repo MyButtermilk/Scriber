@@ -9,6 +9,8 @@ import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiUrl, wsUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
+import { EmptyState } from "@/components/ui/empty-state";
+import { SkeletonList } from "@/components/ui/skeleton-card";
 
 export default function LiveMic() {
   const { toast } = useToast();
@@ -197,8 +199,8 @@ export default function LiveMic() {
       {/* Main Recording Area */}
       <div className="flex flex-col items-center justify-center space-y-6 mb-10">
 
-        {/* Live Text Output */}
-        <div className="w-full max-w-lg min-h-[120px] text-center flex items-center justify-center p-6 rounded-2xl bg-secondary/30 border border-border/50 backdrop-blur-sm">
+        {/* Live Text Output - Debossed/inset neumorphic style */}
+        <div className="neu-search-inset w-full max-w-lg min-h-[120px] text-center flex items-center justify-center p-6 rounded-2xl">
           {isRecording ? (
             <motion.p
               initial={{ opacity: 0 }}
@@ -246,7 +248,7 @@ export default function LiveMic() {
 
           <Button
             size="lg"
-            className={`h-24 w-24 rounded-full shadow-xl transition-all duration-300 ${isRecording ? 'bg-destructive hover:bg-destructive/90 ring-4 ring-destructive/20' : 'bg-primary hover:bg-primary/90 hover:scale-105 shadow-primary/25'}`}
+            className={`h-24 w-24 rounded-full shadow-xl transition-all duration-300 ${isRecording ? 'bg-destructive hover:bg-destructive/90 ring-4 ring-destructive/20 recording-pulse' : 'bg-primary hover:bg-primary/90 hover:scale-105 shadow-primary/25'}`}
             onClick={handleToggle}
           >
             {isRecording ? (
@@ -283,80 +285,97 @@ export default function LiveMic() {
           </div>
         </div>
 
-        <div className={viewMode === "grid" ? "grid grid-cols-2 gap-3" : "grid gap-3"}>
-          {transcripts.filter(t => t.type === 'mic').map((item) => (
-            <Card
-              key={item.id}
-              className="p-4 hover:shadow-lg transition-all cursor-pointer bg-white/70 dark:bg-zinc-900/70 backdrop-blur-xl border border-white/20 dark:border-white/10 shadow-md shadow-black/5 dark:shadow-black/20 group"
-              onClick={() => setLocation(`/transcript/${item.id}`)}
-            >
-              {viewMode === "list" ? (
-                // List View
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
-                      <Mic className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
-                      <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-                        <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
-                        <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
-                        <span className="flex items-center gap-1 bg-secondary px-1.5 py-0.5 rounded-md"><Globe className="w-3 h-3" /> {item.language}</span>
+        {transcriptsQuery.isLoading ? (
+          <SkeletonList count={3} variant={viewMode} />
+        ) : transcripts.filter(t => t.type === 'mic').length === 0 ? (
+          <EmptyState type="mic" />
+        ) : (
+          <div className={viewMode === "grid" ? "grid grid-cols-2 gap-3" : "grid gap-3"}>
+            {transcripts.filter(t => t.type === 'mic').map((item, index) => (
+              <motion.div
+                key={item.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{
+                  delay: index * 0.05,
+                  duration: 0.3,
+                  ease: "easeOut"
+                }}
+              >
+                <Card
+                  className="neu-panel-raised p-4 hover:scale-[1.01] transition-all cursor-pointer bg-card border-0 group"
+                  onClick={() => setLocation(`/transcript/${item.id}`)}
+                >
+                  {viewMode === "list" ? (
+                    // List View
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
+                          <Mic className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
+                          <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
+                            <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
+                            <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
+                            <span className="flex items-center gap-1 bg-secondary px-1.5 py-0.5 rounded-md"><Globe className="w-3 h-3" /> {item.language}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex flex-col justify-center">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                          onClick={(e) => deleteTranscript(e, item.id)}
+                          disabled={deletingId === item.id}
+                        >
+                          {deletingId === item.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-4 h-4" />
+                          )}
+                        </Button>
                       </div>
                     </div>
-                  </div>
-                  <div className="flex flex-col justify-center">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
-                      onClick={(e) => deleteTranscript(e, item.id)}
-                      disabled={deletingId === item.id}
-                    >
-                      {deletingId === item.id ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="w-4 h-4" />
-                      )}
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                // Grid View
-                <div className="flex flex-col h-full">
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
-                      <Mic className="w-6 h-6" />
+                  ) : (
+                    // Grid View
+                    <div className="flex flex-col h-full">
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
+                          <Mic className="w-6 h-6" />
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive h-8 w-8"
+                          onClick={(e) => deleteTranscript(e, item.id)}
+                          disabled={deletingId === item.id}
+                        >
+                          {deletingId === item.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-4 h-4" />
+                          )}
+                        </Button>
+                      </div>
+                      <h3 className="font-medium text-foreground group-hover:text-primary transition-colors line-clamp-2 mb-2">{item.title}</h3>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
+                        <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
+                        <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
+                      </div>
+                      <div className="mt-2">
+                        <span className="inline-flex items-center gap-1 bg-secondary/50 px-2 py-1 rounded-md text-xs"><Globe className="w-3 h-3" /> {item.language}</span>
+                      </div>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive h-8 w-8"
-                      onClick={(e) => deleteTranscript(e, item.id)}
-                      disabled={deletingId === item.id}
-                    >
-                      {deletingId === item.id ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="w-4 h-4" />
-                      )}
-                    </Button>
-                  </div>
-                  <h3 className="font-medium text-foreground group-hover:text-primary transition-colors line-clamp-2 mb-2">{item.title}</h3>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
-                    <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
-                    <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
-                  </div>
-                  <div className="mt-2">
-                    <span className="inline-flex items-center gap-1 bg-secondary/50 px-2 py-1 rounded-md text-xs"><Globe className="w-3 h-3" /> {item.language}</span>
-                  </div>
-                </div>
-              )}
-            </Card>
-          ))}
-        </div>
+                  )}
+                </Card>
+              </motion.div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
 }
+

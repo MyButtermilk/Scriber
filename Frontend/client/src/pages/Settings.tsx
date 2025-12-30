@@ -389,7 +389,7 @@ export default function Settings() {
 
         {/* Transcription Settings */}
         <AccordionItem value="transcription" className="border-0">
-          <div className="bg-white/70 dark:bg-zinc-900/70 backdrop-blur-xl border border-white/20 dark:border-white/10 rounded-xl shadow-lg shadow-black/5 dark:shadow-black/20 overflow-hidden">
+          <div className="neu-panel-raised bg-card rounded-xl overflow-hidden">
             <AccordionTrigger className="px-6 py-4 hover:no-underline">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-primary/10 text-primary">
@@ -714,7 +714,7 @@ export default function Settings() {
 
         {/* API Keys */}
         <AccordionItem value="api-keys" className="border-0">
-          <div className="bg-white/70 dark:bg-zinc-900/70 backdrop-blur-xl border border-white/20 dark:border-white/10 rounded-xl shadow-lg shadow-black/5 dark:shadow-black/20 overflow-hidden">
+          <div className="neu-panel-raised bg-card rounded-xl overflow-hidden">
             <AccordionTrigger className="px-6 py-4 hover:no-underline">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">

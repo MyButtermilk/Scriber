@@ -37,6 +37,8 @@
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
 
+  --color-sidebar: hsl(var(--sidebar));
+
   --color-chart-1: hsl(var(--chart-1));
   --color-chart-2: hsl(var(--chart-2));
   --color-chart-3: hsl(var(--chart-3));
@@ -50,36 +52,45 @@
 }
 
 :root {
-  /* Soft Blue Brand Palette */
-  --background: 210 20% 98%;
-  --foreground: 222 47% 11%;
+  /* Light Neumorphism - soft cream/gray palette */
+  --neu-base: 220 15% 92%;
+  --neu-light: 0 0% 100%;
+  --neu-dark: 220 10% 82%;
 
+  /* Sidebar - soft gray for light mode */
+  --sidebar: 220 15% 94%;
+
+  /* Background - off-white */
+  --background: 220 15% 96%;
+  --foreground: 220 20% 15%;
+
+  /* Cards/panels */
   --card: 0 0% 100%;
-  --card-foreground: 222 47% 11%;
+  --card-foreground: 220 20% 15%;
 
   --popover: 0 0% 100%;
-  --popover-foreground: 222 47% 11%;
+  --popover-foreground: 220 20% 15%;
 
-  /* Primary Blue - Soft but distinct */
-  --primary: 215 90% 55%;
-  --primary-foreground: 210 40% 98%;
+  /* Primary - muted blue */
+  --primary: 220 60% 50%;
+  --primary-foreground: 0 0% 100%;
 
-  /* Secondary/Muted - Cool grays */
-  --secondary: 210 40% 96.1%;
-  --secondary-foreground: 222 47% 11.2%;
+  /* Secondary - for debossed elements */
+  --secondary: 220 15% 88%;
+  --secondary-foreground: 220 20% 25%;
 
-  --muted: 210 40% 96.1%;
-  --muted-foreground: 215 16% 47%;
+  --muted: 220 15% 90%;
+  --muted-foreground: 220 10% 45%;
 
-  --accent: 210 40% 96.1%;
-  --accent-foreground: 222 47% 11.2%;
+  --accent: 220 15% 90%;
+  --accent-foreground: 220 20% 15%;
 
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 210 40% 98%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
 
-  --border: 214 32% 91%;
-  --input: 214 32% 91%;
-  --ring: 215 90% 55%;
+  --border: 220 15% 88%;
+  --input: 220 15% 90%;
+  --ring: 220 60% 50%;
 
   --radius: 0.75rem;
 
@@ -98,6 +109,11 @@ html {
 /* Use overlay scrollbar on modern browsers */
 @supports (scrollbar-gutter: stable) {
   html {
+    scrollbar-gutter: stable;
+  }
+
+  /* Prevent layout shift in scrollable containers */
+  .overflow-y-auto {
     scrollbar-gutter: stable;
   }
 }
@@ -121,33 +137,44 @@ html {
 }
 
 .dark {
-  --background: 222 47% 11%;
-  --foreground: 210 40% 98%;
+  /* Neumorphism base color - matte charcoal */
+  --neu-base: 220 6% 18%;
+  --neu-light: 220 6% 24%;
+  --neu-dark: 220 6% 10%;
 
-  --card: 222 47% 11%;
-  --card-foreground: 210 40% 98%;
+  /* Sidebar background - slightly darker charcoal */
+  --sidebar: 220 6% 14%;
 
-  --popover: 222 47% 11%;
-  --popover-foreground: 210 40% 98%;
+  /* Outer background - matte charcoal */
+  --background: 220 6% 16%;
+  --foreground: 0 0% 92%;
 
-  --primary: 210 40% 98%;
-  --primary-foreground: 222 47.4% 11.2%;
+  /* Main content area */
+  --card: 220 6% 20%;
+  --card-foreground: 0 0% 92%;
 
-  --secondary: 217.2 32.6% 17.5%;
-  --secondary-foreground: 210 40% 98%;
+  --popover: 220 6% 18%;
+  --popover-foreground: 0 0% 92%;
 
-  --muted: 217.2 32.6% 17.5%;
-  --muted-foreground: 215 20.2% 65.1%;
+  --primary: 0 0% 95%;
+  --primary-foreground: 0 0% 10%;
 
-  --accent: 217.2 32.6% 17.5%;
-  --accent-foreground: 210 40% 98%;
+  /* Neumorphic surface for debossed elements */
+  --secondary: 220 6% 14%;
+  --secondary-foreground: 0 0% 85%;
+
+  --muted: 220 6% 16%;
+  --muted-foreground: 0 0% 55%;
+
+  --accent: 220 6% 22%;
+  --accent-foreground: 0 0% 92%;
 
   --destructive: 0 62.8% 30.6%;
-  --destructive-foreground: 210 40% 98%;
+  --destructive-foreground: 0 0% 98%;
 
-  --border: 217.2 32.6% 17.5%;
-  --input: 217.2 32.6% 17.5%;
-  --ring: 212.7 26.8% 83.9%;
+  --border: 220 6% 12%;
+  --input: 220 6% 14%;
+  --ring: 0 0% 40%;
 }
 
 @layer base {
@@ -167,23 +194,258 @@ html {
   h6 {
     @apply font-heading font-semibold tracking-tight;
   }
+
+  /* Enhanced Typography Hierarchy */
+  .transcript-title {
+    @apply text-2xl font-bold tracking-tight;
+  }
+
+  .transcript-content {
+    @apply text-lg leading-relaxed text-foreground/90;
+  }
+}
+
+/* ============================================
+   NEUMORPHISM UTILITY CLASSES
+   ============================================ */
+
+/* Light Mode Neumorphism - needs stronger shadows for visibility */
+.neu-panel-raised {
+  box-shadow:
+    8px 8px 16px hsl(220 15% 75% / 0.5),
+    -6px -6px 12px hsl(0 0% 100% / 0.9),
+    inset 0 1px 0 hsl(0 0% 100% / 0.6);
+}
+
+.neu-panel-inset {
+  box-shadow:
+    inset 4px 4px 8px hsl(220 15% 75% / 0.35),
+    inset -3px -3px 6px hsl(0 0% 100% / 0.8);
+}
+
+.neu-search-inset {
+  background: linear-gradient(145deg, hsl(220 15% 86%), hsl(220 15% 90%));
+  box-shadow:
+    inset 3px 3px 6px hsl(220 15% 70% / 0.4),
+    inset -2px -2px 4px hsl(0 0% 100% / 0.7);
+}
+
+.neu-nav-item {
+  background: transparent;
+}
+
+.neu-nav-active {
+  background: linear-gradient(145deg, hsl(0 0% 100%), hsl(220 15% 94%));
+  box-shadow:
+    4px 4px 8px hsl(220 15% 75% / 0.4),
+    -3px -3px 6px hsl(0 0% 100% / 0.9),
+    inset 0 1px 0 hsl(0 0% 100% / 0.5);
+}
+
+.neu-kbd {
+  background: hsl(220 15% 92%);
+  box-shadow:
+    2px 2px 4px hsl(220 15% 75% / 0.3),
+    -1px -1px 2px hsl(0 0% 100% / 0.8);
+}
+
+/* Dark Mode Neumorphism Overrides - charcoal palette */
+.dark .neu-panel-raised {
+  box-shadow:
+    8px 8px 16px hsl(220 6% 6% / 0.7),
+    -4px -4px 12px hsl(220 6% 26% / 0.15),
+    inset 0 1px 0 hsl(220 6% 28% / 0.2);
+}
+
+.dark .neu-panel-inset {
+  box-shadow:
+    inset 3px 3px 8px hsl(220 6% 6% / 0.5),
+    inset -2px -2px 6px hsl(220 6% 26% / 0.08);
+}
+
+.dark .neu-search-inset {
+  background: linear-gradient(145deg, hsl(220 6% 12%), hsl(220 6% 15%));
+  box-shadow:
+    inset 4px 4px 8px hsl(220 6% 4% / 0.7),
+    inset -2px -2px 4px hsl(220 6% 24% / 0.1);
+}
+
+.dark .neu-nav-active {
+  background: linear-gradient(145deg, hsl(220 6% 20%), hsl(220 6% 16%));
+  box-shadow:
+    5px 5px 10px hsl(220 6% 6% / 0.6),
+    -3px -3px 8px hsl(220 6% 26% / 0.12),
+    inset 0 1px 0 hsl(220 6% 30% / 0.2);
+}
+
+.dark .neu-kbd {
+  background: hsl(220 6% 18%);
+  box-shadow:
+    2px 2px 4px hsl(220 6% 6% / 0.5),
+    -1px -1px 2px hsl(220 6% 24% / 0.08);
+}
+
+/* ============================================
+   MICRO-INTERACTIONS & TRANSITIONS
+   ============================================ */
+
+/* Base transition for all neumorphic elements */
+.neu-panel-raised,
+.neu-search-inset,
+.neu-nav-item,
+.neu-nav-active {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Hover Lift Effect for Cards - Light Mode */
+.neu-panel-raised:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    12px 12px 24px hsl(220 15% 70% / 0.45),
+    -8px -8px 16px hsl(0 0% 100% / 0.95),
+    inset 0 1px 0 hsl(0 0% 100% / 0.7);
+}
+
+/* Hover Lift Effect for Cards - Dark Mode */
+.dark .neu-panel-raised:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    12px 12px 24px hsl(220 6% 4% / 0.8),
+    -6px -6px 16px hsl(220 6% 28% / 0.18),
+    inset 0 1px 0 hsl(220 6% 32% / 0.25);
+}
+
+/* Button/Card Press Animation - Light Mode */
+.neu-panel-raised:active {
+  transform: translateY(0) scale(0.98);
+  box-shadow:
+    inset 3px 3px 6px hsl(220 15% 75% / 0.35),
+    inset -2px -2px 4px hsl(0 0% 100% / 0.6);
+  transition: all 0.1s ease-out;
+}
+
+/* Button/Card Press Animation - Dark Mode */
+.dark .neu-panel-raised:active {
+  transform: translateY(0) scale(0.98);
+  box-shadow:
+    inset 3px 3px 6px hsl(220 6% 6% / 0.5),
+    inset -2px -2px 4px hsl(220 6% 22% / 0.1);
+  transition: all 0.1s ease-out;
+}
+
+/* Neumorphic Button - Raised (idle) */
+.neu-button {
+  box-shadow:
+    4px 4px 8px hsl(220 15% 75% / 0.4),
+    -3px -3px 6px hsl(0 0% 100% / 0.9);
+  transition: all 0.15s ease-out;
+}
+
+.neu-button:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    6px 6px 12px hsl(220 15% 70% / 0.45),
+    -4px -4px 8px hsl(0 0% 100% / 0.95);
+}
+
+.neu-button:active {
+  transform: scale(0.96);
+  box-shadow:
+    inset 2px 2px 4px hsl(220 15% 70% / 0.35),
+    inset -1px -1px 3px hsl(0 0% 100% / 0.6);
+}
+
+.dark .neu-button {
+  box-shadow:
+    4px 4px 8px hsl(220 6% 6% / 0.6),
+    -2px -2px 6px hsl(220 6% 26% / 0.12);
+}
+
+.dark .neu-button:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    6px 6px 12px hsl(220 6% 4% / 0.7),
+    -3px -3px 8px hsl(220 6% 28% / 0.15);
+}
+
+.dark .neu-button:active {
+  transform: scale(0.96);
+  box-shadow:
+    inset 2px 2px 4px hsl(220 6% 6% / 0.5),
+    inset -1px -1px 3px hsl(220 6% 22% / 0.08);
+}
+
+/* Recording Button Pulse Animation */
+@keyframes recPulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
+  }
+
+  50% {
+    box-shadow: 0 0 0 16px rgba(239, 68, 68, 0);
+  }
+}
+
+.recording-pulse {
+  animation: recPulse 1.5s ease-in-out infinite;
+}
+
+/* Nav item hover effect */
+.neu-nav-item:hover {
+  background: hsl(220 15% 94% / 0.5);
+}
+
+.dark .neu-nav-item:hover {
+  background: hsl(220 6% 20% / 0.5);
+}
+
+/* Focus States for Accessibility */
+.neu-panel-raised:focus-visible,
+.neu-nav-item:focus-visible,
+.neu-button:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 2px;
+}
+
+/* Respect reduced motion preferences */
+@media (prefers-reduced-motion: reduce) {
+
+  .neu-panel-raised,
+  .neu-search-inset,
+  .neu-nav-item,
+  .neu-nav-active,
+  .neu-button,
+  .recording-pulse {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  .neu-panel-raised:hover,
+  .dark .neu-panel-raised:hover {
+    transform: none;
+  }
 }
 
 /* Custom Prose styles for ReactMarkdown rendering */
 .prose {
+  font-size: 1.125rem;
   line-height: 1.75;
 }
 
 .prose h1 {
-  font-size: 1.875rem;
+  font-size: 2rem;
   font-weight: 700;
+  letter-spacing: -0.025em;
   margin-top: 2rem;
   margin-bottom: 1rem;
 }
 
 .prose h2 {
-  font-size: 1.5rem;
+  font-size: 1.625rem;
   font-weight: 600;
+  letter-spacing: -0.015em;
   margin-top: 1.75rem;
   margin-bottom: 0.75rem;
   padding-bottom: 0.5rem;
@@ -191,13 +453,16 @@ html {
 }
 
 .prose h3 {
-  font-size: 1.25rem;
+  font-size: 1.375rem;
   font-weight: 600;
+  letter-spacing: -0.01em;
   margin-top: 1.5rem;
   margin-bottom: 0.5rem;
 }
 
 .prose p {
+  font-size: 1.125rem;
+  line-height: 1.75;
   margin-top: 0.75rem;
   margin-bottom: 0.75rem;
 }
@@ -266,4 +531,112 @@ html {
 /* Dark mode prose adjustments */
 .dark .prose h2 {
   border-bottom-color: hsl(var(--border));
+}
+
+/* ============================================
+   SKELETON LOADER STYLES
+   ============================================ */
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.neu-skeleton {
+  background: linear-gradient(90deg,
+      hsl(220 15% 88%) 25%,
+      hsl(220 15% 94%) 50%,
+      hsl(220 15% 88%) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 0.5rem;
+}
+
+.dark .neu-skeleton {
+  background: linear-gradient(90deg,
+      hsl(220 6% 16%) 25%,
+      hsl(220 6% 22%) 50%,
+      hsl(220 6% 16%) 75%);
+  background-size: 200% 100%;
+}
+
+.neu-skeleton-card {
+  box-shadow:
+    4px 4px 8px hsl(220 15% 75% / 0.3),
+    -3px -3px 6px hsl(0 0% 100% / 0.6);
+}
+
+.dark .neu-skeleton-card {
+  box-shadow:
+    4px 4px 8px hsl(220 6% 6% / 0.4),
+    -2px -2px 6px hsl(220 6% 26% / 0.1);
+}
+
+/* ============================================
+   NEUMORPHIC TOAST STYLES
+   ============================================ */
+
+[data-sonner-toaster] [data-sonner-toast] {
+  background: hsl(var(--card)) !important;
+  border: none !important;
+  box-shadow:
+    8px 8px 16px hsl(220 15% 75% / 0.4),
+    -6px -6px 12px hsl(0 0% 100% / 0.8),
+    inset 0 1px 0 hsl(0 0% 100% / 0.5) !important;
+  border-radius: 1rem !important;
+}
+
+.dark [data-sonner-toaster] [data-sonner-toast] {
+  box-shadow:
+    8px 8px 16px hsl(220 6% 6% / 0.6),
+    -4px -4px 12px hsl(220 6% 26% / 0.12),
+    inset 0 1px 0 hsl(220 6% 28% / 0.2) !important;
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-type="success"] {
+  background: linear-gradient(135deg, hsl(142 70% 45% / 0.15), hsl(var(--card))) !important;
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-type="error"] {
+  background: linear-gradient(135deg, hsl(0 70% 50% / 0.15), hsl(var(--card))) !important;
+}
+
+/* ============================================
+   EMPTY STATE STYLES
+   ============================================ */
+
+.empty-state-icon {
+  width: 80px;
+  height: 80px;
+  stroke-width: 1px;
+  opacity: 0.4;
+}
+
+.empty-state-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 2rem;
+  text-align: center;
+  gap: 1rem;
+}
+
+.empty-state-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  margin: 0;
+}
+
+.empty-state-description {
+  font-size: 0.875rem;
+  color: hsl(var(--muted-foreground));
+  max-width: 280px;
+  margin: 0;
 }

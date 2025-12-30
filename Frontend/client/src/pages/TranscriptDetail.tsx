@@ -199,7 +199,7 @@ export default function TranscriptDetail() {
             </Button>
           </Link>
           <div>
-            <h1 className="font-semibold text-lg leading-tight">{transcript?.title || "Transcript"}</h1>
+            <h1 className="transcript-title">{transcript?.title || "Transcript"}</h1>
             <p className="text-xs text-muted-foreground">{transcript.date} • {displayDuration}</p>
           </div>
         </div>
@@ -252,7 +252,7 @@ export default function TranscriptDetail() {
               <AccordionTrigger className="px-4 py-3 hover:no-underline">
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-primary" />
-                  <span className="font-semibold">Summary</span>
+                  <span className="text-base font-semibold tracking-tight">Summary</span>
                   {transcript.step?.includes("Summariz") && (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground ml-2">
                       <Loader2 className="w-3 h-3 animate-spin" />
@@ -263,11 +263,11 @@ export default function TranscriptDetail() {
               </AccordionTrigger>
               <AccordionContent className="px-4 pb-4">
                 {transcript.summary ? (
-                  <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/90 leading-relaxed">
+                  <div className="prose dark:prose-invert max-w-none">
                     <ReactMarkdown>{transcript.summary}</ReactMarkdown>
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground italic">
+                  <p className="text-base text-muted-foreground italic">
                     {transcript.status === "completed"
                       ? "No summary yet. Click 'Summarize' in the header to generate one."
                       : "Summary will be available after transcription completes."}
@@ -281,7 +281,7 @@ export default function TranscriptDetail() {
               <AccordionTrigger className="px-4 py-3 hover:no-underline">
                 <div className="flex items-center gap-2">
                   <FileText className="w-4 h-4 text-blue-600" />
-                  <span className="font-semibold">Transcript</span>
+                  <span className="text-base font-semibold tracking-tight">Transcript</span>
                   {transcript.status === "processing" && transcript.step && (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground ml-2">
                       <Loader2 className="w-3 h-3 animate-spin" />
@@ -291,7 +291,7 @@ export default function TranscriptDetail() {
                 </div>
               </AccordionTrigger>
               <AccordionContent className="px-4 pb-4">
-                <p className="text-foreground/90 leading-relaxed whitespace-pre-wrap">
+                <p className="transcript-content whitespace-pre-wrap">
                   {transcriptQuery.isLoading ? (
                     "Loading..."
                   ) : transcript.status === "processing" ? (
