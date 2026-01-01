@@ -277,14 +277,23 @@ class ScriberWebController:
 
         self._downloads_dir = Path(os.getenv("SCRIBER_DOWNLOADS_DIR", "downloads")).resolve()
 
-        # Initialize native overlay for system-wide recording popup
-        self._overlay = get_overlay(on_stop=lambda: self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self.stop_listening())
-        ))
+        # Overlay is initialized in background after server starts (see _prewarm_overlay)
+        # This avoids blocking app startup while ensuring overlay is ready for first hotkey
+        self._overlay = None
+        self._overlay_lock = asyncio.Lock()
         
         # Initialize database and load persisted transcripts
         db.init_database()
         self._load_transcripts_from_db()
+    
+    def _get_overlay(self):
+        """Get or create the overlay instance and ensure callback is connected."""
+        # get_overlay will create if needed, or update callback if already exists
+        on_stop = lambda: self._loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(self.stop_listening())
+        )
+        self._overlay = get_overlay(on_stop=on_stop)
+        return self._overlay
     
     def _load_transcripts_from_db(self) -> None:
         """Load transcripts from database on startup."""
@@ -1550,12 +1559,24 @@ async def run_server(host: str, port: int) -> None:
 
 
 async def _prewarm_cache() -> None:
-    """Pre-warm ML model cache in background after server starts.
+    """Pre-warm ML model cache and overlay in background after server starts.
     
-    This loads Silero VAD and SmartTurn models in the background,
-    reducing first-recording latency by 300-500ms.
+    This loads Silero VAD and SmartTurn models AND initializes the Qt overlay
+    in the background, reducing first-recording latency by 500-800ms total.
     """
-    await asyncio.sleep(2)  # Wait for server to stabilize
+    await asyncio.sleep(1)  # Wait for server to stabilize
+    
+    # Prewarm overlay first (it runs in its own thread)
+    try:
+        from src.overlay import get_overlay
+        # Get overlay triggers its initialization in a background thread
+        # Pass None for on_stop since this is just prewarming
+        await asyncio.to_thread(lambda: get_overlay(on_stop=None))
+        logger.info("Overlay prewarmed (ready for first recording)")
+    except Exception as e:
+        logger.debug(f"Overlay prewarm skipped: {e}")
+    
+    # Then prewarm ML models
     try:
         from src.pipeline import _AnalyzerCache
         # Load in thread to avoid blocking event loop

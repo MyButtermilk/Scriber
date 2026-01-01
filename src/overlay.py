@@ -940,6 +940,19 @@ class RecordingOverlay:
             self._impl = TkRecordingOverlay(on_stop=on_stop)
         else:
             logger.warning("No GUI toolkit available for overlay")
+    
+    def set_on_stop(self, on_stop: Optional[Callable[[], None]]) -> None:
+        """Set or update the on_stop callback.
+        
+        This allows prewarming the overlay without a callback,
+        then connecting it to the controller later.
+        """
+        self._on_stop = on_stop
+        if self._impl:
+            # Update the underlying implementation's callback
+            self._impl._on_stop = on_stop
+            if hasattr(self._impl, '_window') and self._impl._window:
+                self._impl._window._on_stop = on_stop
             
     def start(self) -> None:
         """Start the overlay."""
@@ -982,11 +995,17 @@ _overlay: Optional[RecordingOverlay] = None
 
 
 def get_overlay(on_stop: Optional[Callable[[], None]] = None) -> RecordingOverlay:
-    """Get or create the global overlay instance."""
+    """Get or create the global overlay instance.
+    
+    If called with on_stop and overlay already exists, updates the callback.
+    """
     global _overlay
     if _overlay is None:
         _overlay = RecordingOverlay(on_stop=on_stop)
         _overlay.start()
+    elif on_stop is not None:
+        # Update callback if provided and overlay already exists
+        _overlay.set_on_stop(on_stop)
     return _overlay
 
 

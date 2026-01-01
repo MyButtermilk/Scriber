@@ -90,31 +90,22 @@ All transcripts are loaded synchronously from SQLite at startup.
 
 ---
 
-### ✅ Quick Win 4: Cache Prewarming 
+### ✅ Quick Win 2 & 4: Background Prewarming (Overlay + ML Cache)
 
-**File:** `src/web_api.py`
+**File:** `src/web_api.py`, `src/overlay.py`
 
-**Change:** Added `_prewarm_cache()` background task that loads Silero VAD and SmartTurn ML models 2 seconds after server starts.
+**Change:** The `_prewarm_cache()` background task now initializes:
+1. **Qt Overlay** - 1 second after server starts (avoids blocking startup)
+2. **Silero VAD model** - loaded in background thread
+3. **SmartTurn analyzer** - loaded in background thread
 
-**Savings:** 300-500ms on first recording start
+The overlay supports updating its `on_stop` callback after creation, so it can be prewarmed without the controller, then connected later.
+
+**Savings:** 500-800ms total (overlay + ML models ready before first hotkey)
 
 ---
 
 ## Remaining Optimizations (Future)
-
-### Quick Win 2: Lazy Overlay Initialization
-
-Defer overlay creation to first hotkey press:
-
-```python
-self._overlay = None  # Don't create yet
-
-async def start_listening(self):
-    if self._overlay is None:
-        self._overlay = get_overlay(on_stop=...)
-```
-
-**Potential Savings:** 200-400ms
 
 ### Quick Win 3: Background Transcript Loading
 
@@ -135,8 +126,8 @@ async def _post_startup_init(self):
 | Optimization | Status | Savings |
 |--------------|--------|---------|
 | Lazy STT imports | ✅ Done | ~750ms |
-| Cache prewarming | ✅ Done | ~400ms (first rec) |
-| Lazy overlay | ⏳ Pending | ~400ms |
+| Overlay prewarming | ✅ Done | ~400ms |
+| ML cache prewarming | ✅ Done | ~400ms |
 | Background transcript load | ⏳ Pending | ~100ms |
 
 ---
@@ -144,5 +135,5 @@ async def _post_startup_init(self):
 ## Total Estimated Impact
 
 With implemented optimizations:
-- **App startup:** ~750ms faster
-- **First recording:** ~400ms faster (due to prewarmed cache)
+- **App startup:** ~750ms faster (no blocking overlay/imports)
+- **First recording:** ~800ms faster (prewarmed overlay + ML cache)
