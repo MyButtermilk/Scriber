@@ -8,7 +8,7 @@ This document outlines potential performance improvements for the Scriber applic
 
 ## Priority 1: High-Impact, Low-Effort
 
-### 1.1 Database Connection Pooling
+### 1.1 Database Connection Pooling ✅ IMPLEMENTED
 
 **Current State:**
 - `database.py` creates a new SQLite connection for every database operation (`_get_connection()`)
@@ -18,54 +18,68 @@ This document outlines potential performance improvements for the Scriber applic
 - Connection overhead adds latency to every transcript load/save operation
 - Not thread-safe under concurrent access
 
-**Proposed Solution:**
+**Implemented Solution:**
 ```python
-# Use a connection per thread (SQLite is not truly concurrent but this avoids repeated opens)
+# src/database.py - Thread-local connection pooling
 import threading
+import atexit
 
-_local = threading.local()
+_thread_local = threading.local()
+_all_connections: list[sqlite3.Connection] = []
 
 def _get_connection() -> sqlite3.Connection:
-    """Get or create a thread-local database connection."""
-    if not hasattr(_local, 'conn') or _local.conn is None:
-        _local.conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-        _local.conn.row_factory = sqlite3.Row
-    return _local.conn
+    if not hasattr(_thread_local, 'conn') or _thread_local.conn is None:
+        conn = sqlite3.connect(_DB_PATH, check_same_thread=False, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")  # Better concurrency
+        conn.execute("PRAGMA synchronous=NORMAL")  # Faster writes
+        _thread_local.conn = conn
+    return _thread_local.conn
+
+atexit.register(_close_all_connections)  # Cleanup on exit
 ```
 
 **Impact:** ~10-50ms reduction per database operation
-**Effort:** Low (1-2 hours)
+**Status:** ✅ Completed (2026-01-01)
 
 ---
 
-### 1.2 Frontend Bundle Optimization
+### 1.2 Frontend Bundle Optimization ✅ IMPLEMENTED (Code Splitting)
 
 **Current State:**
 - React 19 with Vite 7, full bundle loaded on initial page load
 - Large dependencies: framer-motion, recharts, lucide-react (all icons), radix-ui
 
-**Proposed Solution:**
-1. **Code Splitting by Route:**
-   ```typescript
-   // Lazy load pages
-   const Settings = lazy(() => import('./pages/Settings'));
-   const Youtube = lazy(() => import('./pages/Youtube'));
-   const FileTranscribe = lazy(() => import('./pages/FileTranscribe'));
-   ```
+**Implemented Solution - Code Splitting:**
+```tsx
+// Frontend/client/src/App.tsx
+import { lazy, Suspense } from "react";
 
-2. **Tree-shake Lucide Icons:**
-   ```typescript
-   // Instead of: import { Settings, User, Home } from 'lucide-react'
-   // Use individual imports in each component
-   import Settings from 'lucide-react/dist/esm/icons/settings';
-   ```
+// Each page is now a separate chunk, loaded on demand
+const LiveMic = lazy(() => import("@/pages/LiveMic"));
+const Youtube = lazy(() => import("@/pages/Youtube"));
+const FileTranscribe = lazy(() => import("@/pages/FileTranscribe"));
+const Settings = lazy(() => import("@/pages/Settings"));
+const TranscriptDetail = lazy(() => import("@/pages/TranscriptDetail"));
 
-3. **Lazy Load Framer Motion:**
-   - Only load `framer-motion` for pages that need animations
-   - Use CSS transitions for simple micro-interactions
+function TabRoutes() {
+  return (
+    <Suspense fallback={<PageLoader />}>
+      <Switch>
+        <Route path="/" component={LiveMic} />
+        {/* ... */}
+      </Switch>
+    </Suspense>
+  );
+}
+```
+
+**Remaining Optimizations (Optional):**
+- Tree-shake Lucide Icons using individual imports
+- Lazy load Framer Motion for animated pages only
 
 **Impact:** 30-50% reduction in initial bundle size
-**Effort:** Medium (4-6 hours)
+**Status:** ✅ Code Splitting Completed (2026-01-01)
 
 ---
 
@@ -277,20 +291,15 @@ class TranscriptRecord:
 
 ## Implementation Roadmap
 
-### Week 1: Quick Wins
-- [ ] WebSocket message throttling (1.3)
-- [x] Audio frame optimization (2.3) ✅
-- [ ] Database connection caching (1.1)
-
-### Week 2: Frontend Optimization
-- [ ] Code splitting (1.2)
-- [ ] Transcript list virtualization (2.1)
-
-### Completed
+### Completed ✅
+- [x] Database connection pooling (1.1) ✅
+- [x] Code splitting (1.2) ✅
 - [x] STT/Analyzer caching (2.2) ✅
 - [x] Audio frame optimization (2.3) ✅
 
-### Future
+### Pending
+- [ ] WebSocket message throttling (1.3)
+- [ ] Transcript list virtualization (2.1)
 - [ ] Lazy transcript content loading (3.3)
 
 ### Future
