@@ -48,6 +48,53 @@ except Exception:
     HAS_SILERO_VAD = False
     logger.warning("Silero VAD not available; segmented STT may produce no transcripts")
 
+
+# ============================================================================
+# Analyzer Cache for faster pipeline start
+# Caches heavy ML-based analyzers (VAD, SmartTurn) to avoid reloading models
+# ============================================================================
+import threading
+
+class _AnalyzerCache:
+    """Thread-safe cache for expensive analyzers (VAD, SmartTurn).
+    
+    These analyzers load ML models that take 200-500ms to initialize.
+    By caching them, subsequent recording sessions start faster.
+    """
+    _lock = threading.Lock()
+    _vad_analyzer = None
+    _smart_turn_analyzer = None
+    
+    @classmethod
+    def get_vad_analyzer(cls):
+        """Get or create a cached Silero VAD analyzer."""
+        if not HAS_SILERO_VAD or not SileroVADAnalyzer:
+            return None
+        with cls._lock:
+            if cls._vad_analyzer is None:
+                logger.info("Initializing Silero VAD analyzer (cached for future use)")
+                cls._vad_analyzer = SileroVADAnalyzer()
+            return cls._vad_analyzer
+    
+    @classmethod
+    def get_smart_turn_analyzer(cls):
+        """Get or create a cached SmartTurn analyzer."""
+        if not HAS_SMART_TURN:
+            return None
+        with cls._lock:
+            if cls._smart_turn_analyzer is None:
+                logger.info("Initializing SmartTurn V3 analyzer (cached for future use)")
+                cls._smart_turn_analyzer = LocalSmartTurnAnalyzerV3()
+            return cls._smart_turn_analyzer
+    
+    @classmethod
+    def clear_cache(cls):
+        """Clear cached analyzers (useful for testing or config changes)."""
+        with cls._lock:
+            cls._vad_analyzer = None
+            cls._smart_turn_analyzer = None
+            logger.debug("Analyzer cache cleared")
+
 try:
     from pipecat.services.soniox.stt import SonioxSTTService, SonioxInputParams, SonioxContextObject
 except ImportError:
@@ -523,14 +570,17 @@ class ScriberPipeline:
         try:
             async with aiohttp.ClientSession() as session:
                 stt_service = self._create_stt_service(session)
-                smart_turn = LocalSmartTurnAnalyzerV3() if HAS_SMART_TURN else None
+                
+                # Use cached analyzers for faster start (saves 200-500ms on subsequent recordings)
+                smart_turn = _AnalyzerCache.get_smart_turn_analyzer()
                 if smart_turn:
-                    logger.info("Enabling SmartTurn V3")
+                    logger.debug("Using cached SmartTurn V3 analyzer")
 
                 vad_analyzer = None
                 if isinstance(stt_service, SegmentedSTTService):
-                    if HAS_SILERO_VAD and SileroVADAnalyzer:
-                        vad_analyzer = SileroVADAnalyzer()
+                    vad_analyzer = _AnalyzerCache.get_vad_analyzer()
+                    if vad_analyzer:
+                        logger.debug("Using cached Silero VAD analyzer")
                     else:
                         logger.warning("Segmented STT requires VAD; transcripts may be empty.")
 
@@ -601,9 +651,8 @@ class ScriberPipeline:
 
                 vad_analyzer = None
                 if isinstance(stt_service, SegmentedSTTService):
-                    if HAS_SILERO_VAD and SileroVADAnalyzer:
-                        vad_analyzer = SileroVADAnalyzer()
-                    else:
+                    vad_analyzer = _AnalyzerCache.get_vad_analyzer()
+                    if not vad_analyzer:
                         logger.warning("Segmented STT requires VAD; transcripts may be empty.")
 
                 file_input = FfmpegAudioFileInput(

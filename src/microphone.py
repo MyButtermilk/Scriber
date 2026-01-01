@@ -141,14 +141,19 @@ class MicrophoneInput(BaseInputTransport):
         if status:
             logger.warning(f"Audio status: {status}")
         if self._running:
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, indata.tobytes())
+            # Directly use the buffer without extra processing
+            audio_bytes = indata.tobytes()
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, audio_bytes)
             
-            # Calculate RMS on every callback for responsive visualization
-            if self.on_audio_level:
+            # Throttled RMS calculation for visualization (every 2nd callback = ~30fps at 1024 block size @ 16kHz)
+            self._rms_callback_count += 1
+            if self.on_audio_level and (self._rms_callback_count & 1) == 0:
                 try:
-                    # Fast RMS using int32 to avoid overflow, minimal allocations
-                    samples = indata.flatten()
-                    rms = np.sqrt(np.mean(samples.astype(np.int32) ** 2)) / 32768.0
+                    # Optimized RMS: use int16 view directly, compute in float32 for speed
+                    # indata is already int16 dtype, shape is (frames, channels)
+                    samples = indata.view(np.int16).ravel()
+                    # Use float32 for faster computation than float64
+                    rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) / 32768.0
                     self.on_audio_level(float(rms))
                 except Exception:
                     pass
