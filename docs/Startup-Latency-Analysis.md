@@ -105,19 +105,13 @@ The overlay supports updating its `on_stop` callback after creation, so it can b
 
 ---
 
-## Remaining Optimizations (Future)
+### ✅ Quick Win 3: Background Transcript Loading
 
-### Quick Win 3: Background Transcript Loading
+**File:** `src/web_api.py`
 
-Load transcripts after server starts:
+**Change:** Transcript loading moved from synchronous `__init__` to the `_background_init()` task. Transcripts are loaded 100ms after server starts, in a background thread.
 
-```python
-async def _post_startup_init(self):
-    await asyncio.sleep(0)
-    self._load_transcripts_from_db()
-```
-
-**Potential Savings:** 50-150ms
+**Savings:** ~50-150ms off app startup
 
 ---
 
@@ -128,12 +122,15 @@ async def _post_startup_init(self):
 | Lazy STT imports | ✅ Done | ~750ms |
 | Overlay prewarming | ✅ Done | ~400ms |
 | ML cache prewarming | ✅ Done | ~400ms |
-| Background transcript load | ⏳ Pending | ~100ms |
+| Background transcript load | ✅ Done | ~100ms |
+
+**All startup optimizations complete!**
 
 ---
 
 ## Total Estimated Impact
 
-With implemented optimizations:
-- **App startup:** ~750ms faster (no blocking overlay/imports)
+With all implemented optimizations:
+- **App startup:** ~850ms faster (lazy imports + background transcript load)
 - **First recording:** ~800ms faster (prewarmed overlay + ML cache)
+- **Total potential savings:** ~1.6 seconds
