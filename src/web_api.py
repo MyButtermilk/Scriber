@@ -18,7 +18,7 @@ from src.config import Config
 from src.pipeline import ScriberPipeline
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
-from src.overlay import get_overlay, show_recording_overlay, show_transcribing_overlay, hide_recording_overlay, update_overlay_audio
+from src.overlay import get_overlay, show_recording_overlay, show_initializing_overlay, show_transcribing_overlay, hide_recording_overlay, update_overlay_audio
 from src import database as db
 
 TranscriptStatus = Literal["completed", "processing", "failed", "recording"]
@@ -400,6 +400,8 @@ class ScriberWebController:
         except Exception as exc:  # pragma: no cover - runtime dependent
             logger.error(f"Pipeline error: {exc}")
             self._set_status("Error")
+            # Hide overlay when pipeline fails to prevent it staying stuck at "Preparing..."
+            hide_recording_overlay()
             if self._current:
                 self._current.finish("failed")
                 self._history.insert(0, self._current)
@@ -669,18 +671,26 @@ class ScriberWebController:
         rec.start()
         self._current = rec
 
+        # Show initializing overlay immediately for user feedback
+        show_initializing_overlay()
+        
+        # Callback to transition overlay when mic is ready
+        def on_mic_ready():
+            logger.debug("on_mic_ready callback triggered - transitioning overlay to recording mode")
+            show_recording_overlay()
+            logger.info("Microphone ready - recording started")
+
         self._pipeline = ScriberPipeline(
             service_name=Config.DEFAULT_STT_SERVICE,
             on_status_change=self._set_status,
             on_audio_level=self._on_audio_level,
             on_transcription=self._on_transcription,
+            on_mic_ready=on_mic_ready,
         )
         self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
         self._pipeline_task.add_done_callback(self._on_pipeline_done)
         self._is_listening = True
         self._set_status("Listening")
-        # Show native overlay
-        show_recording_overlay()
         await self.broadcast({"type": "session_started", "session": rec.to_public(include_content=True)})
 
     async def stop_listening(self) -> None:

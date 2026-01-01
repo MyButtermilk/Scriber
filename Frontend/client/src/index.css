@@ -49,6 +49,30 @@
   --font-heading: 'Plus Jakarta Sans', sans-serif;
 
   --radius: 0.75rem;
+
+  /* Accordion animations for shadcn/ui */
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+
+    to {
+      height: var(--radix-accordion-content-height);
+    }
+  }
+
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+
+    to {
+      height: 0;
+    }
+  }
 }
 
 :root {
@@ -101,21 +125,16 @@
   --chart-5: 27 87% 67%;
 }
 
-/* Custom overlay scrollbar - doesn't take up layout space */
+/* Prevent layout shifts with scrollbar */
 html {
-  overflow-y: scroll;
+  /* Use scrollbar-gutter to reserve space for scrollbar, preventing layout shifts */
+  scrollbar-gutter: stable;
 }
 
-/* Use overlay scrollbar on modern browsers */
-@supports (scrollbar-gutter: stable) {
-  html {
-    scrollbar-gutter: stable;
-  }
-
-  /* Prevent layout shift in scrollable containers */
-  .overflow-y-auto {
-    scrollbar-gutter: stable;
-  }
+/* Prevent layout shift when Radix UI adds overflow:hidden to body (e.g., for Select dropdowns) */
+html:has(body[data-scroll-locked]) {
+  /* Keep the scrollbar gutter visible even when body is scroll-locked */
+  overflow-y: scroll;
 }
 
 /* Webkit overlay scrollbar */
@@ -299,7 +318,6 @@ html {
 
 /* Hover Lift Effect for Cards - Light Mode */
 .neu-panel-raised:hover {
-  transform: translateY(-3px);
   box-shadow:
     12px 12px 24px hsl(220 15% 70% / 0.45),
     -8px -8px 16px hsl(0 0% 100% / 0.95),
@@ -308,15 +326,15 @@ html {
 
 /* Hover Lift Effect for Cards - Dark Mode */
 .dark .neu-panel-raised:hover {
-  transform: translateY(-3px);
   box-shadow:
     12px 12px 24px hsl(220 6% 4% / 0.8),
     -6px -6px 16px hsl(220 6% 28% / 0.18),
     inset 0 1px 0 hsl(220 6% 32% / 0.25);
 }
 
-/* Button/Card Press Animation - Light Mode */
-.neu-panel-raised:active {
+/* Button/Card Press Animation - Only for clickable card elements, not container panels
+   Use .neu-panel-clickable class for cards that should have press animation */
+.neu-panel-clickable:active {
   transform: translateY(0) scale(0.98);
   box-shadow:
     inset 3px 3px 6px hsl(220 15% 75% / 0.35),
@@ -325,7 +343,7 @@ html {
 }
 
 /* Button/Card Press Animation - Dark Mode */
-.dark .neu-panel-raised:active {
+.dark .neu-panel-clickable:active {
   transform: translateY(0) scale(0.98);
   box-shadow:
     inset 3px 3px 6px hsl(220 6% 6% / 0.5),

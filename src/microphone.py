@@ -32,6 +32,7 @@ class MicrophoneInput(BaseInputTransport):
         device="default",
         keep_alive=False,
         on_audio_level=None,
+        on_ready=None,
     ):
         if not HAS_SOUNDDEVICE:
             raise RuntimeError("Sounddevice is not available, cannot use MicrophoneInput.")
@@ -51,6 +52,7 @@ class MicrophoneInput(BaseInputTransport):
         self.device = device
         self.keep_alive = keep_alive
         self.on_audio_level = on_audio_level
+        self.on_ready = on_ready
         self.stream = None
         self._running = False
         self._loop = None
@@ -61,14 +63,16 @@ class MicrophoneInput(BaseInputTransport):
 
     async def start(self, frame: StartFrame):
         """Start audio capture and feed frames into the transport queue."""
+        logger.debug(f"MicrophoneInput.start() called, device={self.device}")
         await super().start(frame)
         self._loop = asyncio.get_running_loop()
         self._running = True
 
         try:
+            # Define device_index at the outer scope so it's available for logging
+            device_index = None if self.device == "default" else int(self.device)
+            
             if not self.stream:
-                device_index = None if self.device == "default" else int(self.device)
-                
                 # Auto-detect channels supported by the device to avoid PaErrorCode -9998.
                 # Also validate the device exists and is an input device.
                 try:
@@ -120,6 +124,12 @@ class MicrophoneInput(BaseInputTransport):
             if not self.stream.active:
                 self.stream.start()
             logger.info(f"Microphone stream started (device={'default' if device_index is None else device_index})")
+            # Signal that microphone is ready and capturing audio
+            if self.on_ready:
+                try:
+                    self.on_ready()
+                except Exception as e:
+                    logger.warning(f"on_ready callback error: {e}")
             # Ensure transport audio queue exists before we push frames
             self._create_audio_task()
             self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")

@@ -44,6 +44,7 @@ from src.config import Config
 class QtOverlaySignals(QObject):
     """Signals for thread-safe communication with Qt overlay."""
     show_signal = Signal()
+    show_initializing_signal = Signal()
     hide_signal = Signal()
     show_transcribing_signal = Signal()
     audio_signal = Signal(float)
@@ -62,8 +63,10 @@ class QtOverlayWindow(QWidget):
         super().__init__()
         self._on_stop = on_stop
         self._is_recording = False
+        self._is_initializing = False
         self._is_transcribing = False
         self._spinner_angle = 0
+        self._pulse_phase = 0.0  # For pulsing animation in initializing state
         
         # Window setup with shadow margin
         self.setWindowFlags(
@@ -200,10 +203,29 @@ class QtOverlayWindow(QWidget):
         self.raise_()
         self._anim_timer.start()
         self._fade_timer.start()
+    
+    def show_initializing(self):
+        """Show overlay in initializing mode (preparing microphone)."""
+        self._is_recording = False
+        self._is_initializing = True
+        self._is_transcribing = False
+        self._spinner_timer.stop()
+        self._pending_hide = False
+        self._pulse_phase = 0.0
+        
+        self._position_default()
+        self.setWindowOpacity(0.0)
+        self._fade_opacity = 0.0
+        self._fade_target = 1.0
+        self.show()
+        self.raise_()
+        self._anim_timer.start()  # Reuse anim timer for pulse effect
+        self._fade_timer.start()
         
     def show_transcribing(self):
         """Show overlay in transcribing mode."""
         self._is_recording = False
+        self._is_initializing = False
         self._is_transcribing = True
         self._spinner_angle = 0
         self._anim_timer.stop()
@@ -224,6 +246,7 @@ class QtOverlayWindow(QWidget):
         self._spinner_timer.stop()
         self._fade_timer.stop()
         self._is_recording = False
+        self._is_initializing = False
         self._is_transcribing = False
         super().hideEvent(event)
         
@@ -307,6 +330,10 @@ class QtOverlayWindow(QWidget):
                 self._fall[i] += self._gravity * 0.016  # Gravity acceleration
                 self._display[i] = max(0.0, current - self._fall[i])
         
+        # Update pulse animation for initializing state
+        if self._is_initializing:
+            self._pulse_phase += 0.08  # ~5 pulses per second at 60fps
+        
         self.update()
         
     def paintEvent(self, event):
@@ -340,6 +367,8 @@ class QtOverlayWindow(QWidget):
         
         if self._is_recording:
             self._draw_recording_mode(painter, pill)
+        elif self._is_initializing:
+            self._draw_initializing_mode(painter, pill)
         elif self._is_transcribing:
             self._draw_transcribing_mode(painter, pill)
     
@@ -413,6 +442,63 @@ class QtOverlayWindow(QWidget):
             
             # Draw mirrored bar (extends up and down from center)
             painter.drawRect(QRectF(x, cy - bar_h, bar_w - 1, bar_h * 2))
+    
+    def _draw_initializing_mode(self, painter: QPainter, pill: QRectF):
+        """Draw initializing mode: pulsing mic icon + 'Preparing...' text."""
+        center_y = pill.center().y()
+        
+        # Calculate pulse opacity (sine wave between 0.4 and 1.0)
+        pulse = 0.7 + 0.3 * math.sin(self._pulse_phase)
+        
+        # Calculate total content width for centering
+        icon_size = 24
+        text = "Preparing..."
+        spacing = 10
+        
+        font = QFont("Segoe UI", 12)
+        font.setWeight(QFont.Medium)
+        painter.setFont(font)
+        
+        fm = QFontMetrics(font)
+        text_width = fm.horizontalAdvance(text)
+        total_content_width = icon_size + spacing + text_width
+        
+        # Center the content in the pill
+        content_start_x = pill.left() + (pill.width() - total_content_width) / 2
+        
+        # Draw pulsing microphone icon (simple circle with inner shape)
+        icon_cx = content_start_x + icon_size / 2
+        icon_cy = center_y
+        
+        # Outer circle with pulse
+        color = QColor("#3B82F6")
+        color.setAlphaF(pulse)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(color)
+        painter.drawEllipse(QRectF(icon_cx - icon_size/2, icon_cy - icon_size/2, icon_size, icon_size))
+        
+        # Inner microphone shape (simplified - just a white rounded rect)
+        mic_w = icon_size * 0.35
+        mic_h = icon_size * 0.5
+        painter.setBrush(QColor(255, 255, 255, int(255 * pulse)))
+        mic_rect = QRectF(icon_cx - mic_w/2, icon_cy - mic_h/2 - 2, mic_w, mic_h)
+        painter.drawRoundedRect(mic_rect, mic_w/2, mic_w/2)
+        
+        # Mic stand (small line at bottom)
+        stand_color = QColor(255, 255, 255, int(255 * pulse))
+        painter.setPen(QPen(stand_color, 2))
+        painter.drawLine(
+            QPointF(icon_cx, icon_cy + mic_h/2 - 2),
+            QPointF(icon_cx, icon_cy + icon_size/2 - 4)
+        )
+        
+        # Draw text with pulse
+        text_x = content_start_x + icon_size + spacing
+        text_color = QColor("#3B82F6")
+        text_color.setAlphaF(pulse)
+        painter.setPen(text_color)
+        text_rect = QRectF(text_x, pill.top(), text_width + 10, pill.height())
+        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
         
     def _draw_transcribing_mode(self, painter: QPainter, pill: QRectF):
         """Draw transcribing mode: spinner + text, centered in pill."""
@@ -543,6 +629,11 @@ class QtRecordingOverlay:
         """Show the overlay in recording mode."""
         if self._signals:
             self._signals.show_signal.emit()
+    
+    def show_initializing(self) -> None:
+        """Show the overlay in initializing mode."""
+        if self._signals:
+            self._signals.show_initializing_signal.emit()
             
     def show_transcribing(self) -> None:
         """Show overlay in transcribing mode."""
@@ -571,6 +662,7 @@ class QtRecordingOverlay:
             
             # Connect signals with QueuedConnection for thread-safety
             self._signals.show_signal.connect(self._window.show_recording, Qt.QueuedConnection)
+            self._signals.show_initializing_signal.connect(self._window.show_initializing, Qt.QueuedConnection)
             self._signals.show_transcribing_signal.connect(self._window.show_transcribing, Qt.QueuedConnection)
             self._signals.hide_signal.connect(self._window.hide_overlay, Qt.QueuedConnection)
             self._signals.audio_signal.connect(self._window.update_audio_level, Qt.QueuedConnection)
@@ -630,6 +722,11 @@ class TkRecordingOverlay:
         
     def show(self) -> None:
         """Show the overlay."""
+        self._command_queue.put(("show", None))
+    
+    def show_initializing(self) -> None:
+        """Show overlay in initializing mode (fallback: just show recording mode)."""
+        # TkRecordingOverlay doesn't support initializing animation, just show recording mode
         self._command_queue.put(("show", None))
         
     def show_transcribing(self) -> None:
@@ -858,6 +955,11 @@ class RecordingOverlay:
         """Show the overlay."""
         if self._impl:
             self._impl.show()
+    
+    def show_initializing(self) -> None:
+        """Show overlay in initializing mode."""
+        if self._impl:
+            self._impl.show_initializing()
             
     def show_transcribing(self) -> None:
         """Show overlay in transcribing mode."""
@@ -892,6 +994,12 @@ def show_recording_overlay() -> None:
     """Show the recording overlay."""
     overlay = get_overlay()
     overlay.show()
+
+
+def show_initializing_overlay() -> None:
+    """Show the overlay in initializing mode."""
+    overlay = get_overlay()
+    overlay.show_initializing()
 
 
 def show_transcribing_overlay() -> None:

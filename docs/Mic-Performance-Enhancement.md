@@ -1,5 +1,18 @@
 # Microphone Performance Enhancement
 
+## Implementation Status ✅
+
+**Implemented Solutions:**
+- ✅ **Solution 1 (Ready Signal)**: Added `on_ready` callback to `MicrophoneInput` that fires when the stream is actually started
+- ✅ **Solution 4 (Visual Feedback)**: Added "Preparing..." overlay with pulsing animation shown during initialization
+- ✅ **Solution 5 (Hybrid)**: Combines Solution 1 + 4 for best user experience
+
+**Not Implemented:**
+- ❌ **Solution 2 (Pre-warming)**: Available via `MIC_ALWAYS_ON` setting (existing feature)
+- ❌ **Solution 3 (Pre-buffer)**: Planned for future if needed
+
+---
+
 ## Problem Description
 
 When the user presses the hotkey to start recording, the microphone is sometimes not ready yet, causing the first few seconds of speech to be cut off.

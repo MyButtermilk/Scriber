@@ -435,12 +435,14 @@ class ScriberPipeline:
         on_audio_level=None,
         on_transcription: Optional[Callable[[str, bool], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
+        on_mic_ready: Optional[Callable[[], None]] = None,
     ):
         self.service_name = service_name
         self.on_status_change = on_status_change
         self.on_audio_level = on_audio_level
         self.on_transcription = on_transcription
         self.on_progress = on_progress
+        self.on_mic_ready = on_mic_ready
         self.pipeline = None
         self.task = None
         self.runner = None
@@ -541,6 +543,7 @@ class ScriberPipeline:
                     device=_resolve_mic_device(Config.MIC_DEVICE),
                     keep_alive=Config.MIC_ALWAYS_ON,
                     on_audio_level=self.on_audio_level,
+                    on_ready=self.on_mic_ready,
                 )
 
                 inject_immediately = self.service_name == "soniox" and not (self.service_name == "soniox_async" or Config.SONIOX_MODE == "async")

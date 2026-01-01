@@ -58,6 +58,7 @@ export default function Settings() {
   const [visualizerBarCount, setVisualizerBarCount] = useState(45);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartAvailable, setAutostartAvailable] = useState(false);
+  const [micAlwaysOn, setMicAlwaysOn] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,6 +101,7 @@ export default function Settings() {
         setSummarizationModel(settings.summarizationModel || "gemini-flash-latest");
         setAutoSummarize(settings.autoSummarize === true);
         setVisualizerBarCount(settings.visualizerBarCount || 45);
+        setMicAlwaysOn(settings.micAlwaysOn === true);
 
         setSonioxKey(keys.soniox || "");
         setAssemblyAIKey(keys.assemblyai || "");
@@ -379,6 +381,25 @@ export default function Settings() {
     }
   };
 
+  const handleMicAlwaysOnChange = async (enabled: boolean) => {
+    setMicAlwaysOn(enabled);
+    try {
+      await updateSettings({ micAlwaysOn: enabled });
+      toast({
+        title: "Saved",
+        description: enabled ? "Mic pre-warming enabled" : "Mic pre-warming disabled",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      setMicAlwaysOn(!enabled);
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
   return (
     <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
       <header className="mb-6 space-y-2">
@@ -434,13 +455,31 @@ export default function Settings() {
                       </div>
                     </SelectTrigger>
                     <SelectContent>
-                      {inputDevices.map((device) => (
-                        <SelectItem key={device.deviceId} value={device.deviceId}>
-                          {device.label}
-                        </SelectItem>
-                      ))}
+                      {inputDevices.length === 0 ? (
+                        <SelectItem value="__loading__" disabled>Loading devices...</SelectItem>
+                      ) : (
+                        inputDevices.map((device, index) => {
+                          const deviceValue = device.deviceId || `device-${index}`;
+                          return (
+                            <SelectItem key={`${deviceValue}-${index}`} value={deviceValue}>
+                              {device.label || `Device ${index + 1}`}
+                            </SelectItem>
+                          );
+                        })
+                      )}
                     </SelectContent>
                   </Select>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label className="text-base">Mic Pre-warming</Label>
+                    <p className="text-sm text-muted-foreground">Keep microphone in standby for instant recording start</p>
+                  </div>
+                  <Switch
+                    checked={micAlwaysOn}
+                    onCheckedChange={handleMicAlwaysOnChange}
+                  />
                 </div>
 
                 <Separator />
