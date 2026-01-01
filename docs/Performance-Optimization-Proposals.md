@@ -296,6 +296,11 @@ class TranscriptRecord:
 - [x] Code splitting (1.2) ✅
 - [x] STT/Analyzer caching (2.2) ✅
 - [x] Audio frame optimization (2.3) ✅
+- [x] Lazy STT imports (2026-01-01) ✅
+- [x] Background overlay prewarming (2026-01-01) ✅
+- [x] Background ML model prewarming (2026-01-01) ✅
+- [x] Background transcript loading (2026-01-01) ✅
+- [x] STT service pre-import / Hotkey response optimization (4.4) (2026-01-01) ✅
 
 ### Pending
 - [ ] WebSocket message throttling (1.3)

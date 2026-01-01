@@ -1565,8 +1565,9 @@ async def _background_init(controller: ScriberWebController) -> None:
     1. Load transcripts from database
     2. Prewarm Qt overlay
     3. Prewarm ML models (VAD, SmartTurn)
+    4. Pre-import configured STT service (4.4 optimization)
     
-    Total savings: ~600-1000ms off startup + first recording latency.
+    Total savings: ~700-1200ms off startup + first recording latency.
     """
     await asyncio.sleep(0.1)  # Yield to let server start accepting connections
     
@@ -1600,6 +1601,46 @@ async def _background_init(controller: ScriberWebController) -> None:
         logger.info("ML model cache warmed (first recording will start faster)")
     except Exception as e:
         logger.debug(f"Cache prewarm skipped: {e}")
+    
+    # Pre-import the configured STT service (4.4 optimization)
+    # This ensures the module is already loaded when user presses hotkey
+    try:
+        await asyncio.to_thread(_prewarm_stt_service, Config.DEFAULT_STT_SERVICE)
+        logger.info(f"STT service '{Config.DEFAULT_STT_SERVICE}' preloaded")
+    except Exception as e:
+        logger.debug(f"STT prewarm skipped: {e}")
+
+
+def _prewarm_stt_service(service_name: str) -> None:
+    """Pre-import the configured STT service module.
+    
+    This avoids the 100-200ms import delay on first hotkey press.
+    The actual service instance is created later with proper parameters.
+    """
+    try:
+        if service_name == "assemblyai":
+            from pipecat.services.assemblyai.stt import AssemblyAISTTService  # noqa: F401
+        elif service_name == "google":
+            from pipecat.services.google.stt import GoogleSTTService  # noqa: F401
+        elif service_name == "elevenlabs":
+            from pipecat.services.elevenlabs.stt import ElevenLabsSTTService  # noqa: F401
+        elif service_name == "deepgram":
+            from pipecat.services.deepgram.stt import DeepgramSTTService  # noqa: F401
+        elif service_name == "openai":
+            from pipecat.services.openai.stt import OpenAISTTService  # noqa: F401
+        elif service_name == "azure":
+            from pipecat.services.azure.stt import AzureSTTService  # noqa: F401
+        elif service_name == "gladia":
+            from pipecat.services.gladia.stt import GladiaSTTService  # noqa: F401
+        elif service_name == "groq":
+            from pipecat.services.groq.stt import GroqSTTService  # noqa: F401
+        elif service_name == "speechmatics":
+            from pipecat.services.speechmatics.stt import SpeechmaticsSTTService  # noqa: F401
+        elif service_name == "aws":
+            from pipecat.services.aws.stt import AWSTranscribeSTTService  # noqa: F401
+        # soniox is already imported at module level
+    except ImportError as e:
+        logger.debug(f"Could not prewarm STT service {service_name}: {e}")
 
 
 def main() -> None:
