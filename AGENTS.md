@@ -94,3 +94,16 @@ Defaults to keep in sync:
 - Commit messages: short, imperative (optionally `feat:`, `fix:`, `refactor:`).
 - Include tests run in PR description.
 - For UI changes, include screenshots when possible.
+
+## Frontend UI/UX Notes
+- Uses neumorphic design system with custom CSS classes (`neu-panel-raised`, `neu-button`, etc.)
+- Tailwind CSS v4 with `@tailwindcss/vite` plugin (CSS-first config in `index.css`)
+- shadcn/ui components wrapped with Radix UI primitives
+- Micro-interactions handled via CSS transitions, not JavaScript
+
+## Documentation
+- `README.md`: User-facing documentation
+- `AGENTS.md`: This file - developer guidelines
+- `frontend.md`: Frontend architecture details
+- `docs/Mic-Performance-Enhancement.md`: Microphone latency improvements
+- `docs/Performance-Optimization-Proposals.md`: Performance improvement roadmap

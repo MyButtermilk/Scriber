@@ -2,13 +2,18 @@
 
 ## Implementation Status ✅
 
-**Implemented Solutions:**
+**Fully Implemented Solutions:**
 - ✅ **Solution 1 (Ready Signal)**: Added `on_ready` callback to `MicrophoneInput` that fires when the stream is actually started
 - ✅ **Solution 4 (Visual Feedback)**: Added "Preparing..." overlay with pulsing animation shown during initialization
 - ✅ **Solution 5 (Hybrid)**: Combines Solution 1 + 4 for best user experience
+  - Overlay shows "Preparing..." immediately on hotkey press
+  - Transitions to "Recording" with waveform when mic is ready
+  - Transitions to "Transcribing" spinner when processing async transcription
+
+**Available but Optional:**
+- ⚙️ **Solution 2 (Pre-warming)**: Available via `MIC_ALWAYS_ON` setting in Settings > Transcription Settings > Mic Pre-warming
 
 **Not Implemented:**
-- ❌ **Solution 2 (Pre-warming)**: Available via `MIC_ALWAYS_ON` setting (existing feature)
 - ❌ **Solution 3 (Pre-buffer)**: Planned for future if needed
 
 ---
