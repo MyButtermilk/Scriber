@@ -543,7 +543,10 @@ class ScriberPipeline:
                     params = SonioxInputParams(model=rt_model, language_hints=[lang_hint] if lang_hint else None) if SonioxInputParams else _SonioxParamsFallback()
             else:
                 params = SonioxInputParams(model=rt_model, language_hints=[lang_hint] if lang_hint else None) if SonioxInputParams else _SonioxParamsFallback()
-            return SonioxSTTService(api_key=_get_api_key("soniox"), params=params)
+            # vad_force_turn_endpoint=True disables automatic endpoint detection which would
+            # otherwise close the WebSocket connection when speech pauses are detected.
+            # This keeps the connection alive for the entire recording session.
+            return SonioxSTTService(api_key=_get_api_key("soniox"), params=params, vad_force_turn_endpoint=True)
 
         elif self.service_name == "assemblyai":
             # Lazy import - only loaded when AssemblyAI is used
@@ -627,12 +630,20 @@ class ScriberPipeline:
                     logger.debug("Using cached SmartTurn V3 analyzer")
 
                 vad_analyzer = None
-                if isinstance(stt_service, SegmentedSTTService):
+                # VAD is needed for:
+                # 1. SegmentedSTTService (requires VAD for audio segmentation)
+                # 2. Soniox real-time with vad_force_turn_endpoint=True (requires VAD to emit 
+                #    UserStoppedSpeakingFrame which triggers finalization and text injection)
+                needs_vad = isinstance(stt_service, SegmentedSTTService)
+                if self.service_name == "soniox" and not (Config.SONIOX_MODE == "async"):
+                    needs_vad = True
+                    
+                if needs_vad:
                     vad_analyzer = _AnalyzerCache.get_vad_analyzer()
                     if vad_analyzer:
                         logger.debug("Using cached Silero VAD analyzer")
                     else:
-                        logger.warning("Segmented STT requires VAD; transcripts may be empty.")
+                        logger.warning("VAD analyzer required but not available; transcripts may not finalize properly.")
 
                 # Always use our custom MicrophoneInput to support on_audio_level callback
                 self.audio_input = MicrophoneInput(

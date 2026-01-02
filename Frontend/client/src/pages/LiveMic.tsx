@@ -240,7 +240,6 @@ export default function LiveMic() {
   };
 
   const intensity = Math.min(1, Math.max(0, audioLevel * 3));
-  const liveText = interimText || finalText;
 
   const handleToggle = async () => {
     try {
@@ -309,9 +308,18 @@ export default function LiveMic() {
             <motion.p
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="text-lg md:text-xl font-medium leading-relaxed text-foreground/90 relative z-10"
+              className="text-lg md:text-xl font-medium leading-relaxed relative z-10"
             >
-              {liveText ? `"${liveText}"` : `"${status || "Listening"}..."`}
+              {(finalText || interimText) ? (
+                <>
+                  "<span className="text-foreground/90">{finalText}</span>
+                  {interimText && (
+                    <span className="text-muted-foreground italic">{finalText ? ' ' : ''}{interimText}</span>
+                  )}"
+                </>
+              ) : (
+                <span className="text-foreground/90">"{status || "Listening"}..."</span>
+              )}
             </motion.p>
           ) : (
             <p className="text-muted-foreground relative z-10">Ready to record. Tap the microphone to start.</p>
