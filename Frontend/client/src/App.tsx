@@ -6,16 +6,18 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { ThemeProvider } from "@/components/theme-provider";
 import { lazy, Suspense } from "react";
 
-// Lazy load pages for code splitting - each page becomes a separate chunk
-// This reduces initial bundle size by 30-50%
-const LiveMic = lazy(() => import("@/pages/LiveMic"));
-const Youtube = lazy(() => import("@/pages/Youtube"));
-const FileTranscribe = lazy(() => import("@/pages/FileTranscribe"));
-const Settings = lazy(() => import("@/pages/Settings"));
+// Main navigation pages - eagerly loaded to ensure instant section switching
+// These are bundled together since users frequently navigate between them
+import LiveMic from "@/pages/LiveMic";
+import Youtube from "@/pages/Youtube";
+import FileTranscribe from "@/pages/FileTranscribe";
+import Settings from "@/pages/Settings";
+
+// Lazy load only rarely accessed pages for slightly smaller initial bundle
 const TranscriptDetail = lazy(() => import("@/pages/TranscriptDetail"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
-// Loading fallback component - minimal to avoid layout shift
+// Loading fallback component - only needed for lazy-loaded pages
 function PageLoader() {
   return (
     <div className="flex items-center justify-center min-h-[300px]">
@@ -28,15 +30,15 @@ function TabRoutes() {
   const [location] = useLocation();
   return (
     <AppLayout path={location}>
-      <Suspense fallback={<PageLoader />}>
-        <Switch>
-          <Route path="/" component={LiveMic} />
-          <Route path="/youtube" component={Youtube} />
-          <Route path="/file" component={FileTranscribe} />
-          <Route path="/settings" component={Settings} />
+      <Switch>
+        <Route path="/" component={LiveMic} />
+        <Route path="/youtube" component={Youtube} />
+        <Route path="/file" component={FileTranscribe} />
+        <Route path="/settings" component={Settings} />
+        <Suspense fallback={<PageLoader />}>
           <Route component={NotFound} />
-        </Switch>
-      </Suspense>
+        </Suspense>
+      </Switch>
     </AppLayout>
   );
 }

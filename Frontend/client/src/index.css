@@ -80,35 +80,38 @@
      UNIFIED NEUMORPHIC DESIGN TOKENS
      Light source: top-left for consistent tactile feel
      ============================================ */
-  
+
   /* Base surface colors - uniform across sidebar and main area */
-  --neu-bg: #e8ecf2;          /* Background canvas - soft cool gray */
-  --neu-surface: #eef2f6;     /* Raised surfaces - slightly lighter */
-  --neu-surface-alt: #f4f7fb; /* Alternative surface for cards */
-  
+  --neu-bg: #e8ecf2;
+  /* Background canvas - soft cool gray */
+  --neu-surface: #eef2f6;
+  /* Raised surfaces - slightly lighter */
+  --neu-surface-alt: #f4f7fb;
+  /* Alternative surface for cards */
+
   /* Shadow colors - avoid pure black for soft skeuo feel */
   --neu-shadow-dark: rgba(20, 30, 45, 0.14);
   --neu-shadow-light: rgba(255, 255, 255, 0.85);
   --neu-shadow-dark-strong: rgba(20, 30, 45, 0.18);
   --neu-shadow-light-strong: rgba(255, 255, 255, 0.92);
-  
+
   /* Stroke for subtle edge definition */
   --neu-stroke: rgba(255, 255, 255, 0.55);
   --neu-stroke-inner: rgba(20, 30, 45, 0.05);
-  
+
   /* Unified shadow tokens - consistent light direction (top-left) */
-  --neu-raised-1: 
+  --neu-raised-1:
     -6px -6px 12px var(--neu-shadow-light),
     6px 6px 12px var(--neu-shadow-dark);
-  
-  --neu-raised-2: 
+
+  --neu-raised-2:
     -10px -10px 22px var(--neu-shadow-light-strong),
     12px 12px 26px var(--neu-shadow-dark-strong);
-  
-  --neu-inset-1: 
+
+  --neu-inset-1:
     inset 4px 4px 10px var(--neu-shadow-dark),
     inset -4px -4px 10px var(--neu-shadow-light);
-  
+
   --neu-inset-subtle:
     inset 2px 2px 6px rgba(20, 30, 45, 0.08),
     inset -2px -2px 6px var(--neu-shadow-light);
@@ -194,27 +197,27 @@ html:has(body[data-scroll-locked]) {
   --neu-bg: #1a1d23;
   --neu-surface: #22262e;
   --neu-surface-alt: #282c36;
-  
+
   --neu-shadow-dark: rgba(0, 0, 0, 0.45);
   --neu-shadow-light: rgba(60, 70, 85, 0.12);
   --neu-shadow-dark-strong: rgba(0, 0, 0, 0.55);
   --neu-shadow-light-strong: rgba(70, 80, 100, 0.15);
-  
+
   --neu-stroke: rgba(255, 255, 255, 0.06);
   --neu-stroke-inner: rgba(0, 0, 0, 0.2);
-  
-  --neu-raised-1: 
+
+  --neu-raised-1:
     -6px -6px 12px var(--neu-shadow-light),
     6px 6px 12px var(--neu-shadow-dark);
-  
-  --neu-raised-2: 
+
+  --neu-raised-2:
     -10px -10px 22px var(--neu-shadow-light-strong),
     12px 12px 26px var(--neu-shadow-dark-strong);
-  
-  --neu-inset-1: 
+
+  --neu-inset-1:
     inset 4px 4px 10px var(--neu-shadow-dark),
     inset -4px -4px 10px var(--neu-shadow-light);
-  
+
   --neu-inset-subtle:
     inset 2px 2px 6px rgba(0, 0, 0, 0.25),
     inset -2px -2px 6px var(--neu-shadow-light);
@@ -320,9 +323,9 @@ html:has(body[data-scroll-locked]) {
 
 /* Search field / input inset */
 .neu-search-inset {
-  background: linear-gradient(145deg, 
-    hsl(220 15% 86% / 0.8), 
-    hsl(220 15% 90% / 0.9));
+  background: linear-gradient(145deg,
+      hsl(220 15% 86% / 0.8),
+      hsl(220 15% 90% / 0.9));
   box-shadow: var(--neu-inset-1);
   border: 1px solid rgba(255, 255, 255, 0.35);
   border-radius: 18px;
@@ -332,7 +335,12 @@ html:has(body[data-scroll-locked]) {
 .neu-nav-item {
   background: transparent;
   border-radius: 14px;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background 0.1s ease-out, transform 0.1s ease-out;
+}
+
+.neu-nav-item:active {
+  transform: scale(0.97);
+  transition: none;
 }
 
 /* Active nav item - raised from surface */
@@ -384,7 +392,12 @@ html:has(body[data-scroll-locked]) {
   box-shadow: var(--neu-raised-1);
   border: 1px solid var(--neu-stroke);
   position: relative;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.12s ease-out, box-shadow 0.12s ease-out;
+}
+
+.neu-recording-row:active {
+  transform: scale(0.98) !important;
+  transition: none;
 }
 
 .neu-recording-row::before {
@@ -398,7 +411,7 @@ html:has(body[data-scroll-locked]) {
     inset 0 -1px 0 rgba(20, 30, 45, 0.02);
 }
 
-.neu-recording-row + .neu-recording-row {
+.neu-recording-row+.neu-recording-row {
   margin-top: 12px;
 }
 
@@ -426,10 +439,10 @@ html:has(body[data-scroll-locked]) {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background: linear-gradient(180deg, 
-    rgba(255, 255, 255, 0.03) 0%, 
-    transparent 50%,
-    rgba(0, 0, 0, 0.02) 100%);
+  background: linear-gradient(180deg,
+      rgba(255, 255, 255, 0.03) 0%,
+      transparent 50%,
+      rgba(0, 0, 0, 0.02) 100%);
 }
 
 /* ============================================
@@ -499,9 +512,9 @@ html:has(body[data-scroll-locked]) {
 }
 
 .dark .neu-search-inset {
-  background: linear-gradient(145deg, 
-    hsl(220 6% 13% / 0.9), 
-    hsl(220 6% 16% / 0.9));
+  background: linear-gradient(145deg,
+      hsl(220 6% 13% / 0.9),
+      hsl(220 6% 16% / 0.9));
   box-shadow: var(--neu-inset-1);
   border: 1px solid rgba(255, 255, 255, 0.04);
 }
@@ -575,15 +588,16 @@ html:has(body[data-scroll-locked]) {
 
 /* ============================================
    MICRO-INTERACTIONS & TRANSITIONS
+   Optimized for snappy feel - 100-120ms durations
    ============================================ */
 
 .neu-panel-raised,
-.neu-panel-inset,
-.neu-search-inset,
-.neu-nav-item,
-.neu-nav-active,
-.neu-recording-row {
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+.neu-panel-inset {
+  transition: box-shadow 0.12s ease-out, transform 0.1s ease-out;
+}
+
+.neu-search-inset {
+  transition: box-shadow 0.1s ease-out;
 }
 
 /* Hover lift effect */
@@ -591,11 +605,11 @@ html:has(body[data-scroll-locked]) {
   box-shadow: var(--neu-raised-2);
 }
 
-/* Clickable press animation */
+/* Clickable press animation - instant feedback */
 .neu-panel-clickable:active {
   transform: translateY(0) scale(0.98);
   box-shadow: var(--neu-inset-subtle);
-  transition: all 0.1s ease-out;
+  transition: none;
 }
 
 /* Neumorphic Button */
@@ -603,7 +617,7 @@ html:has(body[data-scroll-locked]) {
   background: var(--neu-surface);
   box-shadow: var(--neu-raised-1);
   border: 1px solid var(--neu-stroke);
-  transition: all 0.15s ease-out;
+  transition: transform 0.1s ease-out, box-shadow 0.1s ease-out;
 }
 
 .neu-button:hover {
@@ -614,6 +628,7 @@ html:has(body[data-scroll-locked]) {
 .neu-button:active {
   transform: scale(0.96);
   box-shadow: var(--neu-inset-subtle);
+  transition: none;
 }
 
 /* Nav item hover */
@@ -635,6 +650,7 @@ html:has(body[data-scroll-locked]) {
 
 /* Recording Button Pulse Animation */
 @keyframes recPulse {
+
   0%,
   100% {
     box-shadow:
@@ -657,6 +673,7 @@ html:has(body[data-scroll-locked]) {
 
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
+
   .neu-panel-raised,
   .neu-search-inset,
   .neu-nav-item,

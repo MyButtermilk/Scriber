@@ -15,6 +15,7 @@ interface TranscriptCardProps {
   deletingId: string | null;
   onDelete: (e: React.MouseEvent, id: string) => void;
   onNavigate: (id: string) => void;
+  onHover?: (id: string) => void;
 }
 
 const TranscriptCard = memo(function TranscriptCard({
@@ -24,20 +25,22 @@ const TranscriptCard = memo(function TranscriptCard({
   deletingId,
   onDelete,
   onNavigate,
+  onHover,
 }: TranscriptCardProps) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{
-        delay: index * 0.05,
-        duration: 0.3,
+        delay: Math.min(index * 0.02, 0.1),
+        duration: 0.2,
         ease: "easeOut"
       }}
     >
       <Card
-        className="neu-recording-row p-4 cursor-pointer bg-transparent hover:scale-[1.01] transition-all group"
+        className="neu-recording-row p-4 cursor-pointer bg-transparent hover:scale-[1.01] group"
         onClick={() => onNavigate(item.id)}
+        onMouseEnter={() => onHover?.(item.id)}
       >
         {viewMode === "list" ? (
           // List View
@@ -292,6 +295,14 @@ export default function LiveMic() {
     setLocation(`/transcript/${id}`);
   }, [setLocation]);
 
+  // Preload TranscriptDetail page and data on hover for instant navigation
+  const preloadTranscript = useCallback((id: string) => {
+    // Preload the lazy-loaded TranscriptDetail page chunk
+    import("@/pages/TranscriptDetail");
+    // Prefetch the transcript data
+    queryClient.prefetchQuery({ queryKey: ["/api/transcripts", id] });
+  }, [queryClient]);
+
   return (
     <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
       <header className="mb-8 text-center space-y-2">
@@ -411,6 +422,7 @@ export default function LiveMic() {
                 deletingId={deletingId}
                 onDelete={deleteTranscript}
                 onNavigate={navigateToTranscript}
+                onHover={preloadTranscript}
               />
             ))}
           </div>

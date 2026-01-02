@@ -22,6 +22,7 @@ interface FileCardProps {
   deletingId: string | null;
   onDelete: (e: React.MouseEvent, id: string) => void;
   onNavigate: (id: string) => void;
+  onHover?: (id: string) => void;
 }
 
 const FileCard = memo(function FileCard({
@@ -31,16 +32,18 @@ const FileCard = memo(function FileCard({
   deletingId,
   onDelete,
   onNavigate,
+  onHover,
 }: FileCardProps) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.05, duration: 0.3, ease: "easeOut" }}
+      transition={{ delay: Math.min(index * 0.02, 0.1), duration: 0.2, ease: "easeOut" }}
     >
       <Card
-        className="neu-recording-row p-4 cursor-pointer bg-transparent hover:scale-[1.01] transition-all group"
+        className="neu-recording-row p-4 cursor-pointer bg-transparent hover:scale-[1.01] group"
         onClick={() => onNavigate(item.id)}
+        onMouseEnter={() => onHover?.(item.id)}
       >
         {viewMode === "list" ? (
           // List view
@@ -268,6 +271,12 @@ export default function FileTranscribe() {
     setLocation(`/transcript/${id}`);
   }, [setLocation]);
 
+  // Preload TranscriptDetail page and data on hover for instant navigation
+  const preloadTranscript = useCallback((id: string) => {
+    import("@/pages/TranscriptDetail");
+    queryClient.prefetchQuery({ queryKey: ["/api/transcripts", id] });
+  }, [queryClient]);
+
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0 && !isUploading) {
       uploadFile(acceptedFiles[0]);
@@ -397,6 +406,7 @@ export default function FileTranscribe() {
                 deletingId={deletingId}
                 onDelete={deleteTranscript}
                 onNavigate={navigateToTranscript}
+                onHover={preloadTranscript}
               />
             ))}
           </div>

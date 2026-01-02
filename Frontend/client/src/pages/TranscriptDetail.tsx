@@ -8,9 +8,96 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MOCK_TRANSCRIPTS } from "@/lib/mockData";
 import { useToast } from "@/hooks/use-toast";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useLayoutEffect, useCallback } from "react";
 import { wsUrl, apiUrl } from "@/lib/backend";
 import ReactMarkdown from "react-markdown";
+
+// FitText component that dynamically scales font size to fit container
+interface FitTextProps {
+  children: string;
+  minFontSize?: number;
+  maxFontSize?: number;
+  className?: string;
+}
+
+function FitText({ children, minFontSize = 12, maxFontSize = 24, className = "" }: FitTextProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [fontSize, setFontSize] = useState(maxFontSize);
+
+  const calculateFit = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const containerWidth = container.offsetWidth;
+    if (containerWidth === 0) return;
+
+    // Create a temporary span to measure text width at max font size
+    const measureSpan = document.createElement('span');
+    measureSpan.style.cssText = `
+      position: absolute;
+      visibility: hidden;
+      white-space: nowrap;
+      font-size: ${maxFontSize}px;
+      font-weight: bold;
+      font-family: inherit;
+      letter-spacing: -0.025em;
+    `;
+    measureSpan.textContent = children;
+    document.body.appendChild(measureSpan);
+
+    const textWidth = measureSpan.offsetWidth;
+    document.body.removeChild(measureSpan);
+
+    if (textWidth > containerWidth) {
+      // Calculate the scale factor and apply it
+      const scale = containerWidth / textWidth;
+      const newSize = Math.max(minFontSize, Math.floor(maxFontSize * scale));
+      setFontSize(newSize);
+    } else {
+      setFontSize(maxFontSize);
+    }
+  }, [children, maxFontSize, minFontSize]);
+
+  // Calculate on mount and when children change
+  useLayoutEffect(() => {
+    // Small delay to ensure container is rendered
+    const timer = requestAnimationFrame(() => {
+      calculateFit();
+    });
+    return () => cancelAnimationFrame(timer);
+  }, [children, calculateFit]);
+
+  // Recalculate on resize
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const resizeObserver = new ResizeObserver(() => {
+      calculateFit();
+    });
+
+    resizeObserver.observe(container);
+    return () => resizeObserver.disconnect();
+  }, [calculateFit]);
+
+  return (
+    <div ref={containerRef} className="w-full">
+      <span
+        className={className}
+        style={{
+          fontSize: `${fontSize}px`,
+          display: 'block',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis'
+        }}
+        title={children}
+      >
+        {children}
+      </span>
+    </div>
+  );
+}
 
 function SummarizeButton({ transcriptId, onComplete }: { transcriptId: string | undefined; onComplete: () => void }) {
   const [isSummarizing, setIsSummarizing] = useState(false);
@@ -191,20 +278,22 @@ export default function TranscriptDetail() {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header Toolbar */}
-      <header className="sticky top-0 z-40 backdrop-blur-md border-b border-border/50 h-16 flex items-center justify-between px-4 md:px-8" style={{ background: 'var(--neu-bg)' }}>
-        <div className="flex items-center gap-4">
+      <header className="sticky top-0 z-40 backdrop-blur-md border-b border-border/50 h-16 flex items-center justify-between px-4 md:px-8 gap-4" style={{ background: 'var(--neu-bg)' }}>
+        <div className="flex items-center gap-4 min-w-0 flex-1">
           <Link href={getBackLink()}>
-            <Button variant="ghost" size="icon" className="-ml-2">
+            <Button variant="ghost" size="icon" className="-ml-2 shrink-0">
               <ArrowLeft className="w-5 h-5 text-muted-foreground" />
             </Button>
           </Link>
-          <div>
-            <h1 className="transcript-title">{transcript?.title || "Transcript"}</h1>
-            <p className="text-xs text-muted-foreground">{transcript.date} • {displayDuration}</p>
+          <div className="min-w-0 flex-1">
+            <FitText className="font-bold tracking-tight text-foreground" minFontSize={14} maxFontSize={24}>
+              {transcript?.title || "Transcript"}
+            </FitText>
+            <p className="text-xs text-muted-foreground truncate">{transcript.date} • {displayDuration}</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {transcript.content && (
             <Button
               variant={copied ? "default" : "outline"}

@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { SidebarSearch } from "@/components/ui/sidebar-search";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { useQueryClient } from "@tanstack/react-query";
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -13,6 +14,12 @@ interface AppLayoutProps {
 export function AppLayout({ children, path }: AppLayoutProps) {
   const [location, setLocation] = useLocation();
   const currentKey = path || location;
+  const queryClient = useQueryClient();
+
+  // Prefetch transcripts data on nav hover for instant loading
+  const handleNavHover = () => {
+    queryClient.prefetchQuery({ queryKey: ["/api/transcripts"] });
+  };
 
   const tabs = [
     { href: "/", icon: Mic, label: "Live Mic" },
@@ -47,8 +54,9 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                 <li key={tab.href}>
                   <Link
                     href={tab.href}
+                    onMouseEnter={handleNavHover}
                     className={cn(
-                      "neu-nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 cursor-pointer no-underline outline-none",
+                      "neu-nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium cursor-pointer no-underline outline-none",
                       isActive
                         ? "neu-nav-active text-foreground"
                         : "text-muted-foreground hover:text-foreground"
@@ -80,12 +88,12 @@ export function AppLayout({ children, path }: AppLayoutProps) {
             <AnimatePresence mode="wait">
               <motion.div
                 key={currentKey}
-                initial={{ opacity: 0, scale: 0.96 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 1.02 }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
                 transition={{
-                  duration: 0.25,
-                  ease: [0.4, 0, 0.2, 1]
+                  duration: 0.15,
+                  ease: "easeOut"
                 }}
                 className="min-h-full"
               >
