@@ -76,23 +76,60 @@
 }
 
 :root {
-  /* Light Neumorphism - soft cream/gray palette */
+  /* ============================================
+     UNIFIED NEUMORPHIC DESIGN TOKENS
+     Light source: top-left for consistent tactile feel
+     ============================================ */
+  
+  /* Base surface colors - uniform across sidebar and main area */
+  --neu-bg: #e8ecf2;          /* Background canvas - soft cool gray */
+  --neu-surface: #eef2f6;     /* Raised surfaces - slightly lighter */
+  --neu-surface-alt: #f4f7fb; /* Alternative surface for cards */
+  
+  /* Shadow colors - avoid pure black for soft skeuo feel */
+  --neu-shadow-dark: rgba(20, 30, 45, 0.14);
+  --neu-shadow-light: rgba(255, 255, 255, 0.85);
+  --neu-shadow-dark-strong: rgba(20, 30, 45, 0.18);
+  --neu-shadow-light-strong: rgba(255, 255, 255, 0.92);
+  
+  /* Stroke for subtle edge definition */
+  --neu-stroke: rgba(255, 255, 255, 0.55);
+  --neu-stroke-inner: rgba(20, 30, 45, 0.05);
+  
+  /* Unified shadow tokens - consistent light direction (top-left) */
+  --neu-raised-1: 
+    -6px -6px 12px var(--neu-shadow-light),
+    6px 6px 12px var(--neu-shadow-dark);
+  
+  --neu-raised-2: 
+    -10px -10px 22px var(--neu-shadow-light-strong),
+    12px 12px 26px var(--neu-shadow-dark-strong);
+  
+  --neu-inset-1: 
+    inset 4px 4px 10px var(--neu-shadow-dark),
+    inset -4px -4px 10px var(--neu-shadow-light);
+  
+  --neu-inset-subtle:
+    inset 2px 2px 6px rgba(20, 30, 45, 0.08),
+    inset -2px -2px 6px var(--neu-shadow-light);
+
+  /* Legacy HSL values for compatibility */
   --neu-base: 220 15% 92%;
   --neu-light: 0 0% 100%;
   --neu-dark: 220 10% 82%;
 
-  /* Sidebar - soft gray for light mode */
-  --sidebar: 220 15% 94%;
+  /* Sidebar - same surface as main for unified feel */
+  --sidebar: 220 15% 91%;
 
-  /* Background - off-white */
-  --background: 220 15% 96%;
+  /* Background - cool gray base (matches neu-bg) */
+  --background: 220 15% 91%;
   --foreground: 220 20% 15%;
 
-  /* Cards/panels */
-  --card: 0 0% 100%;
+  /* Cards/panels - slightly elevated from background */
+  --card: 220 15% 94%;
   --card-foreground: 220 20% 15%;
 
-  --popover: 0 0% 100%;
+  --popover: 220 15% 96%;
   --popover-foreground: 220 20% 15%;
 
   /* Primary - muted blue */
@@ -103,7 +140,7 @@
   --secondary: 220 15% 88%;
   --secondary-foreground: 220 20% 25%;
 
-  --muted: 220 15% 90%;
+  --muted: 220 15% 88%;
   --muted-foreground: 220 10% 45%;
 
   --accent: 220 15% 90%;
@@ -112,8 +149,8 @@
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 100%;
 
-  --border: 220 15% 88%;
-  --input: 220 15% 90%;
+  --border: 220 15% 85%;
+  --input: 220 15% 88%;
   --ring: 220 60% 50%;
 
   --radius: 0.75rem;
@@ -127,13 +164,10 @@
 
 /* Prevent layout shifts with scrollbar */
 html {
-  /* Use scrollbar-gutter to reserve space for scrollbar, preventing layout shifts */
   scrollbar-gutter: stable;
 }
 
-/* Prevent layout shift when Radix UI adds overflow:hidden to body (e.g., for Select dropdowns) */
 html:has(body[data-scroll-locked]) {
-  /* Keep the scrollbar gutter visible even when body is scroll-locked */
   overflow-y: scroll;
 }
 
@@ -156,19 +190,45 @@ html:has(body[data-scroll-locked]) {
 }
 
 .dark {
-  /* Neumorphism base color - matte charcoal */
+  /* Dark mode neumorphic tokens */
+  --neu-bg: #1a1d23;
+  --neu-surface: #22262e;
+  --neu-surface-alt: #282c36;
+  
+  --neu-shadow-dark: rgba(0, 0, 0, 0.45);
+  --neu-shadow-light: rgba(60, 70, 85, 0.12);
+  --neu-shadow-dark-strong: rgba(0, 0, 0, 0.55);
+  --neu-shadow-light-strong: rgba(70, 80, 100, 0.15);
+  
+  --neu-stroke: rgba(255, 255, 255, 0.06);
+  --neu-stroke-inner: rgba(0, 0, 0, 0.2);
+  
+  --neu-raised-1: 
+    -6px -6px 12px var(--neu-shadow-light),
+    6px 6px 12px var(--neu-shadow-dark);
+  
+  --neu-raised-2: 
+    -10px -10px 22px var(--neu-shadow-light-strong),
+    12px 12px 26px var(--neu-shadow-dark-strong);
+  
+  --neu-inset-1: 
+    inset 4px 4px 10px var(--neu-shadow-dark),
+    inset -4px -4px 10px var(--neu-shadow-light);
+  
+  --neu-inset-subtle:
+    inset 2px 2px 6px rgba(0, 0, 0, 0.25),
+    inset -2px -2px 6px var(--neu-shadow-light);
+
+  /* Legacy HSL values */
   --neu-base: 220 6% 18%;
   --neu-light: 220 6% 24%;
   --neu-dark: 220 6% 10%;
 
-  /* Sidebar background - slightly darker charcoal */
   --sidebar: 220 6% 14%;
 
-  /* Outer background - matte charcoal */
   --background: 220 6% 16%;
   --foreground: 0 0% 92%;
 
-  /* Main content area */
   --card: 220 6% 20%;
   --card-foreground: 0 0% 92%;
 
@@ -178,7 +238,6 @@ html:has(body[data-scroll-locked]) {
   --primary: 0 0% 95%;
   --primary-foreground: 0 0% 10%;
 
-  /* Neumorphic surface for debossed elements */
   --secondary: 220 6% 14%;
   --secondary-foreground: 0 0% 85%;
 
@@ -202,7 +261,8 @@ html:has(body[data-scroll-locked]) {
   }
 
   body {
-    @apply font-sans antialiased bg-background text-foreground;
+    @apply font-sans antialiased text-foreground;
+    background: var(--neu-bg);
   }
 
   h1,
@@ -225,201 +285,347 @@ html:has(body[data-scroll-locked]) {
 }
 
 /* ============================================
-   NEUMORPHISM UTILITY CLASSES
+   UNIFIED NEUMORPHISM CLASSES
+   All using consistent top-left light source
    ============================================ */
 
-/* Light Mode Neumorphism - needs stronger shadows for visibility */
+/* Raised panel with paired shadow (top-left highlight, bottom-right shadow) */
 .neu-panel-raised {
-  box-shadow:
-    8px 8px 16px hsl(220 15% 75% / 0.5),
-    -6px -6px 12px hsl(0 0% 100% / 0.9),
-    inset 0 1px 0 hsl(0 0% 100% / 0.6);
+  background: var(--neu-surface);
+  box-shadow: var(--neu-raised-1);
+  border: 1px solid var(--neu-stroke);
+  border-radius: 18px;
+  position: relative;
 }
 
+/* Inner bevel highlight for more tactile feel */
+.neu-panel-raised::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 rgba(20, 30, 45, 0.03);
+}
+
+/* Inset/debossed panel for wells, inputs, status areas */
 .neu-panel-inset {
-  box-shadow:
-    inset 4px 4px 8px hsl(220 15% 75% / 0.35),
-    inset -3px -3px 6px hsl(0 0% 100% / 0.8);
+  background: var(--neu-bg);
+  box-shadow: var(--neu-inset-1);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 18px;
 }
 
+/* Search field / input inset */
 .neu-search-inset {
-  background: linear-gradient(145deg, hsl(220 15% 86%), hsl(220 15% 90%));
-  box-shadow:
-    inset 3px 3px 6px hsl(220 15% 70% / 0.4),
-    inset -2px -2px 4px hsl(0 0% 100% / 0.7);
+  background: linear-gradient(145deg, 
+    hsl(220 15% 86% / 0.8), 
+    hsl(220 15% 90% / 0.9));
+  box-shadow: var(--neu-inset-1);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 18px;
 }
 
+/* Nav item base */
 .neu-nav-item {
   background: transparent;
+  border-radius: 14px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* Active nav item - raised from surface */
 .neu-nav-active {
-  background: linear-gradient(145deg, hsl(0 0% 100%), hsl(220 15% 94%));
-  box-shadow:
-    4px 4px 8px hsl(220 15% 75% / 0.4),
-    -3px -3px 6px hsl(0 0% 100% / 0.9),
-    inset 0 1px 0 hsl(0 0% 100% / 0.5);
+  background: var(--neu-surface-alt);
+  box-shadow: var(--neu-raised-1);
+  border: 1px solid var(--neu-stroke);
+  border-radius: 14px;
+  position: relative;
 }
 
+.neu-nav-active::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(20, 30, 45, 0.02);
+}
+
+/* Keyboard shortcut badge */
 .neu-kbd {
-  background: hsl(220 15% 92%);
+  background: var(--neu-surface);
   box-shadow:
-    2px 2px 4px hsl(220 15% 75% / 0.3),
-    -1px -1px 2px hsl(0 0% 100% / 0.8);
+    -2px -2px 4px var(--neu-shadow-light),
+    2px 2px 4px var(--neu-shadow-dark);
+  border: 1px solid var(--neu-stroke);
 }
 
-/* Dark Mode Neumorphism Overrides - charcoal palette */
-.dark .neu-panel-raised {
+/* ============================================
+   RECORDINGS LIST - UNIFIED WELL + ROWS STYLE
+   ============================================ */
+
+/* Container well for transcript list */
+.neu-recordings-well {
+  background: var(--neu-bg);
+  border-radius: 22px;
+  padding: 14px;
+  box-shadow: var(--neu-inset-1);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+/* Individual recording row - raised from well */
+.neu-recording-row {
+  background: var(--neu-surface);
+  border-radius: 16px;
+  box-shadow: var(--neu-raised-1);
+  border: 1px solid var(--neu-stroke);
+  position: relative;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.neu-recording-row::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
   box-shadow:
-    8px 8px 16px hsl(220 6% 6% / 0.7),
-    -4px -4px 12px hsl(220 6% 26% / 0.15),
-    inset 0 1px 0 hsl(220 6% 28% / 0.2);
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(20, 30, 45, 0.02);
+}
+
+.neu-recording-row + .neu-recording-row {
+  margin-top: 12px;
+}
+
+.neu-recording-row:hover {
+  box-shadow: var(--neu-raised-2);
+  transform: translateY(-1px);
+}
+
+/* ============================================
+   STATUS WELL / BANNER - DEBOSSED STYLE
+   ============================================ */
+
+.neu-status-well {
+  background: var(--neu-bg);
+  border-radius: 22px;
+  box-shadow: var(--neu-inset-1);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  position: relative;
+}
+
+/* Optional screen effect for status wells */
+.neu-status-well::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg, 
+    rgba(255, 255, 255, 0.03) 0%, 
+    transparent 50%,
+    rgba(0, 0, 0, 0.02) 100%);
+}
+
+/* ============================================
+   MIC BUTTON - FIXED TACTILE STYLE
+   Same light direction as sidebar (top-left)
+   ============================================ */
+
+.neu-mic-button {
+  width: 96px;
+  height: 96px;
+  border-radius: 999px;
+  background: linear-gradient(145deg, #3a73e8, #2f63dd);
+  box-shadow:
+    -10px -10px 20px rgba(255, 255, 255, 0.35),
+    12px 12px 26px rgba(20, 30, 45, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  position: relative;
+  transition: all 0.15s ease-out;
+}
+
+/* Inner highlight ring for button */
+.neu-mic-button::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+.neu-mic-button:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    -12px -12px 24px rgba(255, 255, 255, 0.4),
+    14px 14px 30px rgba(20, 30, 45, 0.25);
+}
+
+.neu-mic-button:active {
+  transform: translateY(1px);
+  box-shadow:
+    inset 8px 8px 16px rgba(20, 30, 45, 0.22),
+    inset -8px -8px 16px rgba(255, 255, 255, 0.25);
+}
+
+/* Recording state - red gradient */
+.neu-mic-button.recording {
+  background: linear-gradient(145deg, #ef4444, #dc2626);
+}
+
+/* Dark mode overrides */
+.dark .neu-panel-raised {
+  background: var(--neu-surface);
+  box-shadow: var(--neu-raised-1);
+  border: 1px solid var(--neu-stroke);
+}
+
+.dark .neu-panel-raised::before {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15);
 }
 
 .dark .neu-panel-inset {
-  box-shadow:
-    inset 3px 3px 8px hsl(220 6% 6% / 0.5),
-    inset -2px -2px 6px hsl(220 6% 26% / 0.08);
+  background: var(--neu-bg);
+  box-shadow: var(--neu-inset-1);
+  border: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .dark .neu-search-inset {
-  background: linear-gradient(145deg, hsl(220 6% 12%), hsl(220 6% 15%));
-  box-shadow:
-    inset 4px 4px 8px hsl(220 6% 4% / 0.7),
-    inset -2px -2px 4px hsl(220 6% 24% / 0.1);
+  background: linear-gradient(145deg, 
+    hsl(220 6% 13% / 0.9), 
+    hsl(220 6% 16% / 0.9));
+  box-shadow: var(--neu-inset-1);
+  border: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .dark .neu-nav-active {
-  background: linear-gradient(145deg, hsl(220 6% 20%), hsl(220 6% 16%));
+  background: var(--neu-surface-alt);
+  box-shadow: var(--neu-raised-1);
+  border: 1px solid var(--neu-stroke);
+}
+
+.dark .neu-nav-active::before {
   box-shadow:
-    5px 5px 10px hsl(220 6% 6% / 0.6),
-    -3px -3px 8px hsl(220 6% 26% / 0.12),
-    inset 0 1px 0 hsl(220 6% 30% / 0.2);
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1);
 }
 
 .dark .neu-kbd {
-  background: hsl(220 6% 18%);
+  background: var(--neu-surface);
   box-shadow:
-    2px 2px 4px hsl(220 6% 6% / 0.5),
-    -1px -1px 2px hsl(220 6% 24% / 0.08);
+    -2px -2px 4px var(--neu-shadow-light),
+    2px 2px 4px var(--neu-shadow-dark);
+  border: 1px solid var(--neu-stroke);
+}
+
+.dark .neu-recordings-well {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-inset-1);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.dark .neu-recording-row {
+  background: var(--neu-surface);
+  box-shadow: var(--neu-raised-1);
+  border: 1px solid var(--neu-stroke);
+}
+
+.dark .neu-recording-row::before {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1);
+}
+
+.dark .neu-status-well {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-inset-1);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.dark .neu-mic-button {
+  box-shadow:
+    -10px -10px 20px rgba(70, 80, 100, 0.12),
+    12px 12px 26px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.dark .neu-mic-button::after {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.dark .neu-mic-button:hover {
+  box-shadow:
+    -12px -12px 24px rgba(70, 80, 100, 0.15),
+    14px 14px 30px rgba(0, 0, 0, 0.5);
+}
+
+.dark .neu-mic-button:active {
+  box-shadow:
+    inset 8px 8px 16px rgba(0, 0, 0, 0.35),
+    inset -8px -8px 16px rgba(70, 80, 100, 0.1);
 }
 
 /* ============================================
    MICRO-INTERACTIONS & TRANSITIONS
    ============================================ */
 
-/* Base transition for all neumorphic elements */
 .neu-panel-raised,
+.neu-panel-inset,
 .neu-search-inset,
 .neu-nav-item,
-.neu-nav-active {
+.neu-nav-active,
+.neu-recording-row {
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Hover Lift Effect for Cards - Light Mode */
+/* Hover lift effect */
 .neu-panel-raised:hover {
-  box-shadow:
-    12px 12px 24px hsl(220 15% 70% / 0.45),
-    -8px -8px 16px hsl(0 0% 100% / 0.95),
-    inset 0 1px 0 hsl(0 0% 100% / 0.7);
+  box-shadow: var(--neu-raised-2);
 }
 
-/* Hover Lift Effect for Cards - Dark Mode */
-.dark .neu-panel-raised:hover {
-  box-shadow:
-    12px 12px 24px hsl(220 6% 4% / 0.8),
-    -6px -6px 16px hsl(220 6% 28% / 0.18),
-    inset 0 1px 0 hsl(220 6% 32% / 0.25);
-}
-
-/* Button/Card Press Animation - Only for clickable card elements, not container panels
-   Use .neu-panel-clickable class for cards that should have press animation */
+/* Clickable press animation */
 .neu-panel-clickable:active {
   transform: translateY(0) scale(0.98);
-  box-shadow:
-    inset 3px 3px 6px hsl(220 15% 75% / 0.35),
-    inset -2px -2px 4px hsl(0 0% 100% / 0.6);
+  box-shadow: var(--neu-inset-subtle);
   transition: all 0.1s ease-out;
 }
 
-/* Button/Card Press Animation - Dark Mode */
-.dark .neu-panel-clickable:active {
-  transform: translateY(0) scale(0.98);
-  box-shadow:
-    inset 3px 3px 6px hsl(220 6% 6% / 0.5),
-    inset -2px -2px 4px hsl(220 6% 22% / 0.1);
-  transition: all 0.1s ease-out;
-}
-
-/* Neumorphic Button - Raised (idle) */
+/* Neumorphic Button */
 .neu-button {
-  box-shadow:
-    4px 4px 8px hsl(220 15% 75% / 0.4),
-    -3px -3px 6px hsl(0 0% 100% / 0.9);
+  background: var(--neu-surface);
+  box-shadow: var(--neu-raised-1);
+  border: 1px solid var(--neu-stroke);
   transition: all 0.15s ease-out;
 }
 
 .neu-button:hover {
   transform: translateY(-2px);
-  box-shadow:
-    6px 6px 12px hsl(220 15% 70% / 0.45),
-    -4px -4px 8px hsl(0 0% 100% / 0.95);
+  box-shadow: var(--neu-raised-2);
 }
 
 .neu-button:active {
   transform: scale(0.96);
-  box-shadow:
-    inset 2px 2px 4px hsl(220 15% 70% / 0.35),
-    inset -1px -1px 3px hsl(0 0% 100% / 0.6);
+  box-shadow: var(--neu-inset-subtle);
 }
 
-.dark .neu-button {
-  box-shadow:
-    4px 4px 8px hsl(220 6% 6% / 0.6),
-    -2px -2px 6px hsl(220 6% 26% / 0.12);
-}
-
-.dark .neu-button:hover {
-  transform: translateY(-2px);
-  box-shadow:
-    6px 6px 12px hsl(220 6% 4% / 0.7),
-    -3px -3px 8px hsl(220 6% 28% / 0.15);
-}
-
-.dark .neu-button:active {
-  transform: scale(0.96);
-  box-shadow:
-    inset 2px 2px 4px hsl(220 6% 6% / 0.5),
-    inset -1px -1px 3px hsl(220 6% 22% / 0.08);
-}
-
-/* Recording Button Pulse Animation */
-@keyframes recPulse {
-
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
-  }
-
-  50% {
-    box-shadow: 0 0 0 16px rgba(239, 68, 68, 0);
-  }
-}
-
-.recording-pulse {
-  animation: recPulse 1.5s ease-in-out infinite;
-}
-
-/* Nav item hover effect */
+/* Nav item hover */
 .neu-nav-item:hover {
-  background: hsl(220 15% 94% / 0.5);
+  background: hsl(220 15% 92% / 0.6);
 }
 
 .dark .neu-nav-item:hover {
-  background: hsl(220 6% 20% / 0.5);
+  background: hsl(220 6% 22% / 0.5);
 }
 
-/* Focus States for Accessibility */
+/* Focus States */
 .neu-panel-raised:focus-visible,
 .neu-nav-item:focus-visible,
 .neu-button:focus-visible {
@@ -427,26 +633,51 @@ html:has(body[data-scroll-locked]) {
   outline-offset: 2px;
 }
 
-/* Respect reduced motion preferences */
-@media (prefers-reduced-motion: reduce) {
+/* Recording Button Pulse Animation */
+@keyframes recPulse {
+  0%,
+  100% {
+    box-shadow:
+      -10px -10px 20px rgba(255, 255, 255, 0.35),
+      12px 12px 26px rgba(20, 30, 45, 0.22),
+      0 0 0 0 rgba(239, 68, 68, 0.5);
+  }
 
+  50% {
+    box-shadow:
+      -10px -10px 20px rgba(255, 255, 255, 0.35),
+      12px 12px 26px rgba(20, 30, 45, 0.22),
+      0 0 0 16px rgba(239, 68, 68, 0);
+  }
+}
+
+.recording-pulse {
+  animation: recPulse 1.5s ease-in-out infinite;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
   .neu-panel-raised,
   .neu-search-inset,
   .neu-nav-item,
   .neu-nav-active,
   .neu-button,
+  .neu-recording-row,
   .recording-pulse {
     transition: none !important;
     animation: none !important;
   }
 
   .neu-panel-raised:hover,
-  .dark .neu-panel-raised:hover {
+  .neu-recording-row:hover {
     transform: none;
   }
 }
 
-/* Custom Prose styles for ReactMarkdown rendering */
+/* ============================================
+   PROSE STYLES FOR MARKDOWN
+   ============================================ */
+
 .prose {
   font-size: 1.125rem;
   line-height: 1.75;
@@ -546,7 +777,6 @@ html:has(body[data-scroll-locked]) {
   padding: 0;
 }
 
-/* Dark mode prose adjustments */
 .dark .prose h2 {
   border-bottom-color: hsl(var(--border));
 }
@@ -584,15 +814,9 @@ html:has(body[data-scroll-locked]) {
 }
 
 .neu-skeleton-card {
-  box-shadow:
-    4px 4px 8px hsl(220 15% 75% / 0.3),
-    -3px -3px 6px hsl(0 0% 100% / 0.6);
-}
-
-.dark .neu-skeleton-card {
-  box-shadow:
-    4px 4px 8px hsl(220 6% 6% / 0.4),
-    -2px -2px 6px hsl(220 6% 26% / 0.1);
+  background: var(--neu-surface);
+  box-shadow: var(--neu-raised-1);
+  border: 1px solid var(--neu-stroke);
 }
 
 /* ============================================
@@ -600,28 +824,18 @@ html:has(body[data-scroll-locked]) {
    ============================================ */
 
 [data-sonner-toaster] [data-sonner-toast] {
-  background: hsl(var(--card)) !important;
-  border: none !important;
-  box-shadow:
-    8px 8px 16px hsl(220 15% 75% / 0.4),
-    -6px -6px 12px hsl(0 0% 100% / 0.8),
-    inset 0 1px 0 hsl(0 0% 100% / 0.5) !important;
+  background: var(--neu-surface) !important;
+  border: 1px solid var(--neu-stroke) !important;
+  box-shadow: var(--neu-raised-2) !important;
   border-radius: 1rem !important;
 }
 
-.dark [data-sonner-toaster] [data-sonner-toast] {
-  box-shadow:
-    8px 8px 16px hsl(220 6% 6% / 0.6),
-    -4px -4px 12px hsl(220 6% 26% / 0.12),
-    inset 0 1px 0 hsl(220 6% 28% / 0.2) !important;
-}
-
 [data-sonner-toaster] [data-sonner-toast][data-type="success"] {
-  background: linear-gradient(135deg, hsl(142 70% 45% / 0.15), hsl(var(--card))) !important;
+  background: linear-gradient(135deg, hsl(142 70% 45% / 0.15), var(--neu-surface)) !important;
 }
 
 [data-sonner-toaster] [data-sonner-toast][data-type="error"] {
-  background: linear-gradient(135deg, hsl(0 70% 50% / 0.15), hsl(var(--card))) !important;
+  background: linear-gradient(135deg, hsl(0 70% 50% / 0.15), var(--neu-surface)) !important;
 }
 
 /* ============================================

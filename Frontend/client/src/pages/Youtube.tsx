@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useLocation } from "wouter";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, memo } from "react";
 import { apiUrl, wsUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -29,6 +29,151 @@ type YouTubeSearchItem = {
 };
 
 type SortOption = "date" | "likes" | "views";
+
+// Memoized YoutubeVideoCard to prevent unnecessary re-renders
+interface YoutubeVideoCardProps {
+  item: any;
+  index: number;
+  viewMode: "list" | "grid";
+  deletingId: string | null;
+  onDelete: (e: React.MouseEvent, id: string) => void;
+  onNavigate: (id: string) => void;
+}
+
+const YoutubeVideoCard = memo(function YoutubeVideoCard({
+  item,
+  index,
+  viewMode,
+  deletingId,
+  onDelete,
+  onNavigate,
+}: YoutubeVideoCardProps) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.05, duration: 0.3, ease: "easeOut" }}
+    >
+      <Card
+        className="neu-recording-row overflow-hidden bg-transparent hover:scale-[1.01] transition-all group cursor-pointer rounded-xl"
+        onClick={() => onNavigate(item.id)}
+      >
+        {viewMode === "list" ? (
+          // List view
+          <div className="flex gap-4 p-4 min-w-0 overflow-hidden">
+            <div className="relative w-32 h-20 bg-muted rounded-md shrink-0 overflow-hidden">
+              {item.thumbnailUrl ? (
+                <img
+                  src={item.thumbnailUrl}
+                  alt={item.title || "Thumbnail"}
+                  className="w-full h-full object-cover opacity-90"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="w-full h-full bg-secondary flex items-center justify-center">
+                  <YoutubeIcon className="w-8 h-8 text-muted-foreground/50" />
+                </div>
+              )}
+              <div className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">
+                {item.duration}
+              </div>
+            </div>
+
+            <div className="flex-1 min-w-0 overflow-hidden">
+              <div className="flex justify-between items-start gap-2">
+                <h3 className="font-medium text-foreground truncate text-base flex-1 min-w-0">{item.title}</h3>
+                {item.status === 'processing' ? (
+                  <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1 shrink-0">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    {item.step || "Processing"}
+                  </Badge>
+                ) : item.status === 'failed' ? (
+                  <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px] shrink-0">Failed</Badge>
+                ) : (
+                  <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full shrink-0">
+                    <CheckCircle2 className="w-3 h-3" />
+                    Ready
+                  </div>
+                )}
+              </div>
+              <p className="text-sm text-muted-foreground mt-1 truncate">{item.channel || item.channelTitle || "Unknown Channel"} • {item.date}</p>
+            </div>
+
+            <div className="flex flex-col justify-center">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                onClick={(e) => onDelete(e, item.id)}
+                disabled={deletingId === item.id}
+              >
+                {deletingId === item.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Trash2 className="w-4 h-4" />
+                )}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          // Grid view
+          <div className="flex flex-col">
+            <div className="relative w-full aspect-video bg-muted overflow-hidden">
+              {item.thumbnailUrl ? (
+                <img
+                  src={item.thumbnailUrl}
+                  alt={item.title || "Thumbnail"}
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="w-full h-full bg-secondary flex items-center justify-center">
+                  <YoutubeIcon className="w-12 h-12 text-muted-foreground/50" />
+                </div>
+              )}
+              <div className="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded">
+                {item.duration}
+              </div>
+              <div className="absolute top-2 right-2">
+                {item.status === 'processing' ? (
+                  <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50/90 text-[10px] flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  </Badge>
+                ) : item.status === 'failed' ? (
+                  <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50/90 text-[10px]">Failed</Badge>
+                ) : (
+                  <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50/90 px-2 py-1 rounded-full">
+                    <CheckCircle2 className="w-3 h-3" />
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="p-3">
+              <h3 className="font-medium text-foreground line-clamp-2 text-sm group-hover:text-primary transition-colors">{item.title}</h3>
+              <p className="text-xs text-muted-foreground mt-1 truncate">{item.channel || item.channelTitle || "Unknown"}</p>
+              <div className="flex items-center justify-between mt-2">
+                <span className="text-xs text-muted-foreground">{item.date}</span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                  onClick={(e) => onDelete(e, item.id)}
+                  disabled={deletingId === item.id}
+                >
+                  {deletingId === item.id ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3 h-3" />
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Card>
+    </motion.div>
+  );
+});
 
 export default function Youtube() {
   const [, setLocation] = useLocation();
@@ -191,7 +336,7 @@ export default function Youtube() {
     }
   };
 
-  const deleteTranscript = async (e: React.MouseEvent, id: string) => {
+  const deleteTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation(); // Prevent card click navigation
     if (deletingId) return;
 
@@ -219,7 +364,11 @@ export default function Youtube() {
     } finally {
       setDeletingId(null);
     }
-  };
+  }, [deletingId, toast]);
+
+  const navigateToTranscript = useCallback((id: string) => {
+    setLocation(`/transcript/${id}`);
+  }, [setLocation]);
 
   return (
     <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
@@ -229,7 +378,7 @@ export default function Youtube() {
       </header>
 
       {/* Input Section - Debossed neumorphic style */}
-      <div className="neu-search-inset p-2 mb-6 rounded-xl">
+      <div className="neu-status-well p-2 mb-6 rounded-xl">
         <div className="flex items-center gap-2">
           <div className="pl-3 text-muted-foreground">
             <YoutubeIcon className="w-5 h-5" />
@@ -303,7 +452,7 @@ export default function Youtube() {
                 return (
                   <Card
                     key={item.videoId}
-                    className="neu-panel-raised overflow-hidden border-0 hover:scale-[1.01] transition-all group cursor-pointer bg-card"
+                    className="neu-recording-row overflow-hidden hover:scale-[1.01] transition-all group cursor-pointer bg-transparent"
                     onClick={() => startTranscription(item)}
                   >
                     <div className="flex gap-4 p-4">
@@ -399,127 +548,17 @@ export default function Youtube() {
           ) : recentVideos.length === 0 ? (
             <EmptyState type="youtube" />
           ) : (
-            <div className={viewMode === "grid" ? "grid grid-cols-3 gap-4" : "grid grid-cols-1 gap-4"}>
+            <div className={viewMode === "grid" ? "grid grid-cols-3 gap-4" : "flex flex-col gap-4"}>
               {recentVideos.map((item: any, index: number) => (
-                <motion.div
+                <YoutubeVideoCard
                   key={item.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.05, duration: 0.3, ease: "easeOut" }}
-                >
-                  <Card className="neu-panel-raised overflow-hidden bg-card border-0 hover:scale-[1.01] transition-all group cursor-pointer rounded-xl" onClick={() => setLocation(`/transcript/${item.id}`)}>
-                    {viewMode === "list" ? (
-                      // List view
-                      <div className="flex gap-4 p-4 min-w-0 overflow-hidden">
-                        <div className="relative w-32 h-20 bg-muted rounded-md shrink-0 overflow-hidden">
-                          {item.thumbnailUrl ? (
-                            <img
-                              src={item.thumbnailUrl}
-                              alt={item.title || "Thumbnail"}
-                              className="w-full h-full object-cover opacity-90"
-                            />
-                          ) : (
-                            <div className="w-full h-full bg-secondary flex items-center justify-center">
-                              <YoutubeIcon className="w-8 h-8 text-muted-foreground/50" />
-                            </div>
-                          )}
-                          <div className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">
-                            {item.duration}
-                          </div>
-                        </div>
-
-                        <div className="flex-1 min-w-0 overflow-hidden">
-                          <div className="flex justify-between items-start gap-2">
-                            <h3 className="font-medium text-foreground truncate text-base flex-1 min-w-0">{item.title}</h3>
-                            {item.status === 'processing' ? (
-                              <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1 shrink-0">
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                {item.step || "Processing"}
-                              </Badge>
-                            ) : item.status === 'failed' ? (
-                              <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px] shrink-0">Failed</Badge>
-                            ) : (
-                              <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full shrink-0">
-                                <CheckCircle2 className="w-3 h-3" />
-                                Ready
-                              </div>
-                            )}
-                          </div>
-                          <p className="text-sm text-muted-foreground mt-1 truncate">{item.channel || item.channelTitle || "Unknown Channel"} • {item.date}</p>
-                        </div>
-
-                        <div className="flex flex-col justify-center">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={(e) => deleteTranscript(e, item.id)}
-                            disabled={deletingId === item.id}
-                          >
-                            {deletingId === item.id ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Trash2 className="w-4 h-4" />
-                            )}
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
-                      // Grid view
-                      <div className="flex flex-col">
-                        <div className="relative w-full aspect-video bg-muted overflow-hidden">
-                          {item.thumbnailUrl ? (
-                            <img
-                              src={item.thumbnailUrl}
-                              alt={item.title || "Thumbnail"}
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                            />
-                          ) : (
-                            <div className="w-full h-full bg-secondary flex items-center justify-center">
-                              <YoutubeIcon className="w-12 h-12 text-muted-foreground/50" />
-                            </div>
-                          )}
-                          <div className="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded">
-                            {item.duration}
-                          </div>
-                          <div className="absolute top-2 right-2">
-                            {item.status === 'processing' ? (
-                              <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50/90 text-[10px] flex items-center gap-1">
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                              </Badge>
-                            ) : item.status === 'failed' ? (
-                              <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50/90 text-[10px]">Failed</Badge>
-                            ) : (
-                              <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50/90 px-2 py-1 rounded-full">
-                                <CheckCircle2 className="w-3 h-3" />
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                        <div className="p-3">
-                          <h3 className="font-medium text-foreground line-clamp-2 text-sm group-hover:text-primary transition-colors">{item.title}</h3>
-                          <p className="text-xs text-muted-foreground mt-1 truncate">{item.channel || item.channelTitle || "Unknown"}</p>
-                          <div className="flex items-center justify-between mt-2">
-                            <span className="text-xs text-muted-foreground">{item.date}</span>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
-                              onClick={(e) => deleteTranscript(e, item.id)}
-                              disabled={deletingId === item.id}
-                            >
-                              {deletingId === item.id ? (
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                              ) : (
-                                <Trash2 className="w-3 h-3" />
-                              )}
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </Card>
-                </motion.div>
+                  item={item}
+                  index={index}
+                  viewMode={viewMode}
+                  deletingId={deletingId}
+                  onDelete={deleteTranscript}
+                  onNavigate={navigateToTranscript}
+                />
               ))}
             </div>
           )}

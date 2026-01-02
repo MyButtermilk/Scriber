@@ -49,7 +49,8 @@ class Config:
     HOTKEY = os.getenv("SCRIBER_HOTKEY", "ctrl+alt+s")
     DEFAULT_STT_SERVICE = os.getenv("SCRIBER_DEFAULT_STT", "soniox")
     SONIOX_MODE = os.getenv("SCRIBER_SONIOX_MODE", "realtime").lower()  # realtime | async
-    SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", "stt-async-preview")
+    SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", "stt-async-v3")
+    SONIOX_RT_MODEL = os.getenv("SCRIBER_SONIOX_RT_MODEL", "stt-rt-v3")
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
     LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "auto")
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
@@ -245,6 +246,7 @@ Input:"""
         add("SCRIBER_MODE", cls.MODE)
         add("SCRIBER_SONIOX_MODE", cls.SONIOX_MODE)
         add("SCRIBER_SONIOX_ASYNC_MODEL", cls.SONIOX_ASYNC_MODEL)
+        add("SCRIBER_SONIOX_RT_MODEL", cls.SONIOX_RT_MODEL)
         add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
         # Note: SUMMARIZATION_PROMPT is not persisted to .env (multi-line value causes parsing issues)
         # The default prompt from config.py will be used

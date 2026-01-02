@@ -118,9 +118,10 @@ class SonioxAsyncProcessor(FrameProcessor):
         self,
         api_key: str,
         custom_vocab: str = "",
-        model: str = "stt-async-preview",
+        model: str = "stt-async-v3",
         session: aiohttp.ClientSession = None,
         on_progress: Optional[Callable[[str], None]] = None,
+        enable_speaker_diarization: bool = False,
     ):
         super().__init__()
         self.api_key = api_key
@@ -128,6 +129,7 @@ class SonioxAsyncProcessor(FrameProcessor):
         self.model = model
         self.session = session
         self.on_progress = on_progress
+        self.enable_speaker_diarization = enable_speaker_diarization
         self._buffer = bytearray()
         self._sample_rate = None
         self._channels = None
@@ -209,8 +211,14 @@ class SonioxAsyncProcessor(FrameProcessor):
                     file_id = (await resp.json())["id"]
 
                 payload = {"file_id": file_id, "model": self.model}
+                # Build proper context object if custom_vocab is provided
                 if self.custom_vocab:
-                    payload["context"] = self.custom_vocab
+                    terms = [t.strip() for t in self.custom_vocab.split(",") if t.strip()]
+                    if terms:
+                        payload["context"] = {"terms": terms}
+                # Enable speaker diarization for file/youtube transcription
+                if self.enable_speaker_diarization:
+                    payload["enable_speaker_diarization"] = True
 
                 async with self.session.post(
                     f"{self.BASE_URL}/transcriptions",
@@ -507,21 +515,34 @@ class ScriberPipeline:
             use_async = self.service_name == "soniox_async" or Config.SONIOX_MODE == "async"
             if use_async:
                 logger.info("Using Soniox async transcription mode")
+                # Note: speaker diarization is NOT enabled for live mic (async mode)
+                # It's only enabled for file/youtube transcription
                 return SonioxAsyncProcessor(
                     api_key=_get_api_key("soniox"),
                     custom_vocab=Config.CUSTOM_VOCAB,
                     model=Config.SONIOX_ASYNC_MODEL,
                     session=session,
                     on_progress=self.on_progress,
+                    enable_speaker_diarization=False,  # Disabled for live mic
                 )
             if not SonioxSTTService: raise ImportError("SonioxSTTService not available.")
             lang_hint = _selected_language()
-            params = SonioxInputParams(language_hints=[lang_hint] if lang_hint else None) if SonioxInputParams else _SonioxParamsFallback()
+            # Use stt-rt-v3 model for realtime transcription
+            rt_model = Config.SONIOX_RT_MODEL
+            # Build params with model and context
             if Config.CUSTOM_VOCAB and SonioxContextObject:
                 terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
                 if terms:
                     logger.info(f"Applying custom vocabulary: {terms}")
-                    params = SonioxInputParams(context=SonioxContextObject(terms=terms), language_hints=[lang_hint] if lang_hint else None) if SonioxInputParams else _SonioxParamsFallback(context=SonioxContextObject(terms=terms))
+                    params = SonioxInputParams(
+                        model=rt_model,
+                        context=SonioxContextObject(terms=terms),
+                        language_hints=[lang_hint] if lang_hint else None,
+                    ) if SonioxInputParams else _SonioxParamsFallback(context=SonioxContextObject(terms=terms))
+                else:
+                    params = SonioxInputParams(model=rt_model, language_hints=[lang_hint] if lang_hint else None) if SonioxInputParams else _SonioxParamsFallback()
+            else:
+                params = SonioxInputParams(model=rt_model, language_hints=[lang_hint] if lang_hint else None) if SonioxInputParams else _SonioxParamsFallback()
             return SonioxSTTService(api_key=_get_api_key("soniox"), params=params)
 
         elif self.service_name == "assemblyai":
@@ -779,7 +800,7 @@ class ScriberPipeline:
 
             headers = {"Authorization": f"Bearer {api_key}"}
             base_url = "https://api.soniox.com/v1"
-            model = Config.SONIOX_ASYNC_MODEL or "stt-async-preview"
+            model = Config.SONIOX_ASYNC_MODEL or "stt-async-v3"
 
             if self.on_progress:
                 self.on_progress("Uploading audio...")
@@ -803,10 +824,15 @@ class ScriberPipeline:
                     resp.raise_for_status()
                     file_id = (await resp.json())["id"]
 
-                # Start transcription
+                # Start transcription with speaker diarization enabled for file/youtube
                 payload = {"file_id": file_id, "model": model}
+                # Build proper context object if custom_vocab is provided
                 if Config.CUSTOM_VOCAB:
-                    payload["context"] = Config.CUSTOM_VOCAB
+                    terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
+                    if terms:
+                        payload["context"] = {"terms": terms}
+                # Enable speaker diarization for file/youtube transcription
+                payload["enable_speaker_diarization"] = True
 
                 async with session.post(
                     f"{base_url}/transcriptions",

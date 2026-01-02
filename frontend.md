@@ -34,21 +34,26 @@ Other useful commands:
 
 ## App behavior (current state)
 
-The UI is functional as a prototype, but not wired to real transcription yet:
+The UI is functional and can talk to the Python backend (HTTP + WebSocket). It also degrades gracefully when the backend is unavailable:
 
-- All “history”/transcripts come from `Frontend/client/src/lib/mockData.ts`.
-- `LiveMic`, `Youtube`, and `FileTranscribe` screens show simulated recording/upload/search behavior.
-- `TranscriptDetail` renders a mock transcript and supports “copy to clipboard”.
-- `Settings` is a mock settings panel (device/model/language/hotkey + API key fields) that currently “saves” by showing toasts only.
+- Most screens fetch data from the backend via `/api/...` and listen to `/ws` for updates.
+- `TranscriptDetail` falls back to mock content from `Frontend/client/src/lib/mockData.ts` when needed.
+- `Settings` loads/saves via `/api/settings` (API keys, hotkey/mode, mic device, language, etc.).
+
+## Related docs
+
+- `docs/UI-UX-Improvement-Proposals.md`: UI/UX roadmap ideas (prioritized).
+- `docs/Performance-Optimization-Proposals.md`: performance-focused improvements (incl. UI performance).
 
 ## Client structure
 
-- Entry: `Frontend/client/src/main.tsx` → `Frontend/client/src/App.tsx`
+- Entry: `Frontend/client/src/main.tsx` -> `Frontend/client/src/App.tsx`
 - Routing: `wouter`
   - Tab routes inside layout: `/`, `/youtube`, `/file`, `/settings`
   - Detail route: `/transcript/:id`
 - Layout: `Frontend/client/src/components/layout/AppLayout.tsx`
-  - Bottom tab bar (Live Mic / Youtube / File / Settings)
+  - Left sidebar navigation (Live Mic / YouTube / File / Settings)
+  - Global search input (`SidebarSearch`) + theme toggle
   - Page transitions via `framer-motion`
 - Data fetching scaffold: TanStack Query in `Frontend/client/src/lib/queryClient.ts`
   - `apiRequest()` + `getQueryFn()` expect JSON endpoints and `credentials: "include"`.
@@ -83,7 +88,7 @@ The UI is functional as a prototype, but not wired to real transcription yet:
 
 ## Notable implementation details / gotchas
 
-- `Frontend` is a separate Node project with its own `package.json`; it is not currently integrated with the Python/Tkinter app under `src/`.
+- `Frontend` is a separate Node project with its own `package.json`; it is launched/managed by the Python tray app and talks to the Python backend via HTTP/WS.
 - `Frontend/server/vite.ts` imports `nanoid`, but `nanoid` is not listed in `Frontend/package.json` (it may work transitively, but should be an explicit dependency if used).
 - `Frontend/.local/state/...` looks like Replit agent state; it’s not needed for the app at runtime.
 - `Frontend/components.json` references `tailwind.config.ts`, but this project uses Tailwind v4’s CSS-first setup via `client/src/index.css` + `@tailwindcss/vite`.

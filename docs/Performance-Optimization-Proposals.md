@@ -83,7 +83,214 @@ function TabRoutes() {
 
 ---
 
-### 1.3 WebSocket Message Batching
+### 1.3 WebSocket Singleton Hook
+
+**Current State:**
+- Jede Seite erstellt eigene WebSocket-Verbindung:
+  - `LiveMic.tsx` → `new WebSocket("/ws")`
+  - `Youtube.tsx` → `new WebSocket("/ws")`
+  - `FileTranscribe.tsx` → `new WebSocket("/ws")`
+  - `TranscriptDetail.tsx` → `new WebSocket("/ws")`
+  - `RecordingPopup.tsx` → `new WebSocket("/ws")`
+
+**Problem:**
+- 5 parallele TCP-Verbindungen zum gleichen Endpoint
+- Jede Verbindung = TCP-Handshake-Overhead
+- Inkonsistenter State möglich zwischen Komponenten
+
+**Proposed Solution:**
+```typescript
+// Frontend/client/src/hooks/useWebSocket.ts
+let wsInstance: WebSocket | null = null;
+const listeners = new Map<string, Set<(data: any) => void>>();
+
+export function useWebSocket(
+  messageTypes: string[],
+  onMessage: (data: any) => void
+) {
+  const stableCallback = useCallback(onMessage, []);
+
+  useEffect(() => {
+    // Nur EINE Verbindung für die ganze App
+    if (!wsInstance || wsInstance.readyState === WebSocket.CLOSED) {
+      wsInstance = new WebSocket(wsUrl("/ws"));
+      wsInstance.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        listeners.get(data.type)?.forEach(cb => cb(data));
+      };
+    }
+
+    // Komponente registriert sich für bestimmte Message-Typen
+    messageTypes.forEach(type => {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type)!.add(stableCallback);
+    });
+
+    return () => {
+      messageTypes.forEach(type => listeners.get(type)?.delete(stableCallback));
+    };
+  }, [messageTypes, stableCallback]);
+}
+```
+
+**Vorteile:**
+- 1 statt 5 TCP-Verbindungen = weniger Server-Load
+- Schnellere Navigation (keine neue Verbindung beim Seitenwechsel)
+- Konsistenter State über alle Komponenten
+- Weniger Memory (ein WebSocket-Buffer statt fünf)
+
+**Nachteile:**
+- Komplexere Message-Routing-Logik
+- Shared State Risiko (Bug in einem Listener kann andere beeinflussen)
+- Singleton-Pattern erschwert Unit-Tests
+- Migration erfordert Anpassungen in 5 Dateien
+
+**Impact:** ~200-400ms Netzwerk-Latenz gespart, weniger Server-Load
+**Effort:** Medium (4-6 Stunden)
+**Risk:** Mittel (Bug könnte gesamte Real-time-Kommunikation brechen)
+
+---
+
+### 1.4 Component Memoization ✅ IMPLEMENTED
+
+**Current State:**
+- `LiveMic.tsx:294-374` rendert Transcript-Cards inline in `.map()`
+- `Youtube.tsx:403-523` rendert Video-Cards inline
+- `FileTranscribe.tsx:266-364` rendert File-Cards inline
+
+**Problem:**
+- Bei *jedem* State-Change im Parent werden *alle* Cards neu gerendert
+- Bei 50 Transcripts = 50 unnötige Re-Renders pro State-Änderung
+- Besonders bei `audioLevels` Updates (30fps) problematisch
+
+**Proposed Solution:**
+```tsx
+// Vorher: Inline in der map() - SCHLECHT
+{transcripts.map((item) => (
+  <motion.div key={item.id}>
+    <Card>...</Card>
+  </motion.div>
+))}
+
+// Nachher: Separate memoized Komponente - GUT
+const TranscriptCard = memo(function TranscriptCard({
+  item,
+  onDelete,
+  onNavigate
+}: TranscriptCardProps) {
+  return (
+    <motion.div initial={{...}} animate={{...}}>
+      <Card className="...">
+        {/* Card-Inhalt */}
+      </Card>
+    </motion.div>
+  );
+});
+
+// WICHTIG: Callbacks müssen stabil sein!
+const handleDelete = useCallback((id: string) => {
+  deleteMutation.mutate(id);
+}, [deleteMutation]);
+
+const handleNavigate = useCallback((id: string) => {
+  setLocation(`/transcript/${id}`);
+}, [setLocation]);
+
+// Verwendung
+{transcripts.map((item) => (
+  <TranscriptCard
+    key={item.id}
+    item={item}
+    onDelete={handleDelete}
+    onNavigate={handleNavigate}
+  />
+))}
+```
+
+**Vorteile:**
+- Card rendert nur bei eigener Prop-Änderung neu
+- Flüssigere UI, besonders bei vielen Items
+- Bessere Code-Struktur (kleinere, wiederverwendbare Komponenten)
+- Skaliert besser bei 100+ Transcripts
+
+**Nachteile:**
+- Overhead bei wenigen Items (memo-Vergleich kostet auch)
+- Callbacks MÜSSEN mit `useCallback` stabilisiert werden (sonst wirkungslos!)
+- Mehr Boilerplate (separate Komponente + Props-Interface)
+- Bei Object-Props braucht man ggf. custom `areEqual` Funktion
+
+**Betroffene Dateien:**
+- `Frontend/client/src/pages/LiveMic.tsx` (Zeilen 294-374)
+- `Frontend/client/src/pages/Youtube.tsx` (Zeilen 403-523)
+- `Frontend/client/src/pages/FileTranscribe.tsx` (Zeilen 266-364)
+
+**Impact:** ~100-200ms UI Response-Verbesserung
+**Effort:** Low (2-3 Stunden)
+**Risk:** Gering (lokale Änderung, leicht rückgängig zu machen)
+**Status:** ✅ Completed (2026-01-01) - Implemented memoized components: `TranscriptCard`, `YoutubeVideoCard`, `FileCard`
+
+---
+
+### 1.5 Vite Build Optimization
+
+**Current State:**
+- `vite.config.ts:37-40` hat minimale Build-Konfiguration:
+```typescript
+build: {
+  outDir: path.resolve(import.meta.dirname, "dist/public"),
+  emptyOutDir: true,
+}
+```
+
+**Problem:**
+- Keine `rollupOptions.output` für Chunk-Kontrolle
+- Keine explizite `minify` Spezifikation
+- Große Vendor-Chunks (React, Radix, Framer Motion zusammen)
+
+**Proposed Solution:**
+```typescript
+// Frontend/vite.config.ts
+build: {
+  outDir: path.resolve(import.meta.dirname, "dist/public"),
+  emptyOutDir: true,
+  minify: 'terser',
+  terserOptions: {
+    compress: {
+      drop_console: true,  // Entferne console.log in Production
+    },
+  },
+  rollupOptions: {
+    output: {
+      manualChunks: {
+        'react-vendor': ['react', 'react-dom'],
+        'radix-ui': [
+          '@radix-ui/react-dialog',
+          '@radix-ui/react-popover',
+          '@radix-ui/react-select',
+          '@radix-ui/react-tabs',
+        ],
+        'animation': ['framer-motion'],
+        'query': ['@tanstack/react-query'],
+      }
+    }
+  },
+  reportCompressedSize: true,
+}
+```
+
+**Vorteile:**
+- Bessere Cache-Nutzung (Vendor-Chunks ändern sich selten)
+- Paralleles Laden von unabhängigen Chunks
+- Kleinere initiale Bundle-Größe
+- Console.logs in Production entfernt
+
+**Impact:** ~15-25% Bundle-Reduktion, besseres Caching
+**Effort:** Low (1 Stunde)
+**Risk:** Gering
+
+---
+
+### 1.6 WebSocket Message Batching
 
 **Current State:**
 - `ScriberWebController.broadcast()` sends individual messages for each event
@@ -100,7 +307,7 @@ class ScriberWebController:
     def __init__(self, ...):
         self._last_audio_broadcast = 0
         self._audio_broadcast_interval = 1/30  # 30fps
-    
+
     def _on_audio_level(self, rms: float):
         now = time.monotonic()
         if now - self._last_audio_broadcast < self._audio_broadcast_interval:
@@ -116,7 +323,47 @@ class ScriberWebController:
 
 ## Priority 2: Medium-Impact Optimizations
 
-### 2.1 Transcript List Virtualization
+### 2.1 Database Index on created_at
+
+**Current State:**
+- `database.py:63-85` erstellt Tabelle ohne expliziten Index:
+```sql
+CREATE TABLE IF NOT EXISTS transcripts (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,  -- Kein Index!
+    updated_at TEXT NOT NULL,
+    ...
+)
+```
+
+**Problem:**
+- `load_all_transcripts()` sortiert nach `created_at DESC`
+- Ohne Index = Full Table Scan bei jeder Abfrage
+- Bei 1000+ Transcripts spürbar langsamer
+
+**Proposed Solution:**
+```python
+# src/database.py - In init_database()
+def init_database() -> None:
+    with _get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS transcripts (...)
+        """)
+        # NEU: Index für schnellere Sortierung
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_transcripts_created_at
+            ON transcripts(created_at DESC)
+        """)
+        conn.commit()
+```
+
+**Impact:** ~50-100ms Verbesserung bei 1000+ Transcripts
+**Effort:** Very Low (15 Minuten)
+**Risk:** Sehr gering (Index kann ohne Datenverlust hinzugefügt werden)
+
+---
+
+### 2.2 Transcript List Virtualization
 
 **Current State:**
 - `list_transcripts()` returns all transcripts
@@ -302,9 +549,15 @@ class TranscriptRecord:
 - [x] Background transcript loading (2026-01-01) ✅
 - [x] STT service pre-import / Hotkey response optimization (4.4) (2026-01-01) ✅
 
-### Pending
-- [ ] WebSocket message throttling (1.3)
-- [ ] Transcript list virtualization (2.1)
+### Pending (High Priority)
+- [ ] WebSocket Singleton Hook (1.3) - ~200-400ms Impact, Medium Effort
+- [x] Component Memoization (1.4) - ~100-200ms Impact ✅ Completed (2026-01-01)
+- [ ] Vite Build Optimization (1.5) - ~15-25% Bundle, Low Effort
+- [ ] WebSocket Message Batching (1.6) - 50-70% weniger Traffic, Low Effort
+
+### Pending (Medium Priority)
+- [ ] Database Index on created_at (2.1) - Very Low Effort ⭐
+- [ ] Transcript list virtualization (2.2)
 - [ ] Lazy transcript content loading (3.3)
 
 ### Future

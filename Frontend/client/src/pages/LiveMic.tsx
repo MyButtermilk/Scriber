@@ -1,11 +1,111 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, memo } from "react";
 import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2, LayoutGrid, LayoutList } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { Transcript } from "@/lib/mockData";
 import { useLocation } from "wouter";
+
+// Memoized TranscriptCard to prevent unnecessary re-renders
+interface TranscriptCardProps {
+  item: Transcript;
+  index: number;
+  viewMode: "list" | "grid";
+  deletingId: string | null;
+  onDelete: (e: React.MouseEvent, id: string) => void;
+  onNavigate: (id: string) => void;
+}
+
+const TranscriptCard = memo(function TranscriptCard({
+  item,
+  index,
+  viewMode,
+  deletingId,
+  onDelete,
+  onNavigate,
+}: TranscriptCardProps) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{
+        delay: index * 0.05,
+        duration: 0.3,
+        ease: "easeOut"
+      }}
+    >
+      <Card
+        className="neu-recording-row p-4 cursor-pointer bg-transparent hover:scale-[1.01] transition-all group"
+        onClick={() => onNavigate(item.id)}
+      >
+        {viewMode === "list" ? (
+          // List View
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
+                <Mic className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
+                <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
+                  <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
+                  <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
+                  <span className="flex items-center gap-1 bg-secondary px-1.5 py-0.5 rounded-md"><Globe className="w-3 h-3" /> {item.language}</span>
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-col justify-center">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                onClick={(e) => onDelete(e, item.id)}
+                disabled={deletingId === item.id}
+              >
+                {deletingId === item.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Trash2 className="w-4 h-4" />
+                )}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          // Grid View
+          <div className="flex flex-col h-full">
+            <div className="flex items-start justify-between mb-3">
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
+                <Mic className="w-6 h-6" />
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive h-8 w-8"
+                onClick={(e) => onDelete(e, item.id)}
+                disabled={deletingId === item.id}
+              >
+                {deletingId === item.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Trash2 className="w-4 h-4" />
+                )}
+              </Button>
+            </div>
+            <h3 className="font-medium text-foreground group-hover:text-primary transition-colors line-clamp-2 mb-2">{item.title}</h3>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
+              <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
+              <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
+            </div>
+            <div className="mt-2">
+              <span className="inline-flex items-center gap-1 bg-secondary/50 px-2 py-1 rounded-md text-xs"><Globe className="w-3 h-3" /> {item.language}</span>
+            </div>
+          </div>
+        )}
+      </Card>
+    </motion.div>
+  );
+});
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiUrl, wsUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
@@ -159,7 +259,7 @@ export default function LiveMic() {
     }
   };
 
-  const deleteTranscript = async (e: React.MouseEvent, id: string) => {
+  const deleteTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     if (deletingId) return;
 
@@ -187,7 +287,11 @@ export default function LiveMic() {
     } finally {
       setDeletingId(null);
     }
-  };
+  }, [deletingId, queryClient, toast]);
+
+  const navigateToTranscript = useCallback((id: string) => {
+    setLocation(`/transcript/${id}`);
+  }, [setLocation]);
 
   return (
     <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
@@ -199,18 +303,18 @@ export default function LiveMic() {
       {/* Main Recording Area */}
       <div className="flex flex-col items-center justify-center space-y-6 mb-10">
 
-        {/* Live Text Output - Debossed/inset neumorphic style */}
-        <div className="neu-search-inset w-full max-w-lg min-h-[120px] text-center flex items-center justify-center p-6 rounded-2xl">
+        {/* Live Text Output - Debossed status well for unified design */}
+        <div className="neu-status-well w-full max-w-lg min-h-[120px] text-center flex items-center justify-center p-6">
           {isRecording ? (
             <motion.p
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="text-lg md:text-xl font-medium leading-relaxed text-foreground/90"
+              className="text-lg md:text-xl font-medium leading-relaxed text-foreground/90 relative z-10"
             >
               {liveText ? `"${liveText}"` : `"${status || "Listening"}..."`}
             </motion.p>
           ) : (
-            <p className="text-muted-foreground">Ready to record. Tap the microphone to start.</p>
+            <p className="text-muted-foreground relative z-10">Ready to record. Tap the microphone to start.</p>
           )}
         </div>
 
@@ -246,17 +350,16 @@ export default function LiveMic() {
             {isRecording && <span className="animate-pulse text-red-500">REC</span>}
           </div>
 
-          <Button
-            size="lg"
-            className={`h-24 w-24 rounded-full shadow-xl transition-all duration-300 ${isRecording ? 'bg-destructive hover:bg-destructive/90 ring-4 ring-destructive/20 recording-pulse' : 'bg-primary hover:bg-primary/90 hover:scale-105 shadow-primary/25'}`}
+          <button
+            className={`neu-mic-button flex items-center justify-center text-white ${isRecording ? 'recording recording-pulse' : ''}`}
             onClick={handleToggle}
           >
             {isRecording ? (
-              <Square className="w-12 h-12 fill-current" />
+              <Square className="w-10 h-10 fill-current" />
             ) : (
-              <Mic className="w-16 h-16" />
+              <Mic className="w-12 h-12" />
             )}
-          </Button>
+          </button>
 
           <div className="text-sm font-mono font-medium text-muted-foreground w-16">
             {isRecording ? formatTime(elapsed) : "00:00"}
@@ -290,87 +393,17 @@ export default function LiveMic() {
         ) : transcripts.filter(t => t.type === 'mic').length === 0 ? (
           <EmptyState type="mic" />
         ) : (
-          <div className={viewMode === "grid" ? "grid grid-cols-2 gap-3" : "grid gap-3"}>
+          <div className={viewMode === "grid" ? "grid grid-cols-2 gap-4" : "flex flex-col gap-4"}>
             {transcripts.filter(t => t.type === 'mic').map((item, index) => (
-              <motion.div
+              <TranscriptCard
                 key={item.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{
-                  delay: index * 0.05,
-                  duration: 0.3,
-                  ease: "easeOut"
-                }}
-              >
-                <Card
-                  className="neu-panel-raised p-4 hover:scale-[1.01] transition-all cursor-pointer bg-card border-0 group"
-                  onClick={() => setLocation(`/transcript/${item.id}`)}
-                >
-                  {viewMode === "list" ? (
-                    // List View
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
-                          <Mic className="w-5 h-5" />
-                        </div>
-                        <div>
-                          <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
-                          <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-                            <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
-                            <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
-                            <span className="flex items-center gap-1 bg-secondary px-1.5 py-0.5 rounded-md"><Globe className="w-3 h-3" /> {item.language}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex flex-col justify-center">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
-                          onClick={(e) => deleteTranscript(e, item.id)}
-                          disabled={deletingId === item.id}
-                        >
-                          {deletingId === item.id ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="w-4 h-4" />
-                          )}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    // Grid View
-                    <div className="flex flex-col h-full">
-                      <div className="flex items-start justify-between mb-3">
-                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
-                          <Mic className="w-6 h-6" />
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive h-8 w-8"
-                          onClick={(e) => deleteTranscript(e, item.id)}
-                          disabled={deletingId === item.id}
-                        >
-                          {deletingId === item.id ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="w-4 h-4" />
-                          )}
-                        </Button>
-                      </div>
-                      <h3 className="font-medium text-foreground group-hover:text-primary transition-colors line-clamp-2 mb-2">{item.title}</h3>
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
-                        <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
-                        <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
-                      </div>
-                      <div className="mt-2">
-                        <span className="inline-flex items-center gap-1 bg-secondary/50 px-2 py-1 rounded-md text-xs"><Globe className="w-3 h-3" /> {item.language}</span>
-                      </div>
-                    </div>
-                  )}
-                </Card>
-              </motion.div>
+                item={item}
+                index={index}
+                viewMode={viewMode}
+                deletingId={deletingId}
+                onDelete={deleteTranscript}
+                onNavigate={navigateToTranscript}
+              />
             ))}
           </div>
         )}

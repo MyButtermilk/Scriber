@@ -4,7 +4,6 @@ keyboard
 pyautogui
 python-dotenv
 google-generativeai
-elevenlabs
 loguru
 pytest
 pytest-asyncio
@@ -13,5 +12,5 @@ customtkinter
 pillow
 numpy
 yt-dlp
-PySide6
+PySide6-Essentials
 pystray

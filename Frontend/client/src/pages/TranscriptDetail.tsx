@@ -191,7 +191,7 @@ export default function TranscriptDetail() {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header Toolbar */}
-      <header className="sticky top-0 z-40 bg-background/80 backdrop-blur-md border-b border-border h-16 flex items-center justify-between px-4 md:px-8">
+      <header className="sticky top-0 z-40 backdrop-blur-md border-b border-border/50 h-16 flex items-center justify-between px-4 md:px-8" style={{ background: 'var(--neu-bg)' }}>
         <div className="flex items-center gap-4">
           <Link href={getBackLink()}>
             <Button variant="ghost" size="icon" className="-ml-2">
@@ -242,13 +242,13 @@ export default function TranscriptDetail() {
 
           {/* Meta Card */}
           <div className="flex flex-wrap gap-2">
-            <Badge variant="secondary" className="px-3 py-1 font-normal"><Calendar className="w-3 h-3 mr-1.5" /> {transcript.date}</Badge>
+            <Badge variant="secondary" className="px-3 py-1 font-normal neu-button"><Calendar className="w-3 h-3 mr-1.5" /> {transcript.date}</Badge>
           </div>
 
           {/* Accordion with Summary and Transcript */}
           <Accordion type="multiple" value={accordionValue} onValueChange={setAccordionValue} className="space-y-4">
             {/* Summary Section */}
-            <AccordionItem value="summary" className="border rounded-lg bg-card">
+            <AccordionItem value="summary" className="neu-recording-row overflow-hidden">
               <AccordionTrigger className="px-4 py-3 hover:no-underline">
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-primary" />
@@ -277,7 +277,7 @@ export default function TranscriptDetail() {
             </AccordionItem>
 
             {/* Transcript Section */}
-            <AccordionItem value="transcript" className="border rounded-lg bg-card">
+            <AccordionItem value="transcript" className="neu-recording-row overflow-hidden">
               <AccordionTrigger className="px-4 py-3 hover:no-underline">
                 <div className="flex items-center gap-2">
                   <FileText className="w-4 h-4 text-blue-600" />
