@@ -4,6 +4,8 @@ import { queryClient } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ThemeProvider } from "@/components/theme-provider";
+import { BackendStatusProvider } from "@/hooks/use-backend-status";
+import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
 import { lazy, Suspense } from "react";
 
 // Main navigation pages - eagerly loaded to ensure instant section switching
@@ -62,11 +64,15 @@ function App() {
   return (
     <ThemeProvider defaultTheme="system" storageKey="scriber-theme">
       <QueryClientProvider client={queryClient}>
-        <Toaster />
-        <Router />
+        <BackendStatusProvider>
+          <Toaster />
+          <BackendOfflineBanner />
+          <Router />
+        </BackendStatusProvider>
       </QueryClientProvider>
     </ThemeProvider>
   );
 }
 
 export default App;
+
