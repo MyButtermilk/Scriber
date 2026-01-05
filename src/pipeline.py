@@ -546,6 +546,7 @@ class ScriberPipeline:
             # vad_force_turn_endpoint=True disables automatic endpoint detection which would
             # otherwise close the WebSocket connection when speech pauses are detected.
             # This keeps the connection alive for the entire recording session.
+            logger.info(f"Creating SonioxSTTService with vad_force_turn_endpoint=True (endpoint detection DISABLED)")
             return SonioxSTTService(api_key=_get_api_key("soniox"), params=params, vad_force_turn_endpoint=True)
 
         elif self.service_name == "assemblyai":
@@ -616,6 +617,17 @@ class ScriberPipeline:
             raise ValueError(f"Unknown service: {self.service_name}")
 
     async def start(self):
+        # Ensure any previous task is cleaned up
+        if self.task and not self.task.has_finished():
+            logger.warning("Starting new pipeline but previous task still active - cancelling...")
+            try:
+                await self.task.cancel()
+                if self.runner:
+                    await self.runner.cancel()
+            except Exception as e:
+                logger.debug(f"Previous task cleanup: {e}")
+            self.task = None
+
         if self.is_active:
             return
         logger.info(f"Starting Scriber Pipeline with {self.service_name}")
@@ -632,11 +644,10 @@ class ScriberPipeline:
                 vad_analyzer = None
                 # VAD is needed for:
                 # 1. SegmentedSTTService (requires VAD for audio segmentation)
-                # 2. Soniox real-time with vad_force_turn_endpoint=True (requires VAD to emit 
-                #    UserStoppedSpeakingFrame which triggers finalization and text injection)
+                # Note: For Soniox RT, we use SmartTurn V3 exclusively for turn detection.
+                # Using both VAD and SmartTurn causes double UserStoppedSpeakingFrame events,
+                # which triggers duplicate text injection.
                 needs_vad = isinstance(stt_service, SegmentedSTTService)
-                if self.service_name == "soniox" and not (Config.SONIOX_MODE == "async"):
-                    needs_vad = True
                     
                 if needs_vad:
                     vad_analyzer = _AnalyzerCache.get_vad_analyzer()
@@ -934,29 +945,74 @@ class ScriberPipeline:
         )
         if self.on_status_change:
             self.on_status_change("Transcribing..." if is_soniox_async else "Stopping...")
+        # For Soniox real-time: send stop_recording and wait for final tokens BEFORE pipeline shutdown.
+        # This ensures all spoken audio is transcribed and injected before we close.
+        is_soniox_rt = self.service_name == "soniox" and not is_soniox_async
+        soniox_manual_stop_done = False
+        if is_soniox_rt and self.pipeline and hasattr(self.pipeline, '_processors'):
+            for step in self.pipeline._processors:
+                if step.__class__.__name__ == "SonioxSTTService":
+                    try:
+                        from websockets.protocol import State
+                        websocket = getattr(step, "_websocket", None)
+                        if websocket and websocket.state is State.OPEN:
+                            # Send stop_recording (empty string) to trigger finalization
+                            logger.debug("Sending stop_recording to Soniox...")
+                            await websocket.send("")
+                            
+                            # Wait for receive task to complete (gets final tokens + finished=True)
+                            receive_task = getattr(step, "_receive_task", None)
+                            if receive_task and not receive_task.done():
+                                logger.debug("Waiting for Soniox final tokens...")
+                                try:
+                                    await asyncio.wait_for(asyncio.shield(receive_task), timeout=3.0)
+                                    logger.debug("Soniox receive task completed")
+                                    soniox_manual_stop_done = True
+                                except asyncio.TimeoutError:
+                                    logger.warning("Soniox receive task timeout (3s)")
+                                except asyncio.CancelledError:
+                                    pass
+                                except Exception as e:
+                                    logger.debug(f"Soniox receive task wait: {e}")
+                    except Exception as e:
+                        logger.debug(f"Soniox stop flow error: {e}")
 
-        # Request a graceful stop so processors can flush final results (Soniox async needs EndFrame).
+        # Now request pipeline shutdown
+        # If we already did manual stop for Soniox RT, use cancel to skip pipecat's stop flow
+        # which would try to send stop_recording again
+        stop_future = None
         if self.task and not self.task.has_finished():
-            await self.task.stop_when_done()
-
+            if soniox_manual_stop_done:
+                stop_future = asyncio.create_task(self.task.cancel(reason="manual stop completed"))
+            else:
+                stop_future = asyncio.create_task(self.task.stop_when_done())
+        
         wait_timeout = timeout_secs
         if wait_timeout is None:
             wait_timeout = 600.0 if is_soniox_async else 30.0
 
         try:
+            # Wait for either start_done (pipeline completely finished) or timeout
             await asyncio.wait_for(self._start_done.wait(), timeout=wait_timeout)
         except asyncio.TimeoutError:
-            logger.warning(f"Timeout while stopping pipeline (>{wait_timeout}s); cancelling")
-            try:
-                if self.task and not self.task.has_finished():
+            logger.warning(f"Timeout while stopping pipeline (>{wait_timeout}s); forcing cancel")
+            if self.task and not self.task.has_finished():
+                try:
                     await self.task.cancel(reason="stop timeout")
-            except Exception as e:
-                logger.debug(f"Task cancel warning: {e}")
-            try:
-                if self.runner:
+                except Exception as e:
+                    logger.debug(f"Task cancel error: {e}")
+            if self.runner:
+                try:
                     await self.runner.cancel()
-            except Exception as e:
-                logger.debug(f"Runner cancel warning: {e}")
+                except Exception as e:
+                    logger.debug(f"Runner cancel error: {e}")
+
+        # Ensure future is cleaned up
+        if stop_future and not stop_future.done():
+            try:
+                await stop_future
+            except Exception:
+                pass
 
         # Flush any buffered transcription as a last resort.
         try:

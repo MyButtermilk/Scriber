@@ -778,6 +778,9 @@ class ScriberWebController:
         rec.start()
         self._current = rec
 
+        # Ensure overlay has stop callback connected before showing
+        self._get_overlay()
+        
         # Show initializing overlay immediately for user feedback
         show_initializing_overlay()
         
