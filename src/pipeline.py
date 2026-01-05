@@ -248,10 +248,10 @@ class SonioxAsyncProcessor(FrameProcessor):
                         if status in error_statuses:
                             raise RuntimeError(status_payload.get("error_message", "Soniox async error"))
                     poll_count += 1
-                    # Update progress periodically (every 5 polls = ~5 seconds)
-                    if poll_count % 5 == 0:
+                    # Log every 10 seconds for debugging
+                    if poll_count % 10 == 0:
                         elapsed = int(asyncio.get_running_loop().time() - poll_start)
-                        self._report_progress(f"Processing transcription... ({elapsed}s)")
+                        logger.debug(f"Soniox async polling: {elapsed}s elapsed")
                     await asyncio.sleep(1)
 
                 self._report_progress("Retrieving transcript...")
@@ -884,8 +884,9 @@ class ScriberPipeline:
                             raise RuntimeError(status_payload.get("error_message", "Soniox transcription error"))
 
                     poll_count += 1
-                    if poll_count % 5 == 0 and self.on_progress:
-                        self.on_progress(f"Processing transcription... ({int(elapsed)}s)")
+                    # Log every 10 seconds for debugging
+                    if poll_count % 10 == 0:
+                        logger.debug(f"Soniox direct polling: {int(elapsed)}s elapsed")
 
                     await asyncio.sleep(1)
 

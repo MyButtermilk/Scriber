@@ -28,6 +28,11 @@ _ALLOWED_ORIGINS_ENV = "SCRIBER_ALLOWED_ORIGINS"
 _UPLOAD_MAX_BYTES_ENV = "SCRIBER_UPLOAD_MAX_BYTES"
 _UPLOAD_MAX_MB_ENV = "SCRIBER_UPLOAD_MAX_MB"
 _DEFAULT_UPLOAD_MAX_MB = 200
+_DEFAULT_AUDIO_MAX_MB = 200  # Limit for extracted audio files
+_DEFAULT_VIDEO_MAX_MB = 2048  # 2GB limit for raw video uploads (audio extracted)
+
+# Video file extensions that require audio extraction
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED_NAMES = {
@@ -120,6 +125,68 @@ def _get_upload_max_bytes() -> int:
 
 def _format_upload_limit(limit_bytes: int) -> str:
     return f"{limit_bytes / (1024 * 1024):.0f}MB"
+
+
+def _get_video_max_bytes() -> int:
+    """Get maximum bytes allowed for video file uploads (audio will be extracted)."""
+    return _DEFAULT_VIDEO_MAX_MB * 1024 * 1024
+
+
+def _get_audio_max_bytes() -> int:
+    """Get maximum bytes allowed for audio files (after extraction from video)."""
+    return _DEFAULT_AUDIO_MAX_MB * 1024 * 1024
+
+
+async def _extract_audio_from_video(video_path: Path, output_dir: Path) -> Path:
+    """
+    Extract audio from a video file using ffmpeg.
+    
+    Returns the path to the extracted audio file (MP3 format).
+    Raises RuntimeError if extraction fails.
+    """
+    import shutil
+    
+    ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found on PATH (required for video audio extraction).")
+    
+    # Output as MP3 for good compression and compatibility
+    audio_filename = video_path.stem + ".mp3"
+    audio_path = output_dir / audio_filename
+    
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",  # Overwrite output
+        "-i", str(video_path),
+        "-vn",  # No video
+        "-acodec", "libmp3lame",
+        "-ab", "128k",  # 128kbps for good quality/size balance
+        "-ar", "16000",  # 16kHz sample rate (good for speech)
+        "-ac", "1",  # Mono (sufficient for transcription)
+        str(audio_path),
+    ]
+    
+    logger.debug(f"Extracting audio from video: {video_path.name}")
+    
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    
+    _, stderr = await proc.communicate()
+    
+    if proc.returncode != 0:
+        err_msg = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
+        raise RuntimeError(f"ffmpeg audio extraction failed: {err_msg or f'exit code {proc.returncode}'}")
+    
+    if not audio_path.exists():
+        raise RuntimeError("Audio extraction completed but output file not found.")
+    
+    logger.debug(f"Audio extracted: {audio_path.name} ({audio_path.stat().st_size / (1024*1024):.1f}MB)")
+    return audio_path
 
 
 def _format_duration(seconds: float) -> str:
@@ -469,7 +536,38 @@ class ScriberWebController:
         await self.broadcast({"type": "history_updated"})
         try:
             out_dir = self._downloads_dir / "youtube" / rec.id
-            audio_path = await download_youtube_audio(rec.source_url, output_dir=out_dir, audio_format="mp3")
+            
+            # Track download progress with speed and ETA
+            last_broadcast_time = [0.0]  # Use list to allow mutation in closure
+            
+            def on_download_progress(progress) -> None:
+                import time
+                now = time.time()
+                # Throttle broadcasts to max 4 per second to avoid flooding
+                if now - last_broadcast_time[0] < 0.25:
+                    return
+                last_broadcast_time[0] = now
+                
+                # Build step message with speed and ETA
+                if progress.speed and progress.eta:
+                    rec.step = f"Downloading... {progress.percent:.0f}% • {progress.speed} • ETA {progress.eta}"
+                elif progress.speed:
+                    rec.step = f"Downloading... {progress.percent:.0f}% • {progress.speed}"
+                elif progress.percent > 0:
+                    rec.step = f"Downloading... {progress.percent:.0f}%"
+                else:
+                    rec.step = "Downloading audio..."
+                rec.updated_at = datetime.now().isoformat()
+                self._loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(self.broadcast({"type": "history_updated"}))
+                )
+            
+            audio_path = await download_youtube_audio(
+                rec.source_url, 
+                output_dir=out_dir, 
+                audio_format="mp3",
+                on_progress=on_download_progress
+            )
 
             def on_transcription(text: str, is_final: bool) -> None:
                 if not is_final:
@@ -1363,13 +1461,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Expected multipart/form-data"}, status=400)
 
         try:
-            max_bytes = _get_upload_max_bytes()
-            limit_label = _format_upload_limit(max_bytes)
-            if request.content_length is not None and request.content_length > max_bytes:
-                return web.json_response(
-                    {"message": f"File too large (max {limit_label})."}, status=413
-                )
-
             reader = await request.multipart()
             file_field = None
             original_filename = "uploaded_file"
@@ -1384,13 +1475,30 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 return web.json_response({"message": "No file uploaded"}, status=400)
 
             # Validate file extension
-            allowed_extensions = {".mp3", ".m4a", ".wav", ".mp4", ".mov", ".webm", ".ogg", ".flac", ".aac"}
+            allowed_extensions = {".mp3", ".m4a", ".wav", ".mp4", ".mov", ".webm", ".ogg", ".flac", ".aac", ".avi", ".mkv", ".m4v"}
             safe_filename = _safe_upload_filename(original_filename)
             ext = Path(safe_filename).suffix.lower()
             if ext not in allowed_extensions:
                 return web.json_response(
                     {"message": f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(allowed_extensions))}"},
                     status=400,
+                )
+
+            # Determine if this is a video file (needs audio extraction)
+            is_video = ext in _VIDEO_EXTENSIONS
+            
+            # Use different size limits for video vs audio files
+            if is_video:
+                max_bytes = _get_video_max_bytes()  # 2GB for videos (audio will be extracted)
+            else:
+                max_bytes = _get_upload_max_bytes()  # 200MB for audio files
+            limit_label = _format_upload_limit(max_bytes)
+            
+            # Check content-length header if available
+            if request.content_length is not None and request.content_length > max_bytes:
+                return web.json_response(
+                    {"message": f"File too large (max {limit_label})."},
+                    status=413,
                 )
 
             # Generate unique ID and save file
@@ -1416,15 +1524,56 @@ def create_app(controller: ScriberWebController) -> web.Application:
             if too_large:
                 try:
                     import shutil
-
                     if save_dir.exists():
                         shutil.rmtree(save_dir)
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to cleanup oversized upload: {cleanup_err}")
                 return web.json_response({"message": f"File too large (max {limit_label})."}, status=413)
 
+            # For video files, extract audio using ffmpeg
+            transcribe_path = save_path
+            if is_video:
+                try:
+                    logger.info(f"Extracting audio from video: {safe_filename} ({bytes_read / (1024*1024):.1f}MB)")
+                    audio_path = await _extract_audio_from_video(save_path, save_dir)
+                    
+                    # Check if extracted audio is within size limit
+                    audio_size = audio_path.stat().st_size
+                    audio_limit = _get_audio_max_bytes()
+                    if audio_size > audio_limit:
+                        import shutil
+                        if save_dir.exists():
+                            shutil.rmtree(save_dir)
+                        return web.json_response(
+                            {"message": f"Extracted audio too large ({audio_size / (1024*1024):.0f}MB, max {audio_limit / (1024*1024):.0f}MB)."},
+                            status=413,
+                        )
+                    
+                    # Delete original video file to save space
+                    try:
+                        save_path.unlink()
+                        logger.debug(f"Deleted original video file: {safe_filename}")
+                    except Exception as del_err:
+                        logger.warning(f"Failed to delete video after extraction: {del_err}")
+                    
+                    # Use extracted audio for transcription
+                    transcribe_path = audio_path
+                    # Update filename for display
+                    safe_filename = audio_path.name
+                    logger.info(f"Audio extracted successfully: {safe_filename} ({audio_size / (1024*1024):.1f}MB)")
+                    
+                except RuntimeError as extract_err:
+                    import shutil
+                    if save_dir.exists():
+                        shutil.rmtree(save_dir)
+                    logger.error(f"Audio extraction failed: {extract_err}")
+                    return web.json_response(
+                        {"message": f"Failed to extract audio from video: {extract_err}"},
+                        status=500,
+                    )
+
             # Start transcription
-            rec = await ctl.start_file_transcription(save_path, safe_filename)
+            rec = await ctl.start_file_transcription(transcribe_path, safe_filename)
             return web.json_response(rec.to_public(include_content=True))
 
         except ValueError as exc:
@@ -1432,6 +1581,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except Exception as exc:
             logger.exception("Failed to process file upload")
             return web.json_response({"message": str(exc) or "Failed to process file upload"}, status=500)
+
 
     async def delete_transcript(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]

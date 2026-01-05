@@ -287,7 +287,7 @@ export default function FileTranscribe() {
     onDrop,
     accept: {
       "audio/*": [".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac"],
-      "video/*": [".mp4", ".mov", ".webm"],
+      "video/*": [".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"],
     },
     multiple: false,
     disabled: isUploading,
@@ -331,7 +331,7 @@ export default function FileTranscribe() {
           ) : (
             <>
               <p className="text-lg font-medium">Click to upload or drag and drop</p>
-              <p className="text-sm text-muted-foreground">MP3, M4A, WAV, MP4, MOV (max 2GB)</p>
+              <p className="text-sm text-muted-foreground">Audio: MP3, M4A, WAV (max 200MB) • Video: MP4, MOV, etc. (max 2GB, audio extracted)</p>
             </>
           )}
         </div>

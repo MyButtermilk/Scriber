@@ -176,21 +176,38 @@ export default function TranscriptDetail() {
 
   // Local elapsed time counter for processing transcripts
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [startTime] = useState(() => Date.now());
+  const startTimeRef = useRef<number | null>(null);
+  const isProcessingRef = useRef(false);
 
+  // Track when processing starts/stops
   useEffect(() => {
-    if (transcript.status !== "processing") {
-      return;
+    const isNowProcessing = transcript.status === "processing";
+
+    // Transition INTO processing
+    if (isNowProcessing && !isProcessingRef.current) {
+      startTimeRef.current = Date.now();
+      setElapsedSeconds(0);
     }
 
-    // Update every second
+    // Transition OUT of processing
+    if (!isNowProcessing && isProcessingRef.current) {
+      startTimeRef.current = null;
+    }
+
+    isProcessingRef.current = isNowProcessing;
+  }, [transcript.status]);
+
+  // Run timer independently - always active, updates based on startTimeRef
+  useEffect(() => {
     const interval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      setElapsedSeconds(elapsed);
+      if (startTimeRef.current && isProcessingRef.current) {
+        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+        setElapsedSeconds(elapsed);
+      }
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [transcript.status, startTime]);
+  }, []); // Empty deps - runs once, uses refs for state
 
   // Format elapsed time as MM:SS
   const formatElapsed = (seconds: number) => {
@@ -334,6 +351,21 @@ export default function TranscriptDetail() {
             <Badge variant="secondary" className="px-3 py-1 font-normal neu-button"><Calendar className="w-3 h-3 mr-1.5" /> {transcript.date}</Badge>
           </div>
 
+          {/* Processing Status Banner */}
+          {transcript.status === "processing" && (
+            <div className="neu-status-well p-4 flex items-center gap-3">
+              <Loader2 className="w-5 h-5 animate-spin text-primary shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-foreground truncate">
+                  {transcript.step || "Processing..."}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Elapsed: {displayDuration}
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Accordion with Summary and Transcript */}
           <Accordion type="multiple" value={accordionValue} onValueChange={setAccordionValue} className="space-y-4">
             {/* Summary Section */}
@@ -371,12 +403,6 @@ export default function TranscriptDetail() {
                 <div className="flex items-center gap-2">
                   <FileText className="w-4 h-4 text-blue-600" />
                   <span className="text-base font-semibold tracking-tight">Transcript</span>
-                  {transcript.status === "processing" && transcript.step && (
-                    <span className="flex items-center gap-1 text-xs text-muted-foreground ml-2">
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                      {transcript.step}
-                    </span>
-                  )}
                 </div>
               </AccordionTrigger>
               <AccordionContent className="px-4 pb-4">
