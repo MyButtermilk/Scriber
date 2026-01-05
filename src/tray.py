@@ -33,6 +33,12 @@ backend_process = None
 frontend_process = None
 tray_icon = None
 
+# Watchdog settings
+BACKEND_CHECK_INTERVAL = 5  # Check every 5 seconds
+watchdog_running = True
+watchdog_thread = None
+
+
 
 def load_icon():
     """Load the favicon icon for the system tray."""
@@ -194,6 +200,51 @@ def stop_backend():
         except subprocess.TimeoutExpired:
             backend_process.kill()
         backend_process = None
+
+
+def watchdog_loop():
+    """Monitor backend process and restart if it crashes."""
+    global backend_process, watchdog_running
+    import time
+    import urllib.request
+    
+    consecutive_failures = 0
+    MAX_CONSECUTIVE_FAILURES = 3  # Restart after 3 failed health checks
+    
+    while watchdog_running:
+        time.sleep(BACKEND_CHECK_INTERVAL)
+        
+        if not watchdog_running:
+            break
+        
+        # Check if backend process is still running
+        if backend_process is not None and backend_process.poll() is not None:
+            # Process has exited
+            exit_code = backend_process.returncode
+            with log_lock:
+                log_buffer.append(f"[Watchdog] Backend process exited with code {exit_code}, restarting...")
+            start_backend()
+            consecutive_failures = 0
+            continue
+        
+        # Also check via health endpoint (in case process is running but unresponsive)
+        try:
+            req = urllib.request.Request("http://127.0.0.1:8765/api/health", method="GET")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                if resp.status == 200:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+        except Exception:
+            consecutive_failures += 1
+        
+        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            with log_lock:
+                log_buffer.append(f"[Watchdog] Backend unresponsive ({consecutive_failures} failures), restarting...")
+            stop_backend()
+            time.sleep(1)
+            start_backend()
+            consecutive_failures = 0
 
 
 def show_logs(icon, item):
@@ -556,8 +607,11 @@ def restart_app(icon, item):
 
 def quit_app(icon, item):
     """Quit the application."""
+    global watchdog_running
     # Run shutdown in a separate thread so it doesn't block the UI
     def shutdown():
+        global watchdog_running
+        watchdog_running = False  # Stop watchdog first
         stop_backend()
         stop_frontend()
         icon.stop()
@@ -619,9 +673,18 @@ def setup_tray():
 
 def main():
     """Main entry point."""
+    global watchdog_running, watchdog_thread
+    
     # Start processes
     start_backend()
     start_frontend()
+    
+    # Start watchdog thread to auto-restart backend if it crashes
+    watchdog_running = True
+    watchdog_thread = threading.Thread(target=watchdog_loop, daemon=True, name="BackendWatchdog")
+    watchdog_thread.start()
+    with log_lock:
+        log_buffer.append("[Tray] Backend watchdog started (auto-restart enabled)")
     
     # Setup and run tray icon
     icon = setup_tray()
@@ -635,7 +698,10 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        # Stop watchdog
+        watchdog_running = False
         stop_backend()
+
 
 
 if __name__ == "__main__":

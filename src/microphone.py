@@ -168,7 +168,11 @@ class MicrophoneInput(BaseInputTransport):
 
         try:
             while self._running:
-                data = await self._queue.get()
+                try:
+                    # Use timeout to allow checking _running flag periodically
+                    data = await asyncio.wait_for(self._queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
                 if data is None:
                     break
                 frame = InputAudioRawFrame(
@@ -178,22 +182,45 @@ class MicrophoneInput(BaseInputTransport):
                 )
                 await self.push_audio_frame(frame)
         except asyncio.CancelledError:
-            pass
+            # Clean up audio stream on cancellation
+            self._running = False
+            if self.stream:
+                try:
+                    self.stream.stop()
+                    self.stream.close()
+                except Exception:
+                    pass
+                self.stream = None
+            raise  # Re-raise to properly complete cancellation
 
     async def stop(self, frame: EndFrame):
         self._running = False
+        
+        # Stop the audio stream first
         if self.stream and not self.keep_alive:
-            self.stream.stop()
-            self.stream.close()
+            try:
+                self.stream.stop()
+                self.stream.close()
+            except Exception:
+                pass
             self.stream = None
+        
+        # Signal the queue to stop
         if self._queue:
             try:
                 self._queue.put_nowait(None)
             except Exception:
                 pass
+        
+        # Wait for consumer task with timeout
         if self._consumer_task:
             task, self._consumer_task = self._consumer_task, None
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            try:
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+        
         self._stopped.set()
         await super().stop(frame)
+

@@ -336,6 +336,8 @@ class ScriberWebController:
         self._keyboard = None
 
         self._is_listening = False
+        self._is_stopping = False  # Track if stop is in progress
+        self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
         self._status = "Stopped"
 
         self._current: Optional[TranscriptRecord] = None
@@ -469,6 +471,14 @@ class ScriberWebController:
         self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self.broadcast(payload)))
 
     def _on_pipeline_done(self, task: asyncio.Task) -> None:
+        async def _safe_cleanup():
+            """Cleanup state with proper lock protection."""
+            async with self._listening_lock:
+                self._is_listening = False
+                self._is_stopping = False
+                self._pipeline = None
+                self._pipeline_task = None
+        
         try:
             task.result()
         except asyncio.CancelledError:
@@ -485,9 +495,10 @@ class ScriberWebController:
                     lambda: asyncio.create_task(self.broadcast({"type": "history_updated"}))
                 )
         finally:
-            self._is_listening = False
-            self._pipeline = None
-            self._pipeline_task = None
+            # Schedule safe cleanup on the event loop
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(_safe_cleanup())
+            )
 
     def _touch_history(self) -> None:
         self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self.broadcast({"type": "history_updated"})))
@@ -762,82 +773,121 @@ class ScriberWebController:
                 logger.warning(f"Failed to cleanup uploaded file: {cleanup_err}")
 
     async def start_listening(self) -> None:
-        if self._is_listening:
-            return
+        # Acquire lock for entire operation - no parallel start/stop allowed
+        async with self._listening_lock:
+            # Don't start if already listening or if stop is in progress
+            if self._is_listening or self._is_stopping:
+                return
 
-        started_at = datetime.now()
-        rec = TranscriptRecord(
-            id=uuid4().hex,
-            title=f"Live Mic {started_at.strftime('%Y-%m-%d %H:%M')}",
-            date=_format_date_label(started_at),
-            duration="00:00",
-            status="recording",
-            type="mic",
-            language=Config.LANGUAGE or "auto",
-        )
-        rec.start()
-        self._current = rec
+            started_at = datetime.now()
+            rec = TranscriptRecord(
+                id=uuid4().hex,
+                title=f"Live Mic {started_at.strftime('%Y-%m-%d %H:%M')}",
+                date=_format_date_label(started_at),
+                duration="00:00",
+                status="recording",
+                type="mic",
+                language=Config.LANGUAGE or "auto",
+            )
+            rec.start()
+            self._current = rec
 
-        # Ensure overlay has stop callback connected before showing
-        self._get_overlay()
-        
-        # Show initializing overlay immediately for user feedback
-        show_initializing_overlay()
-        
-        # Callback to transition overlay when mic is ready
-        def on_mic_ready():
-            logger.debug("on_mic_ready callback triggered - transitioning overlay to recording mode")
-            show_recording_overlay()
-            logger.info("Microphone ready - recording started")
+            # Ensure overlay has stop callback connected before showing
+            self._get_overlay()
+            
+            # Show initializing overlay immediately for user feedback
+            show_initializing_overlay()
+            
+            # Callback to transition overlay when mic is ready
+            def on_mic_ready():
+                logger.debug("on_mic_ready callback triggered - transitioning overlay to recording mode")
+                show_recording_overlay()
+                logger.info("Microphone ready - recording started")
 
-        self._pipeline = ScriberPipeline(
-            service_name=Config.DEFAULT_STT_SERVICE,
-            on_status_change=self._set_status,
-            on_audio_level=self._on_audio_level,
-            on_transcription=self._on_transcription,
-            on_mic_ready=on_mic_ready,
-        )
-        self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
-        self._pipeline_task.add_done_callback(self._on_pipeline_done)
-        self._is_listening = True
-        self._set_status("Listening")
-        await self.broadcast({"type": "session_started", "session": rec.to_public(include_content=True)})
+            self._pipeline = ScriberPipeline(
+                service_name=Config.DEFAULT_STT_SERVICE,
+                on_status_change=self._set_status,
+                on_audio_level=self._on_audio_level,
+                on_transcription=self._on_transcription,
+                on_mic_ready=on_mic_ready,
+            )
+            self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
+            self._pipeline_task.add_done_callback(self._on_pipeline_done)
+            self._is_listening = True
+            self._set_status("Listening")
+            await self.broadcast({"type": "session_started", "session": rec.to_public(include_content=True)})
 
     async def stop_listening(self) -> None:
-        if not self._is_listening:
-            return
+        # Acquire lock for entire operation - no parallel start/stop allowed
+        async with self._listening_lock:
+            if not self._is_listening:
+                return
+            
+            # Mark that we're stopping
+            self._is_stopping = True
+            self._is_listening = False  # Prevent any new operations
+            
+            # Capture current pipeline references
+            pipeline = self._pipeline
+            pipeline_task = self._pipeline_task
+            current = self._current
+            
+            # Clear references immediately to prevent double-stop
+            self._pipeline = None
+            self._pipeline_task = None
+            self._current = None
         
-        # Show transcribing state before stopping pipeline
-        show_transcribing_overlay()
-        await self.broadcast({"type": "transcribing"})
+        # Now do the actual stopping work (outside the lock to not block hotkey checks)
+        # But we've already cleared _is_listening so no new start will happen
+        
+        # Check if this is a real-time service (Soniox RT) - text is injected during recording
+        # For async services, show "Transcribing..." while processing
+        is_realtime_service = (
+            pipeline and 
+            pipeline.service_name == "soniox" and 
+            Config.SONIOX_MODE == "realtime"
+        )
+        
+        if is_realtime_service:
+            # For RT services, hide overlay immediately - text is already injected
+            hide_recording_overlay()
+        else:
+            # Show transcribing state for async services that need processing time
+            show_transcribing_overlay()
+            await self.broadcast({"type": "transcribing"})
         
         try:
-            if self._pipeline:
-                await self._pipeline.stop()
-            if self._pipeline_task:
-                self._pipeline_task.cancel()
+            if pipeline:
+                await pipeline.stop()
+            
+            # Hide overlay for async services after processing completes
+            if not is_realtime_service:
+                hide_recording_overlay()
+            
+            if pipeline_task:
+                pipeline_task.cancel()
                 try:
-                    await self._pipeline_task
+                    await pipeline_task
                 except asyncio.CancelledError:
                     pass
         finally:
-            self._is_listening = False
-            self._pipeline = None
-            self._pipeline_task = None
+            async with self._listening_lock:
+                self._is_stopping = False
+            
             self._set_status("Stopped")
-            # Hide native overlay after transcription complete
-            hide_recording_overlay()
 
-            if self._current:
-                self._current.finish("completed")
-                self._history.insert(0, self._current)
-                finished = self._current
-                self._current = None
-                self._save_transcript_to_db(finished)  # Persist to database
-                await self.broadcast({"type": "session_finished", "session": finished.to_public(include_content=True)})
+            if current:
+                current.finish("completed")
+                self._history.insert(0, current)
+                self._save_transcript_to_db(current)  # Persist to database
+                await self.broadcast({"type": "session_finished", "session": current.to_public(include_content=True)})
                 await self.broadcast({"type": "history_updated"})
 
     async def toggle_listening(self) -> None:
+        # Quick check without lock - if operation in progress, ignore
+        if self._is_stopping:
+            return
+        
         if self._is_listening:
             await self.stop_listening()
         else:

@@ -465,11 +465,9 @@ class TranscriptionCallbackProcessor(FrameProcessor):
             try:
                 if isinstance(frame, InterimTranscriptionFrame):
                     if frame.text:
-                        logger.debug(f"TranscriptionCallback: interim text ({len(frame.text)} chars)")
                         cb(frame.text, False)
                 elif isinstance(frame, TranscriptionFrame):
                     if frame.text:
-                        logger.info(f"TranscriptionCallback: final text ({len(frame.text)} chars)")
                         cb(frame.text, True)
             except Exception as e:
                 logger.error(f"TranscriptionCallback error: {e}")
@@ -624,8 +622,8 @@ class ScriberPipeline:
                 await self.task.cancel()
                 if self.runner:
                     await self.runner.cancel()
-            except Exception as e:
-                logger.debug(f"Previous task cleanup: {e}")
+            except Exception:
+                pass
             self.task = None
 
         if self.is_active:
@@ -638,8 +636,6 @@ class ScriberPipeline:
                 
                 # Use cached analyzers for faster start (saves 200-500ms on subsequent recordings)
                 smart_turn = _AnalyzerCache.get_smart_turn_analyzer()
-                if smart_turn:
-                    logger.debug("Using cached SmartTurn V3 analyzer")
 
                 vad_analyzer = None
                 # VAD is needed for:
@@ -651,9 +647,7 @@ class ScriberPipeline:
                     
                 if needs_vad:
                     vad_analyzer = _AnalyzerCache.get_vad_analyzer()
-                    if vad_analyzer:
-                        logger.debug("Using cached Silero VAD analyzer")
-                    else:
+                    if not vad_analyzer:
                         logger.warning("VAD analyzer required but not available; transcripts may not finalize properly.")
 
                 # Always use our custom MicrophoneInput to support on_audio_level callback
@@ -957,25 +951,22 @@ class ScriberPipeline:
                         websocket = getattr(step, "_websocket", None)
                         if websocket and websocket.state is State.OPEN:
                             # Send stop_recording (empty string) to trigger finalization
-                            logger.debug("Sending stop_recording to Soniox...")
                             await websocket.send("")
                             
                             # Wait for receive task to complete (gets final tokens + finished=True)
                             receive_task = getattr(step, "_receive_task", None)
                             if receive_task and not receive_task.done():
-                                logger.debug("Waiting for Soniox final tokens...")
                                 try:
                                     await asyncio.wait_for(asyncio.shield(receive_task), timeout=3.0)
-                                    logger.debug("Soniox receive task completed")
                                     soniox_manual_stop_done = True
                                 except asyncio.TimeoutError:
                                     logger.warning("Soniox receive task timeout (3s)")
                                 except asyncio.CancelledError:
                                     pass
-                                except Exception as e:
-                                    logger.debug(f"Soniox receive task wait: {e}")
-                    except Exception as e:
-                        logger.debug(f"Soniox stop flow error: {e}")
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
 
         # Now request pipeline shutdown
         # If we already did manual stop for Soniox RT, use cancel to skip pipecat's stop flow

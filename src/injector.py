@@ -202,15 +202,12 @@ class TextInjector(FrameProcessor):
             return
         if isinstance(frame, TranscriptionFrame):
             if frame.text and frame.text != self._last_injected:
-                logger.debug(f"TextInjector: injecting TranscriptionFrame ({len(frame.text)} chars)")
                 if self.inject_immediately:
                     self._inject_text(frame.text.strip() + " ")
                 else:
                     # Buffer finalized transcript segments; inject as one block at end of utterance.
                     self._buffer.append(frame.text.strip())
                 self._last_injected = frame.text
-            else:
-                logger.debug(f"TextInjector: skipping duplicate TranscriptionFrame ({len(frame.text) if frame.text else 0} chars)")
         elif isinstance(frame, StartFrame):
             self._buffer = []
             self._last_injected = ""
