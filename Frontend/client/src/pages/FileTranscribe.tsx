@@ -172,6 +172,13 @@ export default function FileTranscribe() {
         const msg = JSON.parse(event.data);
         if (msg?.type === "history_updated") {
           queryClient.refetchQueries({ queryKey: ["/api/transcripts"] });
+        } else if (msg?.type === "error") {
+          toast({
+            title: "Transcription Error",
+            description: msg.message || "An error occurred during transcription.",
+            variant: "destructive",
+            duration: 6000,
+          });
         }
       } catch {
         // ignore

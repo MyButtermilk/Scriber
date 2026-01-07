@@ -397,7 +397,59 @@ def _resolve_mic_device(device_name: str) -> str:
     The mic device setting now stores the device NAME (stable across reboots)
     instead of the index (which can change). This function looks up the current
     index for the named device, falling back to 'default' if not found.
+    
+    If a FAVORITE_MIC is set and available, it will be used instead of the
+    selected device. This allows users to have a preferred mic that is
+    automatically used whenever it's connected.
     """
+    import sounddevice as sd
+    
+    def find_device_by_name(name: str) -> str | None:
+        """Find device index by name, preferring MME host API."""
+        if not name or name == "default":
+            return None
+            
+        try:
+            # Get preferred host API (MME for best USB device compatibility)
+            host_apis = sd.query_hostapis()
+            mme_idx = next((i for i, h in enumerate(host_apis) if h.get('name', '') == 'MME'), None)
+            wasapi_idx = next((i for i, h in enumerate(host_apis) if 'WASAPI' in h.get('name', '')), None)
+            preferred_hostapi = mme_idx if mme_idx is not None else wasapi_idx
+            
+            # Search for device by name in preferred host API first
+            for idx, dev in enumerate(sd.query_devices()):
+                if int(dev.get("max_input_channels", 0) or 0) <= 0:
+                    continue
+                
+                hostapi_idx = dev.get('hostapi', 0)
+                if preferred_hostapi is not None and hostapi_idx != preferred_hostapi:
+                    continue
+                
+                dev_name = str(dev.get("name", ""))
+                if dev_name == name:
+                    return str(idx)
+            
+            # Try any host API as fallback
+            for idx, dev in enumerate(sd.query_devices()):
+                if int(dev.get("max_input_channels", 0) or 0) <= 0:
+                    continue
+                dev_name = str(dev.get("name", ""))
+                if dev_name == name:
+                    return str(idx)
+                    
+        except Exception:
+            pass
+        return None
+    
+    # Check if favorite mic is set and available
+    favorite = Config.FAVORITE_MIC
+    if favorite and favorite != "default":
+        favorite_idx = find_device_by_name(favorite)
+        if favorite_idx:
+            logger.info(f"Using favorite microphone '{favorite}' (device index {favorite_idx})")
+            return favorite_idx
+    
+    # Fall back to selected device
     if device_name == "default" or not device_name:
         return "default"
     
@@ -409,45 +461,14 @@ def _resolve_mic_device(device_name: str) -> str:
         pass
     
     # It's a device name - resolve to index
-    try:
-        import sounddevice as sd
-        
-        # Get preferred host API (MME for best USB device compatibility)
-        host_apis = sd.query_hostapis()
-        mme_idx = next((i for i, h in enumerate(host_apis) if h.get('name', '') == 'MME'), None)
-        wasapi_idx = next((i for i, h in enumerate(host_apis) if 'WASAPI' in h.get('name', '')), None)
-        preferred_hostapi = mme_idx if mme_idx is not None else wasapi_idx
-        
-        # Search for device by name in preferred host API first
-        for idx, dev in enumerate(sd.query_devices()):
-            if int(dev.get("max_input_channels", 0) or 0) <= 0:
-                continue
-            
-            hostapi_idx = dev.get('hostapi', 0)
-            if preferred_hostapi is not None and hostapi_idx != preferred_hostapi:
-                continue
-            
-            name = str(dev.get("name", ""))
-            if name == device_name:
-                logger.info(f"Resolved microphone '{device_name}' to device index {idx}")
-                return str(idx)
-        
-        # Try any host API as fallback
-        for idx, dev in enumerate(sd.query_devices()):
-            if int(dev.get("max_input_channels", 0) or 0) <= 0:
-                continue
-            name = str(dev.get("name", ""))
-            if name == device_name:
-                logger.info(f"Resolved microphone '{device_name}' to device index {idx} (different host API)")
-                return str(idx)
-        
-        # Device not found - fall back to default
-        logger.warning(f"Microphone '{device_name}' not available, falling back to Windows default")
-        return "default"
-        
-    except Exception as e:
-        logger.error(f"Error resolving microphone '{device_name}': {e}")
-        return "default"
+    device_idx = find_device_by_name(device_name)
+    if device_idx:
+        logger.info(f"Resolved microphone '{device_name}' to device index {device_idx}")
+        return device_idx
+    
+    # Device not found - fall back to default
+    logger.warning(f"Microphone '{device_name}' not available, falling back to Windows default")
+    return "default"
 
 
 class TranscriptionCallbackProcessor(FrameProcessor):
@@ -549,9 +570,26 @@ class ScriberPipeline:
 
         elif self.service_name == "assemblyai":
             # Lazy import - only loaded when AssemblyAI is used
-            from pipecat.services.assemblyai.stt import AssemblyAISTTService
+            from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAIConnectionParams
             if not _get_api_key("assemblyai"): raise ValueError("AssemblyAI API Key is missing.")
-            return AssemblyAISTTService(api_key=_get_api_key("assemblyai"), aiohttp_session=session, language=_selected_language())
+            
+            # Always use multilingual model to support:
+            # 1. Auto language detection when LANGUAGE=auto
+            # 2. Non-English languages (German, French, Spanish, Italian, Portuguese)
+            # The 'universal-streaming-english' model only supports English
+            lang = _selected_language()
+            
+            # Configure connection params with multilingual speech model
+            connection_params = AssemblyAIConnectionParams(
+                speech_model="universal-streaming-multilingual"
+            )
+            logger.info(f"AssemblyAI: Using multilingual model (language={lang or 'auto-detect'})")
+            
+            return AssemblyAISTTService(
+                api_key=_get_api_key("assemblyai"), 
+                language=lang if lang else Language.EN,
+                connection_params=connection_params
+            )
         
         elif self.service_name == "google":
             # Lazy import - only loaded when Google is used
@@ -562,7 +600,17 @@ class ScriberPipeline:
             # Lazy import - only loaded when ElevenLabs is used
             from pipecat.services.elevenlabs.stt import ElevenLabsSTTService
             if not _get_api_key("elevenlabs"): raise ValueError("ElevenLabs API Key is missing.")
-            return ElevenLabsSTTService(api_key=_get_api_key("elevenlabs"), aiohttp_session=session)
+            
+            # Configure language for ElevenLabs STT
+            lang = _selected_language()
+            params = ElevenLabsSTTService.InputParams(language=lang) if lang else None
+            logger.info(f"ElevenLabs STT: Using language={lang or 'auto-detect'}")
+            
+            return ElevenLabsSTTService(
+                api_key=_get_api_key("elevenlabs"), 
+                aiohttp_session=session,
+                params=params
+            )
         
         elif self.service_name == "deepgram":
             # Lazy import - only loaded when Deepgram is used

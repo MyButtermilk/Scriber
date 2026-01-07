@@ -54,6 +54,7 @@ class Config:
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
     LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "auto")
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
+    FAVORITE_MIC = os.getenv("SCRIBER_FAVORITE_MIC", "")  # Preferred mic - used when available
     MIC_ALWAYS_ON = os.getenv("SCRIBER_MIC_ALWAYS_ON", "0") in ("1", "true", "True")
     # Text injection method: "type" (keystrokes), "paste" (clipboard + Ctrl+V), or "auto" (choose by app/window).
     INJECT_METHOD = os.getenv("SCRIBER_INJECT_METHOD", "auto").lower()  # auto | type | paste
@@ -195,6 +196,12 @@ Input:"""
         os.environ["SCRIBER_MIC_DEVICE"] = device
 
     @classmethod
+    def set_favorite_mic(cls, device: str) -> None:
+        """Set the favorite microphone (used automatically when available)."""
+        cls.FAVORITE_MIC = device
+        os.environ["SCRIBER_FAVORITE_MIC"] = device
+
+    @classmethod
     def set_mic_always_on(cls, enabled: bool) -> None:
         cls.MIC_ALWAYS_ON = bool(enabled)
         os.environ["SCRIBER_MIC_ALWAYS_ON"] = "1" if enabled else "0"
@@ -256,6 +263,7 @@ Input:"""
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)
         add("SCRIBER_OPENAI_STT_MODEL", cls.OPENAI_STT_MODEL)
         add("SCRIBER_MIC_DEVICE", cls.MIC_DEVICE)
+        add("SCRIBER_FAVORITE_MIC", cls.FAVORITE_MIC or "")
         add("SCRIBER_MIC_ALWAYS_ON", "1" if cls.MIC_ALWAYS_ON else "0")
         add("SCRIBER_INJECT_METHOD", cls.INJECT_METHOD)
         add("SCRIBER_PASTE_PRE_DELAY_MS", str(cls.PASTE_PRE_DELAY_MS))

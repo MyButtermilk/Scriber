@@ -479,6 +479,10 @@ class ScriberWebController:
                 self._pipeline = None
                 self._pipeline_task = None
         
+        async def _broadcast_error(error_msg: str):
+            """Broadcast error to frontend."""
+            await self.broadcast({"type": "error", "message": error_msg})
+        
         try:
             task.result()
         except asyncio.CancelledError:
@@ -488,6 +492,27 @@ class ScriberWebController:
             self._set_status("Error")
             # Hide overlay when pipeline fails to prevent it staying stuck at "Preparing..."
             hide_recording_overlay()
+            
+            # Parse error and create user-friendly message
+            error_str = str(exc).lower()
+            if "402" in error_str or "payment required" in error_str:
+                user_msg = "STT service requires payment. Please check your account credits or subscription."
+            elif "401" in error_str or "unauthorized" in error_str or "invalid api key" in error_str:
+                user_msg = "Invalid API key. Please check your STT service credentials in Settings."
+            elif "403" in error_str or "forbidden" in error_str:
+                user_msg = "Access denied. Please check your STT service permissions."
+            elif "unable to connect" in error_str or "connection" in error_str:
+                user_msg = "Could not connect to STT service. Please check your internet connection."
+            elif "timeout" in error_str:
+                user_msg = "Connection to STT service timed out. Please try again."
+            else:
+                user_msg = f"Recording failed: {exc}"
+            
+            # Broadcast error to frontend
+            self._loop.call_soon_threadsafe(
+                lambda msg=user_msg: asyncio.create_task(_broadcast_error(msg))
+            )
+            
             if self._current:
                 self._current.finish("failed")
                 self._history.insert(0, self._current)
@@ -963,6 +988,7 @@ class ScriberWebController:
             "sonioxAsyncModel": Config.SONIOX_ASYNC_MODEL,
             "language": Config.LANGUAGE,
             "micDevice": Config.MIC_DEVICE,
+            "favoriteMic": Config.FAVORITE_MIC or "",
             "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
             "debug": bool(Config.DEBUG),
             "customVocab": Config.CUSTOM_VOCAB or "",
@@ -1017,6 +1043,9 @@ class ScriberWebController:
 
         if "micDevice" in payload and isinstance(payload["micDevice"], str):
             Config.set_mic_device(payload["micDevice"])
+
+        if "favoriteMic" in payload and isinstance(payload["favoriteMic"], str):
+            Config.set_favorite_mic(payload["favoriteMic"])
 
         if "micAlwaysOn" in payload:
             Config.set_mic_always_on(bool(payload["micAlwaysOn"]))

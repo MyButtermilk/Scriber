@@ -231,6 +231,13 @@ export default function TranscriptDetail() {
         if (msg?.type === "history_updated") {
           // Invalidate this specific transcript query to refresh content
           queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] });
+        } else if (msg?.type === "error") {
+          toast({
+            title: "Error",
+            description: msg.message || "An error occurred.",
+            variant: "destructive",
+            duration: 6000,
+          });
         }
       } catch {
         // ignore parse errors

@@ -209,6 +209,16 @@ export default function LiveMic() {
           case "history_updated":
             queryClient.invalidateQueries({ queryKey: ["/api/transcripts"] });
             break;
+          case "error":
+            toast({
+              title: "Recording Error",
+              description: msg.message || "An error occurred during recording.",
+              variant: "destructive",
+              duration: 6000,
+            });
+            setIsRecording(false);
+            setStatus("Stopped");
+            break;
           case "settings_updated":
             break;
           default:

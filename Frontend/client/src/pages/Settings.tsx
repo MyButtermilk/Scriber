@@ -1,4 +1,4 @@
-import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronRight, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power, Key, Settings2 } from "lucide-react";
+import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronRight, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power, Key, Settings2, Star } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
@@ -59,6 +59,7 @@ export default function Settings() {
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartAvailable, setAutostartAvailable] = useState(false);
   const [micAlwaysOn, setMicAlwaysOn] = useState(false);
+  const [favoriteMic, setFavoriteMic] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -102,6 +103,7 @@ export default function Settings() {
         setAutoSummarize(settings.autoSummarize === true);
         setVisualizerBarCount(settings.visualizerBarCount || 45);
         setMicAlwaysOn(settings.micAlwaysOn === true);
+        setFavoriteMic(settings.favoriteMic || "");
 
         setSonioxKey(keys.soniox || "");
         setAssemblyAIKey(keys.assemblyai || "");
@@ -206,6 +208,29 @@ export default function Settings() {
     try {
       await updateSettings({ micDevice: deviceId });
     } catch (e: any) {
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
+  const handleSetFavoriteMic = async (deviceId: string) => {
+    // Toggle favorite - if already favorite, clear it
+    const newFavorite = favoriteMic === deviceId ? "" : deviceId;
+    setFavoriteMic(newFavorite);
+    try {
+      await updateSettings({ favoriteMic: newFavorite });
+      toast({
+        title: newFavorite ? "Favorite set" : "Favorite cleared",
+        description: newFavorite
+          ? "This microphone will be used automatically when available."
+          : "No preferred microphone set.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      setFavoriteMic(favoriteMic); // Revert on error
       toast({
         title: "Save failed",
         description: String(e?.message || e),
@@ -442,33 +467,69 @@ export default function Settings() {
                   </>
                 )}
 
-                <div className="flex items-center justify-between">
+                <div className="space-y-3">
                   <div className="space-y-0.5">
                     <Label className="text-base">Input Device</Label>
-                    <p className="text-sm text-muted-foreground">Select microphone for recording</p>
+                    <p className="text-sm text-muted-foreground">
+                      Select microphone for recording. Star a device to always use it when available.
+                    </p>
                   </div>
-                  <Select value={selectedDeviceId} onValueChange={handleMicDeviceChange}>
-                    <SelectTrigger className="w-[320px]">
-                      <div className="flex items-center truncate">
-                        <AudioLines className="w-4 h-4 mr-2 text-muted-foreground shrink-0" />
-                        <SelectValue placeholder="Select microphone" />
-                      </div>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {inputDevices.length === 0 ? (
-                        <SelectItem value="__loading__" disabled>Loading devices...</SelectItem>
-                      ) : (
-                        inputDevices.map((device, index) => {
-                          const deviceValue = device.deviceId || `device-${index}`;
-                          return (
-                            <SelectItem key={`${deviceValue}-${index}`} value={deviceValue}>
+                  <div className="space-y-2">
+                    {inputDevices.length === 0 ? (
+                      <div className="text-sm text-muted-foreground py-2">Loading devices...</div>
+                    ) : (
+                      inputDevices.map((device, index) => {
+                        const deviceValue = device.deviceId || `device-${index}`;
+                        const isSelected = selectedDeviceId === deviceValue;
+                        const isFavorite = favoriteMic === deviceValue;
+                        return (
+                          <div
+                            key={`${deviceValue}-${index}`}
+                            className={cn(
+                              "flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all",
+                              isSelected
+                                ? "border-primary bg-primary/5"
+                                : "border-border/60 hover:border-primary/50 hover:bg-accent/5"
+                            )}
+                            onClick={() => handleMicDeviceChange(deviceValue)}
+                          >
+                            <AudioLines className={cn(
+                              "w-4 h-4 shrink-0",
+                              isSelected ? "text-primary" : "text-muted-foreground"
+                            )} />
+                            <span className={cn(
+                              "flex-1 text-sm truncate",
+                              isSelected ? "font-medium" : ""
+                            )}>
                               {device.label || `Device ${index + 1}`}
-                            </SelectItem>
-                          );
-                        })
-                      )}
-                    </SelectContent>
-                  </Select>
+                            </span>
+                            {isSelected && <Check className="w-4 h-4 text-primary shrink-0" />}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSetFavoriteMic(deviceValue);
+                              }}
+                              className={cn(
+                                "p-1.5 rounded-md transition-all shrink-0",
+                                isFavorite
+                                  ? "text-amber-500 hover:bg-amber-500/10"
+                                  : "text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent"
+                              )}
+                              title={isFavorite ? "Remove from favorites" : "Set as favorite"}
+                            >
+                              <Star className={cn("w-4 h-4", isFavorite && "fill-amber-500")} />
+                            </button>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                  {favoriteMic && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                      <Star className="w-3 h-3 fill-current" />
+                      Favorite mic will be used automatically when connected
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between">
