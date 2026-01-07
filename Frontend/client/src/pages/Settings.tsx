@@ -218,6 +218,7 @@ export default function Settings() {
 
   const handleSetFavoriteMic = async (deviceId: string) => {
     // Toggle favorite - if already favorite, clear it
+    const originalFavorite = favoriteMic;  // Capture before optimistic update
     const newFavorite = favoriteMic === deviceId ? "" : deviceId;
     setFavoriteMic(newFavorite);
     try {
@@ -230,7 +231,7 @@ export default function Settings() {
         duration: 2000,
       });
     } catch (e: any) {
-      setFavoriteMic(favoriteMic); // Revert on error
+      setFavoriteMic(originalFavorite); // Revert to original value on error
       toast({
         title: "Save failed",
         description: String(e?.message || e),

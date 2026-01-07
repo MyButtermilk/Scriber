@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useEffect, useRef, useState, memo } from "react";
+import React, { useEffect, useRef, useState, memo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Square, Loader2 } from "lucide-react";
 import { wsUrl, apiUrl } from "@/lib/backend";
+import { useToast } from "@/hooks/use-toast";
+import { useWebSocket } from "@/hooks/use-websocket";
 
 const BAR_COUNT = 56; // ~30% reduction from 80
 
@@ -126,10 +128,10 @@ interface RecordingPopupProps {
 }
 
 export function RecordingPopup({ className }: RecordingPopupProps) {
+    const { toast } = useToast();
     const [isRecording, setIsRecording] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
     const [audioLevels, setAudioLevels] = useState<number[]>(Array(BAR_COUNT).fill(0.12));
-    const wsRef = useRef<WebSocket | null>(null);
 
     // CAVA-style state refs
     const levelsRef = useRef<number[]>(Array(BAR_COUNT).fill(0));  // Target levels
@@ -182,79 +184,81 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
         };
     }, []);
 
-    useEffect(() => {
-        const ws = new WebSocket(wsUrl("/ws"));
-        wsRef.current = ws;
+    // WebSocket message handler with error support
+    const handleWsMessage = useCallback((msg: any) => {
+        if (!msg || typeof msg !== "object") return;
 
-        ws.onmessage = (event) => {
-            try {
-                const msg = JSON.parse(event.data);
-                if (!msg || typeof msg !== "object") return;
-
-                switch (msg.type) {
-                    case "state":
-                    case "status":
-                        setIsRecording(!!msg.listening);
-                        if (msg.transcribing !== undefined) {
-                            setIsTranscribing(!!msg.transcribing);
-                        }
-                        break;
-                    case "session_started":
-                        setIsRecording(true);
-                        setIsTranscribing(false);
-                        // Reset all levels
-                        levelsRef.current = Array(BAR_COUNT).fill(0);
-                        displayRef.current = Array(BAR_COUNT).fill(0.12);
-                        fallRef.current = Array(BAR_COUNT).fill(0);
-                        agcRef.current = 0.02;
-                        break;
-                    case "transcribing":
-                        // Recording stopped, now transcribing
-                        setIsRecording(false);
-                        setIsTranscribing(true);
-                        break;
-                    case "session_finished":
-                        // Transcription complete
-                        setIsRecording(false);
-                        setIsTranscribing(false);
-                        break;
-                    case "audio_level":
-                        const rms = Math.min(1, Math.max(0, Number(msg.rms) || 0));
-
-                        // Fast AGC like CAVA
-                        if (rms > agcRef.current) {
-                            agcRef.current = rms;
-                        } else {
-                            agcRef.current = agcRef.current * 0.98 + rms * 0.02;
-                        }
-
-                        // Normalize and apply power curve (25% gain boost)
-                        const norm = Math.pow(rms / (agcRef.current + 1e-6), 0.55) * 1.25;
-
-                        // Distribute across bars with frequency-like pattern
-                        for (let i = 0; i < BAR_COUNT; i++) {
-                            const center = BAR_COUNT / 2;
-                            const dist = Math.abs(i - center) / center;
-                            const freqFactor = 1.0 - (dist * dist * 0.6);
-                            const phase = i * 0.4 + rms * 20;
-                            const wave = 0.85 + 0.15 * Math.sin(phase);
-                            levelsRef.current[i] = norm * freqFactor * wave;
-                        }
-                        break;
+        switch (msg.type) {
+            case "state":
+            case "status":
+                setIsRecording(!!msg.listening);
+                if (msg.transcribing !== undefined) {
+                    setIsTranscribing(!!msg.transcribing);
                 }
-            } catch {
-                // ignore parse errors
-            }
-        };
+                break;
+            case "session_started":
+                setIsRecording(true);
+                setIsTranscribing(false);
+                // Reset all levels
+                levelsRef.current = Array(BAR_COUNT).fill(0);
+                displayRef.current = Array(BAR_COUNT).fill(0.12);
+                fallRef.current = Array(BAR_COUNT).fill(0);
+                agcRef.current = 0.02;
+                break;
+            case "transcribing":
+                // Recording stopped, now transcribing
+                setIsRecording(false);
+                setIsTranscribing(true);
+                break;
+            case "session_finished":
+                // Transcription complete
+                setIsRecording(false);
+                setIsTranscribing(false);
+                break;
+            case "error":
+                // Handle recording errors - hide popup and show error toast
+                setIsRecording(false);
+                setIsTranscribing(false);
+                toast({
+                    title: "Recording Error",
+                    description: msg.message || "An error occurred during recording.",
+                    variant: "destructive",
+                    duration: 6000,
+                });
+                break;
+            case "audio_level":
+                const rms = Math.min(1, Math.max(0, Number(msg.rms) || 0));
 
-        return () => {
-            try {
-                ws.close();
-            } catch {
-                // ignore
-            }
-        };
-    }, []);
+                // Fast AGC like CAVA
+                if (rms > agcRef.current) {
+                    agcRef.current = rms;
+                } else {
+                    agcRef.current = agcRef.current * 0.98 + rms * 0.02;
+                }
+
+                // Normalize and apply power curve (25% gain boost)
+                const norm = Math.pow(rms / (agcRef.current + 1e-6), 0.55) * 1.25;
+
+                // Distribute across bars with frequency-like pattern
+                for (let i = 0; i < BAR_COUNT; i++) {
+                    const center = BAR_COUNT / 2;
+                    const dist = Math.abs(i - center) / center;
+                    const freqFactor = 1.0 - (dist * dist * 0.6);
+                    const phase = i * 0.4 + rms * 20;
+                    const wave = 0.85 + 0.15 * Math.sin(phase);
+                    levelsRef.current[i] = norm * freqFactor * wave;
+                }
+                break;
+        }
+    }, [toast]);
+
+    // WebSocket with auto-reconnection
+    useWebSocket({
+        path: "/ws",
+        onMessage: handleWsMessage,
+        autoReconnect: true,
+        reconnectDelay: 1000,
+    });
 
     const handleStop = async () => {
         try {
@@ -270,16 +274,19 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
     const isVisible = isRecording || isTranscribing;
 
     return (
-        <AnimatePresence>
+        <AnimatePresence mode="wait">
             {isVisible && (
                 <motion.div
-                    initial={{ opacity: 0, y: 100, scale: 0.8 }}
+                    initial={{ opacity: 0, y: 40, scale: 0.95 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 50, scale: 0.9 }}
+                    exit={{ opacity: 0, y: 20, scale: 0.98 }}
                     transition={{
-                        type: "spring",
-                        stiffness: 400,
-                        damping: 30,
+                        duration: 0.2,
+                        ease: [0.25, 0.46, 0.45, 0.94], // easeOutQuad for smooth feel
+                    }}
+                    style={{
+                        willChange: 'transform, opacity',
+                        transform: 'translateZ(0)', // Force GPU acceleration
                     }}
                     className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-[9999] ${className || ""}`}
                 >

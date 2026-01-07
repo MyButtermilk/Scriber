@@ -282,10 +282,22 @@ class MicPreviewStream:
         dev = getattr(Config, "MIC_DEVICE", "default")
         if dev in (None, "", "default"):
             return None
+        # Try numeric ID first
         try:
             return int(dev)
+        except (ValueError, TypeError):
+            pass
+        # Try to find device by name
+        try:
+            import sounddevice as sd
+            devices = sd.query_devices()
+            for i, d in enumerate(devices):
+                if d.get("max_input_channels", 0) > 0:
+                    if d.get("name") == dev:
+                        return i
         except Exception:
-            return None
+            pass
+        return None
 
     def _open_stream(self) -> None:
         self._last_open_attempt = time.monotonic()

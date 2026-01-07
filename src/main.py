@@ -69,57 +69,63 @@ def _reset_pipeline_state():
     pipeline_task = None
     is_listening = False
 
+# Lock to prevent race conditions when rapidly pressing hotkey
+_listening_lock = asyncio.Lock()
+
 async def start_listening():
     global pipeline, pipeline_task, is_listening
-    if is_listening:
-        return
-    try:
-        if ui:
-            ui.set_mic_preview_enabled(False)
-        pipeline = ScriberPipeline(
-            service_name=Config.DEFAULT_STT_SERVICE,
-            on_status_change=handle_status,
-            on_audio_level=handle_audio_level
-        )
-        pipeline_task = asyncio.create_task(pipeline.start())
-        pipeline_task.add_done_callback(_on_pipeline_done)
-        is_listening = True
-        handle_status("Listening")
-    except (ValueError, ImportError) as e:
-        logger.error(f"Configuration error: {e}")
-        handle_status(f"Error: {e}")
-        if ui:
-            ui.set_mic_preview_enabled(True)
-        _reset_pipeline_state()
-    except Exception as e:
-        logger.error(f"Failed to start listening: {e}")
-        handle_status("Error")
-        if ui:
-            ui.set_mic_preview_enabled(True)
-        _reset_pipeline_state()
+    async with _listening_lock:
+        if is_listening:
+            return
+        try:
+            if ui:
+                ui.set_mic_preview_enabled(False)
+            pipeline = ScriberPipeline(
+                service_name=Config.DEFAULT_STT_SERVICE,
+                on_status_change=handle_status,
+                on_audio_level=handle_audio_level
+            )
+            pipeline_task = asyncio.create_task(pipeline.start())
+            pipeline_task.add_done_callback(_on_pipeline_done)
+            is_listening = True
+            handle_status("Listening")
+        except (ValueError, ImportError) as e:
+            logger.error(f"Configuration error: {e}")
+            handle_status(f"Error: {e}")
+            if ui:
+                ui.set_mic_preview_enabled(True)
+            _reset_pipeline_state()
+        except Exception as e:
+            logger.error(f"Failed to start listening: {e}")
+            handle_status("Error")
+            if ui:
+                ui.set_mic_preview_enabled(True)
+            _reset_pipeline_state()
 
 async def stop_listening():
     global pipeline, pipeline_task, is_listening
-    if not is_listening:
-        return
-    try:
-        if pipeline:
-            await pipeline.stop()
-        if pipeline_task:
-            pipeline_task.cancel()
-            try:
-                await pipeline_task
-            except asyncio.CancelledError:
-                pass
-        handle_status("Stopped")
-    finally:
-        if ui:
-            ui.set_mic_preview_enabled(True)
-        is_listening = False
-        pipeline = None
-        pipeline_task = None
+    async with _listening_lock:
+        if not is_listening:
+            return
+        try:
+            if pipeline:
+                await pipeline.stop()
+            if pipeline_task:
+                pipeline_task.cancel()
+                try:
+                    await pipeline_task
+                except asyncio.CancelledError:
+                    pass
+            handle_status("Stopped")
+        finally:
+            if ui:
+                ui.set_mic_preview_enabled(True)
+            is_listening = False
+            pipeline = None
+            pipeline_task = None
 
 async def toggle_listening():
+    # Lock is acquired inside start/stop, so we don't need it here
     if is_listening:
         await stop_listening()
     else:

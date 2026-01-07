@@ -8,6 +8,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MOCK_TRANSCRIPTS } from "@/lib/mockData";
 import { useToast } from "@/hooks/use-toast";
+import { useWebSocket } from "@/hooks/use-websocket";
 import { useState, useEffect, useRef, useLayoutEffect, useCallback } from "react";
 import { wsUrl, apiUrl } from "@/lib/backend";
 import ReactMarkdown from "react-markdown";
@@ -221,37 +222,27 @@ export default function TranscriptDetail() {
     ? formatElapsed(elapsedSeconds)
     : transcript.duration;
 
-  // WebSocket connection for real-time updates
-  useEffect(() => {
-    const ws = new WebSocket(wsUrl("/ws"));
+  // WebSocket with auto-reconnection for real-time updates
+  const handleWsMessage = useCallback((msg: any) => {
+    if (msg?.type === "history_updated") {
+      // Invalidate this specific transcript query to refresh content
+      queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] });
+    } else if (msg?.type === "error") {
+      toast({
+        title: "Error",
+        description: msg.message || "An error occurred.",
+        variant: "destructive",
+        duration: 6000,
+      });
+    }
+  }, [id, queryClient, toast]);
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg?.type === "history_updated") {
-          // Invalidate this specific transcript query to refresh content
-          queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] });
-        } else if (msg?.type === "error") {
-          toast({
-            title: "Error",
-            description: msg.message || "An error occurred.",
-            variant: "destructive",
-            duration: 6000,
-          });
-        }
-      } catch {
-        // ignore parse errors
-      }
-    };
-
-    return () => {
-      try {
-        ws.close();
-      } catch {
-        // ignore
-      }
-    };
-  }, [id, queryClient]);
+  useWebSocket({
+    path: "/ws",
+    onMessage: handleWsMessage,
+    autoReconnect: true,
+    reconnectDelay: 1000,
+  });
 
   const handleCopyTranscript = () => {
     navigator.clipboard.writeText(transcript?.content || "");

@@ -9,6 +9,7 @@ import { useLocation } from "wouter";
 import { useState, useEffect, useMemo, useCallback, memo } from "react";
 import { apiUrl, wsUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
+import { useWebSocket } from "@/hooks/use-websocket";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -223,36 +224,26 @@ export default function Youtube() {
     (t: any) => t?.type === "youtube",
   );
 
-  // WebSocket connection for real-time updates
-  useEffect(() => {
-    const ws = new WebSocket(wsUrl("/ws"));
+  // WebSocket with auto-reconnection for real-time updates
+  const handleWsMessage = useCallback((msg: any) => {
+    if (msg?.type === "history_updated") {
+      queryClient.refetchQueries({ queryKey: ["/api/transcripts"] });
+    } else if (msg?.type === "error") {
+      toast({
+        title: "Transcription Error",
+        description: msg.message || "An error occurred during transcription.",
+        variant: "destructive",
+        duration: 6000,
+      });
+    }
+  }, [queryClient, toast]);
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg?.type === "history_updated") {
-          queryClient.refetchQueries({ queryKey: ["/api/transcripts"] });
-        } else if (msg?.type === "error") {
-          toast({
-            title: "Transcription Error",
-            description: msg.message || "An error occurred during transcription.",
-            variant: "destructive",
-            duration: 6000,
-          });
-        }
-      } catch {
-        // ignore parse errors
-      }
-    };
-
-    return () => {
-      try {
-        ws.close();
-      } catch {
-        // ignore
-      }
-    };
-  }, [queryClient]);
+  useWebSocket({
+    path: "/ws",
+    onMessage: handleWsMessage,
+    autoReconnect: true,
+    reconnectDelay: 1000,
+  });
 
   // Helper to detect if input is a YouTube URL
   const isYouTubeUrl = (input: string): boolean => {

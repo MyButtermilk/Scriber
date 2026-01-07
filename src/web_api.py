@@ -629,8 +629,12 @@ class ScriberWebController:
                 on_transcription=on_transcription,
                 on_progress=on_progress,
             )
-            # Use direct file upload to Soniox (bypasses PCM conversion)
-            await pipeline.transcribe_file_direct(str(audio_path))
+            
+            # Use direct file upload for Soniox (more efficient), fallback to pipecat for others
+            if Config.DEFAULT_STT_SERVICE in ("soniox", "soniox_async"):
+                await pipeline.transcribe_file_direct(str(audio_path))
+            else:
+                await pipeline.transcribe_file(str(audio_path))
 
             logger.info(f"YouTube transcription completed: {len(rec.content)} chars")
             rec.status = "completed"
@@ -754,8 +758,12 @@ class ScriberWebController:
                 on_transcription=on_transcription,
                 on_progress=on_progress,
             )
-            # Use direct file upload to Soniox (bypasses PCM conversion)
-            await pipeline.transcribe_file_direct(str(file_path))
+            
+            # Use direct file upload for Soniox (more efficient), fallback to pipecat for others
+            if Config.DEFAULT_STT_SERVICE in ("soniox", "soniox_async"):
+                await pipeline.transcribe_file_direct(str(file_path))
+            else:
+                await pipeline.transcribe_file(str(file_path))
 
             logger.info(f"File transcription completed: {len(rec.content)} chars")
             rec.status = "completed"

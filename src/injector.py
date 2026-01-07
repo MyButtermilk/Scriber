@@ -165,25 +165,25 @@ def _paste_text(text: str) -> bool:
         return True
     finally:
         if previous_text is None:
-            return
-
-        restore_delay_ms = max(0, int(getattr(Config, "PASTE_RESTORE_DELAY_MS", 0) or 0))
-
-        def _restore_if_unchanged():
-            try:
-                current = _windows_clipboard_get_text()
-                # Only restore if the clipboard still contains our injected text; don't clobber user clipboard changes.
-                if current == text:
-                    _windows_clipboard_set_text(previous_text)
-            except Exception:
-                pass
-
-        if restore_delay_ms <= 0:
-            _restore_if_unchanged()
+            pass  # No previous clipboard content to restore
         else:
-            t = threading.Timer(restore_delay_ms / 1000.0, _restore_if_unchanged)
-            t.daemon = True
-            t.start()
+            restore_delay_ms = max(0, int(getattr(Config, "PASTE_RESTORE_DELAY_MS", 0) or 0))
+
+            def _restore_if_unchanged():
+                try:
+                    current = _windows_clipboard_get_text()
+                    # Only restore if the clipboard still contains our injected text; don't clobber user clipboard changes.
+                    if current == text:
+                        _windows_clipboard_set_text(previous_text)
+                except Exception:
+                    pass
+
+            if restore_delay_ms <= 0:
+                _restore_if_unchanged()
+            else:
+                t = threading.Timer(restore_delay_ms / 1000.0, _restore_if_unchanged)
+                t.daemon = True
+                t.start()
 
 
 class TextInjector(FrameProcessor):

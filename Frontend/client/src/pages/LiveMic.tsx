@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, memo } from "react";
+import { useWebSocket } from "@/hooks/use-websocket";
 import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2, LayoutGrid, LayoutList } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -153,98 +154,89 @@ export default function LiveMic() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
-  useEffect(() => {
-    const ws = new WebSocket(wsUrl("/ws"));
+  // WebSocket with auto-reconnection
+  const handleWsMessage = useCallback((msg: any) => {
+    if (!msg || typeof msg !== "object") return;
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (!msg || typeof msg !== "object") return;
-
-        switch (msg.type) {
-          case "state":
-            setIsRecording(!!msg.listening);
-            setStatus(msg.status || "Stopped");
-            if (msg.current?.content) {
-              setFinalText(String(msg.current.content));
-              setInterimText("");
-            }
-            break;
-          case "status":
-            setIsRecording(!!msg.listening);
-            setStatus(msg.status || "Stopped");
-            break;
-          case "audio_level":
-            setAudioLevel(Number(msg.rms) || 0);
-            break;
-          case "transcript":
-            if (msg.isFinal) {
-              if (msg.content) {
-                setFinalText(String(msg.content));
-                setInterimText("");
-                break;
-              }
-              const t = String(msg.text || "").trim();
-              if (t) setFinalText((prev) => (prev ? `${prev} ${t}` : t));
-              setInterimText("");
-            } else {
-              setInterimText(String(msg.text || ""));
-            }
-            break;
-          case "session_started":
-            setIsRecording(true);
-            setStatus("Listening");
-            setFinalText("");
+    switch (msg.type) {
+      case "state":
+        setIsRecording(!!msg.listening);
+        setStatus(msg.status || "Stopped");
+        if (msg.current?.content) {
+          setFinalText(String(msg.current.content));
+          setInterimText("");
+        }
+        break;
+      case "status":
+        setIsRecording(!!msg.listening);
+        setStatus(msg.status || "Stopped");
+        break;
+      case "audio_level":
+        setAudioLevel(Number(msg.rms) || 0);
+        break;
+      case "transcript":
+        if (msg.isFinal) {
+          if (msg.content) {
+            setFinalText(String(msg.content));
             setInterimText("");
             break;
-          case "session_finished":
-            setIsRecording(false);
-            setStatus("Stopped");
-            if (msg.session?.content) {
-              setFinalText(String(msg.session.content));
-              setInterimText("");
-            }
-            queryClient.invalidateQueries({ queryKey: ["/api/transcripts"] });
-            break;
-          case "history_updated":
-            queryClient.invalidateQueries({ queryKey: ["/api/transcripts"] });
-            break;
-          case "error":
-            toast({
-              title: "Recording Error",
-              description: msg.message || "An error occurred during recording.",
-              variant: "destructive",
-              duration: 6000,
-            });
-            setIsRecording(false);
-            setStatus("Stopped");
-            break;
-          case "settings_updated":
-            break;
-          default:
-            break;
+          }
+          const t = String(msg.text || "").trim();
+          if (t) setFinalText((prev) => (prev ? `${prev} ${t}` : t));
+          setInterimText("");
+        } else {
+          setInterimText(String(msg.text || ""));
         }
-      } catch {
-        // ignore
-      }
-    };
+        break;
+      case "session_started":
+        setIsRecording(true);
+        setStatus("Listening");
+        setFinalText("");
+        setInterimText("");
+        break;
+      case "session_finished":
+        setIsRecording(false);
+        setStatus("Stopped");
+        if (msg.session?.content) {
+          setFinalText(String(msg.session.content));
+          setInterimText("");
+        }
+        queryClient.invalidateQueries({ queryKey: ["/api/transcripts"] });
+        break;
+      case "history_updated":
+        queryClient.invalidateQueries({ queryKey: ["/api/transcripts"] });
+        break;
+      case "error":
+        toast({
+          title: "Recording Error",
+          description: msg.message || "An error occurred during recording.",
+          variant: "destructive",
+          duration: 6000,
+        });
+        setIsRecording(false);
+        setStatus("Stopped");
+        break;
+      case "settings_updated":
+        break;
+      default:
+        break;
+    }
+  }, [queryClient, toast]);
 
-    ws.onerror = () => {
+  const { isConnected } = useWebSocket({
+    path: "/ws",
+    onMessage: handleWsMessage,
+    onError: () => {
       toast({
         title: "Backend disconnected",
-        description: "Could not connect to the Scriber backend. Start `python -m src.web_api`.",
+        description: "Could not connect to the Scriber backend. Reconnecting...",
         duration: 4000,
       });
-    };
+    },
+    autoReconnect: true,
+    reconnectDelay: 1000,
+  });
 
-    return () => {
-      try {
-        ws.close();
-      } catch {
-        // ignore
-      }
-    };
-  }, [queryClient, toast]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);

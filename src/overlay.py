@@ -98,10 +98,12 @@ class QtOverlayWindow(QWidget):
         # AGC (Automatic Gain Control) for adaptive level scaling
         self._agc = 0.02
         
-        # CAVA-style parameters
+        # CAVA-style parameters - optimized for maximum responsiveness
         self._noise_reduction = 0.77  # 0-1, smoothing factor
-        self._gravity = 0.8  # Fall-off acceleration
+        self._gravity = 0.7  # Quick fall-off
         self._integral = 0.7  # Weighted average factor
+        self._rise_speed = 0.9  # Near-instant rise (0-1)
+        self._fall_damping = 0.85  # Faster fall, less floaty
         
         # Stop button hit-test (updated during painting)
         self._stop_center_x = 0.0
@@ -125,14 +127,14 @@ class QtOverlayWindow(QWidget):
         self._spinner_timer.setInterval(16)
         self._spinner_timer.timeout.connect(self._update_spinner)
         
-        # Fade animation support
+        # Fade animation support - optimized for smooth 60fps
         self._pending_hide = False
         self._fade_opacity = 0.0
         self._fade_timer = QTimer(self)
-        self._fade_timer.setInterval(16)
+        self._fade_timer.setInterval(16)  # 60fps
         self._fade_timer.timeout.connect(self._fade_tick)
         self._fade_target = 0.0
-        self._fade_speed = 0.15  # ~7 frames to full fade
+        self._fade_speed = 0.35  # Faster fade for snappy feel (~4 frames)
         
         self.setWindowOpacity(0.0)
         
@@ -251,17 +253,24 @@ class QtOverlayWindow(QWidget):
         super().hideEvent(event)
         
     def _fade_tick(self):
-        """Handle fade animation."""
+        """Handle fade animation with easing for smooth feel."""
         diff = self._fade_target - self._fade_opacity
-        if abs(diff) < 0.01:
+        if abs(diff) < 0.005:  # Tighter threshold for smoother finish
             self._fade_opacity = self._fade_target
             self._fade_timer.stop()
-            if self._pending_hide and self._fade_opacity <= 0.01:
+            if self._pending_hide and self._fade_opacity <= 0.005:
                 self._anim_timer.stop()
                 self._spinner_timer.stop()
                 self.hide()
         else:
-            self._fade_opacity += diff * self._fade_speed
+            # Ease-out curve for natural deceleration
+            step = diff * self._fade_speed
+            # Ensure minimum step size to prevent stalling
+            if abs(step) < 0.02:
+                step = 0.02 if diff > 0 else -0.02
+            self._fade_opacity += step
+            # Clamp to valid range
+            self._fade_opacity = max(0.0, min(1.0, self._fade_opacity))
         self.setWindowOpacity(self._fade_opacity)
     
     def _update_spinner(self):
@@ -284,29 +293,29 @@ class QtOverlayWindow(QWidget):
         if rms > self._agc:
             self._agc = rms  # Instant attack
         else:
-            self._agc = self._agc * 0.98 + rms * 0.02  # Slow decay
+            self._agc = self._agc * 0.96 + rms * 0.04  # Slightly faster decay for responsiveness
         
         # Normalize with AGC
         norm = rms / (self._agc + 1e-6)
         
         # Apply power curve for better dynamics (makes quiet parts more visible)
         # Lower exponent = more gain
-        norm = math.pow(norm, 0.55) * 1.25  # 25% gain boost
+        norm = math.pow(norm, 0.5) * 1.3  # More gain, better visibility
         
         # Distribute across bars with frequency-like pattern
         for i in range(self._bar_count):
             # Logarithmic-style distribution (center weighted)
             center = self._bar_count / 2
             dist = abs(i - center) / center
-            # Create frequency-like falloff
-            freq_factor = 1.0 - (dist * dist * 0.6)
-            # Add subtle variation for visual interest
-            phase = i * 0.4 + rms * 20
-            wave = 0.85 + 0.15 * math.sin(phase)
+            # Create frequency-like falloff - gentler curve
+            freq_factor = 1.0 - (dist * dist * 0.5)
+            # Add subtle variation for visual interest - smoother wave
+            phase = i * 0.3 + rms * 15
+            wave = 0.9 + 0.1 * math.sin(phase)  # Less variation = smoother
             self._levels[i] = norm * freq_factor * wave
     
     def _tick(self):
-        """CAVA-style animation with gravity fall-off and instant rise."""
+        """CAVA-style animation - maximum responsiveness."""
         # Check if bar count changed (user updated setting)
         new_bar_count = Config.VISUALIZER_BAR_COUNT
         if new_bar_count != self._bar_count:
@@ -322,17 +331,17 @@ class QtOverlayWindow(QWidget):
             current = self._display[i]
             
             if target > current:
-                # Fast rise - nearly instant response
-                self._display[i] = current + (target - current) * 0.6
-                self._fall[i] = 0.0  # Reset fall velocity
+                # Near-instant rise for maximum responsiveness
+                self._display[i] = current + (target - current) * self._rise_speed
+                self._fall[i] = 0.0
             else:
-                # Gravity-based fall (CAVA style)
-                self._fall[i] += self._gravity * 0.016  # Gravity acceleration
+                # Quick gravity fall - no slow damping
+                self._fall[i] = self._fall[i] * self._fall_damping + self._gravity * 0.02
                 self._display[i] = max(0.0, current - self._fall[i])
         
         # Update pulse animation for initializing state
         if self._is_initializing:
-            self._pulse_phase += 0.08  # ~5 pulses per second at 60fps
+            self._pulse_phase += 0.08
         
         self.update()
         
@@ -704,7 +713,9 @@ class TkRecordingOverlay:
         self._transcribing_window = None
         self._bar_ids: list = []
         
-        self._audio_levels = [0.12] * BAR_COUNT
+        # Use Config bar count or default to 45
+        bar_count = getattr(Config, 'VISUALIZER_BAR_COUNT', 45)
+        self._audio_levels = [0.12] * bar_count
         
     def start(self) -> None:
         """Start the overlay in a separate thread."""

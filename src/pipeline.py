@@ -441,22 +441,48 @@ def _resolve_mic_device(device_name: str) -> str:
             pass
         return None
     
-    # Check if favorite mic is set and available
+    # Check if favorite mic is set and should be used
+    # Favorite mic only overrides when:
+    # 1. Selected device is "default" (no explicit selection), OR
+    # 2. Selected device is unavailable
     favorite = Config.FAVORITE_MIC
+    use_favorite = False
+    
     if favorite and favorite != "default":
-        favorite_idx = find_device_by_name(favorite)
-        if favorite_idx:
-            logger.info(f"Using favorite microphone '{favorite}' (device index {favorite_idx})")
-            return favorite_idx
+        if device_name == "default" or not device_name:
+            # No explicit selection - use favorite if available
+            use_favorite = True
+        else:
+            # User selected a specific device - only use favorite if selected is unavailable
+            selected_idx = find_device_by_name(device_name)
+            if not selected_idx:
+                # Selected device not available, try favorite
+                use_favorite = True
+        
+        if use_favorite:
+            favorite_idx = find_device_by_name(favorite)
+            if favorite_idx:
+                logger.info(f"Using favorite microphone '{favorite}' (device index {favorite_idx})")
+                return favorite_idx
     
     # Fall back to selected device
     if device_name == "default" or not device_name:
         return "default"
     
-    # If it's already a numeric index (legacy), assume it might be valid
+    # If it's already a numeric index (legacy), validate it exists
     try:
-        int(device_name)
-        return device_name  # Legacy format, MicrophoneInput will handle fallback
+        idx = int(device_name)
+        # Validate the device exists
+        import sounddevice as sd
+        try:
+            dev_info = sd.query_devices(device=idx, kind='input')
+            if int(dev_info.get('max_input_channels', 0) or 0) > 0:
+                return device_name
+        except Exception:
+            pass
+        # Legacy device doesn't exist - fall back to default
+        logger.warning(f"Legacy device index {device_name} not valid, falling back to Windows default")
+        return "default"
     except ValueError:
         pass
     
@@ -585,11 +611,18 @@ class ScriberPipeline:
             )
             logger.info(f"AssemblyAI: Using multilingual model (language={lang or 'auto-detect'})")
             
-            return AssemblyAISTTService(
-                api_key=_get_api_key("assemblyai"), 
-                language=lang if lang else Language.EN,
-                connection_params=connection_params
-            )
+            # When lang is None (auto), don't pass language param to enable auto-detection
+            if lang:
+                return AssemblyAISTTService(
+                    api_key=_get_api_key("assemblyai"), 
+                    language=lang,
+                    connection_params=connection_params
+                )
+            else:
+                return AssemblyAISTTService(
+                    api_key=_get_api_key("assemblyai"), 
+                    connection_params=connection_params
+                )
         
         elif self.service_name == "google":
             # Lazy import - only loaded when Google is used
