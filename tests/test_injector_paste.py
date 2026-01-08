@@ -12,6 +12,8 @@ from src.injector import TextInjector
 async def test_paste_injection_uses_ctrl_v_and_restores_clipboard(monkeypatch):
     monkeypatch.setattr(Config, "INJECT_METHOD", "paste")
     monkeypatch.setattr(Config, "PASTE_RESTORE_DELAY_MS", 0)
+    # Ensure sys.platform is "win32" so _paste_text proceeds
+    monkeypatch.setattr("sys.platform", "win32")
 
     injector = TextInjector(inject_immediately=False)
     frame = TranscriptionFrame(text="hello world", user_id="user", timestamp="now")
