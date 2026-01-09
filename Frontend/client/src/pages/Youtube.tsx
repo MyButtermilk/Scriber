@@ -1,4 +1,4 @@
-import { ArrowRight, Clock, MoreHorizontal, PlayCircle, Youtube as YoutubeIcon, Loader2, Trash2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList } from "lucide-react";
+import { ArrowRight, Clock, MoreHorizontal, PlayCircle, Youtube as YoutubeIcon, Loader2, Trash2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList, Square } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -93,6 +93,8 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                   </Badge>
                 ) : item.status === 'failed' ? (
                   <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px] shrink-0">Failed</Badge>
+                ) : item.status === 'stopped' ? (
+                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px] shrink-0">Stopped</Badge>
                 ) : (
                   <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full shrink-0">
                     <CheckCircle2 className="w-3 h-3" />
@@ -145,6 +147,8 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                   </Badge>
                 ) : item.status === 'failed' ? (
                   <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50/90 text-[10px]">Failed</Badge>
+                ) : item.status === 'stopped' ? (
+                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50/90 text-[10px]">Stopped</Badge>
                 ) : (
                   <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50/90 px-2 py-1 rounded-full">
                     <CheckCircle2 className="w-3 h-3" />
@@ -173,9 +177,10 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
               </div>
             </div>
           </div>
-        )}
-      </Card>
-    </motion.div>
+        )
+        }
+      </Card >
+    </motion.div >
   );
 });
 

@@ -1,6 +1,6 @@
 import { useCallback, useState, useEffect, memo } from "react";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileAudio, FileVideo, CheckCircle2, Clock, MoreVertical, Loader2, XCircle, Trash2, LayoutGrid, LayoutList } from "lucide-react";
+import { UploadCloud, FileAudio, FileVideo, CheckCircle2, Clock, MoreVertical, Loader2, XCircle, Trash2, LayoutGrid, LayoutList, Square } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -52,9 +52,11 @@ const FileCard = memo(function FileCard({
             <div className="flex items-center gap-4">
               <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${item.status === 'failed'
                 ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
-                : 'bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600'
+                : item.status === 'stopped'
+                  ? 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600'
+                  : 'bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600'
                 }`}>
-                {item.status === 'failed' ? <XCircle className="w-5 h-5" /> : <FileAudio className="w-5 h-5" />}
+                {item.status === 'failed' ? <XCircle className="w-5 h-5" /> : item.status === 'stopped' ? <Square className="w-5 h-5" /> : <FileAudio className="w-5 h-5" />}
               </div>
               <div>
                 <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
@@ -70,6 +72,8 @@ const FileCard = memo(function FileCard({
             <div className="flex items-center gap-2">
               {item.status === 'failed' ? (
                 <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
+              ) : item.status === 'stopped' ? (
+                <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">Stopped</Badge>
               ) : (
                 <div className="hidden sm:flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
                   <CheckCircle2 className="w-3 h-3" />
@@ -97,13 +101,17 @@ const FileCard = memo(function FileCard({
             <div className="flex items-start justify-between mb-3">
               <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${item.status === 'failed'
                 ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
-                : 'bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600'
+                : item.status === 'stopped'
+                  ? 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600'
+                  : 'bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600'
                 }`}>
-                {item.status === 'failed' ? <XCircle className="w-6 h-6" /> : <FileAudio className="w-6 h-6" />}
+                {item.status === 'failed' ? <XCircle className="w-6 h-6" /> : item.status === 'stopped' ? <Square className="w-6 h-6" /> : <FileAudio className="w-6 h-6" />}
               </div>
               <div className="flex items-center gap-1">
                 {item.status === 'failed' ? (
                   <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
+                ) : item.status === 'stopped' ? (
+                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">Stopped</Badge>
                 ) : (
                   <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
                     <CheckCircle2 className="w-3 h-3" />

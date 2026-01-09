@@ -395,11 +395,6 @@ html:has(body[data-scroll-locked]) {
   transition: transform 0.12s ease-out, box-shadow 0.12s ease-out;
 }
 
-.neu-recording-row:active {
-  transform: scale(0.98) !important;
-  transition: none;
-}
-
 .neu-recording-row::before {
   content: "";
   position: absolute;

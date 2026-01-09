@@ -298,7 +298,7 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
                             backgroundColor: '#000000',
                             borderRadius: 9999,
                             padding: '8px 8px 8px 8px',
-                            boxShadow: '0 10px 40px rgba(0, 0, 0, 0.5)',
+                            boxShadow: '0 12px 36px rgba(0, 0, 0, 0.35)',
                         }}
                     >
                         {/* Stop Button - only show during recording */}

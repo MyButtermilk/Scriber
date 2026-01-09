@@ -856,6 +856,55 @@ class ScriberPipeline:
             self.is_active = False
             self._start_done.set()
 
+    def _format_speaker_transcript(self, tokens: list) -> str:
+        """Format tokens with speaker diarization labels.
+        
+        Groups consecutive tokens by speaker and formats as:
+        [Speaker 1]: Hello, how are you?
+        [Speaker 2]: I'm doing great, thanks!
+        
+        Args:
+            tokens: List of token dicts with 'text' and optionally 'speaker' fields
+            
+        Returns:
+            Formatted transcript string with speaker labels
+        """
+        if not tokens:
+            return ""
+        
+        segments = []
+        current_speaker = None
+        current_text = []
+        
+        for token in tokens:
+            text = token.get("text", "")
+            speaker = token.get("speaker", "")
+            
+            if speaker and speaker != current_speaker:
+                # Save previous segment
+                if current_text and current_speaker:
+                    segments.append((current_speaker, "".join(current_text).strip()))
+                current_speaker = speaker
+                current_text = [text]
+            else:
+                current_text.append(text)
+        
+        # Don't forget last segment
+        if current_text and current_speaker:
+            segments.append((current_speaker, "".join(current_text).strip()))
+        
+        # Format with speaker labels
+        if not segments:
+            # Fallback: just concatenate all text
+            return "".join(t.get("text", "") for t in tokens).strip()
+        
+        lines = []
+        for speaker, text in segments:
+            if text:
+                lines.append(f"[Speaker {speaker}]: {text}")
+        
+        return "\n\n".join(lines)
+
     async def transcribe_file_direct(self, file_path: str) -> None:
         """
         Transcribe audio/video file by uploading directly to Soniox async API.
@@ -987,7 +1036,15 @@ class ScriberPipeline:
                 ) as r3:
                     r3.raise_for_status()
                     transcript_payload = await r3.json()
-                    text = transcript_payload.get("text", "")
+                    
+                    # Parse speaker diarization if available
+                    tokens = transcript_payload.get("tokens", [])
+                    if tokens and any(t.get("speaker") for t in tokens):
+                        # Format with speaker labels
+                        text = self._format_speaker_transcript(tokens)
+                    else:
+                        # Fallback to plain text
+                        text = transcript_payload.get("text", "")
 
                 if text and self.on_transcription:
                     logger.info(f"Soniox direct transcription completed ({len(text)} chars)")

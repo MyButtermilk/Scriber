@@ -4,18 +4,31 @@ Scriber is an AI-powered voice transcription app for Windows (and other platform
 
 ## Features
 
+### Core Functionality
 - **Live Dictation**: Global hotkey (`Ctrl+Alt+S` default) to toggle recording with a responsive audio visualizer overlay.
+- **YouTube Transcription**: Paste a YouTube URL or search directly to transcribe videos.
+- **File Transcription**: Upload audio/video files (mp3, wav, mp4, mov, webm, mkv, etc.) for processing. Videos up to 2GB supported with automatic audio extraction.
+- **Persistence**: All transcripts are saved to a local SQLite database (`transcripts.db`), so your history is preserved across restarts.
+
+### AI-Powered Features
+- **Summarization**: Generates summaries of transcripts using Google Gemini or OpenAI models.
+- **Speaker Diarization**: Automatic speaker identification and labeling in transcripts (via Soniox).
+- **Multiple STT Providers**: Support for Soniox, Deepgram, AssemblyAI, OpenAI Whisper, Azure, Gladia, Speechmatics, AWS, and more.
+
+### Export & Sharing
+- **PDF Export**: Export transcripts with formatted summaries and speaker labels.
+- **DOCX Export**: Export transcripts as Word documents with proper heading and list formatting.
+- **Copy to Clipboard**: One-click copy for transcripts and summaries.
+
+### User Experience
+- **Modern UI**: Built with React 19, Vite, and Tailwind CSS with a neumorphic design.
+- **Task Cancellation**: Stop long-running YouTube or file transcriptions at any time.
+- **Real-time Progress**: Live updates during processing with download speed, ETA, and transcription progress.
 - **System Tray Integration**: Runs silently in the background. Right-click the tray icon to:
   - View application logs.
   - Access recent recordings (copy to clipboard instantly).
   - Open the Web UI.
   - Restart or Quit the application.
-- **YouTube Transcription**: Paste a YouTube URL or search directly to transcribe videos.
-- **File Transcription**: Upload audio/video files (mp3, wav, mp4, etc.) for processing.
-- **Persistence**: All transcripts are saved to a local SQLite database (`transcripts.db`), so your history is preserved across restarts.
-- **Summarization**: Generates summaries of transcripts using Google Gemini or OpenAI models.
-- **Modern UI**: Built with React 19, Vite, and Tailwind CSS.
-- **Multiple STT Providers**: Support for Soniox, Deepgram, AssemblyAI, OpenAI Whisper, Azure, Gladia, and more.
 
 ## Quick Start (Windows)
 
@@ -72,6 +85,7 @@ The application is composed of three main parts managed by a central tray applic
     -   WebSocket broadcasting for real-time frontend updates.
     -   Database operations (SQLite).
     -   YouTube downloads and file processing.
+    -   PDF/DOCX export generation.
 3.  **Frontend (`Frontend/`)**: A React/Vite SPA that connects to the backend via WebSocket and REST API.
 
 ## Project Structure
@@ -84,6 +98,7 @@ Scriber/
     database.py         # SQLite database interface
     pipeline.py         # STT provider orchestration
     overlay.py          # Visualizer overlay logic
+    export.py           # PDF/DOCX export utilities
     config.py           # Configuration loader
     ...
   Frontend/             # React application source
@@ -105,6 +120,7 @@ This will automatically launch the backend and the frontend (`npm run dev:client
 -   **App doesn't start?** Check `start.bat` output or run `python -m src.tray` manually in a terminal to see immediate errors.
 -   **Logs**: Right-click the tray icon and select "View Logs" to debug issues with API keys or devices.
 -   **Copying fails?** The tray app uses direct Windows API calls for clipboard reliability. If it fails, check the logs.
+-   **Export not working?** Ensure `python-docx`, `reportlab`, and `lxml` are installed: `pip install python-docx reportlab lxml`
 
 ## License
 

@@ -332,7 +332,8 @@ class ScriberWebController:
         self._pipeline: Optional[ScriberPipeline] = None
         self._pipeline_task: Optional[asyncio.Task] = None
         self._ptt_task: Optional[asyncio.Task] = None
-        self._youtube_tasks: dict[str, asyncio.Task] = {}
+        # Track running file/YouTube transcription tasks by transcript ID
+        self._running_tasks: dict[str, asyncio.Task] = {}
         self._keyboard = None
 
         self._is_listening = False
@@ -355,6 +356,17 @@ class ScriberWebController:
         db.init_database()
         self._transcripts_loaded = False
     
+    def _register_task(self, transcript_id: str, task: asyncio.Task) -> None:
+        """Register a background task for a transcript."""
+        # Use call_soon_threadsafe to ensure thread safety if called from callbacks
+        self._running_tasks[transcript_id] = task
+        task.add_done_callback(lambda _: self._loop.call_soon_threadsafe(lambda: self._unregister_task(transcript_id)))
+
+    def _unregister_task(self, transcript_id: str) -> None:
+        """Unregister a background task."""
+        if transcript_id in self._running_tasks:
+            del self._running_tasks[transcript_id]
+
     def _get_overlay(self):
         """Get or create the overlay instance and ensure callback is connected."""
         # get_overlay will create if needed, or update callback if already exists
@@ -559,11 +571,17 @@ class ScriberWebController:
         async def _runner() -> None:
             try:
                 await self._run_youtube_transcription(rec)
+            except asyncio.CancelledError:
+                # Ensure status is updated if cancelled
+                if rec.status == "processing":
+                    rec.status = "stopped"
+                    rec.step = "Stopped by user"
+                raise
             finally:
-                self._youtube_tasks.pop(rec.id, None)
+                pass  # Task cleanup handled by done callback
 
         task = asyncio.create_task(_runner(), name=f"youtube_transcribe_{rec.id}")
-        self._youtube_tasks[rec.id] = task
+        self._register_task(rec.id, task)
         return rec
 
     async def _run_youtube_transcription(self, rec: TranscriptRecord) -> None:
@@ -721,11 +739,17 @@ class ScriberWebController:
         async def _runner() -> None:
             try:
                 await self._run_file_transcription(rec, file_path)
+            except asyncio.CancelledError:
+                # Ensure status is updated if cancelled
+                if rec.status == "processing":
+                    rec.status = "stopped"
+                    rec.step = "Stopped by user"
+                raise
             finally:
-                self._youtube_tasks.pop(rec.id, None)
+                pass  # Task cleanup handled by done callback
 
         task = asyncio.create_task(_runner(), name=f"file_transcribe_{rec.id}")
-        self._youtube_tasks[rec.id] = task  # Reuse youtube_tasks dict for file tasks too
+        self._register_task(rec.id, task)
         return rec
 
     async def _run_file_transcription(self, rec: TranscriptRecord, file_path: Path) -> None:
@@ -1128,6 +1152,32 @@ class ScriberWebController:
 
         await self.broadcast({"type": "settings_updated"})
         return self.get_settings()
+
+    async def cancel_transcript(self, transcript_id: str) -> bool:
+        """Cancel a running transcription task."""
+        # Find record in history
+        rec = next((r for r in self._history if r.id == transcript_id), None)
+        
+        if transcript_id in self._running_tasks:
+            task = self._running_tasks[transcript_id]
+            task.cancel()
+            
+            if rec and rec.status == "processing":
+                 rec.step = "Stopping..."
+                 rec.updated_at = datetime.now().isoformat()
+                 await self.broadcast({"type": "history_updated"})
+            return True
+            
+        # Also check if it's stuck in processing but no task running (e.g. restart)
+        if rec and rec.status == "processing":
+            rec.status = "stopped"
+            rec.step = "Stopped" 
+            rec.updated_at = datetime.now().isoformat()
+            self._save_transcript_to_db(rec)
+            await self.broadcast({"type": "history_updated"})
+            return True
+            
+        return False
 
     def list_microphones(self) -> list[dict[str, str]]:
         """List available microphone devices.
@@ -1737,6 +1787,84 @@ def create_app(controller: ScriberWebController) -> web.Application:
             logger.exception("Summarization failed")
             return web.json_response({"message": str(exc) or "Summarization failed"}, status=500)
 
+    async def stop_transcript(request: web.Request):
+        """Cancel a running transcription task."""
+        ctl: ScriberWebController = request.app["controller"]
+        transcript_id = request.match_info.get("id", "")
+        if not transcript_id:
+            return web.json_response({"message": "Missing transcript ID"}, status=400)
+        
+        success = await ctl.cancel_transcript(transcript_id)
+        if not success:
+             # Check if it exists at all
+             found = any(r.id == transcript_id for r in ctl._history)
+             if not found:
+                 return web.json_response({"message": "Transcript not found"}, status=404)
+             return web.json_response({"message": "Transcription is not running"}, status=400)
+             
+        return web.json_response({"success": True})
+
+    async def export_transcript(request: web.Request):
+        """Export transcript as PDF or DOCX."""
+        from src.export import export_to_pdf, export_to_docx
+        
+        ctl: ScriberWebController = request.app["controller"]
+        transcript_id = request.match_info.get("id", "")
+        export_format = request.match_info.get("format", "pdf").lower()
+        
+        if not transcript_id:
+            return web.json_response({"message": "Missing transcript ID"}, status=400)
+        
+        if export_format not in ("pdf", "docx"):
+            return web.json_response({"message": "Invalid format. Use 'pdf' or 'docx'"}, status=400)
+        
+        # Find transcript
+        rec = next((r for r in ctl._history if r.id == transcript_id), None)
+        if not rec:
+            return web.json_response({"message": "Transcript not found"}, status=404)
+        
+        if not rec.content:
+            return web.json_response({"message": "Transcript has no content to export"}, status=400)
+        
+        try:
+            if export_format == "pdf":
+                data = export_to_pdf(
+                    title=rec.title or "Transcript",
+                    content=rec.content,
+                    summary=rec.summary,
+                    date=rec.date,
+                    duration=rec.duration,
+                )
+                content_type = "application/pdf"
+                ext = "pdf"
+            else:
+                data = export_to_docx(
+                    title=rec.title or "Transcript",
+                    content=rec.content,
+                    summary=rec.summary,
+                    date=rec.date,
+                    duration=rec.duration,
+                )
+                content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ext = "docx"
+            
+            # Sanitize filename
+            safe_title = "".join(c for c in (rec.title or "transcript") if c.isalnum() or c in " -_").strip()[:50]
+            filename = f"{safe_title}.{ext}"
+            
+            return web.Response(
+                body=data,
+                content_type=content_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                },
+            )
+        except ImportError as e:
+            return web.json_response({"message": str(e)}, status=500)
+        except Exception as e:
+            logger.exception(f"Export failed: {e}")
+            return web.json_response({"message": f"Export failed: {e}"}, status=500)
+
     app.router.add_get("/api/health", health)
     app.router.add_get("/ws", ws_handler)
 
@@ -1755,6 +1883,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/transcripts/{id}", transcript_detail)
     app.router.add_delete("/api/transcripts/{id}", delete_transcript)
     app.router.add_post("/api/transcripts/{id}/summarize", summarize_transcript)
+    app.router.add_post("/api/transcripts/{id}/cancel", stop_transcript)
+    app.router.add_get("/api/transcripts/{id}/export/{format}", export_transcript)
 
     app.router.add_get("/api/youtube/search", youtube_search)
     app.router.add_get("/api/youtube/video", youtube_video)

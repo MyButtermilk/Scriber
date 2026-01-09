@@ -1,10 +1,16 @@
 import { useParams, Link } from "wouter";
-import { ArrowLeft, Share2, Download, Copy, Play, Search, Clock, Calendar, Pencil, Check, Loader2, Sparkles, FileText } from "lucide-react";
+import { ArrowLeft, Share2, Download, Copy, Play, Search, Clock, Calendar, Pencil, Check, Loader2, Sparkles, FileText, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MOCK_TRANSCRIPTS } from "@/lib/mockData";
 import { useToast } from "@/hooks/use-toast";
@@ -12,6 +18,88 @@ import { useWebSocket } from "@/hooks/use-websocket";
 import { useState, useEffect, useRef, useLayoutEffect, useCallback } from "react";
 import { wsUrl, apiUrl } from "@/lib/backend";
 import ReactMarkdown from "react-markdown";
+
+// Speaker colors for diarization - visually distinct palette
+const SPEAKER_COLORS = [
+  { bg: "bg-blue-100 dark:bg-blue-900/40", text: "text-blue-700 dark:text-blue-300", border: "border-blue-300 dark:border-blue-700" },
+  { bg: "bg-emerald-100 dark:bg-emerald-900/40", text: "text-emerald-700 dark:text-emerald-300", border: "border-emerald-300 dark:border-emerald-700" },
+  { bg: "bg-amber-100 dark:bg-amber-900/40", text: "text-amber-700 dark:text-amber-300", border: "border-amber-300 dark:border-amber-700" },
+  { bg: "bg-purple-100 dark:bg-purple-900/40", text: "text-purple-700 dark:text-purple-300", border: "border-purple-300 dark:border-purple-700" },
+  { bg: "bg-rose-100 dark:bg-rose-900/40", text: "text-rose-700 dark:text-rose-300", border: "border-rose-300 dark:border-rose-700" },
+  { bg: "bg-cyan-100 dark:bg-cyan-900/40", text: "text-cyan-700 dark:text-cyan-300", border: "border-cyan-300 dark:border-cyan-700" },
+];
+
+// Component to render transcript with speaker diarization labels
+function SpeakerFormattedText({ content }: { content: string }) {
+  // Regex to match [Speaker N]: at the start of paragraphs
+  const speakerPattern = /\[Speaker (\d+)\]:\s*/g;
+
+  // Check if content has speaker labels
+  if (!speakerPattern.test(content)) {
+    return <span>{content}</span>;
+  }
+
+  // Reset regex
+  speakerPattern.lastIndex = 0;
+
+  // Split by speaker labels and create segments
+  const segments: { speaker: string; text: string }[] = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = speakerPattern.exec(content)) !== null) {
+    // If there's text before this match (shouldn't happen in well-formed content)
+    if (match.index > lastIndex && segments.length === 0) {
+      segments.push({ speaker: "", text: content.slice(lastIndex, match.index) });
+    }
+
+    // Find the end of this segment (next speaker label or end of string)
+    const nextMatch = speakerPattern.exec(content);
+    const endIndex = nextMatch ? nextMatch.index : content.length;
+    speakerPattern.lastIndex = match.index + match[0].length; // Reset to after current match
+
+    segments.push({
+      speaker: match[1],
+      text: content.slice(match.index + match[0].length, endIndex).trim()
+    });
+
+    lastIndex = endIndex;
+
+    // If we found a next match, we need to process it
+    if (nextMatch) {
+      speakerPattern.lastIndex = nextMatch.index;
+    }
+  }
+
+  // Simple approach: split by double newline and parse each paragraph
+  const paragraphs = content.split(/\n\n+/);
+
+  return (
+    <div className="space-y-4">
+      {paragraphs.map((para, idx) => {
+        const labelMatch = para.match(/^\[Speaker (\d+)\]:\s*([\s\S]*)$/);
+        if (labelMatch) {
+          const speakerNum = parseInt(labelMatch[1], 10);
+          const speakerText = labelMatch[2];
+          const colorIdx = (speakerNum - 1) % SPEAKER_COLORS.length;
+          const colors = SPEAKER_COLORS[colorIdx];
+
+          return (
+            <div key={idx} className="flex flex-col gap-1">
+              <span
+                className={`inline-flex items-center self-start px-2.5 py-0.5 rounded-full text-xs font-medium border ${colors.bg} ${colors.text} ${colors.border}`}
+              >
+                Speaker {speakerNum}
+              </span>
+              <p className="leading-relaxed">{speakerText}</p>
+            </div>
+          );
+        }
+        return <p key={idx} className="leading-relaxed">{para}</p>;
+      })}
+    </div>
+  );
+}
 
 // FitText component that dynamically scales font size to fit container
 interface FitTextProps {
@@ -97,6 +185,36 @@ function FitText({ children, minFontSize = 12, maxFontSize = 24, className = "" 
         {children}
       </span>
     </div>
+  );
+}
+
+function StopButton({ transcriptId, onStop }: { transcriptId: string; onStop: () => void }) {
+  const [isStopping, setIsStopping] = useState(false);
+  const { toast } = useToast();
+
+  const handleStop = async () => {
+    if (isStopping) return;
+    setIsStopping(true);
+    try {
+      const res = await fetch(apiUrl(`/api/transcripts/${transcriptId}/cancel`), {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to stop");
+
+      toast({ title: "Stopping...", description: "Task cancellation requested." });
+      onStop();
+    } catch {
+      toast({ title: "Error", description: "Failed to stop task.", variant: "destructive" });
+      setIsStopping(false);
+    }
+  };
+
+  return (
+    <Button size="sm" variant="destructive" onClick={handleStop} disabled={isStopping}>
+      {isStopping ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Square className="w-3 h-3 mr-1 fill-current" />}
+      Stop
+    </Button>
   );
 }
 
@@ -331,9 +449,32 @@ export default function TranscriptDetail() {
               {copiedSummary ? "Copied!" : "Copy Summary"}
             </Button>
           )}
-          <Button variant="outline" size="sm" className="hidden md:flex">
-            <Download className="w-4 h-4 mr-2" /> Export
-          </Button>
+          <DropdownMenu modal={false}>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="hidden md:flex data-[state=open]:bg-accent" style={{ transform: 'none' }}>
+                <Download className="w-4 h-4 mr-2" /> Export
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => {
+                  window.open(apiUrl(`/api/transcripts/${id}/export/pdf`), '_blank');
+                }}
+              >
+                <FileText className="w-4 h-4 mr-2" /> Export as PDF
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  window.open(apiUrl(`/api/transcripts/${id}/export/docx`), '_blank');
+                }}
+              >
+                <FileText className="w-4 h-4 mr-2" /> Export as DOCX
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {transcript.status === "processing" && (
+            <StopButton transcriptId={id!} onStop={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
+          )}
           {transcript.status === "completed" && !transcript.summary && !autoSummarize && (
             <SummarizeButton transcriptId={id} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
           )}
@@ -404,17 +545,17 @@ export default function TranscriptDetail() {
                 </div>
               </AccordionTrigger>
               <AccordionContent className="px-4 pb-4">
-                <p className="transcript-content whitespace-pre-wrap">
+                <div className="transcript-content">
                   {transcriptQuery.isLoading ? (
                     "Loading..."
                   ) : transcript.status === "processing" ? (
                     <span className="text-muted-foreground italic"></span>
                   ) : transcript.content ? (
-                    transcript.content
+                    <SpeakerFormattedText content={transcript.content} />
                   ) : (
                     "No transcript text captured."
                   )}
-                </p>
+                </div>
               </AccordionContent>
             </AccordionItem>
           </Accordion>

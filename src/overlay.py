@@ -355,15 +355,19 @@ class QtOverlayWindow(QWidget):
         pill = QRectF(m, m, self.width() - 2 * m, self.height() - 2 * m)
         radius = pill.height() / 2.0
         
-        # Soft shadow (multi-pass)
-        shadow_steps = 5
+        # Soft shadow (smoother multi-pass)
+        shadow_steps = 12
         for i in range(shadow_steps, 0, -1):
-            a = int(15 * (i / shadow_steps))
+            # Non-linear alpha falloff for smoother edge
+            progress = i / shadow_steps
+            a = int(12 * progress * progress)  # Quadratic falloff, max alpha ~12
             painter.setBrush(QColor(0, 0, 0, a))
             painter.setPen(Qt.NoPen)
+            # Expand rectangle
             r = QRectF(pill.left() - i, pill.top() - i, 
                        pill.width() + 2 * i, pill.height() + 2 * i)
-            r.translate(0, i * 0.6 + 2)
+            # Offset fixed downward for clean drop shadow effect
+            r.translate(0, 4)
             painter.drawRoundedRect(r, radius + i, radius + i)
         
         # Background gradient
