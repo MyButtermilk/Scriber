@@ -10,11 +10,11 @@
 </p>
 
 <p align="center">
-  <a href="#features">Features</a> •
-  <a href="#screenshots">Screenshots</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#usage">Usage</a> •
-  <a href="#configuration">Configuration</a>
+  <a href="#-features">Features</a> •
+  <a href="#-screenshots">Screenshots</a> •
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-usage">Usage</a> •
+  <a href="#-configuration">Configuration</a>
 </p>
 
 ---
