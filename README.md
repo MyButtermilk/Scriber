@@ -10,16 +10,16 @@
 </p>
 
 <p align="center">
-  <a href="#-features">Features</a> •
-  <a href="#-screenshots">Screenshots</a> •
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#-usage">Usage</a> •
-  <a href="#-configuration">Configuration</a>
+  <a href="#features">Features</a> •
+  <a href="#screenshots">Screenshots</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#usage">Usage</a> •
+  <a href="#configuration">Configuration</a>
 </p>
 
 ---
 
-## ✨ Features
+## Features
 
 ### 🎤 Live Dictation
 Press a global hotkey (`Ctrl+Alt+S` by default) from anywhere on your system to instantly start recording. A sleek overlay appears with real-time audio visualization and transcription. Perfect for taking quick notes, writing emails, or dictating documents.
@@ -47,7 +47,7 @@ Scriber runs silently in your system tray. Access recent recordings, view logs, 
 
 ---
 
-## 📸 Screenshots
+## Screenshots
 
 ### Live Mic Recording
 <p align="center">
@@ -81,7 +81,7 @@ Scriber runs silently in your system tray. Access recent recordings, view logs, 
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Windows
 
@@ -113,7 +113,7 @@ Scriber runs silently in your system tray. Access recent recordings, view logs, 
 
 ---
 
-## 📖 Usage
+## Usage
 
 ### Global Hotkey
 Press `Ctrl+Alt+S` (configurable) from anywhere to toggle recording. The live overlay shows:
@@ -139,7 +139,7 @@ Right-click the tray icon to:
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Scriber uses environment variables and a `.env` file for configuration. Key settings:
 
