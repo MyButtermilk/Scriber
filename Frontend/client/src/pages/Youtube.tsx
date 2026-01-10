@@ -1,4 +1,4 @@
-import { ArrowRight, Clock, MoreHorizontal, PlayCircle, Youtube as YoutubeIcon, Loader2, Trash2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList, Square } from "lucide-react";
+import { ArrowRight, Clock, MoreHorizontal, PlayCircle, Youtube as YoutubeIcon, Loader2, Trash2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -204,6 +204,16 @@ export default function Youtube() {
     localStorage.setItem("scriber-view-mode", viewMode);
   }, [viewMode]);
 
+  // History search state
+  const [historySearch, setHistorySearch] = useState("");
+  const [debouncedHistorySearch, setDebouncedHistorySearch] = useState("");
+
+  // Debounce history search
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedHistorySearch(historySearch), 300);
+    return () => clearTimeout(timer);
+  }, [historySearch]);
+
   // Sort search results
   const sortedResults = useMemo(() => {
     if (!searchResults.length) return [];
@@ -222,12 +232,17 @@ export default function Youtube() {
   }, [searchResults, sortBy]);
 
   const transcriptsQuery = useQuery({
-    queryKey: ["/api/transcripts"],
-    staleTime: 0, // Always fetch fresh data on mount
+    queryKey: ["/api/transcripts", { q: debouncedHistorySearch, type: "youtube" }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (debouncedHistorySearch) params.set("q", debouncedHistorySearch);
+      params.set("type", "youtube");
+      const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
+      return res.json();
+    },
+    staleTime: 0,
   });
-  const recentVideos: any[] = ((transcriptsQuery.data as any)?.items || []).filter(
-    (t: any) => t?.type === "youtube",
-  );
+  const recentVideos: any[] = (transcriptsQuery.data as any)?.items || [];
 
   // WebSocket with auto-reconnection for real-time updates
   const handleWsMessage = useCallback((msg: any) => {
@@ -554,11 +569,35 @@ export default function Youtube() {
           </ToggleGroup>
         </div>
 
+        {/* History Search Bar */}
+        <div className="relative mt-3">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            type="text"
+            placeholder="Search history..."
+            value={historySearch}
+            onChange={(e) => setHistorySearch(e.target.value)}
+            className="pl-9 pr-9 h-9 bg-secondary/50"
+          />
+          {historySearch && (
+            <button
+              onClick={() => setHistorySearch("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
         <div className="w-full py-2">
           {transcriptsQuery.isLoading ? (
             <SkeletonList count={3} variant={viewMode} />
           ) : recentVideos.length === 0 ? (
-            <EmptyState type="youtube" />
+            debouncedHistorySearch ? (
+              <p className="text-center text-muted-foreground py-8">No videos match "{debouncedHistorySearch}"</p>
+            ) : (
+              <EmptyState type="youtube" />
+            )
           ) : (
             <div className={viewMode === "grid" ? "grid grid-cols-3 gap-4" : "flex flex-col gap-4"}>
               {recentVideos.map((item: any, index: number) => (

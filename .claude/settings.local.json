@@ -2,7 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(test:*)",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(du:*)",
+      "Bash(./venv/Scripts/python:*)",
+      "Bash(./venv/Scripts/pip uninstall:*)",
+      "Bash(./venv/Scripts/pip install:*)",
+      "Bash(./venv/Scripts/pip show:*)",
+      "Bash(git log:*)",
+      "Bash(find:*)",
+      "Bash(npm run build:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

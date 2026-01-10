@@ -1,10 +1,11 @@
-import { useEffect, useState, useCallback, memo } from "react";
+import { useEffect, useState, useCallback, memo, useMemo } from "react";
 import { useWebSocket } from "@/hooks/use-websocket";
-import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2, LayoutGrid, LayoutList } from "lucide-react";
+import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2, LayoutGrid, LayoutList, Search, X } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Input } from "@/components/ui/input";
 import type { Transcript } from "@/lib/mockData";
 import { useLocation } from "wouter";
 
@@ -130,14 +131,29 @@ export default function LiveMic() {
   const [viewMode, setViewMode] = useState<"list" | "grid">(
     () => (localStorage.getItem("scriber-view-mode") as "list" | "grid") || "list"
   );
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
   // Persist view mode
   useEffect(() => {
     localStorage.setItem("scriber-view-mode", viewMode);
   }, [viewMode]);
 
+  // Debounce search
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   const transcriptsQuery = useQuery({
-    queryKey: ["/api/transcripts"],
+    queryKey: ["/api/transcripts", { q: debouncedSearch, type: "mic" }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (debouncedSearch) params.set("q", debouncedSearch);
+      params.set("type", "mic");
+      const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
+      return res.json();
+    },
   });
   const transcripts: Transcript[] = (transcriptsQuery.data as any)?.items || [];
 
@@ -201,10 +217,18 @@ export default function LiveMic() {
           setFinalText(String(msg.session.content));
           setInterimText("");
         }
-        queryClient.invalidateQueries({ queryKey: ["/api/transcripts"] });
+        queryClient.invalidateQueries({
+          predicate: (query) =>
+            query.queryKey[0] === "/api/transcripts" &&
+            (query.queryKey[1] as { type?: string })?.type === "mic",
+        });
         break;
       case "history_updated":
-        queryClient.invalidateQueries({ queryKey: ["/api/transcripts"] });
+        queryClient.invalidateQueries({
+          predicate: (query) =>
+            query.queryKey[0] === "/api/transcripts" &&
+            (query.queryKey[1] as { type?: string })?.type === "mic",
+        });
         break;
       case "error":
         toast({
@@ -407,15 +431,39 @@ export default function LiveMic() {
               </ToggleGroupItem>
             </ToggleGroup>
           </div>
+
+          {/* Search Bar */}
+          <div className="relative mt-3">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="Search recordings..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 pr-9 h-9 bg-secondary/50"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
 
         {transcriptsQuery.isLoading ? (
           <SkeletonList count={3} variant={viewMode} />
-        ) : transcripts.filter(t => t.type === 'mic').length === 0 ? (
-          <EmptyState type="mic" />
+        ) : transcripts.length === 0 ? (
+          debouncedSearch ? (
+            <p className="text-center text-muted-foreground py-8">No recordings match "{debouncedSearch}"</p>
+          ) : (
+            <EmptyState type="mic" />
+          )
         ) : (
           <div className={viewMode === "grid" ? "grid grid-cols-2 gap-4" : "flex flex-col gap-4"}>
-            {transcripts.filter(t => t.type === 'mic').map((item, index) => (
+            {transcripts.map((item, index) => (
               <TranscriptCard
                 key={item.id}
                 item={item}

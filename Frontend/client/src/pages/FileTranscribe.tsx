@@ -1,11 +1,12 @@
 import { useCallback, useState, useEffect, memo } from "react";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileAudio, FileVideo, CheckCircle2, Clock, MoreVertical, Loader2, XCircle, Trash2, LayoutGrid, LayoutList, Square } from "lucide-react";
+import { UploadCloud, FileAudio, FileVideo, CheckCircle2, Clock, MoreVertical, Loader2, XCircle, Trash2, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Input } from "@/components/ui/input";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiUrl, wsUrl } from "@/lib/backend";
@@ -164,13 +165,28 @@ export default function FileTranscribe() {
     localStorage.setItem("scriber-view-mode", viewMode);
   }, [viewMode]);
 
+  // Search state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  // Debounce search
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   const transcriptsQuery = useQuery({
-    queryKey: ["/api/transcripts"],
-    staleTime: 0, // Always fetch fresh data on mount
+    queryKey: ["/api/transcripts", { q: debouncedSearch, type: "file" }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (debouncedSearch) params.set("q", debouncedSearch);
+      params.set("type", "file");
+      const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
+      return res.json();
+    },
+    staleTime: 0,
   });
-  const recentFromBackend: any[] = ((transcriptsQuery.data as any)?.items || []).filter(
-    (t: any) => t?.type === "file",
-  );
+  const recentFromBackend: any[] = (transcriptsQuery.data as any)?.items || [];
 
   // WebSocket with auto-reconnection for real-time updates
   const handleWsMessage = useCallback((msg: any) => {
@@ -397,10 +413,34 @@ export default function FileTranscribe() {
             </ToggleGroupItem>
           </ToggleGroup>
         </div>
+
+        {/* Search Bar */}
+        <div className="relative mt-3">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            type="text"
+            placeholder="Search files..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-9 pr-9 h-9 bg-secondary/50"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
         {transcriptsQuery.isLoading ? (
           <SkeletonList count={3} variant={viewMode} />
         ) : completedItems.length === 0 ? (
-          <EmptyState type="file" />
+          debouncedSearch ? (
+            <p className="text-center text-muted-foreground py-8">No files match "{debouncedSearch}"</p>
+          ) : (
+            <EmptyState type="file" />
+          )
         ) : (
           <div className={viewMode === "grid" ? "grid grid-cols-2 gap-4" : "flex flex-col gap-4"}>
             {completedItems.map((item: any, index: number) => (

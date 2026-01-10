@@ -1313,9 +1313,39 @@ class ScriberWebController:
             logger.error(f"Error resolving microphone '{device_name}': {e}")
             return "default"
 
-    def list_transcripts(self, *, include_content: bool = False) -> list[dict[str, Any]]:
+    def list_transcripts(
+        self, 
+        *, 
+        include_content: bool = False,
+        query: str = "",
+        transcript_type: str = "",
+    ) -> list[dict[str, Any]]:
+        """List transcripts with optional search and filtering.
+        
+        Args:
+            include_content: Whether to include full transcript content
+            query: Search query (searches title, content, channel)
+            transcript_type: Filter by type (live, youtube, file)
+        """
         out = []
+        query_lower = query.lower().strip() if query else ""
+        
         for rec in self._history:
+            # Type filter
+            if transcript_type and rec.type != transcript_type:
+                continue
+            
+            # Search filter
+            if query_lower:
+                searchable = (
+                    (rec.title or "").lower() +
+                    (rec.content or "").lower() +
+                    (rec.channel or "").lower() +
+                    (rec.summary or "").lower()
+                )
+                if query_lower not in searchable:
+                    continue
+            
             out.append(rec.to_public(include_content=include_content))
         return out
 
@@ -1491,7 +1521,15 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def transcripts(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
-        return web.json_response({"items": ctl.list_transcripts(include_content=False)})
+        query = request.query.get("q", "")
+        transcript_type = request.query.get("type", "")
+        return web.json_response({
+            "items": ctl.list_transcripts(
+                include_content=False, 
+                query=query, 
+                transcript_type=transcript_type
+            )
+        })
 
     async def transcript_detail(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
