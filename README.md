@@ -209,6 +209,130 @@ YOUTUBE_API_KEY=your_key_here
 
 ---
 
+## 📊 State Machine Diagrams
+
+### Live Recording State Machine
+
+The live microphone recording follows this state flow:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    
+    Idle --> Preparing : Hotkey pressed
+    Preparing --> Recording : Mic ready
+    Preparing --> Idle : Error (mic unavailable)
+    
+    Recording --> Transcribing : Hotkey pressed (stop)
+    Recording --> Recording : Audio captured
+    
+    Transcribing --> Completed : STT finished
+    Transcribing --> Failed : STT error
+    
+    Completed --> [*]
+    Failed --> [*]
+    
+    note right of Preparing
+        Shows "Preparing..." overlay
+        Initializes microphone
+    end note
+    
+    note right of Recording
+        Shows audio visualization
+        Real-time transcription
+    end note
+```
+
+### YouTube/File Transcription State Machine
+
+Background transcription jobs (YouTube and File uploads) follow this workflow:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Queued
+    
+    Queued --> Downloading : Start processing
+    
+    Downloading --> Extracting : Download complete (video)
+    Downloading --> Transcribing : Download complete (audio)
+    Downloading --> Failed : Download error
+    Downloading --> Stopped : User cancelled
+    
+    Extracting --> Transcribing : Audio extracted
+    Extracting --> Failed : FFmpeg error
+    
+    Transcribing --> Summarizing : Transcription complete (auto-summarize on)
+    Transcribing --> Completed : Transcription complete
+    Transcribing --> Failed : STT error
+    Transcribing --> Stopped : User cancelled
+    
+    Summarizing --> Completed : Summary generated
+    Summarizing --> Completed : Summary failed (transcript still saved)
+    
+    Completed --> [*]
+    Failed --> [*]
+    Stopped --> [*]
+```
+
+### Transcript Status Lifecycle
+
+Each transcript record transitions through these statuses:
+
+```mermaid
+stateDiagram-v2
+    [*] --> recording : Live mic started
+    [*] --> processing : YouTube/File queued
+    
+    recording --> completed : Stop + finalize
+    recording --> failed : Pipeline error
+    
+    processing --> completed : Transcription done
+    processing --> failed : Error occurred
+    processing --> stopped : User cancelled
+    
+    completed --> completed : Summary added
+    completed --> completed : Export generated
+    
+    note right of completed
+        Content persisted to SQLite
+        Available for search/export
+    end note
+```
+
+### WebSocket Message Flow
+
+Real-time communication between backend and frontend:
+
+```mermaid
+sequenceDiagram
+    participant F as Frontend
+    participant B as Backend
+    participant S as STT Service
+    
+    F->>B: Connect WebSocket
+    B->>F: state (current status)
+    
+    Note over F,B: User starts recording
+    F->>B: toggle (via hotkey)
+    B->>F: session_started
+    
+    loop Recording
+        B->>S: Audio stream
+        S->>B: Transcription (interim)
+        B->>F: transcript (text, isFinal=false)
+        S->>B: Transcription (final)
+        B->>F: transcript (text, isFinal=true)
+    end
+    
+    Note over F,B: User stops recording
+    F->>B: toggle (via hotkey)
+    B->>F: transcribing
+    B->>F: session_finished
+    B->>F: history_updated
+```
+
+---
+
 ## 📦 Project Structure
 
 ```
