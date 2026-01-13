@@ -49,6 +49,13 @@ def _require_ffmpeg() -> None:
     raise YouTubeDownloadError("ffmpeg not found on PATH (required for audio extraction).")
 
 
+def _find_yt_dlp_command() -> list[str]:
+    exe = shutil.which("yt-dlp") or shutil.which("yt-dlp.exe")
+    if not exe:
+        return [sys.executable, "-m", "yt_dlp"]
+    return [exe]
+
+
 async def download_youtube_audio(
     url: str,
     *,
@@ -156,11 +163,7 @@ async def download_youtube_audio(
         logger.warning("yt-dlp library not available, falling back to subprocess")
     
     # Fallback to subprocess if library import fails
-    exe = shutil.which("yt-dlp") or shutil.which("yt-dlp.exe")
-    if not exe:
-        exe_cmd = [sys.executable, "-m", "yt_dlp"]
-    else:
-        exe_cmd = [exe]
+    exe_cmd = _find_yt_dlp_command()
     
     args = [
         *exe_cmd,
