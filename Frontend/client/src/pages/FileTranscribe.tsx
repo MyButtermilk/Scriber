@@ -1,6 +1,6 @@
 import { useCallback, useState, useEffect, memo } from "react";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileAudio, FileVideo, CheckCircle2, Clock, MoreVertical, Loader2, XCircle, Trash2, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
+import { UploadCloud, FileAudio, FileVideo, CheckCircle2, Clock, MoreVertical, Loader2, XCircle, Trash2, LayoutGrid, LayoutList, Square, Search, X, Copy, Check } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiUrl, wsUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
-import { useWebSocket } from "@/hooks/use-websocket";
+import { useSharedWebSocket } from "@/contexts/WebSocketContext";
 import { motion } from "framer-motion";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonList } from "@/components/ui/skeleton-card";
@@ -22,7 +22,9 @@ interface FileCardProps {
   index: number;
   viewMode: "list" | "grid";
   deletingId: string | null;
+  copyingId: string | null;
   onDelete: (e: React.MouseEvent, id: string) => void;
+  onCopy: (e: React.MouseEvent, id: string) => void;
   onNavigate: (id: string) => void;
   onHover?: (id: string) => void;
 }
@@ -32,7 +34,9 @@ const FileCard = memo(function FileCard({
   index,
   viewMode,
   deletingId,
+  copyingId,
   onDelete,
+  onCopy,
   onNavigate,
   onHover,
 }: FileCardProps) {
@@ -84,9 +88,24 @@ const FileCard = memo(function FileCard({
               <Button
                 variant="ghost"
                 size="icon"
+                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
+                onClick={(e) => onCopy(e, item.id)}
+                disabled={copyingId === item.id}
+                title="Copy transcript"
+              >
+                {copyingId === item.id ? (
+                  <Check className="w-4 h-4 text-green-500" />
+                ) : (
+                  <Copy className="w-4 h-4" />
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
                 className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
                 onClick={(e) => onDelete(e, item.id)}
                 disabled={deletingId === item.id}
+                title="Delete transcript"
               >
                 {deletingId === item.id ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -126,13 +145,28 @@ const FileCard = memo(function FileCard({
               <span>•</span>
               <span>{item.date}</span>
             </div>
-            <div className="flex items-center justify-end mt-2">
+            <div className="flex items-center justify-end mt-2 gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
+                onClick={(e) => onCopy(e, item.id)}
+                disabled={copyingId === item.id}
+                title="Copy transcript"
+              >
+                {copyingId === item.id ? (
+                  <Check className="w-3 h-3 text-green-500" />
+                ) : (
+                  <Copy className="w-3 h-3" />
+                )}
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
                 onClick={(e) => onDelete(e, item.id)}
                 disabled={deletingId === item.id}
+                title="Delete transcript"
               >
                 {deletingId === item.id ? (
                   <Loader2 className="w-3 h-3 animate-spin" />
@@ -155,6 +189,7 @@ export default function FileTranscribe() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadingFileName, setUploadingFileName] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [copyingId, setCopyingId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const [viewMode, setViewMode] = useState<"list" | "grid">(
     () => (localStorage.getItem("scriber-view-mode") as "list" | "grid") || "list"
@@ -202,12 +237,8 @@ export default function FileTranscribe() {
     }
   }, [queryClient, toast]);
 
-  useWebSocket({
-    path: "/ws",
-    onMessage: handleWsMessage,
-    autoReconnect: true,
-    reconnectDelay: 1000,
-  });
+  // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
+  useSharedWebSocket(handleWsMessage);
 
   const uploadFile = async (file: File) => {
     setIsUploading(true);
@@ -288,6 +319,42 @@ export default function FileTranscribe() {
       setDeletingId(null);
     }
   }, [deletingId, toast]);
+
+  const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (copyingId) return;
+
+    setCopyingId(id);
+    try {
+      // Fetch the full transcript content
+      const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error(res.statusText);
+      }
+      const data = await res.json();
+      const content = data?.content || "";
+      if (!content) {
+        throw new Error("No transcript content available");
+      }
+      await navigator.clipboard.writeText(content);
+      toast({
+        title: "Copied",
+        description: "Transcript copied to clipboard.",
+        duration: 2000,
+      });
+      // Show check mark briefly
+      setTimeout(() => setCopyingId(null), 1500);
+    } catch (e: any) {
+      toast({
+        title: "Copy failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+      setCopyingId(null);
+    }
+  }, [copyingId, toast]);
 
   const navigateToTranscript = useCallback((id: string) => {
     setLocation(`/transcript/${id}`);
@@ -450,7 +517,9 @@ export default function FileTranscribe() {
                 index={index}
                 viewMode={viewMode}
                 deletingId={deletingId}
+                copyingId={copyingId}
                 onDelete={deleteTranscript}
+                onCopy={copyTranscript}
                 onNavigate={navigateToTranscript}
                 onHover={preloadTranscript}
               />

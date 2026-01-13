@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Square, Loader2 } from "lucide-react";
 import { wsUrl, apiUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
-import { useWebSocket } from "@/hooks/use-websocket";
+import { useSharedWebSocket } from "@/contexts/WebSocketContext";
 
 const BAR_COUNT = 56; // ~30% reduction from 80
 
@@ -252,13 +252,8 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
         }
     }, [toast]);
 
-    // WebSocket with auto-reconnection
-    useWebSocket({
-        path: "/ws",
-        onMessage: handleWsMessage,
-        autoReconnect: true,
-        reconnectDelay: 1000,
-    });
+    // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
+    useSharedWebSocket(handleWsMessage);
 
     const handleStop = async () => {
         try {

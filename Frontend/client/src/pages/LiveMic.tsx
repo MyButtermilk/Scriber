@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, memo, useMemo } from "react";
-import { useWebSocket } from "@/hooks/use-websocket";
-import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2, LayoutGrid, LayoutList, Search, X } from "lucide-react";
+import { useSharedWebSocket } from "@/contexts/WebSocketContext";
+import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2, LayoutGrid, LayoutList, Search, X, Copy, Check } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -15,7 +15,9 @@ interface TranscriptCardProps {
   index: number;
   viewMode: "list" | "grid";
   deletingId: string | null;
+  copyingId: string | null;
   onDelete: (e: React.MouseEvent, id: string) => void;
+  onCopy: (e: React.MouseEvent, id: string) => void;
   onNavigate: (id: string) => void;
   onHover?: (id: string) => void;
 }
@@ -25,7 +27,9 @@ const TranscriptCard = memo(function TranscriptCard({
   index,
   viewMode,
   deletingId,
+  copyingId,
   onDelete,
+  onCopy,
   onNavigate,
   onHover,
 }: TranscriptCardProps) {
@@ -60,13 +64,28 @@ const TranscriptCard = memo(function TranscriptCard({
                 </div>
               </div>
             </div>
-            <div className="flex flex-col justify-center">
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
+                onClick={(e) => onCopy(e, item.id)}
+                disabled={copyingId === item.id}
+                title="Copy transcript"
+              >
+                {copyingId === item.id ? (
+                  <Check className="w-4 h-4 text-green-500" />
+                ) : (
+                  <Copy className="w-4 h-4" />
+                )}
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"
                 className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
                 onClick={(e) => onDelete(e, item.id)}
                 disabled={deletingId === item.id}
+                title="Delete transcript"
               >
                 {deletingId === item.id ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -83,19 +102,36 @@ const TranscriptCard = memo(function TranscriptCard({
               <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
                 <Mic className="w-6 h-6" />
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive h-8 w-8"
-                onClick={(e) => onDelete(e, item.id)}
-                disabled={deletingId === item.id}
-              >
-                {deletingId === item.id ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Trash2 className="w-4 h-4" />
-                )}
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary h-8 w-8"
+                  onClick={(e) => onCopy(e, item.id)}
+                  disabled={copyingId === item.id}
+                  title="Copy transcript"
+                >
+                  {copyingId === item.id ? (
+                    <Check className="w-4 h-4 text-green-500" />
+                  ) : (
+                    <Copy className="w-4 h-4" />
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive h-8 w-8"
+                  onClick={(e) => onDelete(e, item.id)}
+                  disabled={deletingId === item.id}
+                  title="Delete transcript"
+                >
+                  {deletingId === item.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" />
+                  )}
+                </Button>
+              </div>
             </div>
             <h3 className="font-medium text-foreground group-hover:text-primary transition-colors line-clamp-2 mb-2">{item.title}</h3>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
@@ -126,6 +162,7 @@ export default function LiveMic() {
   const [finalText, setFinalText] = useState("");
   const [interimText, setInterimText] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [copyingId, setCopyingId] = useState<string | null>(null);
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
   const [viewMode, setViewMode] = useState<"list" | "grid">(
@@ -247,19 +284,8 @@ export default function LiveMic() {
     }
   }, [queryClient, toast]);
 
-  const { isConnected } = useWebSocket({
-    path: "/ws",
-    onMessage: handleWsMessage,
-    onError: () => {
-      toast({
-        title: "Backend disconnected",
-        description: "Could not connect to the Scriber backend. Reconnecting...",
-        duration: 4000,
-      });
-    },
-    autoReconnect: true,
-    reconnectDelay: 1000,
-  });
+  // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
+  const { isConnected } = useSharedWebSocket(handleWsMessage);
 
 
   const formatTime = (seconds: number) => {
@@ -316,6 +342,42 @@ export default function LiveMic() {
       setDeletingId(null);
     }
   }, [deletingId, queryClient, toast]);
+
+  const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (copyingId) return;
+
+    setCopyingId(id);
+    try {
+      // Fetch the full transcript content
+      const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error(res.statusText);
+      }
+      const data = await res.json();
+      const content = data?.content || "";
+      if (!content) {
+        throw new Error("No transcript content available");
+      }
+      await navigator.clipboard.writeText(content);
+      toast({
+        title: "Copied",
+        description: "Transcript copied to clipboard.",
+        duration: 2000,
+      });
+      // Show check mark briefly
+      setTimeout(() => setCopyingId(null), 1500);
+    } catch (e: any) {
+      toast({
+        title: "Copy failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+      setCopyingId(null);
+    }
+  }, [copyingId, toast]);
 
   const navigateToTranscript = useCallback((id: string) => {
     setLocation(`/transcript/${id}`);
@@ -470,7 +532,9 @@ export default function LiveMic() {
                 index={index}
                 viewMode={viewMode}
                 deletingId={deletingId}
+                copyingId={copyingId}
                 onDelete={deleteTranscript}
+                onCopy={copyTranscript}
                 onNavigate={navigateToTranscript}
                 onHover={preloadTranscript}
               />

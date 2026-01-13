@@ -324,29 +324,36 @@ class SonioxAsyncProcessor(FrameProcessor):
         OPTIMIZED: Single-pass in-memory encoding using pipes.
         - Eliminates temporary files (faster disk-less operation)
         - Single FFmpeg invocation (removes remux step)
-        - Uses -fflags +genpts to fix duration metadata in one pass
+        - Calculates and sets explicit duration for proper WebM header metadata
         - Estimated improvement: 500-800ms per encoding
         """
 
         sr = self._sample_rate or 16000
         ch = self._channels or 1
+        
+        # Calculate audio duration from PCM data (16-bit = 2 bytes per sample)
+        bytes_per_sample = 2 * ch  # int16 * channels
+        num_samples = len(audio_bytes) // bytes_per_sample
+        duration_secs = num_samples / sr
 
         if prefer_webm and shutil.which("ffmpeg"):
             try:
                 # Direct PCM → Opus/WebM in memory using stdin/stdout pipes
+                # Key: We set -t (duration) explicitly so FFmpeg writes it to the WebM container
                 cmd = [
                     "ffmpeg",
                     "-f", "s16le",           # Input format: signed 16-bit little-endian PCM
                     "-ar", str(sr),          # Input sample rate
                     "-ac", str(ch),          # Input channels
                     "-i", "pipe:0",          # Read from stdin
+                    "-t", f"{duration_secs:.6f}",  # Explicit duration for proper WebM metadata
                     "-c:a", "libopus",       # Encode to Opus
                     "-ar", "48000",          # Output sample rate
                     "-ac", "1",              # Mono output (Opus multi-channel not well supported)
                     "-b:a", "32k",           # Bitrate
                     "-application", "voip",  # Optimize for voice
                     "-f", "webm",            # Output format
-                    "-fflags", "+genpts",    # Generate presentation timestamps (fixes duration)
+                    "-fflags", "+genpts",    # Generate presentation timestamps
                     "pipe:1"                 # Write to stdout
                 ]
 
@@ -363,7 +370,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                     raise RuntimeError(f"FFmpeg encoding failed: {stderr.decode()}")
 
                 if Config.DEBUG:
-                    logger.info(f"Encoded PCM to WebM in-memory ({len(webm_bytes)} bytes)")
+                    logger.info(f"Encoded PCM to WebM in-memory ({len(webm_bytes)} bytes, {duration_secs:.2f}s)")
 
                 return webm_bytes, "audio/webm", "audio.webm"
 

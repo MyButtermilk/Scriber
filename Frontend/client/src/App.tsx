@@ -6,6 +6,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { ThemeProvider } from "@/components/theme-provider";
 import { BackendStatusProvider } from "@/hooks/use-backend-status";
 import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
+import { WebSocketProvider } from "@/contexts/WebSocketContext";
 import { lazy, Suspense } from "react";
 
 // Main navigation pages - eagerly loaded to ensure instant section switching
@@ -65,9 +66,12 @@ function App() {
     <ThemeProvider defaultTheme="system" storageKey="scriber-theme">
       <QueryClientProvider client={queryClient}>
         <BackendStatusProvider>
-          <Toaster />
-          <BackendOfflineBanner />
-          <Router />
+          {/* PERFORMANCE: Single WebSocket connection shared across all pages */}
+          <WebSocketProvider path="/ws" autoReconnect={true} reconnectDelay={1000}>
+            <Toaster />
+            <BackendOfflineBanner />
+            <Router />
+          </WebSocketProvider>
         </BackendStatusProvider>
       </QueryClientProvider>
     </ThemeProvider>

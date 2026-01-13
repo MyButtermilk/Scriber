@@ -14,7 +14,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MOCK_TRANSCRIPTS } from "@/lib/mockData";
 import { useToast } from "@/hooks/use-toast";
-import { useWebSocket } from "@/hooks/use-websocket";
+import { useSharedWebSocket } from "@/contexts/WebSocketContext";
 import { useState, useEffect, useRef, useLayoutEffect, useCallback } from "react";
 import { wsUrl, apiUrl } from "@/lib/backend";
 import ReactMarkdown from "react-markdown";
@@ -355,12 +355,8 @@ export default function TranscriptDetail() {
     }
   }, [id, queryClient, toast]);
 
-  useWebSocket({
-    path: "/ws",
-    onMessage: handleWsMessage,
-    autoReconnect: true,
-    reconnectDelay: 1000,
-  });
+  // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
+  useSharedWebSocket(handleWsMessage);
 
   const handleCopyTranscript = () => {
     navigator.clipboard.writeText(transcript?.content || "");
