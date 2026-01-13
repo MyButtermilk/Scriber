@@ -195,15 +195,18 @@ class MicrophoneInput(BaseInputTransport):
 
     async def stop(self, frame: EndFrame):
         self._running = False
-        
-        # Stop the audio stream first
-        if self.stream and not self.keep_alive:
+
+        # OPTIMIZED: Always stop stream to prevent CPU usage and buffer overflow
+        # With keep_alive: pause stream (fast restart via stream.start())
+        # Without keep_alive: close stream entirely
+        if self.stream:
             try:
-                self.stream.stop()
-                self.stream.close()
+                self.stream.stop()  # Stops callbacks, saves CPU, prevents overflow
+                if not self.keep_alive:
+                    self.stream.close()
+                    self.stream = None
             except Exception:
                 pass
-            self.stream = None
         
         # Signal the queue to stop
         if self._queue:

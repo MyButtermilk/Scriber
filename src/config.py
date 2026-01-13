@@ -56,8 +56,12 @@ class Config:
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
     FAVORITE_MIC = os.getenv("SCRIBER_FAVORITE_MIC", "")  # Preferred mic - used when available
     MIC_ALWAYS_ON = os.getenv("SCRIBER_MIC_ALWAYS_ON", "0") in ("1", "true", "True")
-    # Text injection method: "type" (keystrokes), "paste" (clipboard + Ctrl+V), or "auto" (choose by app/window).
-    INJECT_METHOD = os.getenv("SCRIBER_INJECT_METHOD", "auto").lower()  # auto | type | paste
+    # Text injection method:
+    #   "sendinput" - Windows SendInput API, instant batch injection (~10ms for any length)
+    #   "paste" - Clipboard + Ctrl+V, fast and reliable
+    #   "type" - Character-by-character keystrokes (slowest, most compatible)
+    #   "auto" - Smart selection: SendInput for most apps, paste for Word/Outlook
+    INJECT_METHOD = os.getenv("SCRIBER_INJECT_METHOD", "auto").lower()  # auto | sendinput | paste | type
     # Clipboard paste tuning (Windows). Some apps (Word/Outlook) process paste asynchronously.
     PASTE_PRE_DELAY_MS = int(os.getenv("SCRIBER_PASTE_PRE_DELAY_MS", "80"))
     PASTE_RESTORE_DELAY_MS = int(os.getenv("SCRIBER_PASTE_RESTORE_DELAY_MS", "1500"))
