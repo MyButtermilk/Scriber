@@ -266,7 +266,14 @@ Input:"""
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)
         add("SCRIBER_OPENAI_STT_MODEL", cls.OPENAI_STT_MODEL)
-        add("SCRIBER_MIC_DEVICE", cls.MIC_DEVICE)
+        # If a favorite mic is set, always revert MIC_DEVICE to "default" in the saved .env
+        # This ensures that on the next restart, the favorite mic is automatically selected
+        # (via the startup resolution logic) instead of persisting the last used temporary mic.
+        if cls.FAVORITE_MIC:
+            add("SCRIBER_MIC_DEVICE", "default")
+        else:
+            add("SCRIBER_MIC_DEVICE", cls.MIC_DEVICE)
+        
         add("SCRIBER_FAVORITE_MIC", cls.FAVORITE_MIC or "")
         add("SCRIBER_MIC_ALWAYS_ON", "1" if cls.MIC_ALWAYS_ON else "0")
         add("SCRIBER_INJECT_METHOD", cls.INJECT_METHOD)

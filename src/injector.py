@@ -351,17 +351,22 @@ class TextInjector(FrameProcessor):
         """
         Inject text into the active application.
 
-        INJECTION PRIORITY (fastest to slowest):
-        1. SendInput API (~10ms for ANY text length) - instant batch injection
-        2. Clipboard paste (~25-100ms) - for apps that don't work with SendInput
-        3. keyboard.write (10ms/char) - legacy fallback
+        INJECTION PRIORITY (most reliable to fastest):
+        1. Clipboard paste (~25-50ms) - RELIABLE, works in all apps including elevated ones
+        2. SendInput API (~10ms) - faster but often blocked by UIPI privilege isolation
+        3. keyboard.write (10ms/char) - legacy fallback, very slow
 
         For 500 chars:
-        - SendInput: ~10ms (INSTANT)
-        - Clipboard: ~50ms
+        - Clipboard: ~50ms (RELIABLE)
+        - SendInput: ~10ms (often fails due to UIPI)
         - keyboard.write: 5000ms (5 seconds)
 
-        Speed improvement: up to 500x faster than previous implementation.
+        NOTE: Clipboard is the default because SendInput frequently fails when:
+        - Target app runs with higher privileges (Admin)
+        - UIPI (User Interface Privilege Isolation) blocks the input
+        - App has certain security features enabled
+        
+        The ~20-40ms speed difference is negligible compared to reliability.
         """
         if not HAS_GUI:
             logger.info(f"[MOCK INJECT] {text}")
@@ -374,30 +379,25 @@ class TextInjector(FrameProcessor):
         if method not in {"auto", "type", "paste", "sendinput"}:
             method = "auto"
 
-        # Determine best method based on active window
+        # Determine best method based on active window and config
         if method == "auto":
-            if _should_paste_for_active_window():
-                # Word/Outlook work best with clipboard paste
-                method = "paste"
-            else:
-                # Default to SendInput for instant injection
-                method = "sendinput"
+            # Default to clipboard paste - most reliable
+            # SendInput often fails due to UIPI privilege isolation
+            method = "paste"
 
-        # Try SendInput first (instant injection)
-        if method in {"sendinput", "type"}:
+        # Try clipboard paste first (reliable for all apps)
+        if method in {"paste", "auto"}:
+            if _paste_text(text, skip_clipboard_restore=False):
+                return
+            logger.debug("Clipboard paste failed; falling back to SendInput")
+
+        # Try SendInput as fallback (faster but often blocked)
+        if method in {"sendinput", "type", "paste"}:
             if _send_input_text(text):
                 if Config.DEBUG:
                     logger.info(f"Injected via SendInput ({len(text)} chars, instant)")
                 return
-            logger.debug("SendInput failed; falling back to clipboard paste")
-
-        # Try clipboard paste (fast, reliable for most apps)
-        if method in {"paste", "sendinput", "type"}:
-            # Skip clipboard restore when using as fallback (speed optimization)
-            skip_restore = method != "paste"
-            if _paste_text(text, skip_clipboard_restore=skip_restore):
-                return
-            logger.debug("Clipboard paste failed; falling back to keystroke typing")
+            logger.debug("SendInput also failed; falling back to keystroke typing")
 
         # Last resort: character-by-character typing (slow but most compatible)
         try:

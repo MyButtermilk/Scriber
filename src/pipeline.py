@@ -223,7 +223,12 @@ class SonioxAsyncProcessor(FrameProcessor):
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
-                resp.raise_for_status()
+                # Accept both 200 OK and 201 Created as success (201 is standard for resource creation)
+                if resp.status not in (200, 201):
+                    # Capture actual error response from Soniox
+                    error_body = await resp.text()
+                    logger.error(f"Soniox file upload failed: status={resp.status}, body={error_body}")
+                    resp.raise_for_status()
                 file_id = (await resp.json())["id"]
 
             payload = {"file_id": file_id, "model": self.model}
@@ -311,21 +316,30 @@ class SonioxAsyncProcessor(FrameProcessor):
                 if text:
                     logger.info(f"Soniox async transcription completed ({len(text)} chars)")
                 self._report_progress("Completed")
+                
+                # Clean up: delete file and transcription from Soniox to avoid hitting file limits
+                await self._cleanup_soniox_resources(file_id, transcription_id, headers)
+                
                 return text
 
         except Exception as e:
             logger.error(f"Soniox async transcription failed: {e}")
+            # Try to clean up even on failure
+            try:
+                if 'file_id' in dir():
+                    await self._cleanup_soniox_resources(file_id, transcription_id if 'transcription_id' in dir() else None, headers)
+            except Exception:
+                pass
             raise
 
     async def _encode_audio(self, audio_bytes: bytes, prefer_webm: bool = True):
         """
         Encode raw PCM to WebM/Opus (preferred) or WAV.
 
-        OPTIMIZED: Single-pass in-memory encoding using pipes.
-        - Eliminates temporary files (faster disk-less operation)
-        - Single FFmpeg invocation (removes remux step)
-        - Calculates and sets explicit duration for proper WebM header metadata
-        - Estimated improvement: 500-800ms per encoding
+        Uses temporary file for WebM encoding because WebM containers require
+        seekable output to write duration metadata in the header. Piping to
+        stdout produces files with missing/zero duration that Soniox rejects
+        with 400 Bad Request.
         """
 
         sr = self._sample_rate or 16000
@@ -337,45 +351,66 @@ class SonioxAsyncProcessor(FrameProcessor):
         duration_secs = num_samples / sr
 
         if prefer_webm and shutil.which("ffmpeg"):
+            # Use temporary files for WebM - required for proper duration metadata
+            # WebM/Matroska containers need seekable output to write duration to header
+            tmp_input = None
+            tmp_output_path = None
             try:
-                # Direct PCM → Opus/WebM in memory using stdin/stdout pipes
-                # Key: We set -t (duration) explicitly so FFmpeg writes it to the WebM container
+                # Write PCM to temp input file
+                tmp_input = tempfile.NamedTemporaryFile(suffix=".pcm", delete=False)
+                tmp_input.write(audio_bytes)
+                tmp_input.close()
+                
+                # Create temp output file path
+                tmp_output_path = tmp_input.name.replace(".pcm", ".webm")
+                
+                # Two-pass encoding: input file → output file (allows FFmpeg to write duration)
                 cmd = [
-                    "ffmpeg",
+                    "ffmpeg", "-y",          # Overwrite output
                     "-f", "s16le",           # Input format: signed 16-bit little-endian PCM
                     "-ar", str(sr),          # Input sample rate
                     "-ac", str(ch),          # Input channels
-                    "-i", "pipe:0",          # Read from stdin
-                    "-t", f"{duration_secs:.6f}",  # Explicit duration for proper WebM metadata
+                    "-i", tmp_input.name,    # Read from temp file
                     "-c:a", "libopus",       # Encode to Opus
-                    "-ar", "48000",          # Output sample rate
-                    "-ac", "1",              # Mono output (Opus multi-channel not well supported)
+                    "-ar", "48000",          # Output sample rate (Opus standard)
+                    "-ac", "1",              # Mono output
                     "-b:a", "32k",           # Bitrate
                     "-application", "voip",  # Optimize for voice
-                    "-f", "webm",            # Output format
-                    "-fflags", "+genpts",    # Generate presentation timestamps
-                    "pipe:1"                 # Write to stdout
+                    tmp_output_path          # Write to temp file (allows seeking for duration)
                 ]
 
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
-                    stdin=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
 
-                webm_bytes, stderr = await proc.communicate(input=audio_bytes)
+                _, stderr = await proc.communicate()
 
                 if proc.returncode != 0:
                     raise RuntimeError(f"FFmpeg encoding failed: {stderr.decode()}")
 
+                # Read the WebM file with proper duration metadata
+                with open(tmp_output_path, "rb") as f:
+                    webm_bytes = f.read()
+
                 if Config.DEBUG:
-                    logger.info(f"Encoded PCM to WebM in-memory ({len(webm_bytes)} bytes, {duration_secs:.2f}s)")
+                    logger.info(f"Encoded PCM to WebM via temp file ({len(webm_bytes)} bytes, {duration_secs:.2f}s)")
 
                 return webm_bytes, "audio/webm", "audio.webm"
 
             except Exception as e:
                 logger.warning(f"WebM encode failed ({e}); falling back to WAV")
+            finally:
+                # Clean up temp files
+                try:
+                    if tmp_input and os.path.exists(tmp_input.name):
+                        os.unlink(tmp_input.name)
+                    if tmp_output_path and os.path.exists(tmp_output_path):
+                        os.unlink(tmp_output_path)
+                except Exception:
+                    pass
 
         # WAV fallback (already in-memory)
         buf = io.BytesIO()
@@ -385,6 +420,38 @@ class SonioxAsyncProcessor(FrameProcessor):
             wf.setframerate(sr)
             wf.writeframes(audio_bytes)
         return buf.getvalue(), "audio/wav", "audio.wav"
+
+    async def _cleanup_soniox_resources(self, file_id: str, transcription_id: str | None, headers: dict):
+        """Delete file and transcription from Soniox to avoid hitting file limits."""
+        # Delete transcription first (it references the file)
+        if transcription_id:
+            try:
+                async with self.session.delete(
+                    f"{self.BASE_URL}/transcriptions/{transcription_id}",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status in (200, 204, 404):
+                        logger.debug(f"Deleted Soniox transcription {transcription_id}")
+                    else:
+                        logger.warning(f"Failed to delete transcription {transcription_id}: {resp.status}")
+            except Exception as e:
+                logger.warning(f"Error deleting transcription: {e}")
+        
+        # Delete the uploaded file
+        if file_id:
+            try:
+                async with self.session.delete(
+                    f"{self.BASE_URL}/files/{file_id}",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status in (200, 204, 404):
+                        logger.debug(f"Deleted Soniox file {file_id}")
+                    else:
+                        logger.warning(f"Failed to delete file {file_id}: {resp.status}")
+            except Exception as e:
+                logger.warning(f"Error deleting file: {e}")
 
 # ============================================================================
 # STT Services are imported LAZILY inside _create_stt_service() to reduce
