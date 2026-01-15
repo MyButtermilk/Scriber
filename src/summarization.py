@@ -11,7 +11,7 @@ from loguru import logger
 
 from src.config import Config
 
-SummarizationModel = Literal["gemini-3-pro-preview", "gemini-flash-latest", "gpt-5.2", "gpt-5-mini", "gpt-5-nano"]
+SummarizationModel = Literal["gemini-3-flash-preview", "gemini-3-pro-preview", "gpt-5.2", "gpt-5-mini", "gpt-5-nano"]
 
 
 async def summarize_text(text: str, model: SummarizationModel | None = None) -> str:
@@ -32,7 +32,7 @@ async def summarize_text(text: str, model: SummarizationModel | None = None) -> 
     if not text or not text.strip():
         return ""
     
-    model = model or getattr(Config, "SUMMARIZATION_MODEL", "gemini-flash-latest")
+    model = model or getattr(Config, "SUMMARIZATION_MODEL", "gemini-3-flash-preview")
     prompt = Config.SUMMARIZATION_PROMPT or "Summarize the following transcript:"
     full_prompt = f"{prompt}\n\n{text}"
     

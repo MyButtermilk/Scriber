@@ -131,7 +131,7 @@ Input:"""
     SUMMARIZATION_PROMPT = _json_settings.get("summarizationPrompt") or os.getenv("SCRIBER_SUMMARIZATION_PROMPT") or _DEFAULT_SUMMARIZATION_PROMPT
 
     # Summarization model for LLM transcript summarization
-    SUMMARIZATION_MODEL = os.getenv("SCRIBER_SUMMARIZATION_MODEL", "gemini-flash-latest")
+    SUMMARIZATION_MODEL = os.getenv("SCRIBER_SUMMARIZATION_MODEL", "gemini-3-flash-preview")
 
     # Auto-summarize transcripts when completed
     AUTO_SUMMARIZE = os.getenv("SCRIBER_AUTO_SUMMARIZE", "0") in ("1", "true", "True")
@@ -262,7 +262,7 @@ Input:"""
         add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
         # Note: SUMMARIZATION_PROMPT is not persisted to .env (multi-line value causes parsing issues)
         # The default prompt from config.py will be used
-        add("SCRIBER_SUMMARIZATION_MODEL", cls.SUMMARIZATION_MODEL or "gemini-flash-latest")
+        add("SCRIBER_SUMMARIZATION_MODEL", cls.SUMMARIZATION_MODEL or "gemini-3-flash-preview")
         add("SCRIBER_AUTO_SUMMARIZE", "1" if cls.AUTO_SUMMARIZE else "0")
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)

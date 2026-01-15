@@ -52,7 +52,7 @@ export default function Settings() {
   const [inputDevices, setInputDevices] = useState<{ deviceId: string, label: string }[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState("default");
   const [transcriptionModel, setTranscriptionModel] = useState("soniox-realtime");
-  const [summarizationModel, setSummarizationModel] = useState("gemini-flash-latest");
+  const [summarizationModel, setSummarizationModel] = useState("gemini-3-flash-preview");
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [language, setLanguage] = useState("auto");
   const [visualizerBarCount, setVisualizerBarCount] = useState(45);
@@ -99,7 +99,7 @@ export default function Settings() {
         setTranscriptionModel(serviceToModel(settings.defaultSttService || "", settings.sonioxMode || "realtime"));
         setCustomVocabulary(settings.customVocab || "");
         setSummarizationPrompt(settings.summarizationPrompt || "");
-        setSummarizationModel(settings.summarizationModel || "gemini-flash-latest");
+        setSummarizationModel(settings.summarizationModel || "gemini-3-flash-preview");
         setAutoSummarize(settings.autoSummarize === true);
         setVisualizerBarCount(settings.visualizerBarCount || 45);
         setMicAlwaysOn(settings.micAlwaysOn === true);
@@ -646,8 +646,8 @@ export default function Settings() {
                       <SelectValue placeholder="Select model" />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="gemini-3-flash-preview">Gemini 3.0 Flash Preview (Recommended)</SelectItem>
                       <SelectItem value="gemini-3-pro-preview">Gemini 3 Pro</SelectItem>
-                      <SelectItem value="gemini-flash-latest">Gemini 2.5 Flash</SelectItem>
                       <SelectItem value="gpt-5.2">OpenAI GPT 5.2</SelectItem>
                       <SelectItem value="gpt-5-mini">OpenAI GPT 5 Mini</SelectItem>
                       <SelectItem value="gpt-5-nano">OpenAI GPT 5 Nano</SelectItem>

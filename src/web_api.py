@@ -1117,7 +1117,7 @@ class ScriberWebController:
             "debug": bool(Config.DEBUG),
             "customVocab": Config.CUSTOM_VOCAB or "",
             "summarizationPrompt": Config.SUMMARIZATION_PROMPT or "",
-            "summarizationModel": Config.SUMMARIZATION_MODEL or "gemini-flash-latest",
+            "summarizationModel": Config.SUMMARIZATION_MODEL or "gemini-3-flash-preview",
             "autoSummarize": bool(Config.AUTO_SUMMARIZE),
             "openaiSttModel": Config.OPENAI_STT_MODEL,
             "visualizerBarCount": Config.VISUALIZER_BAR_COUNT,
