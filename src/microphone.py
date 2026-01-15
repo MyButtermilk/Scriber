@@ -197,7 +197,9 @@ class MicrophoneInput(BaseInputTransport):
             await asyncio.sleep(0.01)
 
         try:
-            while self._running:
+            while True:
+                if not self._running and self._queue.empty():
+                    break
                 try:
                     # Use timeout to allow checking _running flag periodically
                     data = await asyncio.wait_for(self._queue.get(), timeout=0.1)
@@ -237,23 +239,24 @@ class MicrophoneInput(BaseInputTransport):
                     self.stream = None
             except Exception:
                 pass
-        
+
         # Signal the queue to stop
         if self._queue:
             try:
-                self._queue.put_nowait(None)
+                if self._queue.empty():
+                    self._queue.put_nowait(None)
             except Exception:
                 pass
-        
+
         # Wait for consumer task with timeout
         if self._consumer_task:
             task, self._consumer_task = self._consumer_task, None
-            task.cancel()
             try:
-                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=1.0)
+                await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
             except asyncio.TimeoutError:
-                pass
-        
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
         self._stopped.set()
         await super().stop(frame)
 

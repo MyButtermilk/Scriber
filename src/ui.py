@@ -638,10 +638,22 @@ class ScriberUI(ctk.CTk):
             text_color=("gray10", "gray90")
         )
         self.mic_combo.pack(pady=(0, 15), padx=15)
-        
+
         # Init mic selection
         current_mic = Config.MIC_DEVICE
+        favorite_mic = getattr(Config, "FAVORITE_MIC", "") or ""
+        if favorite_mic and devices:
+            def _label_to_name(label: str) -> str:
+                suffix = " (Default)"
+                return label[:-len(suffix)] if label.endswith(suffix) else label
+
+            favorite_id = next((d[0] for d in devices if _label_to_name(d[1]) == favorite_mic), None)
+            current_available = any(d[0] == current_mic for d in devices)
+            if favorite_id and (current_mic in ("default", "", None) or not current_available):
+                current_mic = favorite_id
+
         display = next((d[1] for d in devices if d[0] == current_mic), dev_names[0] if dev_names else "Default")
+        self.mic_device_var.set(current_mic)
         self.mic_combo.set(display)
 
     def _build_settings(self):

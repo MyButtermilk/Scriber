@@ -1103,6 +1103,50 @@ class ScriberWebController:
             await asyncio.sleep(0.05)
 
     def get_settings(self) -> dict[str, Any]:
+        def resolve_mic_device_for_ui() -> str:
+            selected = Config.MIC_DEVICE or "default"
+            favorite = Config.FAVORITE_MIC or ""
+            try:
+                devices = self.list_microphones()
+            except Exception:
+                return selected
+            available = {d.get("deviceId") for d in devices if d.get("deviceId")}
+            if len(available) <= 1:  # "default" only, no reliable availability check
+                return selected
+
+            def resolve_device_id(device_id: str) -> str | None:
+                if not device_id or device_id == "default":
+                    return None
+                if device_id in available:
+                    return device_id
+                try:
+                    idx = int(device_id)
+                except (TypeError, ValueError):
+                    return None
+                try:
+                    import sounddevice as sd  # type: ignore
+
+                    info = sd.query_devices(device=idx, kind="input")
+                    name = info.get("name")
+                    if name in available:
+                        return name
+                except Exception:
+                    return None
+                return None
+
+            selected_is_default = selected in ("", "default", None)
+            selected_name = resolve_device_id(selected) if not selected_is_default else None
+            selected_available = bool(selected_name)
+
+            favorite_name = favorite if favorite and favorite != "default" else ""
+            favorite_available = bool(favorite_name and favorite_name in available)
+
+            if favorite_available and (selected_is_default or not selected_available):
+                return favorite_name
+            if selected_available:
+                return selected_name  # type: ignore[return-value]
+            return "default"
+
         return {
             "hotkey": _hotkey_to_display(Config.HOTKEY),
             "hotkeyRaw": Config.HOTKEY,
@@ -1111,7 +1155,7 @@ class ScriberWebController:
             "sonioxMode": Config.SONIOX_MODE,
             "sonioxAsyncModel": Config.SONIOX_ASYNC_MODEL,
             "language": Config.LANGUAGE,
-            "micDevice": Config.MIC_DEVICE,
+            "micDevice": resolve_mic_device_for_ui(),
             "favoriteMic": Config.FAVORITE_MIC or "",
             "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
             "debug": bool(Config.DEBUG),

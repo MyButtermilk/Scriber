@@ -646,8 +646,24 @@ class ScriberPipeline:
         self.runner = None
         self.audio_input = None
         self.is_active = False
+        self._audio_cleanup_lock = asyncio.Lock()
         self._start_done = asyncio.Event()
         self._start_done.set()
+
+    async def _cleanup_audio_input(self) -> None:
+        audio_input = self.audio_input
+        if not audio_input:
+            return
+        async with self._audio_cleanup_lock:
+            audio_input = self.audio_input
+            if not audio_input:
+                return
+            try:
+                await audio_input.stop(EndFrame())
+            except Exception as exc:
+                logger.debug(f"Audio input cleanup warning: {exc}")
+            finally:
+                self.audio_input = None
 
     def _create_stt_service(self, session: aiohttp.ClientSession):
         """Create the appropriate STT service based on configuration.
@@ -889,6 +905,7 @@ class ScriberPipeline:
         finally:
             # Ensure stop() can always unblock, even if start() exits due to an error or cancellation.
             self.is_active = False
+            await self._cleanup_audio_input()
             self._start_done.set()
 
     async def transcribe_file(self, file_path: str) -> None:
@@ -1171,8 +1188,10 @@ class ScriberPipeline:
             self.is_active = False
             if self.on_status_change:
                 self.on_status_change("Stopped")
+            await self._cleanup_audio_input()
             return
         if not self.is_active:
+            await self._cleanup_audio_input()
             return
         logger.info("Stopping Scriber Pipeline")
 
@@ -1182,6 +1201,8 @@ class ScriberPipeline:
         )
         if self.on_status_change:
             self.on_status_change("Transcribing..." if is_soniox_async else "Stopping...")
+        # Stop mic capture immediately so LED turns off while transcription finalizes.
+        await self._cleanup_audio_input()
         # For Soniox real-time: send stop_recording and wait for final tokens BEFORE pipeline shutdown.
         # This ensures all spoken audio is transcribed and injected before we close.
         is_soniox_rt = self.service_name == "soniox" and not is_soniox_async
@@ -1274,6 +1295,7 @@ class ScriberPipeline:
             except Exception as e:
                 logger.debug(f"Soniox cleanup warning: {e}")
 
+        await self._cleanup_audio_input()
         self.is_active = False
         if self.on_status_change:
             self.on_status_change("Stopped")
