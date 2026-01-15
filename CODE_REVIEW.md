@@ -14,6 +14,7 @@
 3. [Frontend-Probleme](#3-frontend-probleme)
 4. [Integrations-Probleme](#4-integrations-probleme)
 5. [Zusammenfassung & Prioritäten](#5-zusammenfassung--prioritäten)
+6. [Performance-Verbesserungen](#6-performance-verbesserungen)
 
 ---
 
@@ -643,13 +644,13 @@ _DEFAULT_UPLOAD_MAX_MB = 200  # Kann per Env überschrieben werden
 
 ### 5.1 Übersichtstabelle
 
-| Schweregrad | Backend | Frontend | Integration | Total |
-|-------------|---------|----------|-------------|-------|
-| **KRITISCH** | 2 | 0 | 0 | 2 |
-| **HOCH** | 4 | 6 | 3 | 13 |
-| **MITTEL** | 10 | 4 | 5 | 19 |
-| **NIEDRIG** | 3 | 2 | 2 | 7 |
-| **Total** | 19 | 12 | 10 | **41** |
+| Schweregrad | Backend | Frontend | Integration | Performance | Total |
+|-------------|---------|----------|-------------|-------------|-------|
+| **KRITISCH** | 2 | 0 | 0 | 0 | 2 |
+| **HOCH** | 4 | 6 | 3 | 4 | 17 |
+| **MITTEL** | 10 | 4 | 5 | 5 | 24 |
+| **NIEDRIG** | 3 | 2 | 2 | 2 | 9 |
+| **Total** | 19 | 12 | 10 | 11 | **52** |
 
 ### 5.2 Priorisierte Fix-Liste
 
@@ -669,12 +670,20 @@ _DEFAULT_UPLOAD_MAX_MB = 200  # Kann per Env überschrieben werden
 11. **TypeScript-Check fixen** - `queryClient.ts` Generic/Typing reparieren
 12. **Pytest-Suite reparieren** - `tests/test_injector.py`, `tests/test_youtube_download.py`
 
-#### Mittelfristig verbessern (Qualität)
+#### Mittelfristig verbessern (Qualität & Performance)
 13. CSRF-Protection implementieren
 14. Timezone-aware Datetimes verwenden
 15. Type Safety verbessern (kein `as any`)
 16. Retry-Logik für externe APIs
 17. Backpressure für WebSocket
+
+#### Performance-Optimierungen (nach Priorität)
+18. **WebSocket Transcript Updates:** Delta statt Volltext (O(n²) → O(1))
+19. **`_history` Datenstruktur:** Dict für ID-Lookups hinzufügen (O(n) → O(1))
+20. **`/api/transcripts` Fast-Path:** Direkter Slice ohne Scan bei leerer Suche
+21. **Audio-Level Rendering:** `useRef` + RAF statt 60fps State Updates
+22. **`history_updated` Throttling:** Globales Rate-Limiting (max 2-4/s)
+23. **Lazy-Load Flag:** `_content_loaded` statt heuristischer `len() < 150` Check
 
 ---
 
@@ -688,4 +697,243 @@ _DEFAULT_UPLOAD_MAX_MB = 200  # Kann per Env überschrieben werden
 
 ---
 
-*Aktualisiert von GPT-5.2 (Codex CLI) am 2026-01-14*
+## 6. Performance-Verbesserungen
+
+> Fokus: konkrete „Quick Wins“ und skalierende Verbesserungen. Viele Punkte sind für eine lokale Single-User-App optional – werden aber relevant, sobald Transkripte groß werden oder mehrere Clients offen sind.
+
+### 6.1 Backend (aiohttp / DB / Pipeline)
+
+#### HOCH: WebSocket sendet kompletten `content` bei jedem finalen Segment (O(n²) Payload)
+**Datei:** `src/web_api.py:484-490`
+
+```python
+payload = {"type": "transcript", "text": text, "isFinal": bool(is_final)}
+if is_final and self._current:
+    payload["content"] = self._current.content
+```
+
+**Impact:** Bei langen Diktaten wächst die gesendete Datenmenge quadratisch (jede Final-Nachricht enthält den gesamten bisher akkumulierten Text) → CPU (JSON-Encode) + Netzwerk + UI-Renders steigen unnötig.
+
+**Fix-Idee (kompatibel zum Frontend-Fallback):**
+- Standard: nur `text`/`isFinal` senden (Delta).
+- Optional: `content` nur bei `session_finished` oder alle X Sekunden/ab X Zeichen.
+- Optional: Sequenznummern (`seq`) + `contentLength`, damit der Client Drift erkennen kann.
+
+---
+
+#### HOCH: `/api/transcripts` scannt immer die komplette History (auch ohne Suche)
+**Datei:** `src/web_api.py:1357-1389` (`ScriberWebController.list_transcripts`)
+
+```python
+for rec in self._history:
+    # ... Filter
+    filtered.append(rec)
+```
+
+**Impact:** O(n) pro Request, auch wenn `q` leer ist und nur paginiert wird. Zusätzlich ist die Suche teuer, weil sie `title+content+channel+summary` lowercased und konkatenert.
+
+**Fix-Idee:**
+- Fast-Path: wenn `q` leer ist und kein Type-Filter → direkt `total=len(_history)` und Slice `[offset:offset+limit]` ohne Scan.
+- Bei Suche: statt `(rec.content or "").lower()` → DB-Suche (LIKE/FTS5) oder vorcomputierter, kleiner Search-Blob (z.B. nur Title/Preview/Summary).
+
+---
+
+#### MITTEL: Lazy-Load Condition kann wiederholt DB reads triggern
+**Datei:** `src/web_api.py:1397-1407` (`ScriberWebController.get_transcript`)
+
+```python
+if len(rec.content) < 150 or not rec.summary:
+    full_data = db.get_transcript(transcript_id)
+```
+
+**Impact:** Wenn `summary` leer bleibt (z.B. Auto-Summary aus), wird bei jedem Aufruf erneut aus der DB geladen → unnötige IO/Locks.
+
+**Fix-Idee:** `rec._content_loaded` / `rec._summary_loaded` Flags (oder separates Feld für Preview vs Full) statt heuristischem `len(...)`/`not summary`.
+
+---
+
+#### NIEDRIG: `/api/youtube/video` erzeugt pro Request eine neue `ClientSession`
+**Datei:** `src/web_api.py:1676`
+
+**Impact:** Overhead durch Connector/Session-Aufbau; unnötig, da `app["http_session"]` bereits existiert.
+
+**Fix-Idee:** Shared Session verwenden und per-request Timeout setzen (z.B. `timeout=ClientTimeout(total=30)` im `session.get(...)` oder im `youtube_api` Call-Site).
+
+---
+
+### 6.2 Frontend (React)
+
+#### HOCH: 60fps Audio-Level Updates verursachen viele Re-Renders
+**Dateien:** `src/web_api.py:472-482`, `Frontend/client/src/pages/LiveMic.tsx:227-229`
+
+```ts
+case "audio_level":
+  setAudioLevel(Number(msg.rms) || 0);
+  break;
+```
+
+**Impact:** Bis zu ~60 State-Updates/s → große Komponente rendert permanent. Auf schwächeren Geräten merkbar.
+
+**Fix-Idee:**
+- Audio-Level in `useRef` + `requestAnimationFrame` (UI aktualisiert 30fps/60fps ohne React-State).
+- Oder: eigenes, memoisiertes Visualizer-Child, das nur `audioLevel` bekommt.
+- Oder: Server-seitig FPS drosseln (z.B. 20–30fps reicht visuell oft).
+
+---
+
+#### MITTEL: `FitText` erzeugt DOM-Elemente zum Messen (Layout Thrash)
+**Datei:** `Frontend/client/src/pages/TranscriptDetail.tsx:123-138`
+
+**Fix-Idee:** `canvas.measureText()` oder persistentes hidden-measure Element statt create/append/remove pro Messung; Messung nur bei echten Änderungen (Width/Title).
+
+---
+
+#### MITTEL: Timer triggert Re-Render der gesamten TranscriptDetail-Page
+**Datei:** `Frontend/client/src/pages/TranscriptDetail.tsx:320-329`
+
+**Fix-Idee:** Timeranzeige in ein kleines memoisiertes Sub-Component auslagern oder DOM-Text via Ref aktualisieren, damit große Teile der Page nicht jede Sekunde re-evaluieren.
+
+---
+
+### 6.3 Integration / Protokoll
+
+#### MITTEL: `history_updated` führt zu „Refetch-Storms“ bei häufigen Progress-Updates
+**Pattern:** Backend broadcastet häufig `{"type":"history_updated"}`, Frontend invalidiert Queries und refetcht Listen.
+
+**Fix-Idee:** Statt „invalidate + full refetch“:
+- WebSocket Patch-Events (`history_patch` mit `id` + geänderten Feldern) und Query-Cache gezielt updaten.
+- Throttling/Batching (z.B. max 2 Updates/s).
+
+---
+
+#### Optional: Kompression für große Payloads
+**Ideen:**
+- WebSocket permessage-deflate (Trade-off: CPU vs Bandbreite).
+- HTTP gzip/deflate für Transcript-Detail/Export-Responses (falls nicht nur localhost).
+
+---
+
+### 6.4 Backend (Datenstrukturen)
+
+#### HOCH: `_history` als Liste → O(n) Lookups bei jeder ID-Suche
+**Dateien:** `src/web_api.py:1172, 1397, 1846, 1874, 1912, 1934`
+
+```python
+# PROBLEM: Lineare Suche bei jeder Operation
+rec = next((r for r in self._history if r.id == transcript_id), None)
+```
+
+**Impact:** Bei 1000+ Transkripten werden `get_transcript`, `delete_transcript`, `summarize` etc. spürbar langsamer (O(n) statt O(1)).
+
+**Fix-Idee:** Zusätzliches Dict `_history_by_id: dict[str, TranscriptRecord]` für O(1) Lookups:
+```python
+self._history_by_id = {rec.id: rec for rec in self._history}
+# Lookup: rec = self._history_by_id.get(transcript_id)
+```
+
+---
+
+#### MITTEL: WebSocket `broadcast()` kopiert Client-Liste bei jedem Aufruf
+**Datei:** `src/web_api.py:438-461`
+
+```python
+async def broadcast(self, payload: dict[str, Any]) -> None:
+    msg = json.dumps(payload, ensure_ascii=False)  # JSON bei jedem Call
+    async with self._clients_lock:
+        clients = list(self._clients)  # Kopie bei jedem Broadcast
+```
+
+**Impact:** Bei 60fps Audio-Level + mehreren Clients: ~60 JSON-Serialisierungen/s + 60 List-Kopien/s.
+
+**Fix-Idee:**
+- Audio-Level: JSON-String cachen (nur `rms`-Wert ändert sich, Template verwenden)
+- Oder: Nur bei Client-Änderung kopieren (dirty flag)
+
+---
+
+#### MITTEL: `history_updated` wird bei jedem Progress-Update gebroadcastet
+**Dateien:** `src/web_api.py:539, 548, 576, 597, 623, 643, 648, 675, 698, 744, 766, 778, 783`
+
+**Impact:** Bei YouTube/File-Transkription mit Progress-Updates: Frontend refetcht die gesamte Liste mehrfach pro Sekunde.
+
+**Beobachtung:** Es gibt bereits Throttling (0.25s) für YouTube-Progress, aber nicht für alle Pfade.
+
+**Fix-Idee:**
+- Globales Throttling für `history_updated` (max 2-4/s)
+- Oder: `history_patch`-Events mit nur geänderten Feldern
+
+---
+
+### 6.5 Pipeline (Audio-Processing)
+
+#### NIEDRIG: Soniox Async Processor hält gesamtes Audio im RAM
+**Datei:** `src/pipeline.py:112-260` (`SonioxAsyncProcessor`)
+
+```python
+self._audio_buffer = io.BytesIO()  # Wächst unbegrenzt
+```
+
+**Impact:** Bei langen Aufnahmen (>30min) kann der RAM-Verbrauch mehrere GB erreichen.
+
+**Fix-Idee:**
+- Streaming-Upload statt Buffer-dann-Upload
+- Oder: Chunked Processing mit Zwischenergebnissen
+
+---
+
+#### NIEDRIG: VAD/SmartTurn-Analyzer werden pro Pipeline gecacht, aber nicht global
+**Datei:** `src/pipeline.py:60-109` (`_AnalyzerCache`)
+
+**Beobachtung:** Cache ist bereits implementiert (`_AnalyzerCache`), aber nur auf Klassen-Ebene. Bei Restart der Pipeline werden Analyzer neu initialisiert.
+
+**Status:** ✅ Bereits optimiert - Cache funktioniert korrekt.
+
+---
+
+### 6.6 Messen statt Raten (Low Effort)
+
+**Quick Wins:**
+- Timings per `time.perf_counter()` (Backend) für `list_transcripts`, `db.get_transcript`, Export, YouTube Download.
+- Client-Side: `performance.mark/measure` für Render-Hotspots (TranscriptDetail, Listen).
+- Optional: Debug-Flag-gated Logging, damit Release nicht noisig wird.
+
+**Profiling-Empfehlungen:**
+```python
+# Backend: Simple Timing Decorator
+import functools, time
+def timed(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        result = await func(*args, **kwargs)
+        logger.debug(f"{func.__name__} took {(time.perf_counter()-start)*1000:.1f}ms")
+        return result
+    return wrapper
+```
+
+```typescript
+// Frontend: React DevTools Profiler + Performance API
+performance.mark('list-render-start');
+// ... render
+performance.mark('list-render-end');
+performance.measure('list-render', 'list-render-start', 'list-render-end');
+```
+
+---
+
+### 6.7 Zusammenfassung Performance-Prioritäten
+
+| Priorität | Problem | Erwarteter Gewinn |
+|-----------|---------|-------------------|
+| **HOCH** | WebSocket O(n²) Content | -50-90% Bandbreite bei langen Diktaten |
+| **HOCH** | `/api/transcripts` O(n) Scan | -80% Latenz bei leerer Suche |
+| **HOCH** | 60fps Audio Re-Renders | -90% React Re-Renders |
+| **HOCH** | `_history` O(n) Lookups | -90% bei ID-Operationen |
+| **MITTEL** | Lazy-Load wiederholte DB-Reads | -50% DB I/O |
+| **MITTEL** | `history_updated` Storms | -70% Refetch-Requests |
+| **MITTEL** | FitText Layout Thrash | Smoother UI |
+| **NIEDRIG** | Audio-Buffer RAM | Nur bei >30min relevant |
+
+---
+
+*Aktualisiert von Claude Opus 4.5 am 2026-01-15*
