@@ -130,9 +130,22 @@ class SonioxAsyncProcessor(FrameProcessor):
         self.session = session
         self.on_progress = on_progress
         self.enable_speaker_diarization = enable_speaker_diarization
-        self._buffer = bytearray()
+        self._buffer = self._create_buffer()
+        self._buffer_size = 0
         self._sample_rate = None
         self._channels = None
+
+    def _create_buffer(self):
+        """Use spooled temp file to cap RAM usage for long recordings."""
+        return tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+
+    def _reset_buffer(self) -> None:
+        try:
+            self._buffer.close()
+        except Exception:
+            pass
+        self._buffer = self._create_buffer()
+        self._buffer_size = 0
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
@@ -142,15 +155,18 @@ class SonioxAsyncProcessor(FrameProcessor):
                 self._sample_rate = frame.sample_rate
             if not self._channels:
                 self._channels = frame.num_channels
-            self._buffer.extend(frame.audio)
+            self._buffer.write(frame.audio)
+            self._buffer_size += len(frame.audio)
             await self.push_frame(frame, direction)
         elif isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
-            if not self._buffer:
+            if not self._buffer_size:
                 logger.debug("Soniox async: no audio buffered; skipping transcription")
                 await self.push_frame(frame, direction)
                 return
             try:
-                text = await self._transcribe_async(bytes(self._buffer))
+                self._buffer.seek(0)
+                audio_bytes = self._buffer.read()
+                text = await self._transcribe_async(audio_bytes)
                 await self.push_frame(
                     TranscriptionFrame(
                         text=text,
@@ -163,7 +179,7 @@ class SonioxAsyncProcessor(FrameProcessor):
             except Exception as e:
                 logger.error(f"Soniox async transcription failed: {e}")
             await self.push_frame(frame, direction)
-            self._buffer = bytearray()
+            self._reset_buffer()
         else:
             await self.push_frame(frame, direction)
 
@@ -823,6 +839,7 @@ class ScriberPipeline:
                 self.audio_input = MicrophoneInput(
                     sample_rate=Config.SAMPLE_RATE,
                     channels=Config.CHANNELS,
+                    block_size=Config.MIC_BLOCK_SIZE,
                     turn_analyzer=smart_turn,
                     vad_analyzer=vad_analyzer,
                     device=_resolve_mic_device(Config.MIC_DEVICE),

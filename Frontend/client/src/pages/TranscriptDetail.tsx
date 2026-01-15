@@ -15,7 +15,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MOCK_TRANSCRIPTS } from "@/lib/mockData";
 import { useToast } from "@/hooks/use-toast";
 import { useSharedWebSocket } from "@/contexts/WebSocketContext";
-import { useState, useEffect, useRef, useLayoutEffect, useCallback } from "react";
+import { useState, useEffect, useRef, useLayoutEffect, useCallback, useMemo } from "react";
 import { wsUrl, apiUrl } from "@/lib/backend";
 import ReactMarkdown from "react-markdown";
 
@@ -31,57 +31,36 @@ const SPEAKER_COLORS = [
 
 // Component to render transcript with speaker diarization labels
 function SpeakerFormattedText({ content }: { content: string }) {
-  // Regex to match [Speaker N]: at the start of paragraphs
-  const speakerPattern = /\[Speaker (\d+)\]:\s*/g;
+  const hasSpeakerLabels = useMemo(
+    () => /\[Speaker (\d+)\]:/.test(content),
+    [content]
+  );
+  const paragraphs = useMemo(() => (content || "").split(/\n\n+/), [content]);
+  const parsed = useMemo(() => {
+    if (!hasSpeakerLabels) return [];
+    const labelPattern = /^\[Speaker (\d+)\]:\s*([\s\S]*)$/;
+    return paragraphs.map((para) => {
+      const labelMatch = labelPattern.exec(para);
+      if (!labelMatch) {
+        return { type: "text" as const, text: para };
+      }
+      return {
+        type: "speaker" as const,
+        speakerNum: parseInt(labelMatch[1], 10),
+        text: labelMatch[2],
+      };
+    });
+  }, [hasSpeakerLabels, paragraphs]);
 
-  // Check if content has speaker labels
-  if (!speakerPattern.test(content)) {
+  if (!hasSpeakerLabels) {
     return <span>{content}</span>;
   }
 
-  // Reset regex
-  speakerPattern.lastIndex = 0;
-
-  // Split by speaker labels and create segments
-  const segments: { speaker: string; text: string }[] = [];
-  let lastIndex = 0;
-  let match;
-
-  while ((match = speakerPattern.exec(content)) !== null) {
-    // If there's text before this match (shouldn't happen in well-formed content)
-    if (match.index > lastIndex && segments.length === 0) {
-      segments.push({ speaker: "", text: content.slice(lastIndex, match.index) });
-    }
-
-    // Find the end of this segment (next speaker label or end of string)
-    const nextMatch = speakerPattern.exec(content);
-    const endIndex = nextMatch ? nextMatch.index : content.length;
-    speakerPattern.lastIndex = match.index + match[0].length; // Reset to after current match
-
-    segments.push({
-      speaker: match[1],
-      text: content.slice(match.index + match[0].length, endIndex).trim()
-    });
-
-    lastIndex = endIndex;
-
-    // If we found a next match, we need to process it
-    if (nextMatch) {
-      speakerPattern.lastIndex = nextMatch.index;
-    }
-  }
-
-  // Simple approach: split by double newline and parse each paragraph
-  const paragraphs = content.split(/\n\n+/);
-
   return (
     <div className="space-y-4">
-      {paragraphs.map((para, idx) => {
-        const labelMatch = para.match(/^\[Speaker (\d+)\]:\s*([\s\S]*)$/);
-        if (labelMatch) {
-          const speakerNum = parseInt(labelMatch[1], 10);
-          const speakerText = labelMatch[2];
-          const colorIdx = (speakerNum - 1) % SPEAKER_COLORS.length;
+      {parsed.map((segment, idx) => {
+        if (segment.type === "speaker") {
+          const colorIdx = (segment.speakerNum - 1) % SPEAKER_COLORS.length;
           const colors = SPEAKER_COLORS[colorIdx];
 
           return (
@@ -89,13 +68,13 @@ function SpeakerFormattedText({ content }: { content: string }) {
               <span
                 className={`inline-flex items-center self-start px-2.5 py-0.5 rounded-full text-xs font-medium border ${colors.bg} ${colors.text} ${colors.border}`}
               >
-                Speaker {speakerNum}
+                Speaker {segment.speakerNum}
               </span>
-              <p className="leading-relaxed">{speakerText}</p>
+              <p className="leading-relaxed">{segment.text}</p>
             </div>
           );
         }
-        return <p key={idx} className="leading-relaxed">{para}</p>;
+        return <p key={idx} className="leading-relaxed">{segment.text}</p>;
       })}
     </div>
   );
@@ -111,31 +90,19 @@ interface FitTextProps {
 
 function FitText({ children, minFontSize = 12, maxFontSize = 24, className = "" }: FitTextProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLSpanElement>(null);
   const [fontSize, setFontSize] = useState(maxFontSize);
 
   const calculateFit = useCallback(() => {
     const container = containerRef.current;
-    if (!container) return;
+    const measureSpan = measureRef.current;
+    if (!container || !measureSpan) return;
 
     const containerWidth = container.offsetWidth;
     if (containerWidth === 0) return;
 
-    // Create a temporary span to measure text width at max font size
-    const measureSpan = document.createElement('span');
-    measureSpan.style.cssText = `
-      position: absolute;
-      visibility: hidden;
-      white-space: nowrap;
-      font-size: ${maxFontSize}px;
-      font-weight: bold;
-      font-family: inherit;
-      letter-spacing: -0.025em;
-    `;
-    measureSpan.textContent = children;
-    document.body.appendChild(measureSpan);
-
+    measureSpan.style.fontSize = `${maxFontSize}px`;
     const textWidth = measureSpan.offsetWidth;
-    document.body.removeChild(measureSpan);
 
     if (textWidth > containerWidth) {
       // Calculate the scale factor and apply it
@@ -170,7 +137,15 @@ function FitText({ children, minFontSize = 12, maxFontSize = 24, className = "" 
   }, [calculateFit]);
 
   return (
-    <div ref={containerRef} className="w-full">
+    <div ref={containerRef} className="w-full relative">
+      <span
+        ref={measureRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute opacity-0 whitespace-nowrap font-bold tracking-tight"
+        style={{ fontSize: `${maxFontSize}px` }}
+      >
+        {children}
+      </span>
       <span
         className={className}
         style={{
@@ -186,6 +161,47 @@ function FitText({ children, minFontSize = 12, maxFontSize = 24, className = "" 
       </span>
     </div>
   );
+}
+
+function DurationText({ status, duration }: { status?: string; duration?: string }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const startTimeRef = useRef<number | null>(null);
+  const isProcessingRef = useRef(false);
+
+  useEffect(() => {
+    const isNowProcessing = status === "processing";
+    if (isNowProcessing && !isProcessingRef.current) {
+      startTimeRef.current = Date.now();
+      setElapsedSeconds(0);
+    }
+    if (!isNowProcessing && isProcessingRef.current) {
+      startTimeRef.current = null;
+    }
+    isProcessingRef.current = isNowProcessing;
+  }, [status]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (startTimeRef.current && isProcessingRef.current) {
+        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+        setElapsedSeconds(elapsed);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const formatElapsed = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const display = status === "processing"
+    ? formatElapsed(elapsedSeconds)
+    : (duration || "");
+
+  return <span>{display}</span>;
 }
 
 function StopButton({ transcriptId, onStop }: { transcriptId: string; onStop: () => void }) {
@@ -293,53 +309,6 @@ export default function TranscriptDetail() {
     type: "mic",
   };
 
-  // Local elapsed time counter for processing transcripts
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const startTimeRef = useRef<number | null>(null);
-  const isProcessingRef = useRef(false);
-
-  // Track when processing starts/stops
-  useEffect(() => {
-    const isNowProcessing = transcript.status === "processing";
-
-    // Transition INTO processing
-    if (isNowProcessing && !isProcessingRef.current) {
-      startTimeRef.current = Date.now();
-      setElapsedSeconds(0);
-    }
-
-    // Transition OUT of processing
-    if (!isNowProcessing && isProcessingRef.current) {
-      startTimeRef.current = null;
-    }
-
-    isProcessingRef.current = isNowProcessing;
-  }, [transcript.status]);
-
-  // Run timer independently - always active, updates based on startTimeRef
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (startTimeRef.current && isProcessingRef.current) {
-        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
-        setElapsedSeconds(elapsed);
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, []); // Empty deps - runs once, uses refs for state
-
-  // Format elapsed time as MM:SS
-  const formatElapsed = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  // Show elapsed time when processing, otherwise show actual duration
-  const displayDuration = transcript.status === "processing"
-    ? formatElapsed(elapsedSeconds)
-    : transcript.duration;
-
   // WebSocket with auto-reconnection for real-time updates
   const handleWsMessage = useCallback((msg: any) => {
     if (msg?.type === "history_updated") {
@@ -418,7 +387,9 @@ export default function TranscriptDetail() {
             <FitText className="font-bold tracking-tight text-foreground" minFontSize={14} maxFontSize={24}>
               {transcript?.title || "Transcript"}
             </FitText>
-            <p className="text-xs text-muted-foreground truncate">{transcript.date} • {displayDuration}</p>
+            <p className="text-xs text-muted-foreground truncate">
+              {transcript.date} • <DurationText status={transcript.status} duration={transcript.duration} />
+            </p>
           </div>
         </div>
 
@@ -495,7 +466,7 @@ export default function TranscriptDetail() {
                   {transcript.step || "Processing..."}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Elapsed: {displayDuration}
+                  Elapsed: <DurationText status={transcript.status} duration={transcript.duration} />
                 </p>
               </div>
             </div>

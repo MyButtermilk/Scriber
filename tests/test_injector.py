@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 import asyncio
 from src.injector import TextInjector
 from pipecat.frames.frames import (
@@ -15,11 +15,14 @@ class TestInjector(unittest.TestCase):
         # TranscriptionFrame(text: str, user_id: str, timestamp: str, ...)
         frame = TranscriptionFrame(text="Hello world", user_id="user", timestamp="now")
 
-        # Mock keyboard/pyautogui
-        with patch('src.injector.keyboard') as mock_kb:
+        # Mock injection to avoid OS-level side effects
+        with patch.object(injector, "_inject_text") as mock_inject, patch.object(
+            injector, "push_frame", new=AsyncMock()
+        ):
             # We need to run the async method
             async def run():
                 await injector.process_frame(frame, MagicMock())
+                await injector.process_frame(EndFrame(), MagicMock())
 
             asyncio.run(run())
             pass
@@ -29,9 +32,12 @@ class TestInjector(unittest.TestCase):
         injector = TextInjector()
         frame = TranscriptionFrame(text="Hello world", user_id="user", timestamp="now")
 
-        with patch('src.injector.logger') as mock_logger:
+        with patch('src.injector.logger') as mock_logger, patch.object(
+            injector, "_inject_text"
+        ), patch.object(injector, "push_frame", new=AsyncMock()):
             async def run():
                 await injector.process_frame(frame, MagicMock())
+                await injector.process_frame(EndFrame(), MagicMock())
 
             asyncio.run(run())
             # It should log
@@ -42,12 +48,12 @@ class TestInjector(unittest.TestCase):
         injector = TextInjector(inject_immediately=False)
         injected_texts = []
 
-        def mock_write(text):
+        def record_injection(text: str):
             injected_texts.append(text)
 
-        with patch("src.injector.HAS_GUI", True), patch("src.injector.keyboard") as mock_kb:
-            mock_kb.write = mock_write
-
+        with patch.object(injector, "_inject_text", side_effect=record_injection), patch.object(
+            injector, "push_frame", new=AsyncMock()
+        ):
             async def run():
                 frame = TranscriptionFrame(
                     text="hello world", user_id="user", timestamp="now"

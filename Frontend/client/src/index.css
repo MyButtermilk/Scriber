@@ -415,6 +415,19 @@ html:has(body[data-scroll-locked]) {
   transform: translateY(-1px);
 }
 
+/* Scroll performance: skip offscreen card content */
+@supports (content-visibility: auto) {
+  .perf-scroll-item {
+    content-visibility: auto;
+    contain: layout paint;
+    contain-intrinsic-size: 120px;
+  }
+
+  .perf-scroll-grid {
+    contain-intrinsic-size: 200px;
+  }
+}
+
 /* ============================================
    STATUS WELL / BANNER - DEBOSSED STYLE
    ============================================ */

@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-from aiohttp import ClientError, ClientSession
+from aiohttp import ClientError, ClientSession, ClientTimeout
 
 
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
@@ -59,9 +59,15 @@ def _clamp_max_results(value: int, *, default: int = 10) -> int:
     return 50 if value > 50 else value
 
 
-async def _request_json(session: ClientSession, url: str, params: dict[str, str]) -> dict[str, Any]:
+async def _request_json(
+    session: ClientSession,
+    url: str,
+    params: dict[str, str],
+    *,
+    timeout: ClientTimeout | None = None,
+) -> dict[str, Any]:
     try:
-        async with session.get(url, params=params) as resp:
+        async with session.get(url, params=params, timeout=timeout) as resp:
             try:
                 payload: Any = await resp.json(content_type=None)
             except Exception:
@@ -94,6 +100,7 @@ async def search_youtube_videos(
     max_results: int = 10,
     page_token: str | None = None,
     session: ClientSession,
+    timeout: ClientTimeout | None = None,
 ) -> dict[str, Any]:
     api_key = (api_key or "").strip()
     query = (query or "").strip()
@@ -115,7 +122,7 @@ async def search_youtube_videos(
     if page_token:
         search_params["pageToken"] = page_token
 
-    search = await _request_json(session, YOUTUBE_SEARCH_URL, search_params)
+    search = await _request_json(session, YOUTUBE_SEARCH_URL, search_params, timeout=timeout)
     items = search.get("items") if isinstance(search.get("items"), list) else []
 
     ordered_video_ids: list[str] = []
@@ -151,7 +158,7 @@ async def search_youtube_videos(
             "id": ",".join(ordered_video_ids),
             "key": api_key,
         }
-        videos = await _request_json(session, YOUTUBE_VIDEOS_URL, videos_params)
+        videos = await _request_json(session, YOUTUBE_VIDEOS_URL, videos_params, timeout=timeout)
         for v in videos.get("items") if isinstance(videos.get("items"), list) else []:
             if not isinstance(v, dict):
                 continue
@@ -197,6 +204,7 @@ async def get_video_by_id(
     video_id: str,
     *,
     session: ClientSession,
+    timeout: ClientTimeout | None = None,
 ) -> dict[str, Any] | None:
     """Fetch video details by video ID. Returns None if video not found."""
     api_key = (api_key or "").strip()
@@ -211,7 +219,7 @@ async def get_video_by_id(
         "id": video_id,
         "key": api_key,
     }
-    videos = await _request_json(session, YOUTUBE_VIDEOS_URL, videos_params)
+    videos = await _request_json(session, YOUTUBE_VIDEOS_URL, videos_params, timeout=timeout)
     items = videos.get("items") if isinstance(videos.get("items"), list) else []
     
     if not items:

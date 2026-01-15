@@ -1,4 +1,5 @@
 import asyncio
+import time
 import numpy as np
 from loguru import logger
 from pipecat.frames.frames import InputAudioRawFrame, StartFrame, EndFrame
@@ -26,7 +27,7 @@ class MicrophoneInput(BaseInputTransport):
         self,
         sample_rate=16000,
         channels=1,
-        block_size=1024,
+        block_size=512,
         turn_analyzer=None,
         vad_analyzer=None,
         device="default",
@@ -59,7 +60,10 @@ class MicrophoneInput(BaseInputTransport):
         self._queue = asyncio.Queue()
         self._consumer_task = None
         self._stopped = asyncio.Event()
-        self._rms_callback_count = 0  # Throttle RMS calculations
+        # Visualizer gating (reduce noise-triggered movement)
+        self._noise_floor_db = -70.0
+        self._speech_active = False
+        self._speech_hold_until = 0.0
 
     async def start(self, frame: StartFrame):
         """Start audio capture and feed frames into the transport queue."""
@@ -137,7 +141,7 @@ class MicrophoneInput(BaseInputTransport):
             logger.error(f"Microphone error: {e}")
             await self.stop(frame=EndFrame())
 
-    def _audio_callback(self, indata, frames, time, status):
+    def _audio_callback(self, indata, frames, time_info, status):
         if status:
             logger.warning(f"Audio status: {status}")
         if self._running:
@@ -145,16 +149,42 @@ class MicrophoneInput(BaseInputTransport):
             audio_bytes = indata.tobytes()
             self._loop.call_soon_threadsafe(self._queue.put_nowait, audio_bytes)
             
-            # Throttled RMS calculation for visualization (every 2nd callback = ~30fps at 1024 block size @ 16kHz)
-            self._rms_callback_count += 1
-            if self.on_audio_level and (self._rms_callback_count & 1) == 0:
+            # RMS calculation for visualization (every callback for responsiveness)
+            if self.on_audio_level:
                 try:
                     # Optimized RMS: use int16 view directly, compute in float32 for speed
                     # indata is already int16 dtype, shape is (frames, channels)
                     samples = indata.view(np.int16).ravel()
                     # Use float32 for faster computation than float64
                     rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) / 32768.0
-                    self.on_audio_level(float(rms))
+
+                    # Speech-focused gating (dynamic noise floor + hysteresis)
+                    db = 20.0 * float(np.log10(rms + 1e-6))
+                    now = time.monotonic()
+
+                    # Update noise floor: quick to drop, very slow to rise (avoid "locking out" speech)
+                    if (not self._speech_active) or (db < self._noise_floor_db + 3.0):
+                        if db < self._noise_floor_db:
+                            self._noise_floor_db = self._noise_floor_db * 0.8 + db * 0.2
+                        elif db <= self._noise_floor_db + 1.0:
+                            self._noise_floor_db = self._noise_floor_db * 0.98 + db * 0.02
+
+                    # Higher thresholds for speech-only activation (ignore background noise)
+                    threshold_high = max(self._noise_floor_db + 12.0, -50.0)
+                    threshold_low = threshold_high - 4.0
+                    abs_on_rms = 0.003   # ~3x louder than before to trigger
+                    abs_off_rms = 0.001  # Higher off threshold too
+
+                    if db >= threshold_high or rms >= abs_on_rms:
+                        self._speech_active = True
+                        self._speech_hold_until = now + 0.25
+                    elif (
+                        (db <= threshold_low and rms <= abs_off_rms)
+                        and now >= self._speech_hold_until
+                    ):
+                        self._speech_active = False
+
+                    self.on_audio_level(float(rms) if self._speech_active else 0.0)
                 except Exception:
                     pass
 

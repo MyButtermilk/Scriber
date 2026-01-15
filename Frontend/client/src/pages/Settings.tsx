@@ -344,8 +344,12 @@ export default function Settings() {
   const handleCustomVocabBlur = async () => {
     try {
       await updateSettings({ customVocab: customVocabulary });
-    } catch {
-      // ignore
+    } catch (e: any) {
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
     }
   };
 
@@ -368,11 +372,17 @@ export default function Settings() {
 
   const handleVisualizerBarCountChange = async (value: number[]) => {
     const count = value[0];
+    const prevCount = visualizerBarCount;
     setVisualizerBarCount(count);
     try {
       await updateSettings({ visualizerBarCount: count });
-    } catch {
-      // ignore
+    } catch (e: any) {
+      setVisualizerBarCount(prevCount);
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
     }
   };
 

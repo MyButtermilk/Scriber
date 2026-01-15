@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import builtins
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -26,17 +27,29 @@ async def test_download_youtube_audio_requires_url(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_download_youtube_audio_requires_yt_dlp(tmp_path: Path):
-    with patch("src.youtube_download._find_yt_dlp_command", return_value=[]):
-        with pytest.raises(YouTubeDownloadError, match="yt-dlp not installed"):
-            await download_youtube_audio("https://example.com", output_dir=tmp_path)
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "yt_dlp":
+            raise ImportError("yt_dlp not available")
+        return real_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=fake_import):
+        with patch("src.youtube_download._require_ffmpeg"):
+            with patch("src.youtube_download.shutil.which", return_value=None):
+                with patch(
+                    "src.youtube_download.asyncio.create_subprocess_exec",
+                    new=AsyncMock(return_value=_DummyProc(stdout="", stderr="yt-dlp not installed", returncode=1)),
+                ):
+                    with pytest.raises(YouTubeDownloadError, match="yt-dlp not installed"):
+                        await download_youtube_audio("https://example.com", output_dir=tmp_path)
 
 
 @pytest.mark.asyncio
 async def test_download_youtube_audio_requires_ffmpeg(tmp_path: Path):
-    with patch("src.youtube_download._find_yt_dlp_command", return_value=["yt-dlp"]):
-        with patch("src.youtube_download.shutil.which", return_value=None):
-            with pytest.raises(YouTubeDownloadError, match="ffmpeg not found"):
-                await download_youtube_audio("https://example.com", output_dir=tmp_path)
+    with patch("src.youtube_download.shutil.which", return_value=None):
+        with pytest.raises(YouTubeDownloadError, match="ffmpeg not found"):
+            await download_youtube_audio("https://example.com", output_dir=tmp_path)
 
 
 @pytest.mark.asyncio
@@ -44,7 +57,14 @@ async def test_download_youtube_audio_parses_output_path(tmp_path: Path):
     out_file = tmp_path / "abc.mp3"
     out_file.write_bytes(b"fake")
 
-    with patch("src.youtube_download._find_yt_dlp_command", return_value=["yt-dlp"]):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "yt_dlp":
+            raise ImportError("yt_dlp not available")
+        return real_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=fake_import):
         with patch("src.youtube_download.shutil.which", side_effect=lambda name: "ffmpeg" if "ffmpeg" in name else None):
             with patch(
                 "src.youtube_download.asyncio.create_subprocess_exec",

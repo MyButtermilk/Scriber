@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, memo } from "react";
+import { useCallback, useState, useEffect, memo, useRef } from "react";
 import { useDropzone } from "react-dropzone";
 import { UploadCloud, FileAudio, FileVideo, CheckCircle2, Clock, MoreVertical, Loader2, XCircle, Trash2, LayoutGrid, LayoutList, Square, Search, X, Copy, Check } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -47,7 +47,7 @@ const FileCard = memo(function FileCard({
       transition={{ delay: Math.min(index * 0.02, 0.1), duration: 0.2, ease: "easeOut" }}
     >
       <Card
-        className="neu-recording-row p-4 cursor-pointer bg-transparent hover:scale-[1.01] group"
+        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} p-4 cursor-pointer bg-transparent hover:scale-[1.01] group`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
       >
@@ -190,6 +190,7 @@ export default function FileTranscribe() {
   const [uploadingFileName, setUploadingFileName] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
+  const deletingRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
   const [viewMode, setViewMode] = useState<"list" | "grid">(
     () => (localStorage.getItem("scriber-view-mode") as "list" | "grid") || "list"
@@ -292,8 +293,9 @@ export default function FileTranscribe() {
 
   const deleteTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation(); // Prevent card click navigation
-    if (deletingId) return;
+    if (deletingRef.current) return;
 
+    deletingRef.current = id;
     setDeletingId(id);
     try {
       const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
@@ -316,9 +318,10 @@ export default function FileTranscribe() {
         duration: 4000,
       });
     } finally {
+      deletingRef.current = null;
       setDeletingId(null);
     }
-  }, [deletingId, toast]);
+  }, [toast]);
 
   const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -433,7 +436,7 @@ export default function FileTranscribe() {
             <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Processing Queue</h3>
           </div>
           {processingItems.map((item: any) => (
-            <Card key={item.id} className="neu-recording-row p-4 bg-transparent">
+            <Card key={item.id} className="neu-recording-row perf-scroll-item p-4 bg-transparent">
               <div className="flex items-center gap-4">
                 <div className="p-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-lg">
                   <FileAudio className="w-5 h-5" />

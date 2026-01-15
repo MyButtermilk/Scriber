@@ -53,7 +53,7 @@ def _close_all_connections():
             except Exception:
                 pass
         _all_connections.clear()
-    logger.debug("Closed all database connections")
+    # Avoid logging during interpreter shutdown; sinks may already be closed.
 
 
 # Register cleanup on interpreter exit

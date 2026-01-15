@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, memo, useMemo } from "react";
+import { useEffect, useState, useCallback, memo, useMemo, useRef } from "react";
 import { useSharedWebSocket } from "@/contexts/WebSocketContext";
 import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2, LayoutGrid, LayoutList, Search, X, Copy, Check } from "lucide-react";
 import { motion } from "framer-motion";
@@ -44,7 +44,7 @@ const TranscriptCard = memo(function TranscriptCard({
       }}
     >
       <Card
-        className="neu-recording-row p-4 cursor-pointer bg-transparent hover:scale-[1.01] group"
+        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} p-4 cursor-pointer bg-transparent hover:scale-[1.01] group`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
       >
@@ -147,6 +147,65 @@ const TranscriptCard = memo(function TranscriptCard({
     </motion.div>
   );
 });
+
+interface AudioVisualizerProps {
+  isRecording: boolean;
+  audioLevelRef: React.MutableRefObject<number>;
+}
+
+const AudioVisualizer = memo(function AudioVisualizer({
+  isRecording,
+  audioLevelRef,
+}: AudioVisualizerProps) {
+  const [level, setLevel] = useState(0);
+  const lastFrameRef = useRef(0);
+
+  useEffect(() => {
+    if (!isRecording) {
+      setLevel(0);
+      return;
+    }
+    let rafId = 0;
+    const tick = (time: number) => {
+      if (time - lastFrameRef.current >= 33) {
+        setLevel(audioLevelRef.current);
+        lastFrameRef.current = time;
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [audioLevelRef, isRecording]);
+
+  const intensity = Math.min(1, Math.max(0, level * 3));
+
+  return (
+    <div className="h-16 flex items-center justify-center gap-1 w-full max-w-xs overflow-hidden">
+      {isRecording ? (
+        Array.from({ length: 20 }).map((_, i) => (
+          <motion.div
+            key={i}
+            className="w-1.5 bg-primary/80 rounded-full"
+            animate={{
+              height: [
+                10,
+                10 + intensity * 48 * (0.35 + 0.65 * Math.abs(Math.sin((i + 1) * 0.9))),
+                10,
+              ],
+            }}
+            transition={{
+              repeat: Infinity,
+              duration: 0.5,
+              delay: i * 0.05,
+            }}
+          />
+        ))
+      ) : (
+        <div className="w-full h-0.5 bg-border rounded-full" />
+      )}
+    </div>
+  );
+});
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiUrl, wsUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
@@ -158,7 +217,6 @@ export default function LiveMic() {
   const [isRecording, setIsRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState<string>("Stopped");
-  const [audioLevel, setAudioLevel] = useState(0);
   const [finalText, setFinalText] = useState("");
   const [interimText, setInterimText] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -170,6 +228,7 @@ export default function LiveMic() {
   );
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const audioLevelRef = useRef(0);
 
   // Persist view mode
   useEffect(() => {
@@ -225,7 +284,7 @@ export default function LiveMic() {
         setStatus(msg.status || "Stopped");
         break;
       case "audio_level":
-        setAudioLevel(Number(msg.rms) || 0);
+        audioLevelRef.current = Number(msg.rms) || 0;
         break;
       case "transcript":
         if (msg.isFinal) {
@@ -293,8 +352,6 @@ export default function LiveMic() {
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
-
-  const intensity = Math.min(1, Math.max(0, audioLevel * 3));
 
   const handleToggle = async () => {
     try {
@@ -426,30 +483,7 @@ export default function LiveMic() {
         </div>
 
         {/* Waveform Visualization (Mock) */}
-        <div className="h-16 flex items-center justify-center gap-1 w-full max-w-xs overflow-hidden">
-          {isRecording ? (
-            Array.from({ length: 20 }).map((_, i) => (
-              <motion.div
-                key={i}
-                className="w-1.5 bg-primary/80 rounded-full"
-                animate={{
-                  height: [
-                    10,
-                    10 + intensity * 48 * (0.35 + 0.65 * Math.abs(Math.sin((i + 1) * 0.9))),
-                    10,
-                  ],
-                }}
-                transition={{
-                  repeat: Infinity,
-                  duration: 0.5,
-                  delay: i * 0.05,
-                }}
-              />
-            ))
-          ) : (
-            <div className="w-full h-0.5 bg-border rounded-full" />
-          )}
-        </div>
+        <AudioVisualizer isRecording={isRecording} audioLevelRef={audioLevelRef} />
 
         {/* Controls */}
         <div className="flex items-center gap-6">

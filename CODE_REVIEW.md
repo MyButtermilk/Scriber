@@ -1,8 +1,8 @@
 # Scriber Code Review - Bug- und Risiko-Analyse
 
-**Datum:** 2026-01-14
-**Version:** 1.1
-**Reviewer:** GPT-5.2 (Codex CLI)
+**Datum:** 2026-01-15
+**Version:** 1.2
+**Reviewer:** GPT-5 (Codex CLI)
 
 ---
 
@@ -26,15 +26,11 @@
 
 - `venv\Scripts\python -m compileall -q src` ✅
 - `venv\Scripts\python check_imports.py` ✅ (alle STT-Services importierbar)
-- `venv\Scripts\python -m pytest` ❌ (4 failed, 17 passed)
-  - `tests/test_injector.py::TestInjector::test_deduplication_survives_flush`
-  - `tests/test_youtube_download.py` (3 Tests; Patch auf nicht existierende Funktion `_find_yt_dlp_command`)
-  - Zusatz: Loguru-Handler meldet am Ende `ValueError: I/O operation on closed file` (siehe [2.5 Datenbank-Probleme](#25-datenbank-probleme))
+- `venv\Scripts\python -m pytest` ✅ (21 passed)
 
 ### 0.2 Frontend
 
-- `cd Frontend; npm run check` ❌
-  - `Frontend/client/src/lib/queryClient.ts`: `TS2304: Cannot find name 'T'` (siehe [3.0 Build/TypeScript](#30-buildtypescript))
+- `cd Frontend; npm run check` ✅
 
 ---
 
@@ -227,6 +223,8 @@ def _on_transcription(self, text: str, is_final: bool):
             self._current.content += text
 ```
 
+**Status (2026-01-15):** ✅ `_current_lock` eingeführt; Zugriff in Start/Stop, `_on_transcription`, `_on_pipeline_done` und `get_state` abgesichert.
+
 ---
 
 #### MITTEL: SQLite `check_same_thread=False` deaktiviert Sicherheit
@@ -286,6 +284,8 @@ async with session.get(url, params=params) as resp:
 
 **Einordnung:** In `src/web_api.py` wird für den App-HTTP-Client ein Timeout gesetzt (`ClientTimeout(total=15)`), und `/api/youtube/video` nutzt `ClientTimeout(total=30)`. Das reduziert das Risiko, ist aber “implizit” und leicht zu umgehen, wenn der Call-Site später geändert wird.
 
+**Status (2026-01-15):** ✅ `youtube_api` unterstützt per-request Timeout; `/api/youtube/video` nutzt shared Session mit explizitem Timeout.
+
 ---
 
 #### MITTEL: Keine Retry-Logik für externe APIs
@@ -316,6 +316,8 @@ payload = await search_youtube_videos(api_key, q, ...)
 
 **Fix-Idee:** Vor Summarize/Export: `full = ctl.get_transcript(id)` oder `db.get_transcript(id)` laden und `rec.content`/`rec.summary` aktualisieren.
 
+**Status (2026-01-15):** ✅ Summarize/Export laden Full-Content via `get_transcript` (Lazy-Load-safe) und nutzen DB-Fallback, falls Record nicht in `_history` ist.
+
 ---
 
 #### NIEDRIG: Loguru-Fehler beim Interpreter-Exit (atexit)
@@ -325,6 +327,8 @@ payload = await search_youtube_videos(api_key, q, ...)
 **Beobachtung:** Beim Testlauf endet der Prozess mit `ValueError: I/O operation on closed file` aus dem Loguru-Sink, ausgelöst durch Logging in `_close_all_connections()` während/ nach pytest-Capture-Cleanup.
 
 **Fix-Idee:** Logging im atexit-Handler vermeiden oder `ValueError` beim Schreiben abfangen.
+
+**Status (2026-01-15):** ✅ Logging im atexit-Handler entfernt, um Shutdown-Fehler zu vermeiden (`src/database.py`).
 
 ---
 
@@ -353,6 +357,8 @@ conn.execute("PRAGMA synchronous=NORMAL")  # Risiko bei Crash
 
 **Fix-Idee:** Tests an aktuelle Implementierung anpassen (StartFrame senden, `_send_input_text`/`_paste_text` mocken oder `_inject_text` patchen; `youtube_download` Tests auf `shutil.which`/ImportError/Subprocess mocken).
 
+**Status (2026-01-15):** ✅ Tests angepasst – `TextInjector` Tests mocken `_inject_text`/`push_frame`, `youtube_download` Tests simulieren fehlendes `yt_dlp` via Import-Hook und Subprocess-Fehler.
+
 ---
 
 ## 3. Frontend-Probleme
@@ -374,6 +380,8 @@ export const getQueryFn: <T>(options: { ... }) => QueryFunction<T> =
 **Impact:** `npm run check` (tsc) bricht ab; Type-Safety/CI kann nicht grün werden.
 
 **Fix-Idee:** `getQueryFn` als echte generische Funktion definieren (`export const getQueryFn = <T,>(...) => ...`), damit `T` im Funktionskörper gültig ist.
+
+**Status (2026-01-15):** ✅ `getQueryFn` auf echte generische Funktion umgestellt (`Frontend/client/src/lib/queryClient.ts`).
 
 ---
 
@@ -416,6 +424,8 @@ const deleteTranscript = useCallback(async (e, id) => {
 ```
 
 **Lösung:** Optimistic UI mit sofortiger State-Änderung oder Debounce.
+
+**Status (2026-01-15):** ✅ Double-Click Guard via `useRef` in File/Youtube-Delete (synchrones Gate vor dem ersten `setDeletingId`).
 
 ---
 
@@ -487,6 +497,8 @@ const handleCustomVocabBlur = async () => {
     }
 };
 ```
+
+**Status (2026-01-15):** ✅ Fehler werden nun getoastet; Visualizer-Bar-Update reverted den State bei Fehler.
 
 ---
 
@@ -678,12 +690,12 @@ _DEFAULT_UPLOAD_MAX_MB = 200  # Kann per Env überschrieben werden
 17. Backpressure für WebSocket
 
 #### Performance-Optimierungen (nach Priorität)
-18. **WebSocket Transcript Updates:** Delta statt Volltext (O(n²) → O(1))
-19. **`_history` Datenstruktur:** Dict für ID-Lookups hinzufügen (O(n) → O(1))
-20. **`/api/transcripts` Fast-Path:** Direkter Slice ohne Scan bei leerer Suche
-21. **Audio-Level Rendering:** `useRef` + RAF statt 60fps State Updates
-22. **`history_updated` Throttling:** Globales Rate-Limiting (max 2-4/s)
-23. **Lazy-Load Flag:** `_content_loaded` statt heuristischer `len() < 150` Check
+18. **WebSocket Transcript Updates:** Delta statt Volltext (O(n²) → O(1)) ✅ (2026-01-15)
+19. **`_history` Datenstruktur:** Dict für ID-Lookups hinzufügen (O(n) → O(1)) ✅ (2026-01-15)
+20. **`/api/transcripts` Fast-Path:** Direkter Slice ohne Scan bei leerer Suche ✅ (2026-01-15)
+21. **Audio-Level Rendering:** `useRef` + RAF statt 60fps State Updates ✅ (2026-01-15)
+22. **`history_updated` Throttling:** Globales Rate-Limiting (max 2-4/s) ✅ (2026-01-15)
+23. **Lazy-Load Flag:** `_content_loaded` statt heuristischer `len() < 150` Check ✅ (2026-01-15)
 
 ---
 
@@ -719,6 +731,8 @@ if is_final and self._current:
 - Optional: `content` nur bei `session_finished` oder alle X Sekunden/ab X Zeichen.
 - Optional: Sequenznummern (`seq`) + `contentLength`, damit der Client Drift erkennen kann.
 
+**Status (2026-01-15):** ✅ Backend sendet nur Delta-`text`; Volltext nur noch via `session_finished`.
+
 ---
 
 #### HOCH: `/api/transcripts` scannt immer die komplette History (auch ohne Suche)
@@ -736,6 +750,8 @@ for rec in self._history:
 - Fast-Path: wenn `q` leer ist und kein Type-Filter → direkt `total=len(_history)` und Slice `[offset:offset+limit]` ohne Scan.
 - Bei Suche: statt `(rec.content or "").lower()` → DB-Suche (LIKE/FTS5) oder vorcomputierter, kleiner Search-Blob (z.B. nur Title/Preview/Summary).
 
+**Status (2026-01-15):** ✅ Fast-Path implementiert (direkter Slice bei leerer Suche ohne Type-Filter).
+
 ---
 
 #### MITTEL: Lazy-Load Condition kann wiederholt DB reads triggern
@@ -750,6 +766,8 @@ if len(rec.content) < 150 or not rec.summary:
 
 **Fix-Idee:** `rec._content_loaded` / `rec._summary_loaded` Flags (oder separates Feld für Preview vs Full) statt heuristischem `len(...)`/`not summary`.
 
+**Status (2026-01-15):** ✅ `_content_loaded`/`_summary_loaded` Flags eingeführt; `get_transcript` lädt nur einmal nach.
+
 ---
 
 #### NIEDRIG: `/api/youtube/video` erzeugt pro Request eine neue `ClientSession`
@@ -758,6 +776,8 @@ if len(rec.content) < 150 or not rec.summary:
 **Impact:** Overhead durch Connector/Session-Aufbau; unnötig, da `app["http_session"]` bereits existiert.
 
 **Fix-Idee:** Shared Session verwenden und per-request Timeout setzen (z.B. `timeout=ClientTimeout(total=30)` im `session.get(...)` oder im `youtube_api` Call-Site).
+
+**Status (2026-01-15):** ✅ Shared Session genutzt; `youtube_api` unterstützt per-request Timeout.
 
 ---
 
@@ -779,6 +799,8 @@ case "audio_level":
 - Oder: eigenes, memoisiertes Visualizer-Child, das nur `audioLevel` bekommt.
 - Oder: Server-seitig FPS drosseln (z.B. 20–30fps reicht visuell oft).
 
+**Status (2026-01-15):** ✅ LiveMic nutzt `audioLevelRef` + RAF in eigenem `AudioVisualizer`-Component.
+
 ---
 
 #### MITTEL: `FitText` erzeugt DOM-Elemente zum Messen (Layout Thrash)
@@ -786,12 +808,16 @@ case "audio_level":
 
 **Fix-Idee:** `canvas.measureText()` oder persistentes hidden-measure Element statt create/append/remove pro Messung; Messung nur bei echten Änderungen (Width/Title).
 
+**Status (2026-01-15):** ✅ Persistentes, verstecktes Measure-Element genutzt (kein DOM-Create/Remove pro Messung).
+
 ---
 
 #### MITTEL: Timer triggert Re-Render der gesamten TranscriptDetail-Page
 **Datei:** `Frontend/client/src/pages/TranscriptDetail.tsx:320-329`
 
 **Fix-Idee:** Timeranzeige in ein kleines memoisiertes Sub-Component auslagern oder DOM-Text via Ref aktualisieren, damit große Teile der Page nicht jede Sekunde re-evaluieren.
+
+**Status (2026-01-15):** ✅ Timer in eigenes `DurationText`-Subcomponent ausgelagert.
 
 ---
 
@@ -803,6 +829,8 @@ case "audio_level":
 **Fix-Idee:** Statt „invalidate + full refetch“:
 - WebSocket Patch-Events (`history_patch` mit `id` + geänderten Feldern) und Query-Cache gezielt updaten.
 - Throttling/Batching (z.B. max 2 Updates/s).
+
+**Status (2026-01-15):** ✅ Globales Throttling für `history_updated` implementiert (ca. 4/s) inkl. Timer-Coalescing.
 
 ---
 
@@ -831,6 +859,8 @@ self._history_by_id = {rec.id: rec for rec in self._history}
 # Lookup: rec = self._history_by_id.get(transcript_id)
 ```
 
+**Status (2026-01-15):** ✅ `_history_by_id` + Helper eingeführt; alle ID-Lookups umgestellt.
+
 ---
 
 #### MITTEL: WebSocket `broadcast()` kopiert Client-Liste bei jedem Aufruf
@@ -849,6 +879,8 @@ async def broadcast(self, payload: dict[str, Any]) -> None:
 - Audio-Level: JSON-String cachen (nur `rms`-Wert ändert sich, Template verwenden)
 - Oder: Nur bei Client-Änderung kopieren (dirty flag)
 
+**Status (2026-01-15):** ✅ Client-Snapshot + Dirty-Flag eingeführt; List-Kopie nur bei Änderungen.
+
 ---
 
 #### MITTEL: `history_updated` wird bei jedem Progress-Update gebroadcastet
@@ -861,6 +893,8 @@ async def broadcast(self, payload: dict[str, Any]) -> None:
 **Fix-Idee:**
 - Globales Throttling für `history_updated` (max 2-4/s)
 - Oder: `history_patch`-Events mit nur geänderten Feldern
+
+**Status (2026-01-15):** ✅ Alle `history_updated` Pfade auf globales Throttling umgestellt.
 
 ---
 
@@ -878,6 +912,8 @@ self._audio_buffer = io.BytesIO()  # Wächst unbegrenzt
 **Fix-Idee:**
 - Streaming-Upload statt Buffer-dann-Upload
 - Oder: Chunked Processing mit Zwischenergebnissen
+
+**Status (2026-01-15):** ✅ Buffer auf `SpooledTemporaryFile` umgestellt (RAM-Deckel, Spill to disk).
 
 ---
 
@@ -934,6 +970,8 @@ performance.measure('list-render', 'list-render-start', 'list-render-end');
 | **MITTEL** | FitText Layout Thrash | Smoother UI |
 | **NIEDRIG** | Audio-Buffer RAM | Nur bei >30min relevant |
 
+**Status (2026-01-15):** ✅ Prioritäten 18–23 umgesetzt (siehe Implementierungen oben).
+
 ---
 
-*Aktualisiert von Claude Opus 4.5 am 2026-01-15*
+*Aktualisiert von GPT-5 (Codex CLI) am 2026-01-15*

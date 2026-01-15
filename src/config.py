@@ -56,6 +56,7 @@ class Config:
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
     FAVORITE_MIC = os.getenv("SCRIBER_FAVORITE_MIC", "")  # Preferred mic - used when available
     MIC_ALWAYS_ON = os.getenv("SCRIBER_MIC_ALWAYS_ON", "0") in ("1", "true", "True")
+    MIC_BLOCK_SIZE = max(128, min(4096, int(os.getenv("SCRIBER_MIC_BLOCK_SIZE", "512"))))
     # Text injection method:
     #   "sendinput" - Windows SendInput API, instant batch injection (~10ms for any length)
     #   "paste" - Clipboard + Ctrl+V, fast and reliable
@@ -276,6 +277,7 @@ Input:"""
         
         add("SCRIBER_FAVORITE_MIC", cls.FAVORITE_MIC or "")
         add("SCRIBER_MIC_ALWAYS_ON", "1" if cls.MIC_ALWAYS_ON else "0")
+        add("SCRIBER_MIC_BLOCK_SIZE", str(cls.MIC_BLOCK_SIZE))
         add("SCRIBER_INJECT_METHOD", cls.INJECT_METHOD)
         add("SCRIBER_PASTE_PRE_DELAY_MS", str(cls.PASTE_PRE_DELAY_MS))
         add("SCRIBER_PASTE_RESTORE_DELAY_MS", str(cls.PASTE_RESTORE_DELAY_MS))

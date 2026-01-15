@@ -18,7 +18,7 @@ os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
 try:
     from PySide6.QtWidgets import QApplication, QWidget, QLabel
     from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread, QRectF, QPointF
-    from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QFont, QFontMetrics, QLinearGradient, QCursor, QGuiApplication
+    from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QFont, QFontMetrics, QLinearGradient, QCursor, QGuiApplication, QPixmap
     HAS_QT = True
 except ImportError:
     HAS_QT = False
@@ -78,7 +78,8 @@ class QtOverlayWindow(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         
         # Size proportions (30% smaller than original)
-        self._shadow_margin = 8
+        # Compact shadow margin for elegant, tight shadow
+        self._shadow_margin = 17
         self._pill_w = 280
         self._pill_h = 50
         self.setFixedSize(
@@ -98,12 +99,12 @@ class QtOverlayWindow(QWidget):
         # AGC (Automatic Gain Control) for adaptive level scaling
         self._agc = 0.02
         
-        # CAVA-style parameters - optimized for maximum responsiveness
+        # CAVA-style parameters - tuned for fast, responsive feel
         self._noise_reduction = 0.77  # 0-1, smoothing factor
-        self._gravity = 0.7  # Quick fall-off
+        self._gravity = 0.95  # Faster fall-off
         self._integral = 0.7  # Weighted average factor
-        self._rise_speed = 0.9  # Near-instant rise (0-1)
-        self._fall_damping = 0.85  # Faster fall, less floaty
+        self._rise_speed = 1.0  # Instant rise
+        self._fall_damping = 0.80  # Less floaty
         
         # Stop button hit-test (updated during painting)
         self._stop_center_x = 0.0
@@ -117,14 +118,14 @@ class QtOverlayWindow(QWidget):
         
         self.setMouseTracking(True)
         
-        # 60 fps animation timer
+        # 40 fps animation timer (snappier, still light with cached background)
         self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(16)
+        self._anim_timer.setInterval(25)
         self._anim_timer.timeout.connect(self._tick)
-        
+
         # Spinner timer for transcribing mode
         self._spinner_timer = QTimer(self)
-        self._spinner_timer.setInterval(16)
+        self._spinner_timer.setInterval(25)
         self._spinner_timer.timeout.connect(self._update_spinner)
         
         # Fade animation support - optimized for smooth 60fps
@@ -134,8 +135,13 @@ class QtOverlayWindow(QWidget):
         self._fade_timer.setInterval(16)  # 60fps
         self._fade_timer.timeout.connect(self._fade_tick)
         self._fade_target = 0.0
-        self._fade_speed = 0.35  # Faster fade for snappy feel (~4 frames)
-        
+        self._fade_speed = 0.35  # Faster fade for snappy feel (~4 frames)      
+
+        # Cache background to avoid repainting heavy shadows/gradients
+        self._background_cache = None
+        self._background_cache_size = None
+        self._background_cache_dpr = None
+
         self.setWindowOpacity(0.0)
         
     def _build_taper(self, n: int) -> list:
@@ -164,6 +170,80 @@ class QtOverlayWindow(QWidget):
         g = int(c1.green() + (c2.green() - c1.green()) * f)
         b = int(c1.blue() + (c2.blue() - c1.blue()) * f)
         return QColor(r, g, b)
+
+    def _ensure_background_cache(self) -> None:
+        """Build and cache the static overlay background for fast repaints."""
+        size = self.size()
+        try:
+            dpr = float(self.devicePixelRatioF())
+        except Exception:
+            dpr = 1.0
+
+        if (
+            self._background_cache is not None
+            and self._background_cache_size == size
+            and self._background_cache_dpr == dpr
+        ):
+            return
+
+        pixmap = QPixmap(int(size.width() * dpr), int(size.height() * dpr))
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+        m = self._shadow_margin
+        pill = QRectF(m, m, size.width() - 2 * m, size.height() - 2 * m)
+        radius = pill.height() / 2.0
+
+        # === Elegant Compact Shadow (Apple-style) ===
+        # Tight, refined shadow for premium floating effect
+        shadow_steps = 16
+        max_spread = 12.0  # Compact spread for elegance
+        y_offset_base = 3.6  # Subtle directional offset
+        
+        for i in range(shadow_steps, 0, -1):
+            # Normalized progress (1.0 at edge, 0.0 at pill)
+            t = i / shadow_steps
+            
+            # Smooth opacity curve - stronger near pill for definition
+            opacity = int(22 * (1 - t) ** 1.8)
+            opacity = max(1, min(opacity, 18))
+            
+            painter.setBrush(QColor(0, 0, 0, opacity))
+            painter.setPen(Qt.NoPen)
+            
+            # Spread grows linearly outward
+            spread = (i / shadow_steps) * max_spread
+            
+            # Slight y-offset grows with distance (light from above)
+            y_off = (i / shadow_steps) * y_offset_base
+            
+            r = QRectF(
+                pill.left() - spread,
+                pill.top() - spread * 0.7,
+                pill.width() + 2 * spread,
+                pill.height() + 2 * spread * 0.85,
+            )
+            r.translate(0, y_off)
+            
+            # Rounded corners scale with spread for consistent pill shape
+            painter.drawRoundedRect(r, radius + spread, radius + spread * 0.85)
+
+        # Background gradient
+        grad = QLinearGradient(pill.topLeft(), pill.bottomLeft())
+        grad.setColorAt(0.0, QColor(18, 18, 18, 245))
+        grad.setColorAt(1.0, QColor(8, 8, 8, 245))
+        painter.setBrush(grad)
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(pill, radius, radius)
+        painter.end()
+
+        self._background_cache = pixmap
+        self._background_cache_size = size
+        self._background_cache_dpr = dpr
     
     def _position_default(self):
         """Position overlay at bottom-center of screen, just above taskbar."""
@@ -278,7 +358,7 @@ class QtOverlayWindow(QWidget):
         if not self._is_transcribing:
             self._spinner_timer.stop()
             return
-        self._spinner_angle = (self._spinner_angle + 6) % 360
+        self._spinner_angle = (self._spinner_angle + 12) % 360
         self.update()
         
     def update_audio_level(self, rms: float):
@@ -331,12 +411,15 @@ class QtOverlayWindow(QWidget):
             current = self._display[i]
             
             if target > current:
-                # Near-instant rise for maximum responsiveness
-                self._display[i] = current + (target - current) * self._rise_speed
+                # Instant catch-up on big jumps, otherwise fast rise
+                if (target - current) > 0.18:
+                    self._display[i] = target
+                else:
+                    self._display[i] = current + (target - current) * self._rise_speed
                 self._fall[i] = 0.0
             else:
                 # Quick gravity fall - no slow damping
-                self._fall[i] = self._fall[i] * self._fall_damping + self._gravity * 0.02
+                self._fall[i] = self._fall[i] * self._fall_damping + self._gravity * 0.025
                 self._display[i] = max(0.0, current - self._fall[i])
         
         # Update pulse animation for initializing state
@@ -351,32 +434,12 @@ class QtOverlayWindow(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         
+        self._ensure_background_cache()
+        if self._background_cache is not None:
+            painter.drawPixmap(0, 0, self._background_cache)
+
         m = self._shadow_margin
         pill = QRectF(m, m, self.width() - 2 * m, self.height() - 2 * m)
-        radius = pill.height() / 2.0
-        
-        # Soft shadow (smoother multi-pass)
-        shadow_steps = 12
-        for i in range(shadow_steps, 0, -1):
-            # Non-linear alpha falloff for smoother edge
-            progress = i / shadow_steps
-            a = int(12 * progress * progress)  # Quadratic falloff, max alpha ~12
-            painter.setBrush(QColor(0, 0, 0, a))
-            painter.setPen(Qt.NoPen)
-            # Expand rectangle
-            r = QRectF(pill.left() - i, pill.top() - i, 
-                       pill.width() + 2 * i, pill.height() + 2 * i)
-            # Offset fixed downward for clean drop shadow effect
-            r.translate(0, 4)
-            painter.drawRoundedRect(r, radius + i, radius + i)
-        
-        # Background gradient
-        grad = QLinearGradient(pill.topLeft(), pill.bottomLeft())
-        grad.setColorAt(0.0, QColor(18, 18, 18, 245))
-        grad.setColorAt(1.0, QColor(8, 8, 8, 245))
-        painter.setBrush(grad)
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(pill, radius, radius)
         
         if self._is_recording:
             self._draw_recording_mode(painter, pill)

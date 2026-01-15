@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useLocation } from "wouter";
-import { useState, useEffect, useMemo, useCallback, memo } from "react";
+import { useState, useEffect, useMemo, useCallback, memo, useRef } from "react";
 import { apiUrl, wsUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
 import { useSharedWebSocket } from "@/contexts/WebSocketContext";
@@ -62,7 +62,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
       transition={{ delay: Math.min(index * 0.02, 0.1), duration: 0.2, ease: "easeOut" }}
     >
       <Card
-        className="neu-recording-row overflow-hidden bg-transparent hover:scale-[1.01] group cursor-pointer rounded-xl"
+        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} overflow-hidden bg-transparent hover:scale-[1.01] group cursor-pointer rounded-xl`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
       >
@@ -230,6 +230,7 @@ export default function Youtube() {
   const [startingVideoId, setStartingVideoId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
+  const deletingRef = useRef<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>("date");
   const queryClient = useQueryClient();
   const [viewMode, setViewMode] = useState<"list" | "grid">(
@@ -392,8 +393,9 @@ export default function Youtube() {
 
   const deleteTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation(); // Prevent card click navigation
-    if (deletingId) return;
+    if (deletingRef.current) return;
 
+    deletingRef.current = id;
     setDeletingId(id);
     try {
       const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
@@ -416,9 +418,10 @@ export default function Youtube() {
         duration: 4000,
       });
     } finally {
+      deletingRef.current = null;
       setDeletingId(null);
     }
-  }, [deletingId, toast]);
+  }, [toast]);
 
   const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -548,7 +551,7 @@ export default function Youtube() {
                 return (
                   <Card
                     key={item.videoId}
-                    className="neu-recording-row overflow-hidden hover:scale-[1.01] transition-all group cursor-pointer bg-transparent"
+                    className="neu-recording-row perf-scroll-item overflow-hidden hover:scale-[1.01] transition-all group cursor-pointer bg-transparent"
                     onClick={() => startTranscription(item)}
                   >
                     <div className="flex gap-4 p-4">

@@ -50,28 +50,28 @@ export async function apiRequest(
 }
 
 type UnauthorizedBehavior = "returnNull" | "throw";
-export const getQueryFn: <T>(options: {
+export const getQueryFn = <T,>({
+  on401: unauthorizedBehavior,
+}: {
   on401: UnauthorizedBehavior;
-}) => QueryFunction<T> =
-  ({ on401: unauthorizedBehavior }) =>
-    async ({ queryKey }) => {
-      try {
-        const res = await fetch(apiUrl(queryKey.join("/") as string), {
-          credentials: "include",
-        });
+}): QueryFunction<T> => async ({ queryKey }) => {
+  try {
+    const res = await fetch(apiUrl(queryKey.join("/") as string), {
+      credentials: "include",
+    });
 
-        if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-          return null as T;
-        }
+    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
+      return null as T;
+    }
 
-        await throwIfResNotOk(res);
-        return (await res.json()) as T;
-      } catch {
-        // Backend offline / not yet ready / CORS blocked: treat as empty and let the UI render.
-        // The BackendOfflineBanner will handle showing the user a friendly message.
-        return null as T;
-      }
-    };
+    await throwIfResNotOk(res);
+    return (await res.json()) as T;
+  } catch {
+    // Backend offline / not yet ready / CORS blocked: treat as empty and let the UI render.
+    // The BackendOfflineBanner will handle showing the user a friendly message.
+    return null as T;
+  }
+};
 
 export const queryClient = new QueryClient({
   defaultOptions: {
