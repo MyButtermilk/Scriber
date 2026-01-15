@@ -8,4 +8,8 @@ src/assets/flags/*.png
 downloads/
 *.db
 transcripts.db
+transcripts.db-wal
+transcripts.db-shm
 settings.json
+.scriber.lock
+tmp/
