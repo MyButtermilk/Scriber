@@ -1,11 +1,11 @@
-import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronRight, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power, Key, Settings2, Star } from "lucide-react";
+import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronRight, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power, Key, Settings2, Star, Download, Trash2, Loader2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -13,6 +13,37 @@ import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
 import { apiUrl } from "@/lib/backend";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
+import { useSharedWebSocket } from "@/contexts/WebSocketContext";
+
+type OnnxModelInfo = {
+  id: string;
+  name: string;
+  description: string;
+  languages: string[];
+  sizeMb: number;
+  sizeMbByQuantization?: Record<string, number>;
+  supportedQuantizations?: string[];
+  supportsTimestamps?: boolean;
+  downloaded?: boolean;
+  status?: "ready" | "not_downloaded" | "downloading" | "error";
+  progress?: number;
+  message?: string;
+};
+
+type NemoModelInfo = {
+  id: string;
+  name: string;
+  description: string;
+  languages: string[];
+  sizeMb: number;
+  supportsTimestamps?: boolean;
+  downloaded?: boolean;
+  status?: "ready" | "not_downloaded" | "downloading" | "error";
+  progress?: number;
+  message?: string;
+};
 
 export default function Settings() {
   const [openAIKey, setOpenAIKey] = useState("");
@@ -61,6 +92,62 @@ export default function Settings() {
   const [micAlwaysOn, setMicAlwaysOn] = useState(false);
   const [favoriteMic, setFavoriteMic] = useState("");
 
+  const [onnxAvailable, setOnnxAvailable] = useState<boolean | null>(null);
+  const [onnxMessage, setOnnxMessage] = useState("");
+  const [onnxModels, setOnnxModels] = useState<OnnxModelInfo[]>([]);
+  const [onnxModel, setOnnxModel] = useState("");
+  const [onnxQuantization, setOnnxQuantization] = useState("int8");
+
+  const [nemoAvailable, setNemoAvailable] = useState<boolean | null>(null);
+  const [nemoMessage, setNemoMessage] = useState("");
+  const [nemoModels, setNemoModels] = useState<NemoModelInfo[]>([]);
+  const [nemoModel, setNemoModel] = useState("");
+
+  const loadOnnxModels = useCallback(async () => {
+    try {
+      const res = await fetch(apiUrl("/api/onnx/models"), { credentials: "include" });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      const data = await res.json();
+      const available = data.available !== false;
+      setOnnxAvailable(available);
+      setOnnxMessage(data.message || "");
+      const models = (data.models || []) as OnnxModelInfo[];
+      setOnnxModels(models);
+
+      const current = data.currentModel || "";
+      const selected = models.find((m) => m.id === current) ? current : (models[0]?.id || "");
+      setOnnxModel(selected);
+      setOnnxQuantization(data.quantization || "int8");
+    } catch (e: any) {
+      setOnnxAvailable(false);
+      setOnnxMessage(String(e?.message || e));
+    }
+  }, []);
+
+  const loadNemoModels = useCallback(async () => {
+    try {
+      const res = await fetch(apiUrl("/api/nemo/models"), { credentials: "include" });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      const data = await res.json();
+      const available = data.available !== false;
+      setNemoAvailable(available);
+      setNemoMessage(data.message || "");
+      const models = (data.models || []) as NemoModelInfo[];
+      setNemoModels(models);
+
+      const current = data.currentModel || "";
+      const selected = models.find((m) => m.id === current) ? current : (models[0]?.id || "");
+      setNemoModel(selected);
+    } catch (e: any) {
+      setNemoAvailable(false);
+      setNemoMessage(String(e?.message || e));
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -104,6 +191,7 @@ export default function Settings() {
         setVisualizerBarCount(settings.visualizerBarCount || 45);
         setMicAlwaysOn(settings.micAlwaysOn === true);
         setFavoriteMic(settings.favoriteMic || "");
+        setNemoModel(settings.nemoModel || "");
 
         setSonioxKey(keys.soniox || "");
         setAssemblyAIKey(keys.assemblyai || "");
@@ -118,6 +206,8 @@ export default function Settings() {
         setGroqKey(keys.groq || "");
 
         setInputDevices((mics.devices || []) as { deviceId: string, label: string }[]);
+        await loadOnnxModels();
+        await loadNemoModels();
       } catch (e: any) {
         toast({
           title: "Failed to load settings",
@@ -131,7 +221,7 @@ export default function Settings() {
     return () => {
       cancelled = true;
     };
-  }, [toast]);
+  }, [toast, loadOnnxModels, loadNemoModels]);
 
   const updateSettings = async (patch: any) => {
     const res = await fetch(apiUrl("/api/settings"), {
@@ -266,6 +356,199 @@ export default function Settings() {
     } catch (e: any) {
       toast({
         title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
+  const handleOnnxModelChange = async (value: string) => {
+    setOnnxModel(value);
+    try {
+      const selected = onnxModels.find((m) => m.id === value);
+      const supported = selected?.supportedQuantizations || ["int8", "fp32"];
+      if (!supported.includes(onnxQuantization)) {
+        const nextQuant = supported[0];
+        setOnnxQuantization(nextQuant);
+        await updateSettings({ onnxModel: value, onnxQuantization: nextQuant });
+      } else {
+        await updateSettings({ onnxModel: value });
+      }
+      toast({
+        title: "Saved",
+        description: "Local model selection updated.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
+  const handleOnnxQuantizationChange = async (value: string) => {
+    setOnnxQuantization(value);
+    try {
+      await updateSettings({ onnxQuantization: value });
+      await loadOnnxModels();
+      toast({
+        title: "Saved",
+        description: "Quantization updated.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
+  const handleOnnxDownload = async (modelId: string) => {
+    if (!modelId) return;
+    setOnnxModels((prev) =>
+      prev.map((m) =>
+        m.id === modelId
+          ? { ...m, status: "downloading", progress: 0, message: "Starting download..." }
+          : m
+      )
+    );
+    try {
+      const res = await fetch(apiUrl("/api/onnx/download"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId, quantization: onnxQuantization }),
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        throw new Error(data?.message || "Download failed");
+      }
+      toast({
+        title: "Download finished",
+        description: "Model downloaded successfully.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Download failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    } finally {
+      await loadOnnxModels();
+    }
+  };
+
+  const handleOnnxDelete = async (modelId: string) => {
+    if (!modelId) return;
+    try {
+      const res = await fetch(
+        apiUrl(`/api/onnx/models/${encodeURIComponent(modelId)}?quantization=${encodeURIComponent(onnxQuantization)}`),
+        {
+        method: "DELETE",
+        credentials: "include",
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        throw new Error(data?.message || "Delete failed");
+      }
+      toast({
+        title: "Deleted",
+        description: "Model removed from cache.",
+        duration: 2000,
+      });
+      await loadOnnxModels();
+    } catch (e: any) {
+      toast({
+        title: "Delete failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
+  const handleNemoModelChange = async (value: string) => {
+    setNemoModel(value);
+    try {
+      await updateSettings({ nemoModel: value });
+      toast({
+        title: "Saved",
+        description: "NeMo model updated.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
+  const handleNemoDownload = async (modelId: string) => {
+    if (!modelId) return;
+    setNemoModels((prev) =>
+      prev.map((m) =>
+        m.id === modelId
+          ? { ...m, status: "downloading", progress: 0, message: "Starting download..." }
+          : m
+      )
+    );
+    try {
+      const res = await fetch(apiUrl("/api/nemo/download"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId }),
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        throw new Error(data?.message || "Download failed");
+      }
+      toast({
+        title: "Download finished",
+        description: "Model downloaded successfully.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Download failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    } finally {
+      await loadNemoModels();
+    }
+  };
+
+  const handleNemoDelete = async (modelId: string) => {
+    if (!modelId) return;
+    try {
+      const res = await fetch(
+        apiUrl(`/api/nemo/models/${encodeURIComponent(modelId)}`),
+        {
+          method: "DELETE",
+          credentials: "include",
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        throw new Error(data?.message || "Delete failed");
+      }
+      toast({
+        title: "Deleted",
+        description: "Model removed from cache.",
+        duration: 2000,
+      });
+      await loadNemoModels();
+    } catch (e: any) {
+      toast({
+        title: "Delete failed",
         description: String(e?.message || e),
         duration: 4000,
       });
@@ -436,6 +719,70 @@ export default function Settings() {
     }
   };
 
+  const handleWsMessage = useCallback((msg: any) => {
+    if (!msg) return;
+    if (msg.type === "onnx_download_progress") {
+      setOnnxModels((prev) =>
+        prev.map((m) =>
+          m.id === msg.modelId
+            ? {
+                ...m,
+                status: msg.status,
+                progress: typeof msg.progress === "number" ? msg.progress : m.progress,
+                message: msg.message || m.message,
+                downloaded: msg.status === "ready" ? true : m.downloaded,
+              }
+            : m
+        )
+      );
+    }
+    if (msg.type === "onnx_models_updated") {
+      loadOnnxModels();
+    }
+    if (msg.type === "nemo_download_progress") {
+      setNemoModels((prev) =>
+        prev.map((m) =>
+          m.id === msg.modelId
+            ? {
+                ...m,
+                status: msg.status,
+                progress: typeof msg.progress === "number" ? msg.progress : m.progress,
+                message: msg.message || m.message,
+                downloaded: msg.status === "ready" ? true : m.downloaded,
+              }
+            : m
+        )
+      );
+    }
+    if (msg.type === "nemo_models_updated") {
+      loadNemoModels();
+    }
+  }, [loadOnnxModels, loadNemoModels]);
+
+  useSharedWebSocket(handleWsMessage);
+
+  const selectedOnnxModel = onnxModels.find((m) => m.id === onnxModel) || onnxModels[0];
+  const selectedNemoModel = nemoModels.find((m) => m.id === nemoModel) || nemoModels[0];
+  const supportedQuantizations = selectedOnnxModel?.supportedQuantizations || ["int8", "fp32"];
+  const quantizationSupported = supportedQuantizations.includes(onnxQuantization);
+  const formatSize = (sizeMb?: number) => {
+    if (!sizeMb) return "";
+    if (sizeMb >= 1024) return `${(sizeMb / 1024).toFixed(1)} GB`;
+    return `${sizeMb} MB`;
+  };
+  const getStatusLabel = (status?: string) => {
+    if (status === "ready") return "Downloaded";
+    if (status === "downloading") return "Downloading";
+    if (status === "error") return "Error";
+    return "Not downloaded";
+  };
+  const getStatusVariant = (status?: string): "default" | "secondary" | "destructive" | "outline" => {
+    if (status === "ready") return "default";
+    if (status === "downloading") return "secondary";
+    if (status === "error") return "destructive";
+    return "outline";
+  };
+
   return (
     <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
       <header className="mb-6 space-y-2">
@@ -565,7 +912,9 @@ export default function Settings() {
                     <SelectTrigger className="w-[320px]">
                       <SelectValue placeholder="Select model" />
                     </SelectTrigger>
-                    <SelectContent>
+                      <SelectContent>
+                      <SelectItem value="onnx_local">Local (ONNX) - No API Key</SelectItem>
+                      <SelectItem value="nemo_local">Local (NeMo) - Primeline</SelectItem>
                       <SelectItem value="soniox-realtime">Soniox Realtime</SelectItem>
                       <SelectItem value="soniox-async">Soniox Async</SelectItem>
                       <SelectItem value="assemblyai">AssemblyAI</SelectItem>
@@ -580,6 +929,237 @@ export default function Settings() {
                       <SelectItem value="aws">AWS Transcribe</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-3">
+                  <div className="space-y-0.5">
+                    <Label className="text-base">Local Models</Label>
+                    <p className="text-sm text-muted-foreground">Run speech recognition locally without API keys</p>
+                  </div>
+
+                  {onnxAvailable === null && (
+                    <div className="text-sm text-muted-foreground">Loading local models...</div>
+                  )}
+
+                  {onnxAvailable === false && (
+                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                      {onnxMessage || "onnx-asr not installed. Run: pip install onnx-asr[cpu,hub]"}
+                    </div>
+                  )}
+
+                  {onnxAvailable && (
+                    <div className="space-y-4 rounded-lg border border-border/60 bg-secondary/20 p-4">
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <Label className="text-sm">Model</Label>
+                          <Select value={onnxModel} onValueChange={handleOnnxModelChange}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select local model" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {onnxModels.map((model) => (
+                                <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <Label className="text-sm">Quantization</Label>
+                          <Select value={onnxQuantization} onValueChange={handleOnnxQuantizationChange}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select quantization" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="int8" disabled={!supportedQuantizations.includes("int8")}>int8 (fast)</SelectItem>
+                              <SelectItem value="fp16" disabled={!supportedQuantizations.includes("fp16")}>fp16 (balanced)</SelectItem>
+                              <SelectItem value="fp32" disabled={!supportedQuantizations.includes("fp32")}>fp32 (accurate)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      {selectedOnnxModel ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-sm font-medium">{selectedOnnxModel.name}</div>
+                            <Badge variant={getStatusVariant(selectedOnnxModel.status)}>
+                              {getStatusLabel(selectedOnnxModel.status)}
+                            </Badge>
+                          </div>
+                          <p className="text-sm text-muted-foreground">{selectedOnnxModel.description}</p>
+                          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                            {(() => {
+                              const sizeForQuant =
+                                selectedOnnxModel.sizeMbByQuantization?.[onnxQuantization] ??
+                                selectedOnnxModel.sizeMb;
+                              return sizeForQuant ? (
+                                <span>Size ({onnxQuantization}): {formatSize(sizeForQuant)}</span>
+                              ) : null;
+                            })()}
+                            {selectedOnnxModel.languages?.length ? (
+                              <span>Languages: {selectedOnnxModel.languages.join(", ")}</span>
+                            ) : null}
+                          </div>
+
+                          {!quantizationSupported && (
+                            <div className="text-xs text-destructive">
+                              Quantization "{onnxQuantization}" is not supported for this model.
+                            </div>
+                          )}
+
+                          {selectedOnnxModel.status === "downloading" && (
+                            <div className="space-y-2">
+                              <Progress value={selectedOnnxModel.progress || 0} />
+                              <div className="text-xs text-muted-foreground flex items-center gap-2">
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                <span>{selectedOnnxModel.message || "Downloading..."}</span>
+                                <span className="ml-auto">{Math.round(selectedOnnxModel.progress || 0)}%</span>
+                              </div>
+                            </div>
+                          )}
+
+                          {selectedOnnxModel.status === "error" && selectedOnnxModel.message && (
+                            <div className="text-xs text-destructive">{selectedOnnxModel.message}</div>
+                          )}
+
+                          <div className="flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => handleOnnxDownload(selectedOnnxModel.id)}
+                              disabled={
+                                selectedOnnxModel.status === "downloading" ||
+                                selectedOnnxModel.downloaded ||
+                                !quantizationSupported
+                              }
+                            >
+                              {selectedOnnxModel.status === "downloading" ? (
+                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              ) : (
+                                <Download className="w-4 h-4 mr-2" />
+                              )}
+                              Download
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleOnnxDelete(selectedOnnxModel.id)}
+                              disabled={!selectedOnnxModel.downloaded || selectedOnnxModel.status === "downloading"}
+                            >
+                              <Trash2 className="w-4 h-4 mr-2" />
+                              Delete
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-sm text-muted-foreground">No local models available.</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <Separator />
+
+                <div className="space-y-3">
+                  <div className="space-y-0.5">
+                    <Label className="text-base">NeMo Local Models</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Run .nemo models locally (requires NeMo toolkit)
+                    </p>
+                  </div>
+
+                  {nemoAvailable === null && (
+                    <div className="text-sm text-muted-foreground">Loading NeMo models...</div>
+                  )}
+
+                  {nemoAvailable === false && (
+                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                      {nemoMessage || "NeMo toolkit not installed. Run: pip install nemo_toolkit[asr]"}
+                    </div>
+                  )}
+
+                  {nemoAvailable && (
+                    <div className="space-y-4 rounded-lg border border-border/60 bg-secondary/20 p-4">
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <Label className="text-sm">Model</Label>
+                          <Select value={nemoModel} onValueChange={handleNemoModelChange}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select NeMo model" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {nemoModels.map((model) => (
+                                <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      {selectedNemoModel ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-sm font-medium">{selectedNemoModel.name}</div>
+                            <Badge variant={getStatusVariant(selectedNemoModel.status)}>
+                              {getStatusLabel(selectedNemoModel.status)}
+                            </Badge>
+                          </div>
+                          <p className="text-sm text-muted-foreground">{selectedNemoModel.description}</p>
+                          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                            {selectedNemoModel.sizeMb ? (
+                              <span>Size: {formatSize(selectedNemoModel.sizeMb)}</span>
+                            ) : null}
+                            {selectedNemoModel.languages?.length ? (
+                              <span>Languages: {selectedNemoModel.languages.join(", ")}</span>
+                            ) : null}
+                          </div>
+
+                          {selectedNemoModel.status === "downloading" && (
+                            <div className="space-y-2">
+                              <Progress value={selectedNemoModel.progress || 0} />
+                              <div className="text-xs text-muted-foreground flex items-center gap-2">
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                <span>{selectedNemoModel.message || "Downloading..."}</span>
+                                <span className="ml-auto">{Math.round(selectedNemoModel.progress || 0)}%</span>
+                              </div>
+                            </div>
+                          )}
+
+                          {selectedNemoModel.status === "error" && selectedNemoModel.message && (
+                            <div className="text-xs text-destructive">{selectedNemoModel.message}</div>
+                          )}
+
+                          <div className="flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => handleNemoDownload(selectedNemoModel.id)}
+                              disabled={selectedNemoModel.status === "downloading" || selectedNemoModel.downloaded}
+                            >
+                              {selectedNemoModel.status === "downloading" ? (
+                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              ) : (
+                                <Download className="w-4 h-4 mr-2" />
+                              )}
+                              Download
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleNemoDelete(selectedNemoModel.id)}
+                              disabled={!selectedNemoModel.downloaded || selectedNemoModel.status === "downloading"}
+                            >
+                              <Trash2 className="w-4 h-4 mr-2" />
+                              Delete
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-sm text-muted-foreground">No NeMo models available.</div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <Separator />

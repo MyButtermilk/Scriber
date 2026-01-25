@@ -275,10 +275,20 @@ class TranscriptRecord:
     _summary_loaded: bool = True
 
     def to_public(self, *, include_content: bool) -> dict[str, Any]:
+        # Dynamically calculate date label based on created_at to ensure
+        # "Today" and "Yesterday" are always accurate relative to current time
+        display_date = self.date
+        if self.created_at:
+            try:
+                created_ts = datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
+                display_date = _format_date_label(created_ts)
+            except (ValueError, TypeError):
+                pass  # Fall back to stored date if parsing fails
+        
         data: dict[str, Any] = {
             "id": self.id,
             "title": self.title,
-            "date": self.date,
+            "date": display_date,
             "duration": self.duration,
             "status": self.status,
             "type": self.type,
@@ -1164,6 +1174,10 @@ class ScriberWebController:
             "summarizationModel": Config.SUMMARIZATION_MODEL or "gemini-3-flash-preview",
             "autoSummarize": bool(Config.AUTO_SUMMARIZE),
             "openaiSttModel": Config.OPENAI_STT_MODEL,
+            "onnxModel": Config.ONNX_MODEL,
+            "onnxQuantization": Config.ONNX_QUANTIZATION,
+            "onnxUseGpu": bool(Config.ONNX_USE_GPU),
+            "nemoModel": Config.NEMO_MODEL,
             "visualizerBarCount": Config.VISUALIZER_BAR_COUNT,
             "apiKeys": {
                 "soniox": Config.SONIOX_API_KEY or "",
@@ -1238,6 +1252,18 @@ class ScriberWebController:
 
         if "openaiSttModel" in payload and isinstance(payload["openaiSttModel"], str):
             Config.set_openai_stt_model(payload["openaiSttModel"])
+
+        if "onnxModel" in payload and isinstance(payload["onnxModel"], str):
+            Config.set_onnx_model(payload["onnxModel"])
+
+        if "onnxQuantization" in payload and isinstance(payload["onnxQuantization"], str):
+            Config.set_onnx_quantization(payload["onnxQuantization"])
+
+        if "onnxUseGpu" in payload:
+            Config.set_onnx_use_gpu(bool(payload["onnxUseGpu"]))
+
+        if "nemoModel" in payload and isinstance(payload["nemoModel"], str):
+            Config.set_nemo_model(payload["nemoModel"])
 
         if "visualizerBarCount" in payload:
             try:
@@ -2153,7 +2179,345 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_post("/api/youtube/transcribe", youtube_transcribe)
     app.router.add_post("/api/file/transcribe", file_transcribe)
 
+
+    # ==========================================================================
+    # ONNX Local Models API
+    # ==========================================================================
+
+    async def onnx_list_models(request: web.Request):
+        """List available ONNX models with download status."""
+        try:
+            from src.onnx_stt import list_available_models, is_onnx_available
+            
+            if not is_onnx_available():
+                return web.json_response({
+                    "available": False,
+                    "message": "onnx-asr library not installed. Run: pip install onnx-asr[cpu,hub]",
+                    "models": [],
+                })
+            
+            models = list_available_models(quantization=Config.ONNX_QUANTIZATION)
+            return web.json_response({
+                "available": True,
+                "models": models,
+                "currentModel": Config.ONNX_MODEL,
+                "quantization": Config.ONNX_QUANTIZATION,
+            })
+        except ImportError as e:
+            return web.json_response({
+                "available": False,
+                "message": str(e),
+                "models": [],
+            })
+        except Exception as e:
+            logger.exception("Failed to list ONNX models")
+            return web.json_response({"message": str(e)}, status=500)
+
+    async def onnx_model_status(request: web.Request):
+        """Get status of a specific ONNX model."""
+        model_id = request.match_info.get("model_id", "")
+        if not model_id:
+            return web.json_response({"message": "Missing model ID"}, status=400)
+        
+        try:
+            from src.onnx_stt import get_model_info, get_model_status
+            
+            info = get_model_info(model_id)
+            if not info:
+                return web.json_response({"message": "Unknown model"}, status=404)
+
+            quantization = request.query.get("quantization") or Config.ONNX_QUANTIZATION
+            status = get_model_status(model_id, quantization=quantization)
+            
+            return web.json_response({
+                "id": model_id,
+                "name": info["name"],
+                "description": info["description"],
+                "languages": info["languages"],
+                "sizeMb": info["size_mb"],
+                "sizeMbByQuantization": info.get("size_mb_by_quantization", {}),
+                "supportedQuantizations": info.get("supported_quantizations", ["int8", "fp32"]),
+                "downloaded": status["downloaded"],
+                "status": status["status"],
+                "progress": status["progress"],
+                "message": status["message"],
+            })
+        except Exception as e:
+            return web.json_response({"message": str(e)}, status=500)
+
+    async def onnx_download_model(request: web.Request):
+        """Download an ONNX model from Hugging Face."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        
+        model_id = body.get("modelId", "")
+        quantization = body.get("quantization") or Config.ONNX_QUANTIZATION
+        if not model_id:
+            return web.json_response({"message": "Missing modelId"}, status=400)
+        
+        try:
+            from src.onnx_stt import (
+                download_model,
+                get_model_info,
+                get_model_status,
+                is_model_downloading,
+            )
+
+            info = get_model_info(model_id)
+            if not info:
+                return web.json_response({"message": "Unknown model"}, status=404)
+
+            status = get_model_status(model_id, quantization=quantization)
+            if status.get("downloaded"):
+                return web.json_response({
+                    "success": True,
+                    "message": "Model already downloaded",
+                    "modelId": model_id,
+                })
+
+            if is_model_downloading(model_id):
+                return web.json_response({
+                    "success": False,
+                    "message": "Download already in progress",
+                    "modelId": model_id,
+                }, status=409)
+
+            ctl: ScriberWebController = request.app["controller"]
+            loop = asyncio.get_running_loop()
+
+            def on_progress(progress: float, message: str) -> None:
+                status_value = "downloading"
+                if progress < 0:
+                    status_value = "error"
+                elif progress >= 100:
+                    status_value = "ready"
+
+                payload = {
+                    "type": "onnx_download_progress",
+                    "modelId": model_id,
+                    "progress": progress,
+                    "status": status_value,
+                    "message": message,
+                }
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(ctl.broadcast(payload))
+                )
+
+            logger.info(f"Starting ONNX model download: {model_id}")
+            success = await download_model(model_id, quantization=quantization, on_progress=on_progress)
+
+            final_status = get_model_status(model_id, quantization=quantization)
+            await ctl.broadcast({
+                "type": "onnx_download_progress",
+                "modelId": model_id,
+                "progress": final_status.get("progress", 0.0),
+                "status": final_status.get("status", "error" if not success else "ready"),
+                "message": final_status.get("message", ""),
+            })
+
+            if success:
+                return web.json_response({
+                    "success": True,
+                    "message": "Model downloaded successfully",
+                    "modelId": model_id,
+                })
+            return web.json_response({
+                "success": False,
+                "message": "Download failed",
+                "modelId": model_id,
+            }, status=500)
+
+        except ValueError as e:
+            return web.json_response({"message": str(e)}, status=400)
+        except Exception as e:
+            logger.exception(f"Failed to download model {model_id}")
+            return web.json_response({"message": str(e)}, status=500)
+
+    async def onnx_delete_model(request: web.Request):
+        """Delete a downloaded ONNX model from cache."""
+        model_id = request.match_info.get("model_id", "")
+        if not model_id:
+            return web.json_response({"message": "Missing model ID"}, status=400)
+        
+        try:
+            from src.onnx_stt import delete_model, get_model_info
+            
+            info = get_model_info(model_id)
+            if not info:
+                return web.json_response({"message": "Unknown model"}, status=404)
+            
+            quantization = request.query.get("quantization") or Config.ONNX_QUANTIZATION
+            success = delete_model(model_id, quantization=quantization)
+            
+            if success:
+                logger.info(f"Deleted ONNX model: {model_id}")
+                await request.app["controller"].broadcast({
+                    "type": "onnx_models_updated",
+                    "modelId": model_id,
+                })
+                return web.json_response({
+                    "success": True,
+                    "message": "Model deleted",
+                    "modelId": model_id,
+                })
+            else:
+                return web.json_response({
+                    "success": False,
+                    "message": "Model not found in cache",
+                    "modelId": model_id,
+                }, status=404)
+                
+        except Exception as e:
+            logger.exception(f"Failed to delete model {model_id}")
+            return web.json_response({"message": str(e)}, status=500)
+
+    async def nemo_list_models(request: web.Request):
+        """List available NeMo models and their download status."""
+        try:
+            from src.nemo_stt import list_available_models, is_nemo_available
+
+            if not is_nemo_available():
+                return web.json_response({
+                    "available": False,
+                    "message": "NeMo toolkit not installed. Run: pip install nemo_toolkit[asr]",
+                    "models": [],
+                })
+
+            return web.json_response({
+                "available": True,
+                "models": list_available_models(),
+                "currentModel": Config.NEMO_MODEL,
+            })
+        except Exception as e:
+            logger.exception("Failed to list NeMo models")
+            return web.json_response({"message": str(e)}, status=500)
+
+    async def nemo_download_model(request: web.Request):
+        """Download a NeMo model from Hugging Face."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        model_id = body.get("modelId", "")
+        if not model_id:
+            return web.json_response({"message": "Missing modelId"}, status=400)
+
+        try:
+            from src.nemo_stt import (
+                download_model,
+                get_model_info,
+                get_model_status,
+                is_model_downloading,
+            )
+
+            info = get_model_info(model_id)
+            if not info:
+                return web.json_response({"message": "Unknown model"}, status=404)
+
+            status = get_model_status(model_id)
+            if status.get("downloaded"):
+                return web.json_response({
+                    "success": True,
+                    "message": "Model already downloaded",
+                    "modelId": model_id,
+                })
+
+            if is_model_downloading(model_id):
+                return web.json_response({
+                    "success": False,
+                    "message": "Download already in progress",
+                    "modelId": model_id,
+                }, status=409)
+
+            ctl: ScriberWebController = request.app["controller"]
+            loop = asyncio.get_running_loop()
+
+            def on_progress(progress: float, message: str) -> None:
+                status_value = "downloading"
+                if progress < 0:
+                    status_value = "error"
+                elif progress >= 100:
+                    status_value = "ready"
+
+                payload = {
+                    "type": "nemo_download_progress",
+                    "modelId": model_id,
+                    "progress": progress,
+                    "status": status_value,
+                    "message": message,
+                }
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(ctl.broadcast(payload))
+                )
+
+            logger.info(f"Starting NeMo model download: {model_id}")
+            success = await download_model(model_id, on_progress=on_progress)
+
+            final_status = get_model_status(model_id)
+            await ctl.broadcast({
+                "type": "nemo_download_progress",
+                "modelId": model_id,
+                "progress": final_status.get("progress", 0.0),
+                "status": final_status.get("status", "error" if not success else "ready"),
+                "message": final_status.get("message", ""),
+            })
+
+            if success:
+                return web.json_response({
+                    "success": True,
+                    "message": "Model downloaded successfully",
+                    "modelId": model_id,
+                })
+            return web.json_response({
+                "success": False,
+                "message": "Download failed",
+                "modelId": model_id,
+            }, status=500)
+
+        except Exception as e:
+            logger.exception(f"Failed to download model {model_id}")
+            return web.json_response({"message": str(e)}, status=500)
+
+    async def nemo_delete_model(request: web.Request):
+        """Delete a downloaded NeMo model from cache."""
+        model_id = request.match_info.get("model_id", "")
+        if not model_id:
+            return web.json_response({"message": "Missing model ID"}, status=400)
+
+        try:
+            from src.nemo_stt import delete_model, get_model_info
+
+            info = get_model_info(model_id)
+            if not info:
+                return web.json_response({"message": "Unknown model"}, status=404)
+
+            success = delete_model(model_id)
+
+            if success:
+                ctl: ScriberWebController = request.app["controller"]
+                await ctl.broadcast({
+                    "type": "nemo_models_updated",
+                })
+                return web.json_response({"success": True})
+
+            return web.json_response({"message": "Delete failed"}, status=404)
+        except Exception as e:
+            logger.exception(f"Failed to delete model {model_id}")
+            return web.json_response({"message": str(e)}, status=500)
+
+    app.router.add_get("/api/onnx/models", onnx_list_models)
+    app.router.add_get("/api/onnx/models/{model_id}", onnx_model_status)
+    app.router.add_post("/api/onnx/download", onnx_download_model)
+    app.router.add_delete("/api/onnx/models/{model_id}", onnx_delete_model)
+    app.router.add_get("/api/nemo/models", nemo_list_models)
+    app.router.add_post("/api/nemo/download", nemo_download_model)
+    app.router.add_delete("/api/nemo/models/{model_id}", nemo_delete_model)
+
     return app
+
 
 
 async def run_server(host: str, port: int) -> None:

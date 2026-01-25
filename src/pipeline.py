@@ -23,6 +23,7 @@ from pipecat.frames.frames import (
     StartFrame,
     StopFrame,
     CancelFrame,
+    UserStoppedSpeakingFrame,
 )
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
@@ -47,6 +48,11 @@ except Exception:
     SileroVADAnalyzer = None
     HAS_SILERO_VAD = False
     logger.warning("Silero VAD not available; segmented STT may produce no transcripts")
+
+try:
+    from pipecat.audio.vad.vad_analyzer import VADParams
+except Exception:
+    VADParams = None
 
 
 # ============================================================================
@@ -665,7 +671,7 @@ class ScriberPipeline:
             finally:
                 self.audio_input = None
 
-    def _create_stt_service(self, session: aiohttp.ClientSession):
+    def _create_stt_service(self, session: aiohttp.ClientSession, *, for_file: bool = False):
         """Create the appropriate STT service based on configuration.
         
         STT services are imported lazily here to reduce app startup time.
@@ -811,6 +817,31 @@ class ScriberPipeline:
             # Lazy import - only loaded when AWS is used
             from pipecat.services.aws.stt import AWSTranscribeSTTService
             return AWSTranscribeSTTService()
+
+        elif self.service_name == "onnx_local":
+            from src.onnx_local_service import OnnxLocalBufferedSTTService, OnnxLocalSTTService
+            if for_file:
+                return OnnxLocalSTTService(
+                    model_name=Config.ONNX_MODEL,
+                    language=Config.LANGUAGE,
+                    quantization=Config.ONNX_QUANTIZATION,
+                )
+            return OnnxLocalBufferedSTTService(
+                model_name=Config.ONNX_MODEL,
+                language=Config.LANGUAGE,
+                quantization=Config.ONNX_QUANTIZATION,
+                sample_rate=Config.SAMPLE_RATE,
+                channels=Config.CHANNELS,
+            )
+
+        elif self.service_name == "nemo_local":
+            from src.nemo_local_service import NemoLocalBufferedSTTService
+            return NemoLocalBufferedSTTService(
+                model_name=Config.NEMO_MODEL,
+                language=Config.LANGUAGE,
+                sample_rate=Config.SAMPLE_RATE,
+                channels=Config.CHANNELS,
+            )
         
         else:
             raise ValueError(f"Unknown service: {self.service_name}")
@@ -850,6 +881,21 @@ class ScriberPipeline:
                     vad_analyzer = _AnalyzerCache.get_vad_analyzer()
                     if not vad_analyzer:
                         logger.warning("VAD analyzer required but not available; transcripts may not finalize properly.")
+                    elif self.service_name == "onnx_local" and VADParams:
+                        try:
+                            vad_analyzer.set_sample_rate(Config.SAMPLE_RATE)
+                            params = vad_analyzer.params
+                            # Canary/Parakeet need more sensitive VAD for quiet mics.
+                            vad_analyzer.set_params(
+                                VADParams(
+                                    confidence=params.confidence,
+                                    start_secs=params.start_secs,
+                                    stop_secs=params.stop_secs,
+                                    min_volume=0.1,
+                                )
+                            )
+                        except Exception as exc:
+                            logger.debug(f"VAD param override failed: {exc}")
 
                 # Always use our custom MicrophoneInput to support on_audio_level callback
                 self.audio_input = MicrophoneInput(
@@ -916,13 +962,27 @@ class ScriberPipeline:
         file_input: FfmpegAudioFileInput | None = None
         try:
             async with aiohttp.ClientSession() as session:
-                stt_service = self._create_stt_service(session)
+                stt_service = self._create_stt_service(session, for_file=True)
 
                 vad_analyzer = None
                 if isinstance(stt_service, SegmentedSTTService):
                     vad_analyzer = _AnalyzerCache.get_vad_analyzer()
                     if not vad_analyzer:
                         logger.warning("Segmented STT requires VAD; transcripts may be empty.")
+                    elif self.service_name == "onnx_local" and VADParams:
+                        try:
+                            vad_analyzer.set_sample_rate(Config.SAMPLE_RATE)
+                            params = vad_analyzer.params
+                            vad_analyzer.set_params(
+                                VADParams(
+                                    confidence=params.confidence,
+                                    start_secs=params.start_secs,
+                                    stop_secs=params.stop_secs,
+                                    min_volume=0.1,
+                                )
+                            )
+                        except Exception as exc:
+                            logger.debug(f"VAD param override failed: {exc}")
 
                 file_input = FfmpegAudioFileInput(
                     file_path,
@@ -1201,6 +1261,15 @@ class ScriberPipeline:
         )
         if self.on_status_change:
             self.on_status_change("Transcribing..." if is_soniox_async else "Stopping...")
+        # Force flush of segmented STT buffers before stopping audio input (EndFrame closes pipeline).
+        if self.pipeline:
+            try:
+                if any(isinstance(step, SegmentedSTTService) for step in self.pipeline.processors):
+                    logger.debug("Forcing segmented STT flush on stop")
+                    await self.pipeline.push_frame(UserStoppedSpeakingFrame(), direction=FrameDirection.DOWNSTREAM)
+                    await asyncio.sleep(0)
+            except Exception as e:
+                logger.debug(f"Segmented STT flush warning: {e}")
         # Stop mic capture immediately so LED turns off while transcription finalizes.
         await self._cleanup_audio_input()
         # For Soniox real-time: send stop_recording and wait for final tokens BEFORE pipeline shutdown.
