@@ -117,14 +117,49 @@ class MicrophoneInput(BaseInputTransport):
                         logger.warning(f"Could not query default device ({e}); using 1 channel")
                         self._target_channels = 1
 
-                self.stream = sd.InputStream(
-                    samplerate=self._target_sample_rate,
-                    channels=self._target_channels,
-                    blocksize=self.block_size,
-                    dtype="int16",
-                    callback=self._audio_callback,
-                    device=device_index,
-                )
+                # Try to open the stream - with fallback to default if configured device fails
+                try:
+                    self.stream = sd.InputStream(
+                        samplerate=self._target_sample_rate,
+                        channels=self._target_channels,
+                        blocksize=self.block_size,
+                        dtype="int16",
+                        callback=self._audio_callback,
+                        device=device_index,
+                    )
+                except Exception as stream_err:
+                    if device_index is not None:
+                        # Configured device failed to open - fall back to system default
+                        logger.warning(
+                            f"Could not open device {device_index} ({stream_err}); "
+                            f"falling back to Windows default microphone"
+                        )
+                        device_index = None
+                        # Re-query default device channels
+                        try:
+                            default_info = sd.query_devices(device=None, kind='input')
+                            max_channels = int(default_info.get('max_input_channels', 1))
+                            if max_channels > 0:
+                                chosen_channels = self._target_channels
+                                if chosen_channels <= 0 or chosen_channels > max_channels:
+                                    chosen_channels = max_channels
+                                self._target_channels = chosen_channels
+                        except Exception:
+                            self._target_channels = 1
+
+                        # Try default device
+                        self.stream = sd.InputStream(
+                            samplerate=self._target_sample_rate,
+                            channels=self._target_channels,
+                            blocksize=self.block_size,
+                            dtype="int16",
+                            callback=self._audio_callback,
+                            device=None,  # System default
+                        )
+                    else:
+                        # Already using default, re-raise
+                        raise
+
             if not self.stream.active:
                 self.stream.start()
             logger.info(f"Microphone stream started (device={'default' if device_index is None else device_index})")
@@ -140,6 +175,8 @@ class MicrophoneInput(BaseInputTransport):
         except Exception as e:
             logger.error(f"Microphone error: {e}")
             await self.stop(frame=EndFrame())
+            # Re-raise to notify the pipeline that microphone initialization failed
+            raise RuntimeError(f"Microphone initialization failed: {e}") from e
 
     def _audio_callback(self, indata, frames, time_info, status):
         if status:

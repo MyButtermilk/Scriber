@@ -89,6 +89,7 @@ export default function Settings() {
   const [visualizerBarCount, setVisualizerBarCount] = useState(45);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartAvailable, setAutostartAvailable] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [micAlwaysOn, setMicAlwaysOn] = useState(false);
   const [favoriteMic, setFavoriteMic] = useState("");
 
@@ -208,7 +209,9 @@ export default function Settings() {
         setInputDevices((mics.devices || []) as { deviceId: string, label: string }[]);
         await loadOnnxModels();
         await loadNemoModels();
+        setSettingsLoaded(true);
       } catch (e: any) {
+        setSettingsLoaded(true); // Still mark as loaded even on error
         toast({
           title: "Failed to load settings",
           description: String(e?.message || e),
@@ -806,7 +809,7 @@ export default function Settings() {
               </div>
             </AccordionTrigger>
             <AccordionContent>
-              <div className="px-6 pb-6 space-y-6">
+              <div className={`px-6 pb-6 space-y-6 transition-opacity duration-200 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
 
                 {autostartAvailable && (
                   <>

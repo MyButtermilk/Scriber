@@ -5,6 +5,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { SidebarSearch } from "@/components/ui/sidebar-search";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useQueryClient } from "@tanstack/react-query";
+import { useState, useEffect, useCallback } from "react";
+import { CommandPalette } from "@/components/CommandPalette";
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -15,6 +17,24 @@ export function AppLayout({ children, path }: AppLayoutProps) {
   const [location, setLocation] = useLocation();
   const currentKey = path || location;
   const queryClient = useQueryClient();
+  const [commandOpen, setCommandOpen] = useState(false);
+
+  // Global Strg+K handler for Command Palette
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setCommandOpen((open) => !open);
+      }
+    };
+    document.addEventListener("keydown", down);
+    return () => document.removeEventListener("keydown", down);
+  }, []);
+
+  // Callback for SidebarSearch to open Command Palette
+  const handleOpenCommandPalette = useCallback(() => {
+    setCommandOpen(true);
+  }, []);
 
   // Prefetch transcripts data on nav hover for instant loading
   const handleNavHover = () => {
@@ -40,7 +60,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
 
         {/* Search Bar */}
         <div className="px-3 pb-3">
-          <SidebarSearch placeholder="Search" />
+          <SidebarSearch placeholder="Search" onOpenCommandPalette={handleOpenCommandPalette} />
         </div>
 
         {/* Navigation */}
@@ -105,6 +125,9 @@ export function AppLayout({ children, path }: AppLayoutProps) {
           </div>
         </div>
       </main>
+
+      {/* Command Palette */}
+      <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
     </div>
   );
 }

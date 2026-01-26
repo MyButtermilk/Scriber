@@ -686,12 +686,15 @@ class ScriberWebController:
                 import time
                 now = time.time()
                 # Throttle broadcasts to max 4 per second to avoid flooding
-                if now - last_broadcast_time[0] < 0.25:
+                # BUT always allow "finished" status through to show 100%
+                if progress.status != "finished" and now - last_broadcast_time[0] < 0.25:
                     return
                 last_broadcast_time[0] = now
                 
                 # Build step message with speed and ETA
-                if progress.speed and progress.eta:
+                if progress.status == "finished":
+                    rec.step = "Download complete"
+                elif progress.speed and progress.eta:
                     rec.step = f"Downloading... {progress.percent:.0f}% • {progress.speed} • ETA {progress.eta}"
                 elif progress.speed:
                     rec.step = f"Downloading... {progress.percent:.0f}% • {progress.speed}"
@@ -1113,7 +1116,11 @@ class ScriberWebController:
             await asyncio.sleep(0.05)
 
     def get_settings(self) -> dict[str, Any]:
+        # Track favorite mic availability for UI feedback
+        _favorite_mic_available = False
+
         def resolve_mic_device_for_ui() -> str:
+            nonlocal _favorite_mic_available
             selected = Config.MIC_DEVICE or "default"
             favorite = Config.FAVORITE_MIC or ""
             try:
@@ -1149,13 +1156,15 @@ class ScriberWebController:
             selected_available = bool(selected_name)
 
             favorite_name = favorite if favorite and favorite != "default" else ""
-            favorite_available = bool(favorite_name and favorite_name in available)
+            _favorite_mic_available = bool(favorite_name and favorite_name in available)
 
-            if favorite_available and (selected_is_default or not selected_available):
+            if _favorite_mic_available and (selected_is_default or not selected_available):
                 return favorite_name
             if selected_available:
                 return selected_name  # type: ignore[return-value]
             return "default"
+
+        resolved_mic = resolve_mic_device_for_ui()
 
         return {
             "hotkey": _hotkey_to_display(Config.HOTKEY),
@@ -1165,8 +1174,9 @@ class ScriberWebController:
             "sonioxMode": Config.SONIOX_MODE,
             "sonioxAsyncModel": Config.SONIOX_ASYNC_MODEL,
             "language": Config.LANGUAGE,
-            "micDevice": resolve_mic_device_for_ui(),
+            "micDevice": resolved_mic,
             "favoriteMic": Config.FAVORITE_MIC or "",
+            "favoriteMicAvailable": _favorite_mic_available,
             "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
             "debug": bool(Config.DEBUG),
             "customVocab": Config.CUSTOM_VOCAB or "",
