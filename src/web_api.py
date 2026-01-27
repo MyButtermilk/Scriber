@@ -710,7 +710,6 @@ class ScriberWebController:
             audio_path = await download_youtube_audio(
                 rec.source_url, 
                 output_dir=out_dir, 
-                audio_format="mp3",
                 on_progress=on_download_progress
             )
 

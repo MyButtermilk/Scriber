@@ -163,6 +163,7 @@ export default function Settings() {
 
     const load = async () => {
       try {
+        // Load ALL data in parallel - don't wait for ONNX/NeMo models
         const [settingsRes, micsRes, autostartRes] = await Promise.all([
           fetch(apiUrl("/api/settings"), { credentials: "include" }),
           fetch(apiUrl("/api/microphones"), { credentials: "include" }),
@@ -207,9 +208,13 @@ export default function Settings() {
         setGroqKey(keys.groq || "");
 
         setInputDevices((mics.devices || []) as { deviceId: string, label: string }[]);
-        await loadOnnxModels();
-        await loadNemoModels();
+
+        // Show page immediately - don't wait for model info
         setSettingsLoaded(true);
+
+        // Load ONNX and NeMo models in background (non-blocking)
+        loadOnnxModels();
+        loadNemoModels();
       } catch (e: any) {
         setSettingsLoaded(true); // Still mark as loaded even on error
         toast({
@@ -452,8 +457,8 @@ export default function Settings() {
       const res = await fetch(
         apiUrl(`/api/onnx/models/${encodeURIComponent(modelId)}?quantization=${encodeURIComponent(onnxQuantization)}`),
         {
-        method: "DELETE",
-        credentials: "include",
+          method: "DELETE",
+          credentials: "include",
         }
       );
       const data = await res.json().catch(() => ({}));
@@ -729,12 +734,12 @@ export default function Settings() {
         prev.map((m) =>
           m.id === msg.modelId
             ? {
-                ...m,
-                status: msg.status,
-                progress: typeof msg.progress === "number" ? msg.progress : m.progress,
-                message: msg.message || m.message,
-                downloaded: msg.status === "ready" ? true : m.downloaded,
-              }
+              ...m,
+              status: msg.status,
+              progress: typeof msg.progress === "number" ? msg.progress : m.progress,
+              message: msg.message || m.message,
+              downloaded: msg.status === "ready" ? true : m.downloaded,
+            }
             : m
         )
       );
@@ -747,12 +752,12 @@ export default function Settings() {
         prev.map((m) =>
           m.id === msg.modelId
             ? {
-                ...m,
-                status: msg.status,
-                progress: typeof msg.progress === "number" ? msg.progress : m.progress,
-                message: msg.message || m.message,
-                downloaded: msg.status === "ready" ? true : m.downloaded,
-              }
+              ...m,
+              status: msg.status,
+              progress: typeof msg.progress === "number" ? msg.progress : m.progress,
+              message: msg.message || m.message,
+              downloaded: msg.status === "ready" ? true : m.downloaded,
+            }
             : m
         )
       );
@@ -787,7 +792,7 @@ export default function Settings() {
   };
 
   return (
-    <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
+    <div className={`max-w-screen-md mx-auto px-4 py-6 md:py-8 transition-opacity duration-150 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
       <header className="mb-6 space-y-2">
         <h1 className="text-3xl font-bold tracking-tight text-foreground">Settings</h1>
         <p className="text-muted-foreground">Manage your preferences and API keys</p>
@@ -809,7 +814,7 @@ export default function Settings() {
               </div>
             </AccordionTrigger>
             <AccordionContent>
-              <div className={`px-6 pb-6 space-y-6 transition-opacity duration-200 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
+              <div className="px-6 pb-6 space-y-6">
 
                 {autostartAvailable && (
                   <>
@@ -915,7 +920,7 @@ export default function Settings() {
                     <SelectTrigger className="w-[320px]">
                       <SelectValue placeholder="Select model" />
                     </SelectTrigger>
-                      <SelectContent>
+                    <SelectContent>
                       <SelectItem value="onnx_local">Local (ONNX) - No API Key</SelectItem>
                       <SelectItem value="nemo_local">Local (NeMo) - Primeline</SelectItem>
                       <SelectItem value="soniox-realtime">Soniox Realtime</SelectItem>

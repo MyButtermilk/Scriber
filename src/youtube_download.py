@@ -43,24 +43,21 @@ def _format_eta(seconds: int) -> str:
     return f"{seconds // 3600}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
 
 
-def _require_ffmpeg() -> None:
-    if shutil.which("ffmpeg") or shutil.which("ffmpeg.exe"):
-        return
-    raise YouTubeDownloadError("ffmpeg not found on PATH (required for audio extraction).")
-
 
 async def download_youtube_audio(
     url: str,
     *,
     output_dir: str | Path,
-    audio_format: str = "mp3",
     on_progress: Optional[Callable[[DownloadProgress], None]] = None,
 ) -> Path:
+    """Download audio from YouTube video directly as webm (no conversion needed).
+    
+    Downloads only the audio stream in webm format, which is natively supported
+    by Soniox STT. This avoids unnecessary FFmpeg conversion overhead.
+    """
     url = (url or "").strip()
     if not url:
         raise ValueError("Missing URL")
-
-    _require_ffmpeg()
 
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -117,14 +114,11 @@ async def download_youtube_audio(
                         pass
         
         ydl_opts = {
-            "format": "bestaudio/best",
+            # Prefer webm audio (Opus codec), fall back to any audio format
+            "format": "bestaudio[ext=webm]/bestaudio",
             "outtmpl": template,
             "noplaylist": True,
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": audio_format,
-                "preferredquality": "0",
-            }],
+            # No postprocessors - keep original format for speed
             "progress_hooks": [progress_hook],
             "quiet": True,
             "no_warnings": True,
@@ -135,9 +129,10 @@ async def download_youtube_audio(
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info:
-                    # Get the final filename after post-processing
+                    # Get the final filename (no post-processing, so ext comes from format)
                     video_id = info.get("id", "video")
-                    final_path = out_dir / f"{video_id}.{audio_format}"
+                    ext = info.get("ext", "webm")
+                    final_path = out_dir / f"{video_id}.{ext}"
         
         # Run in thread to not block event loop
         loop = asyncio.get_running_loop()
@@ -146,9 +141,10 @@ async def download_youtube_audio(
         if final_path and final_path.exists():
             return final_path
         
-        # Try to find the file
-        for f in out_dir.glob(f"*.{audio_format}"):
-            return f
+        # Try to find the file (webm preferred, then any audio)
+        for ext in ["webm", "m4a", "opus", "mp3"]:
+            for f in out_dir.glob(f"*.{ext}"):
+                return f
         
         raise YouTubeDownloadError("Downloaded file not found")
         
@@ -166,12 +162,7 @@ async def download_youtube_audio(
         *exe_cmd,
         "--no-playlist",
         "-f",
-        "bestaudio/best",
-        "-x",
-        "--audio-format",
-        str(audio_format),
-        "--audio-quality",
-        "0",
+        "bestaudio[ext=webm]/bestaudio",  # Prefer webm, no conversion
         "-o",
         template,
         "--print",
