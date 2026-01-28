@@ -251,6 +251,16 @@ def _hotkey_to_display(hotkey: str) -> str:
     return " + ".join(out) if out else ""
 
 
+_DEVICE_NAME_PREFIX_RE = re.compile(r"\((\d+)\s*-\s*", re.IGNORECASE)
+
+
+def _normalize_device_name(name: str) -> str:
+    """Normalize Windows device names by stripping unstable numeric prefixes."""
+    if not name:
+        return ""
+    return _DEVICE_NAME_PREFIX_RE.sub("(", name).strip().lower()
+
+
 @dataclass
 class TranscriptRecord:
     id: str
@@ -954,12 +964,36 @@ class ScriberWebController:
                 show_recording_overlay()
                 logger.info("Microphone ready - recording started")
 
+            # Callback for pipeline errors (e.g., Soniox websocket timeout)
+            def on_pipeline_error(error_msg: str):
+                logger.error(f"Pipeline error callback: {error_msg}")
+                self._set_status("Error")
+                self._overlay_audio_enabled = False
+                hide_recording_overlay()
+
+                # Parse error and create user-friendly message
+                error_lower = error_msg.lower()
+                if "timeout" in error_lower or "handshake" in error_lower:
+                    user_msg = "Connection to STT service timed out. Please check your internet connection and try again."
+                elif "402" in error_lower or "payment required" in error_lower:
+                    user_msg = "STT service requires payment. Please check your account credits."
+                elif "401" in error_lower or "unauthorized" in error_lower:
+                    user_msg = "Invalid API key. Please check your credentials in Settings."
+                else:
+                    user_msg = f"Recording failed: {error_msg}"
+
+                # Broadcast error to frontend
+                self._loop.call_soon_threadsafe(
+                    lambda msg=user_msg: asyncio.create_task(self.broadcast({"type": "error", "message": msg}))
+                )
+
             self._pipeline = ScriberPipeline(
                 service_name=Config.DEFAULT_STT_SERVICE,
                 on_status_change=self._set_status,
                 on_audio_level=self._on_audio_level,
                 on_transcription=self._on_transcription,
                 on_mic_ready=on_mic_ready,
+                on_error=on_pipeline_error,
             )
             self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
             self._pipeline_task.add_done_callback(self._on_pipeline_done)
@@ -1117,24 +1151,34 @@ class ScriberWebController:
     def get_settings(self) -> dict[str, Any]:
         # Track favorite mic availability for UI feedback
         _favorite_mic_available = False
+        _resolved_favorite = ""
 
         def resolve_mic_device_for_ui() -> str:
-            nonlocal _favorite_mic_available
+            nonlocal _favorite_mic_available, _resolved_favorite
             selected = Config.MIC_DEVICE or "default"
             favorite = Config.FAVORITE_MIC or ""
             try:
                 devices = self.list_microphones()
             except Exception:
                 return selected
-            available = {d.get("deviceId") for d in devices if d.get("deviceId")}
+            available_ids = [d.get("deviceId") for d in devices if d.get("deviceId")]
+            available = set(available_ids)
             if len(available) <= 1:  # "default" only, no reliable availability check
                 return selected
+            normalized_to_id: dict[str, str] = {}
+            for dev_id in available_ids:
+                norm = _normalize_device_name(dev_id)
+                if norm and norm not in normalized_to_id:
+                    normalized_to_id[norm] = dev_id
 
             def resolve_device_id(device_id: str) -> str | None:
                 if not device_id or device_id == "default":
                     return None
                 if device_id in available:
                     return device_id
+                norm = _normalize_device_name(device_id)
+                if norm in normalized_to_id:
+                    return normalized_to_id[norm]
                 try:
                     idx = int(device_id)
                 except (TypeError, ValueError):
@@ -1144,8 +1188,12 @@ class ScriberWebController:
 
                     info = sd.query_devices(device=idx, kind="input")
                     name = info.get("name")
-                    if name in available:
-                        return name
+                    if name:
+                        if name in available:
+                            return name
+                        name_norm = _normalize_device_name(name)
+                        if name_norm in normalized_to_id:
+                            return normalized_to_id[name_norm]
                 except Exception:
                     return None
                 return None
@@ -1154,10 +1202,11 @@ class ScriberWebController:
             selected_name = resolve_device_id(selected) if not selected_is_default else None
             selected_available = bool(selected_name)
 
-            favorite_name = favorite if favorite and favorite != "default" else ""
-            _favorite_mic_available = bool(favorite_name and favorite_name in available)
+            favorite_name = resolve_device_id(favorite) if favorite and favorite != "default" else None
+            _favorite_mic_available = bool(favorite_name)
+            _resolved_favorite = favorite_name or ""
 
-            if _favorite_mic_available and (selected_is_default or not selected_available):
+            if favorite_name and (selected_is_default or not selected_available):
                 return favorite_name
             if selected_available:
                 return selected_name  # type: ignore[return-value]
@@ -1174,7 +1223,7 @@ class ScriberWebController:
             "sonioxAsyncModel": Config.SONIOX_ASYNC_MODEL,
             "language": Config.LANGUAGE,
             "micDevice": resolved_mic,
-            "favoriteMic": Config.FAVORITE_MIC or "",
+            "favoriteMic": _resolved_favorite or (Config.FAVORITE_MIC or ""),
             "favoriteMicAvailable": _favorite_mic_available,
             "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
             "debug": bool(Config.DEBUG),
@@ -1451,6 +1500,16 @@ class ScriberWebController:
             wasapi_idx = next((i for i, h in enumerate(host_apis) if 'WASAPI' in h.get('name', '')), None)
             mme_idx = next((i for i, h in enumerate(host_apis) if h.get('name', '') == 'MME'), None)
             preferred_hostapi = wasapi_idx if wasapi_idx is not None else mme_idx
+
+            target = device_name.strip()
+            target_norm = _normalize_device_name(target)
+
+            def _matches(dev_name: str) -> bool:
+                if dev_name == target:
+                    return True
+                if target_norm:
+                    return _normalize_device_name(dev_name) == target_norm
+                return False
             
             # Search for the device by name
             for idx, dev in enumerate(sd.query_devices()):
@@ -1463,7 +1522,7 @@ class ScriberWebController:
                     continue
                 
                 name = str(dev.get("name", ""))
-                if name == device_name:
+                if _matches(name):
                     logger.info(f"Resolved microphone '{device_name}' to device index {idx}")
                     return str(idx)
             
@@ -1472,7 +1531,7 @@ class ScriberWebController:
                 if int(dev.get("max_input_channels", 0) or 0) <= 0:
                     continue
                 name = str(dev.get("name", ""))
-                if name == device_name:
+                if _matches(name):
                     logger.info(f"Resolved microphone '{device_name}' to device index {idx} (different host API)")
                     return str(idx)
             

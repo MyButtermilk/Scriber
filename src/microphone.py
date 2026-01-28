@@ -206,22 +206,23 @@ class MicrophoneInput(BaseInputTransport):
                         elif db <= self._noise_floor_db + 1.0:
                             self._noise_floor_db = self._noise_floor_db * 0.98 + db * 0.02
 
-                    # Higher thresholds for speech-only activation (ignore background noise)
-                    threshold_high = max(self._noise_floor_db + 12.0, -50.0)
-                    threshold_low = threshold_high - 4.0
-                    abs_on_rms = 0.003   # ~3x louder than before to trigger
-                    abs_off_rms = 0.001  # Higher off threshold too
+                    # Lower thresholds for responsive visualization
+                    threshold_high = max(self._noise_floor_db + 8.0, -55.0)
+                    threshold_low = threshold_high - 6.0
+                    abs_on_rms = 0.001   # More sensitive trigger
+                    abs_off_rms = 0.0005  # Lower off threshold
 
                     if db >= threshold_high or rms >= abs_on_rms:
                         self._speech_active = True
-                        self._speech_hold_until = now + 0.25
+                        self._speech_hold_until = now + 0.3  # Longer hold for smoother visualization
                     elif (
                         (db <= threshold_low and rms <= abs_off_rms)
                         and now >= self._speech_hold_until
                     ):
                         self._speech_active = False
 
-                    self.on_audio_level(float(rms) if self._speech_active else 0.0)
+                    # Always send some signal when speech active, minimal signal otherwise
+                    self.on_audio_level(float(rms) if self._speech_active else max(0.0, rms * 0.3))
                 except Exception:
                     pass
 

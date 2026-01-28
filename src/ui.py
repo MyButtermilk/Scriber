@@ -6,6 +6,7 @@ import urllib.request
 import threading
 import time
 import math
+import re
 from PIL import Image
 import os
 
@@ -24,6 +25,14 @@ COLOR_DANGER_HOVER = "#dc2626" # Red-600
 COLOR_WARNING = "#f59e0b" # Amber-500
 COLOR_SIDEBAR = "#1e293b" # Slate-800
 COLOR_BG = "#0f172a" # Slate-900 (Darker bg if possible, but ctk controls theme)
+
+_DEVICE_NAME_PREFIX_RE = re.compile(r"\((\d+)\s*-\s*", re.IGNORECASE)
+
+
+def _normalize_device_name(name: str) -> str:
+    if not name:
+        return ""
+    return _DEVICE_NAME_PREFIX_RE.sub("(", name).strip().lower()
 
 class AudioVisualizer(ctk.CTkFrame):
     """Responsive mic visualizer with smooth bars + peak hold.
@@ -287,13 +296,16 @@ class MicPreviewStream:
             return int(dev)
         except (ValueError, TypeError):
             pass
+        target = str(dev).strip()
+        target_norm = _normalize_device_name(target)
         # Try to find device by name
         try:
             import sounddevice as sd
             devices = sd.query_devices()
             for i, d in enumerate(devices):
                 if d.get("max_input_channels", 0) > 0:
-                    if d.get("name") == dev:
+                    name = d.get("name")
+                    if name == target or (target_norm and _normalize_device_name(name) == target_norm):
                         return i
         except Exception:
             pass

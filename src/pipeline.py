@@ -7,6 +7,7 @@ import wave
 import contextlib
 import tempfile
 import os
+import re
 from loguru import logger
 from typing import Callable, Optional
 
@@ -501,6 +502,19 @@ def _selected_language():
     return lang if lang else None
 
 
+_DEVICE_NAME_PREFIX_RE = re.compile(r"\((\d+)\s*-\s*", re.IGNORECASE)
+
+
+def _normalize_device_name(name: str) -> str:
+    """Normalize Windows device names by stripping unstable numeric prefixes.
+
+    Example: "Mikrofon (5- Insta360 Link)" -> "Mikrofon (Insta360 Link)"
+    """
+    if not name:
+        return ""
+    return _DEVICE_NAME_PREFIX_RE.sub("(", name).strip().lower()
+
+
 def _resolve_mic_device(device_name: str) -> str:
     """Resolve a saved device name to the current device index.
     
@@ -518,6 +532,15 @@ def _resolve_mic_device(device_name: str) -> str:
         """Find device index by name, preferring MME host API."""
         if not name or name == "default":
             return None
+        target = name.strip()
+        target_norm = _normalize_device_name(target)
+
+        def _matches(dev_name: str) -> bool:
+            if dev_name == target:
+                return True
+            if target_norm:
+                return _normalize_device_name(dev_name) == target_norm
+            return False
             
         try:
             # Get preferred host API (MME for best USB device compatibility)
@@ -536,7 +559,9 @@ def _resolve_mic_device(device_name: str) -> str:
                     continue
                 
                 dev_name = str(dev.get("name", ""))
-                if dev_name == name:
+                if _matches(dev_name):
+                    if dev_name != target:
+                        logger.info(f"Matched microphone '{target}' to '{dev_name}' (normalized match)")
                     return str(idx)
             
             # Try any host API as fallback
@@ -544,7 +569,9 @@ def _resolve_mic_device(device_name: str) -> str:
                 if int(dev.get("max_input_channels", 0) or 0) <= 0:
                     continue
                 dev_name = str(dev.get("name", ""))
-                if dev_name == name:
+                if _matches(dev_name):
+                    if dev_name != target:
+                        logger.info(f"Matched microphone '{target}' to '{dev_name}' (normalized match)")
                     return str(idx)
                     
         except Exception:
@@ -640,6 +667,7 @@ class ScriberPipeline:
         on_transcription: Optional[Callable[[str, bool], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
         on_mic_ready: Optional[Callable[[], None]] = None,
+        on_error: Optional[Callable[[str], None]] = None,
     ):
         self.service_name = service_name
         self.on_status_change = on_status_change
@@ -647,6 +675,7 @@ class ScriberPipeline:
         self.on_transcription = on_transcription
         self.on_progress = on_progress
         self.on_mic_ready = on_mic_ready
+        self.on_error = on_error
         self.pipeline = None
         self.task = None
         self.runner = None
@@ -927,6 +956,19 @@ class ScriberPipeline:
                     params=PipelineParams(allow_interruptions=True),
                     check_dangling_tasks=False,  # suppress false-positive dangling task warnings (e.g., Soniox keepalive)
                 )
+
+                # Register error handler to catch non-fatal errors (e.g., Soniox websocket timeout)
+                if self.on_error:
+                    @self.task.event_handler("on_pipeline_error")
+                    async def handle_pipeline_error(task, frame):
+                        error_msg = str(frame.error) if hasattr(frame, 'error') else str(frame)
+                        logger.error(f"Pipeline error event: {error_msg}")
+                        if self.on_error:
+                            self.on_error(error_msg)
+                        # Cancel the pipeline on connection errors to prevent stuck state
+                        if "timeout" in error_msg.lower() or "handshake" in error_msg.lower():
+                            await task.cancel(reason=error_msg)
+
                 # Disable signal handling because runner executes in background thread
                 self.runner = PipelineRunner(handle_sigint=False, handle_sigterm=False)
                 self.is_active = True
