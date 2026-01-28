@@ -25,6 +25,7 @@ from pipecat.frames.frames import (
     StopFrame,
     CancelFrame,
     UserStoppedSpeakingFrame,
+    ErrorFrame,
 )
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
@@ -634,6 +635,59 @@ def _resolve_mic_device(device_name: str) -> str:
     return "default"
 
 
+class ConnectionErrorHandlerProcessor(FrameProcessor):
+    """Catches connection errors (e.g., Soniox websocket timeout) and triggers cleanup."""
+
+    def __init__(
+        self,
+        on_error: Optional[Callable[[str], None]] = None,
+        cleanup_callback: Optional[Callable[[], None]] = None,
+    ):
+        super().__init__()
+        self.on_error = on_error
+        self.cleanup_callback = cleanup_callback
+        self._error_triggered = False
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+
+        # Catch ErrorFrames and handle connection errors
+        if isinstance(frame, ErrorFrame) and not self._error_triggered:
+            error_msg = str(frame.error) if hasattr(frame, 'error') else str(frame)
+            error_lower = error_msg.lower()
+
+            # Check for connection-related errors
+            is_connection_error = (
+                "timeout" in error_lower
+                or "handshake" in error_lower
+                or "connection" in error_lower
+                or "websocket" in error_lower
+            )
+
+            if is_connection_error:
+                self._error_triggered = True
+                logger.error(f"Connection error detected: {error_msg}")
+
+                # Trigger error callback
+                if self.on_error:
+                    try:
+                        self.on_error(error_msg)
+                    except Exception as e:
+                        logger.warning(f"Error callback failed: {e}")
+
+                # Trigger cleanup (stops microphone to prevent frame flood)
+                if self.cleanup_callback:
+                    try:
+                        self.cleanup_callback()
+                    except Exception as e:
+                        logger.warning(f"Cleanup callback failed: {e}")
+
+                # Don't propagate connection errors downstream
+                return
+
+        await self.push_frame(frame, direction)
+
+
 class TranscriptionCallbackProcessor(FrameProcessor):
     """Emits interim/final transcription updates via a lightweight callback."""
 
@@ -945,7 +999,26 @@ class ScriberPipeline:
                 transcript_cb = (
                     TranscriptionCallbackProcessor(self.on_transcription) if self.on_transcription else None
                 )
-                steps = [self.audio_input, stt_service]
+
+                # Create cleanup callback to stop microphone on connection errors
+                def sync_cleanup():
+                    """Synchronous cleanup that schedules async cleanup."""
+                    if self.audio_input:
+                        try:
+                            # Stop the audio stream directly (sync operation)
+                            if hasattr(self.audio_input, 'stream') and self.audio_input.stream:
+                                self.audio_input.stream.stop()
+                                self.audio_input._running = False
+                        except Exception as e:
+                            logger.debug(f"Sync cleanup warning: {e}")
+
+                # Error handler to catch connection errors right after STT service
+                error_handler = ConnectionErrorHandlerProcessor(
+                    on_error=self.on_error,
+                    cleanup_callback=sync_cleanup,
+                )
+
+                steps = [self.audio_input, stt_service, error_handler]
                 if transcript_cb:
                     steps.append(transcript_cb)
                 steps.append(text_injector)
@@ -1314,6 +1387,11 @@ class ScriberPipeline:
                 logger.debug(f"Segmented STT flush warning: {e}")
         # Stop mic capture immediately so LED turns off while transcription finalizes.
         await self._cleanup_audio_input()
+
+        # Give audio frames time to propagate through the pipeline to the STT service.
+        # This is critical for short recordings where stop is called very quickly.
+        await asyncio.sleep(0.15)
+
         # For Soniox real-time: send stop_recording and wait for final tokens BEFORE pipeline shutdown.
         # This ensures all spoken audio is transcribed and injected before we close.
         is_soniox_rt = self.service_name == "soniox" and not is_soniox_async
@@ -1324,24 +1402,48 @@ class ScriberPipeline:
                     try:
                         from websockets.protocol import State
                         websocket = getattr(step, "_websocket", None)
+
+                        # Wait for websocket to be ready if it's still connecting
+                        if websocket:
+                            wait_start = asyncio.get_running_loop().time()
+                            while websocket.state not in (State.OPEN, State.CLOSED) and (asyncio.get_running_loop().time() - wait_start) < 2.0:
+                                await asyncio.sleep(0.05)
+
                         if websocket and websocket.state is State.OPEN:
+                            # Wait for any pending audio to be sent before requesting finalization
+                            # The STT service might have buffered audio that hasn't been sent yet
+                            audio_queue = getattr(step, "_audio_queue", None)
+                            if audio_queue:
+                                try:
+                                    # Wait up to 0.5s for audio queue to drain
+                                    drain_start = asyncio.get_running_loop().time()
+                                    while not audio_queue.empty() and (asyncio.get_running_loop().time() - drain_start) < 0.5:
+                                        await asyncio.sleep(0.02)
+                                except Exception:
+                                    pass
+
                             # Send stop_recording (empty string) to trigger finalization
+                            logger.debug("Sending stop_recording to Soniox")
                             await websocket.send("")
-                            
+
                             # Wait for receive task to complete (gets final tokens + finished=True)
                             receive_task = getattr(step, "_receive_task", None)
                             if receive_task and not receive_task.done():
                                 try:
-                                    await asyncio.wait_for(asyncio.shield(receive_task), timeout=3.0)
+                                    # Use 5s timeout - Soniox needs time to process the final audio
+                                    await asyncio.wait_for(asyncio.shield(receive_task), timeout=5.0)
                                     soniox_manual_stop_done = True
+                                    logger.debug("Soniox receive task completed successfully")
                                 except asyncio.TimeoutError:
-                                    logger.warning("Soniox receive task timeout (3s)")
+                                    logger.warning("Soniox receive task timeout (5s)")
                                 except asyncio.CancelledError:
                                     pass
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
+                                except Exception as e:
+                                    logger.debug(f"Soniox receive task error: {e}")
+                        elif websocket:
+                            logger.warning(f"Soniox websocket not open on stop (state={websocket.state}) - transcription may be incomplete")
+                    except Exception as e:
+                        logger.debug(f"Soniox stop handling error: {e}")
 
         # Now request pipeline shutdown
         # If we already did manual stop for Soniox RT, use cancel to skip pipecat's stop flow

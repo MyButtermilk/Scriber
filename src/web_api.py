@@ -548,6 +548,7 @@ class ScriberWebController:
         )
 
     def _on_transcription(self, text: str, is_final: bool) -> None:
+        logger.debug(f"Transcription received: final={is_final}, len={len(text) if text else 0}")
         if is_final:
             with self._current_lock:
                 if self._current:
@@ -982,10 +983,13 @@ class ScriberWebController:
                 else:
                     user_msg = f"Recording failed: {error_msg}"
 
-                # Broadcast error to frontend
-                self._loop.call_soon_threadsafe(
-                    lambda msg=user_msg: asyncio.create_task(self.broadcast({"type": "error", "message": msg}))
-                )
+                # Broadcast error to frontend and stop the pipeline
+                def schedule_cleanup():
+                    asyncio.create_task(self.broadcast({"type": "error", "message": user_msg}))
+                    # Schedule pipeline stop to clean up properly
+                    asyncio.create_task(self._emergency_stop_pipeline())
+
+                self._loop.call_soon_threadsafe(schedule_cleanup)
 
             self._pipeline = ScriberPipeline(
                 service_name=Config.DEFAULT_STT_SERVICE,
@@ -1000,6 +1004,37 @@ class ScriberWebController:
             self._is_listening = True
             self._set_status("Listening")
             await self.broadcast({"type": "session_started", "session": rec.to_public(include_content=True)})
+
+    async def _emergency_stop_pipeline(self) -> None:
+        """Emergency stop for connection errors - doesn't save transcript."""
+        logger.warning("Emergency pipeline stop triggered")
+        try:
+            # Cancel the current recording session without saving
+            if self._current_rec:
+                self._current_rec = None
+
+            # Stop the pipeline
+            if self._pipeline:
+                try:
+                    await asyncio.wait_for(self._pipeline.stop(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Emergency stop timeout - forcing cleanup")
+                except Exception as e:
+                    logger.debug(f"Emergency stop warning: {e}")
+
+            # Cancel the pipeline task
+            if self._pipeline_task and not self._pipeline_task.done():
+                self._pipeline_task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(self._pipeline_task), timeout=1.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
+            self._is_listening = False
+            self._pipeline = None
+            self._pipeline_task = None
+        except Exception as e:
+            logger.error(f"Emergency stop error: {e}")
 
     async def stop_listening(self) -> None:
         # Acquire lock for entire operation - no parallel start/stop allowed

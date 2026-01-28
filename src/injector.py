@@ -344,7 +344,12 @@ class TextInjector(FrameProcessor):
         if self._buffer:
             text = " ".join(self._buffer).strip()
             if text:
+                logger.debug(f"TextInjector flush: injecting {len(text)} chars")
                 self._inject_text(text + " ")
+            else:
+                logger.debug("TextInjector flush: buffer joined to empty string")
+        else:
+            logger.debug("TextInjector flush: buffer is empty")
         self._buffer = []
 
     def _inject_text(self, text: str):
