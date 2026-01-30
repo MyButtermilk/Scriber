@@ -49,7 +49,7 @@ class Config:
     HOTKEY = os.getenv("SCRIBER_HOTKEY", "ctrl+alt+s")
     DEFAULT_STT_SERVICE = os.getenv("SCRIBER_DEFAULT_STT", "soniox")
     SONIOX_MODE = os.getenv("SCRIBER_SONIOX_MODE", "realtime").lower()  # realtime | async
-    SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", "stt-async-v3")
+    SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", "stt-async-v4")
     SONIOX_RT_MODEL = os.getenv("SCRIBER_SONIOX_RT_MODEL", "stt-rt-v3")
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
     LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "auto")

@@ -365,6 +365,7 @@ class ScriberWebController:
         self._is_stopping = False  # Track if stop is in progress
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
         self._status = "Stopped"
+        self._session_id: str | None = None
 
         self._current: Optional[TranscriptRecord] = None
         self._current_lock = threading.Lock()
@@ -483,6 +484,7 @@ class ScriberWebController:
             "listening": self._is_listening,
             "status": self._status,
             "current": current.to_public(include_content=True) if current else None,
+            "sessionId": self._session_id,
         }
 
     async def add_client(self, ws: web.WebSocketResponse) -> None:
@@ -525,16 +527,23 @@ class ScriberWebController:
                     self._clients.discard(ws)
                 self._clients_dirty = True
 
-    def _set_status(self, status: str) -> None:
+    def _set_status(self, status: str, *, session_id: str | None = None) -> None:
+        if session_id is not None and session_id != self._session_id:
+            return
         self._status = status
+        payload = {"type": "status", "status": status, "listening": self._is_listening}
+        if session_id is None:
+            session_id = self._session_id
+        if session_id is not None:
+            payload["sessionId"] = session_id
         # status changes can happen from non-async callbacks; schedule the broadcast.
         self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(
-                self.broadcast({"type": "status", "status": status, "listening": self._is_listening})
-            )
+            lambda: asyncio.create_task(self.broadcast(payload))
         )
 
-    def _on_audio_level(self, rms: float) -> None:
+    def _on_audio_level(self, rms: float, *, session_id: str | None = None) -> None:
+        if session_id is not None and session_id != self._session_id:
+            return
         # Called from the sounddevice callback thread; throttle broadcasts to ~60fps.
         now = time.monotonic()
         if now - self._last_audio_broadcast < 0.016:  # ~60fps
@@ -543,20 +552,31 @@ class ScriberWebController:
         # Update native overlay waveform only when recording overlay is active
         if self._overlay_audio_enabled:
             update_overlay_audio(rms)
+        payload = {"type": "audio_level", "rms": float(rms)}
+        if session_id is None:
+            session_id = self._session_id
+        if session_id is not None:
+            payload["sessionId"] = session_id
         self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self.broadcast({"type": "audio_level", "rms": float(rms)}))
+            lambda: asyncio.create_task(self.broadcast(payload))
         )
 
-    def _on_transcription(self, text: str, is_final: bool) -> None:
+    def _on_transcription(self, text: str, is_final: bool, *, session_id: str | None = None) -> None:
+        if session_id is not None and session_id != self._session_id:
+            return
         logger.debug(f"Transcription received: final={is_final}, len={len(text) if text else 0}")
         if is_final:
             with self._current_lock:
-                if self._current:
+                if self._current and (session_id is None or self._current.id == session_id):
                     self._current.append_final_text(text)
         payload: dict[str, Any] = {"type": "transcript", "text": text, "isFinal": bool(is_final)}
+        if session_id is None:
+            session_id = self._session_id
+        if session_id is not None:
+            payload["sessionId"] = session_id
         self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self.broadcast(payload)))
 
-    def _on_pipeline_done(self, task: asyncio.Task) -> None:
+    def _on_pipeline_done(self, task: asyncio.Task, *, session_id: str | None = None) -> None:
         async def _safe_cleanup():
             """Cleanup state with proper lock protection."""
             async with self._listening_lock:
@@ -567,7 +587,10 @@ class ScriberWebController:
         
         async def _broadcast_error(error_msg: str):
             """Broadcast error to frontend."""
-            await self.broadcast({"type": "error", "message": error_msg})
+            payload = {"type": "error", "message": error_msg}
+            if session_id is not None:
+                payload["sessionId"] = session_id
+            await self.broadcast(payload)
         
         try:
             task.result()
@@ -948,8 +971,10 @@ class ScriberWebController:
                 language=Config.LANGUAGE or "auto",
             )
             rec.start()
+            session_id = rec.id
             with self._current_lock:
                 self._current = rec
+            self._session_id = session_id
 
             # Ensure overlay has stop callback connected before showing
             self._get_overlay()
@@ -960,6 +985,8 @@ class ScriberWebController:
 
             # Callback to transition overlay when mic is ready
             def on_mic_ready():
+                if session_id != self._session_id:
+                    return
                 logger.debug("on_mic_ready callback triggered - transitioning overlay to recording mode")
                 self._overlay_audio_enabled = True
                 show_recording_overlay()
@@ -967,6 +994,8 @@ class ScriberWebController:
 
             # Callback for pipeline errors (e.g., Soniox websocket timeout)
             def on_pipeline_error(error_msg: str):
+                if session_id != self._session_id:
+                    return
                 logger.error(f"Pipeline error callback: {error_msg}")
                 self._set_status("Error")
                 self._overlay_audio_enabled = False
@@ -985,33 +1014,38 @@ class ScriberWebController:
 
                 # Broadcast error to frontend and stop the pipeline
                 def schedule_cleanup():
-                    asyncio.create_task(self.broadcast({"type": "error", "message": user_msg}))
+                    asyncio.create_task(self.broadcast({"type": "error", "message": user_msg, "sessionId": session_id}))
                     # Schedule pipeline stop to clean up properly
-                    asyncio.create_task(self._emergency_stop_pipeline())
+                    asyncio.create_task(self._emergency_stop_pipeline(session_id=session_id))
 
                 self._loop.call_soon_threadsafe(schedule_cleanup)
 
             self._pipeline = ScriberPipeline(
                 service_name=Config.DEFAULT_STT_SERVICE,
-                on_status_change=self._set_status,
-                on_audio_level=self._on_audio_level,
-                on_transcription=self._on_transcription,
+                on_status_change=lambda status: self._set_status(status, session_id=session_id),
+                on_audio_level=lambda rms: self._on_audio_level(rms, session_id=session_id),
+                on_transcription=lambda text, is_final: self._on_transcription(text, is_final, session_id=session_id),
                 on_mic_ready=on_mic_ready,
                 on_error=on_pipeline_error,
             )
             self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
-            self._pipeline_task.add_done_callback(self._on_pipeline_done)
+            self._pipeline_task.add_done_callback(lambda task: self._on_pipeline_done(task, session_id=session_id))
             self._is_listening = True
-            self._set_status("Listening")
-            await self.broadcast({"type": "session_started", "session": rec.to_public(include_content=True)})
+            self._set_status("Listening", session_id=session_id)
+            session_payload = {"type": "session_started", "session": rec.to_public(include_content=True), "sessionId": session_id}
 
-    async def _emergency_stop_pipeline(self) -> None:
+        await self.broadcast(session_payload)
+
+    async def _emergency_stop_pipeline(self, *, session_id: str | None = None) -> None:
         """Emergency stop for connection errors - doesn't save transcript."""
         logger.warning("Emergency pipeline stop triggered")
+        if session_id is not None and session_id != self._session_id:
+            return
         try:
             # Cancel the current recording session without saving
-            if self._current_rec:
-                self._current_rec = None
+            with self._current_lock:
+                if self._current:
+                    self._current = None
 
             # Stop the pipeline
             if self._pipeline:
@@ -1033,6 +1067,7 @@ class ScriberWebController:
             self._is_listening = False
             self._pipeline = None
             self._pipeline_task = None
+            self._session_id = None
         except Exception as e:
             logger.error(f"Emergency stop error: {e}")
 
@@ -1051,6 +1086,7 @@ class ScriberWebController:
             pipeline_task = self._pipeline_task
             with self._current_lock:
                 current = self._current
+            session_id = self._session_id
             
             # Clear pipeline references immediately to prevent double-stop
             # NOTE: We do NOT clear _current here - it must remain set until
@@ -1078,7 +1114,10 @@ class ScriberWebController:
             # Show transcribing state for async services that need processing time
             self._overlay_audio_enabled = False
             show_transcribing_overlay()
-            await self.broadcast({"type": "transcribing"})
+            transcribing_payload = {"type": "transcribing"}
+            if session_id is not None:
+                transcribing_payload["sessionId"] = session_id
+            await self.broadcast(transcribing_payload)
         
         try:
             if pipeline:
@@ -1103,6 +1142,7 @@ class ScriberWebController:
         finally:
             async with self._listening_lock:
                 self._is_stopping = False
+                self._session_id = None
             
             self._set_status("Stopped")
 
@@ -1110,7 +1150,10 @@ class ScriberWebController:
                 current.finish("completed")
                 self._add_to_history(current)
                 self._save_transcript_to_db(current)  # Persist to database
-                await self.broadcast({"type": "session_finished", "session": current.to_public(include_content=True)})
+                finished_payload = {"type": "session_finished", "session": current.to_public(include_content=True)}
+                if session_id is not None:
+                    finished_payload["sessionId"] = session_id
+                await self.broadcast(finished_payload)
                 await self._broadcast_history_updated()
 
     async def toggle_listening(self) -> None:

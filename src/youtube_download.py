@@ -115,14 +115,17 @@ async def download_youtube_audio(
                         pass
 
         ydl_opts = {
-            # Prefer webm audio (Opus codec), fall back to any audio format
-            "format": "bestaudio[ext=webm]/bestaudio",
+            # Flexible format: prefer webm/m4a audio, fall back to any audio or video+audio
+            # Android client may not have webm, so we need multiple fallbacks
+            "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best[ext=webm]/best[ext=mp4]/best",
             "outtmpl": template,
             "noplaylist": True,
             # No postprocessors - keep original format for speed
             "progress_hooks": [progress_hook],
             "quiet": True,
             "no_warnings": True,
+            # Use Android client to avoid 403 errors (YouTube blocks web client more aggressively)
+            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
         }
 
         def _run_download():
@@ -146,8 +149,9 @@ async def download_youtube_audio(
                     # Retry on 403 Forbidden errors (often transient)
                     if "403" in error_str or "forbidden" in error_str:
                         if attempt < max_retries - 1:
-                            logger.warning(f"YouTube download got 403 error, retrying ({attempt + 1}/{max_retries})...")
-                            time.sleep(1.0 + attempt * 0.5)  # Increasing delay: 1s, 1.5s, 2s
+                            delay = 2.0 + attempt * 2.0  # Increasing delay: 2s, 4s, 6s
+                            logger.warning(f"YouTube download got 403 error, retrying in {delay}s ({attempt + 1}/{max_retries})...")
+                            time.sleep(delay)
                             continue
                     # For other errors or final retry, raise immediately
                     raise
@@ -163,8 +167,8 @@ async def download_youtube_audio(
         if final_path and final_path.exists():
             return final_path
 
-        # Try to find the file (webm preferred, then any audio)
-        for ext in ["webm", "m4a", "opus", "mp3"]:
+        # Try to find the file (audio formats preferred, then video)
+        for ext in ["webm", "m4a", "opus", "mp3", "mp4", "mkv"]:
             for f in out_dir.glob(f"*.{ext}"):
                 return f
 
@@ -184,12 +188,16 @@ async def download_youtube_audio(
         *exe_cmd,
         "--no-playlist",
         "-f",
-        "bestaudio[ext=webm]/bestaudio",  # Prefer webm, no conversion
+        # Flexible format: prefer webm/m4a audio, fall back to any audio or video+audio
+        "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best[ext=webm]/best[ext=mp4]/best",
         "-o",
         template,
         "--print",
         "after_move:filepath",
         "--no-progress",
+        # Use Android client to avoid 403 errors (YouTube blocks web client more aggressively)
+        "--extractor-args",
+        "youtube:player_client=android,web",
         url,
     ]
 
@@ -217,8 +225,9 @@ async def download_youtube_audio(
         # Check for 403 error and retry
         if "403" in last_error_msg.lower() or "forbidden" in last_error_msg.lower():
             if attempt < max_retries - 1:
-                logger.warning(f"YouTube download got 403 error, retrying ({attempt + 1}/{max_retries})...")
-                await asyncio.sleep(1.0 + attempt * 0.5)  # Increasing delay: 1s, 1.5s, 2s
+                delay = 2.0 + attempt * 2.0  # Increasing delay: 2s, 4s, 6s
+                logger.warning(f"YouTube download got 403 error, retrying in {delay}s ({attempt + 1}/{max_retries})...")
+                await asyncio.sleep(delay)
                 continue
 
         # For other errors or final retry, raise immediately

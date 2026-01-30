@@ -252,6 +252,7 @@ export default function LiveMic() {
     },
   });
   const transcripts: Transcript[] = (transcriptsQuery.data as any)?.items || [];
+  const activeSessionIdRef = useRef<string | null>(null);
 
   // Mock timer
   useEffect(() => {
@@ -269,9 +270,16 @@ export default function LiveMic() {
   // WebSocket with auto-reconnection
   const handleWsMessage = useCallback((msg: any) => {
     if (!msg || typeof msg !== "object") return;
+    const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
+    const activeSessionId = activeSessionIdRef.current;
 
     switch (msg.type) {
       case "state":
+        if (msgSessionId) {
+          activeSessionIdRef.current = msgSessionId;
+        } else if (!msg.listening) {
+          activeSessionIdRef.current = null;
+        }
         setIsRecording(!!msg.listening);
         setStatus(msg.status || "Stopped");
         if (msg.current?.content) {
@@ -280,13 +288,22 @@ export default function LiveMic() {
         }
         break;
       case "status":
+        if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+          break;
+        }
         setIsRecording(!!msg.listening);
         setStatus(msg.status || "Stopped");
         break;
       case "audio_level":
+        if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+          break;
+        }
         audioLevelRef.current = Number(msg.rms) || 0;
         break;
       case "transcript":
+        if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+          break;
+        }
         if (msg.isFinal) {
           if (msg.content) {
             setFinalText(String(msg.content));
@@ -301,12 +318,19 @@ export default function LiveMic() {
         }
         break;
       case "session_started":
+        if (msgSessionId) {
+          activeSessionIdRef.current = msgSessionId;
+        }
         setIsRecording(true);
         setStatus("Listening");
         setFinalText("");
         setInterimText("");
         break;
       case "session_finished":
+        if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+          break;
+        }
+        activeSessionIdRef.current = null;
         setIsRecording(false);
         setStatus("Stopped");
         if (msg.session?.content) {
@@ -327,6 +351,9 @@ export default function LiveMic() {
         });
         break;
       case "error":
+        if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+          break;
+        }
         toast({
           title: "Recording Error",
           description: msg.message || "An error occurred during recording.",

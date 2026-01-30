@@ -1,7 +1,7 @@
 # Scriber Bug Report
 
 Generated: 2026-01-07
-Updated: 2026-01-07 (Re-validated + new findings)
+Updated: 2026-01-29 (Re-scan + new findings)
 
 This document contains bugs and issues identified during a comprehensive code review of the Scriber codebase.
 
@@ -94,11 +94,31 @@ Added device existence validation before using legacy numeric IDs.
 
 ---
 
-### 22. ~~Tk overlay fallback crashes due to undefined `BAR_COUNT`~~ ✅ FIXED
+### 22. Tk overlay fallback crashes due to undefined `BAR_COUNT`
 
 **File:** `src/overlay.py`
 
-**Fix:** Replaced `BAR_COUNT` with `getattr(Config, 'VISUALIZER_BAR_COUNT', 45)` to use configured value.
+**Issue:** Tkinter fallback still references `BAR_COUNT` when building waveform bars. The constant is undefined, causing a `NameError` and crashing the overlay when PySide6 is unavailable.
+
+**Fix idea:** Replace `BAR_COUNT` with `bar_count` or `Config.VISUALIZER_BAR_COUNT`.
+
+---
+
+### 24. `_emergency_stop_pipeline` references undefined `_current_rec`
+
+**File:** `src/web_api.py`
+
+**Issue:** Emergency stop checks `self._current_rec`, but the controller uses `_current` elsewhere. This raises `AttributeError` and skips cleanup, leaving pipeline tasks/overlay in a stuck state after connection errors.
+
+**Fix idea:** Use `self._current` (under the existing lock) and clear it when stopping.
+
+---
+
+### 25. ~~Soniox direct file transcription never deletes remote resources~~ ✅ FIXED
+
+**File:** `src/pipeline.py`
+
+**Fix:** Added deletion of Soniox transcription and file in a `finally` cleanup block inside `transcribe_file_direct()`.
 
 ---
 
@@ -175,15 +195,13 @@ Theoretical only - top video has 14B views, safe integer limit is 9 quadrillion.
 
 ## 📝 Summary
 
-### Actually Open Bugs (6):
+### Actually Open Bugs (4):
 1. **#4** Missing language support for Deepgram, Gladia, Speechmatics, AWS
 2. **#12** Limited LANGUAGE_MAP (7 languages only)
-3. **#20** File/YouTube transcription forced to Soniox direct
-4. **#21** AssemblyAI auto-detect disabled (forces EN)
-5. **#22** Tk overlay fallback `BAR_COUNT` undefined
-6. **#23** Tk mic preview ignores name-based device IDs
+3. **#22** Tk overlay fallback `BAR_COUNT` undefined
+4. **#24** Emergency stop path uses undefined `_current_rec`
 
-### Fixed Bugs (7):
+### Fixed Bugs (11):
 - #1 Clipboard restore ✅
 - #2 Favorite mic logic ✅
 - #3 Settings stale closure ✅
@@ -191,6 +209,10 @@ Theoretical only - top video has 14B views, safe integer limit is 9 quadrillion.
 - #6 RecordingPopup error handler ✅
 - #10 Legacy mic validation ✅
 - #15 WebSocket reconnection ✅
+- #20 File/YouTube transcription forced to Soniox direct ✅
+- #21 AssemblyAI auto-detect disabled ✅
+- #23 Tk mic preview ignores name-based device IDs ✅
+- #25 Soniox direct transcription cleanup ✅
 
 ### False Positives Removed (10):
 - #7, #8, #9, #11, #13, #14, #16, #17, #18, #19
@@ -203,8 +225,8 @@ Theoretical only - top video has 14B views, safe integer limit is 9 quadrillion.
 | File | Lines | Status |
 |------|-------|--------|
 | `config.py` | 275 | ✓ Clean |
-| `pipeline.py` | 1111 | ✓ Bugs #4, #12, #21 open |
-| `web_api.py` | 1886 | ✓ Bug #20 open |
+| `pipeline.py` | 1111 | ✓ Bugs #4, #12 open |
+| `web_api.py` | 1886 | ✓ Bug #24 open |
 | `microphone.py` | 227 | ✓ Clean |
 | `overlay.py` | 1047 | ✓ Bug #22 open |
 | `injector.py` | 253 | ✓ Fixed |
@@ -216,7 +238,7 @@ Theoretical only - top video has 14B views, safe integer limit is 9 quadrillion.
 | `audio_file_input.py` | 162 | ✓ Clean |
 | `main.py` | 260 | ✓ Fixed (race conditions) |
 | `gemini_transcribe.py` | 55 | ✓ Clean (standalone script) |
-| `ui.py` | 931 | ✓ Bug #23 open |
+| `ui.py` | 931 | ✓ Clean |
 | `__init__.py` | 0 | ✓ Clean |
 
 ### Frontend (pages + hooks)

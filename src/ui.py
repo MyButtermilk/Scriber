@@ -27,12 +27,15 @@ COLOR_SIDEBAR = "#1e293b" # Slate-800
 COLOR_BG = "#0f172a" # Slate-900 (Darker bg if possible, but ctk controls theme)
 
 _DEVICE_NAME_PREFIX_RE = re.compile(r"\((\d+)\s*-\s*", re.IGNORECASE)
+_DEFAULT_SUFFIX_RE = re.compile(r"\s*\(default\)\s*$", re.IGNORECASE)
 
 
 def _normalize_device_name(name: str) -> str:
     if not name:
         return ""
-    return _DEVICE_NAME_PREFIX_RE.sub("(", name).strip().lower()
+    normalized = _DEVICE_NAME_PREFIX_RE.sub("(", name).strip()
+    normalized = _DEFAULT_SUFFIX_RE.sub("", normalized).strip()
+    return normalized.lower()
 
 class AudioVisualizer(ctk.CTkFrame):
     """Responsive mic visualizer with smooth bars + peak hold.
@@ -653,6 +656,19 @@ class ScriberUI(ctk.CTk):
 
         # Init mic selection
         current_mic = Config.MIC_DEVICE
+        try:
+            current_idx = int(current_mic)
+        except (TypeError, ValueError):
+            current_idx = None
+        if current_idx is not None:
+            try:
+                import sounddevice as sd
+                dev_info = sd.query_devices(device=current_idx, kind="input")
+                resolved_name = dev_info.get("name")
+                if resolved_name:
+                    current_mic = str(resolved_name)
+            except Exception:
+                pass
         favorite_mic = getattr(Config, "FAVORITE_MIC", "") or ""
         if favorite_mic and devices:
             def _label_to_name(label: str) -> str:
@@ -841,7 +857,7 @@ class ScriberUI(ctk.CTk):
     def _get_microphones(self):
         try:
             import sounddevice as sd
-            devices = []
+            devices = [("default", "Default")]
             default = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
             seen = set()
             for idx, dev in enumerate(sd.query_devices()):
@@ -850,9 +866,9 @@ class ScriberUI(ctk.CTk):
                 if name in seen: continue
                 seen.add(name)
                 lbl = f"{name} (Default)" if idx == default else name
-                devices.append((str(idx), lbl))
+                devices.append((str(name), lbl))
             return devices
-        except: return [("default", "Default Mic")]
+        except: return [("default", "Default")]
 
     def _on_mic_change(self, choice):
         devs = self._get_microphones()

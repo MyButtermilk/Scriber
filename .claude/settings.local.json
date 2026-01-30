@@ -16,7 +16,8 @@
       "Bash(npm run build:*)",
       "Bash(python -m py_compile:*)",
       "Bash(grep:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "WebFetch(domain:soniox.com)"
     ]
   },
   "enableAllProjectMcpServers": true,

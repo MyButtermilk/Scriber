@@ -131,6 +131,7 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
     const { toast } = useToast();
     const [isRecording, setIsRecording] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
+    const activeSessionIdRef = useRef<string | null>(null);
     const [audioLevels, setAudioLevels] = useState<number[]>(Array(BAR_COUNT).fill(0.12));
 
     // CAVA-style state refs
@@ -187,16 +188,29 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
     // WebSocket message handler with error support
     const handleWsMessage = useCallback((msg: any) => {
         if (!msg || typeof msg !== "object") return;
+        const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
+        const activeSessionId = activeSessionIdRef.current;
 
         switch (msg.type) {
             case "state":
             case "status":
+                if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+                    break;
+                }
+                if (msgSessionId && !activeSessionId) {
+                    activeSessionIdRef.current = msgSessionId;
+                } else if (!msgSessionId && !msg.listening) {
+                    activeSessionIdRef.current = null;
+                }
                 setIsRecording(!!msg.listening);
                 if (msg.transcribing !== undefined) {
                     setIsTranscribing(!!msg.transcribing);
                 }
                 break;
             case "session_started":
+                if (msgSessionId) {
+                    activeSessionIdRef.current = msgSessionId;
+                }
                 setIsRecording(true);
                 setIsTranscribing(false);
                 // Reset all levels
@@ -206,16 +220,26 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
                 agcRef.current = 0.02;
                 break;
             case "transcribing":
+                if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+                    break;
+                }
                 // Recording stopped, now transcribing
                 setIsRecording(false);
                 setIsTranscribing(true);
                 break;
             case "session_finished":
+                if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+                    break;
+                }
+                activeSessionIdRef.current = null;
                 // Transcription complete
                 setIsRecording(false);
                 setIsTranscribing(false);
                 break;
             case "error":
+                if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+                    break;
+                }
                 // Handle recording errors - hide popup and show error toast
                 setIsRecording(false);
                 setIsTranscribing(false);
@@ -227,6 +251,9 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
                 });
                 break;
             case "audio_level":
+                if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+                    break;
+                }
                 const rms = Math.min(1, Math.max(0, Number(msg.rms) || 0));
 
                 // Fast AGC like CAVA

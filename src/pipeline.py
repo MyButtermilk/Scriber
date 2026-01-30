@@ -126,7 +126,7 @@ class SonioxAsyncProcessor(FrameProcessor):
         self,
         api_key: str,
         custom_vocab: str = "",
-        model: str = "stt-async-v3",
+        model: str = "stt-async-v4",
         session: aiohttp.ClientSession = None,
         on_progress: Optional[Callable[[str], None]] = None,
         enable_speaker_diarization: bool = False,
@@ -1243,112 +1243,150 @@ class ScriberPipeline:
 
             headers = {"Authorization": f"Bearer {api_key}"}
             base_url = "https://api.soniox.com/v1"
-            model = Config.SONIOX_ASYNC_MODEL or "stt-async-v3"
+            model = Config.SONIOX_ASYNC_MODEL or "stt-async-v4"
+            file_id = None
+            transcription_id = None
 
             if self.on_progress:
                 self.on_progress("Uploading audio...")
 
             async with aiohttp.ClientSession() as session:
-                # Upload file directly
-                with open(path, "rb") as f:
-                    file_bytes = f.read()
+                async def _cleanup_resources() -> None:
+                    if not file_id and not transcription_id:
+                        return
+                    if transcription_id:
+                        try:
+                            async with session.delete(
+                                f"{base_url}/transcriptions/{transcription_id}",
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=10),
+                            ) as resp:
+                                if resp.status in (200, 204, 404):
+                                    logger.debug(f"Deleted Soniox transcription {transcription_id}")
+                                else:
+                                    logger.warning(
+                                        f"Failed to delete Soniox transcription {transcription_id}: {resp.status}"
+                                    )
+                        except Exception as exc:
+                            logger.warning(f"Error deleting Soniox transcription: {exc}")
 
-                logger.info(f"Uploading {path.name} ({len(file_bytes)} bytes, {content_type})")
+                    if file_id:
+                        try:
+                            async with session.delete(
+                                f"{base_url}/files/{file_id}",
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=10),
+                            ) as resp:
+                                if resp.status in (200, 204, 404):
+                                    logger.debug(f"Deleted Soniox file {file_id}")
+                                else:
+                                    logger.warning(f"Failed to delete Soniox file {file_id}: {resp.status}")
+                        except Exception as exc:
+                            logger.warning(f"Error deleting Soniox file: {exc}")
 
-                data = aiohttp.FormData()
-                data.add_field("file", file_bytes, filename=path.name, content_type=content_type)
+                try:
+                    # Upload file directly
+                    with open(path, "rb") as f:
+                        file_bytes = f.read()
 
-                async with session.post(
-                    f"{base_url}/files",
-                    data=data,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=300),  # 5 min for large files
-                ) as resp:
-                    resp.raise_for_status()
-                    file_id = (await resp.json())["id"]
+                    logger.info(f"Uploading {path.name} ({len(file_bytes)} bytes, {content_type})")
 
-                # Start transcription with speaker diarization enabled for file/youtube
-                payload = {"file_id": file_id, "model": model}
-                # Build proper context object if custom_vocab is provided
-                if Config.CUSTOM_VOCAB:
-                    terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
-                    if terms:
-                        payload["context"] = {"terms": terms}
-                # Enable speaker diarization for file/youtube transcription
-                payload["enable_speaker_diarization"] = True
+                    data = aiohttp.FormData()
+                    data.add_field("file", file_bytes, filename=path.name, content_type=content_type)
 
-                async with session.post(
-                    f"{base_url}/transcriptions",
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                ) as resp2:
-                    resp2.raise_for_status()
-                    transcription_id = (await resp2.json())["id"]
+                    async with session.post(
+                        f"{base_url}/files",
+                        data=data,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=300),  # 5 min for large files
+                    ) as resp:
+                        resp.raise_for_status()
+                        file_id = (await resp.json())["id"]
 
-                # Poll for completion
-                if self.on_progress:
-                    self.on_progress("Processing transcription...")
+                    # Start transcription with speaker diarization enabled for file/youtube
+                    payload = {"file_id": file_id, "model": model}
+                    # Build proper context object if custom_vocab is provided
+                    if Config.CUSTOM_VOCAB:
+                        terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
+                        if terms:
+                            payload["context"] = {"terms": terms}
+                    # Enable speaker diarization for file/youtube transcription
+                    payload["enable_speaker_diarization"] = True
 
-                done_statuses = {"completed", "done", "succeeded", "success"}
-                error_statuses = {"error", "failed", "canceled", "cancelled"}
-                poll_start = asyncio.get_running_loop().time()
-                poll_timeout = 600.0  # 10 minutes max
-                poll_count = 0
+                    async with session.post(
+                        f"{base_url}/transcriptions",
+                        json=payload,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as resp2:
+                        resp2.raise_for_status()
+                        transcription_id = (await resp2.json())["id"]
 
-                while True:
-                    elapsed = asyncio.get_running_loop().time() - poll_start
-                    if elapsed > poll_timeout:
-                        raise TimeoutError("Soniox transcription timed out")
+                    # Poll for completion
+                    if self.on_progress:
+                        self.on_progress("Processing transcription...")
+
+                    done_statuses = {"completed", "done", "succeeded", "success"}
+                    error_statuses = {"error", "failed", "canceled", "cancelled"}
+                    poll_start = asyncio.get_running_loop().time()
+                    poll_timeout = 600.0  # 10 minutes max
+                    poll_count = 0
+
+                    while True:
+                        elapsed = asyncio.get_running_loop().time() - poll_start
+                        if elapsed > poll_timeout:
+                            raise TimeoutError("Soniox transcription timed out")
+
+                        async with session.get(
+                            f"{base_url}/transcriptions/{transcription_id}",
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=15),
+                        ) as r:
+                            r.raise_for_status()
+                            status_payload = await r.json()
+                            status = (status_payload.get("status") or "").lower()
+
+                            if status in done_statuses:
+                                break
+                            if status in error_statuses:
+                                raise RuntimeError(status_payload.get("error_message", "Soniox transcription error"))
+
+                        poll_count += 1
+                        # Log every 10 seconds for debugging
+                        if poll_count % 10 == 0:
+                            logger.debug(f"Soniox direct polling: {int(elapsed)}s elapsed")
+
+                        await asyncio.sleep(1)
+
+                    # Get transcript
+                    if self.on_progress:
+                        self.on_progress("Retrieving transcript...")
 
                     async with session.get(
-                        f"{base_url}/transcriptions/{transcription_id}",
+                        f"{base_url}/transcriptions/{transcription_id}/transcript",
                         headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=15),
-                    ) as r:
-                        r.raise_for_status()
-                        status_payload = await r.json()
-                        status = (status_payload.get("status") or "").lower()
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as r3:
+                        r3.raise_for_status()
+                        transcript_payload = await r3.json()
 
-                        if status in done_statuses:
-                            break
-                        if status in error_statuses:
-                            raise RuntimeError(status_payload.get("error_message", "Soniox transcription error"))
+                        # Parse speaker diarization if available
+                        tokens = transcript_payload.get("tokens", [])
+                        if tokens and any(t.get("speaker") for t in tokens):
+                            # Format with speaker labels
+                            text = self._format_speaker_transcript(tokens)
+                        else:
+                            # Fallback to plain text
+                            text = transcript_payload.get("text", "")
 
-                    poll_count += 1
-                    # Log every 10 seconds for debugging
-                    if poll_count % 10 == 0:
-                        logger.debug(f"Soniox direct polling: {int(elapsed)}s elapsed")
+                    if text and self.on_transcription:
+                        logger.info(f"Soniox direct transcription completed ({len(text)} chars)")
+                        self.on_transcription(text, True)
 
-                    await asyncio.sleep(1)
-
-                # Get transcript
-                if self.on_progress:
-                    self.on_progress("Retrieving transcript...")
-
-                async with session.get(
-                    f"{base_url}/transcriptions/{transcription_id}/transcript",
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                ) as r3:
-                    r3.raise_for_status()
-                    transcript_payload = await r3.json()
-                    
-                    # Parse speaker diarization if available
-                    tokens = transcript_payload.get("tokens", [])
-                    if tokens and any(t.get("speaker") for t in tokens):
-                        # Format with speaker labels
-                        text = self._format_speaker_transcript(tokens)
-                    else:
-                        # Fallback to plain text
-                        text = transcript_payload.get("text", "")
-
-                if text and self.on_transcription:
-                    logger.info(f"Soniox direct transcription completed ({len(text)} chars)")
-                    self.on_transcription(text, True)
-
-                if self.on_progress:
-                    self.on_progress("Completed")
+                    if self.on_progress:
+                        self.on_progress("Completed")
+                finally:
+                    await _cleanup_resources()
 
         except Exception as e:
             logger.error(f"Direct file transcription failed: {e}")
