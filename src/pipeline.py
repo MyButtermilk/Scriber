@@ -1441,6 +1441,10 @@ class ScriberPipeline:
                         from websockets.protocol import State
                         websocket = getattr(step, "_websocket", None)
 
+                        # Log diagnostics about the connection state
+                        audio_bytes_sent = getattr(step, "_audio_bytes_sent", 0)
+                        logger.debug(f"Soniox stop: audio_bytes_sent={audio_bytes_sent}")
+
                         # Wait for websocket to be ready if it's still connecting
                         if websocket:
                             wait_start = asyncio.get_running_loop().time()
@@ -1457,8 +1461,12 @@ class ScriberPipeline:
                                     drain_start = asyncio.get_running_loop().time()
                                     while not audio_queue.empty() and (asyncio.get_running_loop().time() - drain_start) < 0.5:
                                         await asyncio.sleep(0.02)
-                                except Exception:
-                                    pass
+                                    if audio_queue.empty():
+                                        logger.debug("Soniox audio queue drained successfully")
+                                    else:
+                                        logger.warning(f"Soniox audio queue not fully drained (approx {audio_queue.qsize()} items remaining)")
+                                except Exception as e:
+                                    logger.debug(f"Audio queue drain check error: {e}")
 
                             # Send stop_recording (empty string) to trigger finalization
                             logger.debug("Sending stop_recording to Soniox")
@@ -1468,18 +1476,45 @@ class ScriberPipeline:
                             receive_task = getattr(step, "_receive_task", None)
                             if receive_task and not receive_task.done():
                                 try:
-                                    # Use 5s timeout - Soniox needs time to process the final audio
-                                    await asyncio.wait_for(asyncio.shield(receive_task), timeout=5.0)
+                                    # Use 10s timeout - increased from 5s to give Soniox more time
+                                    # to process final audio, especially for longer recordings
+                                    await asyncio.wait_for(asyncio.shield(receive_task), timeout=10.0)
                                     soniox_manual_stop_done = True
                                     logger.debug("Soniox receive task completed successfully")
                                 except asyncio.TimeoutError:
-                                    logger.warning("Soniox receive task timeout (5s)")
+                                    # Log detailed diagnostics when timeout occurs
+                                    ws_state = websocket.state if websocket else "no websocket"
+                                    logger.warning(
+                                        f"Soniox receive task timeout (10s) - "
+                                        f"ws_state={ws_state}, audio_bytes_sent={audio_bytes_sent}"
+                                    )
+                                    
+                                    # RETRY: Try sending stop signal again in case first one was lost
+                                    if websocket and websocket.state is State.OPEN:
+                                        logger.debug("Retrying stop_recording signal to Soniox")
+                                        try:
+                                            await websocket.send("")
+                                            # Wait another 5 seconds for response
+                                            await asyncio.wait_for(asyncio.shield(receive_task), timeout=5.0)
+                                            soniox_manual_stop_done = True
+                                            logger.debug("Soniox receive task completed on retry")
+                                        except asyncio.TimeoutError:
+                                            logger.error("Soniox receive task failed even after retry")
+                                        except Exception as retry_err:
+                                            logger.debug(f"Soniox retry error: {retry_err}")
                                 except asyncio.CancelledError:
                                     pass
                                 except Exception as e:
                                     logger.debug(f"Soniox receive task error: {e}")
+                            else:
+                                if receive_task and receive_task.done():
+                                    logger.debug("Soniox receive task was already done")
+                                else:
+                                    logger.warning("No Soniox receive task found")
                         elif websocket:
                             logger.warning(f"Soniox websocket not open on stop (state={websocket.state}) - transcription may be incomplete")
+                        else:
+                            logger.warning("No Soniox websocket found - recording may have failed to connect")
                     except Exception as e:
                         logger.debug(f"Soniox stop handling error: {e}")
 

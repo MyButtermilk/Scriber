@@ -586,40 +586,73 @@ def restart_backend(icon, item):
 
 
 def get_recent_transcripts():
-    """Fetch recent completed transcripts from the database."""
+    """Fetch recent completed transcripts from the database.
+    
+    Uses a fresh, dedicated database connection to ensure we see the latest
+    WAL (Write-Ahead Log) changes from the backend process. The shared
+    connection pool doesn't reliably see cross-process writes.
+    """
+    import sqlite3
     try:
-        from src.database import load_all_transcripts, _DB_PATH
+        from src.database import _DB_PATH
 
-        write_log(f"[Tray] Loading from database: {_DB_PATH}")
+        # Use a FRESH connection each time to see latest WAL changes from backend
+        # This is critical because the backend runs in a separate process
+        conn = sqlite3.connect(_DB_PATH, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            # Force WAL checkpoint to ensure we see all committed data
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            
+            cursor = conn.execute("""
+                SELECT id, title, date, duration, status, type, language, step,
+                       source_url, channel, thumbnail_url, 
+                       substr(content, 1, 200) as content_preview,
+                       created_at, updated_at
+                FROM transcripts
+                WHERE status = 'completed'
+                ORDER BY created_at DESC
+                LIMIT 5
+            """)
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
 
-        # Load all transcripts from database (already sorted by created_at DESC)
-        all_transcripts = load_all_transcripts()
+        write_log(f"[Tray] Database returned {len(rows)} completed transcripts")
 
-        write_log(f"[Tray] Database returned {len(all_transcripts)} total transcripts")
-        for i, t in enumerate(all_transcripts[:10]):  # Log first 10 for debugging
-            write_log(f"[Tray]   #{i}: type={t.get('type')!r}, status={t.get('status')!r}, title={t.get('title', '')[:30]!r}")
-
-        # Filter for completed recordings (any type) and limit to 5
         recent_transcripts = []
-        for t in all_transcripts:
-            # Include all completed recordings (mic, youtube, file)
-            if t.get("status") == "completed":
-                # Add preview field for menu display
-                content = t.get("content", "")
-                if content:
-                    # Create preview from first 5 words of content
-                    words = content.split()[:5]
-                    preview = " ".join(words)
-                    if len(words) >= 5:
-                        preview += "..."
-                    t["preview"] = preview.replace("\n", " ").strip()
-                else:
-                    t["preview"] = t.get("title", "Untitled")
+        for row in rows:
+            content_preview = row["content_preview"] or ""
+            if content_preview:
+                # Create preview from first 5 words
+                words = content_preview.split()[:5]
+                preview = " ".join(words)
+                if len(words) >= 5:
+                    preview += "..."
+                preview = preview.replace("\n", " ").strip()
+            else:
+                preview = row["title"] or "Untitled"
 
-                recent_transcripts.append(t)
+            recent_transcripts.append({
+                "id": row["id"],
+                "title": row["title"],
+                "date": row["date"],
+                "duration": row["duration"],
+                "status": row["status"],
+                "type": row["type"],
+                "language": row["language"],
+                "step": row["step"],
+                "sourceUrl": row["source_url"],
+                "channel": row["channel"],
+                "thumbnailUrl": row["thumbnail_url"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+                "preview": preview,
+                "content": content_preview,  # Keep for copy_transcript_to_clipboard
+            })
 
-                if len(recent_transcripts) >= 5:
-                    break
+        for i, t in enumerate(recent_transcripts[:5]):
+            write_log(f"[Tray]   #{i}: type={t.get('type')!r}, status={t.get('status')!r}, title={t.get('title', '')[:30]!r}")
 
         write_log(f"[Tray] Found {len(recent_transcripts)} completed transcripts for menu")
 
@@ -639,20 +672,32 @@ def copy_transcript_to_clipboard(transcript_id, label):
         write_log(f"[Tray] Transcript ID: {transcript_id}")
 
         try:
-            # Fetch full content from database
-            from src.database import get_transcript
+            # Fetch full content from database using fresh connection
+            import sqlite3
+            from src.database import _DB_PATH
 
             write_log(f"[Tray] Fetching from database...")
 
-            transcript = get_transcript(transcript_id)
+            # Use fresh connection to see latest data
+            conn = sqlite3.connect(_DB_PATH, timeout=5.0)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                cursor = conn.execute(
+                    "SELECT content FROM transcripts WHERE id = ?", 
+                    (transcript_id,)
+                )
+                row = cursor.fetchone()
+            finally:
+                conn.close()
 
-            write_log(f"[Tray] Database result: {transcript is not None}")
+            write_log(f"[Tray] Database result: {row is not None}")
 
-            if not transcript:
+            if not row:
                 write_log(f"[Tray] Transcript not found: {label[:40]}")
                 return
 
-            content = transcript.get("content", "")
+            content = row["content"] or ""
 
             write_log(f"[Tray] Content length: {len(content)}")
 
@@ -861,8 +906,8 @@ def create_menu():
         pystray.MenuItem("🌐\ufe0f Open Scriber", open_browser, default=True),
         pystray.Menu.SEPARATOR,
         
-        # Recent recordings submenu
-        pystray.MenuItem("📂\ufe0f Recent Recordings", pystray.Menu(get_transcripts_menu)),
+        # Recent recordings submenu - use lambda to regenerate each time menu is opened
+        pystray.MenuItem("📂\ufe0f Recent Recordings", pystray.Menu(lambda: iter(get_transcripts_menu()))),
         pystray.Menu.SEPARATOR,
         
         # Logs section
