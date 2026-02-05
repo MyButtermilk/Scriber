@@ -43,6 +43,12 @@ def _format_eta(seconds: int) -> str:
     return f"{seconds // 3600}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
 
 
+def _require_ffmpeg() -> None:
+    ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if not ffmpeg:
+        raise YouTubeDownloadError("ffmpeg not found on PATH.")
+
+
 
 async def download_youtube_audio(
     url: str,
@@ -58,6 +64,8 @@ async def download_youtube_audio(
     url = (url or "").strip()
     if not url:
         raise ValueError("Missing URL")
+
+    _require_ffmpeg()
 
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)

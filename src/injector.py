@@ -384,20 +384,24 @@ class TextInjector(FrameProcessor):
         if method not in {"auto", "type", "paste", "sendinput"}:
             method = "auto"
 
-        # Determine best method based on active window and config
-        if method == "auto":
-            # Default to clipboard paste - most reliable
-            # SendInput often fails due to UIPI privilege isolation
-            method = "paste"
+        # Explicit modes are strict. Only "auto" falls back across methods.
+        if method == "paste":
+            if not _paste_text(text, skip_clipboard_restore=False):
+                logger.warning("Clipboard paste injection failed")
+            return
 
-        # Try clipboard paste first (reliable for all apps)
-        if method in {"paste", "auto"}:
+        if method == "sendinput":
+            if _send_input_text(text):
+                if Config.DEBUG:
+                    logger.info(f"Injected via SendInput ({len(text)} chars, instant)")
+            else:
+                logger.warning("SendInput injection failed")
+            return
+
+        if method == "auto":
             if _paste_text(text, skip_clipboard_restore=False):
                 return
-            logger.debug("Clipboard paste failed; falling back to SendInput")
-
-        # Try SendInput as fallback (faster but often blocked)
-        if method in {"sendinput", "type", "paste"}:
+            logger.debug("Clipboard paste failed; trying SendInput")
             if _send_input_text(text):
                 if Config.DEBUG:
                     logger.info(f"Injected via SendInput ({len(text)} chars, instant)")

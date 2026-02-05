@@ -22,7 +22,7 @@ from src.youtube_download import YouTubeDownloadError, download_youtube_audio
 from src.overlay import get_overlay, show_recording_overlay, show_initializing_overlay, show_transcribing_overlay, hide_recording_overlay, update_overlay_audio
 from src import database as db
 
-TranscriptStatus = Literal["completed", "processing", "failed", "recording"]
+TranscriptStatus = Literal["completed", "processing", "failed", "recording", "stopped"]
 TranscriptType = Literal["mic", "youtube", "file"]
 
 _ALLOWED_ORIGINS_ENV = "SCRIBER_ALLOWED_ORIGINS"
@@ -577,13 +577,23 @@ class ScriberWebController:
         self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self.broadcast(payload)))
 
     def _on_pipeline_done(self, task: asyncio.Task, *, session_id: str | None = None) -> None:
+        # Ignore completions from tasks that are no longer the active live pipeline.
+        # This prevents stale callbacks from clobbering a newer session's state.
+        if task is not self._pipeline_task:
+            logger.debug("Ignoring completed pipeline task that is no longer active")
+            return
+
         async def _safe_cleanup():
             """Cleanup state with proper lock protection."""
             async with self._listening_lock:
+                if task is not self._pipeline_task:
+                    return
                 self._is_listening = False
                 self._is_stopping = False
                 self._pipeline = None
                 self._pipeline_task = None
+                if session_id is None or session_id == self._session_id:
+                    self._session_id = None
         
         async def _broadcast_error(error_msg: str):
             """Broadcast error to frontend."""
@@ -598,7 +608,7 @@ class ScriberWebController:
             pass
         except Exception as exc:  # pragma: no cover - runtime dependent        
             logger.error(f"Pipeline error: {exc}")
-            self._set_status("Error")
+            self._set_status("Error", session_id=session_id)
             # Hide overlay when pipeline fails to prevent it staying stuck at "Preparing..."
             self._overlay_audio_enabled = False
             hide_recording_overlay()
@@ -625,11 +635,13 @@ class ScriberWebController:
             
             failed_current = None
             with self._current_lock:
-                if self._current:
+                if self._current and (session_id is None or self._current.id == session_id):
                     self._current.finish("failed")
                     failed_current = self._current
+                    self._current = None
             if failed_current:
                 self._add_to_history(failed_current)
+                self._save_transcript_to_db(failed_current)
                 self._loop.call_soon_threadsafe(
                     lambda: asyncio.create_task(self._broadcast_history_updated())
                 )
@@ -1039,35 +1051,41 @@ class ScriberWebController:
     async def _emergency_stop_pipeline(self, *, session_id: str | None = None) -> None:
         """Emergency stop for connection errors - doesn't save transcript."""
         logger.warning("Emergency pipeline stop triggered")
-        if session_id is not None and session_id != self._session_id:
-            return
+        pipeline = None
+        pipeline_task = None
         try:
-            # Cancel the current recording session without saving
-            with self._current_lock:
-                if self._current:
+            async with self._listening_lock:
+                if session_id is not None and session_id != self._session_id:
+                    return
+
+                # Cancel the current recording session without saving.
+                with self._current_lock:
                     self._current = None
 
-            # Stop the pipeline
-            if self._pipeline:
+                pipeline = self._pipeline
+                pipeline_task = self._pipeline_task
+                self._is_listening = False
+                self._is_stopping = False
+                self._pipeline = None
+                self._pipeline_task = None
+                self._session_id = None
+
+            # Stop the previous pipeline instance outside the lock.
+            if pipeline:
                 try:
-                    await asyncio.wait_for(self._pipeline.stop(), timeout=2.0)
+                    await asyncio.wait_for(pipeline.stop(), timeout=2.0)
                 except asyncio.TimeoutError:
                     logger.warning("Emergency stop timeout - forcing cleanup")
                 except Exception as e:
                     logger.debug(f"Emergency stop warning: {e}")
 
-            # Cancel the pipeline task
-            if self._pipeline_task and not self._pipeline_task.done():
-                self._pipeline_task.cancel()
+            # Cancel previous pipeline task if still running.
+            if pipeline_task and not pipeline_task.done():
+                pipeline_task.cancel()
                 try:
-                    await asyncio.wait_for(asyncio.shield(self._pipeline_task), timeout=1.0)
+                    await asyncio.wait_for(asyncio.shield(pipeline_task), timeout=1.0)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     pass
-
-            self._is_listening = False
-            self._pipeline = None
-            self._pipeline_task = None
-            self._session_id = None
         except Exception as e:
             logger.error(f"Emergency stop error: {e}")
 
@@ -1118,16 +1136,18 @@ class ScriberWebController:
             if session_id is not None:
                 transcribing_payload["sessionId"] = session_id
             await self.broadcast(transcribing_payload)
-        
+
+        stop_error: Exception | None = None
         try:
             if pipeline:
                 await pipeline.stop()
-            
+             
             # Now that pipeline has stopped and transcription callback has fired,
             # clear _current to prevent any further modifications
             with self._current_lock:
-                self._current = None
-            
+                if self._current and (session_id is None or self._current.id == session_id):
+                    self._current = None
+             
             # Hide overlay for async services after processing completes
             if not is_realtime_service:
                 self._overlay_audio_enabled = False
@@ -1139,15 +1159,32 @@ class ScriberWebController:
                     await pipeline_task
                 except asyncio.CancelledError:
                     pass
+        except Exception as exc:
+            stop_error = exc
+            logger.exception("Error while stopping live pipeline")
+            self._overlay_audio_enabled = False
+            hide_recording_overlay()
+            error_payload: dict[str, Any] = {
+                "type": "error",
+                "message": f"Failed to stop recording cleanly: {exc}",
+            }
+            if session_id is not None:
+                error_payload["sessionId"] = session_id
+            await self.broadcast(error_payload)
         finally:
             async with self._listening_lock:
                 self._is_stopping = False
-                self._session_id = None
-            
-            self._set_status("Stopped")
+                self._set_status("Error" if stop_error else "Stopped", session_id=session_id)
+                if session_id is None or self._session_id == session_id:
+                    self._session_id = None
 
             if current:
-                current.finish("completed")
+                current.finish("failed" if stop_error else "completed")
+                if stop_error:
+                    err_line = f"[Error] {stop_error}"
+                    current.content = (
+                        f"{current.content}\n{err_line}" if current.content else err_line
+                    )
                 self._add_to_history(current)
                 self._save_transcript_to_db(current)  # Persist to database
                 finished_payload = {"type": "session_finished", "session": current.to_public(include_content=True)}
