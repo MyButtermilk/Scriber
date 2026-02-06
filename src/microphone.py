@@ -74,7 +74,13 @@ class MicrophoneInput(BaseInputTransport):
 
         try:
             # Define device_index at the outer scope so it's available for logging
-            device_index = None if self.device == "default" else int(self.device)
+            device_index = None
+            if self.device not in ("default", "", None):
+                try:
+                    device_index = int(self.device)
+                except (TypeError, ValueError):
+                    logger.warning(f"Invalid microphone device id '{self.device}', using default microphone")
+                    device_index = None
             
             if not self.stream:
                 # Auto-detect channels supported by the device to avoid PaErrorCode -9998.
@@ -179,13 +185,22 @@ class MicrophoneInput(BaseInputTransport):
             raise RuntimeError(f"Microphone initialization failed: {e}") from e
 
     def _audio_callback(self, indata, frames, time_info, status):
-        if status:
-            logger.warning(f"Audio status: {status}")
-        if self._running:
-            # Directly use the buffer without extra processing
+        try:
+            if status:
+                logger.warning(f"Audio status: {status}")
+            if not self._running:
+                return
+
             audio_bytes = indata.tobytes()
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, audio_bytes)
-            
+            try:
+                if self._loop and not self._loop.is_closed():
+                    self._loop.call_soon_threadsafe(self._queue.put_nowait, audio_bytes)
+            except RuntimeError as exc:
+                # Event loop already closing/closed; stop pushing frames from callback thread.
+                logger.debug(f"Audio callback loop unavailable: {exc}")
+                self._running = False
+                return
+
             # RMS calculation for visualization (every callback for responsiveness)
             if self.on_audio_level:
                 try:
@@ -225,6 +240,9 @@ class MicrophoneInput(BaseInputTransport):
                     self.on_audio_level(float(rms) if self._speech_active else max(0.0, rms * 0.3))
                 except Exception:
                     pass
+        except Exception as exc:
+            # Never raise from PortAudio callback threads.
+            logger.debug(f"Audio callback exception ignored: {exc}")
 
     async def _drain_queue(self):
         # Ensure audio queue exists (BaseInputTransport creates it in _create_audio_task)

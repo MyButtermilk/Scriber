@@ -28,13 +28,21 @@ COLOR_BG = "#0f172a" # Slate-900 (Darker bg if possible, but ctk controls theme)
 
 _DEVICE_NAME_PREFIX_RE = re.compile(r"\((\d+)\s*-\s*", re.IGNORECASE)
 _DEFAULT_SUFFIX_RE = re.compile(r"\s*\(default\)\s*$", re.IGNORECASE)
+_HOST_API_SUFFIX_RE = re.compile(
+    r"\s*,\s*(mme|windows\s+wasapi|wasapi|wdm-ks|directsound|asio)\s*$",
+    re.IGNORECASE,
+)
+_MULTISPACE_RE = re.compile(r"\s+")
 
 
 def _normalize_device_name(name: str) -> str:
     if not name:
         return ""
-    normalized = _DEVICE_NAME_PREFIX_RE.sub("(", name).strip()
+    normalized = str(name).strip()
     normalized = _DEFAULT_SUFFIX_RE.sub("", normalized).strip()
+    normalized = _HOST_API_SUFFIX_RE.sub("", normalized).strip()
+    normalized = _DEVICE_NAME_PREFIX_RE.sub("(", normalized).strip()
+    normalized = _MULTISPACE_RE.sub(" ", normalized)
     return normalized.lower()
 
 class AudioVisualizer(ctk.CTkFrame):
@@ -669,15 +677,25 @@ class ScriberUI(ctk.CTk):
                     current_mic = str(resolved_name)
             except Exception:
                 pass
+
+        current_norm = _normalize_device_name(str(current_mic or ""))
+        if current_norm:
+            canonical_current = next(
+                (d[0] for d in devices if _normalize_device_name(d[0]) == current_norm),
+                None,
+            )
+            if canonical_current:
+                current_mic = canonical_current
+                current_norm = _normalize_device_name(canonical_current)
+
         favorite_mic = getattr(Config, "FAVORITE_MIC", "") or ""
         if favorite_mic and devices:
-            def _label_to_name(label: str) -> str:
-                suffix = " (Default)"
-                return label[:-len(suffix)] if label.endswith(suffix) else label
-
-            favorite_id = next((d[0] for d in devices if _label_to_name(d[1]) == favorite_mic), None)
-            current_available = any(d[0] == current_mic for d in devices)
-            if favorite_id and (current_mic in ("default", "", None) or not current_available):
+            favorite_norm = _normalize_device_name(favorite_mic)
+            favorite_id = next(
+                (d[0] for d in devices if _normalize_device_name(d[0]) == favorite_norm),
+                None,
+            )
+            if favorite_id:
                 current_mic = favorite_id
 
         display = next((d[1] for d in devices if d[0] == current_mic), dev_names[0] if dev_names else "Default")
@@ -858,15 +876,60 @@ class ScriberUI(ctk.CTk):
         try:
             import sounddevice as sd
             devices = [("default", "Default")]
-            default = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
-            seen = set()
+
+            try:
+                default = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
+                default_idx = int(default)
+                if default_idx < 0:
+                    default_idx = None
+            except Exception:
+                default_idx = None
+
+            default_norm = ""
+            if default_idx is not None:
+                try:
+                    default_info = sd.query_devices(device=default_idx, kind="input")
+                    default_norm = _normalize_device_name(str(default_info.get("name", "")))
+                except Exception:
+                    default_norm = ""
+
+            try:
+                host_apis = sd.query_hostapis()
+                mme_idx = next((i for i, h in enumerate(host_apis) if h.get("name", "") == "MME"), None)
+                wasapi_idx = next((i for i, h in enumerate(host_apis) if "WASAPI" in h.get("name", "")), None)
+            except Exception:
+                mme_idx = None
+                wasapi_idx = None
+
+            def _host_priority(hostapi_idx: int) -> int:
+                if mme_idx is not None and hostapi_idx == mme_idx:
+                    return 0
+                if wasapi_idx is not None and hostapi_idx == wasapi_idx:
+                    return 1
+                return 2
+
+            candidates: dict[str, tuple[int, int, str]] = {}
             for idx, dev in enumerate(sd.query_devices()):
-                if dev.get("max_input_channels", 0) <= 0: continue
-                name = dev.get("name", f"Dev {idx}")
-                if name in seen: continue
-                seen.add(name)
-                lbl = f"{name} (Default)" if idx == default else name
-                devices.append((str(name), lbl))
+                if int(dev.get("max_input_channels", 0) or 0) <= 0:
+                    continue
+                name = str(dev.get("name", f"Dev {idx}"))
+                normalized_name = _normalize_device_name(name)
+                if not normalized_name:
+                    continue
+                try:
+                    hostapi_idx = int(dev.get("hostapi", -1))
+                except (TypeError, ValueError):
+                    hostapi_idx = -1
+                entry = (_host_priority(hostapi_idx), idx, name)
+                existing = candidates.get(normalized_name)
+                if existing is None or entry[0] < existing[0] or (entry[0] == existing[0] and idx < existing[1]):
+                    candidates[normalized_name] = entry
+
+            for normalized_name, (_, idx, name) in sorted(candidates.items(), key=lambda item: item[1][2].lower()):
+                is_default = (default_idx is not None and idx == default_idx) or (default_norm and normalized_name == default_norm)
+                label = f"{name} (Default)" if is_default else name
+                devices.append((name, label))
+
             return devices
         except: return [("default", "Default")]
 
