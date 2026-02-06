@@ -52,6 +52,7 @@ export default function Settings() {
   const [geminiKey, setGeminiKey] = useState("");
   const [youtubeKey, setYoutubeKey] = useState("");
   const [sonioxKey, setSonioxKey] = useState("");
+  const [mistralKey, setMistralKey] = useState("");
   const [elevenLabsKey, setElevenLabsKey] = useState("");
   const [azureKey, setAzureKey] = useState("");
   const [azureRegion, setAzureRegion] = useState("");
@@ -68,6 +69,7 @@ export default function Settings() {
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [showYoutubeKey, setShowYoutubeKey] = useState(false);
   const [showSonioxKey, setShowSonioxKey] = useState(false);
+  const [showMistralKey, setShowMistralKey] = useState(false);
   const [showElevenLabsKey, setShowElevenLabsKey] = useState(false);
   const [showAzureKey, setShowAzureKey] = useState(false);
   const [showGladiaKey, setShowGladiaKey] = useState(false);
@@ -158,6 +160,9 @@ export default function Settings() {
           ? "soniox-async"
           : "soniox-realtime";
       }
+      if (service === "mistral" || service === "mistral_async") {
+        return service === "mistral_async" ? "mistral-async" : "mistral-realtime";
+      }
       return service || "soniox-realtime";
     };
 
@@ -196,6 +201,7 @@ export default function Settings() {
         setNemoModel(settings.nemoModel || "");
 
         setSonioxKey(keys.soniox || "");
+        setMistralKey(keys.mistral || "");
         setAssemblyAIKey(keys.assemblyai || "");
         setDeepgramKey(keys.deepgram || "");
         setOpenAIKey(keys.openai || "");
@@ -257,6 +263,7 @@ export default function Settings() {
       if (provider === "Gemini") apiKeys.googleApiKey = geminiKey;
       if (provider === "YouTube") apiKeys.youtubeApiKey = youtubeKey;
       if (provider === "Soniox") apiKeys.soniox = sonioxKey;
+      if (provider === "Mistral") apiKeys.mistral = mistralKey;
       if (provider === "ElevenLabs") apiKeys.elevenlabs = elevenLabsKey;
       if (provider === "Azure") {
         apiKeys.azureSpeechKey = azureKey;
@@ -345,6 +352,10 @@ export default function Settings() {
         await updateSettings({ defaultSttService: "soniox", sonioxMode: "async" });
       } else if (value === "soniox-realtime") {
         await updateSettings({ defaultSttService: "soniox", sonioxMode: "realtime" });
+      } else if (value === "mistral-async") {
+        await updateSettings({ defaultSttService: "mistral_async" });
+      } else if (value === "mistral-realtime") {
+        await updateSettings({ defaultSttService: "mistral" });
       } else {
         await updateSettings({ defaultSttService: value });
       }
@@ -925,6 +936,8 @@ export default function Settings() {
                       <SelectItem value="nemo_local">Local (NeMo) - Primeline</SelectItem>
                       <SelectItem value="soniox-realtime">Soniox Realtime</SelectItem>
                       <SelectItem value="soniox-async">Soniox Async</SelectItem>
+                      <SelectItem value="mistral-realtime">Mistral Realtime (Voxtral RT)</SelectItem>
+                      <SelectItem value="mistral-async">Mistral Async (Voxtral V2)</SelectItem>
                       <SelectItem value="assemblyai">AssemblyAI</SelectItem>
                       <SelectItem value="deepgram">Deepgram</SelectItem>
                       <SelectItem value="openai">OpenAI</SelectItem>
@@ -1604,6 +1617,36 @@ export default function Settings() {
                     >
                       {savedKeys['Soniox'] ? <Check className="w-4 h-4 mr-2" /> : null}
                       {savedKeys['Soniox'] ? "Saved" : "Save"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2">
+                  <Label>Mistral API Key</Label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Input
+                        type={showMistralKey ? "text" : "password"}
+                        value={mistralKey}
+                        onChange={(e) => setMistralKey(e.target.value)}
+                        placeholder="Enter your Mistral key"
+                        className="font-mono text-sm pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowMistralKey(!showMistralKey)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      >
+                        {showMistralKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <Button
+                      variant={savedKeys['Mistral'] ? "default" : "outline"}
+                      onClick={() => handleSaveApiKey('Mistral')}
+                      className={savedKeys['Mistral'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
+                    >
+                      {savedKeys['Mistral'] ? <Check className="w-4 h-4 mr-2" /> : null}
+                      {savedKeys['Mistral'] ? "Saved" : "Save"}
                     </Button>
                   </div>
                 </div>

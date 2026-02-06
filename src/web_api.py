@@ -252,13 +252,24 @@ def _hotkey_to_display(hotkey: str) -> str:
 
 
 _DEVICE_NAME_PREFIX_RE = re.compile(r"\((\d+)\s*-\s*", re.IGNORECASE)
+_DEFAULT_SUFFIX_RE = re.compile(r"\s*\(default\)\s*$", re.IGNORECASE)
+_HOST_API_SUFFIX_RE = re.compile(
+    r"\s*,\s*(mme|windows\s+wasapi|wasapi|wdm-ks|directsound|asio)\s*$",
+    re.IGNORECASE,
+)
+_MULTISPACE_RE = re.compile(r"\s+")
 
 
 def _normalize_device_name(name: str) -> str:
     """Normalize Windows device names by stripping unstable numeric prefixes."""
     if not name:
         return ""
-    return _DEVICE_NAME_PREFIX_RE.sub("(", name).strip().lower()
+    normalized = str(name).strip()
+    normalized = _DEFAULT_SUFFIX_RE.sub("", normalized).strip()
+    normalized = _HOST_API_SUFFIX_RE.sub("", normalized).strip()
+    normalized = _DEVICE_NAME_PREFIX_RE.sub("(", normalized).strip()
+    normalized = _MULTISPACE_RE.sub(" ", normalized)
+    return normalized.lower()
 
 
 @dataclass
@@ -784,8 +795,8 @@ class ScriberWebController:
                 on_progress=on_progress,
             )
             
-            # Use direct file upload for Soniox (more efficient), fallback to pipecat for others
-            if Config.DEFAULT_STT_SERVICE in ("soniox", "soniox_async"):
+            # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
+            if Config.DEFAULT_STT_SERVICE in ("soniox", "soniox_async", "mistral", "mistral_async"):
                 await pipeline.transcribe_file_direct(str(audio_path))
             else:
                 await pipeline.transcribe_file(str(audio_path))
@@ -919,8 +930,8 @@ class ScriberWebController:
                 on_progress=on_progress,
             )
             
-            # Use direct file upload for Soniox (more efficient), fallback to pipecat for others
-            if Config.DEFAULT_STT_SERVICE in ("soniox", "soniox_async"):
+            # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
+            if Config.DEFAULT_STT_SERVICE in ("soniox", "soniox_async", "mistral", "mistral_async"):
                 await pipeline.transcribe_file_direct(str(file_path))
             else:
                 await pipeline.transcribe_file(str(file_path))
@@ -1278,8 +1289,6 @@ class ScriberWebController:
                 return selected
             available_ids = [d.get("deviceId") for d in devices if d.get("deviceId")]
             available = set(available_ids)
-            if len(available) <= 1:  # "default" only, no reliable availability check
-                return selected
             normalized_to_id: dict[str, str] = {}
             for dev_id in available_ids:
                 norm = _normalize_device_name(dev_id)
@@ -1321,7 +1330,7 @@ class ScriberWebController:
             _favorite_mic_available = bool(favorite_name)
             _resolved_favorite = favorite_name or ""
 
-            if favorite_name and (selected_is_default or not selected_available):
+            if favorite_name:
                 return favorite_name
             if selected_available:
                 return selected_name  # type: ignore[return-value]
@@ -1354,6 +1363,7 @@ class ScriberWebController:
             "visualizerBarCount": Config.VISUALIZER_BAR_COUNT,
             "apiKeys": {
                 "soniox": Config.SONIOX_API_KEY or "",
+                "mistral": getattr(Config, "MISTRAL_API_KEY", "") or "",
                 "assemblyai": Config.ASSEMBLYAI_API_KEY or "",
                 "deepgram": Config.DEEPGRAM_API_KEY or "",
                 "openai": Config.OPENAI_API_KEY or "",
@@ -1449,6 +1459,7 @@ class ScriberWebController:
         if isinstance(api_keys, dict):
             mapping: dict[str, tuple[str, Callable[[str], None] | None]] = {
                 "soniox": ("soniox", lambda v: Config.set_api_key("soniox", v)),
+                "mistral": ("mistral", lambda v: Config.set_api_key("mistral", v)),
                 "assemblyai": ("assemblyai", lambda v: Config.set_api_key("assemblyai", v)),
                 "deepgram": ("deepgram", lambda v: Config.set_api_key("deepgram", v)),
                 "openai": ("openai", lambda v: Config.set_api_key("openai", v)),
@@ -1529,65 +1540,105 @@ class ScriberWebController:
             return [{"deviceId": "default", "label": "Default"}]
 
         devices: list[dict[str, str]] = [{"deviceId": "default", "label": "Default"}]
-        
-        try:
-            # Get host APIs - prefer MME (most compatible, especially for USB devices)
-            host_apis = sd.query_hostapis()
-            mme_idx = next((i for i, h in enumerate(host_apis) if h.get('name', '') == 'MME'), None)
-            wasapi_idx = next((i for i, h in enumerate(host_apis) if 'WASAPI' in h.get('name', '')), None)
-            
-            # Use MME for best USB device compatibility
-            preferred_hostapi = mme_idx if mme_idx is not None else wasapi_idx
-        except Exception:
-            preferred_hostapi = None
 
         try:
             default = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
+            default_idx = int(default)
+            if default_idx < 0:
+                default_idx = None
         except Exception:
-            default = None
+            default_idx = None
+
+        default_norm = ""
+        if default_idx is not None:
+            try:
+                default_info = sd.query_devices(device=default_idx, kind="input")
+                default_norm = _normalize_device_name(str(default_info.get("name", "")))
+            except Exception:
+                default_norm = ""
+
+        try:
+            host_apis = sd.query_hostapis()
+            mme_idx = next((i for i, h in enumerate(host_apis) if h.get("name", "") == "MME"), None)
+            wasapi_idx = next((i for i, h in enumerate(host_apis) if "WASAPI" in h.get("name", "")), None)
+        except Exception:
+            mme_idx = None
+            wasapi_idx = None
+
+        def _host_priority(hostapi_idx: int) -> int:
+            if mme_idx is not None and hostapi_idx == mme_idx:
+                return 0
+            if wasapi_idx is not None and hostapi_idx == wasapi_idx:
+                return 1
+            return 2
 
         # Virtual/system devices to exclude
         exclude_patterns = [
-            'soundmapper', 'stereo mix', 'stereomix', 'what u hear',
-            'loopback', 'primary sound',
+            "soundmapper",
+            "stereo mix",
+            "stereomix",
+            "what u hear",
+            "loopback",
+            "primary sound",
         ]
-        
-        seen_names: set[str] = set()
-        
+
+        # Keep one representative per normalized name (best host API first).
+        candidates: dict[str, tuple[int, int, str]] = {}
+
         try:
             for idx, dev in enumerate(sd.query_devices()):
                 # Skip if no input channels
                 if int(dev.get("max_input_channels", 0) or 0) <= 0:
                     continue
-                
-                # Only include devices from the preferred host API (MME)
-                hostapi_idx = dev.get('hostapi', 0)
-                if preferred_hostapi is not None and hostapi_idx != preferred_hostapi:
-                    continue
-                
+
                 name = str(dev.get("name", f"Device {idx}"))
                 name_lower = name.lower()
-                
+
                 # Skip virtual/system devices
                 if any(pattern in name_lower for pattern in exclude_patterns):
                     continue
-                
+
                 # Skip devices that look like outputs
-                if any(word in name_lower for word in ['output', 'speaker', 'lautsprecher', 'headphone']):
+                if any(word in name_lower for word in ["output", "speaker", "lautsprecher", "headphone"]):
                     continue
-                
-                # Skip duplicates (same name)
-                if name in seen_names:
+
+                normalized_name = _normalize_device_name(name)
+                if not normalized_name:
                     continue
-                seen_names.add(name)
-                
-                is_default = (default is not None and idx == default)
-                label = f"{name} (Default)" if is_default else name
-                # Use device NAME as the ID (stable across reboots)
-                devices.append({"deviceId": name, "label": label})
-                
+
+                try:
+                    hostapi_idx = int(dev.get("hostapi", -1))
+                except (TypeError, ValueError):
+                    hostapi_idx = -1
+                entry = (_host_priority(hostapi_idx), idx, name)
+                existing = candidates.get(normalized_name)
+                if existing is None:
+                    candidates[normalized_name] = entry
+                    continue
+
+                existing_prio, existing_idx, _ = existing
+                current_prio = entry[0]
+                should_replace = False
+                if current_prio < existing_prio:
+                    should_replace = True
+                elif current_prio == existing_prio:
+                    # If tie, keep the default-device entry when possible.
+                    if default_idx is not None and idx == default_idx and existing_idx != default_idx:
+                        should_replace = True
+                    elif idx < existing_idx:
+                        should_replace = True
+
+                if should_replace:
+                    candidates[normalized_name] = entry
         except Exception:
             pass
+
+        for normalized_name, (_, idx, name) in sorted(candidates.items(), key=lambda item: item[1][2].lower()):
+            is_default = (
+                default_idx is not None and idx == default_idx
+            ) or (default_norm and normalized_name == default_norm)
+            label = f"{name} (Default)" if is_default else name
+            devices.append({"deviceId": name, "label": label})
 
         return devices
 
@@ -1610,11 +1661,9 @@ class ScriberWebController:
             return "default"
         
         try:
-            # Get preferred host API
             host_apis = sd.query_hostapis()
-            wasapi_idx = next((i for i, h in enumerate(host_apis) if 'WASAPI' in h.get('name', '')), None)
-            mme_idx = next((i for i, h in enumerate(host_apis) if h.get('name', '') == 'MME'), None)
-            preferred_hostapi = wasapi_idx if wasapi_idx is not None else mme_idx
+            mme_idx = next((i for i, h in enumerate(host_apis) if h.get("name", "") == "MME"), None)
+            wasapi_idx = next((i for i, h in enumerate(host_apis) if "WASAPI" in h.get("name", "")), None)
 
             target = device_name.strip()
             target_norm = _normalize_device_name(target)
@@ -1625,31 +1674,33 @@ class ScriberWebController:
                 if target_norm:
                     return _normalize_device_name(dev_name) == target_norm
                 return False
-            
-            # Search for the device by name
-            for idx, dev in enumerate(sd.query_devices()):
-                if int(dev.get("max_input_channels", 0) or 0) <= 0:
-                    continue
-                
-                # Prefer devices from the same host API
-                hostapi_idx = dev.get('hostapi', 0)
-                if preferred_hostapi is not None and hostapi_idx != preferred_hostapi:
-                    continue
-                
-                name = str(dev.get("name", ""))
-                if _matches(name):
-                    logger.info(f"Resolved microphone '{device_name}' to device index {idx}")
-                    return str(idx)
-            
-            # If not found in preferred host API, try any host API
+
+            def _host_priority(hostapi_idx: int) -> int:
+                if mme_idx is not None and hostapi_idx == mme_idx:
+                    return 0
+                if wasapi_idx is not None and hostapi_idx == wasapi_idx:
+                    return 1
+                return 2
+
+            matches: list[tuple[int, int, str]] = []
             for idx, dev in enumerate(sd.query_devices()):
                 if int(dev.get("max_input_channels", 0) or 0) <= 0:
                     continue
                 name = str(dev.get("name", ""))
-                if _matches(name):
-                    logger.info(f"Resolved microphone '{device_name}' to device index {idx} (different host API)")
-                    return str(idx)
-            
+                if not _matches(name):
+                    continue
+                try:
+                    hostapi_idx = int(dev.get("hostapi", -1))
+                except (TypeError, ValueError):
+                    hostapi_idx = -1
+                matches.append((_host_priority(hostapi_idx), idx, name))
+
+            if matches:
+                matches.sort(key=lambda item: (item[0], item[1]))
+                best = matches[0]
+                logger.info(f"Resolved microphone '{device_name}' to device index {best[1]}")
+                return str(best[1])
+
             # Device not found - fall back to default
             logger.warning(f"Microphone '{device_name}' not found, falling back to default")
             return "default"

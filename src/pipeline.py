@@ -486,6 +486,12 @@ from src.config import Config
 from src.injector import TextInjector
 from src.microphone import MicrophoneInput
 from src.audio_file_input import FfmpegAudioFileInput
+from src.mistral_stt import (
+    MistralAsyncProcessor,
+    MistralRealtimeSTTService,
+    format_mistral_segments_with_speakers,
+    transcribe_with_mistral,
+)
 
 LANGUAGE_MAP = {
     "auto": None,
@@ -504,16 +510,29 @@ def _selected_language():
 
 
 _DEVICE_NAME_PREFIX_RE = re.compile(r"\((\d+)\s*-\s*", re.IGNORECASE)
+_DEFAULT_SUFFIX_RE = re.compile(r"\s*\(default\)\s*$", re.IGNORECASE)
+_HOST_API_SUFFIX_RE = re.compile(
+    r"\s*,\s*(mme|windows\s+wasapi|wasapi|wdm-ks|directsound|asio)\s*$",
+    re.IGNORECASE,
+)
+_MULTISPACE_RE = re.compile(r"\s+")
 
 
 def _normalize_device_name(name: str) -> str:
-    """Normalize Windows device names by stripping unstable numeric prefixes.
+    """Normalize Windows device names by stripping unstable variations.
 
-    Example: "Mikrofon (5- Insta360 Link)" -> "Mikrofon (Insta360 Link)"
+    Examples:
+    - "Mikrofon (5- Insta360 Link)" -> "Mikrofon (Insta360 Link)"
+    - "USB Mic, Windows WASAPI" -> "USB Mic"
     """
     if not name:
         return ""
-    return _DEVICE_NAME_PREFIX_RE.sub("(", name).strip().lower()
+    normalized = str(name).strip()
+    normalized = _DEFAULT_SUFFIX_RE.sub("", normalized).strip()
+    normalized = _HOST_API_SUFFIX_RE.sub("", normalized).strip()
+    normalized = _DEVICE_NAME_PREFIX_RE.sub("(", normalized).strip()
+    normalized = _MULTISPACE_RE.sub(" ", normalized)
+    return normalized.lower()
 
 
 def _resolve_mic_device(device_name: str) -> str:
@@ -527,7 +546,11 @@ def _resolve_mic_device(device_name: str) -> str:
     selected device. This allows users to have a preferred mic that is
     automatically used whenever it's connected.
     """
-    import sounddevice as sd
+    try:
+        import sounddevice as sd
+    except Exception as exc:
+        logger.warning(f"Sounddevice unavailable while resolving microphone ({exc}); using default")
+        return "default"
     
     def find_device_by_name(name: str) -> str | None:
         """Find device index by name, preferring MME host API."""
@@ -579,29 +602,14 @@ def _resolve_mic_device(device_name: str) -> str:
             pass
         return None
     
-    # Check if favorite mic is set and should be used
-    # Favorite mic only overrides when:
-    # 1. Selected device is "default" (no explicit selection), OR
-    # 2. Selected device is unavailable
+    # If a favorite mic is configured and available, always prefer it.
+    # This matches the UI promise: "always use it when available."
     favorite = Config.FAVORITE_MIC
-    use_favorite = False
-    
     if favorite and favorite != "default":
-        if device_name == "default" or not device_name:
-            # No explicit selection - use favorite if available
-            use_favorite = True
-        else:
-            # User selected a specific device - only use favorite if selected is unavailable
-            selected_idx = find_device_by_name(device_name)
-            if not selected_idx:
-                # Selected device not available, try favorite
-                use_favorite = True
-        
-        if use_favorite:
-            favorite_idx = find_device_by_name(favorite)
-            if favorite_idx:
-                logger.info(f"Using favorite microphone '{favorite}' (device index {favorite_idx})")
-                return favorite_idx
+        favorite_idx = find_device_by_name(favorite)
+        if favorite_idx:
+            logger.info(f"Using favorite microphone '{favorite}' (device index {favorite_idx})")
+            return favorite_idx
     
     # Fall back to selected device
     if device_name == "default" or not device_name:
@@ -781,7 +789,7 @@ class ScriberPipeline:
                 )
             if not SonioxSTTService: raise ImportError("SonioxSTTService not available.")
             lang_hint = _selected_language()
-            # Use stt-rt-v3 model for realtime transcription
+            # Use stt-rt-v4 model for realtime transcription
             rt_model = Config.SONIOX_RT_MODEL
             # Build params with model and context
             if Config.CUSTOM_VOCAB and SonioxContextObject:
@@ -802,6 +810,30 @@ class ScriberPipeline:
             # This keeps the connection alive for the entire recording session.
             logger.info(f"Creating SonioxSTTService with vad_force_turn_endpoint=True (endpoint detection DISABLED)")
             return SonioxSTTService(api_key=_get_api_key("soniox"), params=params, vad_force_turn_endpoint=True)
+
+        elif self.service_name in ("mistral", "mistral_async"):
+            if not _get_api_key("mistral"):
+                raise ValueError("Mistral API Key is missing.")
+
+            if self.service_name == "mistral_async":
+                logger.info("Using Mistral async transcription mode")
+                return MistralAsyncProcessor(
+                    api_key=_get_api_key("mistral"),
+                    model=Config.MISTRAL_ASYNC_MODEL,
+                    language=_selected_language(),
+                    custom_vocab=Config.CUSTOM_VOCAB,
+                    session=session,
+                    on_progress=self.on_progress,
+                )
+
+            logger.info("Using Mistral realtime transcription mode")
+            return MistralRealtimeSTTService(
+                api_key=_get_api_key("mistral"),
+                model=Config.MISTRAL_RT_MODEL,
+                language=_selected_language(),
+                custom_vocab=Config.CUSTOM_VOCAB,
+                aiohttp_session=session,
+            )
 
         elif self.service_name == "assemblyai":
             # Lazy import - only loaded when AssemblyAI is used
@@ -993,7 +1025,10 @@ class ScriberPipeline:
                     on_ready=self.on_mic_ready,
                 )
 
-                inject_immediately = self.service_name == "soniox" and not (self.service_name == "soniox_async" or Config.SONIOX_MODE == "async")
+                inject_immediately = (
+                    (self.service_name == "soniox" and Config.SONIOX_MODE != "async")
+                    or self.service_name == "mistral"
+                )
                 text_injector = TextInjector(inject_immediately=inject_immediately)
                 self.text_injector = text_injector
                 transcript_cb = (
@@ -1204,9 +1239,9 @@ class ScriberPipeline:
 
     async def transcribe_file_direct(self, file_path: str) -> None:
         """
-        Transcribe audio/video file by uploading directly to Soniox async API.
+        Transcribe audio/video file by uploading directly to provider async APIs.
         This bypasses the PCM conversion pipeline and uploads the original file format.
-        Much more efficient for file transcription since Soniox accepts MP3, WAV, M4A, etc.
+        Much more efficient for file transcription than PCM conversion.
         """
         from pathlib import Path
         import mimetypes
@@ -1218,7 +1253,7 @@ class ScriberPipeline:
         if not path.exists():
             raise ValueError(f"File not found: {file_path}")
 
-        logger.info(f"Transcribing file directly with Soniox async: {file_path}")
+        logger.info(f"Transcribing file directly with {self.service_name}: {file_path}")
         self.is_active = True
 
         try:
@@ -1236,6 +1271,54 @@ class ScriberPipeline:
                 ".aac": "audio/aac",
             }
             content_type = content_type_map.get(ext, mimetypes.guess_type(str(path))[0] or "application/octet-stream")
+
+            if self.service_name in ("mistral", "mistral_async"):
+                api_key = Config.get_api_key("mistral")
+                if not api_key:
+                    raise ValueError("Mistral API key is missing")
+
+                with open(path, "rb") as f:
+                    file_bytes = f.read()
+
+                language = Config.LANGUAGE if Config.LANGUAGE and Config.LANGUAGE != "auto" else None
+
+                if self.on_progress:
+                    self.on_progress("Uploading audio...")
+
+                async with aiohttp.ClientSession() as session:
+                    if self.on_progress:
+                        self.on_progress("Processing transcription...")
+
+                    payload = await transcribe_with_mistral(
+                        session=session,
+                        api_key=api_key,
+                        model=Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602",
+                        file_bytes=file_bytes,
+                        filename=path.name,
+                        content_type=content_type,
+                        language=language,
+                        context_bias=Config.CUSTOM_VOCAB or "",
+                        diarize=True,
+                        timestamp_granularities=["segment"],
+                        timeout_secs=900,
+                    )
+
+                text = str(payload.get("text") or "").strip()
+                segments = payload.get("segments") if isinstance(payload.get("segments"), list) else []
+                if segments:
+                    diarized = format_mistral_segments_with_speakers(
+                        [s for s in segments if isinstance(s, dict)]
+                    )
+                    if diarized:
+                        text = diarized
+
+                if text and self.on_transcription:
+                    logger.info(f"Mistral direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
 
             api_key = Config.get_api_key("soniox")
             if not api_key:
@@ -1412,8 +1495,10 @@ class ScriberPipeline:
             self.service_name == "soniox_async"
             or (self.service_name == "soniox" and Config.SONIOX_MODE == "async")
         )
+        is_mistral_async = self.service_name == "mistral_async"
+        is_async_finalization = is_soniox_async or is_mistral_async
         if self.on_status_change:
-            self.on_status_change("Transcribing..." if is_soniox_async else "Stopping...")
+            self.on_status_change("Transcribing..." if is_async_finalization else "Stopping...")
         # Force flush of segmented STT buffers before stopping audio input (EndFrame closes pipeline).
         if self.pipeline:
             try:
@@ -1530,7 +1615,7 @@ class ScriberPipeline:
         
         wait_timeout = timeout_secs
         if wait_timeout is None:
-            wait_timeout = 600.0 if is_soniox_async else 30.0
+            wait_timeout = 600.0 if is_async_finalization else 30.0
 
         try:
             # Wait for either start_done (pipeline completely finished) or timeout

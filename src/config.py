@@ -31,6 +31,7 @@ _json_settings = _load_json_settings()
 class Config:
     # API Keys
     SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
+    MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
     ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
     ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") # For Gemini
@@ -50,7 +51,9 @@ class Config:
     DEFAULT_STT_SERVICE = os.getenv("SCRIBER_DEFAULT_STT", "soniox")
     SONIOX_MODE = os.getenv("SCRIBER_SONIOX_MODE", "realtime").lower()  # realtime | async
     SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", "stt-async-v4")
-    SONIOX_RT_MODEL = os.getenv("SCRIBER_SONIOX_RT_MODEL", "stt-rt-v3")
+    SONIOX_RT_MODEL = os.getenv("SCRIBER_SONIOX_RT_MODEL", "stt-rt-v4")
+    MISTRAL_RT_MODEL = os.getenv("SCRIBER_MISTRAL_RT_MODEL", "voxtral-mini-transcribe-realtime-2602")
+    MISTRAL_ASYNC_MODEL = os.getenv("SCRIBER_MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
     LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "auto")
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
@@ -70,6 +73,8 @@ class Config:
     SERVICE_API_KEY_MAP = {
         "soniox": "SONIOX_API_KEY",
         "soniox_async": "SONIOX_API_KEY",
+        "mistral": "MISTRAL_API_KEY",
+        "mistral_async": "MISTRAL_API_KEY",
         "assemblyai": "ASSEMBLYAI_API_KEY",
         "elevenlabs": "ELEVENLABS_API_KEY",
         "deepgram": "DEEPGRAM_API_KEY",
@@ -85,6 +90,8 @@ class Config:
     SERVICE_LABELS = {
         "soniox": "Soniox",
         "soniox_async": "Soniox (Async)",
+        "mistral": "Mistral (Realtime)",
+        "mistral_async": "Mistral (Async)",
         "assemblyai": "AssemblyAI",
         "google": "Google Cloud",
         "elevenlabs": "ElevenLabs",
@@ -102,8 +109,8 @@ class Config:
     # Mode: "toggle" (default) or "push_to_talk"
     MODE = os.getenv("SCRIBER_MODE", "toggle").lower()
 
-    # Custom Vocabulary (Soniox only)
-    # e.g. "Scriber, Pipecat, Soniox"
+    # Custom Vocabulary (Soniox/Mistral context biasing)
+    # e.g. "Scriber, Pipecat, Soniox, Voxtral"
     CUSTOM_VOCAB = os.getenv("SCRIBER_CUSTOM_VOCAB", "")
 
     # Summarization prompt for LLM transcript summarization
@@ -272,6 +279,7 @@ Input:"""
                 lines.append(f"{k}={v_str}")
 
         add("SONIOX_API_KEY", cls.SONIOX_API_KEY or "")
+        add("MISTRAL_API_KEY", cls.MISTRAL_API_KEY or "")
         add("ASSEMBLYAI_API_KEY", cls.ASSEMBLYAI_API_KEY or "")
         add("ELEVENLABS_API_KEY", cls.ELEVENLABS_API_KEY or "")
         add("GOOGLE_APPLICATION_CREDENTIALS", cls.GOOGLE_APPLICATION_CREDENTIALS or "")
@@ -291,6 +299,8 @@ Input:"""
         add("SCRIBER_SONIOX_MODE", cls.SONIOX_MODE)
         add("SCRIBER_SONIOX_ASYNC_MODEL", cls.SONIOX_ASYNC_MODEL)
         add("SCRIBER_SONIOX_RT_MODEL", cls.SONIOX_RT_MODEL)
+        add("SCRIBER_MISTRAL_RT_MODEL", cls.MISTRAL_RT_MODEL)
+        add("SCRIBER_MISTRAL_ASYNC_MODEL", cls.MISTRAL_ASYNC_MODEL)
         add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
         # Note: SUMMARIZATION_PROMPT is not persisted to .env (multi-line value causes parsing issues)
         # The default prompt from config.py will be used

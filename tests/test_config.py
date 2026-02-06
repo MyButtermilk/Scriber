@@ -17,3 +17,9 @@ class TestConfig(unittest.TestCase):
         # So we might need to reload or access os.getenv directly in methods.
         # But for this simple test, just checking the structure is enough.
         pass
+
+    def test_mistral_service_mapping_exists(self):
+        self.assertIn("mistral", Config.SERVICE_API_KEY_MAP)
+        self.assertIn("mistral_async", Config.SERVICE_API_KEY_MAP)
+        self.assertIn("mistral", Config.SERVICE_LABELS)
+        self.assertIn("mistral_async", Config.SERVICE_LABELS)

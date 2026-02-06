@@ -776,7 +776,7 @@ EndFrame / StopFrame
 
 **File:** `src/pipeline.py`
 
-### Soniox Realtime (RT-V3)
+### Soniox Realtime (RT-V4)
 
 Uses WebSocket streaming for real-time transcription:
 
@@ -784,7 +784,7 @@ Uses WebSocket streaming for real-time transcription:
 def _create_stt_service(self, session):
     if self.service_name == "soniox" and Config.SONIOX_MODE == "realtime":
         params = SonioxInputParams(
-            model="stt-rt-v3",
+            model="stt-rt-v4",
             language_hints=[Config.LANGUAGE] if Config.LANGUAGE != "auto" else None,
             context=SonioxContextObject(terms=custom_vocab_terms),
         )
@@ -1137,7 +1137,7 @@ USER     User clicks stop / releases hotkey
 | **Callback Interval** | ~32ms |
 | **Frame Size** | 1024 bytes (512 samples x 2 bytes) |
 | **WebSocket Heartbeat** | 30 seconds |
-| **Soniox RT Model** | `stt-rt-v3` |
+| **Soniox RT Model** | `stt-rt-v4` |
 | **Soniox Async Model** | `stt-async-v4` |
 | **Audio Encoding (Async)** | WebM/Opus 48kHz mono 32kbps |
 | **Stop Timeout (RT)** | 30 seconds |
