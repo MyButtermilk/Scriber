@@ -496,18 +496,20 @@ def state_monitor_loop():
         
         state_check_cycle += 1
         new_state = "idle"  # Default
+        state_data = {}
         
         try:
             # Always check the main state endpoint (fast, lightweight)
             req = urllib.request.Request("http://127.0.0.1:8765/api/state", method="GET")
             with urllib.request.urlopen(req, timeout=2) as resp:
                 if resp.status == 200:
-                    data = json_module.loads(resp.read().decode('utf-8'))
+                    state_data = json_module.loads(resp.read().decode('utf-8'))
                     
                     # Determine state based on response
-                    is_listening = data.get("listening", False)
-                    status = data.get("status", "")
-                    current = data.get("current")
+                    is_listening = state_data.get("listening", False)
+                    status = state_data.get("status", "")
+                    current = state_data.get("current")
+                    background_processing = bool(state_data.get("backgroundProcessing", False))
                     
                     if is_listening:
                         # Currently recording (highest priority)
@@ -517,10 +519,17 @@ def state_monitor_loop():
                         new_state = "processing"
                     elif status.lower() in ("transcribing", "processing"):
                         new_state = "processing"
+                    elif background_processing:
+                        # Background file/YouTube transcriptions are running.
+                        new_state = "processing"
             
-            # Every 3 seconds, also check for background transcription tasks
-            # This catches YouTube/file transcriptions that run in background
-            if new_state == "idle" and state_check_cycle % 3 == 0:
+            # Backward-compatible fallback for older backend versions.
+            # Newer backend responses include "backgroundProcessing".
+            if (
+                new_state == "idle"
+                and "backgroundProcessing" not in state_data
+                and state_check_cycle % 3 == 0
+            ):
                 try:
                     req = urllib.request.Request(
                         "http://127.0.0.1:8765/api/transcripts?limit=5", 

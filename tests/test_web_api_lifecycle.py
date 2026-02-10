@@ -47,6 +47,22 @@ async def test_on_pipeline_done_ignores_stale_task():
 
 
 @pytest.mark.asyncio
+async def test_get_state_reports_background_processing_flag():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    pending = loop.create_future()
+    ctl._running_tasks["bg-task"] = pending
+
+    state = ctl.get_state()
+    assert state["backgroundProcessing"] is True
+
+    pending.set_result(None)
+    state = ctl.get_state()
+    assert state["backgroundProcessing"] is False
+
+
+@pytest.mark.asyncio
 async def test_on_pipeline_done_persists_failed_live_session():
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)

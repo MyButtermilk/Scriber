@@ -16,7 +16,7 @@ import { MOCK_TRANSCRIPTS } from "@/lib/mockData";
 import { useToast } from "@/hooks/use-toast";
 import { useSharedWebSocket } from "@/contexts/WebSocketContext";
 import { useState, useEffect, useRef, useLayoutEffect, useCallback, useMemo } from "react";
-import { wsUrl, apiUrl } from "@/lib/backend";
+import { apiUrl } from "@/lib/backend";
 import ReactMarkdown from "react-markdown";
 
 // Speaker colors for diarization - visually distinct palette
@@ -280,11 +280,47 @@ export default function TranscriptDetail() {
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
   const queryClient = useQueryClient();
+  const historyRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // WebSocket with auto-reconnection for real-time updates
+  const handleWsMessage = useCallback((msg: any) => {
+    if (msg?.type === "history_updated") {
+      if (!id) return;
+      if (!historyRefreshTimerRef.current) {
+        historyRefreshTimerRef.current = setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] });
+          historyRefreshTimerRef.current = null;
+        }, 250);
+      }
+      return;
+    }
+    if (msg?.type === "error") {
+      toast({
+        title: "Error",
+        description: msg.message || "An error occurred.",
+        variant: "destructive",
+        duration: 6000,
+      });
+    }
+  }, [id, queryClient, toast]);
+
+  // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
+  const { isConnected: isWsConnected } = useSharedWebSocket(handleWsMessage);
+
+  useEffect(() => {
+    return () => {
+      if (historyRefreshTimerRef.current) {
+        clearTimeout(historyRefreshTimerRef.current);
+        historyRefreshTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const transcriptQuery = useQuery({
     queryKey: ["/api/transcripts", id],
     enabled: !!id,
     refetchInterval: (data: any) => {
+      if (isWsConnected) return false;
       const status = data?.status;
       return status === "processing" || status === "recording" ? 1000 : false;
     },
@@ -308,24 +344,6 @@ export default function TranscriptDetail() {
     content: "",
     type: "mic",
   };
-
-  // WebSocket with auto-reconnection for real-time updates
-  const handleWsMessage = useCallback((msg: any) => {
-    if (msg?.type === "history_updated") {
-      // Invalidate this specific transcript query to refresh content
-      queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] });
-    } else if (msg?.type === "error") {
-      toast({
-        title: "Error",
-        description: msg.message || "An error occurred.",
-        variant: "destructive",
-        duration: 6000,
-      });
-    }
-  }, [id, queryClient, toast]);
-
-  // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
-  useSharedWebSocket(handleWsMessage);
 
   const handleCopyTranscript = () => {
     navigator.clipboard.writeText(transcript?.content || "");

@@ -64,6 +64,7 @@ class MicrophoneInput(BaseInputTransport):
         self._noise_floor_db = -70.0
         self._speech_active = False
         self._speech_hold_until = 0.0
+        self._visual_level = 0.0
 
     async def start(self, frame: StartFrame):
         """Start audio capture and feed frames into the transport queue."""
@@ -222,22 +223,27 @@ class MicrophoneInput(BaseInputTransport):
                             self._noise_floor_db = self._noise_floor_db * 0.98 + db * 0.02
 
                     # Lower thresholds for responsive visualization
-                    threshold_high = max(self._noise_floor_db + 8.0, -55.0)
-                    threshold_low = threshold_high - 6.0
-                    abs_on_rms = 0.001   # More sensitive trigger
-                    abs_off_rms = 0.0005  # Lower off threshold
+                    threshold_high = max(self._noise_floor_db + 6.0, -58.0)
+                    threshold_low = threshold_high - 8.0
+                    abs_on_rms = 0.0007
+                    abs_off_rms = 0.00025
 
                     if db >= threshold_high or rms >= abs_on_rms:
                         self._speech_active = True
-                        self._speech_hold_until = now + 0.3  # Longer hold for smoother visualization
+                        self._speech_hold_until = now + 0.45
                     elif (
                         (db <= threshold_low and rms <= abs_off_rms)
                         and now >= self._speech_hold_until
                     ):
                         self._speech_active = False
 
-                    # Always send some signal when speech active, minimal signal otherwise
-                    self.on_audio_level(float(rms) if self._speech_active else max(0.0, rms * 0.3))
+                    # Keep visualization continuous across syllables.
+                    vis_target = float(rms) if self._speech_active else max(0.0, rms * 0.55)
+                    if vis_target > self._visual_level:
+                        self._visual_level = self._visual_level * 0.25 + vis_target * 0.75
+                    else:
+                        self._visual_level = self._visual_level * 0.70 + vis_target * 0.30
+                    self.on_audio_level(self._visual_level)
                 except Exception:
                     pass
         except Exception as exc:

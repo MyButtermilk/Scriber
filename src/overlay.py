@@ -97,14 +97,22 @@ class QtOverlayWindow(QWidget):
         self._taper = self._build_taper(self._bar_count)
         
         # AGC (Automatic Gain Control) for adaptive level scaling
-        self._agc = 0.02
+        self._agc = 0.0022
+        self._agc_min = 0.0022
+        self._agc_decay = 0.06
+        self._input_gain = 2.4
+        self._input_gate = 0.00005
+        self._input_curve_exp = 0.34
+        self._rms_env = 0.0
+        self._rms_attack = 0.82
+        self._rms_release = 0.24
         
         # CAVA-style parameters - tuned for fast, responsive feel
         self._noise_reduction = 0.77  # 0-1, smoothing factor
-        self._gravity = 0.95  # Faster fall-off
+        self._gravity = 0.88
         self._integral = 0.7  # Weighted average factor
         self._rise_speed = 1.0  # Instant rise
-        self._fall_damping = 0.80  # Less floaty
+        self._fall_damping = 0.84
         
         # Stop button hit-test (updated during painting)
         self._stop_center_x = 0.0
@@ -275,7 +283,8 @@ class QtOverlayWindow(QWidget):
         self._levels = [0.0] * self._bar_count
         self._display = [0.0] * self._bar_count
         self._taper = self._build_taper(self._bar_count)
-        self._agc = 0.02
+        self._agc = self._agc_min
+        self._rms_env = 0.0
         
         self._position_default()
         self.setWindowOpacity(0.0)
@@ -368,19 +377,37 @@ class QtOverlayWindow(QWidget):
         
         import math
         rms = max(0.0, min(1.0, float(rms)))
+
+        # Gentle gate + gain: avoid hard dropouts between syllables.
+        if rms < self._input_gate:
+            rms *= 0.45
+        else:
+            rms = max(0.0, rms - self._input_gate)
+        rms = min(1.0, rms * self._input_gain)
+
+        # Envelope smoothing to keep motion continuous while speaking.
+        if rms > self._rms_env:
+            self._rms_env = self._rms_env * (1.0 - self._rms_attack) + rms * self._rms_attack
+        else:
+            self._rms_env = self._rms_env * (1.0 - self._rms_release) + rms * self._rms_release
+        rms = self._rms_env
         
         # Fast AGC - quick attack, slower decay (CAVA autosens style)
         if rms > self._agc:
             self._agc = rms  # Instant attack
         else:
-            self._agc = self._agc * 0.96 + rms * 0.04  # Slightly faster decay for responsiveness
+            self._agc = max(
+                self._agc_min,
+                self._agc * (1.0 - self._agc_decay) + rms * self._agc_decay,
+            )
         
         # Normalize with AGC
         norm = rms / (self._agc + 1e-6)
         
         # Apply power curve for better dynamics (makes quiet parts more visible)
         # Lower exponent = more gain
-        norm = math.pow(norm, 0.5) * 1.3  # More gain, better visibility
+        norm = math.pow(norm, self._input_curve_exp) * 1.55
+        norm = max(0.0, min(1.35, norm))
         
         # Distribute across bars with frequency-like pattern
         for i in range(self._bar_count):
@@ -388,10 +415,10 @@ class QtOverlayWindow(QWidget):
             center = self._bar_count / 2
             dist = abs(i - center) / center
             # Create frequency-like falloff - gentler curve
-            freq_factor = 1.0 - (dist * dist * 0.5)
-            # Add subtle variation for visual interest - smoother wave
-            phase = i * 0.3 + rms * 15
-            wave = 0.9 + 0.1 * math.sin(phase)  # Less variation = smoother
+            freq_factor = 1.0 - (dist * dist * 0.35)
+            # Add stronger per-bar variation for a more reactive look.
+            phase = i * 0.36 + rms * 26
+            wave = 0.82 + 0.22 * math.sin(phase)
             self._levels[i] = norm * freq_factor * wave
     
     def _tick(self):
@@ -950,8 +977,9 @@ class TkRecordingOverlay:
                     elif cmd == "audio":
                         if not self._is_transcribing:
                             rms = float(data) if data else 0
-                            normalized = pow(rms, 0.25) * 0.88 + 0.12
-                            self._audio_levels = self._audio_levels[1:] + [min(1.0, max(0.12, normalized))]
+                            rms = min(1.0, max(0.0, rms * 2.5))
+                            normalized = pow(rms, 0.24) * 0.90 + 0.06
+                            self._audio_levels = self._audio_levels[1:] + [min(1.0, max(0.05, normalized))]
                             if self._is_visible:
                                 self._draw_waveform()
                                 

@@ -7,8 +7,9 @@ import json
 import re
 import contextlib
 import io
+import tempfile
 import wave
-from typing import Any, AsyncGenerator, Callable, Optional
+from typing import Any, AsyncGenerator, BinaryIO, Callable, Optional
 
 import aiohttp
 from loguru import logger
@@ -143,7 +144,7 @@ async def transcribe_with_mistral(
     session: aiohttp.ClientSession,
     api_key: str,
     model: str,
-    file_bytes: bytes,
+    file_content: bytes | BinaryIO,
     filename: str,
     content_type: str,
     language: str | None = None,
@@ -153,11 +154,17 @@ async def transcribe_with_mistral(
     timeout_secs: int = 180,
     _allow_language_retry: bool = True,
 ) -> dict[str, Any]:
+    effective_language = language
+    # Mistral currently does not support combining language + timestamp_granularities.
+    # Avoid an avoidable retry by dropping language when timestamps are requested.
+    if effective_language and timestamp_granularities:
+        effective_language = None
+
     data = aiohttp.FormData()
-    data.add_field("file", file_bytes, filename=filename, content_type=content_type)
+    data.add_field("file", file_content, filename=filename, content_type=content_type)
     data.add_field("model", model)
-    if language:
-        data.add_field("language", language)
+    if effective_language:
+        data.add_field("language", effective_language)
     for token in _normalize_context_bias_terms(context_bias):
         data.add_field("context_bias", token)
     if diarize:
@@ -181,17 +188,28 @@ async def transcribe_with_mistral(
             lower = raw.lower()
             if (
                 _allow_language_retry
-                and language
+                and effective_language
                 and timestamp_granularities
                 and "timestamp_granularities" in lower
                 and "language" in lower
             ):
+                if not isinstance(file_content, (bytes, bytearray)):
+                    if not hasattr(file_content, "seek"):
+                        raise RuntimeError(
+                            "Mistral transcription retry requires a seekable file object."
+                        )
+                    try:
+                        file_content.seek(0)
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Mistral transcription retry could not rewind file stream: {exc}"
+                        ) from exc
                 logger.info("Retrying Mistral transcription without language (timestamp_granularities incompatibility)")
                 return await transcribe_with_mistral(
                     session=session,
                     api_key=api_key,
                     model=model,
-                    file_bytes=file_bytes,
+                    file_content=file_content,
                     filename=filename,
                     content_type=content_type,
                     language=None,
@@ -254,7 +272,7 @@ class MistralRealtimeSTTService(SegmentedSTTService):
                     session=session,
                     api_key=self._api_key,
                     model=self._model,
-                    file_bytes=wav_bytes,
+                    file_content=wav_bytes,
                     filename="audio.wav",
                     content_type="audio/wav",
                     language=language,
@@ -301,11 +319,24 @@ class MistralAsyncProcessor(FrameProcessor):
         self._context_bias = _custom_vocab_to_context_bias(custom_vocab)
         self._session = session
         self._on_progress = on_progress
-        self._buffer = bytearray()
+        self._buffer = self._create_buffer()
+        self._buffer_size = 0
         self._sample_rate = 16000
         self._channels = 1
 
         logger.info(f"MistralAsyncProcessor initialized (model={self._model})")
+
+    def _create_buffer(self):
+        """Use spooled temp file so long recordings don't keep all audio in RAM."""
+        return tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+
+    def _reset_buffer(self) -> None:
+        try:
+            self._buffer.close()
+        except Exception:
+            pass
+        self._buffer = self._create_buffer()
+        self._buffer_size = 0
 
     def _report_progress(self, msg: str) -> None:
         if not self._on_progress:
@@ -328,7 +359,7 @@ class MistralAsyncProcessor(FrameProcessor):
                 session=session,
                 api_key=self._api_key,
                 model=self._model,
-                file_bytes=wav_bytes,
+                file_content=wav_bytes,
                 filename="audio.wav",
                 content_type="audio/wav",
                 language=language,
@@ -354,15 +385,18 @@ class MistralAsyncProcessor(FrameProcessor):
                     self._sample_rate = int(frame.sample_rate or self._sample_rate)
                 if getattr(frame, "num_channels", None):
                     self._channels = max(1, int(frame.num_channels or self._channels))
-                self._buffer.extend(frame.audio)
+                self._buffer.write(frame.audio)
+                self._buffer_size += len(frame.audio)
             await self.push_frame(frame, direction)
             return
 
         if isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
             try:
-                if self._buffer:
+                if self._buffer_size:
                     self._report_progress("Transcribing...")
-                    text = (await self._transcribe_bytes(bytes(self._buffer))).strip()
+                    self._buffer.seek(0)
+                    audio_bytes = self._buffer.read()
+                    text = (await self._transcribe_bytes(audio_bytes)).strip()
                     if text:
                         await self.push_frame(
                             TranscriptionFrame(
@@ -376,7 +410,7 @@ class MistralAsyncProcessor(FrameProcessor):
             except Exception as exc:
                 logger.error(f"Mistral async transcription failed: {exc}")
             finally:
-                self._buffer.clear()
+                self._reset_buffer()
             await self.push_frame(frame, direction)
             return
 

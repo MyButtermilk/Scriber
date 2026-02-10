@@ -15,6 +15,12 @@ from uuid import uuid4
 from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
 from loguru import logger
 
+from src.audio_devices import (
+    get_input_hostapi_priorities,
+    list_unique_input_microphones,
+    normalize_device_name,
+    rank_hostapi,
+)
 from src.config import Config
 from src.pipeline import ScriberPipeline
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
@@ -142,7 +148,7 @@ async def _extract_audio_from_video(video_path: Path, output_dir: Path) -> Path:
     """
     Extract audio from a video file using ffmpeg.
     
-    Returns the path to the extracted audio file (MP3 format).
+    Returns the path to the extracted audio file (WebM/Opus format).
     Raises RuntimeError if extraction fails.
     """
     import shutil
@@ -151,8 +157,8 @@ async def _extract_audio_from_video(video_path: Path, output_dir: Path) -> Path:
     if not ffmpeg:
         raise RuntimeError("ffmpeg not found on PATH (required for video audio extraction).")
     
-    # Output as MP3 for good compression and compatibility
-    audio_filename = video_path.stem + ".mp3"
+    # Output as audio-only WebM/Opus for efficient upload across STT providers.
+    audio_filename = video_path.stem + ".webm"
     audio_path = output_dir / audio_filename
     
     cmd = [
@@ -162,9 +168,9 @@ async def _extract_audio_from_video(video_path: Path, output_dir: Path) -> Path:
         "-y",  # Overwrite output
         "-i", str(video_path),
         "-vn",  # No video
-        "-acodec", "libmp3lame",
-        "-ab", "128k",  # 128kbps for good quality/size balance
-        "-ar", "16000",  # 16kHz sample rate (good for speech)
+        "-c:a", "libopus",
+        "-b:a", "64k",  # Good speech quality with small upload size
+        "-ar", "16000",
         "-ac", "1",  # Mono (sufficient for transcription)
         str(audio_path),
     ]
@@ -209,6 +215,26 @@ def _format_date_label(ts: datetime) -> str:
     return ts.strftime("%Y-%m-%d")
 
 
+def _preview_words(text: str, max_words: int = 5) -> list[str]:
+    if max_words <= 0:
+        return []
+    words: list[str] = []
+    for match in re.finditer(r"\S+", text or ""):
+        words.append(match.group(0))
+        if len(words) >= max_words:
+            break
+    return words
+
+
+def _preview_from_words(words: list[str], max_words: int = 5, *, has_more: bool = False) -> str:
+    if not words:
+        return ""
+    preview = " ".join(words[:max_words])
+    if has_more:
+        preview += "..."
+    return preview
+
+
 def _normalize_hotkey_for_backend(display_hotkey: str) -> str:
     # Frontend records like "Ctrl + Shift + S"; keyboard expects "ctrl+shift+s".
     hotkey = (display_hotkey or "").strip()
@@ -251,25 +277,8 @@ def _hotkey_to_display(hotkey: str) -> str:
     return " + ".join(out) if out else ""
 
 
-_DEVICE_NAME_PREFIX_RE = re.compile(r"\((\d+)\s*-\s*", re.IGNORECASE)
-_DEFAULT_SUFFIX_RE = re.compile(r"\s*\(default\)\s*$", re.IGNORECASE)
-_HOST_API_SUFFIX_RE = re.compile(
-    r"\s*,\s*(mme|windows\s+wasapi|wasapi|wdm-ks|directsound|asio)\s*$",
-    re.IGNORECASE,
-)
-_MULTISPACE_RE = re.compile(r"\s+")
-
-
 def _normalize_device_name(name: str) -> str:
-    """Normalize Windows device names by stripping unstable numeric prefixes."""
-    if not name:
-        return ""
-    normalized = str(name).strip()
-    normalized = _DEFAULT_SUFFIX_RE.sub("", normalized).strip()
-    normalized = _HOST_API_SUFFIX_RE.sub("", normalized).strip()
-    normalized = _DEVICE_NAME_PREFIX_RE.sub("(", normalized).strip()
-    normalized = _MULTISPACE_RE.sub(" ", normalized)
-    return normalized.lower()
+    return normalize_device_name(name)
 
 
 @dataclass
@@ -291,7 +300,10 @@ class TranscriptRecord:
     summary: str = ""
 
     _started_at_monotonic: float | None = None
-    _segments: list[str] = field(default_factory=list)
+    _last_segment: str = ""
+    _preview: str = ""
+    _preview_words: list[str] = field(default_factory=list)
+    _preview_has_more: bool = False
     _content_loaded: bool = True
     _summary_loaded: bool = True
 
@@ -322,11 +334,14 @@ class TranscriptRecord:
             "updatedAt": self.updated_at,
         }
         
-        # Generate 5-word preview
-        words = (self.content or "").strip().split()
-        preview = " ".join(words[:5])
-        if len(words) > 5:
-            preview += "..."
+        preview = self._preview
+        if not preview and self.content:
+            sample_words = _preview_words(self.content, max_words=6)
+            preview = _preview_from_words(
+                sample_words[:5],
+                max_words=5,
+                has_more=len(sample_words) > 5,
+            )
         data["preview"] = preview or self.title
 
         if include_content:
@@ -350,10 +365,27 @@ class TranscriptRecord:
         if not cleaned:
             return
         # Avoid repeats from some providers.
-        if self._segments and self._segments[-1] == cleaned:
+        if self._last_segment == cleaned:
             return
-        self._segments.append(cleaned)
-        self.content = "\n\n".join(self._segments).strip()
+        if self.content:
+            self.content = f"{self.content}\n\n{cleaned}"
+        else:
+            self.content = cleaned
+        self._last_segment = cleaned
+        segment_words = _preview_words(cleaned, max_words=128)
+        if segment_words:
+            if len(self._preview_words) >= 5:
+                self._preview_has_more = True
+            else:
+                needed = 5 - len(self._preview_words)
+                self._preview_words.extend(segment_words[:needed])
+                if len(segment_words) > needed:
+                    self._preview_has_more = True
+            self._preview = _preview_from_words(
+                self._preview_words,
+                max_words=5,
+                has_more=self._preview_has_more,
+            )
         self.updated_at = datetime.now().isoformat()
 
 
@@ -446,10 +478,11 @@ class ScriberWebController:
                     channel=data.get("channel", ""),
                     thumbnail_url=data.get("thumbnailUrl", ""),
                     # Content is NOT loaded - lazy loaded on demand
-                    content=data.get("_previewText", ""),  # Only preview for list display
+                    content="",
                     created_at=data.get("createdAt", ""),
                     updated_at=data.get("updatedAt", ""),
                     summary="",  # Summary also lazy loaded
+                    _preview=data.get("_previewText", "") or "",
                     _content_loaded=False,
                     _summary_loaded=False,
                 )
@@ -491,11 +524,16 @@ class ScriberWebController:
     def get_state(self) -> dict[str, Any]:
         with self._current_lock:
             current = self._current
+        has_background_processing = any(
+            task is not None and not task.done()
+            for task in self._running_tasks.values()
+        )
         return {
             "listening": self._is_listening,
             "status": self._status,
             "current": current.to_public(include_content=True) if current else None,
             "sessionId": self._session_id,
+            "backgroundProcessing": has_background_processing,
         }
 
     async def add_client(self, ws: web.WebSocketResponse) -> None:
@@ -555,9 +593,9 @@ class ScriberWebController:
     def _on_audio_level(self, rms: float, *, session_id: str | None = None) -> None:
         if session_id is not None and session_id != self._session_id:
             return
-        # Called from the sounddevice callback thread; throttle broadcasts to ~60fps.
+        # Called from the sounddevice callback thread; throttle broadcasts to ~30fps.
         now = time.monotonic()
-        if now - self._last_audio_broadcast < 0.016:  # ~60fps
+        if now - self._last_audio_broadcast < 0.033:  # ~30fps
             return
         self._last_audio_broadcast = now
         # Update native overlay waveform only when recording overlay is active
@@ -822,16 +860,16 @@ class ScriberWebController:
         except (ValueError, ImportError) as exc:
             rec.status = "failed"
             rec.step = "Failed"
-            rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
+            rec.append_final_text(f"[Error] {exc}")
         except YouTubeDownloadError as exc:
             rec.status = "failed"
             rec.step = "Failed"
-            rec.content = (rec.content + "\n" if rec.content else "") + f"[Download error] {exc}"
+            rec.append_final_text(f"[Download error] {exc}")
         except Exception as exc:
             logger.exception("YouTube transcription failed")
             rec.status = "failed"
             rec.step = "Failed"
-            rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
+            rec.append_final_text(f"[Error] {exc}")
         finally:
             rec.updated_at = datetime.now().isoformat()
             self._save_transcript_to_db(rec)  # Persist to database
@@ -956,12 +994,12 @@ class ScriberWebController:
         except (ValueError, ImportError) as exc:
             rec.status = "failed"
             rec.step = "Failed"
-            rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
+            rec.append_final_text(f"[Error] {exc}")
         except Exception as exc:
             logger.exception("File transcription failed")
             rec.status = "failed"
             rec.step = "Failed"
-            rec.content = (rec.content + "\n" if rec.content else "") + f"[Error] {exc}"
+            rec.append_final_text(f"[Error] {exc}")
         finally:
             rec.updated_at = datetime.now().isoformat()
             self._save_transcript_to_db(rec)  # Persist to database
@@ -1193,9 +1231,7 @@ class ScriberWebController:
                 current.finish("failed" if stop_error else "completed")
                 if stop_error:
                     err_line = f"[Error] {stop_error}"
-                    current.content = (
-                        f"{current.content}\n{err_line}" if current.content else err_line
-                    )
+                    current.append_final_text(err_line)
                 self._add_to_history(current)
                 self._save_transcript_to_db(current)  # Persist to database
                 finished_payload = {"type": "session_finished", "session": current.to_public(include_content=True)}
@@ -1532,7 +1568,7 @@ class ScriberWebController:
         - deviceId: The device name (stable across reboots, used for persistence)
         - label: Display label (may include "(Default)" suffix)
         
-        Uses MME Host API as primary (most compatible with USB devices).
+        Uses a single active host API to avoid cross-host duplicate entries.
         """
         try:
             import sounddevice as sd  # type: ignore
@@ -1541,104 +1577,9 @@ class ScriberWebController:
 
         devices: list[dict[str, str]] = [{"deviceId": "default", "label": "Default"}]
 
-        try:
-            default = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
-            default_idx = int(default)
-            if default_idx < 0:
-                default_idx = None
-        except Exception:
-            default_idx = None
-
-        default_norm = ""
-        if default_idx is not None:
-            try:
-                default_info = sd.query_devices(device=default_idx, kind="input")
-                default_norm = _normalize_device_name(str(default_info.get("name", "")))
-            except Exception:
-                default_norm = ""
-
-        try:
-            host_apis = sd.query_hostapis()
-            mme_idx = next((i for i, h in enumerate(host_apis) if h.get("name", "") == "MME"), None)
-            wasapi_idx = next((i for i, h in enumerate(host_apis) if "WASAPI" in h.get("name", "")), None)
-        except Exception:
-            mme_idx = None
-            wasapi_idx = None
-
-        def _host_priority(hostapi_idx: int) -> int:
-            if mme_idx is not None and hostapi_idx == mme_idx:
-                return 0
-            if wasapi_idx is not None and hostapi_idx == wasapi_idx:
-                return 1
-            return 2
-
-        # Virtual/system devices to exclude
-        exclude_patterns = [
-            "soundmapper",
-            "stereo mix",
-            "stereomix",
-            "what u hear",
-            "loopback",
-            "primary sound",
-        ]
-
-        # Keep one representative per normalized name (best host API first).
-        candidates: dict[str, tuple[int, int, str]] = {}
-
-        try:
-            for idx, dev in enumerate(sd.query_devices()):
-                # Skip if no input channels
-                if int(dev.get("max_input_channels", 0) or 0) <= 0:
-                    continue
-
-                name = str(dev.get("name", f"Device {idx}"))
-                name_lower = name.lower()
-
-                # Skip virtual/system devices
-                if any(pattern in name_lower for pattern in exclude_patterns):
-                    continue
-
-                # Skip devices that look like outputs
-                if any(word in name_lower for word in ["output", "speaker", "lautsprecher", "headphone"]):
-                    continue
-
-                normalized_name = _normalize_device_name(name)
-                if not normalized_name:
-                    continue
-
-                try:
-                    hostapi_idx = int(dev.get("hostapi", -1))
-                except (TypeError, ValueError):
-                    hostapi_idx = -1
-                entry = (_host_priority(hostapi_idx), idx, name)
-                existing = candidates.get(normalized_name)
-                if existing is None:
-                    candidates[normalized_name] = entry
-                    continue
-
-                existing_prio, existing_idx, _ = existing
-                current_prio = entry[0]
-                should_replace = False
-                if current_prio < existing_prio:
-                    should_replace = True
-                elif current_prio == existing_prio:
-                    # If tie, keep the default-device entry when possible.
-                    if default_idx is not None and idx == default_idx and existing_idx != default_idx:
-                        should_replace = True
-                    elif idx < existing_idx:
-                        should_replace = True
-
-                if should_replace:
-                    candidates[normalized_name] = entry
-        except Exception:
-            pass
-
-        for normalized_name, (_, idx, name) in sorted(candidates.items(), key=lambda item: item[1][2].lower()):
-            is_default = (
-                default_idx is not None and idx == default_idx
-            ) or (default_norm and normalized_name == default_norm)
-            label = f"{name} (Default)" if is_default else name
-            devices.append({"deviceId": name, "label": label})
+        for entry in list_unique_input_microphones(sd):
+            label = f"{entry.name} (Default)" if entry.is_default else entry.name
+            devices.append({"deviceId": entry.name, "label": label})
 
         return devices
 
@@ -1661,9 +1602,8 @@ class ScriberWebController:
             return "default"
         
         try:
-            host_apis = sd.query_hostapis()
-            mme_idx = next((i for i, h in enumerate(host_apis) if h.get("name", "") == "MME"), None)
-            wasapi_idx = next((i for i, h in enumerate(host_apis) if "WASAPI" in h.get("name", "")), None)
+            devices = list(sd.query_devices())
+            host_priorities = get_input_hostapi_priorities(sd, devices)
 
             target = device_name.strip()
             target_norm = _normalize_device_name(target)
@@ -1675,15 +1615,8 @@ class ScriberWebController:
                     return _normalize_device_name(dev_name) == target_norm
                 return False
 
-            def _host_priority(hostapi_idx: int) -> int:
-                if mme_idx is not None and hostapi_idx == mme_idx:
-                    return 0
-                if wasapi_idx is not None and hostapi_idx == wasapi_idx:
-                    return 1
-                return 2
-
             matches: list[tuple[int, int, str]] = []
-            for idx, dev in enumerate(sd.query_devices()):
+            for idx, dev in enumerate(devices):
                 if int(dev.get("max_input_channels", 0) or 0) <= 0:
                     continue
                 name = str(dev.get("name", ""))
@@ -1692,8 +1625,8 @@ class ScriberWebController:
                 try:
                     hostapi_idx = int(dev.get("hostapi", -1))
                 except (TypeError, ValueError):
-                    hostapi_idx = -1
-                matches.append((_host_priority(hostapi_idx), idx, name))
+                    hostapi_idx = None
+                matches.append((rank_hostapi(hostapi_idx, host_priorities), idx, name))
 
             if matches:
                 matches.sort(key=lambda item: (item[0], item[1]))
@@ -1738,6 +1671,54 @@ class ScriberWebController:
         offset = max(0, offset)
 
         query_lower = query.lower().strip() if query else ""
+        if query_lower:
+            # Use SQLite FTS for scalable search and keep unsaved active sessions visible.
+            live_matches: list[dict[str, Any]] = []
+            for rec in self._history:
+                if rec.status not in ("processing", "recording"):
+                    continue
+                if transcript_type and rec.type != transcript_type:
+                    continue
+                searchable = (
+                    f"{rec.title or ''} "
+                    f"{rec.channel or ''} "
+                    f"{rec._preview or ''}"
+                ).lower()
+                if query_lower in searchable:
+                    if rec.id and db.transcript_exists(rec.id):
+                        continue
+                    live_matches.append(rec.to_public(include_content=include_content))
+
+            live_count = len(live_matches)
+            if offset < live_count:
+                live_slice = live_matches[offset:offset + limit]
+                remaining = limit - len(live_slice)
+                db_offset = 0
+            else:
+                live_slice = []
+                remaining = limit
+                db_offset = offset - live_count
+
+            db_result = (
+                db.search_transcript_metadata(
+                    query_lower,
+                    transcript_type=transcript_type,
+                    offset=db_offset,
+                    limit=remaining,
+                )
+                if remaining > 0
+                else {"items": [], "total": 0}
+            )
+            items = live_slice + db_result.get("items", [])
+            total = live_count + int(db_result.get("total", 0))
+            return {
+                "items": items,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "hasMore": offset + len(items) < total,
+            }
+
         if not query_lower and not transcript_type:
             total = len(self._history)
             paginated = self._history[offset:offset + limit]
@@ -1756,17 +1737,6 @@ class ScriberWebController:
             # Type filter
             if transcript_type and rec.type != transcript_type:
                 continue
-
-            # Search filter
-            if query_lower:
-                searchable = (
-                    (rec.title or "").lower() +
-                    (rec.content or "").lower() +
-                    (rec.channel or "").lower() +
-                    (rec.summary or "").lower()
-                )
-                if query_lower not in searchable:
-                    continue
 
             filtered.append(rec)
 
@@ -1796,6 +1766,8 @@ class ScriberWebController:
                 if full_data:
                     rec.content = full_data.get("content", rec.content)
                     rec.summary = full_data.get("summary", rec.summary)
+                    if not rec._preview:
+                        rec._preview = full_data.get("preview", "") or rec._preview
                 rec._content_loaded = True
                 rec._summary_loaded = True
             return rec.to_public(include_content=True)
@@ -2421,22 +2393,26 @@ def create_app(controller: ScriberWebController) -> web.Application:
     async def onnx_list_models(request: web.Request):
         """List available ONNX models with download status."""
         try:
-            from src.onnx_stt import list_available_models, is_onnx_available
-            
-            if not is_onnx_available():
-                return web.json_response({
-                    "available": False,
-                    "message": "onnx-asr library not installed. Run: pip install onnx-asr[cpu,hub]",
-                    "models": [],
-                })
-            
-            models = list_available_models(quantization=Config.ONNX_QUANTIZATION)
-            return web.json_response({
-                "available": True,
-                "models": models,
-                "currentModel": Config.ONNX_MODEL,
-                "quantization": Config.ONNX_QUANTIZATION,
-            })
+            def _load_onnx_models() -> dict[str, Any]:
+                from src.onnx_stt import list_available_models, is_onnx_available
+
+                if not is_onnx_available():
+                    return {
+                        "available": False,
+                        "message": "onnx-asr library not installed. Run: pip install onnx-asr[cpu,hub]",
+                        "models": [],
+                    }
+
+                models = list_available_models(quantization=Config.ONNX_QUANTIZATION)
+                return {
+                    "available": True,
+                    "models": models,
+                    "currentModel": Config.ONNX_MODEL,
+                    "quantization": Config.ONNX_QUANTIZATION,
+                }
+
+            payload = await asyncio.to_thread(_load_onnx_models)
+            return web.json_response(payload)
         except ImportError as e:
             return web.json_response({
                 "available": False,
@@ -2610,20 +2586,24 @@ def create_app(controller: ScriberWebController) -> web.Application:
     async def nemo_list_models(request: web.Request):
         """List available NeMo models and their download status."""
         try:
-            from src.nemo_stt import list_available_models, is_nemo_available
+            def _load_nemo_models() -> dict[str, Any]:
+                from src.nemo_stt import list_available_models, is_nemo_available
 
-            if not is_nemo_available():
-                return web.json_response({
-                    "available": False,
-                    "message": "NeMo toolkit not installed. Run: pip install nemo_toolkit[asr]",
-                    "models": [],
-                })
+                if not is_nemo_available():
+                    return {
+                        "available": False,
+                        "message": "NeMo toolkit not installed. Run: pip install nemo_toolkit[asr]",
+                        "models": [],
+                    }
 
-            return web.json_response({
-                "available": True,
-                "models": list_available_models(),
-                "currentModel": Config.NEMO_MODEL,
-            })
+                return {
+                    "available": True,
+                    "models": list_available_models(),
+                    "currentModel": Config.NEMO_MODEL,
+                }
+
+            payload = await asyncio.to_thread(_load_nemo_models)
+            return web.json_response(payload)
         except Exception as e:
             logger.exception("Failed to list NeMo models")
             return web.json_response({"message": str(e)}, status=500)
@@ -2791,7 +2771,7 @@ async def run_server(host: str, port: int) -> None:
 async def _background_init(controller: ScriberWebController) -> None:
     """Background initialization after server starts.
     
-    Runs in parallel to avoid blocking server startup:
+    Runs asynchronously to avoid blocking server startup:
     1. Load transcripts from database
     2. Prewarm Qt overlay
     3. Prewarm ML models (VAD, SmartTurn)
@@ -2809,36 +2789,37 @@ async def _background_init(controller: ScriberWebController) -> None:
     except Exception as e:
         logger.warning(f"Background transcript load failed: {e}")
     
-    # Wait a bit more before heavy initialization
-    await asyncio.sleep(0.5)
-    
-    # Prewarm overlay (runs in its own thread)
-    try:
-        from src.overlay import get_overlay
-        # Get overlay triggers its initialization in a background thread
-        # Pass None for on_stop since this is just prewarming
-        await asyncio.to_thread(lambda: get_overlay(on_stop=None))
-        logger.info("Overlay prewarmed (ready for first recording)")
-    except Exception as e:
-        logger.debug(f"Overlay prewarm skipped: {e}")
-    
-    # Then prewarm ML models
-    try:
-        from src.pipeline import _AnalyzerCache
-        # Load in thread to avoid blocking event loop
-        await asyncio.to_thread(_AnalyzerCache.get_vad_analyzer)
-        await asyncio.to_thread(_AnalyzerCache.get_smart_turn_analyzer)
-        logger.info("ML model cache warmed (first recording will start faster)")
-    except Exception as e:
-        logger.debug(f"Cache prewarm skipped: {e}")
-    
-    # Pre-import the configured STT service (4.4 optimization)
-    # This ensures the module is already loaded when user presses hotkey
-    try:
-        await asyncio.to_thread(_prewarm_stt_service, Config.DEFAULT_STT_SERVICE)
-        logger.info(f"STT service '{Config.DEFAULT_STT_SERVICE}' preloaded")
-    except Exception as e:
-        logger.debug(f"STT prewarm skipped: {e}")
+    async def _prewarm_overlay() -> None:
+        try:
+            from src.overlay import get_overlay
+            # get_overlay triggers initialization in a background thread.
+            await asyncio.to_thread(lambda: get_overlay(on_stop=None))
+            logger.info("Overlay prewarmed (ready for first recording)")
+        except Exception as e:
+            logger.debug(f"Overlay prewarm skipped: {e}")
+
+    async def _prewarm_models() -> None:
+        try:
+            from src.pipeline import _AnalyzerCache
+            await asyncio.to_thread(_AnalyzerCache.get_vad_analyzer)
+            await asyncio.to_thread(_AnalyzerCache.get_smart_turn_analyzer)
+            logger.info("ML model cache warmed (first recording will start faster)")
+        except Exception as e:
+            logger.debug(f"Cache prewarm skipped: {e}")
+
+    async def _prewarm_stt() -> None:
+        try:
+            await asyncio.to_thread(_prewarm_stt_service, Config.DEFAULT_STT_SERVICE)
+            logger.info(f"STT service '{Config.DEFAULT_STT_SERVICE}' preloaded")
+        except Exception as e:
+            logger.debug(f"STT prewarm skipped: {e}")
+
+    # Run heavyweight warmups in parallel.
+    await asyncio.gather(
+        _prewarm_overlay(),
+        _prewarm_models(),
+        _prewarm_stt(),
+    )
 
 
 def _prewarm_stt_service(service_name: str) -> None:
@@ -2868,6 +2849,8 @@ def _prewarm_stt_service(service_name: str) -> None:
             from pipecat.services.speechmatics.stt import SpeechmaticsSTTService  # noqa: F401
         elif service_name == "aws":
             from pipecat.services.aws.stt import AWSTranscribeSTTService  # noqa: F401
+        elif service_name in {"mistral", "mistral_async"}:
+            from src.mistral_stt import MistralRealtimeSTTService, MistralAsyncProcessor  # noqa: F401
         # soniox is already imported at module level
     except ImportError as e:
         logger.debug(f"Could not prewarm STT service {service_name}: {e}")

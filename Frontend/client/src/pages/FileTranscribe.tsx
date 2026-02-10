@@ -191,6 +191,7 @@ export default function FileTranscribe() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const deletingRef = useRef<string | null>(null);
+  const historyRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queryClient = useQueryClient();
   const [viewMode, setViewMode] = useState<"list" | "grid">(
     () => (localStorage.getItem("scriber-view-mode") as "list" | "grid") || "list"
@@ -220,14 +221,23 @@ export default function FileTranscribe() {
       const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
       return res.json();
     },
-    staleTime: 0,
+    staleTime: 5000,
   });
   const recentFromBackend: any[] = (transcriptsQuery.data as any)?.items || [];
 
   // WebSocket with auto-reconnection for real-time updates
   const handleWsMessage = useCallback((msg: any) => {
     if (msg?.type === "history_updated") {
-      queryClient.refetchQueries({ queryKey: ["/api/transcripts"] });
+      if (!historyRefreshTimerRef.current) {
+        historyRefreshTimerRef.current = setTimeout(() => {
+          queryClient.invalidateQueries({
+            predicate: (query) =>
+              query.queryKey[0] === "/api/transcripts" &&
+              (query.queryKey[1] as { type?: string })?.type === "file",
+          });
+          historyRefreshTimerRef.current = null;
+        }, 250);
+      }
     } else if (msg?.type === "error") {
       toast({
         title: "Transcription Error",
@@ -240,6 +250,15 @@ export default function FileTranscribe() {
 
   // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
   useSharedWebSocket(handleWsMessage);
+
+  useEffect(() => {
+    return () => {
+      if (historyRefreshTimerRef.current) {
+        clearTimeout(historyRefreshTimerRef.current);
+        historyRefreshTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const uploadFile = async (file: File) => {
     setIsUploading(true);

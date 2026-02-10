@@ -229,6 +229,7 @@ export default function LiveMic() {
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const audioLevelRef = useRef(0);
+  const historyRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Persist view mode
   useEffect(() => {
@@ -344,11 +345,16 @@ export default function LiveMic() {
         });
         break;
       case "history_updated":
-        queryClient.invalidateQueries({
-          predicate: (query) =>
-            query.queryKey[0] === "/api/transcripts" &&
-            (query.queryKey[1] as { type?: string })?.type === "mic",
-        });
+        if (!historyRefreshTimerRef.current) {
+          historyRefreshTimerRef.current = setTimeout(() => {
+            queryClient.invalidateQueries({
+              predicate: (query) =>
+                query.queryKey[0] === "/api/transcripts" &&
+                (query.queryKey[1] as { type?: string })?.type === "mic",
+            });
+            historyRefreshTimerRef.current = null;
+          }, 250);
+        }
         break;
       case "error":
         if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
@@ -372,6 +378,15 @@ export default function LiveMic() {
 
   // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
   const { isConnected } = useSharedWebSocket(handleWsMessage);
+
+  useEffect(() => {
+    return () => {
+      if (historyRefreshTimerRef.current) {
+        clearTimeout(historyRefreshTimerRef.current);
+        historyRefreshTimerRef.current = null;
+      }
+    };
+  }, []);
 
 
   const formatTime = (seconds: number) => {

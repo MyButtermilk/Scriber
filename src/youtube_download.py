@@ -12,6 +12,14 @@ class YouTubeDownloadError(RuntimeError):
     pass
 
 
+_AUDIO_ONLY_FORMAT = "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio"
+_FORMAT_SELECTORS = (
+    _AUDIO_ONLY_FORMAT,
+    "bestaudio/best[acodec!=none]",
+    "best[ext=webm]/best[ext=mp4]/best",
+)
+
+
 class DownloadProgress:
     """Progress information for YouTube download."""
     def __init__(self):
@@ -49,6 +57,100 @@ def _require_ffmpeg() -> None:
         raise YouTubeDownloadError("ffmpeg not found on PATH.")
 
 
+def _is_forbidden_error(message: str) -> bool:
+    text = (message or "").lower()
+    return "403" in text or "forbidden" in text
+
+
+def _is_format_unavailable_error(message: str) -> bool:
+    text = (message or "").lower()
+    return "requested format is not available" in text
+
+
+async def _has_video_stream(path: Path) -> bool:
+    """Return True when ffprobe sees at least one video stream."""
+    ffprobe = shutil.which("ffprobe") or shutil.which("ffprobe.exe")
+    if not ffprobe:
+        return False
+
+    proc = await asyncio.create_subprocess_exec(
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_type",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_b, _stderr_b = await proc.communicate()
+    return bool((stdout_b or b"").decode("utf-8", errors="replace").strip())
+
+
+async def _extract_audio_track(source_path: Path) -> Path:
+    """Transcode media to audio-only WebM/Opus."""
+    ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if not ffmpeg:
+        raise YouTubeDownloadError("ffmpeg not found on PATH.")
+
+    if source_path.suffix.lower() == ".webm":
+        target_path = source_path.with_name(f"{source_path.stem}.audio.webm")
+    else:
+        target_path = source_path.with_suffix(".webm")
+    proc = await asyncio.create_subprocess_exec(
+        ffmpeg,
+        "-y",
+        "-i",
+        str(source_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "libopus",
+        "-b:a",
+        "64k",
+        str(target_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _stdout_b, stderr_b = await proc.communicate()
+    if proc.returncode != 0 or not target_path.exists():
+        err_msg = (stderr_b or b"").decode("utf-8", errors="replace").strip()
+        raise YouTubeDownloadError(
+            f"Failed to extract audio from downloaded video: {err_msg or f'exit code {proc.returncode}'}"
+        )
+    return target_path
+
+
+async def _ensure_audio_only_file(path: Path) -> Path:
+    """Guarantee that returned file is audio-only WebM."""
+    suffix = path.suffix.lower()
+    if suffix == ".webm":
+        try:
+            if not await _has_video_stream(path):
+                return path
+        except Exception as exc:
+            logger.debug(f"Could not inspect WEBM streams ({path.name}): {exc}")
+            return path
+        logger.info(f"Downloaded WEBM contains video stream; extracting audio only: {path.name}")
+    else:
+        logger.info(f"Normalizing downloaded media to audio-only WebM: {path.name}")
+
+    audio_path = await _extract_audio_track(path)
+    try:
+        if path != audio_path:
+            path.unlink(missing_ok=True)
+    except Exception as exc:
+        logger.debug(f"Could not remove original downloaded file ({path.name}): {exc}")
+    return audio_path
+
+
 
 async def download_youtube_audio(
     url: str,
@@ -56,10 +158,11 @@ async def download_youtube_audio(
     output_dir: str | Path,
     on_progress: Optional[Callable[[DownloadProgress], None]] = None,
 ) -> Path:
-    """Download audio from YouTube video directly as webm (no conversion needed).
-    
-    Downloads only the audio stream in webm format, which is natively supported
-    by Soniox STT. This avoids unnecessary FFmpeg conversion overhead.
+    """Download a YouTube source and return an audio-only local file path.
+
+    The downloader first tries audio-only selectors, then broader fallbacks for
+    videos where strict selectors are unavailable. Any downloaded file that
+    contains a video stream is converted to audio before returning.
     """
     url = (url or "").strip()
     if not url:
@@ -123,9 +226,8 @@ async def download_youtube_audio(
                         pass
 
         ydl_opts = {
-            # Flexible format: prefer webm/m4a audio, fall back to any audio or video+audio
-            # Android client may not have webm, so we need multiple fallbacks
-            "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best[ext=webm]/best[ext=mp4]/best",
+            # Prefer audio-only formats; fallback selectors are handled in _run_download.
+            "format": _FORMAT_SELECTORS[0],
             "outtmpl": template,
             "noplaylist": True,
             # No postprocessors - keep original format for speed
@@ -141,28 +243,38 @@ async def download_youtube_audio(
             max_retries = 3
             last_error = None
 
-            for attempt in range(max_retries):
-                try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=True)
-                        if info:
-                            # Get the final filename (no post-processing, so ext comes from format)
-                            video_id = info.get("id", "video")
-                            ext = info.get("ext", "webm")
-                            final_path = out_dir / f"{video_id}.{ext}"
-                        return  # Success, exit retry loop
-                except Exception as e:
-                    last_error = e
-                    error_str = str(e).lower()
-                    # Retry on 403 Forbidden errors (often transient)
-                    if "403" in error_str or "forbidden" in error_str:
-                        if attempt < max_retries - 1:
+            for format_selector in _FORMAT_SELECTORS:
+                ydl_opts["format"] = format_selector
+                for attempt in range(max_retries):
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            info = ydl.extract_info(url, download=True)
+                            if info:
+                                # Get the final filename (no post-processing, so ext comes from format)
+                                video_id = info.get("id", "video")
+                                ext = info.get("ext", "webm")
+                                final_path = out_dir / f"{video_id}.{ext}"
+                            return  # Success
+                    except Exception as e:
+                        last_error = e
+                        error_str = str(e)
+
+                        # Retry on transient 403 errors
+                        if _is_forbidden_error(error_str) and attempt < max_retries - 1:
                             delay = 2.0 + attempt * 2.0  # Increasing delay: 2s, 4s, 6s
                             logger.warning(f"YouTube download got 403 error, retrying in {delay}s ({attempt + 1}/{max_retries})...")
                             time.sleep(delay)
                             continue
-                    # For other errors or final retry, raise immediately
-                    raise
+
+                        # Try broader selectors when format is not available.
+                        if _is_format_unavailable_error(error_str):
+                            logger.warning(
+                                f"YouTube format selector unavailable ({format_selector}); trying fallback selector."
+                            )
+                            break
+
+                        # For other errors, abort immediately.
+                        raise
 
             # If we exhausted all retries
             if last_error:
@@ -173,12 +285,12 @@ async def download_youtube_audio(
         await loop.run_in_executor(None, _run_download)
 
         if final_path and final_path.exists():
-            return final_path
+            return await _ensure_audio_only_file(final_path)
 
-        # Try to find the file (audio formats preferred, then video)
-        for ext in ["webm", "m4a", "opus", "mp3", "mp4", "mkv"]:
+        # Try to find the file (audio formats only)
+        for ext in ["webm", "m4a", "opus", "mp3", "wav", "ogg", "flac", "aac"]:
             for f in out_dir.glob(f"*.{ext}"):
-                return f
+                return await _ensure_audio_only_file(f)
 
         raise YouTubeDownloadError("Downloaded file not found")
         
@@ -192,58 +304,63 @@ async def download_youtube_audio(
     else:
         exe_cmd = [exe]
 
-    args = [
-        *exe_cmd,
-        "--no-playlist",
-        "-f",
-        # Flexible format: prefer webm/m4a audio, fall back to any audio or video+audio
-        "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best[ext=webm]/best[ext=mp4]/best",
-        "-o",
-        template,
-        "--print",
-        "after_move:filepath",
-        "--no-progress",
-        # Use Android client to avoid 403 errors (YouTube blocks web client more aggressively)
-        "--extractor-args",
-        "youtube:player_client=android,web",
-        url,
-    ]
-
-    # Retry logic for 403 errors
+    # Retry logic for 403 errors and format selector fallbacks
     max_retries = 3
     last_error_msg = ""
     stdout = ""
     stderr = ""
+    proc = None
 
-    for attempt in range(max_retries):
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout_b, stderr_b = await proc.communicate()
-        stdout = (stdout_b or b"").decode("utf-8", errors="replace")
-        stderr = (stderr_b or b"").decode("utf-8", errors="replace")
+    for format_selector in _FORMAT_SELECTORS:
+        args = [
+            *exe_cmd,
+            "--no-playlist",
+            "-f",
+            format_selector,
+            "-o",
+            template,
+            "--print",
+            "after_move:filepath",
+            "--no-progress",
+            # Use Android client to avoid 403 errors (YouTube blocks web client more aggressively)
+            "--extractor-args",
+            "youtube:player_client=android,web",
+            url,
+        ]
 
-        if proc.returncode == 0:
-            break  # Success
+        for attempt in range(max_retries):
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_b, stderr_b = await proc.communicate()
+            stdout = (stdout_b or b"").decode("utf-8", errors="replace")
+            stderr = (stderr_b or b"").decode("utf-8", errors="replace")
 
-        last_error_msg = stderr.strip() or stdout.strip() or f"yt-dlp exited with code {proc.returncode}"
+            if proc.returncode == 0:
+                break
 
-        # Check for 403 error and retry
-        if "403" in last_error_msg.lower() or "forbidden" in last_error_msg.lower():
-            if attempt < max_retries - 1:
+            last_error_msg = stderr.strip() or stdout.strip() or f"yt-dlp exited with code {proc.returncode}"
+
+            if _is_forbidden_error(last_error_msg) and attempt < max_retries - 1:
                 delay = 2.0 + attempt * 2.0  # Increasing delay: 2s, 4s, 6s
                 logger.warning(f"YouTube download got 403 error, retrying in {delay}s ({attempt + 1}/{max_retries})...")
                 await asyncio.sleep(delay)
                 continue
 
-        # For other errors or final retry, raise immediately
-        raise YouTubeDownloadError(last_error_msg)
+            if _is_format_unavailable_error(last_error_msg):
+                logger.warning(
+                    f"YouTube format selector unavailable ({format_selector}); trying fallback selector."
+                )
+                break
 
-    # Check final result after retries
-    if proc.returncode != 0:
-        raise YouTubeDownloadError(last_error_msg)
+            raise YouTubeDownloadError(last_error_msg)
+
+        if proc and proc.returncode == 0:
+            break
+    else:
+        raise YouTubeDownloadError(last_error_msg or "yt-dlp failed to download audio")
 
     lines = [ln.strip().strip('"') for ln in stdout.splitlines() if ln.strip()]
     if not lines:
@@ -254,4 +371,4 @@ async def download_youtube_audio(
         path = (Path.cwd() / path).resolve()
     if not path.exists():
         raise YouTubeDownloadError(f"Downloaded file not found: {path}")
-    return path
+    return await _ensure_audio_only_file(path)

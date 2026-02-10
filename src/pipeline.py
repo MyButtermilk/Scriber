@@ -7,7 +7,6 @@ import wave
 import contextlib
 import tempfile
 import os
-import re
 from loguru import logger
 from typing import Callable, Optional
 
@@ -483,6 +482,11 @@ class SonioxAsyncProcessor(FrameProcessor):
 # ============================================================================
 
 from src.config import Config
+from src.audio_devices import (
+    get_input_hostapi_priorities,
+    normalize_device_name,
+    rank_hostapi,
+)
 from src.injector import TextInjector
 from src.microphone import MicrophoneInput
 from src.audio_file_input import FfmpegAudioFileInput
@@ -509,30 +513,8 @@ def _selected_language():
     return lang if lang else None
 
 
-_DEVICE_NAME_PREFIX_RE = re.compile(r"\((\d+)\s*-\s*", re.IGNORECASE)
-_DEFAULT_SUFFIX_RE = re.compile(r"\s*\(default\)\s*$", re.IGNORECASE)
-_HOST_API_SUFFIX_RE = re.compile(
-    r"\s*,\s*(mme|windows\s+wasapi|wasapi|wdm-ks|directsound|asio)\s*$",
-    re.IGNORECASE,
-)
-_MULTISPACE_RE = re.compile(r"\s+")
-
-
 def _normalize_device_name(name: str) -> str:
-    """Normalize Windows device names by stripping unstable variations.
-
-    Examples:
-    - "Mikrofon (5- Insta360 Link)" -> "Mikrofon (Insta360 Link)"
-    - "USB Mic, Windows WASAPI" -> "USB Mic"
-    """
-    if not name:
-        return ""
-    normalized = str(name).strip()
-    normalized = _DEFAULT_SUFFIX_RE.sub("", normalized).strip()
-    normalized = _HOST_API_SUFFIX_RE.sub("", normalized).strip()
-    normalized = _DEVICE_NAME_PREFIX_RE.sub("(", normalized).strip()
-    normalized = _MULTISPACE_RE.sub(" ", normalized)
-    return normalized.lower()
+    return normalize_device_name(name)
 
 
 def _resolve_mic_device(device_name: str) -> str:
@@ -553,7 +535,7 @@ def _resolve_mic_device(device_name: str) -> str:
         return "default"
     
     def find_device_by_name(name: str) -> str | None:
-        """Find device index by name, preferring MME host API."""
+        """Find device index by name, preferring the active host API."""
         if not name or name == "default":
             return None
         target = name.strip()
@@ -567,37 +549,68 @@ def _resolve_mic_device(device_name: str) -> str:
             return False
             
         try:
-            # Get preferred host API (MME for best USB device compatibility)
-            host_apis = sd.query_hostapis()
-            mme_idx = next((i for i, h in enumerate(host_apis) if h.get('name', '') == 'MME'), None)
-            wasapi_idx = next((i for i, h in enumerate(host_apis) if 'WASAPI' in h.get('name', '')), None)
-            preferred_hostapi = mme_idx if mme_idx is not None else wasapi_idx
-            
-            # Search for device by name in preferred host API first
-            for idx, dev in enumerate(sd.query_devices()):
-                if int(dev.get("max_input_channels", 0) or 0) <= 0:
+            devices = list(sd.query_devices())
+            host_priorities = get_input_hostapi_priorities(sd, devices)
+            matches: list[tuple[int, int, str, int]] = []
+            for idx, dev in enumerate(devices):
+                max_input_channels = int(dev.get("max_input_channels", 0) or 0)
+                if max_input_channels <= 0:
                     continue
-                
-                hostapi_idx = dev.get('hostapi', 0)
-                if preferred_hostapi is not None and hostapi_idx != preferred_hostapi:
-                    continue
-                
                 dev_name = str(dev.get("name", ""))
-                if _matches(dev_name):
+                if not _matches(dev_name):
+                    continue
+                try:
+                    hostapi_idx = int(dev.get("hostapi", -1))
+                except (TypeError, ValueError):
+                    hostapi_idx = None
+                matches.append((rank_hostapi(hostapi_idx, host_priorities), idx, dev_name, max_input_channels))
+
+            if matches:
+                matches.sort(key=lambda item: (item[0], item[1]))
+
+                check_input_settings = getattr(sd, "check_input_settings", None)
+                sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
+                requested_channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
+
+                # Try ranked candidates first, but skip variants that can't open at target settings
+                # (common with some WASAPI endpoints at 16kHz) before falling back to default.
+                for _, idx, dev_name, max_input_channels in matches:
+                    compatible_channels = min(requested_channels, max_input_channels)
+                    try:
+                        if callable(check_input_settings):
+                            check_input_settings(
+                                device=idx,
+                                samplerate=sample_rate,
+                                channels=compatible_channels,
+                                dtype="int16",
+                            )
+                    except Exception as exc:
+                        logger.info(
+                            "Microphone candidate '{}' (index {}) rejected at {} Hz/{} ch ({}); "
+                            "trying next host variant".format(
+                                dev_name,
+                                idx,
+                                sample_rate,
+                                compatible_channels,
+                                exc,
+                            )
+                        )
+                        continue
+
                     if dev_name != target:
                         logger.info(f"Matched microphone '{target}' to '{dev_name}' (normalized match)")
                     return str(idx)
-            
-            # Try any host API as fallback
-            for idx, dev in enumerate(sd.query_devices()):
-                if int(dev.get("max_input_channels", 0) or 0) <= 0:
-                    continue
-                dev_name = str(dev.get("name", ""))
-                if _matches(dev_name):
-                    if dev_name != target:
-                        logger.info(f"Matched microphone '{target}' to '{dev_name}' (normalized match)")
-                    return str(idx)
-                    
+
+                # If all compatibility checks fail, return the best-ranked variant and let
+                # stream initialization apply its own fallback behavior.
+                _, idx, dev_name, _ = matches[0]
+                logger.warning(
+                    f"All matched variants for microphone '{target}' failed compatibility checks; "
+                    f"using best-ranked index {idx} ('{dev_name}')"
+                )
+                if dev_name != target:
+                    logger.info(f"Matched microphone '{target}' to '{dev_name}' (normalized match)")
+                return str(idx)
         except Exception:
             pass
         return None
@@ -1276,9 +1289,7 @@ class ScriberPipeline:
                 api_key = Config.get_api_key("mistral")
                 if not api_key:
                     raise ValueError("Mistral API key is missing")
-
-                with open(path, "rb") as f:
-                    file_bytes = f.read()
+                file_size = path.stat().st_size
 
                 language = Config.LANGUAGE if Config.LANGUAGE and Config.LANGUAGE != "auto" else None
 
@@ -1288,20 +1299,22 @@ class ScriberPipeline:
                 async with aiohttp.ClientSession() as session:
                     if self.on_progress:
                         self.on_progress("Processing transcription...")
+                    logger.info(f"Mistral direct upload: {path.name} ({file_size} bytes, {content_type})")
 
-                    payload = await transcribe_with_mistral(
-                        session=session,
-                        api_key=api_key,
-                        model=Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602",
-                        file_bytes=file_bytes,
-                        filename=path.name,
-                        content_type=content_type,
-                        language=language,
-                        context_bias=Config.CUSTOM_VOCAB or "",
-                        diarize=True,
-                        timestamp_granularities=["segment"],
-                        timeout_secs=900,
-                    )
+                    with open(path, "rb") as f:
+                        payload = await transcribe_with_mistral(
+                            session=session,
+                            api_key=api_key,
+                            model=Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602",
+                            file_content=f,
+                            filename=path.name,
+                            content_type=content_type,
+                            language=language,
+                            context_bias=Config.CUSTOM_VOCAB or "",
+                            diarize=True,
+                            timestamp_granularities=["segment"],
+                            timeout_secs=900,
+                        )
 
                 text = str(payload.get("text") or "").strip()
                 segments = payload.get("segments") if isinstance(payload.get("segments"), list) else []
@@ -1369,22 +1382,21 @@ class ScriberPipeline:
 
                 try:
                     # Upload file directly
-                    with open(path, "rb") as f:
-                        file_bytes = f.read()
-
-                    logger.info(f"Uploading {path.name} ({len(file_bytes)} bytes, {content_type})")
+                    file_size = path.stat().st_size
+                    logger.info(f"Uploading {path.name} ({file_size} bytes, {content_type})")
 
                     data = aiohttp.FormData()
-                    data.add_field("file", file_bytes, filename=path.name, content_type=content_type)
+                    with open(path, "rb") as f:
+                        data.add_field("file", f, filename=path.name, content_type=content_type)
 
-                    async with session.post(
-                        f"{base_url}/files",
-                        data=data,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=300),  # 5 min for large files
-                    ) as resp:
-                        resp.raise_for_status()
-                        file_id = (await resp.json())["id"]
+                        async with session.post(
+                            f"{base_url}/files",
+                            data=data,
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=300),  # 5 min for large files
+                        ) as resp:
+                            resp.raise_for_status()
+                            file_id = (await resp.json())["id"]
 
                     # Start transcription with speaker diarization enabled for file/youtube
                     payload = {"file_id": file_id, "model": model}

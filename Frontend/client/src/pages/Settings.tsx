@@ -168,7 +168,7 @@ export default function Settings() {
 
     const load = async () => {
       try {
-        // Load ALL data in parallel - don't wait for ONNX/NeMo models
+        // Load core settings data in parallel.
         const [settingsRes, micsRes, autostartRes] = await Promise.all([
           fetch(apiUrl("/api/settings"), { credentials: "include" }),
           fetch(apiUrl("/api/microphones"), { credentials: "include" }),
@@ -217,10 +217,6 @@ export default function Settings() {
 
         // Show page immediately - don't wait for model info
         setSettingsLoaded(true);
-
-        // Load ONNX and NeMo models in background (non-blocking)
-        loadOnnxModels();
-        loadNemoModels();
       } catch (e: any) {
         setSettingsLoaded(true); // Still mark as loaded even on error
         toast({
@@ -235,7 +231,16 @@ export default function Settings() {
     return () => {
       cancelled = true;
     };
-  }, [toast, loadOnnxModels, loadNemoModels]);
+  }, [toast]);
+
+  useEffect(() => {
+    if (transcriptionModel === "onnx_local" && onnxAvailable === null) {
+      loadOnnxModels();
+    }
+    if (transcriptionModel === "nemo_local" && nemoAvailable === null) {
+      loadNemoModels();
+    }
+  }, [transcriptionModel, onnxAvailable, nemoAvailable, loadOnnxModels, loadNemoModels]);
 
   const updateSettings = async (patch: any) => {
     const res = await fetch(apiUrl("/api/settings"), {
@@ -960,17 +965,23 @@ export default function Settings() {
                     <p className="text-sm text-muted-foreground">Run speech recognition locally without API keys</p>
                   </div>
 
-                  {onnxAvailable === null && (
+                  {transcriptionModel !== "onnx_local" && (
+                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                      Select "Local (ONNX) - No API Key" above to load ONNX models.
+                    </div>
+                  )}
+
+                  {transcriptionModel === "onnx_local" && onnxAvailable === null && (
                     <div className="text-sm text-muted-foreground">Loading local models...</div>
                   )}
 
-                  {onnxAvailable === false && (
+                  {transcriptionModel === "onnx_local" && onnxAvailable === false && (
                     <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
                       {onnxMessage || "onnx-asr not installed. Run: pip install onnx-asr[cpu,hub]"}
                     </div>
                   )}
 
-                  {onnxAvailable && (
+                  {transcriptionModel === "onnx_local" && onnxAvailable && (
                     <div className="space-y-4 rounded-lg border border-border/60 bg-secondary/20 p-4">
                       <div className="grid gap-3 md:grid-cols-2">
                         <div className="space-y-1.5">
@@ -1091,17 +1102,23 @@ export default function Settings() {
                     </p>
                   </div>
 
-                  {nemoAvailable === null && (
+                  {transcriptionModel !== "nemo_local" && (
+                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                      Select "Local (NeMo) - Primeline" above to load NeMo models.
+                    </div>
+                  )}
+
+                  {transcriptionModel === "nemo_local" && nemoAvailable === null && (
                     <div className="text-sm text-muted-foreground">Loading NeMo models...</div>
                   )}
 
-                  {nemoAvailable === false && (
+                  {transcriptionModel === "nemo_local" && nemoAvailable === false && (
                     <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
                       {nemoMessage || "NeMo toolkit not installed. Run: pip install nemo_toolkit[asr]"}
                     </div>
                   )}
 
-                  {nemoAvailable && (
+                  {transcriptionModel === "nemo_local" && nemoAvailable && (
                     <div className="space-y-4 rounded-lg border border-border/60 bg-secondary/20 p-4">
                       <div className="grid gap-3 md:grid-cols-2">
                         <div className="space-y-1.5">

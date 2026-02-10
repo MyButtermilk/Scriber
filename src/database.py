@@ -3,6 +3,7 @@ Local SQLite database for persisting transcripts.
 """
 import atexit
 import json
+import re
 import sqlite3
 import threading
 from dataclasses import asdict
@@ -21,6 +22,45 @@ _DB_PATH = _PROJECT_ROOT / "transcripts.db"
 _thread_local = threading.local()
 _all_connections: list[sqlite3.Connection] = []
 _connections_lock = threading.Lock()
+_FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
+
+
+def _compute_preview(text: str, max_words: int = 5) -> str:
+    words: list[str] = []
+    has_more = False
+    for match in re.finditer(r"\S+", text or ""):
+        if len(words) < max_words:
+            words.append(match.group(0))
+        else:
+            has_more = True
+            break
+    if not words:
+        return ""
+    preview = " ".join(words[:max_words])
+    if has_more:
+        preview += "..."
+    return preview
+
+
+def _build_fts_query(query: str) -> str:
+    tokens = _FTS_TOKEN_RE.findall((query or "").lower())
+    if not tokens:
+        return ""
+    terms = [f"{t}*" if len(t) >= 2 else t for t in tokens[:8]]
+    return " AND ".join(terms)
+
+
+def _sync_fts_row(conn: sqlite3.Connection, transcript_id: str) -> None:
+    conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (transcript_id,))
+    conn.execute(
+        """
+        INSERT INTO transcripts_fts(rowid, id, title, content, summary, channel)
+        SELECT rowid, id, title, content, summary, channel
+        FROM transcripts
+        WHERE id = ?
+        """,
+        (transcript_id,),
+    )
 
 
 def _get_connection() -> sqlite3.Connection:
@@ -77,17 +117,47 @@ def init_database() -> None:
                 channel TEXT DEFAULT '',
                 thumbnail_url TEXT DEFAULT '',
                 content TEXT DEFAULT '',
+                preview TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 summary TEXT DEFAULT ''
             )
         """)
+        # Migration: add preview column for existing databases.
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(transcripts)").fetchall()}
+        if "preview" not in cols:
+            conn.execute("ALTER TABLE transcripts ADD COLUMN preview TEXT DEFAULT ''")
+
         # PERFORMANCE: Index on created_at for faster ORDER BY queries
         # Impact: 50-100ms improvement for 1000+ transcripts
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_transcripts_created_at
             ON transcripts(created_at DESC)
         """)
+        # Full-text index for fast transcript search.
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
+                id UNINDEXED,
+                title,
+                content,
+                summary,
+                channel
+            )
+            """
+        )
+        # Keep FTS in sync if needed.
+        total_rows = conn.execute("SELECT COUNT(*) AS c FROM transcripts").fetchone()["c"]
+        total_fts = conn.execute("SELECT COUNT(*) AS c FROM transcripts_fts").fetchone()["c"]
+        if total_rows != total_fts:
+            conn.execute("DELETE FROM transcripts_fts")
+            conn.execute(
+                """
+                INSERT INTO transcripts_fts(rowid, id, title, content, summary, channel)
+                SELECT rowid, id, title, content, summary, channel
+                FROM transcripts
+                """
+            )
         conn.commit()
     logger.info(f"Database initialized at {_DB_PATH}")
 
@@ -96,13 +166,14 @@ def save_transcript(record: Any) -> None:
     """Save or update a transcript record."""
     try:
         data = record.to_public(include_content=True)
+        preview = data.get("preview", "") or _compute_preview(data.get("content", ""))
         # Map camelCase to snake_case for database
         with _get_connection() as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO transcripts 
                 (id, title, date, duration, status, type, language, step, 
-                 source_url, channel, thumbnail_url, content, created_at, updated_at, summary)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 source_url, channel, thumbnail_url, content, preview, created_at, updated_at, summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data.get("id"),
                 data.get("title", ""),
@@ -116,10 +187,14 @@ def save_transcript(record: Any) -> None:
                 data.get("channel", ""),
                 data.get("thumbnailUrl", ""),
                 data.get("content", ""),
+                preview,
                 data.get("createdAt", datetime.now().isoformat()),
                 data.get("updatedAt", datetime.now().isoformat()),
                 data.get("summary", ""),
             ))
+            transcript_id = data.get("id", "")
+            if transcript_id:
+                _sync_fts_row(conn, transcript_id)
             conn.commit()
     except Exception as e:
         logger.error(f"Failed to save transcript: {e}")
@@ -150,6 +225,7 @@ def load_all_transcripts() -> List[dict]:
                     "channel": row["channel"],
                     "thumbnailUrl": row["thumbnail_url"],
                     "content": row["content"],
+                    "preview": row["preview"],
                     "createdAt": row["created_at"],
                     "updatedAt": row["updated_at"],
                     "summary": row["summary"],
@@ -173,7 +249,7 @@ def load_transcript_metadata() -> List[dict]:
             cursor = conn.execute("""
                 SELECT id, title, date, duration, status, type, language, step,
                        source_url, channel, thumbnail_url, created_at, updated_at,
-                       substr(content, 1, 100) as preview_text
+                       preview
                 FROM transcripts
                 ORDER BY created_at DESC
             """)
@@ -199,7 +275,7 @@ def load_transcript_metadata() -> List[dict]:
                     "content": "",
                     "summary": "",
                     # Preview text for list display (first ~100 chars)
-                    "_previewText": row["preview_text"] or "",
+                    "_previewText": row["preview"] or "",
                 })
             return transcripts
     except Exception as e:
@@ -230,6 +306,7 @@ def get_transcript(transcript_id: str) -> Optional[dict]:
                     "channel": row["channel"],
                     "thumbnailUrl": row["thumbnail_url"],
                     "content": row["content"],
+                    "preview": row["preview"],
                     "createdAt": row["created_at"],
                     "updatedAt": row["updated_at"],
                     "summary": row["summary"],
@@ -239,10 +316,25 @@ def get_transcript(transcript_id: str) -> Optional[dict]:
     return None
 
 
+def transcript_exists(transcript_id: str) -> bool:
+    """Check whether a transcript ID exists."""
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM transcripts WHERE id = ? LIMIT 1",
+                (transcript_id,),
+            ).fetchone()
+            return row is not None
+    except Exception as e:
+        logger.error(f"Failed to check transcript existence: {e}")
+        return False
+
+
 def delete_transcript(transcript_id: str) -> bool:
     """Delete a transcript by ID."""
     try:
         with _get_connection() as conn:
+            conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (transcript_id,))
             conn.execute("DELETE FROM transcripts WHERE id = ?", (transcript_id,))
             conn.commit()
             return True
@@ -259,8 +351,100 @@ def update_transcript_summary(transcript_id: str, summary: str) -> bool:
                 "UPDATE transcripts SET summary = ?, updated_at = ? WHERE id = ?",
                 (summary, datetime.now().isoformat(), transcript_id)
             )
+            _sync_fts_row(conn, transcript_id)
             conn.commit()
             return True
     except Exception as e:
         logger.error(f"Failed to update transcript summary: {e}")
         return False
+
+
+def search_transcript_metadata(
+    query: str,
+    *,
+    transcript_type: str = "",
+    offset: int = 0,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Search transcript metadata using SQLite FTS5 with pagination."""
+    offset = max(0, int(offset))
+    limit = max(1, min(100, int(limit)))
+    q = (query or "").strip()
+    if not q:
+        return {"items": [], "total": 0, "offset": offset, "limit": limit, "hasMore": False}
+
+    try:
+        with _get_connection() as conn:
+            fts_q = _build_fts_query(q)
+            params: list[Any] = []
+            type_clause = ""
+            if transcript_type:
+                type_clause = " AND t.type = ? "
+                params.append(transcript_type)
+
+            if fts_q:
+                total_sql = (
+                    "SELECT COUNT(*) AS c FROM transcripts_fts f "
+                    "JOIN transcripts t ON t.rowid = f.rowid "
+                    "WHERE transcripts_fts MATCH ? " + type_clause
+                )
+                rows_sql = (
+                    "SELECT t.id, t.title, t.date, t.duration, t.status, t.type, t.language, t.step, "
+                    "t.source_url, t.channel, t.thumbnail_url, t.created_at, t.updated_at, t.preview "
+                    "FROM transcripts_fts f "
+                    "JOIN transcripts t ON t.rowid = f.rowid "
+                    "WHERE transcripts_fts MATCH ? " + type_clause +
+                    "ORDER BY bm25(f), t.created_at DESC LIMIT ? OFFSET ?"
+                )
+                total = conn.execute(total_sql, [fts_q, *params]).fetchone()["c"]
+                rows = conn.execute(rows_sql, [fts_q, *params, limit, offset]).fetchall()
+            else:
+                like = f"%{q.lower()}%"
+                total_sql = (
+                    "SELECT COUNT(*) AS c FROM transcripts t "
+                    "WHERE (LOWER(t.title) LIKE ? OR LOWER(t.content) LIKE ? OR LOWER(t.summary) LIKE ? OR LOWER(t.channel) LIKE ?) "
+                    + ("AND t.type = ?" if transcript_type else "")
+                )
+                rows_sql = (
+                    "SELECT t.id, t.title, t.date, t.duration, t.status, t.type, t.language, t.step, "
+                    "t.source_url, t.channel, t.thumbnail_url, t.created_at, t.updated_at, t.preview "
+                    "FROM transcripts t "
+                    "WHERE (LOWER(t.title) LIKE ? OR LOWER(t.content) LIKE ? OR LOWER(t.summary) LIKE ? OR LOWER(t.channel) LIKE ?) "
+                    + ("AND t.type = ? " if transcript_type else "") +
+                    "ORDER BY t.created_at DESC LIMIT ? OFFSET ?"
+                )
+                args = [like, like, like, like]
+                if transcript_type:
+                    args.append(transcript_type)
+                total = conn.execute(total_sql, args).fetchone()["c"]
+                rows = conn.execute(rows_sql, [*args, limit, offset]).fetchall()
+
+            items = [{
+                "id": row["id"],
+                "title": row["title"],
+                "date": row["date"],
+                "duration": row["duration"],
+                "status": row["status"],
+                "type": row["type"],
+                "language": row["language"],
+                "step": row["step"],
+                "sourceUrl": row["source_url"],
+                "channel": row["channel"],
+                "thumbnailUrl": row["thumbnail_url"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+                "content": "",
+                "summary": "",
+                "_previewText": row["preview"] or "",
+            } for row in rows]
+
+            return {
+                "items": items,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "hasMore": offset + len(items) < total,
+            }
+    except Exception as e:
+        logger.error(f"Failed to search transcript metadata: {e}")
+        return {"items": [], "total": 0, "offset": offset, "limit": limit, "hasMore": False}
