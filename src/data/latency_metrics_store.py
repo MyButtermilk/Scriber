@@ -3,6 +3,7 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -116,3 +117,30 @@ class LatencyMetricsStore:
             )
         return metrics
 
+    def summarize(self, *, limit: int = 200) -> dict[str, float | int]:
+        metrics = self.latest(limit=limit)
+        values = sorted([m.total_ms for m in metrics if m.total_ms >= 0.0])
+        if not values:
+            return {
+                "count": 0,
+                "minMs": 0.0,
+                "p50Ms": 0.0,
+                "p95Ms": 0.0,
+                "p99Ms": 0.0,
+                "maxMs": 0.0,
+            }
+
+        def percentile(pct: float) -> float:
+            if not values:
+                return 0.0
+            idx = max(0, min(len(values) - 1, int(ceil((pct / 100.0) * len(values)) - 1)))
+            return float(values[idx])
+
+        return {
+            "count": len(values),
+            "minMs": float(values[0]),
+            "p50Ms": percentile(50.0),
+            "p95Ms": percentile(95.0),
+            "p99Ms": percentile(99.0),
+            "maxMs": float(values[-1]),
+        }

@@ -960,6 +960,21 @@ class ScriberWebController:
             "recordingState": self._recording_state_machine.state.value,
         }
 
+    def get_hot_path_metrics(self, *, limit: int = 50) -> dict[str, Any]:
+        query_limit = max(1, min(500, int(limit)))
+        summary = self._latency_metrics_store.summarize(limit=query_limit)
+        latest = self._latency_metrics_store.latest(limit=query_limit)
+        items = [
+            {
+                "sessionId": metric.session_id,
+                "totalMs": metric.total_ms,
+                "segments": metric.segments,
+                "createdAt": metric.created_at,
+            }
+            for metric in latest
+        ]
+        return {"summary": summary, "items": items, "limit": query_limit}
+
     async def add_client(self, ws: web.WebSocketResponse) -> None:
         async with self._clients_lock:
             self._clients.add(ws)
@@ -2344,6 +2359,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
         ctl: ScriberWebController = request.app["controller"]
         return web.json_response(ctl.get_state())
 
+    async def get_hot_path_metrics(request: web.Request):
+        ctl: ScriberWebController = request.app["controller"]
+        try:
+            limit = int(request.query.get("limit", "50"))
+        except ValueError:
+            limit = 50
+        return web.json_response(ctl.get_hot_path_metrics(limit=limit))
+
     async def start_live(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
         await ctl.start_listening()
@@ -2864,6 +2887,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/ws", ws_handler)
 
     app.router.add_get("/api/state", get_state)
+    app.router.add_get("/api/metrics/hot-path", get_hot_path_metrics)
     app.router.add_post("/api/live-mic/start", start_live)
     app.router.add_post("/api/live-mic/stop", stop_live)
     app.router.add_post("/api/live-mic/toggle", toggle_live)

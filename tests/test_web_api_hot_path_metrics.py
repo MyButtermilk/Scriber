@@ -20,3 +20,18 @@ async def test_hot_path_report_persisted_only_once(tmp_path):
     assert len(rows) == 1
     assert rows[0].session_id == session_id
     assert rows[0].total_ms >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_hot_path_metrics_summary_exposed(tmp_path):
+    loop = asyncio.get_running_loop()
+    metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    ctl = ScriberWebController(loop, latency_metrics_store=metrics_store)
+
+    metrics_store.record("a", {"hotkey_received_to_first_paste_ms": 100.0})
+    metrics_store.record("b", {"hotkey_received_to_first_paste_ms": 220.0})
+
+    out = ctl.get_hot_path_metrics(limit=10)
+    assert out["summary"]["count"] == 2
+    assert len(out["items"]) == 2
+    assert out["items"][0]["sessionId"] in {"a", "b"}
