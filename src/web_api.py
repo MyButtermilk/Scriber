@@ -25,7 +25,7 @@ from src.config import Config
 from src.core.error_taxonomy import classify_error_message, user_message_for_category
 from src.core.hot_path_tracer import HotPathTracer
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
-from src.data.job_store import JobStore, JobType
+from src.data.job_store import JobRecord, JobStore, JobType
 from src.pipeline import ScriberPipeline
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
@@ -491,6 +491,133 @@ class ScriberWebController:
         except Exception as exc:  # pragma: no cover - best effort persistence
             logger.warning(f"Failed to sync job status for transcript {rec.id}: {exc}")
 
+    def _schedule_youtube_job(self, rec: TranscriptRecord, *, resumed: bool = False) -> None:
+        async def _runner() -> None:
+            self._set_job_running(rec.id)
+            try:
+                await self._run_youtube_transcription(rec)
+            except asyncio.CancelledError:
+                if rec.status == "processing":
+                    rec.status = "stopped"
+                    rec.step = "Stopped by user"
+                raise
+            finally:
+                self._sync_job_status(rec)
+
+        task_name = f"youtube_transcribe_{rec.id}" if not resumed else f"youtube_resume_{rec.id}"
+        task = asyncio.create_task(_runner(), name=task_name)
+        self._register_task(rec.id, task)
+
+    def _schedule_file_job(self, rec: TranscriptRecord, file_path: Path, *, resumed: bool = False) -> None:
+        async def _runner() -> None:
+            self._set_job_running(rec.id)
+            try:
+                await self._run_file_transcription(rec, file_path)
+            except asyncio.CancelledError:
+                if rec.status == "processing":
+                    rec.status = "stopped"
+                    rec.step = "Stopped by user"
+                raise
+            finally:
+                self._sync_job_status(rec)
+
+        task_name = f"file_transcribe_{rec.id}" if not resumed else f"file_resume_{rec.id}"
+        task = asyncio.create_task(_runner(), name=task_name)
+        self._register_task(rec.id, task)
+
+    def _build_processing_record_from_job(self, job: JobRecord) -> TranscriptRecord:
+        payload = job.payload or {}
+        created_at = job.created_at or datetime.now().isoformat()
+        created_dt = datetime.now()
+        if created_at:
+            try:
+                created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                created_dt = datetime.now()
+        title = str(payload.get("title", "") or "").strip()
+        if not title:
+            title = "YouTube" if job.job_type == JobType.YOUTUBE else "File"
+
+        source_url = str(payload.get("url", "") or "").strip() if job.job_type == JobType.YOUTUBE else str(payload.get("path", "") or "").strip()
+        rec = TranscriptRecord(
+            id=job.transcript_id,
+            title=title,
+            date=_format_date_label(created_dt),
+            duration=str(payload.get("duration", "") or "--:--"),
+            status="processing",
+            type="youtube" if job.job_type == JobType.YOUTUBE else "file",
+            language=str(payload.get("language", "") or Config.LANGUAGE or "auto"),
+            step="Queued (resumed)",
+            source_url=source_url,
+            channel=str(payload.get("channel", "") or ""),
+            thumbnail_url=str(payload.get("thumbnailUrl", "") or ""),
+            created_at=created_at,
+            updated_at=datetime.now().isoformat(),
+            content="",
+            summary="",
+            _content_loaded=True,
+            _summary_loaded=True,
+        )
+        return rec
+
+    def _fail_resumed_job(self, rec: TranscriptRecord, message: str) -> None:
+        rec.status = "failed"
+        rec.step = "Failed"
+        rec.append_final_text(f"[Error] {message}")
+        rec.updated_at = datetime.now().isoformat()
+        self._sync_job_status(rec)
+        self._save_transcript_to_db(rec)
+
+    async def resume_pending_jobs(self, *, limit: int = 25) -> int:
+        reset_count = self._job_store.reset_running_to_queued()
+        pending_jobs = self._job_store.list_pending(limit=limit)
+        resumed_count = 0
+
+        for job in pending_jobs:
+            if job.transcript_id in self._running_tasks:
+                continue
+
+            rec = self._get_history_record(job.transcript_id)
+            if rec and rec.status in ("completed", "failed", "stopped"):
+                self._sync_job_status(rec)
+                continue
+            if rec is None:
+                rec = self._build_processing_record_from_job(job)
+                self._add_to_history(rec)
+
+            self._job_ids_by_transcript[rec.id] = job.id
+
+            if job.job_type == JobType.YOUTUBE:
+                if not rec.source_url:
+                    self._fail_resumed_job(rec, "Missing source URL for resumed YouTube job.")
+                    continue
+                rec.step = "Queued (resumed)"
+                rec.updated_at = datetime.now().isoformat()
+                self._schedule_youtube_job(rec, resumed=True)
+                resumed_count += 1
+                continue
+
+            file_path_raw = str(job.payload.get("path", "") or "").strip()
+            if not file_path_raw:
+                self._fail_resumed_job(rec, "Missing source file path for resumed file transcription.")
+                continue
+            file_path = Path(file_path_raw)
+            if not file_path.exists():
+                self._fail_resumed_job(rec, "Source file is no longer available for resumed file transcription.")
+                continue
+            rec.source_url = str(file_path)
+            rec.step = "Queued (resumed)"
+            rec.updated_at = datetime.now().isoformat()
+            self._schedule_file_job(rec, file_path, resumed=True)
+            resumed_count += 1
+
+        if reset_count or resumed_count:
+            await self._broadcast_history_updated()
+            logger.info(
+                f"Job resume startup scan: reset_running={reset_count}, resumed={resumed_count}, pending={len(pending_jobs)}"
+            )
+        return resumed_count
+
     def _set_recording_state(self, target: RecordingState, *, context: str = "") -> None:
         try:
             event = self._recording_state_machine.transition(target)
@@ -851,22 +978,7 @@ class ScriberWebController:
                 "language": rec.language,
             },
         )
-
-        async def _runner() -> None:
-            self._set_job_running(rec.id)
-            try:
-                await self._run_youtube_transcription(rec)
-            except asyncio.CancelledError:
-                # Ensure status is updated if cancelled
-                if rec.status == "processing":
-                    rec.status = "stopped"
-                    rec.step = "Stopped by user"
-                raise
-            finally:
-                self._sync_job_status(rec)
-
-        task = asyncio.create_task(_runner(), name=f"youtube_transcribe_{rec.id}")
-        self._register_task(rec.id, task)
+        self._schedule_youtube_job(rec)
         return rec
 
     async def _run_youtube_transcription(self, rec: TranscriptRecord) -> None:
@@ -1032,22 +1144,7 @@ class ScriberWebController:
                 "originalFilename": original_filename,
             },
         )
-
-        async def _runner() -> None:
-            self._set_job_running(rec.id)
-            try:
-                await self._run_file_transcription(rec, file_path)
-            except asyncio.CancelledError:
-                # Ensure status is updated if cancelled
-                if rec.status == "processing":
-                    rec.status = "stopped"
-                    rec.step = "Stopped by user"
-                raise
-            finally:
-                self._sync_job_status(rec)
-
-        task = asyncio.create_task(_runner(), name=f"file_transcribe_{rec.id}")
-        self._register_task(rec.id, task)
+        self._schedule_file_job(rec, file_path)
         return rec
 
     async def _run_file_transcription(self, rec: TranscriptRecord, file_path: Path) -> None:
@@ -2918,6 +3015,13 @@ async def _background_init(controller: ScriberWebController) -> None:
         logger.info(f"Loaded {len(controller._history)} transcripts from database")
     except Exception as e:
         logger.warning(f"Background transcript load failed: {e}")
+
+    try:
+        resumed = await controller.resume_pending_jobs(limit=25)
+        if resumed:
+            logger.info(f"Resumed {resumed} pending background job(s)")
+    except Exception as e:
+        logger.warning(f"Background job resume failed: {e}")
     
     async def _prewarm_overlay() -> None:
         try:

@@ -31,6 +31,7 @@ class _StressFakePipeline:
         on_audio_level=None,
         on_transcription=None,
         on_progress=None,
+        on_text_injected=None,
         on_mic_ready=None,
         on_error=None,
     ):
@@ -42,6 +43,7 @@ class _StressFakePipeline:
         self.on_audio_level = on_audio_level
         self.on_transcription = on_transcription
         self.on_progress = on_progress
+        self.on_text_injected = on_text_injected
         self.on_mic_ready = on_mic_ready
         self.on_error = on_error
         self._stop_event = asyncio.Event()
@@ -61,6 +63,8 @@ class _StressFakePipeline:
             if self.on_transcription:
                 self.on_transcription(self.stats.final_text, True)
             TextInjector(inject_immediately=False)._inject_text(self.stats.final_text + " ")
+            if self.on_text_injected:
+                self.on_text_injected(self.stats.final_text + " ")
             self.stats.injected = True
         self._stop_event.set()
 
