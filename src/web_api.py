@@ -40,6 +40,8 @@ from src.core.ws_contracts import (
 from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.pipeline import ScriberPipeline
+from src.runtime.provider_router import ProviderRouter
+from src.runtime.retry_scheduler import RetryScheduler
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
 from src.overlay import get_overlay, show_recording_overlay, show_initializing_overlay, show_transcribing_overlay, hide_recording_overlay, update_overlay_audio
@@ -429,22 +431,30 @@ class ScriberWebController:
         self._job_store = job_store or JobStore()
         self._job_ids_by_transcript: dict[str, str] = {}
         self._latency_metrics_store = latency_metrics_store or LatencyMetricsStore()
-        self._job_retry_scan_handle: asyncio.TimerHandle | None = None
-        self._job_retry_scan_due_monotonic: float | None = None
         self._job_max_attempts = max(1, int(os.getenv("SCRIBER_JOB_MAX_ATTEMPTS", "3")))
         self._job_retry_base_seconds = max(0.1, float(os.getenv("SCRIBER_JOB_RETRY_BASE_SEC", "5")))
         self._job_retry_max_seconds = max(
             self._job_retry_base_seconds,
             float(os.getenv("SCRIBER_JOB_RETRY_MAX_SEC", "120")),
         )
-        self._provider_fallbacks = [
+        provider_fallbacks = [
             p.strip()
             for p in os.getenv("SCRIBER_STT_FALLBACKS", "").split(",")
             if p.strip()
         ]
-        self._provider_breaker = ProviderCircuitBreaker(
+        breaker = ProviderCircuitBreaker(
             failure_threshold=max(1, int(os.getenv("SCRIBER_BREAKER_FAILURE_THRESHOLD", "3"))),
             cooldown_seconds=max(1.0, float(os.getenv("SCRIBER_BREAKER_COOLDOWN_SEC", "30"))),
+        )
+        self._provider_breaker = breaker
+        self._provider_router = ProviderRouter(
+            default_provider_getter=lambda: str(getattr(Config, "DEFAULT_STT_SERVICE", "") or ""),
+            fallbacks=provider_fallbacks,
+            breaker=breaker,
+        )
+        self._retry_scheduler = RetryScheduler(
+            loop=self._loop,
+            trigger=lambda: self.resume_pending_jobs(limit=25),
         )
         self._validate_ws_contracts = os.getenv("SCRIBER_VALIDATE_WS_CONTRACTS", "0").strip() in {
             "1",
@@ -521,36 +531,16 @@ class ScriberWebController:
             logger.warning(f"Failed to mark job running for transcript {transcript_id}: {exc}")
 
     def _provider_candidates(self) -> list[str]:
-        primary = (Config.DEFAULT_STT_SERVICE or "").strip()
-        ordered = [primary, *self._provider_fallbacks]
-        out: list[str] = []
-        seen: set[str] = set()
-        for entry in ordered:
-            key = (entry or "").strip()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            out.append(key)
-        return out or [primary or "openai"]
+        return self._provider_router.candidates()
 
     def _select_available_provider(self) -> str:
-        candidates = self._provider_candidates()
-        for provider in candidates:
-            if self._provider_breaker.can_execute(provider):
-                return provider
-        raise RuntimeError("No STT provider is currently available (all circuits are open)")
+        return self._provider_router.select()
 
     def _record_provider_success(self, provider: str) -> None:
-        if not provider:
-            return
-        self._provider_breaker.on_success(provider)
+        self._provider_router.record_success(provider)
 
     def _record_provider_failure(self, provider: str, error: Exception | str) -> None:
-        if not provider:
-            return
-        category = classify_error_message(str(error))
-        if is_retryable(category):
-            self._provider_breaker.on_failure(provider)
+        self._provider_router.record_failure(provider, error)
 
     def _retry_delay_seconds(self, attempts: int) -> float:
         exponent = max(0, int(attempts) - 1)
@@ -558,21 +548,7 @@ class ScriberWebController:
         return min(self._job_retry_max_seconds, delay)
 
     def _schedule_retry_scan(self, delay_seconds: float) -> None:
-        delay = max(0.0, float(delay_seconds))
-        due = time.monotonic() + delay
-        # Keep the earliest planned retry scan and coalesce duplicates.
-        if self._job_retry_scan_due_monotonic is not None and due >= self._job_retry_scan_due_monotonic:
-            return
-        if self._job_retry_scan_handle is not None:
-            self._job_retry_scan_handle.cancel()
-        self._job_retry_scan_due_monotonic = due
-
-        def _run_scan() -> None:
-            self._job_retry_scan_handle = None
-            self._job_retry_scan_due_monotonic = None
-            asyncio.create_task(self.resume_pending_jobs(limit=25))
-
-        self._job_retry_scan_handle = self._loop.call_later(delay, _run_scan)
+        self._retry_scheduler.schedule_in(delay_seconds)
 
     def _schedule_next_retry_scan_from_store(self) -> None:
         try:
@@ -581,6 +557,7 @@ class ScriberWebController:
             logger.warning(f"Failed to query next retry delay: {exc}")
             return
         if delay is None:
+            self._retry_scheduler.cancel()
             return
         self._schedule_retry_scan(delay)
 
