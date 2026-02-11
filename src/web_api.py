@@ -22,6 +22,7 @@ from src.audio_devices import (
     rank_hostapi,
 )
 from src.config import Config
+from src.core.provider_capabilities import supports_direct_file_upload
 from src.core.error_taxonomy import classify_error_message, is_retryable, user_message_for_category
 from src.core.hot_path_tracer import HotPathTracer
 from src.core.provider_circuit_breaker import ProviderCircuitBreaker
@@ -1242,7 +1243,7 @@ class ScriberWebController:
             
             # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
             transcribe_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC", 600.0)
-            if provider in ("soniox", "soniox_async", "mistral", "mistral_async"):
+            if supports_direct_file_upload(provider):
                 await self._await_with_timeout(
                     pipeline.transcribe_file_direct(str(audio_path)),
                     timeout_seconds=transcribe_timeout,
@@ -1398,7 +1399,7 @@ class ScriberWebController:
             
             # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
             transcribe_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC", 600.0)
-            if provider in ("soniox", "soniox_async", "mistral", "mistral_async"):
+            if supports_direct_file_upload(provider):
                 await self._await_with_timeout(
                     pipeline.transcribe_file_direct(str(file_path)),
                     timeout_seconds=transcribe_timeout,

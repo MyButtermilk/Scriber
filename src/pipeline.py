@@ -482,6 +482,7 @@ class SonioxAsyncProcessor(FrameProcessor):
 # ============================================================================
 
 from src.config import Config
+from src.core.provider_capabilities import injects_immediately_in_live_mode
 from src.audio_devices import (
     get_input_hostapi_priorities,
     normalize_device_name,
@@ -1040,9 +1041,8 @@ class ScriberPipeline:
                     on_ready=self.on_mic_ready,
                 )
 
-                inject_immediately = (
-                    (self.service_name == "soniox" and Config.SONIOX_MODE != "async")
-                    or self.service_name == "mistral"
+                inject_immediately = injects_immediately_in_live_mode(self.service_name) and not (
+                    self.service_name == "soniox" and Config.SONIOX_MODE == "async"
                 )
                 text_injector = TextInjector(
                     inject_immediately=inject_immediately,
