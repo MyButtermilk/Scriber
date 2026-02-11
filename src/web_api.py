@@ -26,6 +26,7 @@ from src.core.error_taxonomy import classify_error_message, user_message_for_cat
 from src.core.hot_path_tracer import HotPathTracer
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
 from src.data.job_store import JobRecord, JobStore, JobType
+from src.data.latency_metrics_store import LatencyMetricsStore
 from src.pipeline import ScriberPipeline
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
@@ -394,7 +395,13 @@ class TranscriptRecord:
 
 
 class ScriberWebController:
-    def __init__(self, loop: asyncio.AbstractEventLoop, *, job_store: JobStore | None = None):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        job_store: JobStore | None = None,
+        latency_metrics_store: LatencyMetricsStore | None = None,
+    ):
         self._loop = loop
         self._clients: set[web.WebSocketResponse] = set()
         self._clients_lock = asyncio.Lock()
@@ -408,6 +415,7 @@ class ScriberWebController:
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._job_store = job_store or JobStore()
         self._job_ids_by_transcript: dict[str, str] = {}
+        self._latency_metrics_store = latency_metrics_store or LatencyMetricsStore()
         self._keyboard = None
 
         self._is_listening = False
@@ -681,6 +689,10 @@ class ScriberWebController:
         report = tracer.report()
         if report:
             logger.info(f"Hot path timing ({session_id[:8]}): {report}")
+            try:
+                self._latency_metrics_store.record(session_id, report)
+            except Exception as exc:  # pragma: no cover - best effort persistence
+                logger.warning(f"Failed to persist hot path timing for {session_id[:8]}: {exc}")
             self._hot_path_reports_emitted.add(session_id)
 
     def _clear_hot_path_tracer(self, session_id: str | None) -> None:
