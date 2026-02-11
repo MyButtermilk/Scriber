@@ -1,4 +1,4 @@
-import { ArrowRight, Clock, MoreHorizontal, PlayCircle, Youtube as YoutubeIcon, Loader2, Trash2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList, Square, Search, X, Copy, Check } from "lucide-react";
+import { ArrowRight, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, Trash2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList, Square, Search, X, Copy, Check } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -7,13 +7,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useLocation } from "wouter";
 import { useState, useEffect, useMemo, useCallback, memo, useRef } from "react";
-import { apiUrl, wsUrl } from "@/lib/backend";
+import { apiUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
-import { useSharedWebSocket } from "@/contexts/WebSocketContext";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonList } from "@/components/ui/skeleton-card";
+import { QueryErrorState } from "@/components/ui/query-error-state";
+import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
+import { useUrlQueryState } from "@/hooks/use-url-query-state";
 
 type YouTubeSearchItem = {
   videoId: string;
@@ -36,8 +38,8 @@ interface YoutubeVideoCardProps {
   item: any;
   index: number;
   viewMode: "list" | "grid";
-  deletingId: string | null;
-  copyingId: string | null;
+  isDeleting: boolean;
+  isCopying: boolean;
   onDelete: (e: React.MouseEvent, id: string) => void;
   onCopy: (e: React.MouseEvent, id: string) => void;
   onNavigate: (id: string) => void;
@@ -48,23 +50,38 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
   item,
   index,
   viewMode,
-  deletingId,
-  copyingId,
+  isDeleting,
+  isCopying,
   onDelete,
   onCopy,
   onNavigate,
   onHover,
 }: YoutubeVideoCardProps) {
+  const prefersReducedMotion = useReducedMotion();
+
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
+      initial={prefersReducedMotion ? false : { opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: Math.min(index * 0.02, 0.1), duration: 0.2, ease: "easeOut" }}
+      transition={{
+        delay: Math.min(index * 0.02, 0.1),
+        duration: prefersReducedMotion ? 0 : 0.2,
+        ease: "easeOut",
+      }}
     >
       <Card
         className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} overflow-hidden bg-transparent hover:scale-[1.01] group cursor-pointer rounded-xl`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
+        role="button"
+        tabIndex={0}
+        aria-label={`Open transcript ${item.title}`}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onNavigate(item.id);
+          }
+        }}
       >
         {viewMode === "list" ? (
           // List view
@@ -113,12 +130,14 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity"
+                className="h-8 w-8 text-muted-foreground hover:text-primary opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                 onClick={(e) => onCopy(e, item.id)}
-                disabled={copyingId === item.id}
+                disabled={isCopying}
                 title="Copy transcript"
+                aria-label={`Copy transcript ${item.title}`}
+                type="button"
               >
-                {copyingId === item.id ? (
+                {isCopying ? (
                   <Check className="w-4 h-4 text-green-500" />
                 ) : (
                   <Copy className="w-4 h-4" />
@@ -127,12 +146,14 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                className="h-8 w-8 text-muted-foreground hover:text-destructive opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                 onClick={(e) => onDelete(e, item.id)}
-                disabled={deletingId === item.id}
+                disabled={isDeleting}
                 title="Delete transcript"
+                aria-label={`Delete transcript ${item.title}`}
+                type="button"
               >
-                {deletingId === item.id ? (
+                {isDeleting ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <Trash2 className="w-4 h-4" />
@@ -184,12 +205,14 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6 text-muted-foreground hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity"
+                    className="h-6 w-6 text-muted-foreground hover:text-primary opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                     onClick={(e) => onCopy(e, item.id)}
-                    disabled={copyingId === item.id}
+                    disabled={isCopying}
                     title="Copy transcript"
+                    aria-label={`Copy transcript ${item.title}`}
+                    type="button"
                   >
-                    {copyingId === item.id ? (
+                    {isCopying ? (
                       <Check className="w-3 h-3 text-green-500" />
                     ) : (
                       <Copy className="w-3 h-3" />
@@ -198,12 +221,14 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                    className="h-6 w-6 text-muted-foreground hover:text-destructive opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                     onClick={(e) => onDelete(e, item.id)}
-                    disabled={deletingId === item.id}
+                    disabled={isDeleting}
                     title="Delete transcript"
+                    aria-label={`Delete transcript ${item.title}`}
+                    type="button"
                   >
-                    {deletingId === item.id ? (
+                    {isDeleting ? (
                       <Loader2 className="w-3 h-3 animate-spin" />
                     ) : (
                       <Trash2 className="w-3 h-3" />
@@ -223,7 +248,14 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
 export default function Youtube() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useUrlQueryState("search", "", {
+    parse: (raw) => raw ?? "",
+    serialize: (value) => {
+      const trimmed = value.trim();
+      return trimmed ? trimmed : null;
+    },
+    syncDelayMs: 250,
+  });
   const [searchResults, setSearchResults] = useState<YouTubeSearchItem[]>([]);
   const [searchError, setSearchError] = useState<string>("");
   const [isSearching, setIsSearching] = useState(false);
@@ -231,19 +263,23 @@ export default function Youtube() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const deletingRef = useRef<string | null>(null);
-  const [sortBy, setSortBy] = useState<SortOption>("date");
+  const [sortBy, setSortBy] = useUrlQueryState<SortOption>("sort", "date", {
+    parse: (raw) => (raw === "likes" || raw === "views" ? raw : "date"),
+  });
   const queryClient = useQueryClient();
-  const [viewMode, setViewMode] = useState<"list" | "grid">(
-    () => (localStorage.getItem("scriber-view-mode") as "list" | "grid") || "list"
-  );
-
-  // Persist view mode
-  useEffect(() => {
-    localStorage.setItem("scriber-view-mode", viewMode);
-  }, [viewMode]);
+  const [viewMode, setViewMode] = useUrlQueryState<"list" | "grid">("view", "list", {
+    parse: (raw) => (raw === "grid" ? "grid" : "list"),
+  });
 
   // History search state
-  const [historySearch, setHistorySearch] = useState("");
+  const [historySearch, setHistorySearch] = useUrlQueryState("q", "", {
+    parse: (raw) => raw ?? "",
+    serialize: (value) => {
+      const trimmed = value.trim();
+      return trimmed ? trimmed : null;
+    },
+    syncDelayMs: 250,
+  });
   const [debouncedHistorySearch, setDebouncedHistorySearch] = useState("");
 
   // Debounce history search
@@ -251,6 +287,11 @@ export default function Youtube() {
     const timer = setTimeout(() => setDebouncedHistorySearch(historySearch), 300);
     return () => clearTimeout(timer);
   }, [historySearch]);
+
+  const transcriptsQueryKey = useMemo(
+    () => ["/api/transcripts", { q: debouncedHistorySearch, type: "youtube" }] as const,
+    [debouncedHistorySearch],
+  );
 
   // Sort search results
   const sortedResults = useMemo(() => {
@@ -270,7 +311,7 @@ export default function Youtube() {
   }, [searchResults, sortBy]);
 
   const transcriptsQuery = useQuery({
-    queryKey: ["/api/transcripts", { q: debouncedHistorySearch, type: "youtube" }],
+    queryKey: transcriptsQueryKey,
     queryFn: async () => {
       const params = new URLSearchParams();
       if (debouncedHistorySearch) params.set("q", debouncedHistorySearch);
@@ -278,26 +319,23 @@ export default function Youtube() {
       const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
       return res.json();
     },
-    staleTime: 0,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    placeholderData: (previous) => previous,
   });
   const recentVideos: any[] = (transcriptsQuery.data as any)?.items || [];
 
-  // WebSocket with auto-reconnection for real-time updates
-  const handleWsMessage = useCallback((msg: any) => {
-    if (msg?.type === "history_updated") {
-      queryClient.refetchQueries({ queryKey: ["/api/transcripts"] });
-    } else if (msg?.type === "error") {
+  useTranscriptAutoRefresh({
+    queryKey: transcriptsQueryKey,
+    onError: (message) => {
       toast({
         title: "Transcription Error",
-        description: msg.message || "An error occurred during transcription.",
+        description: message,
         variant: "destructive",
         duration: 6000,
       });
-    }
-  }, [queryClient, toast]);
-
-  // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
-  useSharedWebSocket(handleWsMessage);
+    },
+  });
 
   // Helper to detect if input is a YouTube URL
   const isYouTubeUrl = (input: string): boolean => {
@@ -411,6 +449,11 @@ export default function Youtube() {
         description: "Transcript removed successfully.",
         duration: 2000,
       });
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === "/api/transcripts" &&
+          (query.queryKey[1] as { type?: string })?.type === "youtube",
+      });
     } catch (e: any) {
       toast({
         title: "Delete failed",
@@ -421,7 +464,7 @@ export default function Youtube() {
       deletingRef.current = null;
       setDeletingId(null);
     }
-  }, [toast]);
+  }, [queryClient, toast]);
 
   const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -499,6 +542,8 @@ export default function Youtube() {
             className="h-10 w-10 shrink-0 rounded-lg"
             onClick={runSearch}
             disabled={!query.trim() || isSearching}
+            type="button"
+            aria-label="Search YouTube"
           >
             <ArrowRight className="w-5 h-5" />
           </Button>
@@ -540,7 +585,12 @@ export default function Youtube() {
           </div>
 
           {!isSearching && searchError && (
-            <p className="text-sm text-muted-foreground px-2">{searchError}</p>
+            <QueryErrorState
+              title="YouTube search failed"
+              description={searchError}
+              onRetry={query.trim() ? runSearch : undefined}
+              className="mx-2"
+            />
           )}
 
           {sortedResults.length > 0 && (
@@ -553,6 +603,15 @@ export default function Youtube() {
                     key={item.videoId}
                     className="neu-recording-row perf-scroll-item overflow-hidden hover:scale-[1.01] transition-all group cursor-pointer bg-transparent"
                     onClick={() => startTranscription(item)}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Start transcription for ${item.title || "video"}`}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        startTranscription(item);
+                      }
+                    }}
                   >
                     <div className="flex gap-4 p-4">
                       <div className="relative w-32 h-20 bg-muted rounded-md shrink-0 overflow-hidden">
@@ -607,12 +666,6 @@ export default function Youtube() {
                           )}
                         </div>
                       </div>
-
-                      <div className="flex flex-col justify-between items-end">
-                        <Button variant="ghost" size="icon" className="h-8 w-8 -mr-2">
-                          <MoreHorizontal className="w-4 h-4" />
-                        </Button>
-                      </div>
                     </div>
                   </Card>
                 );
@@ -653,8 +706,10 @@ export default function Youtube() {
           />
           {historySearch && (
             <button
+              type="button"
               onClick={() => setHistorySearch("")}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              aria-label="Clear YouTube history search"
             >
               <X className="w-4 h-4" />
             </button>
@@ -664,6 +719,12 @@ export default function Youtube() {
         <div className="w-full py-2">
           {transcriptsQuery.isLoading ? (
             <SkeletonList count={3} variant={viewMode} />
+          ) : transcriptsQuery.isError ? (
+            <QueryErrorState
+              title="Could not load recent videos"
+              description="Please retry loading your YouTube transcript history."
+              onRetry={() => transcriptsQuery.refetch()}
+            />
           ) : recentVideos.length === 0 ? (
             debouncedHistorySearch ? (
               <p className="text-center text-muted-foreground py-8">No videos match "{debouncedHistorySearch}"</p>
@@ -678,8 +739,8 @@ export default function Youtube() {
                   item={item}
                   index={index}
                   viewMode={viewMode}
-                  deletingId={deletingId}
-                  copyingId={copyingId}
+                  isDeleting={deletingId === item.id}
+                  isCopying={copyingId === item.id}
                   onDelete={deleteTranscript}
                   onCopy={copyTranscript}
                   onNavigate={navigateToTranscript}

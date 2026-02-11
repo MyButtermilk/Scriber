@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, memo, useMemo, useRef } from "react";
 import { useSharedWebSocket } from "@/contexts/WebSocketContext";
 import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2, LayoutGrid, LayoutList, Search, X, Copy, Check } from "lucide-react";
-import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -14,8 +13,8 @@ interface TranscriptCardProps {
   item: Transcript;
   index: number;
   viewMode: "list" | "grid";
-  deletingId: string | null;
-  copyingId: string | null;
+  isDeleting: boolean;
+  isCopying: boolean;
   onDelete: (e: React.MouseEvent, id: string) => void;
   onCopy: (e: React.MouseEvent, id: string) => void;
   onNavigate: (id: string) => void;
@@ -26,27 +25,28 @@ const TranscriptCard = memo(function TranscriptCard({
   item,
   index,
   viewMode,
-  deletingId,
-  copyingId,
+  isDeleting,
+  isCopying,
   onDelete,
   onCopy,
   onNavigate,
   onHover,
 }: TranscriptCardProps) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{
-        delay: Math.min(index * 0.02, 0.1),
-        duration: 0.2,
-        ease: "easeOut"
-      }}
-    >
+    <div>
       <Card
         className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} p-4 cursor-pointer bg-transparent hover:scale-[1.01] group`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
+        role="button"
+        tabIndex={0}
+        aria-label={`Open transcript ${item.title}`}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onNavigate(item.id);
+          }
+        }}
       >
         {viewMode === "list" ? (
           // List View
@@ -68,12 +68,14 @@ const TranscriptCard = memo(function TranscriptCard({
               <Button
                 variant="ghost"
                 size="icon"
-                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
+                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
                 onClick={(e) => onCopy(e, item.id)}
-                disabled={copyingId === item.id}
+                disabled={isCopying}
                 title="Copy transcript"
+                aria-label={`Copy transcript ${item.title}`}
+                type="button"
               >
-                {copyingId === item.id ? (
+                {isCopying ? (
                   <Check className="w-4 h-4 text-green-500" />
                 ) : (
                   <Copy className="w-4 h-4" />
@@ -82,12 +84,14 @@ const TranscriptCard = memo(function TranscriptCard({
               <Button
                 variant="ghost"
                 size="icon"
-                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
                 onClick={(e) => onDelete(e, item.id)}
-                disabled={deletingId === item.id}
+                disabled={isDeleting}
                 title="Delete transcript"
+                aria-label={`Delete transcript ${item.title}`}
+                type="button"
               >
-                {deletingId === item.id ? (
+                {isDeleting ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <Trash2 className="w-4 h-4" />
@@ -106,12 +110,14 @@ const TranscriptCard = memo(function TranscriptCard({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary h-8 w-8"
+                  className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-primary h-8 w-8"
                   onClick={(e) => onCopy(e, item.id)}
-                  disabled={copyingId === item.id}
+                  disabled={isCopying}
                   title="Copy transcript"
+                  aria-label={`Copy transcript ${item.title}`}
+                  type="button"
                 >
-                  {copyingId === item.id ? (
+                  {isCopying ? (
                     <Check className="w-4 h-4 text-green-500" />
                   ) : (
                     <Copy className="w-4 h-4" />
@@ -120,12 +126,14 @@ const TranscriptCard = memo(function TranscriptCard({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive h-8 w-8"
+                  className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-destructive h-8 w-8"
                   onClick={(e) => onDelete(e, item.id)}
-                  disabled={deletingId === item.id}
+                  disabled={isDeleting}
                   title="Delete transcript"
+                  aria-label={`Delete transcript ${item.title}`}
+                  type="button"
                 >
-                  {deletingId === item.id ? (
+                  {isDeleting ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
                   ) : (
                     <Trash2 className="w-4 h-4" />
@@ -144,7 +152,7 @@ const TranscriptCard = memo(function TranscriptCard({
           </div>
         )}
       </Card>
-    </motion.div>
+    </div>
   );
 });
 
@@ -183,20 +191,11 @@ const AudioVisualizer = memo(function AudioVisualizer({
     <div className="h-16 flex items-center justify-center gap-1 w-full max-w-xs overflow-hidden">
       {isRecording ? (
         Array.from({ length: 20 }).map((_, i) => (
-          <motion.div
+          <div
             key={i}
-            className="w-1.5 bg-primary/80 rounded-full"
-            animate={{
-              height: [
-                10,
-                10 + intensity * 48 * (0.35 + 0.65 * Math.abs(Math.sin((i + 1) * 0.9))),
-                10,
-              ],
-            }}
-            transition={{
-              repeat: Infinity,
-              duration: 0.5,
-              delay: i * 0.05,
+            className="w-1.5 bg-primary/80 rounded-full transition-[height] duration-150 ease-out"
+            style={{
+              height: `${10 + intensity * 48 * (0.35 + 0.65 * Math.abs(Math.sin((i + 1) * 0.9))) }px`,
             }}
           />
         ))
@@ -207,10 +206,13 @@ const AudioVisualizer = memo(function AudioVisualizer({
   );
 });
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiUrl, wsUrl } from "@/lib/backend";
+import { apiUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonList } from "@/components/ui/skeleton-card";
+import { QueryErrorState } from "@/components/ui/query-error-state";
+import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
+import { useUrlQueryState } from "@/hooks/use-url-query-state";
 
 export default function LiveMic() {
   const { toast } = useToast();
@@ -223,18 +225,24 @@ export default function LiveMic() {
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
-  const [viewMode, setViewMode] = useState<"list" | "grid">(
-    () => (localStorage.getItem("scriber-view-mode") as "list" | "grid") || "list"
-  );
-  const [searchQuery, setSearchQuery] = useState("");
+  const [viewMode, setViewMode] = useUrlQueryState<"list" | "grid">("view", "list", {
+    parse: (raw) => (raw === "grid" ? "grid" : "list"),
+  });
+  const [searchQuery, setSearchQuery] = useUrlQueryState("q", "", {
+    parse: (raw) => raw ?? "",
+    serialize: (value) => {
+      const trimmed = value.trim();
+      return trimmed ? trimmed : null;
+    },
+    syncDelayMs: 250,
+  });
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const audioLevelRef = useRef(0);
-  const historyRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Persist view mode
-  useEffect(() => {
-    localStorage.setItem("scriber-view-mode", viewMode);
-  }, [viewMode]);
+  const transcriptsQueryKey = useMemo(
+    () => ["/api/transcripts", { q: debouncedSearch, type: "mic" }] as const,
+    [debouncedSearch],
+  );
+  const { refreshNow: refreshMicHistory } = useTranscriptAutoRefresh({ queryKey: transcriptsQueryKey });
 
   // Debounce search
   useEffect(() => {
@@ -243,7 +251,7 @@ export default function LiveMic() {
   }, [searchQuery]);
 
   const transcriptsQuery = useQuery({
-    queryKey: ["/api/transcripts", { q: debouncedSearch, type: "mic" }],
+    queryKey: transcriptsQueryKey,
     queryFn: async () => {
       const params = new URLSearchParams();
       if (debouncedSearch) params.set("q", debouncedSearch);
@@ -251,6 +259,9 @@ export default function LiveMic() {
       const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
       return res.json();
     },
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    placeholderData: (previous) => previous,
   });
   const transcripts: Transcript[] = (transcriptsQuery.data as any)?.items || [];
   const activeSessionIdRef = useRef<string | null>(null);
@@ -338,23 +349,7 @@ export default function LiveMic() {
           setFinalText(String(msg.session.content));
           setInterimText("");
         }
-        queryClient.invalidateQueries({
-          predicate: (query) =>
-            query.queryKey[0] === "/api/transcripts" &&
-            (query.queryKey[1] as { type?: string })?.type === "mic",
-        });
-        break;
-      case "history_updated":
-        if (!historyRefreshTimerRef.current) {
-          historyRefreshTimerRef.current = setTimeout(() => {
-            queryClient.invalidateQueries({
-              predicate: (query) =>
-                query.queryKey[0] === "/api/transcripts" &&
-                (query.queryKey[1] as { type?: string })?.type === "mic",
-            });
-            historyRefreshTimerRef.current = null;
-          }, 250);
-        }
+        refreshMicHistory();
         break;
       case "error":
         if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
@@ -374,20 +369,10 @@ export default function LiveMic() {
       default:
         break;
     }
-  }, [queryClient, toast]);
+  }, [refreshMicHistory, toast]);
 
   // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
-  const { isConnected } = useSharedWebSocket(handleWsMessage);
-
-  useEffect(() => {
-    return () => {
-      if (historyRefreshTimerRef.current) {
-        clearTimeout(historyRefreshTimerRef.current);
-        historyRefreshTimerRef.current = null;
-      }
-    };
-  }, []);
-
+  useSharedWebSocket(handleWsMessage);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -503,11 +488,7 @@ export default function LiveMic() {
         {/* Live Text Output - Debossed status well for unified design */}
         <div className="neu-status-well w-full max-w-lg min-h-[120px] text-center flex items-center justify-center p-6">
           {isRecording ? (
-            <motion.p
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="text-lg md:text-xl font-medium leading-relaxed relative z-10"
-            >
+            <p className="text-lg md:text-xl font-medium leading-relaxed relative z-10">
               {(finalText || interimText) ? (
                 <>
                   "<span className="text-foreground/90">{finalText}</span>
@@ -518,7 +499,7 @@ export default function LiveMic() {
               ) : (
                 <span className="text-foreground/90">"{status || "Listening"}..."</span>
               )}
-            </motion.p>
+            </p>
           ) : (
             <p className="text-muted-foreground relative z-10">Ready to record. Tap the microphone to start.</p>
           )}
@@ -530,12 +511,14 @@ export default function LiveMic() {
         {/* Controls */}
         <div className="flex items-center gap-6">
           <div className="text-sm font-medium text-muted-foreground w-16 text-right">
-            {isRecording && <span className="animate-pulse text-red-500">REC</span>}
+            {isRecording && <span className="animate-pulse text-red-500 motion-reduce:animate-none">REC</span>}
           </div>
 
           <button
+            type="button"
             className={`neu-mic-button flex items-center justify-center text-white ${isRecording ? 'recording recording-pulse' : ''}`}
             onClick={handleToggle}
+            aria-label={isRecording ? "Stop recording" : "Start recording"}
           >
             {isRecording ? (
               <Square className="w-10 h-10 fill-current" />
@@ -569,30 +552,38 @@ export default function LiveMic() {
               </ToggleGroupItem>
             </ToggleGroup>
           </div>
+        </div>
 
-          {/* Search Bar */}
-          <div className="relative mt-3">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              type="text"
-              placeholder="Search recordings..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 pr-9 h-9 bg-secondary/50"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
-          </div>
+        {/* Search Bar */}
+        <div className="relative mt-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            type="text"
+            placeholder="Search recordings..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-9 pr-9 h-9 bg-secondary/50"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              aria-label="Clear recording search"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         {transcriptsQuery.isLoading ? (
           <SkeletonList count={3} variant={viewMode} />
+        ) : transcriptsQuery.isError ? (
+          <QueryErrorState
+            title="Could not load recordings"
+            description="Please retry loading your recording history."
+            onRetry={() => transcriptsQuery.refetch()}
+          />
         ) : transcripts.length === 0 ? (
           debouncedSearch ? (
             <p className="text-center text-muted-foreground py-8">No recordings match "{debouncedSearch}"</p>
@@ -607,8 +598,8 @@ export default function LiveMic() {
                 item={item}
                 index={index}
                 viewMode={viewMode}
-                deletingId={deletingId}
-                copyingId={copyingId}
+                isDeleting={deletingId === item.id}
+                isCopying={copyingId === item.id}
                 onDelete={deleteTranscript}
                 onCopy={copyTranscript}
                 onNavigate={navigateToTranscript}

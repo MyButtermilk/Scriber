@@ -14,10 +14,11 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MOCK_TRANSCRIPTS } from "@/lib/mockData";
 import { useToast } from "@/hooks/use-toast";
-import { useSharedWebSocket } from "@/contexts/WebSocketContext";
 import { useState, useEffect, useRef, useLayoutEffect, useCallback, useMemo } from "react";
 import { apiUrl } from "@/lib/backend";
 import ReactMarkdown from "react-markdown";
+import { QueryErrorState } from "@/components/ui/query-error-state";
+import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 
 // Speaker colors for diarization - visually distinct palette
 const SPEAKER_COLORS = [
@@ -227,7 +228,7 @@ function StopButton({ transcriptId, onStop }: { transcriptId: string; onStop: ()
   };
 
   return (
-    <Button size="sm" variant="destructive" onClick={handleStop} disabled={isStopping}>
+    <Button size="sm" variant="destructive" onClick={handleStop} disabled={isStopping} type="button">
       {isStopping ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Square className="w-3 h-3 mr-1 fill-current" />}
       Stop
     </Button>
@@ -268,7 +269,7 @@ function SummarizeButton({ transcriptId, onComplete }: { transcriptId: string | 
   };
 
   return (
-    <Button size="sm" variant="outline" onClick={handleSummarize} disabled={isSummarizing}>
+    <Button size="sm" variant="outline" onClick={handleSummarize} disabled={isSummarizing} type="button">
       {isSummarizing ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Sparkles className="w-3 h-3 mr-1" />}
       {isSummarizing ? "Summarizing..." : "Summarize"}
     </Button>
@@ -280,41 +281,17 @@ export default function TranscriptDetail() {
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
   const queryClient = useQueryClient();
-  const historyRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // WebSocket with auto-reconnection for real-time updates
-  const handleWsMessage = useCallback((msg: any) => {
-    if (msg?.type === "history_updated") {
-      if (!id) return;
-      if (!historyRefreshTimerRef.current) {
-        historyRefreshTimerRef.current = setTimeout(() => {
-          queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] });
-          historyRefreshTimerRef.current = null;
-        }, 250);
-      }
-      return;
-    }
-    if (msg?.type === "error") {
+  const { isWsConnected } = useTranscriptAutoRefresh({
+    transcriptId: id,
+    onError: (message) => {
       toast({
         title: "Error",
-        description: msg.message || "An error occurred.",
+        description: message,
         variant: "destructive",
         duration: 6000,
       });
-    }
-  }, [id, queryClient, toast]);
-
-  // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
-  const { isConnected: isWsConnected } = useSharedWebSocket(handleWsMessage);
-
-  useEffect(() => {
-    return () => {
-      if (historyRefreshTimerRef.current) {
-        clearTimeout(historyRefreshTimerRef.current);
-        historyRefreshTimerRef.current = null;
-      }
-    };
-  }, []);
+    },
+  });
 
   const transcriptQuery = useQuery({
     queryKey: ["/api/transcripts", id],
@@ -397,7 +374,7 @@ export default function TranscriptDetail() {
       <header className="sticky top-0 z-40 backdrop-blur-md border-b border-border/50 h-16 flex items-center justify-between px-4 md:px-8 gap-4" style={{ background: 'var(--neu-bg)' }}>
         <div className="flex items-center gap-4 min-w-0 flex-1">
           <Link href={getBackLink()}>
-            <Button variant="ghost" size="icon" className="-ml-2 shrink-0">
+            <Button variant="ghost" size="icon" className="-ml-2 shrink-0" aria-label="Go back">
               <ArrowLeft className="w-5 h-5 text-muted-foreground" />
             </Button>
           </Link>
@@ -418,6 +395,7 @@ export default function TranscriptDetail() {
               size="sm"
               className="hidden md:flex"
               onClick={handleCopyTranscript}
+              type="button"
             >
               {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
               {copied ? "Copied!" : "Copy Transcript"}
@@ -429,6 +407,7 @@ export default function TranscriptDetail() {
               size="sm"
               className="hidden md:flex"
               onClick={handleCopySummary}
+              type="button"
             >
               {copiedSummary ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
               {copiedSummary ? "Copied!" : "Copy Summary"}
@@ -436,7 +415,7 @@ export default function TranscriptDetail() {
           )}
           <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="hidden md:flex data-[state=open]:bg-accent" style={{ transform: 'none' }}>
+              <Button variant="outline" size="sm" className="hidden md:flex data-[state=open]:bg-accent" style={{ transform: 'none' }} type="button">
                 <Download className="w-4 h-4 mr-2" /> Export
               </Button>
             </DropdownMenuTrigger>
@@ -457,11 +436,52 @@ export default function TranscriptDetail() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          <DropdownMenu modal={false}>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" className="md:hidden" aria-label="Open transcript actions" type="button">
+                <Download className="w-4 h-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {transcript.content && (
+                <DropdownMenuItem onClick={handleCopyTranscript}>
+                  <Copy className="w-4 h-4 mr-2" /> Copy Transcript
+                </DropdownMenuItem>
+              )}
+              {transcript.summary && (
+                <DropdownMenuItem onClick={handleCopySummary}>
+                  <Copy className="w-4 h-4 mr-2" /> Copy Summary
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem
+                onClick={() => {
+                  window.open(apiUrl(`/api/transcripts/${id}/export/pdf`), "_blank");
+                }}
+              >
+                <FileText className="w-4 h-4 mr-2" /> Export as PDF
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  window.open(apiUrl(`/api/transcripts/${id}/export/docx`), "_blank");
+                }}
+              >
+                <FileText className="w-4 h-4 mr-2" /> Export as DOCX
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {transcript.status === "processing" && (
             <StopButton transcriptId={id!} onStop={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
           )}
           {transcript.status === "completed" && !transcript.summary && !autoSummarize && (
-            <SummarizeButton transcriptId={id} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
+            <div className="hidden md:block">
+              <SummarizeButton transcriptId={id} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
+            </div>
+          )}
+          {transcript.status === "completed" && !transcript.summary && !autoSummarize && (
+            <div className="md:hidden">
+              <SummarizeButton transcriptId={id} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
+            </div>
           )}
         </div>
       </header>
@@ -474,6 +494,14 @@ export default function TranscriptDetail() {
           <div className="flex flex-wrap gap-2">
             <Badge variant="secondary" className="px-3 py-1 font-normal neu-button"><Calendar className="w-3 h-3 mr-1.5" /> {transcript.date}</Badge>
           </div>
+
+          {transcriptQuery.isError && !mock && (
+            <QueryErrorState
+              title="Could not load transcript"
+              description="Please retry loading this transcript."
+              onRetry={() => transcriptQuery.refetch()}
+            />
+          )}
 
           {/* Processing Status Banner */}
           {transcript.status === "processing" && (

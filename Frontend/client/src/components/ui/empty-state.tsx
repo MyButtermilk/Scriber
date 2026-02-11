@@ -1,5 +1,4 @@
 import { Mic, Youtube, UploadCloud, FileText } from "lucide-react";
-import { motion } from "framer-motion";
 
 interface EmptyStateProps {
     type: "mic" | "youtube" | "file" | "transcript";
@@ -38,17 +37,12 @@ export function EmptyState({ type, title, description }: EmptyStateProps) {
     const content = defaultContent[type];
 
     return (
-        <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4, ease: "easeOut" }}
-            className="empty-state-container"
-        >
+        <div className="empty-state-container">
             <div className="neu-search-inset p-6 rounded-full">
                 <Icon className="empty-state-icon text-muted-foreground" />
             </div>
             <h3 className="empty-state-title">{title || content.title}</h3>
             <p className="empty-state-description">{description || content.description}</p>
-        </motion.div>
+        </div>
     );
 }

@@ -14,8 +14,10 @@ export function SidebarSearch({ placeholder = "Search", onOpenCommandPalette }: 
     }, []);
 
     return (
-        <div
-            className="neu-search-inset flex items-center gap-2 px-3 py-2.5 rounded-xl cursor-pointer transition-all duration-200 hover:bg-accent/50"
+        <button
+            type="button"
+            className="neu-search-inset flex w-full items-center gap-2 px-3 py-2.5 rounded-xl text-left cursor-pointer transition-all duration-200 hover:bg-accent/50"
+            aria-label="Open command palette"
             onClick={() => onOpenCommandPalette?.()}
         >
             <Search className="w-4 h-4 text-muted-foreground shrink-0" />
@@ -25,6 +27,6 @@ export function SidebarSearch({ placeholder = "Search", onOpenCommandPalette }: 
             <kbd className="neu-kbd shrink-0 inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground rounded">
                 {isMac ? "⌘K" : "Strg+K"}
             </kbd>
-        </div>
+        </button>
     );
 }

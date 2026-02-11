@@ -9,12 +9,11 @@ import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
 import { WebSocketProvider } from "@/contexts/WebSocketContext";
 import { lazy, Suspense } from "react";
 
-// Main navigation pages - eagerly loaded to ensure instant section switching
-// These are bundled together since users frequently navigate between them
+// Keep default route eager for fastest first paint, lazy-load heavier routes.
 import LiveMic from "@/pages/LiveMic";
-import Youtube from "@/pages/Youtube";
-import FileTranscribe from "@/pages/FileTranscribe";
-import Settings from "@/pages/Settings";
+const Youtube = lazy(() => import("@/pages/Youtube"));
+const FileTranscribe = lazy(() => import("@/pages/FileTranscribe"));
+const Settings = lazy(() => import("@/pages/Settings"));
 
 // Lazy load only rarely accessed pages for slightly smaller initial bundle
 const TranscriptDetail = lazy(() => import("@/pages/TranscriptDetail"));
@@ -33,15 +32,15 @@ function TabRoutes() {
   const [location] = useLocation();
   return (
     <AppLayout path={location}>
-      <Switch>
-        <Route path="/" component={LiveMic} />
-        <Route path="/youtube" component={Youtube} />
-        <Route path="/file" component={FileTranscribe} />
-        <Route path="/settings" component={Settings} />
-        <Suspense fallback={<PageLoader />}>
+      <Suspense fallback={<PageLoader />}>
+        <Switch>
+          <Route path="/" component={LiveMic} />
+          <Route path="/youtube" component={Youtube} />
+          <Route path="/file" component={FileTranscribe} />
+          <Route path="/settings" component={Settings} />
           <Route component={NotFound} />
-        </Suspense>
-      </Switch>
+        </Switch>
+      </Suspense>
     </AppLayout>
   );
 }
@@ -50,11 +49,9 @@ function Router() {
   return (
     <Switch>
       <Route path="/transcript/:id">
-        {(params) => (
-          <Suspense fallback={<PageLoader />}>
-            <TranscriptDetail />
-          </Suspense>
-        )}
+        <Suspense fallback={<PageLoader />}>
+          <TranscriptDetail />
+        </Suspense>
       </Route>
       <Route component={TabRoutes} />
     </Switch>

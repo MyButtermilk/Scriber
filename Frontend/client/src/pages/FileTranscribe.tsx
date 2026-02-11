@@ -1,6 +1,6 @@
-import { useCallback, useState, useEffect, memo, useRef } from "react";
+import { useCallback, useState, useEffect, memo, useMemo, useRef } from "react";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileAudio, FileVideo, CheckCircle2, Clock, MoreVertical, Loader2, XCircle, Trash2, LayoutGrid, LayoutList, Square, Search, X, Copy, Check } from "lucide-react";
+import { UploadCloud, FileAudio, CheckCircle2, Loader2, XCircle, Trash2, LayoutGrid, LayoutList, Square, Search, X, Copy, Check } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -9,20 +9,22 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Input } from "@/components/ui/input";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiUrl, wsUrl } from "@/lib/backend";
+import { apiUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
-import { useSharedWebSocket } from "@/contexts/WebSocketContext";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonList } from "@/components/ui/skeleton-card";
+import { QueryErrorState } from "@/components/ui/query-error-state";
+import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
+import { useUrlQueryState } from "@/hooks/use-url-query-state";
 
 // Memoized FileCard to prevent unnecessary re-renders
 interface FileCardProps {
   item: any;
   index: number;
   viewMode: "list" | "grid";
-  deletingId: string | null;
-  copyingId: string | null;
+  isDeleting: boolean;
+  isCopying: boolean;
   onDelete: (e: React.MouseEvent, id: string) => void;
   onCopy: (e: React.MouseEvent, id: string) => void;
   onNavigate: (id: string) => void;
@@ -33,23 +35,38 @@ const FileCard = memo(function FileCard({
   item,
   index,
   viewMode,
-  deletingId,
-  copyingId,
+  isDeleting,
+  isCopying,
   onDelete,
   onCopy,
   onNavigate,
   onHover,
 }: FileCardProps) {
+  const prefersReducedMotion = useReducedMotion();
+
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
+      initial={prefersReducedMotion ? false : { opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: Math.min(index * 0.02, 0.1), duration: 0.2, ease: "easeOut" }}
+      transition={{
+        delay: Math.min(index * 0.02, 0.1),
+        duration: prefersReducedMotion ? 0 : 0.2,
+        ease: "easeOut",
+      }}
     >
       <Card
         className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} p-4 cursor-pointer bg-transparent hover:scale-[1.01] group`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
+        role="button"
+        tabIndex={0}
+        aria-label={`Open transcript ${item.title}`}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onNavigate(item.id);
+          }
+        }}
       >
         {viewMode === "list" ? (
           // List view
@@ -88,12 +105,14 @@ const FileCard = memo(function FileCard({
               <Button
                 variant="ghost"
                 size="icon"
-                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
+                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
                 onClick={(e) => onCopy(e, item.id)}
-                disabled={copyingId === item.id}
+                disabled={isCopying}
                 title="Copy transcript"
+                aria-label={`Copy transcript ${item.title}`}
+                type="button"
               >
-                {copyingId === item.id ? (
+                {isCopying ? (
                   <Check className="w-4 h-4 text-green-500" />
                 ) : (
                   <Copy className="w-4 h-4" />
@@ -102,12 +121,14 @@ const FileCard = memo(function FileCard({
               <Button
                 variant="ghost"
                 size="icon"
-                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
                 onClick={(e) => onDelete(e, item.id)}
-                disabled={deletingId === item.id}
+                disabled={isDeleting}
                 title="Delete transcript"
+                aria-label={`Delete transcript ${item.title}`}
+                type="button"
               >
-                {deletingId === item.id ? (
+                {isDeleting ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <Trash2 className="w-4 h-4" />
@@ -149,12 +170,14 @@ const FileCard = memo(function FileCard({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
+                className="h-6 w-6 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
                 onClick={(e) => onCopy(e, item.id)}
-                disabled={copyingId === item.id}
+                disabled={isCopying}
                 title="Copy transcript"
+                aria-label={`Copy transcript ${item.title}`}
+                type="button"
               >
-                {copyingId === item.id ? (
+                {isCopying ? (
                   <Check className="w-3 h-3 text-green-500" />
                 ) : (
                   <Copy className="w-3 h-3" />
@@ -163,12 +186,14 @@ const FileCard = memo(function FileCard({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                className="h-6 w-6 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
                 onClick={(e) => onDelete(e, item.id)}
-                disabled={deletingId === item.id}
+                disabled={isDeleting}
                 title="Delete transcript"
+                aria-label={`Delete transcript ${item.title}`}
+                type="button"
               >
-                {deletingId === item.id ? (
+                {isDeleting ? (
                   <Loader2 className="w-3 h-3 animate-spin" />
                 ) : (
                   <Trash2 className="w-3 h-3" />
@@ -191,20 +216,25 @@ export default function FileTranscribe() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const deletingRef = useRef<string | null>(null);
-  const historyRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queryClient = useQueryClient();
-  const [viewMode, setViewMode] = useState<"list" | "grid">(
-    () => (localStorage.getItem("scriber-view-mode") as "list" | "grid") || "list"
-  );
-
-  // Persist view mode
-  useEffect(() => {
-    localStorage.setItem("scriber-view-mode", viewMode);
-  }, [viewMode]);
+  const [viewMode, setViewMode] = useUrlQueryState<"list" | "grid">("view", "list", {
+    parse: (raw) => (raw === "grid" ? "grid" : "list"),
+  });
 
   // Search state
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useUrlQueryState("q", "", {
+    parse: (raw) => raw ?? "",
+    serialize: (value) => {
+      const trimmed = value.trim();
+      return trimmed ? trimmed : null;
+    },
+    syncDelayMs: 250,
+  });
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const transcriptsQueryKey = useMemo(
+    () => ["/api/transcripts", { q: debouncedSearch, type: "file" }] as const,
+    [debouncedSearch],
+  );
 
   // Debounce search
   useEffect(() => {
@@ -213,7 +243,7 @@ export default function FileTranscribe() {
   }, [searchQuery]);
 
   const transcriptsQuery = useQuery({
-    queryKey: ["/api/transcripts", { q: debouncedSearch, type: "file" }],
+    queryKey: transcriptsQueryKey,
     queryFn: async () => {
       const params = new URLSearchParams();
       if (debouncedSearch) params.set("q", debouncedSearch);
@@ -221,44 +251,23 @@ export default function FileTranscribe() {
       const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
       return res.json();
     },
-    staleTime: 5000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    placeholderData: (previous) => previous,
   });
   const recentFromBackend: any[] = (transcriptsQuery.data as any)?.items || [];
 
-  // WebSocket with auto-reconnection for real-time updates
-  const handleWsMessage = useCallback((msg: any) => {
-    if (msg?.type === "history_updated") {
-      if (!historyRefreshTimerRef.current) {
-        historyRefreshTimerRef.current = setTimeout(() => {
-          queryClient.invalidateQueries({
-            predicate: (query) =>
-              query.queryKey[0] === "/api/transcripts" &&
-              (query.queryKey[1] as { type?: string })?.type === "file",
-          });
-          historyRefreshTimerRef.current = null;
-        }, 250);
-      }
-    } else if (msg?.type === "error") {
+  useTranscriptAutoRefresh({
+    queryKey: transcriptsQueryKey,
+    onError: (message) => {
       toast({
         title: "Transcription Error",
-        description: msg.message || "An error occurred during transcription.",
+        description: message,
         variant: "destructive",
         duration: 6000,
       });
-    }
-  }, [queryClient, toast]);
-
-  // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
-  useSharedWebSocket(handleWsMessage);
-
-  useEffect(() => {
-    return () => {
-      if (historyRefreshTimerRef.current) {
-        clearTimeout(historyRefreshTimerRef.current);
-        historyRefreshTimerRef.current = null;
-      }
-    };
-  }, []);
+    },
+  });
 
   const uploadFile = async (file: File) => {
     setIsUploading(true);
@@ -330,6 +339,11 @@ export default function FileTranscribe() {
         description: "Transcript removed successfully.",
         duration: 2000,
       });
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === "/api/transcripts" &&
+          (query.queryKey[1] as { type?: string })?.type === "file",
+      });
     } catch (e: any) {
       toast({
         title: "Delete failed",
@@ -340,7 +354,7 @@ export default function FileTranscribe() {
       deletingRef.current = null;
       setDeletingId(null);
     }
-  }, [toast]);
+  }, [queryClient, toast]);
 
   const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -417,7 +431,10 @@ export default function FileTranscribe() {
 
       {/* Dropzone - Debossed neumorphic style */}
       <div
-        {...getRootProps()}
+        {...getRootProps({
+          role: "button",
+          "aria-label": "Upload file for transcription",
+        })}
         className={`
           neu-status-well rounded-xl p-10 text-center cursor-pointer transition-all duration-200 mb-6
           flex flex-col items-center justify-center gap-4 group
@@ -474,6 +491,8 @@ export default function FileTranscribe() {
                   variant="ghost"
                   size="sm"
                   className="text-muted-foreground hover:text-foreground"
+                  type="button"
+                  aria-label={`View transcript ${item.title}`}
                   onClick={() => setLocation(`/transcript/${item.id}`)}
                 >
                   View
@@ -515,8 +534,10 @@ export default function FileTranscribe() {
           />
           {searchQuery && (
             <button
+              type="button"
               onClick={() => setSearchQuery("")}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              aria-label="Clear file search"
             >
               <X className="w-4 h-4" />
             </button>
@@ -524,6 +545,12 @@ export default function FileTranscribe() {
         </div>
         {transcriptsQuery.isLoading ? (
           <SkeletonList count={3} variant={viewMode} />
+        ) : transcriptsQuery.isError ? (
+          <QueryErrorState
+            title="Could not load file transcripts"
+            description="Please retry loading your file history."
+            onRetry={() => transcriptsQuery.refetch()}
+          />
         ) : completedItems.length === 0 ? (
           debouncedSearch ? (
             <p className="text-center text-muted-foreground py-8">No files match "{debouncedSearch}"</p>
@@ -538,8 +565,8 @@ export default function FileTranscribe() {
                 item={item}
                 index={index}
                 viewMode={viewMode}
-                deletingId={deletingId}
-                copyingId={copyingId}
+                isDeleting={deletingId === item.id}
+                isCopying={copyingId === item.id}
                 onDelete={deleteTranscript}
                 onCopy={copyTranscript}
                 onNavigate={navigateToTranscript}

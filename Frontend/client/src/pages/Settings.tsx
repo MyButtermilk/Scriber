@@ -16,6 +16,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { useSharedWebSocket } from "@/contexts/WebSocketContext";
+import { QueryErrorState } from "@/components/ui/query-error-state";
 
 type OnnxModelInfo = {
   id: string;
@@ -92,6 +93,7 @@ export default function Settings() {
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartAvailable, setAutostartAvailable] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
   const [micAlwaysOn, setMicAlwaysOn] = useState(false);
   const [favoriteMic, setFavoriteMic] = useState("");
 
@@ -168,6 +170,7 @@ export default function Settings() {
 
     const load = async () => {
       try {
+        setSettingsError("");
         // Load core settings data in parallel.
         const [settingsRes, micsRes, autostartRes] = await Promise.all([
           fetch(apiUrl("/api/settings"), { credentials: "include" }),
@@ -219,6 +222,7 @@ export default function Settings() {
         setSettingsLoaded(true);
       } catch (e: any) {
         setSettingsLoaded(true); // Still mark as loaded even on error
+        setSettingsError(String(e?.message || e));
         toast({
           title: "Failed to load settings",
           description: String(e?.message || e),
@@ -809,6 +813,14 @@ export default function Settings() {
 
   return (
     <div className={`max-w-screen-md mx-auto px-4 py-6 md:py-8 transition-opacity duration-150 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
+      {settingsError && (
+        <QueryErrorState
+          className="mb-4"
+          title="Could not load settings"
+          description={settingsError}
+          onRetry={() => window.location.reload()}
+        />
+      )}
       <header className="mb-6 space-y-2">
         <h1 className="text-3xl font-bold tracking-tight text-foreground">Settings</h1>
         <p className="text-muted-foreground">Manage your preferences and API keys</p>
@@ -874,6 +886,17 @@ export default function Settings() {
                                 : "border-border/60 hover:border-primary/50 hover:bg-accent/5"
                             )}
                             onClick={() => handleMicDeviceChange(deviceValue)}
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={isSelected}
+                            aria-label={`Select microphone ${device.label || `Device ${index + 1}`}`}
+                            onKeyDown={(e) => {
+                              if (e.target !== e.currentTarget) return;
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                handleMicDeviceChange(deviceValue);
+                              }
+                            }}
                           >
                             <AudioLines className={cn(
                               "w-4 h-4 shrink-0",
@@ -887,6 +910,7 @@ export default function Settings() {
                             </span>
                             {isSelected && <Check className="w-4 h-4 text-primary shrink-0" />}
                             <button
+                              type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 handleSetFavoriteMic(deviceValue);
@@ -898,6 +922,7 @@ export default function Settings() {
                                   : "text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent"
                               )}
                               title={isFavorite ? "Remove from favorites" : "Set as favorite"}
+                              aria-label={isFavorite ? `Remove ${device.label || `Device ${index + 1}`} from favorites` : `Set ${device.label || `Device ${index + 1}`} as favorite`}
                             >
                               <Star className={cn("w-4 h-4", isFavorite && "fill-amber-500")} />
                             </button>
@@ -1220,31 +1245,31 @@ export default function Settings() {
                       </SelectItem>
                       <SelectItem value="en">
                         <div className="flex items-center gap-2">
-                          <span className="fi fi-us rounded-sm"></span>
+                          <span aria-hidden="true">🇺🇸</span>
                           <span>English</span>
                         </div>
                       </SelectItem>
                       <SelectItem value="es">
                         <div className="flex items-center gap-2">
-                          <span className="fi fi-es rounded-sm"></span>
+                          <span aria-hidden="true">🇪🇸</span>
                           <span>Spanish</span>
                         </div>
                       </SelectItem>
                       <SelectItem value="fr">
                         <div className="flex items-center gap-2">
-                          <span className="fi fi-fr rounded-sm"></span>
+                          <span aria-hidden="true">🇫🇷</span>
                           <span>French</span>
                         </div>
                       </SelectItem>
                       <SelectItem value="de">
                         <div className="flex items-center gap-2">
-                          <span className="fi fi-de rounded-sm"></span>
+                          <span aria-hidden="true">🇩🇪</span>
                           <span>German</span>
                         </div>
                       </SelectItem>
                       <SelectItem value="it">
                         <div className="flex items-center gap-2">
-                          <span className="fi fi-it rounded-sm"></span>
+                          <span aria-hidden="true">🇮🇹</span>
                           <span>Italian</span>
                         </div>
                       </SelectItem>
