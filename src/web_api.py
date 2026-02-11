@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -568,6 +568,31 @@ class ScriberWebController:
         self._sync_job_status(rec)
         self._save_transcript_to_db(rec)
 
+    @staticmethod
+    def _timeout_seconds(env_key: str, default_seconds: float) -> float:
+        raw = os.getenv(env_key, "").strip()
+        if not raw:
+            return default_seconds
+        try:
+            parsed = float(raw)
+            if parsed > 0:
+                return parsed
+        except ValueError:
+            pass
+        return default_seconds
+
+    async def _await_with_timeout(
+        self,
+        operation: Awaitable[Any],
+        *,
+        timeout_seconds: float,
+        timeout_label: str,
+    ) -> Any:
+        try:
+            return await asyncio.wait_for(operation, timeout=timeout_seconds)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"{timeout_label} timed out after {timeout_seconds:.1f}s") from exc
+
     async def resume_pending_jobs(self, *, limit: int = 25) -> int:
         reset_count = self._job_store.reset_running_to_queued()
         pending_jobs = self._job_store.list_pending(limit=limit)
@@ -1016,10 +1041,15 @@ class ScriberWebController:
                     lambda: asyncio.create_task(self._broadcast_history_updated())
                 )
             
-            audio_path = await download_youtube_audio(
-                rec.source_url, 
-                output_dir=out_dir, 
-                on_progress=on_download_progress
+            download_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC", 300.0)
+            audio_path = await self._await_with_timeout(
+                download_youtube_audio(
+                    rec.source_url,
+                    output_dir=out_dir,
+                    on_progress=on_download_progress,
+                ),
+                timeout_seconds=download_timeout,
+                timeout_label="YouTube download",
             )
 
             def on_transcription(text: str, is_final: bool) -> None:
@@ -1048,10 +1078,19 @@ class ScriberWebController:
             )
             
             # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
+            transcribe_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC", 600.0)
             if Config.DEFAULT_STT_SERVICE in ("soniox", "soniox_async", "mistral", "mistral_async"):
-                await pipeline.transcribe_file_direct(str(audio_path))
+                await self._await_with_timeout(
+                    pipeline.transcribe_file_direct(str(audio_path)),
+                    timeout_seconds=transcribe_timeout,
+                    timeout_label="YouTube transcription",
+                )
             else:
-                await pipeline.transcribe_file(str(audio_path))
+                await self._await_with_timeout(
+                    pipeline.transcribe_file(str(audio_path)),
+                    timeout_seconds=transcribe_timeout,
+                    timeout_label="YouTube transcription",
+                )
 
             logger.info(f"YouTube transcription completed: {len(rec.content)} chars")
             rec.status = "completed"
@@ -1075,6 +1114,10 @@ class ScriberWebController:
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Error] {exc}")
+        except TimeoutError as exc:
+            rec.status = "failed"
+            rec.step = "Failed"
+            rec.append_final_text(f"[Timeout] {exc}")
         except YouTubeDownloadError as exc:
             rec.status = "failed"
             rec.step = "Failed"
@@ -1179,10 +1222,19 @@ class ScriberWebController:
             )
             
             # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
+            transcribe_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC", 600.0)
             if Config.DEFAULT_STT_SERVICE in ("soniox", "soniox_async", "mistral", "mistral_async"):
-                await pipeline.transcribe_file_direct(str(file_path))
+                await self._await_with_timeout(
+                    pipeline.transcribe_file_direct(str(file_path)),
+                    timeout_seconds=transcribe_timeout,
+                    timeout_label="File transcription",
+                )
             else:
-                await pipeline.transcribe_file(str(file_path))
+                await self._await_with_timeout(
+                    pipeline.transcribe_file(str(file_path)),
+                    timeout_seconds=transcribe_timeout,
+                    timeout_label="File transcription",
+                )
 
             logger.info(f"File transcription completed: {len(rec.content)} chars")
             rec.status = "completed"
@@ -1205,6 +1257,10 @@ class ScriberWebController:
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Error] {exc}")
+        except TimeoutError as exc:
+            rec.status = "failed"
+            rec.step = "Failed"
+            rec.append_final_text(f"[Timeout] {exc}")
         except Exception as exc:
             logger.exception("File transcription failed")
             rec.status = "failed"
