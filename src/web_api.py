@@ -25,6 +25,7 @@ from src.config import Config
 from src.core.error_taxonomy import classify_error_message, user_message_for_category
 from src.core.hot_path_tracer import HotPathTracer
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
+from src.data.job_store import JobStore, JobType
 from src.pipeline import ScriberPipeline
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
@@ -393,7 +394,7 @@ class TranscriptRecord:
 
 
 class ScriberWebController:
-    def __init__(self, loop: asyncio.AbstractEventLoop):
+    def __init__(self, loop: asyncio.AbstractEventLoop, *, job_store: JobStore | None = None):
         self._loop = loop
         self._clients: set[web.WebSocketResponse] = set()
         self._clients_lock = asyncio.Lock()
@@ -405,6 +406,8 @@ class ScriberWebController:
         self._ptt_task: Optional[asyncio.Task] = None
         # Track running file/YouTube transcription tasks by transcript ID
         self._running_tasks: dict[str, asyncio.Task] = {}
+        self._job_store = job_store or JobStore()
+        self._job_ids_by_transcript: dict[str, str] = {}
         self._keyboard = None
 
         self._is_listening = False
@@ -447,6 +450,46 @@ class ScriberWebController:
         """Unregister a background task."""
         if transcript_id in self._running_tasks:
             del self._running_tasks[transcript_id]
+
+    def _enqueue_background_job(
+        self,
+        rec: TranscriptRecord,
+        *,
+        job_type: JobType,
+        payload: dict[str, Any],
+    ) -> None:
+        try:
+            job = self._job_store.enqueue(
+                transcript_id=rec.id,
+                job_type=job_type,
+                payload=payload,
+            )
+            self._job_ids_by_transcript[rec.id] = job.id
+        except Exception as exc:  # pragma: no cover - best effort persistence
+            logger.warning(f"Failed to persist queued job for transcript {rec.id}: {exc}")
+
+    def _set_job_running(self, transcript_id: str) -> None:
+        job_id = self._job_ids_by_transcript.get(transcript_id)
+        if not job_id:
+            return
+        try:
+            self._job_store.mark_running(job_id)
+        except Exception as exc:  # pragma: no cover - best effort persistence
+            logger.warning(f"Failed to mark job running for transcript {transcript_id}: {exc}")
+
+    def _sync_job_status(self, rec: TranscriptRecord) -> None:
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        if not job_id:
+            return
+        try:
+            if rec.status == "completed":
+                self._job_store.mark_completed(job_id)
+            elif rec.status == "failed":
+                self._job_store.mark_failed(job_id, last_error=rec.step or "Transcription failed")
+            elif rec.status == "stopped":
+                self._job_store.mark_canceled(job_id, last_error=rec.step or "Stopped by user")
+        except Exception as exc:  # pragma: no cover - best effort persistence
+            logger.warning(f"Failed to sync job status for transcript {rec.id}: {exc}")
 
     def _set_recording_state(self, target: RecordingState, *, context: str = "") -> None:
         try:
@@ -796,8 +839,21 @@ class ScriberWebController:
         )
         self._add_to_history(rec)
         await self._broadcast_history_updated()
+        self._enqueue_background_job(
+            rec,
+            job_type=JobType.YOUTUBE,
+            payload={
+                "url": rec.source_url,
+                "title": rec.title,
+                "channel": rec.channel,
+                "thumbnailUrl": rec.thumbnail_url,
+                "duration": rec.duration,
+                "language": rec.language,
+            },
+        )
 
         async def _runner() -> None:
+            self._set_job_running(rec.id)
             try:
                 await self._run_youtube_transcription(rec)
             except asyncio.CancelledError:
@@ -807,7 +863,7 @@ class ScriberWebController:
                     rec.step = "Stopped by user"
                 raise
             finally:
-                pass  # Task cleanup handled by done callback
+                self._sync_job_status(rec)
 
         task = asyncio.create_task(_runner(), name=f"youtube_transcribe_{rec.id}")
         self._register_task(rec.id, task)
@@ -966,8 +1022,19 @@ class ScriberWebController:
             rec.channel = file_size  # Reuse channel field for file size display
         self._add_to_history(rec)
         await self._broadcast_history_updated()
+        self._enqueue_background_job(
+            rec,
+            job_type=JobType.FILE,
+            payload={
+                "path": str(file_path),
+                "title": rec.title,
+                "language": rec.language,
+                "originalFilename": original_filename,
+            },
+        )
 
         async def _runner() -> None:
+            self._set_job_running(rec.id)
             try:
                 await self._run_file_transcription(rec, file_path)
             except asyncio.CancelledError:
@@ -977,7 +1044,7 @@ class ScriberWebController:
                     rec.step = "Stopped by user"
                 raise
             finally:
-                pass  # Task cleanup handled by done callback
+                self._sync_job_status(rec)
 
         task = asyncio.create_task(_runner(), name=f"file_transcribe_{rec.id}")
         self._register_task(rec.id, task)
@@ -1617,6 +1684,7 @@ class ScriberWebController:
             rec.status = "stopped"
             rec.step = "Stopped"
             rec.updated_at = datetime.now().isoformat()
+            self._sync_job_status(rec)
             self._save_transcript_to_db(rec)
             await self._broadcast_history_updated()
             return True
