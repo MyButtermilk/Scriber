@@ -22,6 +22,7 @@ from src.audio_devices import (
     rank_hostapi,
 )
 from src.config import Config
+from src.core.error_taxonomy import classify_error_message, user_message_for_category
 from src.core.hot_path_tracer import HotPathTracer
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
 from src.pipeline import ScriberPipeline
@@ -718,20 +719,9 @@ class ScriberWebController:
             self._overlay_audio_enabled = False
             hide_recording_overlay()
             
-            # Parse error and create user-friendly message
-            error_str = str(exc).lower()
-            if "402" in error_str or "payment required" in error_str:
-                user_msg = "STT service requires payment. Please check your account credits or subscription."
-            elif "401" in error_str or "unauthorized" in error_str or "invalid api key" in error_str:
-                user_msg = "Invalid API key. Please check your STT service credentials in Settings."
-            elif "403" in error_str or "forbidden" in error_str:
-                user_msg = "Access denied. Please check your STT service permissions."
-            elif "unable to connect" in error_str or "connection" in error_str:
-                user_msg = "Could not connect to STT service. Please check your internet connection."
-            elif "timeout" in error_str:
-                user_msg = "Connection to STT service timed out. Please try again."
-            else:
-                user_msg = f"Recording failed: {exc}"
+            category = classify_error_message(str(exc))
+            user_msg = user_message_for_category(category)
+            logger.warning(f"Pipeline task failure category={category.value}: {exc}")
             
             # Broadcast error to frontend
             self._loop.call_soon_threadsafe(
@@ -1124,16 +1114,9 @@ class ScriberWebController:
                 self._overlay_audio_enabled = False
                 hide_recording_overlay()
 
-                # Parse error and create user-friendly message
-                error_lower = error_msg.lower()
-                if "timeout" in error_lower or "handshake" in error_lower:
-                    user_msg = "Connection to STT service timed out. Please check your internet connection and try again."
-                elif "402" in error_lower or "payment required" in error_lower:
-                    user_msg = "STT service requires payment. Please check your account credits."
-                elif "401" in error_lower or "unauthorized" in error_lower:
-                    user_msg = "Invalid API key. Please check your credentials in Settings."
-                else:
-                    user_msg = f"Recording failed: {error_msg}"
+                category = classify_error_message(error_msg)
+                user_msg = user_message_for_category(category)
+                logger.warning(f"Pipeline error category={category.value}: {error_msg}")
 
                 # Broadcast error to frontend and stop the pipeline
                 def schedule_cleanup():
