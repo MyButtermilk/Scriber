@@ -51,3 +51,16 @@ def test_job_store_pending_and_retry_windows(tmp_path):
     reset_count = store.reset_running_to_queued()
     assert reset_count == 2
 
+
+def test_job_store_reports_seconds_until_next_retry(tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    job = store.enqueue(
+        transcript_id="tx-delay",
+        job_type=JobType.FILE,
+        payload={"path": "C:/tmp/retry.wav"},
+    )
+    retry_at = (datetime.now() + timedelta(seconds=2)).isoformat()
+    assert store.set_retry(job.id, retry_at=retry_at, last_error="temporary")
+    delay = store.seconds_until_next_retry()
+    assert delay is not None
+    assert 0.0 <= delay <= 3.0

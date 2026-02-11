@@ -51,7 +51,19 @@ def classify_error_message(message: str) -> ErrorCategory:
         return ErrorCategory.PROVIDER_LIMIT
     if any(token in text for token in ("invalid config", "missing api key", "configuration")):
         return ErrorCategory.CONFIG_INVALID
-    if any(token in text for token in ("service unavailable", "internal server error", "503", "502", "bad gateway")):
+    if any(
+        token in text
+        for token in (
+            "service unavailable",
+            "internal server error",
+            "503",
+            "502",
+            "bad gateway",
+            "no stt provider is currently available",
+            "circuit open",
+            "circuits are open",
+        )
+    ):
         return ErrorCategory.TRANSIENT_PROVIDER
     return ErrorCategory.INTERNAL_BUG
 
@@ -70,4 +82,3 @@ def user_message_for_exception(exc: Exception) -> str:
 
 def is_retryable(category: ErrorCategory) -> bool:
     return category in {ErrorCategory.TRANSIENT_NETWORK, ErrorCategory.TRANSIENT_PROVIDER}
-

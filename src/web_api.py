@@ -22,8 +22,9 @@ from src.audio_devices import (
     rank_hostapi,
 )
 from src.config import Config
-from src.core.error_taxonomy import classify_error_message, user_message_for_category
+from src.core.error_taxonomy import classify_error_message, is_retryable, user_message_for_category
 from src.core.hot_path_tracer import HotPathTracer
+from src.core.provider_circuit_breaker import ProviderCircuitBreaker
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
 from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
@@ -411,11 +412,29 @@ class ScriberWebController:
         self._pipeline: Optional[ScriberPipeline] = None
         self._pipeline_task: Optional[asyncio.Task] = None
         self._ptt_task: Optional[asyncio.Task] = None
+        self._active_provider: str | None = None
         # Track running file/YouTube transcription tasks by transcript ID
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._job_store = job_store or JobStore()
         self._job_ids_by_transcript: dict[str, str] = {}
         self._latency_metrics_store = latency_metrics_store or LatencyMetricsStore()
+        self._job_retry_scan_handle: asyncio.TimerHandle | None = None
+        self._job_retry_scan_due_monotonic: float | None = None
+        self._job_max_attempts = max(1, int(os.getenv("SCRIBER_JOB_MAX_ATTEMPTS", "3")))
+        self._job_retry_base_seconds = max(0.1, float(os.getenv("SCRIBER_JOB_RETRY_BASE_SEC", "5")))
+        self._job_retry_max_seconds = max(
+            self._job_retry_base_seconds,
+            float(os.getenv("SCRIBER_JOB_RETRY_MAX_SEC", "120")),
+        )
+        self._provider_fallbacks = [
+            p.strip()
+            for p in os.getenv("SCRIBER_STT_FALLBACKS", "").split(",")
+            if p.strip()
+        ]
+        self._provider_breaker = ProviderCircuitBreaker(
+            failure_threshold=max(1, int(os.getenv("SCRIBER_BREAKER_FAILURE_THRESHOLD", "3"))),
+            cooldown_seconds=max(1.0, float(os.getenv("SCRIBER_BREAKER_COOLDOWN_SEC", "30"))),
+        )
         self._keyboard = None
 
         self._is_listening = False
@@ -485,6 +504,102 @@ class ScriberWebController:
         except Exception as exc:  # pragma: no cover - best effort persistence
             logger.warning(f"Failed to mark job running for transcript {transcript_id}: {exc}")
 
+    def _provider_candidates(self) -> list[str]:
+        primary = (Config.DEFAULT_STT_SERVICE or "").strip()
+        ordered = [primary, *self._provider_fallbacks]
+        out: list[str] = []
+        seen: set[str] = set()
+        for entry in ordered:
+            key = (entry or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+        return out or [primary or "openai"]
+
+    def _select_available_provider(self) -> str:
+        candidates = self._provider_candidates()
+        for provider in candidates:
+            if self._provider_breaker.can_execute(provider):
+                return provider
+        raise RuntimeError("No STT provider is currently available (all circuits are open)")
+
+    def _record_provider_success(self, provider: str) -> None:
+        if not provider:
+            return
+        self._provider_breaker.on_success(provider)
+
+    def _record_provider_failure(self, provider: str, error: Exception | str) -> None:
+        if not provider:
+            return
+        category = classify_error_message(str(error))
+        if is_retryable(category):
+            self._provider_breaker.on_failure(provider)
+
+    def _retry_delay_seconds(self, attempts: int) -> float:
+        exponent = max(0, int(attempts) - 1)
+        delay = self._job_retry_base_seconds * (2 ** exponent)
+        return min(self._job_retry_max_seconds, delay)
+
+    def _schedule_retry_scan(self, delay_seconds: float) -> None:
+        delay = max(0.0, float(delay_seconds))
+        due = time.monotonic() + delay
+        # Keep the earliest planned retry scan and coalesce duplicates.
+        if self._job_retry_scan_due_monotonic is not None and due >= self._job_retry_scan_due_monotonic:
+            return
+        if self._job_retry_scan_handle is not None:
+            self._job_retry_scan_handle.cancel()
+        self._job_retry_scan_due_monotonic = due
+
+        def _run_scan() -> None:
+            self._job_retry_scan_handle = None
+            self._job_retry_scan_due_monotonic = None
+            asyncio.create_task(self.resume_pending_jobs(limit=25))
+
+        self._job_retry_scan_handle = self._loop.call_later(delay, _run_scan)
+
+    def _schedule_next_retry_scan_from_store(self) -> None:
+        try:
+            delay = self._job_store.seconds_until_next_retry()
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.warning(f"Failed to query next retry delay: {exc}")
+            return
+        if delay is None:
+            return
+        self._schedule_retry_scan(delay)
+
+    def _schedule_retry_if_allowed(self, rec: TranscriptRecord, error: Exception | str) -> bool:
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        if not job_id:
+            return False
+        job = self._job_store.get(job_id)
+        if not job:
+            return False
+        category = classify_error_message(str(error))
+        if not is_retryable(category):
+            return False
+        attempts = max(1, int(job.attempts))
+        if attempts >= self._job_max_attempts:
+            return False
+
+        delay_seconds = self._retry_delay_seconds(attempts)
+        retry_at = (datetime.now() + timedelta(seconds=delay_seconds)).isoformat()
+        retry_label = int(round(delay_seconds))
+        rec.status = "processing"
+        rec.step = f"Retrying in {retry_label}s ({attempts}/{self._job_max_attempts})"
+        rec.updated_at = datetime.now().isoformat()
+        try:
+            self._job_store.set_retry(job_id, retry_at=retry_at, last_error=str(error))
+        except Exception as exc:  # pragma: no cover - best effort persistence
+            logger.warning(f"Failed to persist retry state for transcript {rec.id}: {exc}")
+            return False
+        self._schedule_retry_scan(delay_seconds)
+        logger.warning(
+            f"Scheduled retry for transcript {rec.id} in {delay_seconds:.1f}s "
+            f"(attempt {attempts}/{self._job_max_attempts})"
+        )
+        return True
+
     def _sync_job_status(self, rec: TranscriptRecord) -> None:
         job_id = self._job_ids_by_transcript.get(rec.id)
         if not job_id:
@@ -503,7 +618,23 @@ class ScriberWebController:
         async def _runner() -> None:
             self._set_job_running(rec.id)
             try:
-                await self._run_youtube_transcription(rec)
+                provider = self._select_available_provider()
+            except Exception as exc:
+                if not self._schedule_retry_if_allowed(rec, exc):
+                    rec.status = "failed"
+                    rec.step = "Failed"
+                    rec.append_final_text(f"[Error] {exc}")
+                self._sync_job_status(rec)
+                rec.updated_at = datetime.now().isoformat()
+                self._save_transcript_to_db(rec)
+                await self._broadcast_history_updated()
+                return
+            try:
+                await self._run_youtube_transcription(rec, provider=provider)
+                if rec.status == "completed":
+                    self._record_provider_success(provider)
+                elif rec.status == "failed":
+                    self._record_provider_failure(provider, rec.step)
             except asyncio.CancelledError:
                 if rec.status == "processing":
                     rec.status = "stopped"
@@ -520,7 +651,23 @@ class ScriberWebController:
         async def _runner() -> None:
             self._set_job_running(rec.id)
             try:
-                await self._run_file_transcription(rec, file_path)
+                provider = self._select_available_provider()
+            except Exception as exc:
+                if not self._schedule_retry_if_allowed(rec, exc):
+                    rec.status = "failed"
+                    rec.step = "Failed"
+                    rec.append_final_text(f"[Error] {exc}")
+                self._sync_job_status(rec)
+                rec.updated_at = datetime.now().isoformat()
+                self._save_transcript_to_db(rec)
+                await self._broadcast_history_updated()
+                return
+            try:
+                await self._run_file_transcription(rec, file_path, provider=provider)
+                if rec.status == "completed":
+                    self._record_provider_success(provider)
+                elif rec.status == "failed":
+                    self._record_provider_failure(provider, rec.step)
             except asyncio.CancelledError:
                 if rec.status == "processing":
                     rec.status = "stopped"
@@ -649,6 +796,7 @@ class ScriberWebController:
             logger.info(
                 f"Job resume startup scan: reset_running={reset_count}, resumed={resumed_count}, pending={len(pending_jobs)}"
             )
+        self._schedule_next_retry_scan_from_store()
         return resumed_count
 
     def _set_recording_state(self, target: RecordingState, *, context: str = "") -> None:
@@ -902,6 +1050,7 @@ class ScriberWebController:
                 self._is_stopping = False
                 self._pipeline = None
                 self._pipeline_task = None
+                self._active_provider = None
                 if session_id is None or session_id == self._session_id:
                     self._session_id = None
                 self._set_recording_state(RecordingState.IDLE, context="_on_pipeline_done_cleanup")
@@ -920,6 +1069,7 @@ class ScriberWebController:
             pass
         except Exception as exc:  # pragma: no cover - runtime dependent        
             logger.error(f"Pipeline error: {exc}")
+            self._record_provider_failure(self._active_provider or "", exc)
             self._set_recording_state(RecordingState.FAILED, context="_on_pipeline_done_error")
             self._set_status("Error", session_id=session_id)
             # Hide overlay when pipeline fails to prevent it staying stuck at "Preparing..."
@@ -1018,7 +1168,7 @@ class ScriberWebController:
         self._schedule_youtube_job(rec)
         return rec
 
-    async def _run_youtube_transcription(self, rec: TranscriptRecord) -> None:
+    async def _run_youtube_transcription(self, rec: TranscriptRecord, *, provider: str) -> None:
         rec.step = "Downloading audio..."
         rec.updated_at = datetime.now().isoformat()
         await self._broadcast_history_updated()
@@ -1082,7 +1232,7 @@ class ScriberWebController:
             await self._broadcast_history_updated()
 
             pipeline = ScriberPipeline(
-                service_name=Config.DEFAULT_STT_SERVICE,
+                service_name=provider,
                 on_status_change=None,
                 on_audio_level=None,
                 on_transcription=on_transcription,
@@ -1091,7 +1241,7 @@ class ScriberWebController:
             
             # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
             transcribe_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC", 600.0)
-            if Config.DEFAULT_STT_SERVICE in ("soniox", "soniox_async", "mistral", "mistral_async"):
+            if provider in ("soniox", "soniox_async", "mistral", "mistral_async"):
                 await self._await_with_timeout(
                     pipeline.transcribe_file_direct(str(audio_path)),
                     timeout_seconds=transcribe_timeout,
@@ -1123,19 +1273,31 @@ class ScriberWebController:
                     logger.warning(f"Auto-summarization failed: {sum_err}")
                     rec.step = "Completed"
         except (ValueError, ImportError) as exc:
+            self._record_provider_failure(provider, exc)
+            if self._schedule_retry_if_allowed(rec, exc):
+                return
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Error] {exc}")
         except TimeoutError as exc:
+            self._record_provider_failure(provider, exc)
+            if self._schedule_retry_if_allowed(rec, exc):
+                return
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Timeout] {exc}")
         except YouTubeDownloadError as exc:
+            self._record_provider_failure(provider, exc)
+            if self._schedule_retry_if_allowed(rec, exc):
+                return
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Download error] {exc}")
         except Exception as exc:
             logger.exception("YouTube transcription failed")
+            self._record_provider_failure(provider, exc)
+            if self._schedule_retry_if_allowed(rec, exc):
+                return
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Error] {exc}")
@@ -1202,7 +1364,7 @@ class ScriberWebController:
         self._schedule_file_job(rec, file_path)
         return rec
 
-    async def _run_file_transcription(self, rec: TranscriptRecord, file_path: Path) -> None:
+    async def _run_file_transcription(self, rec: TranscriptRecord, file_path: Path, *, provider: str) -> None:
         """Run transcription on an uploaded file."""
         rec.step = "Preparing audio..."
         rec.updated_at = datetime.now().isoformat()
@@ -1226,7 +1388,7 @@ class ScriberWebController:
             await self._broadcast_history_updated()
 
             pipeline = ScriberPipeline(
-                service_name=Config.DEFAULT_STT_SERVICE,
+                service_name=provider,
                 on_status_change=None,
                 on_audio_level=None,
                 on_transcription=on_transcription,
@@ -1235,7 +1397,7 @@ class ScriberWebController:
             
             # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
             transcribe_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC", 600.0)
-            if Config.DEFAULT_STT_SERVICE in ("soniox", "soniox_async", "mistral", "mistral_async"):
+            if provider in ("soniox", "soniox_async", "mistral", "mistral_async"):
                 await self._await_with_timeout(
                     pipeline.transcribe_file_direct(str(file_path)),
                     timeout_seconds=transcribe_timeout,
@@ -1266,15 +1428,24 @@ class ScriberWebController:
                     logger.warning(f"Auto-summarization failed: {sum_err}")
                     rec.step = "Completed"
         except (ValueError, ImportError) as exc:
+            self._record_provider_failure(provider, exc)
+            if self._schedule_retry_if_allowed(rec, exc):
+                return
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Error] {exc}")
         except TimeoutError as exc:
+            self._record_provider_failure(provider, exc)
+            if self._schedule_retry_if_allowed(rec, exc):
+                return
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Timeout] {exc}")
         except Exception as exc:
             logger.exception("File transcription failed")
+            self._record_provider_failure(provider, exc)
+            if self._schedule_retry_if_allowed(rec, exc):
+                return
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Error] {exc}")
@@ -1286,7 +1457,7 @@ class ScriberWebController:
             try:
                 import shutil
                 file_dir = file_path.parent
-                if file_dir.exists() and file_dir.name != "files":  # Don't delete the root files dir
+                if rec.status != "processing" and file_dir.exists() and file_dir.name != "files":
                     shutil.rmtree(file_dir)
                     logger.debug(f"Cleaned up uploaded file directory: {file_dir}")
             except Exception as cleanup_err:
@@ -1341,6 +1512,7 @@ class ScriberWebController:
                 if session_id != self._session_id:
                     return
                 logger.error(f"Pipeline error callback: {error_msg}")
+                self._record_provider_failure(self._active_provider or "", error_msg)
                 self._set_recording_state(RecordingState.FAILED, context="pipeline_error")
                 self._set_status("Error")
                 self._overlay_audio_enabled = False
@@ -1364,8 +1536,32 @@ class ScriberWebController:
                 self._mark_hot_path(session_id, "first_paste")
                 self._emit_hot_path_report_once(session_id)
 
+            try:
+                live_provider = self._select_available_provider()
+            except Exception as exc:
+                self._set_recording_state(RecordingState.FAILED, context="start_listening_provider_select")
+                self._set_status("Error")
+                self._overlay_audio_enabled = False
+                hide_recording_overlay()
+                with self._current_lock:
+                    failed = self._current
+                    self._current = None
+                self._is_listening = False
+                self._is_stopping = False
+                self._session_id = None
+                self._clear_hot_path_tracer(session_id)
+                if failed:
+                    failed.finish("failed")
+                    failed.append_final_text(f"[Error] {exc}")
+                    self._add_to_history(failed)
+                    self._save_transcript_to_db(failed)
+                    await self._broadcast_history_updated()
+                await self.broadcast({"type": "error", "message": str(exc), "sessionId": session_id})
+                return
+
+            self._active_provider = live_provider
             self._pipeline = ScriberPipeline(
-                service_name=Config.DEFAULT_STT_SERVICE,
+                service_name=live_provider,
                 on_status_change=lambda status: self._set_status(status, session_id=session_id),
                 on_audio_level=lambda rms: self._on_audio_level(rms, session_id=session_id),
                 on_transcription=lambda text, is_final: self._on_transcription(text, is_final, session_id=session_id),
@@ -1401,6 +1597,7 @@ class ScriberWebController:
                 self._is_stopping = False
                 self._pipeline = None
                 self._pipeline_task = None
+                self._active_provider = None
                 self._session_id = None
                 self._set_recording_state(RecordingState.FAILED, context="emergency_stop")
                 self._set_recording_state(RecordingState.IDLE, context="emergency_stop")
@@ -1478,6 +1675,7 @@ class ScriberWebController:
         try:
             if pipeline:
                 await pipeline.stop()
+                self._record_provider_success(self._active_provider or "")
              
             # Now that pipeline has stopped and transcription callback has fired,
             # clear _current to prevent any further modifications
@@ -1498,6 +1696,7 @@ class ScriberWebController:
                     pass
         except Exception as exc:
             stop_error = exc
+            self._record_provider_failure(self._active_provider or "", exc)
             logger.exception("Error while stopping live pipeline")
             self._overlay_audio_enabled = False
             hide_recording_overlay()
@@ -1514,6 +1713,7 @@ class ScriberWebController:
                 self._set_status("Error" if stop_error else "Stopped", session_id=session_id)
                 if session_id is None or self._session_id == session_id:
                     self._session_id = None
+                self._active_provider = None
                 if stop_error:
                     self._set_recording_state(RecordingState.FAILED, context="stop_listening")
                 else:

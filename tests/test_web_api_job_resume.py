@@ -25,7 +25,7 @@ async def test_resume_pending_youtube_job_restarts_and_completes(tmp_path):
 
     ctl = ScriberWebController(loop, job_store=store)
 
-    async def _fake_run(rec):
+    async def _fake_run(rec, *, provider):
         rec.status = "completed"
         rec.step = "Completed"
 
@@ -76,4 +76,3 @@ async def test_resume_file_job_without_source_marks_failed(tmp_path):
     job = store.get_by_transcript_id("tx-resume-file-missing")
     assert job is not None
     assert job.status == JobStatus.FAILED
-

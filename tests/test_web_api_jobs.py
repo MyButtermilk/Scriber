@@ -13,7 +13,7 @@ async def test_start_youtube_transcription_persists_job_lifecycle(tmp_path):
     store = JobStore(db_path=tmp_path / "jobs.db")
     ctl = ScriberWebController(loop, job_store=store)
 
-    async def _fake_run(rec):
+    async def _fake_run(rec, *, provider):
         rec.status = "completed"
         rec.step = "Completed"
 
@@ -40,7 +40,7 @@ async def test_cancel_transcript_marks_background_job_canceled(tmp_path):
     sample_file = tmp_path / "sample.wav"
     sample_file.write_bytes(b"RIFF....WAVEfmt ")
 
-    async def _slow_run(_rec, _path):
+    async def _slow_run(_rec, _path, *, provider):
         await asyncio.sleep(10)
 
     with (
@@ -58,4 +58,3 @@ async def test_cancel_transcript_marks_background_job_canceled(tmp_path):
     assert job is not None
     assert job.status == JobStatus.CANCELED
     assert job.job_type.value == "file"
-

@@ -21,6 +21,7 @@ class _SlowPipeline:
 @pytest.mark.asyncio
 async def test_file_transcription_timeout_marks_failed(monkeypatch, tmp_path):
     loop = asyncio.get_running_loop()
+    monkeypatch.setenv("SCRIBER_JOB_MAX_ATTEMPTS", "1")
     ctl = ScriberWebController(loop)
 
     monkeypatch.setenv("SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC", "0.01")
@@ -45,6 +46,7 @@ async def test_file_transcription_timeout_marks_failed(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_youtube_download_timeout_marks_failed(monkeypatch):
     loop = asyncio.get_running_loop()
+    monkeypatch.setenv("SCRIBER_JOB_MAX_ATTEMPTS", "1")
     ctl = ScriberWebController(loop)
 
     monkeypatch.setenv("SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC", "0.01")
@@ -63,4 +65,3 @@ async def test_youtube_download_timeout_marks_failed(monkeypatch):
 
     assert rec.status == "failed"
     assert "[Timeout] YouTube download timed out" in rec.content
-

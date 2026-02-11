@@ -33,6 +33,16 @@ def _now_iso() -> str:
     return datetime.now().isoformat()
 
 
+def _parse_iso(value: str) -> datetime | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True)
 class JobRecord:
     id: str
@@ -196,6 +206,29 @@ class JobStore:
                     (*_PENDING_STATUSES, now, query_limit),
                 ).fetchall()
         return [JobRecord.from_row(row) for row in rows]
+
+    def seconds_until_next_retry(self) -> float | None:
+        now = datetime.now()
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT next_retry_at
+                    FROM jobs
+                    WHERE status = ?
+                      AND next_retry_at != ''
+                    ORDER BY next_retry_at ASC
+                    LIMIT 1
+                    """,
+                    (JobStatus.QUEUED.value,),
+                ).fetchone()
+        if not row:
+            return None
+        retry_at = _parse_iso(row["next_retry_at"] or "")
+        if retry_at is None:
+            return None
+        delay = (retry_at - now).total_seconds()
+        return max(0.0, delay)
 
     def reset_running_to_queued(self) -> int:
         now = _now_iso()
