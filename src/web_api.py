@@ -26,6 +26,17 @@ from src.core.error_taxonomy import classify_error_message, is_retryable, user_m
 from src.core.hot_path_tracer import HotPathTracer
 from src.core.provider_circuit_breaker import ProviderCircuitBreaker
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
+from src.core.ws_contracts import (
+    audio_level_event,
+    error_event,
+    history_updated_event,
+    session_finished_event,
+    session_started_event,
+    status_event,
+    transcript_event,
+    transcribing_event,
+    validate_event_payload,
+)
 from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.pipeline import ScriberPipeline
@@ -435,6 +446,11 @@ class ScriberWebController:
             failure_threshold=max(1, int(os.getenv("SCRIBER_BREAKER_FAILURE_THRESHOLD", "3"))),
             cooldown_seconds=max(1.0, float(os.getenv("SCRIBER_BREAKER_COOLDOWN_SEC", "30"))),
         )
+        self._validate_ws_contracts = os.getenv("SCRIBER_VALIDATE_WS_CONTRACTS", "0").strip() in {
+            "1",
+            "true",
+            "True",
+        }
         self._keyboard = None
 
         self._is_listening = False
@@ -955,6 +971,8 @@ class ScriberWebController:
             self._clients_dirty = True
 
     async def broadcast(self, payload: dict[str, Any]) -> None:
+        if self._validate_ws_contracts:
+            validate_event_payload(payload)
         msg = json.dumps(payload, ensure_ascii=False)
         if self._clients_dirty:
             async with self._clients_lock:
@@ -988,11 +1006,9 @@ class ScriberWebController:
         if session_id is not None and session_id != self._session_id:
             return
         self._status = status
-        payload = {"type": "status", "status": status, "listening": self._is_listening}
         if session_id is None:
             session_id = self._session_id
-        if session_id is not None:
-            payload["sessionId"] = session_id
+        payload = status_event(status, self._is_listening, session_id=session_id)
         # status changes can happen from non-async callbacks; schedule the broadcast.
         self._loop.call_soon_threadsafe(
             lambda: asyncio.create_task(self.broadcast(payload))
@@ -1009,11 +1025,9 @@ class ScriberWebController:
         # Update native overlay waveform only when recording overlay is active
         if self._overlay_audio_enabled:
             update_overlay_audio(rms)
-        payload = {"type": "audio_level", "rms": float(rms)}
         if session_id is None:
             session_id = self._session_id
-        if session_id is not None:
-            payload["sessionId"] = session_id
+        payload = audio_level_event(float(rms), session_id=session_id)
         self._loop.call_soon_threadsafe(
             lambda: asyncio.create_task(self.broadcast(payload))
         )
@@ -1027,11 +1041,9 @@ class ScriberWebController:
             with self._current_lock:
                 if self._current and (session_id is None or self._current.id == session_id):
                     self._current.append_final_text(text)
-        payload: dict[str, Any] = {"type": "transcript", "text": text, "isFinal": bool(is_final)}
         if session_id is None:
             session_id = self._session_id
-        if session_id is not None:
-            payload["sessionId"] = session_id
+        payload = transcript_event(text, bool(is_final), session_id=session_id)
         self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self.broadcast(payload)))
 
     def _on_pipeline_done(self, task: asyncio.Task, *, session_id: str | None = None) -> None:
@@ -1058,10 +1070,7 @@ class ScriberWebController:
         
         async def _broadcast_error(error_msg: str):
             """Broadcast error to frontend."""
-            payload = {"type": "error", "message": error_msg}
-            if session_id is not None:
-                payload["sessionId"] = session_id
-            await self.broadcast(payload)
+            await self.broadcast(error_event(error_msg, session_id=session_id))
         
         try:
             task.result()
@@ -1118,7 +1127,7 @@ class ScriberWebController:
         if self._history_broadcast_handle is not None:
             self._history_broadcast_handle.cancel()
             self._history_broadcast_handle = None
-        await self.broadcast({"type": "history_updated"})
+        await self.broadcast(history_updated_event())
 
     def _touch_history(self) -> None:
         """Thread-safe schedule for history update broadcast."""
@@ -1524,7 +1533,7 @@ class ScriberWebController:
 
                 # Broadcast error to frontend and stop the pipeline
                 def schedule_cleanup():
-                    asyncio.create_task(self.broadcast({"type": "error", "message": user_msg, "sessionId": session_id}))
+                    asyncio.create_task(self.broadcast(error_event(user_msg, session_id=session_id)))
                     # Schedule pipeline stop to clean up properly
                     asyncio.create_task(self._emergency_stop_pipeline(session_id=session_id))
 
@@ -1556,7 +1565,7 @@ class ScriberWebController:
                     self._add_to_history(failed)
                     self._save_transcript_to_db(failed)
                     await self._broadcast_history_updated()
-                await self.broadcast({"type": "error", "message": str(exc), "sessionId": session_id})
+                await self.broadcast(error_event(str(exc), session_id=session_id))
                 return
 
             self._active_provider = live_provider
@@ -1573,7 +1582,10 @@ class ScriberWebController:
             self._pipeline_task.add_done_callback(lambda task: self._on_pipeline_done(task, session_id=session_id))
             self._is_listening = True
             self._set_status("Listening", session_id=session_id)
-            session_payload = {"type": "session_started", "session": rec.to_public(include_content=True), "sessionId": session_id}
+            session_payload = session_started_event(
+                rec.to_public(include_content=True),
+                session_id=session_id,
+            )
 
         await self.broadcast(session_payload)
 
@@ -1666,9 +1678,7 @@ class ScriberWebController:
             # Show transcribing state for async services that need processing time
             self._overlay_audio_enabled = False
             show_transcribing_overlay()
-            transcribing_payload = {"type": "transcribing"}
-            if session_id is not None:
-                transcribing_payload["sessionId"] = session_id
+            transcribing_payload = transcribing_event(session_id=session_id)
             await self.broadcast(transcribing_payload)
 
         stop_error: Exception | None = None
@@ -1700,12 +1710,7 @@ class ScriberWebController:
             logger.exception("Error while stopping live pipeline")
             self._overlay_audio_enabled = False
             hide_recording_overlay()
-            error_payload: dict[str, Any] = {
-                "type": "error",
-                "message": f"Failed to stop recording cleanly: {exc}",
-            }
-            if session_id is not None:
-                error_payload["sessionId"] = session_id
+            error_payload = error_event(f"Failed to stop recording cleanly: {exc}", session_id=session_id)
             await self.broadcast(error_payload)
         finally:
             async with self._listening_lock:
@@ -1727,9 +1732,10 @@ class ScriberWebController:
                     current.append_final_text(err_line)
                 self._add_to_history(current)
                 self._save_transcript_to_db(current)  # Persist to database
-                finished_payload = {"type": "session_finished", "session": current.to_public(include_content=True)}
-                if session_id is not None:
-                    finished_payload["sessionId"] = session_id
+                finished_payload = session_finished_event(
+                    current.to_public(include_content=True),
+                    session_id=session_id,
+                )
                 await self.broadcast(finished_payload)
                 await self._broadcast_history_updated()
             self._clear_hot_path_tracer(session_id)
