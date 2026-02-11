@@ -56,10 +56,12 @@ async def test_get_state_reports_background_processing_flag():
 
     state = ctl.get_state()
     assert state["backgroundProcessing"] is True
+    assert state["recordingState"] == "idle"
 
     pending.set_result(None)
     state = ctl.get_state()
     assert state["backgroundProcessing"] is False
+    assert state["recordingState"] == "idle"
 
 
 @pytest.mark.asyncio

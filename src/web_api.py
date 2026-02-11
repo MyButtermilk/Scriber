@@ -22,6 +22,8 @@ from src.audio_devices import (
     rank_hostapi,
 )
 from src.config import Config
+from src.core.hot_path_tracer import HotPathTracer
+from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
 from src.pipeline import ScriberPipeline
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
@@ -409,6 +411,9 @@ class ScriberWebController:
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
         self._status = "Stopped"
         self._session_id: str | None = None
+        self._recording_state_machine = RecordingStateMachine()
+        self._hot_path_tracers: dict[str, HotPathTracer] = {}
+        self._hot_path_reports_emitted: set[str] = set()
 
         self._current: Optional[TranscriptRecord] = None
         self._current_lock = threading.Lock()
@@ -441,6 +446,52 @@ class ScriberWebController:
         """Unregister a background task."""
         if transcript_id in self._running_tasks:
             del self._running_tasks[transcript_id]
+
+    def _set_recording_state(self, target: RecordingState, *, context: str = "") -> None:
+        try:
+            event = self._recording_state_machine.transition(target)
+            if event:
+                logger.debug(
+                    f"Recording state transition ({context or 'unknown'}): "
+                    f"{event.source.value} -> {event.target.value}"
+                )
+        except InvalidTransitionError as exc:
+            logger.debug(f"Ignoring invalid recording state transition ({context or 'unknown'}): {exc}")
+
+    def _start_hot_path_tracer(self, session_id: str) -> None:
+        tracer = HotPathTracer(session_id)
+        tracer.mark("hotkey_received")
+        self._hot_path_tracers[session_id] = tracer
+        self._hot_path_reports_emitted.discard(session_id)
+
+    def _mark_hot_path(self, session_id: str | None, marker: str) -> None:
+        if not session_id or not marker:
+            return
+        tracer = self._hot_path_tracers.get(session_id)
+        if not tracer or tracer.has_mark(marker):
+            return
+        tracer.mark(marker)
+
+    def _emit_hot_path_report_once(self, session_id: str | None) -> None:
+        if not session_id:
+            return
+        if session_id in self._hot_path_reports_emitted:
+            return
+        tracer = self._hot_path_tracers.get(session_id)
+        if not tracer:
+            return
+        if not tracer.has_mark("hotkey_received") or not tracer.has_mark("first_paste"):
+            return
+        report = tracer.report()
+        if report:
+            logger.info(f"Hot path timing ({session_id[:8]}): {report}")
+            self._hot_path_reports_emitted.add(session_id)
+
+    def _clear_hot_path_tracer(self, session_id: str | None) -> None:
+        if not session_id:
+            return
+        self._hot_path_tracers.pop(session_id, None)
+        self._hot_path_reports_emitted.discard(session_id)
 
     def _get_overlay(self):
         """Get or create the overlay instance and ensure callback is connected."""
@@ -534,6 +585,7 @@ class ScriberWebController:
             "current": current.to_public(include_content=True) if current else None,
             "sessionId": self._session_id,
             "backgroundProcessing": has_background_processing,
+            "recordingState": self._recording_state_machine.state.value,
         }
 
     async def add_client(self, ws: web.WebSocketResponse) -> None:
@@ -615,6 +667,7 @@ class ScriberWebController:
             return
         logger.debug(f"Transcription received: final={is_final}, len={len(text) if text else 0}")
         if is_final:
+            self._mark_hot_path(session_id or self._session_id, "first_final_token")
             with self._current_lock:
                 if self._current and (session_id is None or self._current.id == session_id):
                     self._current.append_final_text(text)
@@ -643,6 +696,8 @@ class ScriberWebController:
                 self._pipeline_task = None
                 if session_id is None or session_id == self._session_id:
                     self._session_id = None
+                self._set_recording_state(RecordingState.IDLE, context="_on_pipeline_done_cleanup")
+                self._clear_hot_path_tracer(session_id)
         
         async def _broadcast_error(error_msg: str):
             """Broadcast error to frontend."""
@@ -657,6 +712,7 @@ class ScriberWebController:
             pass
         except Exception as exc:  # pragma: no cover - runtime dependent        
             logger.error(f"Pipeline error: {exc}")
+            self._set_recording_state(RecordingState.FAILED, context="_on_pipeline_done_error")
             self._set_status("Error", session_id=session_id)
             # Hide overlay when pipeline fails to prevent it staying stuck at "Preparing..."
             self._overlay_audio_enabled = False
@@ -1036,6 +1092,9 @@ class ScriberWebController:
             with self._current_lock:
                 self._current = rec
             self._session_id = session_id
+            self._start_hot_path_tracer(session_id)
+            self._mark_hot_path(session_id, "controller_accepted")
+            self._set_recording_state(RecordingState.INITIALIZING, context="start_listening")
 
             # Ensure overlay has stop callback connected before showing
             self._get_overlay()
@@ -1049,6 +1108,8 @@ class ScriberWebController:
                 if session_id != self._session_id:
                     return
                 logger.debug("on_mic_ready callback triggered - transitioning overlay to recording mode")
+                self._mark_hot_path(session_id, "mic_ready")
+                self._set_recording_state(RecordingState.RECORDING, context="on_mic_ready")
                 self._overlay_audio_enabled = True
                 show_recording_overlay()
                 logger.info("Microphone ready - recording started")
@@ -1058,6 +1119,7 @@ class ScriberWebController:
                 if session_id != self._session_id:
                     return
                 logger.error(f"Pipeline error callback: {error_msg}")
+                self._set_recording_state(RecordingState.FAILED, context="pipeline_error")
                 self._set_status("Error")
                 self._overlay_audio_enabled = False
                 hide_recording_overlay()
@@ -1081,11 +1143,18 @@ class ScriberWebController:
 
                 self._loop.call_soon_threadsafe(schedule_cleanup)
 
+            def on_text_injected(_text: str):
+                if session_id != self._session_id:
+                    return
+                self._mark_hot_path(session_id, "first_paste")
+                self._emit_hot_path_report_once(session_id)
+
             self._pipeline = ScriberPipeline(
                 service_name=Config.DEFAULT_STT_SERVICE,
                 on_status_change=lambda status: self._set_status(status, session_id=session_id),
                 on_audio_level=lambda rms: self._on_audio_level(rms, session_id=session_id),
                 on_transcription=lambda text, is_final: self._on_transcription(text, is_final, session_id=session_id),
+                on_text_injected=on_text_injected,
                 on_mic_ready=on_mic_ready,
                 on_error=on_pipeline_error,
             )
@@ -1118,6 +1187,9 @@ class ScriberWebController:
                 self._pipeline = None
                 self._pipeline_task = None
                 self._session_id = None
+                self._set_recording_state(RecordingState.FAILED, context="emergency_stop")
+                self._set_recording_state(RecordingState.IDLE, context="emergency_stop")
+                self._clear_hot_path_tracer(session_id)
 
             # Stop the previous pipeline instance outside the lock.
             if pipeline:
@@ -1154,6 +1226,7 @@ class ScriberWebController:
             with self._current_lock:
                 current = self._current
             session_id = self._session_id
+            self._set_recording_state(RecordingState.FINALIZING, context="stop_listening")
             
             # Clear pipeline references immediately to prevent double-stop
             # NOTE: We do NOT clear _current here - it must remain set until
@@ -1226,6 +1299,11 @@ class ScriberWebController:
                 self._set_status("Error" if stop_error else "Stopped", session_id=session_id)
                 if session_id is None or self._session_id == session_id:
                     self._session_id = None
+                if stop_error:
+                    self._set_recording_state(RecordingState.FAILED, context="stop_listening")
+                else:
+                    self._set_recording_state(RecordingState.COMPLETED, context="stop_listening")
+                self._set_recording_state(RecordingState.IDLE, context="stop_listening")
 
             if current:
                 current.finish("failed" if stop_error else "completed")
@@ -1239,6 +1317,7 @@ class ScriberWebController:
                     finished_payload["sessionId"] = session_id
                 await self.broadcast(finished_payload)
                 await self._broadcast_history_updated()
+            self._clear_hot_path_tracer(session_id)
 
     async def toggle_listening(self) -> None:
         # Quick check without lock - if operation in progress, ignore

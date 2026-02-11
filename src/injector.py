@@ -5,6 +5,7 @@ import time
 import threading
 import ctypes
 from ctypes import wintypes
+from typing import Callable, Optional
 from loguru import logger
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import (
@@ -311,9 +312,14 @@ def _paste_text(text: str, *, skip_clipboard_restore: bool = False) -> bool:
 
 
 class TextInjector(FrameProcessor):
-    def __init__(self, inject_immediately: bool = False):
+    def __init__(
+        self,
+        inject_immediately: bool = False,
+        on_injected: Optional[Callable[[str], None]] = None,
+    ):
         super().__init__()
         self.inject_immediately = inject_immediately
+        self.on_injected = on_injected
         self._buffer = []
         self._last_injected = ""
 
@@ -388,32 +394,47 @@ class TextInjector(FrameProcessor):
         if method == "paste":
             if not _paste_text(text, skip_clipboard_restore=False):
                 logger.warning("Clipboard paste injection failed")
+            else:
+                self._notify_injected(text)
             return
 
         if method == "sendinput":
             if _send_input_text(text):
                 if Config.DEBUG:
                     logger.info(f"Injected via SendInput ({len(text)} chars, instant)")
+                self._notify_injected(text)
             else:
                 logger.warning("SendInput injection failed")
             return
 
         if method == "auto":
             if _paste_text(text, skip_clipboard_restore=False):
+                self._notify_injected(text)
                 return
             logger.debug("Clipboard paste failed; trying SendInput")
             if _send_input_text(text):
                 if Config.DEBUG:
                     logger.info(f"Injected via SendInput ({len(text)} chars, instant)")
+                self._notify_injected(text)
                 return
             logger.debug("SendInput also failed; falling back to keystroke typing")
 
         # Last resort: character-by-character typing (slow but most compatible)
         try:
             keyboard.write(text, delay=0.01)  # 10ms per char
+            self._notify_injected(text)
         except Exception:
             try:
                 logger.warning("keyboard.write failed, falling back to pyautogui.")
                 pyautogui.write(text, interval=0.01)
+                self._notify_injected(text)
             except Exception as e:
                 logger.error(f"Text injection failed with all methods: {e}")
+
+    def _notify_injected(self, text: str) -> None:
+        if not self.on_injected:
+            return
+        try:
+            self.on_injected(text)
+        except Exception as exc:
+            logger.debug(f"TextInjector on_injected callback failed: {exc}")

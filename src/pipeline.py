@@ -740,6 +740,7 @@ class ScriberPipeline:
         on_status_change=None,
         on_audio_level=None,
         on_transcription: Optional[Callable[[str, bool], None]] = None,
+        on_text_injected: Optional[Callable[[str], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
         on_mic_ready: Optional[Callable[[], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
@@ -748,6 +749,7 @@ class ScriberPipeline:
         self.on_status_change = on_status_change
         self.on_audio_level = on_audio_level
         self.on_transcription = on_transcription
+        self.on_text_injected = on_text_injected
         self.on_progress = on_progress
         self.on_mic_ready = on_mic_ready
         self.on_error = on_error
@@ -1042,7 +1044,10 @@ class ScriberPipeline:
                     (self.service_name == "soniox" and Config.SONIOX_MODE != "async")
                     or self.service_name == "mistral"
                 )
-                text_injector = TextInjector(inject_immediately=inject_immediately)
+                text_injector = TextInjector(
+                    inject_immediately=inject_immediately,
+                    on_injected=self.on_text_injected,
+                )
                 self.text_injector = text_injector
                 transcript_cb = (
                     TranscriptionCallbackProcessor(self.on_transcription) if self.on_transcription else None
