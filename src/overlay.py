@@ -54,8 +54,8 @@ class QtOverlaySignals(QObject):
 class QtOverlayWindow(QWidget):
     """Qt-based overlay window with smooth anti-aliased rendering and CAVA-style bar visualization."""
     
-    # MIDNIGHT theme colors (blue gradient)
-    MIDNIGHT_COLORS = ["#3B82F6", "#1E3A8A", "#172554"]
+    # MIDNIGHT theme colors (expanded blue gradient — bright to deep)
+    MIDNIGHT_COLORS = ["#93C5FD", "#60A5FA", "#3B82F6", "#2563EB", "#1E3A8A"]
     
     stopped = Signal()
     
@@ -97,22 +97,22 @@ class QtOverlayWindow(QWidget):
         self._taper = self._build_taper(self._bar_count)
         
         # AGC (Automatic Gain Control) for adaptive level scaling
-        self._agc = 0.0022
-        self._agc_min = 0.0022
+        self._agc = 0.010
+        self._agc_min = 0.010
         self._agc_decay = 0.06
-        self._input_gain = 2.4
-        self._input_gate = 0.00005
-        self._input_curve_exp = 0.34
+        self._input_gain = 1.5
+        self._input_gate = 0.0003
+        self._input_curve_exp = 0.58
         self._rms_env = 0.0
         self._rms_attack = 0.82
-        self._rms_release = 0.24
-        
+        self._rms_release = 0.40
+
         # CAVA-style parameters - tuned for fast, responsive feel
         self._noise_reduction = 0.77  # 0-1, smoothing factor
         self._gravity = 0.88
         self._integral = 0.7  # Weighted average factor
         self._rise_speed = 1.0  # Instant rise
-        self._fall_damping = 0.84
+        self._fall_damping = 0.72
         
         # Stop button hit-test (updated during painting)
         self._stop_center_x = 0.0
@@ -406,8 +406,8 @@ class QtOverlayWindow(QWidget):
         
         # Apply power curve for better dynamics (makes quiet parts more visible)
         # Lower exponent = more gain
-        norm = math.pow(norm, self._input_curve_exp) * 1.55
-        norm = max(0.0, min(1.35, norm))
+        norm = math.pow(norm, self._input_curve_exp) * 1.10
+        norm = max(0.0, min(1.20, norm))
         
         # Distribute across bars with frequency-like pattern
         for i in range(self._bar_count):
@@ -476,7 +476,7 @@ class QtOverlayWindow(QWidget):
             self._draw_transcribing_mode(painter, pill)
     
     def _draw_recording_mode(self, painter: QPainter, pill: QRectF):
-        """Draw recording mode: stop button + CAVA-style frequency bars."""
+        """Draw recording mode: stop button with amplitude glow + polished rounded bars."""
         # Stop button sized relative to pill
         stop_d = pill.height() * 0.68
         self._stop_radius = stop_d / 2.0
@@ -484,25 +484,43 @@ class QtOverlayWindow(QWidget):
         stop_cy = pill.center().y()
         self._stop_center_x = stop_cx
         self._stop_center_y = stop_cy
-        
+
+        # Compute average display level for glow intensity
+        avg_lvl = sum(self._display) / max(1, len(self._display))
+
+        # Amplitude-reactive glow ring behind the stop button
+        if avg_lvl > 0.02:
+            glow_alpha = min(120, int(avg_lvl * 200))
+            for ring in range(3, 0, -1):
+                ring_expand = ring * 3.0
+                glow_color = QColor(226, 60, 60, glow_alpha // ring)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(glow_color, 2.0))
+                painter.drawEllipse(QRectF(
+                    stop_cx - self._stop_radius - ring_expand,
+                    stop_cy - self._stop_radius - ring_expand,
+                    stop_d + ring_expand * 2,
+                    stop_d + ring_expand * 2,
+                ))
+
         stop_rect = QRectF(
             stop_cx - self._stop_radius,
             stop_cy - self._stop_radius,
             stop_d, stop_d
         )
-        
+
         # Stop button
         btn_color = QColor(220, 53, 69) if self._btn_hover else QColor(226, 60, 60)
         painter.setBrush(btn_color)
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(stop_rect)
-        
-        # White square with rounded corners
+
+        # White square icon with rounded corners
         sq = stop_d * 0.30
         sq_rect = QRectF(stop_cx - sq / 2.0, stop_cy - sq / 2.0, sq, sq)
         painter.setBrush(QColor(250, 250, 250))
         painter.drawRoundedRect(sq_rect, 4, 4)
-        
+
         # Waveform area (mirrored bars from center)
         left_pad = pill.height() * 1.08
         right_pad = pill.height() * 0.30
@@ -512,39 +530,55 @@ class QtOverlayWindow(QWidget):
             pill.width() - left_pad - right_pad,
             pill.height() * 0.70,
         )
-        
-        # Bar sizing - stretch to fill available space
+
+        # Bar sizing — stretch to fill available space
         bar_count = self._bar_count
-        # Gap is ~30% of bar width for clean look
         total_units = bar_count + (bar_count - 1) * 0.3
         bar_w = wave.width() / total_units
         gap = bar_w * 0.3
-        bar_w = max(1.5, bar_w)  # Minimum bar width only
-        
+        bar_w = max(1.5, bar_w)
+        bar_radius = min(2.5, bar_w * 0.4)  # Rounded corners
+
         # Center line for mirrored bars
         cy = wave.center().y()
-        max_h = wave.height() / 2.0 * 0.90  # Max height each direction
-        
+        max_h = wave.height() / 2.0 * 0.90
+
         painter.setPen(Qt.NoPen)
-        
-        # Draw bars (static positions, mirrored from center)
+
         x0 = wave.left()
         for i in range(bar_count):
             lvl = self._display[i] * self._taper[i]
-            
-            # Bar height extends both up and down from center
-            bar_h = max(2.0, lvl * max_h)
-            
-            # Calculate bar position
+            bar_h = max(1.0, lvl * max_h)
             x = x0 + i * (bar_w + gap)
-            
-            # Color based on height/level (bright when tall, dark when short)
-            factor = min(1.0, lvl)  # 0 = first color (bright), 1 = last color (dark)
-            color = self._interpolate_color(self.MIDNIGHT_COLORS, 1.0 - factor)  # Invert so taller = brighter
-            painter.setBrush(color)
-            
-            # Draw mirrored bar (extends up and down from center)
-            painter.drawRect(QRectF(x, cy - bar_h, bar_w - 1, bar_h * 2))
+
+            # Subtle glow behind active bars
+            if lvl > 0.25:
+                glow_a = min(50, int(lvl * 70))
+                glow_c = QColor(59, 130, 246, glow_a)
+                painter.setBrush(glow_c)
+                glow_expand = 1.5
+                painter.drawRoundedRect(
+                    QRectF(x - glow_expand, cy - bar_h - glow_expand,
+                           bar_w - 1 + glow_expand * 2, bar_h * 2 + glow_expand * 2),
+                    bar_radius + 1, bar_radius + 1,
+                )
+
+            # Vertical gradient per bar: bright top → darker bottom
+            factor = min(1.0, lvl)
+            color_top = self._interpolate_color(self.MIDNIGHT_COLORS, 1.0 - factor)
+            color_bot = self._interpolate_color(self.MIDNIGHT_COLORS, 1.0 - factor * 0.5)
+
+            grad = QLinearGradient(x, cy - bar_h, x, cy + bar_h)
+            grad.setColorAt(0.0, color_top)
+            grad.setColorAt(0.5, color_top)
+            grad.setColorAt(1.0, color_bot)
+            painter.setBrush(QBrush(grad))
+
+            # Draw rounded mirrored bar
+            painter.drawRoundedRect(
+                QRectF(x, cy - bar_h, bar_w - 1, bar_h * 2),
+                bar_radius, bar_radius,
+            )
     
     def _draw_initializing_mode(self, painter: QPainter, pill: QRectF):
         """Draw initializing mode: pulsing mic icon + 'Preparing...' text."""
