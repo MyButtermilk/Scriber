@@ -4,6 +4,7 @@ import types
 
 import pytest
 
+from src.audio_devices import get_default_input_device_index
 from src.config import Config
 from src.pipeline import _normalize_device_name as normalize_pipeline_device_name
 from src.pipeline import _resolve_mic_device
@@ -82,6 +83,21 @@ def test_normalize_device_name_matches_mic_wrapper_and_plain_name():
     assert normalize_pipeline_device_name(a) == normalize_pipeline_device_name(b)
 
 
+def test_get_default_input_device_index_supports_pair_like_default_device() -> None:
+    class _PairLike:
+        def __init__(self, input_idx: int, output_idx: int) -> None:
+            self._values = (input_idx, output_idx)
+
+        def __getitem__(self, index: int) -> int:
+            return self._values[index]
+
+    fake_sd = types.SimpleNamespace(
+        default=types.SimpleNamespace(device=_PairLike(2, 7))
+    )
+
+    assert get_default_input_device_index(fake_sd) == 2
+
+
 def test_resolve_mic_device_prefers_favorite_when_available(monkeypatch: pytest.MonkeyPatch):
     _install_fake_sounddevice(
         monkeypatch,
@@ -153,6 +169,63 @@ def test_resolve_mic_device_falls_back_to_next_host_variant_on_invalid_sample_ra
     assert resolved == "1"
 
 
+def test_resolve_mic_device_skips_unavailable_favorite_and_uses_available_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_fake_sounddevice(
+        monkeypatch,
+        devices=[
+            {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+            {"name": "Built-in Mic, MME", "max_input_channels": 1, "hostapi": 0},
+        ],
+        hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
+        default_input=0,
+        invalid_check_indices={0},
+    )
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "Dock Mic, Windows WASAPI", raising=False)
+
+    resolved = _resolve_mic_device("default")
+
+    assert resolved == "1"
+
+
+def test_resolve_mic_device_uses_nondefault_when_system_default_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_fake_sounddevice(
+        monkeypatch,
+        devices=[
+            {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+            {"name": "Built-in Mic, MME", "max_input_channels": 1, "hostapi": 0},
+        ],
+        hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
+        default_input=0,
+        invalid_check_indices={0},
+    )
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+
+    resolved = _resolve_mic_device("default")
+
+    assert resolved == "1"
+
+
+def test_resolve_mic_device_fallback_ignores_soundmapper(monkeypatch: pytest.MonkeyPatch):
+    _install_fake_sounddevice(
+        monkeypatch,
+        devices=[
+            {"name": "Microsoft Soundmapper - Input", "max_input_channels": 2, "hostapi": 0},
+            {"name": "Microphone Array (Realtek(R) Audio)", "max_input_channels": 4, "hostapi": 0},
+        ],
+        hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
+        default_input=0,
+    )
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+
+    resolved = _resolve_mic_device("default")
+
+    assert resolved == "1"
+
+
 @pytest.mark.asyncio
 async def test_get_settings_prefers_favorite_for_ui_when_available(monkeypatch: pytest.MonkeyPatch):
     loop = asyncio.get_running_loop()
@@ -174,6 +247,30 @@ async def test_get_settings_prefers_favorite_for_ui_when_available(monkeypatch: 
 
     assert settings["micDevice"] == "Mikrofon (7- Dock Mic), Windows WASAPI"
     assert settings["favoriteMicAvailable"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_settings_falls_back_to_first_available_when_favorite_missing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    monkeypatch.setattr(Config, "MIC_DEVICE", "Mikrofon (7- Dock Mic), Windows WASAPI", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "Mikrofon (7- Dock Mic), Windows WASAPI", raising=False)
+    monkeypatch.setattr(
+        ctl,
+        "list_microphones",
+        lambda: [
+            {"deviceId": "default", "label": "Default"},
+            {"deviceId": "Built-in Mic, MME", "label": "Built-in Mic"},
+        ],
+    )
+
+    settings = ctl.get_settings()
+
+    assert settings["micDevice"] == "Built-in Mic, MME"
+    assert settings["favoriteMicAvailable"] is False
 
 
 @pytest.mark.asyncio
@@ -245,6 +342,32 @@ async def test_list_microphones_uses_single_hostapi_list(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_list_microphones_prefers_directsound_over_mme_when_wasapi_unusable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    _install_fake_sounddevice(
+        monkeypatch,
+        devices=[
+            {"name": "Mic Device, MME", "max_input_channels": 1, "hostapi": 0},
+            {"name": "Mic Device, Windows DirectSound", "max_input_channels": 1, "hostapi": 1},
+            {"name": "Mic Device, Windows WASAPI", "max_input_channels": 1, "hostapi": 2},
+        ],
+        hostapis=[{"name": "MME"}, {"name": "Windows DirectSound"}, {"name": "Windows WASAPI"}],
+        default_input=0,
+        invalid_check_indices={2},
+    )
+
+    devices = ctl.list_microphones()
+    ids = [d["deviceId"] for d in devices]
+
+    assert "Mic Device, Windows DirectSound" in ids
+    assert "Mic Device, MME" not in ids
+
+
+@pytest.mark.asyncio
 async def test_list_microphones_falls_back_when_only_mme_has_inputs(monkeypatch: pytest.MonkeyPatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
@@ -264,3 +387,26 @@ async def test_list_microphones_falls_back_when_only_mme_has_inputs(monkeypatch:
 
     assert "Input ()" not in ids
     assert "Dock Mic, MME" in ids
+
+
+@pytest.mark.asyncio
+async def test_list_microphones_skips_unavailable_endpoints(monkeypatch: pytest.MonkeyPatch):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    _install_fake_sounddevice(
+        monkeypatch,
+        devices=[
+            {"name": "Microphone Array (Realtek) , MME", "max_input_channels": 1, "hostapi": 0},
+            {"name": "Mikrofon (5- Insta360 Link), Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+        ],
+        hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
+        default_input=0,
+        invalid_check_indices={1},
+    )
+
+    devices = ctl.list_microphones()
+    ids = [d["deviceId"] for d in devices]
+
+    assert "Microphone Array (Realtek) , MME" in ids
+    assert "Mikrofon (5- Insta360 Link), Windows WASAPI" not in ids

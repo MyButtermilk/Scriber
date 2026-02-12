@@ -17,6 +17,7 @@ from loguru import logger
 
 from src.audio_devices import (
     get_input_hostapi_priorities,
+    is_input_device_compatible,
     list_unique_input_microphones,
     normalize_device_name,
     rank_hostapi,
@@ -25,12 +26,14 @@ from src.config import Config
 from src.core.provider_capabilities import supports_direct_file_upload
 from src.core.error_taxonomy import classify_error_message, is_retryable, user_message_for_category
 from src.core.hot_path_tracer import HotPathTracer
+from src.core.logging_setup import emit_event, setup_logging
 from src.core.provider_circuit_breaker import ProviderCircuitBreaker
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
 from src.core.ws_contracts import (
     audio_level_event,
     error_event,
     history_updated_event,
+    input_warning_event,
     session_finished_event,
     session_started_event,
     status_event,
@@ -223,6 +226,55 @@ def _format_duration(seconds: float) -> str:
     if hours:
         return f"{hours:d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+def _probe_media_duration_seconds(file_path: Path) -> float | None:
+    """Best-effort media duration probe via ffprobe."""
+    import math
+    import shutil
+    import subprocess
+
+    ffprobe = shutil.which("ffprobe") or shutil.which("ffprobe.exe")
+    if not ffprobe:
+        return None
+
+    cmd = [
+        ffprobe,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(file_path),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception as exc:
+        logger.debug(f"ffprobe failed for {file_path.name}: {exc}")
+        return None
+
+    if proc.returncode != 0:
+        return None
+
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return None
+
+    try:
+        seconds = float(raw.splitlines()[0])
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return seconds
 
 
 def _format_date_label(ts: datetime) -> str:
@@ -479,6 +531,29 @@ class ScriberWebController:
         self._history_by_id: dict[str, TranscriptRecord] = {}
         self._last_audio_broadcast = 0.0
         self._overlay_audio_enabled = False
+        self._mic_low_level_since: float | None = None
+        self._mic_input_warning = ""
+        try:
+            self._mic_low_rms_threshold = max(
+                0.0,
+                float(os.getenv("SCRIBER_MIC_LOW_RMS_THRESHOLD", "0.001") or 0.001),
+            )
+        except Exception:
+            self._mic_low_rms_threshold = 0.001
+        try:
+            self._mic_low_rms_clear_threshold = max(
+                self._mic_low_rms_threshold,
+                float(os.getenv("SCRIBER_MIC_LOW_RMS_CLEAR_THRESHOLD", "0.0025") or 0.0025),
+            )
+        except Exception:
+            self._mic_low_rms_clear_threshold = 0.0025
+        try:
+            self._mic_low_rms_warn_after_secs = max(
+                1.0,
+                float(os.getenv("SCRIBER_MIC_LOW_RMS_WARN_AFTER_SECS", "6.0") or 6.0),
+            )
+        except Exception:
+            self._mic_low_rms_warn_after_secs = 6.0
         self._history_broadcast_last = 0.0
         self._history_broadcast_handle: asyncio.TimerHandle | None = None       
         self._history_broadcast_interval = 0.25
@@ -493,6 +568,54 @@ class ScriberWebController:
         # Initialize database schema only (transcript loading happens in background)
         db.init_database()
         self._transcripts_loaded = False
+
+    @staticmethod
+    def _trace_id_for(value: str | None) -> str | None:
+        if not value:
+            return None
+        if value.startswith("tr_"):
+            return value
+        return f"tr_{value}"
+
+    def _emit_workflow_event(
+        self,
+        *,
+        message: str,
+        event: str,
+        workflow: str,
+        stage: str,
+        level: str = "INFO",
+        component: str = "web_api",
+        session_id: str | None = None,
+        record: TranscriptRecord | None = None,
+        provider: str | None = None,
+        duration_ms: int | float | None = None,
+        outcome: str | None = None,
+        milestone: bool = False,
+        error_category: str | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        transcript_id = record.id if record else None
+        trace_source = session_id or transcript_id
+        job_id = self._job_ids_by_transcript.get(transcript_id or "") if transcript_id else None
+        emit_event(
+            logger.bind(component=component),
+            message,
+            level=level,
+            event=event,
+            workflow=workflow,
+            stage=stage,
+            trace_id=self._trace_id_for(trace_source),
+            session_id=session_id,
+            transcript_id=transcript_id,
+            job_id=job_id,
+            provider=provider,
+            duration_ms=duration_ms,
+            outcome=outcome,
+            milestone=milestone,
+            error_category=error_category,
+            meta=meta,
+        )
     
     def _register_task(self, transcript_id: str, task: asyncio.Task) -> None:
         """Register a background task for a transcript."""
@@ -831,6 +954,19 @@ class ScriberWebController:
         report = tracer.report()
         if report:
             logger.info(f"Hot path timing ({session_id[:8]}): {report}")
+            self._emit_workflow_event(
+                message=f"Hot path timing captured ({session_id[:8]})",
+                event="metrics.hot_path.reported",
+                workflow="live_mic",
+                stage="hot_path_report",
+                component="web_api",
+                session_id=session_id,
+                record=self._current,
+                milestone=True,
+                outcome="success",
+                duration_ms=report.get("total_ms"),
+                meta=report,
+            )
             try:
                 self._latency_metrics_store.record(session_id, report)
             except Exception as exc:  # pragma: no cover - best effort persistence
@@ -932,6 +1068,7 @@ class ScriberWebController:
         return {
             "listening": self._is_listening,
             "status": self._status,
+            "inputWarning": self._mic_input_warning,
             "current": current.to_public(include_content=True) if current else None,
             "sessionId": self._session_id,
             "backgroundProcessing": has_background_processing,
@@ -1002,14 +1139,76 @@ class ScriberWebController:
         if session_id is None:
             session_id = self._session_id
         payload = status_event(status, self._is_listening, session_id=session_id)
+        payload["inputWarning"] = self._mic_input_warning
         # status changes can happen from non-async callbacks; schedule the broadcast.
         self._loop.call_soon_threadsafe(
             lambda: asyncio.create_task(self.broadcast(payload))
         )
 
+    def _set_input_warning(self, message: str, *, session_id: str | None = None) -> None:
+        if session_id is not None and session_id != self._session_id:
+            return
+        normalized = str(message or "").strip()
+        if normalized == self._mic_input_warning:
+            return
+        self._mic_input_warning = normalized
+        if session_id is None:
+            session_id = self._session_id
+        payload = input_warning_event(
+            bool(normalized),
+            message=normalized,
+            session_id=session_id,
+        )
+        self._loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(self.broadcast(payload))
+        )
+
+    def _clear_input_warning_state(self, *, session_id: str | None = None, broadcast: bool = True) -> None:
+        if session_id is not None and session_id != self._session_id:
+            return
+        self._mic_low_level_since = None
+        if broadcast:
+            self._set_input_warning("", session_id=session_id)
+        else:
+            self._mic_input_warning = ""
+
+    def _update_input_warning(self, rms: float, *, session_id: str | None = None) -> None:
+        if session_id is not None and session_id != self._session_id:
+            return
+
+        level = max(0.0, float(rms))
+        now = time.monotonic()
+
+        if not self._is_listening:
+            self._clear_input_warning_state(session_id=session_id, broadcast=False)
+            return
+
+        if level >= self._mic_low_rms_clear_threshold:
+            self._mic_low_level_since = None
+            if self._mic_input_warning:
+                self._set_input_warning("", session_id=session_id)
+            return
+
+        if level > self._mic_low_rms_threshold:
+            return
+
+        if self._mic_low_level_since is None:
+            self._mic_low_level_since = now
+            return
+
+        if self._mic_input_warning:
+            return
+
+        if now - self._mic_low_level_since >= self._mic_low_rms_warn_after_secs:
+            self._set_input_warning(
+                "Sehr niedriger Eingangspegel. Bitte Windows-Mikrofonlautstarke und Datenschutzberechtigung prufen.",
+                session_id=session_id,
+            )
+
     def _on_audio_level(self, rms: float, *, session_id: str | None = None) -> None:
         if session_id is not None and session_id != self._session_id:
             return
+        self._update_input_warning(rms, session_id=session_id)
         # Called from the sounddevice callback thread; throttle broadcasts to ~30fps.
         now = time.monotonic()
         if now - self._last_audio_broadcast < 0.033:  # ~30fps
@@ -1034,6 +1233,18 @@ class ScriberWebController:
             with self._current_lock:
                 if self._current and (session_id is None or self._current.id == session_id):
                     self._current.append_final_text(text)
+            self._emit_workflow_event(
+                message="Final transcript chunk received",
+                event="pipeline.transcript.final",
+                workflow="live_mic",
+                stage="transcript_done",
+                component="pipeline",
+                session_id=session_id or self._session_id,
+                record=self._current,
+                provider=self._active_provider,
+                outcome="success",
+                meta={"chars": len(text or "")},
+            )
         if session_id is None:
             session_id = self._session_id
         payload = transcript_event(text, bool(is_final), session_id=session_id)
@@ -1081,6 +1292,21 @@ class ScriberWebController:
             category = classify_error_message(str(exc))
             user_msg = user_message_for_category(category)
             logger.warning(f"Pipeline task failure category={category.value}: {exc}")
+            self._emit_workflow_event(
+                message=f"Pipeline task failed: {user_msg}",
+                event="pipeline.session.failed",
+                workflow="live_mic",
+                stage="pipeline_error",
+                level="ERROR",
+                component="pipeline",
+                session_id=session_id,
+                record=self._current,
+                provider=self._active_provider,
+                milestone=True,
+                outcome="failure",
+                error_category=category.value,
+                meta={"error": str(exc)},
+            )
             
             # Broadcast error to frontend
             self._loop.call_soon_threadsafe(
@@ -1153,6 +1379,15 @@ class ScriberWebController:
             channel=channel,
             thumbnail_url=thumbnail,
         )
+        self._emit_workflow_event(
+            message=f"YouTube job queued: {rec.title}",
+            event="api.job.created",
+            workflow="youtube",
+            stage="job_created",
+            record=rec,
+            milestone=True,
+            outcome="queued",
+        )
         self._add_to_history(rec)
         await self._broadcast_history_updated()
         self._enqueue_background_job(
@@ -1171,11 +1406,24 @@ class ScriberWebController:
         return rec
 
     async def _run_youtube_transcription(self, rec: TranscriptRecord, *, provider: str) -> None:
+        workflow_started = time.monotonic()
+        out_dir = self._downloads_dir / "youtube" / rec.id
         rec.step = "Downloading audio..."
         rec.updated_at = datetime.now().isoformat()
         await self._broadcast_history_updated()
+        self._emit_workflow_event(
+            message="YouTube download started",
+            event="youtube.download.started",
+            workflow="youtube",
+            stage="downloading",
+            component="youtube_download",
+            record=rec,
+            provider=provider,
+            milestone=True,
+            outcome="started",
+        )
         try:
-            out_dir = self._downloads_dir / "youtube" / rec.id
+            download_started = time.monotonic()
             
             # Track download progress with speed and ETA
             last_broadcast_time = [0.0]  # Use list to allow mutation in closure
@@ -1215,6 +1463,18 @@ class ScriberWebController:
                 timeout_seconds=download_timeout,
                 timeout_label="YouTube download",
             )
+            self._emit_workflow_event(
+                message="YouTube download completed",
+                event="youtube.download.completed",
+                workflow="youtube",
+                stage="download_done",
+                component="youtube_download",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                duration_ms=(time.monotonic() - download_started) * 1000,
+                outcome="success",
+            )
 
             def on_transcription(text: str, is_final: bool) -> None:
                 if not is_final:
@@ -1232,6 +1492,18 @@ class ScriberWebController:
             rec.step = "Transcribing..."
             rec.updated_at = datetime.now().isoformat()
             await self._broadcast_history_updated()
+            transcribe_started = time.monotonic()
+            self._emit_workflow_event(
+                message=f"YouTube transcription started ({provider})",
+                event="pipeline.transcription.started",
+                workflow="youtube",
+                stage="transcribing",
+                component="pipeline",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                outcome="started",
+            )
 
             pipeline = ScriberPipeline(
                 service_name=provider,
@@ -1260,6 +1532,19 @@ class ScriberWebController:
             rec.status = "completed"
             rec.step = "Completed"
             logger.debug(f"YouTube record updated: status={rec.status}, step={rec.step}")
+            self._emit_workflow_event(
+                message="YouTube transcription completed",
+                event="pipeline.transcription.completed",
+                workflow="youtube",
+                stage="transcript_done",
+                component="pipeline",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                duration_ms=(time.monotonic() - transcribe_started) * 1000,
+                outcome="success",
+                meta={"chars": len(rec.content)},
+            )
 
             # Auto-summarize if enabled
             if Config.AUTO_SUMMARIZE and rec.content:
@@ -1268,12 +1553,50 @@ class ScriberWebController:
                     rec.step = "Summarizing..."
                     rec.updated_at = datetime.now().isoformat()
                     await self._broadcast_history_updated()
+                    summarize_started = time.monotonic()
+                    self._emit_workflow_event(
+                        message=f"Summary generation started ({Config.SUMMARIZATION_MODEL})",
+                        event="summary.generation.started",
+                        workflow="youtube",
+                        stage="summarizing",
+                        component="summarization",
+                        record=rec,
+                        provider=provider,
+                        milestone=True,
+                        outcome="started",
+                    )
                     rec.summary = await summarize_text(rec.content, Config.SUMMARIZATION_MODEL)
                     rec.step = "Completed"
                     logger.info(f"YouTube auto-summarization completed: {len(rec.summary)} chars")
+                    self._emit_workflow_event(
+                        message="Summary generation completed",
+                        event="summary.generation.completed",
+                        workflow="youtube",
+                        stage="summary_done",
+                        component="summarization",
+                        record=rec,
+                        provider=provider,
+                        milestone=True,
+                        duration_ms=(time.monotonic() - summarize_started) * 1000,
+                        outcome="success",
+                        meta={"chars": len(rec.summary)},
+                    )
                 except Exception as sum_err:
                     logger.warning(f"Auto-summarization failed: {sum_err}")
                     rec.step = "Completed"
+                    self._emit_workflow_event(
+                        message="Summary generation failed",
+                        event="summary.generation.failed",
+                        workflow="youtube",
+                        stage="summarizing",
+                        level="WARNING",
+                        component="summarization",
+                        record=rec,
+                        provider=provider,
+                        outcome="failure",
+                        error_category=classify_error_message(str(sum_err)).value,
+                        meta={"error": str(sum_err)},
+                    )
         except (ValueError, ImportError) as exc:
             self._record_provider_failure(provider, exc)
             if self._schedule_retry_if_allowed(rec, exc):
@@ -1281,6 +1604,19 @@ class ScriberWebController:
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Error] {exc}")
+            self._emit_workflow_event(
+                message="YouTube transcription failed",
+                event="api.job.failed",
+                workflow="youtube",
+                stage="job_failed",
+                level="ERROR",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                outcome="failure",
+                error_category=classify_error_message(str(exc)).value,
+                meta={"error": str(exc)},
+            )
         except TimeoutError as exc:
             self._record_provider_failure(provider, exc)
             if self._schedule_retry_if_allowed(rec, exc):
@@ -1288,6 +1624,19 @@ class ScriberWebController:
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Timeout] {exc}")
+            self._emit_workflow_event(
+                message="YouTube transcription timed out",
+                event="api.job.failed",
+                workflow="youtube",
+                stage="job_failed",
+                level="ERROR",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                outcome="timeout",
+                error_category=classify_error_message(str(exc)).value,
+                meta={"error": str(exc)},
+            )
         except YouTubeDownloadError as exc:
             self._record_provider_failure(provider, exc)
             if self._schedule_retry_if_allowed(rec, exc):
@@ -1295,6 +1644,20 @@ class ScriberWebController:
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Download error] {exc}")
+            self._emit_workflow_event(
+                message="YouTube download failed",
+                event="youtube.download.failed",
+                workflow="youtube",
+                stage="downloading",
+                level="ERROR",
+                component="youtube_download",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                outcome="failure",
+                error_category=classify_error_message(str(exc)).value,
+                meta={"error": str(exc)},
+            )
         except Exception as exc:
             logger.exception("YouTube transcription failed")
             self._record_provider_failure(provider, exc)
@@ -1303,7 +1666,32 @@ class ScriberWebController:
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Error] {exc}")
+            self._emit_workflow_event(
+                message="YouTube job failed",
+                event="api.job.failed",
+                workflow="youtube",
+                stage="job_failed",
+                level="ERROR",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                outcome="failure",
+                error_category=classify_error_message(str(exc)).value,
+                meta={"error": str(exc)},
+            )
         finally:
+            if rec.status == "completed":
+                self._emit_workflow_event(
+                    message="YouTube job completed",
+                    event="api.job.completed",
+                    workflow="youtube",
+                    stage="job_done",
+                    record=rec,
+                    provider=provider,
+                    milestone=True,
+                    duration_ms=(time.monotonic() - workflow_started) * 1000,
+                    outcome="success",
+                )
             rec.updated_at = datetime.now().isoformat()
             self._save_transcript_to_db(rec)  # Persist to database
             await self._broadcast_history_updated()
@@ -1322,6 +1710,8 @@ class ScriberWebController:
             raise ValueError("Uploaded file not found")
 
         title = original_filename or file_path.name
+        duration_seconds = await asyncio.to_thread(_probe_media_duration_seconds, file_path)
+        duration_label = _format_duration(duration_seconds) if duration_seconds is not None else "--:--"
         # Get file size for display
         try:
             file_size_bytes = file_path.stat().st_size
@@ -1341,12 +1731,21 @@ class ScriberWebController:
             id=uuid4().hex,
             title=title,
             date=_format_date_label(started_at),
-            duration="--:--",
+            duration=duration_label,
             status="processing",
             type="file",
             language=Config.LANGUAGE or "auto",
             step="Queued",
             source_url=str(file_path),
+        )
+        self._emit_workflow_event(
+            message=f"File job queued: {rec.title}",
+            event="api.job.created",
+            workflow="file",
+            stage="job_created",
+            record=rec,
+            milestone=True,
+            outcome="queued",
         )
         # Store file size in content temporarily for display
         if file_size:
@@ -1368,9 +1767,21 @@ class ScriberWebController:
 
     async def _run_file_transcription(self, rec: TranscriptRecord, file_path: Path, *, provider: str) -> None:
         """Run transcription on an uploaded file."""
+        workflow_started = time.monotonic()
         rec.step = "Preparing audio..."
         rec.updated_at = datetime.now().isoformat()
         await self._broadcast_history_updated()
+        self._emit_workflow_event(
+            message="File transcription started",
+            event="pipeline.transcription.started",
+            workflow="file",
+            stage="transcribing",
+            component="pipeline",
+            record=rec,
+            provider=provider,
+            milestone=True,
+            outcome="started",
+        )
         try:
             def on_transcription(text: str, is_final: bool) -> None:
                 if not is_final:
@@ -1388,6 +1799,7 @@ class ScriberWebController:
             rec.step = "Transcribing..."
             rec.updated_at = datetime.now().isoformat()
             await self._broadcast_history_updated()
+            transcribe_started = time.monotonic()
 
             pipeline = ScriberPipeline(
                 service_name=provider,
@@ -1415,6 +1827,19 @@ class ScriberWebController:
             logger.info(f"File transcription completed: {len(rec.content)} chars")
             rec.status = "completed"
             rec.step = "Completed"
+            self._emit_workflow_event(
+                message="File transcription completed",
+                event="pipeline.transcription.completed",
+                workflow="file",
+                stage="transcript_done",
+                component="pipeline",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                duration_ms=(time.monotonic() - transcribe_started) * 1000,
+                outcome="success",
+                meta={"chars": len(rec.content)},
+            )
 
             # Auto-summarize if enabled
             if Config.AUTO_SUMMARIZE and rec.content:
@@ -1423,12 +1848,50 @@ class ScriberWebController:
                     rec.step = "Summarizing..."
                     rec.updated_at = datetime.now().isoformat()
                     await self._broadcast_history_updated()
+                    summarize_started = time.monotonic()
+                    self._emit_workflow_event(
+                        message=f"Summary generation started ({Config.SUMMARIZATION_MODEL})",
+                        event="summary.generation.started",
+                        workflow="file",
+                        stage="summarizing",
+                        component="summarization",
+                        record=rec,
+                        provider=provider,
+                        milestone=True,
+                        outcome="started",
+                    )
                     rec.summary = await summarize_text(rec.content, Config.SUMMARIZATION_MODEL)
                     rec.step = "Completed"
                     logger.info(f"File auto-summarization completed: {len(rec.summary)} chars")
+                    self._emit_workflow_event(
+                        message="Summary generation completed",
+                        event="summary.generation.completed",
+                        workflow="file",
+                        stage="summary_done",
+                        component="summarization",
+                        record=rec,
+                        provider=provider,
+                        milestone=True,
+                        duration_ms=(time.monotonic() - summarize_started) * 1000,
+                        outcome="success",
+                        meta={"chars": len(rec.summary)},
+                    )
                 except Exception as sum_err:
                     logger.warning(f"Auto-summarization failed: {sum_err}")
                     rec.step = "Completed"
+                    self._emit_workflow_event(
+                        message="Summary generation failed",
+                        event="summary.generation.failed",
+                        workflow="file",
+                        stage="summarizing",
+                        level="WARNING",
+                        component="summarization",
+                        record=rec,
+                        provider=provider,
+                        outcome="failure",
+                        error_category=classify_error_message(str(sum_err)).value,
+                        meta={"error": str(sum_err)},
+                    )
         except (ValueError, ImportError) as exc:
             self._record_provider_failure(provider, exc)
             if self._schedule_retry_if_allowed(rec, exc):
@@ -1436,6 +1899,19 @@ class ScriberWebController:
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Error] {exc}")
+            self._emit_workflow_event(
+                message="File transcription failed",
+                event="api.job.failed",
+                workflow="file",
+                stage="job_failed",
+                level="ERROR",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                outcome="failure",
+                error_category=classify_error_message(str(exc)).value,
+                meta={"error": str(exc)},
+            )
         except TimeoutError as exc:
             self._record_provider_failure(provider, exc)
             if self._schedule_retry_if_allowed(rec, exc):
@@ -1443,6 +1919,19 @@ class ScriberWebController:
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Timeout] {exc}")
+            self._emit_workflow_event(
+                message="File transcription timed out",
+                event="api.job.failed",
+                workflow="file",
+                stage="job_failed",
+                level="ERROR",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                outcome="timeout",
+                error_category=classify_error_message(str(exc)).value,
+                meta={"error": str(exc)},
+            )
         except Exception as exc:
             logger.exception("File transcription failed")
             self._record_provider_failure(provider, exc)
@@ -1451,7 +1940,34 @@ class ScriberWebController:
             rec.status = "failed"
             rec.step = "Failed"
             rec.append_final_text(f"[Error] {exc}")
+            self._emit_workflow_event(
+                message="File job failed",
+                event="api.job.failed",
+                workflow="file",
+                stage="job_failed",
+                level="ERROR",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                outcome="failure",
+                error_category=classify_error_message(str(exc)).value,
+                meta={"error": str(exc)},
+            )
         finally:
+            if rec.duration.strip() in {"", "--", "--:--", "-:--"}:
+                rec.duration = _format_duration(time.monotonic() - workflow_started)
+            if rec.status == "completed":
+                self._emit_workflow_event(
+                    message="File job completed",
+                    event="api.job.completed",
+                    workflow="file",
+                    stage="job_done",
+                    record=rec,
+                    provider=provider,
+                    milestone=True,
+                    duration_ms=(time.monotonic() - workflow_started) * 1000,
+                    outcome="success",
+                )
             rec.updated_at = datetime.now().isoformat()
             self._save_transcript_to_db(rec)  # Persist to database
             await self._broadcast_history_updated()
@@ -1487,9 +2003,20 @@ class ScriberWebController:
             with self._current_lock:
                 self._current = rec
             self._session_id = session_id
+            self._clear_input_warning_state(session_id=session_id, broadcast=True)
             self._start_hot_path_tracer(session_id)
             self._mark_hot_path(session_id, "controller_accepted")
             self._set_recording_state(RecordingState.INITIALIZING, context="start_listening")
+            self._emit_workflow_event(
+                message="Live mic session requested",
+                event="api.session.start_requested",
+                workflow="live_mic",
+                stage="session_start",
+                session_id=session_id,
+                record=rec,
+                milestone=True,
+                outcome="started",
+            )
 
             # Ensure overlay has stop callback connected before showing
             self._get_overlay()
@@ -1508,6 +2035,18 @@ class ScriberWebController:
                 self._overlay_audio_enabled = True
                 show_recording_overlay()
                 logger.info("Microphone ready - recording started")
+                self._emit_workflow_event(
+                    message="Microphone ready - recording started",
+                    event="pipeline.mic.ready",
+                    workflow="live_mic",
+                    stage="mic_ready",
+                    component="pipeline",
+                    session_id=session_id,
+                    record=rec,
+                    provider=self._active_provider,
+                    milestone=True,
+                    outcome="success",
+                )
 
             # Callback for pipeline errors (e.g., Soniox websocket timeout)
             def on_pipeline_error(error_msg: str):
@@ -1523,6 +2062,21 @@ class ScriberWebController:
                 category = classify_error_message(error_msg)
                 user_msg = user_message_for_category(category)
                 logger.warning(f"Pipeline error category={category.value}: {error_msg}")
+                self._emit_workflow_event(
+                    message=f"Pipeline error: {user_msg}",
+                    event="pipeline.provider.failed",
+                    workflow="live_mic",
+                    stage="pipeline_error",
+                    level="ERROR",
+                    component="pipeline",
+                    session_id=session_id,
+                    record=rec,
+                    provider=self._active_provider,
+                    milestone=True,
+                    outcome="failure",
+                    error_category=category.value,
+                    meta={"error": error_msg},
+                )
 
                 # Broadcast error to frontend and stop the pipeline
                 def schedule_cleanup():
@@ -1537,6 +2091,19 @@ class ScriberWebController:
                     return
                 self._mark_hot_path(session_id, "first_paste")
                 self._emit_hot_path_report_once(session_id)
+                self._emit_workflow_event(
+                    message="Text injected",
+                    event="injector.paste.succeeded",
+                    workflow="live_mic",
+                    stage="inject_done",
+                    component="injector",
+                    session_id=session_id,
+                    record=rec,
+                    provider=self._active_provider,
+                    milestone=True,
+                    outcome="success",
+                    meta={"chars": len(_text or "")},
+                )
 
             try:
                 live_provider = self._select_available_provider()
@@ -1558,6 +2125,20 @@ class ScriberWebController:
                     self._add_to_history(failed)
                     self._save_transcript_to_db(failed)
                     await self._broadcast_history_updated()
+                self._emit_workflow_event(
+                    message=f"Live mic session failed before start: {exc}",
+                    event="api.session.failed",
+                    workflow="live_mic",
+                    stage="session_start",
+                    level="ERROR",
+                    session_id=session_id,
+                    record=rec,
+                    provider=self._active_provider,
+                    milestone=True,
+                    outcome="failure",
+                    error_category=classify_error_message(str(exc)).value,
+                    meta={"error": str(exc)},
+                )
                 await self.broadcast(error_event(str(exc), session_id=session_id))
                 return
 
@@ -1575,6 +2156,18 @@ class ScriberWebController:
             self._pipeline_task.add_done_callback(lambda task: self._on_pipeline_done(task, session_id=session_id))
             self._is_listening = True
             self._set_status("Listening", session_id=session_id)
+            self._emit_workflow_event(
+                message=f"Pipeline session started ({live_provider})",
+                event="pipeline.session.started",
+                workflow="live_mic",
+                stage="listening",
+                component="pipeline",
+                session_id=session_id,
+                record=rec,
+                provider=live_provider,
+                milestone=True,
+                outcome="started",
+            )
             session_payload = session_started_event(
                 rec.to_public(include_content=True),
                 session_id=session_id,
@@ -1585,6 +2178,17 @@ class ScriberWebController:
     async def _emergency_stop_pipeline(self, *, session_id: str | None = None) -> None:
         """Emergency stop for connection errors - doesn't save transcript."""
         logger.warning("Emergency pipeline stop triggered")
+        self._emit_workflow_event(
+            message="Emergency pipeline stop triggered",
+            event="pipeline.emergency_stop.triggered",
+            workflow="live_mic",
+            stage="emergency_stop",
+            level="WARNING",
+            session_id=session_id,
+            component="pipeline",
+            milestone=True,
+            outcome="started",
+        )
         pipeline = None
         pipeline_task = None
         try:
@@ -1603,6 +2207,7 @@ class ScriberWebController:
                 self._pipeline = None
                 self._pipeline_task = None
                 self._active_provider = None
+                self._clear_input_warning_state(session_id=session_id, broadcast=True)
                 self._session_id = None
                 self._set_recording_state(RecordingState.FAILED, context="emergency_stop")
                 self._set_recording_state(RecordingState.IDLE, context="emergency_stop")
@@ -1643,7 +2248,19 @@ class ScriberWebController:
             with self._current_lock:
                 current = self._current
             session_id = self._session_id
+            provider_used = self._active_provider
             self._set_recording_state(RecordingState.FINALIZING, context="stop_listening")
+            self._emit_workflow_event(
+                message="Live mic stop requested",
+                event="api.session.stop_requested",
+                workflow="live_mic",
+                stage="session_stop",
+                session_id=session_id,
+                record=current,
+                provider=provider_used,
+                milestone=True,
+                outcome="started",
+            )
             
             # Clear pipeline references immediately to prevent double-stop
             # NOTE: We do NOT clear _current here - it must remain set until
@@ -1701,6 +2318,20 @@ class ScriberWebController:
             stop_error = exc
             self._record_provider_failure(self._active_provider or "", exc)
             logger.exception("Error while stopping live pipeline")
+            self._emit_workflow_event(
+                message="Live mic stop failed",
+                event="api.session.failed",
+                workflow="live_mic",
+                stage="session_stop",
+                level="ERROR",
+                session_id=session_id,
+                record=current,
+                provider=provider_used,
+                milestone=True,
+                outcome="failure",
+                error_category=classify_error_message(str(exc)).value,
+                meta={"error": str(exc)},
+            )
             self._overlay_audio_enabled = False
             hide_recording_overlay()
             error_payload = error_event(f"Failed to stop recording cleanly: {exc}", session_id=session_id)
@@ -1708,6 +2339,7 @@ class ScriberWebController:
         finally:
             async with self._listening_lock:
                 self._is_stopping = False
+                self._clear_input_warning_state(session_id=session_id, broadcast=True)
                 self._set_status("Error" if stop_error else "Stopped", session_id=session_id)
                 if session_id is None or self._session_id == session_id:
                     self._session_id = None
@@ -1731,6 +2363,23 @@ class ScriberWebController:
                 )
                 await self.broadcast(finished_payload)
                 await self._broadcast_history_updated()
+                duration_ms = None
+                if current._started_at_monotonic is not None:
+                    duration_ms = (time.monotonic() - current._started_at_monotonic) * 1000
+                self._emit_workflow_event(
+                    message="Live mic session completed" if not stop_error else "Live mic session failed",
+                    event="api.session.completed" if not stop_error else "api.session.failed",
+                    workflow="live_mic",
+                    stage="session_done",
+                    level="INFO" if not stop_error else "ERROR",
+                    session_id=session_id,
+                    record=current,
+                    provider=provider_used,
+                    milestone=True,
+                    duration_ms=duration_ms,
+                    outcome="success" if not stop_error else "failure",
+                    error_category=classify_error_message(str(stop_error)).value if stop_error else None,
+                )
             self._clear_hot_path_tracer(session_id)
 
     async def toggle_listening(self) -> None:
@@ -1863,6 +2512,16 @@ class ScriberWebController:
                 return favorite_name
             if selected_available:
                 return selected_name  # type: ignore[return-value]
+            first_available = next(
+                (
+                    dev_id
+                    for dev_id in available_ids
+                    if dev_id and dev_id != "default"
+                ),
+                None,
+            )
+            if first_available:
+                return first_available
             return "default"
 
         resolved_mic = resolve_mic_device_for_ui()
@@ -2071,7 +2730,9 @@ class ScriberWebController:
 
         devices: list[dict[str, str]] = [{"deviceId": "default", "label": "Default"}]
 
-        for entry in list_unique_input_microphones(sd):
+        sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
+        channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
+        for entry in list_unique_input_microphones(sd, sample_rate=sample_rate, channels=channels):
             label = f"{entry.name} (Default)" if entry.is_default else entry.name
             devices.append({"deviceId": entry.name, "label": label})
 
@@ -2087,8 +2748,10 @@ class ScriberWebController:
             The device index as a string, or "default" if not found.
             Falls back to Windows default if the saved device is unavailable.
         """
+        sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
+        channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
         if device_name == "default" or not device_name:
-            return "default"
+            device_name = "default"
         
         try:
             import sounddevice as sd
@@ -2097,7 +2760,12 @@ class ScriberWebController:
         
         try:
             devices = list(sd.query_devices())
-            host_priorities = get_input_hostapi_priorities(sd, devices)
+            host_priorities = get_input_hostapi_priorities(
+                sd,
+                devices,
+                sample_rate=sample_rate,
+                channels=channels,
+            )
 
             target = device_name.strip()
             target_norm = _normalize_device_name(target)
@@ -2124,11 +2792,31 @@ class ScriberWebController:
 
             if matches:
                 matches.sort(key=lambda item: (item[0], item[1]))
-                best = matches[0]
-                logger.info(f"Resolved microphone '{device_name}' to device index {best[1]}")
-                return str(best[1])
+                for _, idx, name in matches:
+                    if is_input_device_compatible(
+                        sd,
+                        device_index=idx,
+                        device_info=devices[idx],
+                        sample_rate=sample_rate,
+                        channels=channels,
+                    ):
+                        logger.info(f"Resolved microphone '{device_name}' to device index {idx}")
+                        return str(idx)
 
-            # Device not found - fall back to default
+            # Selected device not usable: choose curated compatible fallback.
+            curated = list_unique_input_microphones(
+                sd,
+                sample_rate=sample_rate,
+                channels=channels,
+            )
+            if curated:
+                preferred = next((entry for entry in curated if entry.is_default), None)
+                chosen = preferred or curated[0]
+                logger.warning(
+                    f"Microphone '{device_name}' unavailable; falling back to '{chosen.name}' (index {chosen.index})"
+                )
+                return str(chosen.index)
+
             logger.warning(f"Microphone '{device_name}' not found, falling back to default")
             return "default"
             
@@ -3367,6 +4055,13 @@ def _prewarm_stt_service(service_name: str) -> None:
 
 
 def main() -> None:
+    add_stderr = os.getenv("SCRIBER_LOG_STDERR", "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
+    setup_logging(component="web_api", force=True, add_stderr=add_stderr)
     host = os.getenv("SCRIBER_WEB_HOST", "127.0.0.1")
     port = int(os.getenv("SCRIBER_WEB_PORT", "8765"))
     asyncio.run(run_server(host, port))

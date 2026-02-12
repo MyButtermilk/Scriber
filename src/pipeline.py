@@ -485,6 +485,8 @@ from src.config import Config
 from src.core.provider_capabilities import injects_immediately_in_live_mode
 from src.audio_devices import (
     get_input_hostapi_priorities,
+    is_input_device_compatible,
+    list_unique_input_microphones,
     normalize_device_name,
     rank_hostapi,
 )
@@ -535,8 +537,11 @@ def _resolve_mic_device(device_name: str) -> str:
         logger.warning(f"Sounddevice unavailable while resolving microphone ({exc}); using default")
         return "default"
     
+    sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
+    requested_channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
+
     def find_device_by_name(name: str) -> str | None:
-        """Find device index by name, preferring the active host API."""
+        """Find a compatible device index by name, preferring active host APIs."""
         if not name or name == "default":
             return None
         target = name.strip()
@@ -548,10 +553,15 @@ def _resolve_mic_device(device_name: str) -> str:
             if target_norm:
                 return _normalize_device_name(dev_name) == target_norm
             return False
-            
+
         try:
             devices = list(sd.query_devices())
-            host_priorities = get_input_hostapi_priorities(sd, devices)
+            host_priorities = get_input_hostapi_priorities(
+                sd,
+                devices,
+                sample_rate=sample_rate,
+                channels=requested_channels,
+            )
             matches: list[tuple[int, int, str, int]] = []
             for idx, dev in enumerate(devices):
                 max_input_channels = int(dev.get("max_input_channels", 0) or 0)
@@ -566,55 +576,115 @@ def _resolve_mic_device(device_name: str) -> str:
                     hostapi_idx = None
                 matches.append((rank_hostapi(hostapi_idx, host_priorities), idx, dev_name, max_input_channels))
 
-            if matches:
-                matches.sort(key=lambda item: (item[0], item[1]))
+            if not matches:
+                return None
 
-                check_input_settings = getattr(sd, "check_input_settings", None)
-                sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
-                requested_channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
-
-                # Try ranked candidates first, but skip variants that can't open at target settings
-                # (common with some WASAPI endpoints at 16kHz) before falling back to default.
-                for _, idx, dev_name, max_input_channels in matches:
-                    compatible_channels = min(requested_channels, max_input_channels)
-                    try:
-                        if callable(check_input_settings):
-                            check_input_settings(
-                                device=idx,
-                                samplerate=sample_rate,
-                                channels=compatible_channels,
-                                dtype="int16",
-                            )
-                    except Exception as exc:
-                        logger.info(
-                            "Microphone candidate '{}' (index {}) rejected at {} Hz/{} ch ({}); "
-                            "trying next host variant".format(
-                                dev_name,
-                                idx,
-                                sample_rate,
-                                compatible_channels,
-                                exc,
-                            )
+            matches.sort(key=lambda item: (item[0], item[1]))
+            for _, idx, dev_name, max_input_channels in matches:
+                compatible_channels = min(requested_channels, max_input_channels)
+                if not is_input_device_compatible(
+                    sd,
+                    device_index=idx,
+                    device_info=devices[idx],
+                    sample_rate=sample_rate,
+                    channels=compatible_channels,
+                ):
+                    logger.info(
+                        "Microphone candidate '{}' (index {}) rejected at {} Hz/{} ch; "
+                        "trying next host variant".format(
+                            dev_name,
+                            idx,
+                            sample_rate,
+                            compatible_channels,
                         )
-                        continue
+                    )
+                    continue
 
-                    if dev_name != target:
-                        logger.info(f"Matched microphone '{target}' to '{dev_name}' (normalized match)")
-                    return str(idx)
-
-                # If all compatibility checks fail, return the best-ranked variant and let
-                # stream initialization apply its own fallback behavior.
-                _, idx, dev_name, _ = matches[0]
-                logger.warning(
-                    f"All matched variants for microphone '{target}' failed compatibility checks; "
-                    f"using best-ranked index {idx} ('{dev_name}')"
-                )
                 if dev_name != target:
                     logger.info(f"Matched microphone '{target}' to '{dev_name}' (normalized match)")
                 return str(idx)
+
+            logger.warning(
+                f"All matched variants for microphone '{target}' failed compatibility checks; skipping it"
+            )
+            return None
         except Exception:
-            pass
-        return None
+            return None
+
+    def fallback_to_available_device() -> str:
+        """Return a compatible fallback index from curated input microphones."""
+        try:
+            curated = list_unique_input_microphones(
+                sd,
+                sample_rate=sample_rate,
+                channels=requested_channels,
+            )
+        except Exception:
+            curated = []
+
+        if curated:
+            preferred = next((entry for entry in curated if entry.is_default), None)
+            chosen = preferred or curated[0]
+            if chosen.is_default:
+                logger.info(
+                    f"Using system default microphone '{chosen.name}' (device index {chosen.index})"
+                )
+            else:
+                logger.info(
+                    f"Falling back to available microphone '{chosen.name}' (device index {chosen.index})"
+                )
+            return str(chosen.index)
+
+        # Last resort fallback (should rarely happen).
+        try:
+            devices = list(sd.query_devices())
+        except Exception:
+            devices = []
+        if not devices:
+            return "default"
+
+        host_priorities = get_input_hostapi_priorities(
+            sd,
+            devices,
+            sample_rate=sample_rate,
+            channels=requested_channels,
+        )
+        candidates: list[tuple[int, int, int, int, str]] = []
+        for idx, dev in enumerate(devices):
+            max_input_channels = int(dev.get("max_input_channels", 0) or 0)
+            if max_input_channels <= 0:
+                continue
+            try:
+                hostapi_idx = int(dev.get("hostapi", -1))
+            except (TypeError, ValueError):
+                hostapi_idx = None
+            default_rank = 1
+            candidates.append(
+                (
+                    default_rank,
+                    rank_hostapi(hostapi_idx, host_priorities),
+                    idx,
+                    max_input_channels,
+                    str(dev.get("name", "")),
+                )
+            )
+
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        for _, _, idx, max_input_channels, dev_name in candidates:
+            compatible_channels = min(requested_channels, max_input_channels)
+            if not is_input_device_compatible(
+                sd,
+                device_index=idx,
+                device_info=devices[idx],
+                sample_rate=sample_rate,
+                channels=compatible_channels,
+            ):
+                continue
+            logger.info(f"Falling back to available microphone '{dev_name}' (device index {idx})")
+            return str(idx)
+
+        logger.warning("No compatible microphone found; using unresolved system default")
+        return "default"
     
     # If a favorite mic is configured and available, always prefer it.
     # This matches the UI promise: "always use it when available."
@@ -624,37 +694,34 @@ def _resolve_mic_device(device_name: str) -> str:
         if favorite_idx:
             logger.info(f"Using favorite microphone '{favorite}' (device index {favorite_idx})")
             return favorite_idx
-    
-    # Fall back to selected device
-    if device_name == "default" or not device_name:
-        return "default"
-    
-    # If it's already a numeric index (legacy), validate it exists
-    try:
-        idx = int(device_name)
-        # Validate the device exists
-        import sounddevice as sd
+
+    # Try selected device unless "default" is explicitly requested.
+    if device_name not in ("default", "", None):
+        # If it's already a numeric index (legacy), validate it exists.
         try:
-            dev_info = sd.query_devices(device=idx, kind='input')
-            if int(dev_info.get('max_input_channels', 0) or 0) > 0:
-                return device_name
-        except Exception:
-            pass
-        # Legacy device doesn't exist - fall back to default
-        logger.warning(f"Legacy device index {device_name} not valid, falling back to Windows default")
-        return "default"
-    except ValueError:
-        pass
-    
-    # It's a device name - resolve to index
-    device_idx = find_device_by_name(device_name)
-    if device_idx:
-        logger.info(f"Resolved microphone '{device_name}' to device index {device_idx}")
-        return device_idx
-    
-    # Device not found - fall back to default
-    logger.warning(f"Microphone '{device_name}' not available, falling back to Windows default")
-    return "default"
+            idx = int(device_name)
+            try:
+                dev_info = sd.query_devices(device=idx)
+            except Exception:
+                dev_info = None
+            if dev_info and is_input_device_compatible(
+                sd,
+                device_index=idx,
+                device_info=dev_info,
+                sample_rate=sample_rate,
+                channels=requested_channels,
+            ):
+                return str(idx)
+            logger.warning(f"Legacy device index {device_name} not valid; selecting fallback microphone")
+        except ValueError:
+            device_idx = find_device_by_name(device_name)
+            if device_idx:
+                logger.info(f"Resolved microphone '{device_name}' to device index {device_idx}")
+                return device_idx
+            logger.warning(f"Microphone '{device_name}' not available; selecting fallback microphone")
+
+    # Default or unavailable selection: choose first compatible endpoint.
+    return fallback_to_available_device()
 
 
 class ConnectionErrorHandlerProcessor(FrameProcessor):

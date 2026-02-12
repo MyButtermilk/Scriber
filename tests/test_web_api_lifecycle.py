@@ -65,6 +65,41 @@ async def test_get_state_reports_background_processing_flag():
 
 
 @pytest.mark.asyncio
+async def test_low_input_warning_emits_and_clears():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    ctl._session_id = "s1"
+    ctl._is_listening = True
+    ctl._mic_low_rms_warn_after_secs = 0.01
+    ctl._mic_low_rms_threshold = 0.001
+    ctl._mic_low_rms_clear_threshold = 0.002
+
+    with patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock:
+        ctl._on_audio_level(0.0, session_id="s1")
+        await asyncio.sleep(0.03)
+        ctl._on_audio_level(0.0, session_id="s1")
+        await asyncio.sleep(0.05)
+
+        assert ctl.get_state()["inputWarning"]
+        active_payloads = [
+            call.args[0]
+            for call in broadcast_mock.await_args_list
+            if call.args and isinstance(call.args[0], dict) and call.args[0].get("type") == "input_warning"
+        ]
+        assert any(payload.get("active") is True for payload in active_payloads)
+
+        ctl._on_audio_level(0.02, session_id="s1")
+        await asyncio.sleep(0.05)
+        assert ctl.get_state()["inputWarning"] == ""
+        inactive_payloads = [
+            call.args[0]
+            for call in broadcast_mock.await_args_list
+            if call.args and isinstance(call.args[0], dict) and call.args[0].get("type") == "input_warning"
+        ]
+        assert any(payload.get("active") is False for payload in inactive_payloads)
+
+
+@pytest.mark.asyncio
 async def test_on_pipeline_done_persists_failed_live_session():
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)

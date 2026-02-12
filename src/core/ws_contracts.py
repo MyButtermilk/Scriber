@@ -29,6 +29,22 @@ def audio_level_event(rms: float, *, session_id: str | None = None) -> dict[str,
     return _optional_session({"type": "audio_level", "rms": float(rms)}, session_id)
 
 
+def input_warning_event(
+    active: bool,
+    *,
+    message: str = "",
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    return _optional_session(
+        {
+            "type": "input_warning",
+            "active": bool(active),
+            "message": str(message),
+        },
+        session_id,
+    )
+
+
 def transcript_event(text: str, is_final: bool, *, session_id: str | None = None) -> dict[str, Any]:
     return _optional_session(
         {
@@ -75,6 +91,11 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
     elif event_type == "audio_level":
         if not isinstance(payload.get("rms"), (int, float)):
             raise WSContractError("audio_level event requires numeric 'rms'")
+    elif event_type == "input_warning":
+        if not isinstance(payload.get("active"), bool):
+            raise WSContractError("input_warning event requires bool 'active'")
+        if not isinstance(payload.get("message"), str):
+            raise WSContractError("input_warning event requires string 'message'")
     elif event_type == "transcript":
         if not isinstance(payload.get("text"), str):
             raise WSContractError("transcript event requires string 'text'")

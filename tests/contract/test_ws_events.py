@@ -7,6 +7,7 @@ from src.core.ws_contracts import (
     audio_level_event,
     error_event,
     history_updated_event,
+    input_warning_event,
     session_finished_event,
     session_started_event,
     status_event,
@@ -21,6 +22,7 @@ def test_ws_event_builders_match_contract():
     payloads = [
         status_event("Listening", True, session_id="s1"),
         audio_level_event(0.12, session_id="s1"),
+        input_warning_event(True, message="Mic level too low", session_id="s1"),
         transcript_event("hello", True, session_id="s1"),
         error_event("failed", session_id="s1"),
         history_updated_event(),

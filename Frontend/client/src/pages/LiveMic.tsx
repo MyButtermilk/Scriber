@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, memo, useMemo, useRef } from "react";
 import { useSharedWebSocket } from "@/contexts/WebSocketContext";
-import { Mic, Square, Clock, Globe, Timer, Trash2, Loader2, LayoutGrid, LayoutList, Search, X, Copy, Check } from "lucide-react";
+import { Mic, Square, Globe, Trash2, Loader2, LayoutGrid, LayoutList, Search, X, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -57,18 +57,16 @@ const TranscriptCard = memo(function TranscriptCard({
               </div>
               <div>
                 <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
-                <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-                  <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
-                  <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
-                  <span className="flex items-center gap-1 bg-secondary px-1.5 py-0.5 rounded-md"><Globe className="w-3 h-3" /> {item.language}</span>
-                </div>
+                <p className="text-sm text-muted-foreground mt-1 truncate">
+                  {item.date} • {formatDurationLikeYoutube(item.duration)} • {item.language || "—"}
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
                 size="icon"
-                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
+                className="opacity-100 md:opacity-60 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}
                 title="Copy transcript"
@@ -84,7 +82,7 @@ const TranscriptCard = memo(function TranscriptCard({
               <Button
                 variant="ghost"
                 size="icon"
-                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                className="opacity-100 md:opacity-60 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
                 onClick={(e) => onDelete(e, item.id)}
                 disabled={isDeleting}
                 title="Delete transcript"
@@ -110,7 +108,7 @@ const TranscriptCard = memo(function TranscriptCard({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-primary h-8 w-8"
+                  className="opacity-100 md:opacity-60 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
                   onClick={(e) => onCopy(e, item.id)}
                   disabled={isCopying}
                   title="Copy transcript"
@@ -126,7 +124,7 @@ const TranscriptCard = memo(function TranscriptCard({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-destructive h-8 w-8"
+                  className="opacity-100 md:opacity-60 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
                   onClick={(e) => onDelete(e, item.id)}
                   disabled={isDeleting}
                   title="Delete transcript"
@@ -142,12 +140,13 @@ const TranscriptCard = memo(function TranscriptCard({
               </div>
             </div>
             <h3 className="font-medium text-foreground group-hover:text-primary transition-colors line-clamp-2 mb-2">{item.title}</h3>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
-              <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {item.date}</span>
-              <span className="flex items-center gap-1"><Timer className="w-3 h-3" /> {item.duration}</span>
+            <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground mt-auto">
+              <span>{item.date}</span>
+              <span>•</span>
+              <span>{formatDurationLikeYoutube(item.duration)}</span>
             </div>
             <div className="mt-2">
-              <span className="inline-flex items-center gap-1 bg-secondary/50 px-2 py-1 rounded-md text-xs"><Globe className="w-3 h-3" /> {item.language}</span>
+              <span className="inline-flex items-center gap-1 bg-secondary/50 px-2 py-1 rounded-md text-xs"><Globe className="w-3.5 h-3.5" /> {item.language || "—"}</span>
             </div>
           </div>
         )}
@@ -213,20 +212,22 @@ import { SkeletonList } from "@/components/ui/skeleton-card";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useUrlQueryState } from "@/hooks/use-url-query-state";
+import { formatDurationLikeYoutube } from "@/lib/duration";
 
 export default function LiveMic() {
   const { toast } = useToast();
   const [isRecording, setIsRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState<string>("Stopped");
+  const [inputWarning, setInputWarning] = useState("");
   const [finalText, setFinalText] = useState("");
   const [interimText, setInterimText] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
-  const [viewMode, setViewMode] = useUrlQueryState<"list" | "grid">("view", "list", {
-    parse: (raw) => (raw === "grid" ? "grid" : "list"),
+  const [viewMode, setViewMode] = useUrlQueryState<"list" | "grid">("view", "grid", {
+    parse: (raw) => (raw === "list" ? "list" : "grid"),
   });
   const [searchQuery, setSearchQuery] = useUrlQueryState("q", "", {
     parse: (raw) => raw ?? "",
@@ -294,6 +295,7 @@ export default function LiveMic() {
         }
         setIsRecording(!!msg.listening);
         setStatus(msg.status || "Stopped");
+        setInputWarning(String(msg.inputWarning || ""));
         if (msg.current?.content) {
           setFinalText(String(msg.current.content));
           setInterimText("");
@@ -305,12 +307,23 @@ export default function LiveMic() {
         }
         setIsRecording(!!msg.listening);
         setStatus(msg.status || "Stopped");
+        setInputWarning(String(msg.inputWarning || ""));
         break;
       case "audio_level":
         if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
           break;
         }
         audioLevelRef.current = Number(msg.rms) || 0;
+        break;
+      case "input_warning":
+        if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+          break;
+        }
+        if (msg.active) {
+          setInputWarning(String(msg.message || "Microphone input level is very low."));
+        } else {
+          setInputWarning("");
+        }
         break;
       case "transcript":
         if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
@@ -335,6 +348,7 @@ export default function LiveMic() {
         }
         setIsRecording(true);
         setStatus("Listening");
+        setInputWarning("");
         setFinalText("");
         setInterimText("");
         break;
@@ -345,6 +359,7 @@ export default function LiveMic() {
         activeSessionIdRef.current = null;
         setIsRecording(false);
         setStatus("Stopped");
+        setInputWarning("");
         if (msg.session?.content) {
           setFinalText(String(msg.session.content));
           setInterimText("");
@@ -363,6 +378,7 @@ export default function LiveMic() {
         });
         setIsRecording(false);
         setStatus("Stopped");
+        setInputWarning("");
         break;
       case "settings_updated":
         break;
@@ -476,138 +492,151 @@ export default function LiveMic() {
   }, [queryClient]);
 
   return (
-    <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
+    <div className="max-w-screen-md xl:max-w-6xl mx-auto px-4 py-6 md:py-8">
       <header className="mb-8 text-center space-y-2">
         <h1 className="text-3xl font-bold tracking-tight text-foreground">Live Transcription</h1>
         <p className="text-muted-foreground">Capture high-fidelity voice notes instantly</p>
       </header>
 
-      {/* Main Recording Area */}
-      <div className="flex flex-col items-center justify-center space-y-6 mb-10">
+      <div className="space-y-10">
+        <section className="flex flex-col items-center justify-center space-y-6">
 
-        {/* Live Text Output - Debossed status well for unified design */}
-        <div className="neu-status-well w-full max-w-lg min-h-[120px] text-center flex items-center justify-center p-6">
-          {isRecording ? (
-            <p className="text-lg md:text-xl font-medium leading-relaxed relative z-10">
-              {(finalText || interimText) ? (
-                <>
-                  "<span className="text-foreground/90">{finalText}</span>
-                  {interimText && (
-                    <span className="text-muted-foreground italic">{finalText ? ' ' : ''}{interimText}</span>
-                  )}"
-                </>
-              ) : (
-                <span className="text-foreground/90">"{status || "Listening"}..."</span>
-              )}
+          {/* Live Text Output - Debossed status well for unified design */}
+          <div className="neu-status-well w-full max-w-lg min-h-[120px] text-center flex items-center justify-center p-6">
+            <p className="sr-only" aria-live="assertive" aria-atomic="true">
+              {isRecording ? `Recording started. Elapsed ${formatTime(elapsed)}.` : "Recording stopped."}
             </p>
-          ) : (
-            <p className="text-muted-foreground relative z-10">Ready to record. Tap the microphone to start.</p>
+            <div aria-live="polite" aria-atomic="true">
+              {isRecording ? (
+                <p className="text-lg md:text-xl font-medium leading-relaxed relative z-10">
+                  {(finalText || interimText) ? (
+                    <>
+                      "<span className="text-foreground/90">{finalText}</span>
+                      {interimText && (
+                        <span className="text-muted-foreground italic">{finalText ? ' ' : ''}{interimText}</span>
+                      )}"
+                    </>
+                  ) : (
+                    <span className="text-foreground/90">"{status || "Listening"}..."</span>
+                  )}
+                </p>
+              ) : (
+                <p className="text-muted-foreground relative z-10">Ready to record. Tap the microphone to start.</p>
+              )}
+            </div>
+          </div>
+          {isRecording && inputWarning && (
+            <div className="w-full max-w-lg rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+              {inputWarning}
+            </div>
           )}
-        </div>
 
-        {/* Waveform Visualization (Mock) */}
-        <AudioVisualizer isRecording={isRecording} audioLevelRef={audioLevelRef} />
+          {/* Waveform Visualization (Mock) */}
+          <AudioVisualizer isRecording={isRecording} audioLevelRef={audioLevelRef} />
 
-        {/* Controls */}
-        <div className="flex items-center gap-6">
-          <div className="text-sm font-medium text-muted-foreground w-16 text-right">
-            {isRecording && <span className="animate-pulse text-red-500 motion-reduce:animate-none">REC</span>}
-          </div>
+          {/* Controls */}
+          <div className="flex items-center gap-6">
+            <div className="text-sm font-medium text-muted-foreground w-16 text-right">
+              {isRecording && <span className="animate-pulse text-red-500 motion-reduce:animate-none">REC</span>}
+            </div>
 
-          <button
-            type="button"
-            className={`neu-mic-button flex items-center justify-center text-white ${isRecording ? 'recording recording-pulse' : ''}`}
-            onClick={handleToggle}
-            aria-label={isRecording ? "Stop recording" : "Start recording"}
-          >
-            {isRecording ? (
-              <Square className="w-10 h-10 fill-current" />
-            ) : (
-              <Mic className="w-12 h-12" />
-            )}
-          </button>
-
-          <div className="text-sm font-mono font-medium text-muted-foreground w-16">
-            {isRecording ? formatTime(elapsed) : "00:00"}
-          </div>
-        </div>
-      </div>
-
-      {/* History Section */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between px-2">
-          <h2 className="text-lg font-semibold text-foreground">Recent Recordings</h2>
-          <div className="flex items-center gap-2">
-            <ToggleGroup
-              type="single"
-              value={viewMode}
-              onValueChange={(val) => val && setViewMode(val as "list" | "grid")}
-              className="bg-secondary/50 rounded-lg p-1"
-            >
-              <ToggleGroupItem value="list" aria-label="List view" className="h-8 w-8 p-0">
-                <LayoutList className="h-4 w-4" />
-              </ToggleGroupItem>
-              <ToggleGroupItem value="grid" aria-label="Grid view" className="h-8 w-8 p-0">
-                <LayoutGrid className="h-4 w-4" />
-              </ToggleGroupItem>
-            </ToggleGroup>
-          </div>
-        </div>
-
-        {/* Search Bar */}
-        <div className="relative mt-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            type="text"
-            placeholder="Search recordings..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 pr-9 h-9 bg-secondary/50"
-          />
-          {searchQuery && (
             <button
               type="button"
-              onClick={() => setSearchQuery("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              aria-label="Clear recording search"
+              className={`neu-mic-button flex items-center justify-center text-white ${isRecording ? 'recording recording-pulse' : ''}`}
+              onClick={handleToggle}
+              aria-label={isRecording ? "Stop recording" : "Start recording"}
             >
-              <X className="w-4 h-4" />
+              {isRecording ? (
+                <Square className="w-10 h-10 fill-current" />
+              ) : (
+                <Mic className="w-12 h-12" />
+              )}
             </button>
-          )}
-        </div>
 
-        {transcriptsQuery.isLoading ? (
-          <SkeletonList count={3} variant={viewMode} />
-        ) : transcriptsQuery.isError ? (
-          <QueryErrorState
-            title="Could not load recordings"
-            description="Please retry loading your recording history."
-            onRetry={() => transcriptsQuery.refetch()}
-          />
-        ) : transcripts.length === 0 ? (
-          debouncedSearch ? (
-            <p className="text-center text-muted-foreground py-8">No recordings match "{debouncedSearch}"</p>
-          ) : (
-            <EmptyState type="mic" />
-          )
-        ) : (
-          <div className={viewMode === "grid" ? "grid grid-cols-2 gap-4" : "flex flex-col gap-4"}>
-            {transcripts.map((item, index) => (
-              <TranscriptCard
-                key={item.id}
-                item={item}
-                index={index}
-                viewMode={viewMode}
-                isDeleting={deletingId === item.id}
-                isCopying={copyingId === item.id}
-                onDelete={deleteTranscript}
-                onCopy={copyTranscript}
-                onNavigate={navigateToTranscript}
-                onHover={preloadTranscript}
-              />
-            ))}
+            <div className="text-sm font-mono font-medium text-muted-foreground w-16">
+              {isRecording ? formatTime(elapsed) : "00:00"}
+            </div>
           </div>
-        )}
+        </section>
+
+        {/* History Section */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between px-2">
+            <h2 className="text-lg font-semibold text-foreground">Recent Recordings</h2>
+            <div className="flex items-center gap-2">
+              <ToggleGroup
+                type="single"
+                value={viewMode}
+                onValueChange={(val) => val && setViewMode(val as "list" | "grid")}
+                className="bg-secondary/50 rounded-lg p-1"
+              >
+                <ToggleGroupItem value="list" aria-label="List view" className="h-11 w-11 p-0">
+                  <LayoutList className="h-4 w-4" />
+                </ToggleGroupItem>
+                <ToggleGroupItem value="grid" aria-label="Grid view" className="h-11 w-11 p-0">
+                  <LayoutGrid className="h-4 w-4" />
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </div>
+          </div>
+
+          {/* Search Bar */}
+          <div className="relative mt-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="Search recordings..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 pr-9 h-11 bg-secondary/50"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                aria-label="Clear recording search"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {transcriptsQuery.isLoading ? (
+            <SkeletonList count={3} variant={viewMode} />
+          ) : transcriptsQuery.isError ? (
+            <QueryErrorState
+              title="Could not load recordings"
+              description="Please retry loading your recording history."
+              onRetry={() => transcriptsQuery.refetch()}
+            />
+          ) : (
+            transcripts.length === 0 ? (
+              debouncedSearch ? (
+                <p className="text-center text-muted-foreground py-8">No recordings match "{debouncedSearch}"</p>
+              ) : (
+                <EmptyState type="mic" />
+              )
+            ) : (
+              <div className={viewMode === "grid" ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" : "flex flex-col gap-4"}>
+                {transcripts.map((item, index) => (
+                  <TranscriptCard
+                    key={item.id}
+                    item={item}
+                    index={index}
+                    viewMode={viewMode}
+                    isDeleting={deletingId === item.id}
+                    isCopying={copyingId === item.id}
+                    onDelete={deleteTranscript}
+                    onCopy={copyTranscript}
+                    onNavigate={navigateToTranscript}
+                    onHover={preloadTranscript}
+                  />
+                ))}
+              </div>
+            )
+          )}
+        </section>
       </div>
     </div>
   );

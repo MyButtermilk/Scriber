@@ -67,6 +67,49 @@ def _is_input_device(device: Mapping[str, Any]) -> bool:
     return bool(channels and channels > 0)
 
 
+def is_input_device_compatible(
+    sd: Any,
+    *,
+    device_index: int,
+    device_info: Mapping[str, Any] | None = None,
+    sample_rate: int = 16000,
+    channels: int = 1,
+) -> bool:
+    """Return True when an input endpoint can be opened with current settings."""
+    info = device_info
+    if info is None:
+        try:
+            info = sd.query_devices(device=device_index)
+        except Exception:
+            return False
+
+    if not info or not _is_input_device(info):
+        return False
+
+    max_channels = _to_int(info.get("max_input_channels", 0)) or 0
+    if max_channels <= 0:
+        return False
+
+    check_input_settings = getattr(sd, "check_input_settings", None)
+    if not callable(check_input_settings):
+        return True
+
+    wanted_channels = max(1, int(channels or 1))
+    wanted_channels = min(wanted_channels, max_channels)
+    wanted_rate = max(8000, int(sample_rate or 16000))
+
+    try:
+        check_input_settings(
+            device=device_index,
+            samplerate=wanted_rate,
+            channels=wanted_channels,
+            dtype="int16",
+        )
+    except Exception:
+        return False
+    return True
+
+
 def _looks_virtual_or_output(name: str) -> bool:
     if _GENERIC_INPUT_RE.match(name):
         return True
@@ -80,15 +123,26 @@ def get_default_input_device_index(sd: Any) -> int | None:
     """Return the current default input index from sounddevice, when available."""
     try:
         default = sd.default.device
-        if isinstance(default, (list, tuple)):
-            default = default[0]
+        if not isinstance(default, (int, float, str)):
+            try:
+                default = default[0]
+            except Exception:
+                default = None
+        if default is None:
+            return None
         idx = int(default)
     except Exception:
         return None
     return idx if idx >= 0 else None
 
 
-def get_input_hostapi_priorities(sd: Any, devices: list[Mapping[str, Any]] | None = None) -> list[int]:
+def get_input_hostapi_priorities(
+    sd: Any,
+    devices: list[Mapping[str, Any]] | None = None,
+    *,
+    sample_rate: int = 16000,
+    channels: int = 1,
+) -> list[int]:
     """Build host API priority order for input devices.
 
     Inspired by Handy: prefer a single active host first so UI listings avoid
@@ -116,7 +170,7 @@ def get_input_hostapi_priorities(sd: Any, devices: list[Mapping[str, Any]] | Non
     def host_has_usable_input(host_idx: int | None) -> bool:
         if host_idx is None:
             return False
-        for device in devices:
+        for idx, device in enumerate(devices):
             if not _is_input_device(device):
                 continue
             if _to_int(device.get("hostapi")) != host_idx:
@@ -126,21 +180,37 @@ def get_input_hostapi_priorities(sd: Any, devices: list[Mapping[str, Any]] | Non
                 continue
             if _looks_virtual_or_output(name):
                 continue
+            if not is_input_device_compatible(
+                sd,
+                device_index=idx,
+                device_info=device,
+                sample_rate=sample_rate,
+                channels=channels,
+            ):
+                continue
             return True
         return False
 
     mme_idx: int | None = None
     wasapi_idx: int | None = None
+    directsound_idx: int | None = None
     for i, host_api in enumerate(host_apis):
         host_name = str(host_api.get("name", ""))
         if host_name == "MME":
             mme_idx = i
         elif "WASAPI" in host_name:
             wasapi_idx = i
+        elif "DirectSound" in host_name:
+            directsound_idx = i
 
-    # Match Handy behavior on Windows: prefer WASAPI device space.
-    if sys.platform.startswith("win") and host_has_usable_input(wasapi_idx):
-        add(wasapi_idx)
+    # On Windows, prefer low-latency/shared APIs before legacy MME.
+    if sys.platform.startswith("win"):
+        if host_has_usable_input(wasapi_idx):
+            add(wasapi_idx)
+        if host_has_usable_input(directsound_idx):
+            add(directsound_idx)
+        if host_has_usable_input(mme_idx):
+            add(mme_idx)
 
     default_idx = get_default_input_device_index(sd)
     if default_idx is not None and default_idx < len(devices):
@@ -149,6 +219,7 @@ def get_input_hostapi_priorities(sd: Any, devices: list[Mapping[str, Any]] | Non
     add(_to_int(getattr(getattr(sd, "default", None), "hostapi", None)))
 
     add(wasapi_idx)
+    add(directsound_idx)
     add(mme_idx)
 
     for i in range(len(host_apis)):
@@ -160,7 +231,13 @@ def get_input_hostapi_priorities(sd: Any, devices: list[Mapping[str, Any]] | Non
     return priorities
 
 
-def get_primary_input_hostapi(sd: Any, devices: list[Mapping[str, Any]] | None = None) -> int | None:
+def get_primary_input_hostapi(
+    sd: Any,
+    devices: list[Mapping[str, Any]] | None = None,
+    *,
+    sample_rate: int = 16000,
+    channels: int = 1,
+) -> int | None:
     """Pick one active host API for microphone listing."""
     if devices is None:
         try:
@@ -168,16 +245,37 @@ def get_primary_input_hostapi(sd: Any, devices: list[Mapping[str, Any]] | None =
         except Exception:
             return None
 
-    priorities = get_input_hostapi_priorities(sd, devices)
+    priorities = get_input_hostapi_priorities(
+        sd,
+        devices,
+        sample_rate=sample_rate,
+        channels=channels,
+    )
     for hostapi_idx in priorities:
-        for device in devices:
+        for idx, device in enumerate(devices):
             if not _is_input_device(device):
                 continue
             if _to_int(device.get("hostapi")) == hostapi_idx:
+                if not is_input_device_compatible(
+                    sd,
+                    device_index=idx,
+                    device_info=device,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                ):
+                    continue
                 return hostapi_idx
 
-    for device in devices:
+    for idx, device in enumerate(devices):
         if not _is_input_device(device):
+            continue
+        if not is_input_device_compatible(
+            sd,
+            device_index=idx,
+            device_info=device,
+            sample_rate=sample_rate,
+            channels=channels,
+        ):
             continue
         hostapi_idx = _to_int(device.get("hostapi"))
         if hostapi_idx is not None:
@@ -194,7 +292,12 @@ def rank_hostapi(hostapi_idx: int | None, priorities: list[int]) -> int:
         return len(priorities)
 
 
-def list_unique_input_microphones(sd: Any) -> list[MicrophoneEntry]:
+def list_unique_input_microphones(
+    sd: Any,
+    *,
+    sample_rate: int = 16000,
+    channels: int = 1,
+) -> list[MicrophoneEntry]:
     """List deduplicated input devices from one active host API."""
     try:
         devices = list(sd.query_devices())
@@ -206,7 +309,28 @@ def list_unique_input_microphones(sd: Any) -> list[MicrophoneEntry]:
     if default_idx is not None and default_idx < len(devices):
         default_norm = normalize_device_name(str(devices[default_idx].get("name", "")))
 
-    primary_hostapi = get_primary_input_hostapi(sd, devices)
+    primary_hostapi = get_primary_input_hostapi(
+        sd,
+        devices,
+        sample_rate=sample_rate,
+        channels=channels,
+    )
+
+    compatibility_cache: dict[int, bool] = {}
+
+    def is_compatible(idx: int, device: Mapping[str, Any]) -> bool:
+        cached = compatibility_cache.get(idx)
+        if cached is not None:
+            return cached
+        compatible = is_input_device_compatible(
+            sd,
+            device_index=idx,
+            device_info=device,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+        compatibility_cache[idx] = compatible
+        return compatible
 
     def collect(only_hostapi: int | None) -> dict[str, MicrophoneEntry]:
         entries: dict[str, MicrophoneEntry] = {}
@@ -220,6 +344,9 @@ def list_unique_input_microphones(sd: Any) -> list[MicrophoneEntry]:
 
             hostapi_idx = _to_int(device.get("hostapi"))
             if only_hostapi is not None and hostapi_idx != only_hostapi:
+                continue
+
+            if not is_compatible(idx, device):
                 continue
 
             normalized_name = normalize_device_name(name)

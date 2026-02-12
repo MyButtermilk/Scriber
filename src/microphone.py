@@ -22,6 +22,56 @@ except ImportError as exc:  # pragma: no cover - defensive fallback
     ) from exc
 
 
+def _select_best_mono_channel(
+    indata: np.ndarray,
+    previous_channel: int | None = None,
+) -> tuple[np.ndarray, int | None]:
+    """Pick the strongest channel and convert multichannel input to mono int16.
+
+    Some Windows endpoints expose a silent/noisy channel next to the real mic
+    signal. Averaging channels can cancel speech (phase issues), so we keep the
+    strongest channel with mild hysteresis to avoid frequent channel flips.
+    """
+    if not isinstance(indata, np.ndarray) or indata.ndim != 2 or indata.shape[1] <= 1:
+        return indata, previous_channel
+
+    try:
+        channel_energy = np.mean(np.square(indata.astype(np.float32)), axis=0)
+    except Exception:
+        channel_energy = np.zeros(indata.shape[1], dtype=np.float32)
+
+    best_channel = int(np.argmax(channel_energy))
+    chosen_channel = best_channel
+
+    if previous_channel is not None and 0 <= previous_channel < indata.shape[1]:
+        prev_energy = float(channel_energy[previous_channel])
+        best_energy = float(channel_energy[best_channel])
+        # Keep previous channel unless another one is clearly stronger.
+        if prev_energy > 0.0 and best_energy < (prev_energy * 1.35):
+            chosen_channel = previous_channel
+
+    mono = indata[:, chosen_channel]
+    if mono.dtype != np.int16:
+        mono = np.clip(mono, -32768, 32767).astype(np.int16)
+    else:
+        mono = np.ascontiguousarray(mono)
+
+    return mono.reshape(-1, 1), chosen_channel
+
+
+def _determine_capture_channels(output_channels: int, max_channels: int) -> int:
+    """Choose capture channel count for robust mono transcription.
+
+    For mono output we still capture several channels on mic arrays, then pick
+    the strongest channel in the callback. This avoids silent-channel devices.
+    """
+    safe_max = max(1, int(max_channels))
+    safe_output = max(1, min(int(output_channels), safe_max))
+    if safe_output == 1 and safe_max >= 2:
+        return min(8, safe_max)
+    return safe_output
+
+
 class MicrophoneInput(BaseInputTransport):
     def __init__(
         self,
@@ -49,6 +99,7 @@ class MicrophoneInput(BaseInputTransport):
         super().__init__(params=params)
         self._target_sample_rate = sample_rate
         self._target_channels = channels
+        self._capture_channels = channels
         self.block_size = block_size
         self.device = device
         self.keep_alive = keep_alive
@@ -65,6 +116,7 @@ class MicrophoneInput(BaseInputTransport):
         self._speech_active = False
         self._speech_hold_until = 0.0
         self._visual_level = 0.0
+        self._active_capture_channel = None
 
     async def start(self, frame: StartFrame):
         """Start audio capture and feed frames into the transport queue."""
@@ -72,6 +124,7 @@ class MicrophoneInput(BaseInputTransport):
         await super().start(frame)
         self._loop = asyncio.get_running_loop()
         self._running = True
+        self._active_capture_channel = None
 
         try:
             # Define device_index at the outer scope so it's available for logging
@@ -93,14 +146,25 @@ class MicrophoneInput(BaseInputTransport):
                     if max_channels == 0:
                         # Device exists but has no input channels - fall back to default
                         raise ValueError(f"Device has no input channels")
-                    chosen_channels = self._target_channels
-                    if chosen_channels <= 0 or chosen_channels > max_channels:
-                        chosen_channels = max_channels
-                    if self._target_channels != chosen_channels:
+                    output_channels = self._target_channels
+                    if output_channels <= 0:
+                        output_channels = 1
+                    if output_channels > max_channels:
+                        output_channels = max_channels
+                    if self._target_channels != output_channels:
                         logger.info(
-                            f"Overriding configured channels {self._target_channels} with device-supported {chosen_channels}"
+                            f"Overriding configured channels {self._target_channels} with device-supported {output_channels}"
                         )
-                        self._target_channels = chosen_channels
+                        self._target_channels = output_channels
+
+                    # Some Windows mic arrays expose silence on channel 0 with mono capture.
+                    # Capture up to 4 channels and downmix/select strongest in callback.
+                    capture_channels = _determine_capture_channels(output_channels, max_channels)
+                    self._capture_channels = capture_channels
+                    if capture_channels != output_channels:
+                        logger.info(
+                            f"Using {capture_channels} capture channels for stability, downmixing to {output_channels}"
+                        )
 
                 except Exception as e:
                     if device_index is not None:
@@ -116,19 +180,22 @@ class MicrophoneInput(BaseInputTransport):
                                 if chosen_channels <= 0 or chosen_channels > max_channels:
                                     chosen_channels = max_channels
                                 self._target_channels = chosen_channels
+                                self._capture_channels = _determine_capture_channels(chosen_channels, max_channels)
                                 logger.info(f"Using default device with {chosen_channels} channel(s)")
                         except Exception as e2:
                             logger.warning(f"Could not query default device ({e2}); using 1 channel")
                             self._target_channels = 1
+                            self._capture_channels = 1
                     else:
                         logger.warning(f"Could not query default device ({e}); using 1 channel")
                         self._target_channels = 1
+                        self._capture_channels = 1
 
                 # Try to open the stream - with fallback to default if configured device fails
                 try:
                     self.stream = sd.InputStream(
                         samplerate=self._target_sample_rate,
-                        channels=self._target_channels,
+                        channels=self._capture_channels,
                         blocksize=self.block_size,
                         dtype="int16",
                         callback=self._audio_callback,
@@ -151,13 +218,15 @@ class MicrophoneInput(BaseInputTransport):
                                 if chosen_channels <= 0 or chosen_channels > max_channels:
                                     chosen_channels = max_channels
                                 self._target_channels = chosen_channels
+                                self._capture_channels = _determine_capture_channels(chosen_channels, max_channels)
                         except Exception:
                             self._target_channels = 1
+                            self._capture_channels = 1
 
                         # Try default device
                         self.stream = sd.InputStream(
                             samplerate=self._target_sample_rate,
-                            channels=self._target_channels,
+                            channels=self._capture_channels,
                             blocksize=self.block_size,
                             dtype="int16",
                             callback=self._audio_callback,
@@ -192,7 +261,26 @@ class MicrophoneInput(BaseInputTransport):
             if not self._running:
                 return
 
-            audio_bytes = indata.tobytes()
+            output_data = indata
+            if (
+                isinstance(indata, np.ndarray)
+                and indata.ndim == 2
+                and indata.shape[1] > self._target_channels
+                and self._target_channels == 1
+            ):
+                output_data, chosen_channel = _select_best_mono_channel(
+                    indata,
+                    self._active_capture_channel,
+                )
+                if chosen_channel != self._active_capture_channel and chosen_channel is not None:
+                    logger.debug(
+                        "Microphone channel selection changed: {} -> {}",
+                        self._active_capture_channel,
+                        chosen_channel,
+                    )
+                self._active_capture_channel = chosen_channel
+
+            audio_bytes = output_data.tobytes()
             try:
                 if self._loop and not self._loop.is_closed():
                     self._loop.call_soon_threadsafe(self._queue.put_nowait, audio_bytes)
@@ -206,8 +294,8 @@ class MicrophoneInput(BaseInputTransport):
             if self.on_audio_level:
                 try:
                     # Optimized RMS: use int16 view directly, compute in float32 for speed
-                    # indata is already int16 dtype, shape is (frames, channels)
-                    samples = indata.view(np.int16).ravel()
+                    # Use the exact frame we send downstream (after channel selection/downmix).
+                    samples = np.asarray(output_data).astype(np.int16, copy=False).ravel()
                     # Use float32 for faster computation than float64
                     rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) / 32768.0
 
@@ -238,7 +326,7 @@ class MicrophoneInput(BaseInputTransport):
                         self._speech_active = False
 
                     # Keep visualization continuous across syllables.
-                    vis_target = float(rms) if self._speech_active else max(0.0, rms * 0.55)
+                    vis_target = float(rms) if self._speech_active else max(0.0, rms * 0.10)
                     if vis_target > self._visual_level:
                         self._visual_level = self._visual_level * 0.25 + vis_target * 0.75
                     else:
