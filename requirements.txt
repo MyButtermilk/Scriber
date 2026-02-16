@@ -1,5 +1,6 @@
 pipecat-ai[google,assemblyai,silero,local-smart-turn-v3,deepgram,openai,azure,gladia,groq,speechmatics,aws,elevenlabs]
 sounddevice
+pycaw
 keyboard
 pyautogui
 python-dotenv

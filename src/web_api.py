@@ -23,6 +23,7 @@ from src.audio_devices import (
     rank_hostapi,
 )
 from src.config import Config
+from src.device_monitor import DeviceMonitor, devices_contain_name
 from src.core.provider_capabilities import supports_direct_file_upload
 from src.core.error_taxonomy import classify_error_message, is_retryable, user_message_for_category
 from src.core.hot_path_tracer import HotPathTracer
@@ -569,6 +570,13 @@ class ScriberWebController:
         db.init_database()
         self._transcripts_loaded = False
 
+        self._device_monitor = DeviceMonitor(
+            sample_rate=int(getattr(Config, "SAMPLE_RATE", 16000) or 16000),
+            channels=max(1, int(getattr(Config, "CHANNELS", 1) or 1)),
+        )
+        self._device_monitor.on_devices_changed(self._on_devices_changed)
+        self._device_monitor.start()
+
     @staticmethod
     def _trace_id_for(value: str | None) -> str | None:
         if not value:
@@ -576,6 +584,38 @@ class ScriberWebController:
         if value.startswith("tr_"):
             return value
         return f"tr_{value}"
+
+    def _on_devices_changed(self, devices: list[dict[str, str]]) -> None:
+        """Bridge device monitor thread callbacks onto the asyncio loop."""
+        try:
+            self._loop.call_soon_threadsafe(
+                lambda d=devices: asyncio.create_task(self._handle_devices_changed(d))
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to schedule devices-changed handler: {exc}")
+
+    async def _handle_devices_changed(self, devices: list[dict[str, str]]) -> None:
+        favorite = (getattr(Config, "FAVORITE_MIC", "") or "").strip()
+        favorite_restored = False
+        restored_device_id = ""
+        restored_device_label = ""
+
+        if favorite and favorite != "default":
+            favorite_restored, restored_device_id, restored_device_label = devices_contain_name(devices, favorite)
+            if favorite_restored and not self._is_listening and restored_device_id:
+                if Config.MIC_DEVICE != restored_device_id:
+                    Config.set_mic_device(restored_device_id)
+                    logger.info(f"[DeviceMonitor] Favorite mic restored: {restored_device_label}")
+
+        payload: dict[str, Any] = {
+            "type": "microphones_updated",
+            "devices": devices,
+            "favoriteMicRestored": favorite_restored,
+        }
+        if favorite_restored:
+            payload["restoredDeviceId"] = restored_device_id
+            payload["restoredDeviceLabel"] = restored_device_label
+        await self.broadcast(payload)
 
     def _emit_workflow_event(
         self,
@@ -2452,6 +2492,23 @@ class ScriberWebController:
                 pass
             await asyncio.sleep(0.05)
 
+    def shutdown(self) -> None:
+        if self._ptt_task:
+            self._ptt_task.cancel()
+            self._ptt_task = None
+
+        kb = self._keyboard
+        if kb and hasattr(kb, "clear_all_hotkeys"):
+            try:
+                kb.clear_all_hotkeys()
+            except Exception:
+                pass
+
+        try:
+            self._device_monitor.stop()
+        except Exception as exc:
+            logger.debug(f"[DeviceMonitor] stop warning: {exc}")
+
     def get_settings(self) -> dict[str, Any]:
         # Track favorite mic availability for UI feedback
         _favorite_mic_available = False
@@ -2724,6 +2781,13 @@ class ScriberWebController:
         Uses a single active host API to avoid cross-host duplicate entries.
         """
         try:
+            devices = self._device_monitor.get_devices()
+            if devices:
+                return devices
+        except Exception as exc:
+            logger.debug(f"[DeviceMonitor] fallback to direct listing: {exc}")
+
+        try:
             import sounddevice as sd  # type: ignore
         except Exception:  # pragma: no cover - optional runtime dep
             return [{"deviceId": "default", "label": "Default"}]
@@ -2752,6 +2816,11 @@ class ScriberWebController:
         channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
         if device_name == "default" or not device_name:
             device_name = "default"
+
+        try:
+            self._device_monitor.refresh_now()
+        except Exception as exc:
+            logger.debug(f"[DeviceMonitor] manual refresh failed before resolve: {exc}")
         
         try:
             import sounddevice as sd
@@ -3956,7 +4025,9 @@ async def run_server(host: str, port: int) -> None:
         await controller.stop_listening()
     except Exception:
         pass
-    await runner.cleanup()
+    finally:
+        controller.shutdown()
+        await runner.cleanup()
 
 
 async def _background_init(controller: ScriberWebController) -> None:

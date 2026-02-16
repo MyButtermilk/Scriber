@@ -4,6 +4,8 @@ import numpy as np
 from loguru import logger
 from pipecat.frames.frames import InputAudioRawFrame, StartFrame, EndFrame
 
+from src.device_monitor import get_device_guard_lock, mark_stream_started, mark_stream_stopped
+
 try:
     import sounddevice as sd
     HAS_SOUNDDEVICE = True
@@ -117,6 +119,19 @@ class MicrophoneInput(BaseInputTransport):
         self._speech_hold_until = 0.0
         self._visual_level = 0.0
         self._active_capture_channel = None
+        self._stream_claimed = False
+
+    def _claim_active_stream(self) -> None:
+        if self._stream_claimed:
+            return
+        mark_stream_started()
+        self._stream_claimed = True
+
+    def _release_active_stream(self) -> None:
+        if not self._stream_claimed:
+            return
+        mark_stream_stopped()
+        self._stream_claimed = False
 
     async def start(self, frame: StartFrame):
         """Start audio capture and feed frames into the transport queue."""
@@ -127,117 +142,120 @@ class MicrophoneInput(BaseInputTransport):
         self._active_capture_channel = None
 
         try:
-            # Define device_index at the outer scope so it's available for logging
-            device_index = None
-            if self.device not in ("default", "", None):
-                try:
-                    device_index = int(self.device)
-                except (TypeError, ValueError):
-                    logger.warning(f"Invalid microphone device id '{self.device}', using default microphone")
-                    device_index = None
-            
-            if not self.stream:
-                # Auto-detect channels supported by the device to avoid PaErrorCode -9998.
-                # Also validate the device exists and is an input device.
-                try:
-                    dev_info = sd.query_devices(device=device_index, kind='input')
-                    max_channels = int(dev_info.get('max_input_channels', 0))
-                    
-                    if max_channels == 0:
-                        # Device exists but has no input channels - fall back to default
-                        raise ValueError(f"Device has no input channels")
-                    output_channels = self._target_channels
-                    if output_channels <= 0:
-                        output_channels = 1
-                    if output_channels > max_channels:
-                        output_channels = max_channels
-                    if self._target_channels != output_channels:
-                        logger.info(
-                            f"Overriding configured channels {self._target_channels} with device-supported {output_channels}"
-                        )
-                        self._target_channels = output_channels
-
-                    # Some Windows mic arrays expose silence on channel 0 with mono capture.
-                    # Capture up to 4 channels and downmix/select strongest in callback.
-                    capture_channels = _determine_capture_channels(output_channels, max_channels)
-                    self._capture_channels = capture_channels
-                    if capture_channels != output_channels:
-                        logger.info(
-                            f"Using {capture_channels} capture channels for stability, downmixing to {output_channels}"
-                        )
-
-                except Exception as e:
-                    if device_index is not None:
-                        # Configured device failed - fall back to system default
-                        logger.warning(f"Configured device {self.device} unavailable ({e}); falling back to default microphone")
+            # Device enumeration/open is guarded against concurrent PortAudio refresh.
+            with get_device_guard_lock():
+                # Define device_index at the outer scope so it's available for logging
+                device_index = None
+                if self.device not in ("default", "", None):
+                    try:
+                        device_index = int(self.device)
+                    except (TypeError, ValueError):
+                        logger.warning(f"Invalid microphone device id '{self.device}', using default microphone")
                         device_index = None
-                        # Query default device channels
-                        try:
-                            default_info = sd.query_devices(device=None, kind='input')
-                            max_channels = int(default_info.get('max_input_channels', 1))
-                            if max_channels > 0:
-                                chosen_channels = self._target_channels
-                                if chosen_channels <= 0 or chosen_channels > max_channels:
-                                    chosen_channels = max_channels
-                                self._target_channels = chosen_channels
-                                self._capture_channels = _determine_capture_channels(chosen_channels, max_channels)
-                                logger.info(f"Using default device with {chosen_channels} channel(s)")
-                        except Exception as e2:
-                            logger.warning(f"Could not query default device ({e2}); using 1 channel")
-                            self._target_channels = 1
-                            self._capture_channels = 1
-                    else:
-                        logger.warning(f"Could not query default device ({e}); using 1 channel")
-                        self._target_channels = 1
-                        self._capture_channels = 1
+                
+                if not self.stream:
+                    # Auto-detect channels supported by the device to avoid PaErrorCode -9998.
+                    # Also validate the device exists and is an input device.
+                    try:
+                        dev_info = sd.query_devices(device=device_index, kind='input')
+                        max_channels = int(dev_info.get('max_input_channels', 0))
+                        
+                        if max_channels == 0:
+                            # Device exists but has no input channels - fall back to default
+                            raise ValueError(f"Device has no input channels")
+                        output_channels = self._target_channels
+                        if output_channels <= 0:
+                            output_channels = 1
+                        if output_channels > max_channels:
+                            output_channels = max_channels
+                        if self._target_channels != output_channels:
+                            logger.info(
+                                f"Overriding configured channels {self._target_channels} with device-supported {output_channels}"
+                            )
+                            self._target_channels = output_channels
 
-                # Try to open the stream - with fallback to default if configured device fails
-                try:
-                    self.stream = sd.InputStream(
-                        samplerate=self._target_sample_rate,
-                        channels=self._capture_channels,
-                        blocksize=self.block_size,
-                        dtype="int16",
-                        callback=self._audio_callback,
-                        device=device_index,
-                    )
-                except Exception as stream_err:
-                    if device_index is not None:
-                        # Configured device failed to open - fall back to system default
-                        logger.warning(
-                            f"Could not open device {device_index} ({stream_err}); "
-                            f"falling back to Windows default microphone"
-                        )
-                        device_index = None
-                        # Re-query default device channels
-                        try:
-                            default_info = sd.query_devices(device=None, kind='input')
-                            max_channels = int(default_info.get('max_input_channels', 1))
-                            if max_channels > 0:
-                                chosen_channels = self._target_channels
-                                if chosen_channels <= 0 or chosen_channels > max_channels:
-                                    chosen_channels = max_channels
-                                self._target_channels = chosen_channels
-                                self._capture_channels = _determine_capture_channels(chosen_channels, max_channels)
-                        except Exception:
+                        # Some Windows mic arrays expose silence on channel 0 with mono capture.
+                        # Capture up to 4 channels and downmix/select strongest in callback.
+                        capture_channels = _determine_capture_channels(output_channels, max_channels)
+                        self._capture_channels = capture_channels
+                        if capture_channels != output_channels:
+                            logger.info(
+                                f"Using {capture_channels} capture channels for stability, downmixing to {output_channels}"
+                            )
+
+                    except Exception as e:
+                        if device_index is not None:
+                            # Configured device failed - fall back to system default
+                            logger.warning(f"Configured device {self.device} unavailable ({e}); falling back to default microphone")
+                            device_index = None
+                            # Query default device channels
+                            try:
+                                default_info = sd.query_devices(device=None, kind='input')
+                                max_channels = int(default_info.get('max_input_channels', 1))
+                                if max_channels > 0:
+                                    chosen_channels = self._target_channels
+                                    if chosen_channels <= 0 or chosen_channels > max_channels:
+                                        chosen_channels = max_channels
+                                    self._target_channels = chosen_channels
+                                    self._capture_channels = _determine_capture_channels(chosen_channels, max_channels)
+                                    logger.info(f"Using default device with {chosen_channels} channel(s)")
+                            except Exception as e2:
+                                logger.warning(f"Could not query default device ({e2}); using 1 channel")
+                                self._target_channels = 1
+                                self._capture_channels = 1
+                        else:
+                            logger.warning(f"Could not query default device ({e}); using 1 channel")
                             self._target_channels = 1
                             self._capture_channels = 1
 
-                        # Try default device
+                    # Try to open the stream - with fallback to default if configured device fails
+                    try:
                         self.stream = sd.InputStream(
                             samplerate=self._target_sample_rate,
                             channels=self._capture_channels,
                             blocksize=self.block_size,
                             dtype="int16",
                             callback=self._audio_callback,
-                            device=None,  # System default
+                            device=device_index,
                         )
-                    else:
-                        # Already using default, re-raise
-                        raise
+                    except Exception as stream_err:
+                        if device_index is not None:
+                            # Configured device failed to open - fall back to system default
+                            logger.warning(
+                                f"Could not open device {device_index} ({stream_err}); "
+                                f"falling back to Windows default microphone"
+                            )
+                            device_index = None
+                            # Re-query default device channels
+                            try:
+                                default_info = sd.query_devices(device=None, kind='input')
+                                max_channels = int(default_info.get('max_input_channels', 1))
+                                if max_channels > 0:
+                                    chosen_channels = self._target_channels
+                                    if chosen_channels <= 0 or chosen_channels > max_channels:
+                                        chosen_channels = max_channels
+                                    self._target_channels = chosen_channels
+                                    self._capture_channels = _determine_capture_channels(chosen_channels, max_channels)
+                            except Exception:
+                                self._target_channels = 1
+                                self._capture_channels = 1
 
-            if not self.stream.active:
-                self.stream.start()
+                            # Try default device
+                            self.stream = sd.InputStream(
+                                samplerate=self._target_sample_rate,
+                                channels=self._capture_channels,
+                                blocksize=self.block_size,
+                                dtype="int16",
+                                callback=self._audio_callback,
+                                device=None,  # System default
+                            )
+                        else:
+                            # Already using default, re-raise
+                            raise
+
+                if not self.stream.active:
+                    self.stream.start()
+                self._claim_active_stream()
             logger.info(f"Microphone stream started (device={'default' if device_index is None else device_index})")
             # Signal that microphone is ready and capturing audio
             if self.on_ready:
@@ -366,13 +384,15 @@ class MicrophoneInput(BaseInputTransport):
         except asyncio.CancelledError:
             # Clean up audio stream on cancellation
             self._running = False
-            if self.stream:
-                try:
-                    self.stream.stop()
-                    self.stream.close()
-                except Exception:
-                    pass
-                self.stream = None
+            with get_device_guard_lock():
+                if self.stream:
+                    try:
+                        self.stream.stop()
+                        self.stream.close()
+                    except Exception:
+                        pass
+                    self.stream = None
+                self._release_active_stream()
             raise  # Re-raise to properly complete cancellation
 
     async def stop(self, frame: EndFrame):
@@ -381,14 +401,16 @@ class MicrophoneInput(BaseInputTransport):
         # OPTIMIZED: Always stop stream to prevent CPU usage and buffer overflow
         # With keep_alive: pause stream (fast restart via stream.start())
         # Without keep_alive: close stream entirely
-        if self.stream:
-            try:
-                self.stream.stop()  # Stops callbacks, saves CPU, prevents overflow
-                if not self.keep_alive:
-                    self.stream.close()
-                    self.stream = None
-            except Exception:
-                pass
+        with get_device_guard_lock():
+            if self.stream:
+                try:
+                    self.stream.stop()  # Stops callbacks, saves CPU, prevents overflow
+                    if not self.keep_alive:
+                        self.stream.close()
+                        self.stream = None
+                except Exception:
+                    pass
+            self._release_active_stream()
 
         # Signal the queue to stop
         if self._queue:
@@ -409,4 +431,3 @@ class MicrophoneInput(BaseInputTransport):
 
         self._stopped.set()
         await super().stop(frame)
-

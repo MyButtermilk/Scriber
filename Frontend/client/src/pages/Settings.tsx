@@ -260,6 +260,27 @@ export default function Settings() {
     return await res.json();
   };
 
+  const refreshMicrophones = useCallback(async () => {
+    try {
+      const res = await fetch(apiUrl("/api/microphones"), { credentials: "include" });
+      if (!res.ok) {
+        return;
+      }
+      const data = await res.json();
+      const devices = ((data?.devices || []) as { deviceId: string; label: string }[]);
+      setInputDevices(devices);
+      const availableIds = new Set(devices.map((d) => d.deviceId));
+      setSelectedDeviceId((prev) => {
+        if (prev !== "default" && !availableIds.has(prev)) {
+          return "default";
+        }
+        return prev;
+      });
+    } catch {
+      // Best effort refresh on window focus.
+    }
+  }, []);
+
   const handleSaveApiKey = async (provider: string) => {
     try {
       if (provider === "AWS") {
@@ -749,6 +770,35 @@ export default function Settings() {
 
   const handleWsMessage = useCallback((msg: any) => {
     if (!msg) return;
+    if (msg.type === "microphones_updated") {
+      const devices = ((msg.devices || []) as { deviceId: string; label: string }[]);
+      setInputDevices(devices);
+
+      const availableIds = new Set(devices.map((d) => d.deviceId));
+      if (selectedDeviceId !== "default" && !availableIds.has(selectedDeviceId)) {
+        setSelectedDeviceId("default");
+        toast({
+          title: "Mikrofon getrennt",
+          description: "Das ausgewahlte Mikrofon ist nicht mehr verfugbar. Es wurde auf Default zuruckgestellt.",
+          duration: 3000,
+        });
+      }
+
+      if (msg.favoriteMicRestored && typeof msg.restoredDeviceId === "string" && msg.restoredDeviceId) {
+        setSelectedDeviceId(msg.restoredDeviceId);
+        setFavoriteMic(msg.restoredDeviceId);
+        const restoredLabel =
+          typeof msg.restoredDeviceLabel === "string" && msg.restoredDeviceLabel
+            ? msg.restoredDeviceLabel
+            : msg.restoredDeviceId;
+        toast({
+          title: "Favorite mic restored",
+          description: `Favorite microphone '${restoredLabel}' is available again.`,
+          duration: 2500,
+        });
+      }
+      return;
+    }
     if (msg.type === "onnx_download_progress") {
       setOnnxModels((prev) =>
         prev.map((m) =>
@@ -785,9 +835,19 @@ export default function Settings() {
     if (msg.type === "nemo_models_updated") {
       loadNemoModels();
     }
-  }, [loadOnnxModels, loadNemoModels]);
+  }, [loadOnnxModels, loadNemoModels, selectedDeviceId, toast]);
 
   useSharedWebSocket(handleWsMessage);
+
+  useEffect(() => {
+    const onWindowFocus = () => {
+      void refreshMicrophones();
+    };
+    window.addEventListener("focus", onWindowFocus);
+    return () => {
+      window.removeEventListener("focus", onWindowFocus);
+    };
+  }, [refreshMicrophones]);
 
   const selectedOnnxModel = onnxModels.find((m) => m.id === onnxModel) || onnxModels[0];
   const selectedNemoModel = nemoModels.find((m) => m.id === nemoModel) || nemoModels[0];
