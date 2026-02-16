@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import sys
+import re
 import threading
 import time
 from typing import Callable
 
 from loguru import logger
 
-from src.audio_devices import list_unique_input_microphones, normalize_device_name
+from src.audio_devices import get_input_hostapi_priorities, normalize_device_name
 
 try:
     import sounddevice as sd  # type: ignore
@@ -20,6 +21,20 @@ except Exception:
 
 _DEVICE_GUARD_LOCK = threading.RLock()
 _ACTIVE_STREAMS = 0
+
+_EXCLUDE_PATTERNS = (
+    "soundmapper",
+    "stereo mix",
+    "stereomix",
+    "what u hear",
+    "loopback",
+    "primary sound",
+    "sound capture driver",
+    "soundaufnahmetreiber",
+    "primarer soundaufnahmetreiber",
+)
+_OUTPUT_HINTS = ("output", "speaker", "lautsprecher", "headphone", "pc-lautsprecher")
+_GENERIC_INPUT_RE = re.compile(r"^\s*input\s*\(\s*\)\s*$", re.IGNORECASE)
 
 
 def get_device_guard_lock() -> threading.RLock:
@@ -43,6 +58,84 @@ def get_active_stream_count() -> int:
         return _ACTIVE_STREAMS
 
 
+def _to_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _default_input_index() -> int | None:
+    if not HAS_SOUNDDEVICE:
+        return None
+    try:
+        dev = sd.default.device
+        if isinstance(dev, (tuple, list)) and dev:
+            idx = int(dev[0])
+        else:
+            idx = int(dev)
+        if idx >= 0:
+            return idx
+    except Exception:
+        return None
+    return None
+
+
+def _looks_virtual_or_output(name: str) -> bool:
+    if not name:
+        return True
+    if _GENERIC_INPUT_RE.match(name):
+        return True
+    lowered = name.lower()
+    if any(pattern in lowered for pattern in _EXCLUDE_PATTERNS):
+        return True
+    return any(pattern in lowered for pattern in _OUTPUT_HINTS)
+
+
+def _pick_primary_hostapi(
+    all_devices: list[dict],
+    *,
+    default_idx: int | None,
+    host_priorities: list[int],
+) -> int | None:
+    def host_has_real_inputs(hostapi_idx: int) -> bool:
+        for device in all_devices:
+            if _to_int(device.get("hostapi", -1), -1) != hostapi_idx:
+                continue
+            if _to_int(device.get("max_input_channels", 0), 0) <= 0:
+                continue
+            name = str(device.get("name", "")).strip()
+            if not name or _looks_virtual_or_output(name):
+                continue
+            if not normalize_device_name(name):
+                continue
+            return True
+        return False
+
+    # Prefer the host API of the current Windows default input device (same idea as Handy/VoiceTypr: one host).
+    if default_idx is not None and 0 <= default_idx < len(all_devices):
+        default_hostapi = _to_int(all_devices[default_idx].get("hostapi", -1), -1)
+        if default_hostapi >= 0 and host_has_real_inputs(default_hostapi):
+            return default_hostapi
+
+    # Fallback: first prioritized host with real inputs.
+    for hostapi_idx in host_priorities:
+        if hostapi_idx >= 0 and host_has_real_inputs(hostapi_idx):
+            return hostapi_idx
+
+    # Final fallback: first host with real inputs.
+    seen: set[int] = set()
+    for device in all_devices:
+        hostapi_idx = _to_int(device.get("hostapi", -1), -1)
+        if hostapi_idx < 0 or hostapi_idx in seen:
+            continue
+        seen.add(hostapi_idx)
+        if host_has_real_inputs(hostapi_idx):
+            return hostapi_idx
+
+    return None
+
+
 def _enumerate_microphones(
     *,
     sample_rate: int = 16000,
@@ -51,17 +144,64 @@ def _enumerate_microphones(
     if not HAS_SOUNDDEVICE:
         return [{"deviceId": "default", "label": "Default"}]
 
-    devices: list[dict[str, str]] = [{"deviceId": "default", "label": "Default"}]
+    result: list[dict[str, str]] = [{"deviceId": "default", "label": "Default"}]
     try:
-        entries = list_unique_input_microphones(sd, sample_rate=sample_rate, channels=channels)
+        all_devices = list(sd.query_devices())
     except Exception as exc:
-        logger.debug(f"[DeviceMonitor] list_unique_input_microphones failed: {exc}")
-        return devices
+        logger.debug(f"[DeviceMonitor] query_devices failed: {exc}")
+        return result
 
-    for entry in entries:
-        label = f"{entry.name} (Default)" if entry.is_default else entry.name
-        devices.append({"deviceId": entry.name, "label": label})
-    return devices
+    try:
+        host_priorities = get_input_hostapi_priorities(
+            sd,
+            all_devices,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+    except Exception:
+        host_priorities = []
+
+    default_idx = _default_input_index()
+    default_norm = ""
+    if default_idx is not None and 0 <= default_idx < len(all_devices):
+        default_norm = normalize_device_name(str(all_devices[default_idx].get("name", "")))
+
+    selected_hostapi = _pick_primary_hostapi(
+        all_devices,
+        default_idx=default_idx,
+        host_priorities=host_priorities,
+    )
+
+    best_by_norm: dict[str, tuple[tuple[int, int], str, bool]] = {}
+    for idx, device in enumerate(all_devices):
+        hostapi_idx = _to_int(device.get("hostapi", -1), -1)
+        if selected_hostapi is not None and hostapi_idx != selected_hostapi:
+            continue
+
+        if _to_int(device.get("max_input_channels", 0), 0) <= 0:
+            continue
+        name = str(device.get("name", "")).strip()
+        if not name:
+            continue
+        if _looks_virtual_or_output(name):
+            continue
+        norm = normalize_device_name(name)
+        if not norm:
+            continue
+
+        is_default = (default_idx is not None and idx == default_idx) or (default_norm and norm == default_norm)
+        score = (0 if is_default else 1, idx)
+
+        existing = best_by_norm.get(norm)
+        if existing is None or score < existing[0]:
+            best_by_norm[norm] = (score, name, bool(is_default))
+
+    unique_items = sorted(best_by_norm.values(), key=lambda item: item[1].lower())
+    for _, name, is_default in unique_items:
+        label = f"{name} (Default)" if is_default else name
+        result.append({"deviceId": name, "label": label})
+
+    return result
 
 
 def _refresh_portaudio_cache() -> tuple[bool, bool]:
@@ -312,4 +452,3 @@ def devices_contain_name(devices: list[dict[str, str]], device_name: str) -> tup
         if normalize_device_name(dev_id) == target:
             return True, dev_id, str(dev.get("label", dev_id))
     return False, "", ""
-
