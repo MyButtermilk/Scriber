@@ -81,16 +81,22 @@ async def test_low_input_warning_emits_and_clears():
         await asyncio.sleep(0.05)
 
         assert ctl.get_state()["inputWarning"]
+        assert ctl.get_state()["inputWarningCode"] == "mic_level_very_low"
+        assert ctl.get_state()["inputWarningActions"]
         active_payloads = [
             call.args[0]
             for call in broadcast_mock.await_args_list
             if call.args and isinstance(call.args[0], dict) and call.args[0].get("type") == "input_warning"
         ]
         assert any(payload.get("active") is True for payload in active_payloads)
+        assert any(payload.get("code") == "mic_level_very_low" for payload in active_payloads)
+        assert any(payload.get("actions") for payload in active_payloads)
 
         ctl._on_audio_level(0.02, session_id="s1")
         await asyncio.sleep(0.05)
         assert ctl.get_state()["inputWarning"] == ""
+        assert ctl.get_state()["inputWarningCode"] == ""
+        assert ctl.get_state()["inputWarningActions"] == []
         inactive_payloads = [
             call.args[0]
             for call in broadcast_mock.await_args_list

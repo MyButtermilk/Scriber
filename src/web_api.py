@@ -64,6 +64,29 @@ _DEFAULT_VIDEO_MAX_MB = 2048  # 2GB limit for raw video uploads (audio extracted
 
 # Video file extensions that require audio extraction
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
+_INPUT_WARNING_CODE_LOW_LEVEL = "mic_level_very_low"
+_SETTINGS_URI_SOUND = "ms-settings:sound"
+_SETTINGS_URI_SOUND_INPUT_PROPERTIES = "ms-settings:sound-defaultinputproperties"
+_SETTINGS_URI_PRIVACY_MICROPHONE = "ms-settings:privacy-microphone"
+_INPUT_WARNING_ACTIONS_BY_CODE: dict[str, tuple[dict[str, str], ...]] = {
+    _INPUT_WARNING_CODE_LOW_LEVEL: (
+        {
+            "id": "open_input_volume",
+            "label": "Eingangslautstarke offnen",
+            "uri": _SETTINGS_URI_SOUND_INPUT_PROPERTIES,
+        },
+        {
+            "id": "open_microphone_privacy",
+            "label": "Mikrofon-Datenschutz prufen",
+            "uri": _SETTINGS_URI_PRIVACY_MICROPHONE,
+        },
+        {
+            "id": "open_sound_settings",
+            "label": "Sound-Einstellungen offnen",
+            "uri": _SETTINGS_URI_SOUND,
+        },
+    )
+}
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED_NAMES = {
@@ -90,6 +113,33 @@ _WINDOWS_RESERVED_NAMES = {
     "LPT8",
     "LPT9",
 }
+
+
+def _normalize_input_warning_actions(actions: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    if not actions:
+        return []
+    normalized: list[dict[str, str]] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        action_id = str(action.get("id", "")).strip()
+        label = str(action.get("label", "")).strip()
+        uri = str(action.get("uri", "")).strip()
+        if not action_id or not label or not uri:
+            continue
+        normalized.append(
+            {
+                "id": action_id,
+                "label": label,
+                "uri": uri,
+            }
+        )
+    return normalized
+
+
+def _input_warning_actions_for_code(code: str) -> list[dict[str, str]]:
+    template = _INPUT_WARNING_ACTIONS_BY_CODE.get(str(code or "").strip(), ())
+    return [dict(action) for action in template]
 
 
 def _safe_upload_filename(name: str) -> str:
@@ -534,6 +584,8 @@ class ScriberWebController:
         self._overlay_audio_enabled = False
         self._mic_low_level_since: float | None = None
         self._mic_input_warning = ""
+        self._mic_input_warning_code = ""
+        self._mic_input_warning_actions: list[dict[str, str]] = []
         try:
             self._mic_low_rms_threshold = max(
                 0.0,
@@ -1109,6 +1161,8 @@ class ScriberWebController:
             "listening": self._is_listening,
             "status": self._status,
             "inputWarning": self._mic_input_warning,
+            "inputWarningCode": self._mic_input_warning_code,
+            "inputWarningActions": [dict(item) for item in self._mic_input_warning_actions],
             "current": current.to_public(include_content=True) if current else None,
             "sessionId": self._session_id,
             "backgroundProcessing": has_background_processing,
@@ -1180,23 +1234,42 @@ class ScriberWebController:
             session_id = self._session_id
         payload = status_event(status, self._is_listening, session_id=session_id)
         payload["inputWarning"] = self._mic_input_warning
+        payload["inputWarningCode"] = self._mic_input_warning_code
+        payload["inputWarningActions"] = [dict(item) for item in self._mic_input_warning_actions]
         # status changes can happen from non-async callbacks; schedule the broadcast.
         self._loop.call_soon_threadsafe(
             lambda: asyncio.create_task(self.broadcast(payload))
         )
 
-    def _set_input_warning(self, message: str, *, session_id: str | None = None) -> None:
+    def _set_input_warning(
+        self,
+        message: str,
+        *,
+        code: str = "",
+        actions: list[dict[str, Any]] | None = None,
+        session_id: str | None = None,
+    ) -> None:
         if session_id is not None and session_id != self._session_id:
             return
         normalized = str(message or "").strip()
-        if normalized == self._mic_input_warning:
+        normalized_code = str(code or "").strip()
+        normalized_actions = _normalize_input_warning_actions(actions)
+        if (
+            normalized == self._mic_input_warning
+            and normalized_code == self._mic_input_warning_code
+            and normalized_actions == self._mic_input_warning_actions
+        ):
             return
         self._mic_input_warning = normalized
+        self._mic_input_warning_code = normalized_code
+        self._mic_input_warning_actions = [dict(item) for item in normalized_actions]
         if session_id is None:
             session_id = self._session_id
         payload = input_warning_event(
             bool(normalized),
             message=normalized,
+            code=normalized_code,
+            actions=normalized_actions,
             session_id=session_id,
         )
         self._loop.call_soon_threadsafe(
@@ -1211,6 +1284,8 @@ class ScriberWebController:
             self._set_input_warning("", session_id=session_id)
         else:
             self._mic_input_warning = ""
+            self._mic_input_warning_code = ""
+            self._mic_input_warning_actions = []
 
     def _update_input_warning(self, rms: float, *, session_id: str | None = None) -> None:
         if session_id is not None and session_id != self._session_id:
@@ -1242,6 +1317,8 @@ class ScriberWebController:
         if now - self._mic_low_level_since >= self._mic_low_rms_warn_after_secs:
             self._set_input_warning(
                 "Sehr niedriger Eingangspegel. Bitte Windows-Mikrofonlautstarke und Datenschutzberechtigung prufen.",
+                code=_INPUT_WARNING_CODE_LOW_LEVEL,
+                actions=_input_warning_actions_for_code(_INPUT_WARNING_CODE_LOW_LEVEL),
                 session_id=session_id,
             )
 
@@ -4099,7 +4176,7 @@ def _prewarm_stt_service(service_name: str) -> None:
     """
     try:
         if service_name == "assemblyai":
-            from pipecat.services.assemblyai.stt import AssemblyAISTTService  # noqa: F401
+            from src.assemblyai_async_stt import AssemblyAIUniversal3ProAsyncProcessor  # noqa: F401
         elif service_name == "google":
             from pipecat.services.google.stt import GoogleSTTService  # noqa: F401
         elif service_name == "elevenlabs":

@@ -92,7 +92,7 @@ class Config:
         "soniox_async": "Soniox (Async)",
         "mistral": "Mistral (Realtime)",
         "mistral_async": "Mistral (Async)",
-        "assemblyai": "AssemblyAI",
+        "assemblyai": "Assembly AI Universal-3-Pro",
         "google": "Google Cloud",
         "elevenlabs": "ElevenLabs",
         "deepgram": "Deepgram",

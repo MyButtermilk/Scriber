@@ -160,6 +160,47 @@ interface AudioVisualizerProps {
   audioLevelRef: React.MutableRefObject<number>;
 }
 
+interface InputWarningAction {
+  id: string;
+  label: string;
+  uri: string;
+}
+
+const INPUT_WARNING_ACTIONS_BY_CODE: Record<string, InputWarningAction[]> = {
+  mic_level_very_low: [
+    {
+      id: "open_input_volume",
+      label: "Open Input Volume",
+      uri: "ms-settings:sound-defaultinputproperties",
+    },
+    {
+      id: "open_microphone_privacy",
+      label: "Check Microphone Privacy",
+      uri: "ms-settings:privacy-microphone",
+    },
+    {
+      id: "open_sound_settings",
+      label: "Open Sound Settings",
+      uri: "ms-settings:sound",
+    },
+  ],
+};
+
+function normalizeInputWarningActions(value: unknown): InputWarningAction[] {
+  if (!Array.isArray(value)) return [];
+  const normalized: InputWarningAction[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue;
+    const action = raw as Record<string, unknown>;
+    const id = typeof action.id === "string" ? action.id.trim() : "";
+    const label = typeof action.label === "string" ? action.label.trim() : "";
+    const uri = typeof action.uri === "string" ? action.uri.trim() : "";
+    if (!id || !label || !uri) continue;
+    normalized.push({ id, label, uri });
+  }
+  return normalized;
+}
+
 const AudioVisualizer = memo(function AudioVisualizer({
   isRecording,
   audioLevelRef,
@@ -220,6 +261,7 @@ export default function LiveMic() {
   const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState<string>("Stopped");
   const [inputWarning, setInputWarning] = useState("");
+  const [inputWarningActions, setInputWarningActions] = useState<InputWarningAction[]>([]);
   const [finalText, setFinalText] = useState("");
   const [interimText, setInterimText] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -280,6 +322,41 @@ export default function LiveMic() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
+  const applyInputWarning = useCallback((message: unknown, code: unknown, actions: unknown) => {
+    const normalizedMessage = String(message || "").trim();
+    setInputWarning(normalizedMessage);
+    if (!normalizedMessage) {
+      setInputWarningActions([]);
+      return;
+    }
+
+    const normalizedActions = normalizeInputWarningActions(actions);
+    if (normalizedActions.length > 0) {
+      setInputWarningActions(normalizedActions);
+      return;
+    }
+
+    const normalizedCode = typeof code === "string" ? code.trim() : "";
+    const fallback = INPUT_WARNING_ACTIONS_BY_CODE[normalizedCode] || [];
+    setInputWarningActions(fallback.map((action) => ({ ...action })));
+  }, []);
+
+  const handleInputWarningAction = useCallback((action: InputWarningAction) => {
+    try {
+      const normalizedUri = String(action.uri || "").trim().toLowerCase();
+      if (!normalizedUri.startsWith("ms-settings:")) {
+        throw new Error("Unsupported settings URI scheme");
+      }
+      window.location.href = action.uri;
+    } catch (e: any) {
+      toast({
+        title: "Could not open settings",
+        description: String(e?.message || e || "Please open Windows Sound settings manually."),
+        duration: 4000,
+      });
+    }
+  }, [toast]);
+
   // WebSocket with auto-reconnection
   const handleWsMessage = useCallback((msg: any) => {
     if (!msg || typeof msg !== "object") return;
@@ -295,7 +372,7 @@ export default function LiveMic() {
         }
         setIsRecording(!!msg.listening);
         setStatus(msg.status || "Stopped");
-        setInputWarning(String(msg.inputWarning || ""));
+        applyInputWarning(msg.inputWarning, msg.inputWarningCode, msg.inputWarningActions);
         if (msg.current?.content) {
           setFinalText(String(msg.current.content));
           setInterimText("");
@@ -307,7 +384,7 @@ export default function LiveMic() {
         }
         setIsRecording(!!msg.listening);
         setStatus(msg.status || "Stopped");
-        setInputWarning(String(msg.inputWarning || ""));
+        applyInputWarning(msg.inputWarning, msg.inputWarningCode, msg.inputWarningActions);
         break;
       case "audio_level":
         if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
@@ -320,9 +397,9 @@ export default function LiveMic() {
           break;
         }
         if (msg.active) {
-          setInputWarning(String(msg.message || "Microphone input level is very low."));
+          applyInputWarning(msg.message || "Microphone input level is very low.", msg.code, msg.actions);
         } else {
-          setInputWarning("");
+          applyInputWarning("", "", []);
         }
         break;
       case "transcript":
@@ -348,7 +425,7 @@ export default function LiveMic() {
         }
         setIsRecording(true);
         setStatus("Listening");
-        setInputWarning("");
+        applyInputWarning("", "", []);
         setFinalText("");
         setInterimText("");
         break;
@@ -359,7 +436,7 @@ export default function LiveMic() {
         activeSessionIdRef.current = null;
         setIsRecording(false);
         setStatus("Stopped");
-        setInputWarning("");
+        applyInputWarning("", "", []);
         if (msg.session?.content) {
           setFinalText(String(msg.session.content));
           setInterimText("");
@@ -378,14 +455,14 @@ export default function LiveMic() {
         });
         setIsRecording(false);
         setStatus("Stopped");
-        setInputWarning("");
+        applyInputWarning("", "", []);
         break;
       case "settings_updated":
         break;
       default:
         break;
     }
-  }, [refreshMicHistory, toast]);
+  }, [applyInputWarning, refreshMicHistory, toast]);
 
   // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
   useSharedWebSocket(handleWsMessage);
@@ -526,8 +603,24 @@ export default function LiveMic() {
             </div>
           </div>
           {isRecording && inputWarning && (
-            <div className="w-full max-w-lg rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-              {inputWarning}
+            <div className="w-full max-w-lg rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200 space-y-3">
+              <p>{inputWarning}</p>
+              {inputWarningActions.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {inputWarningActions.map((action) => (
+                    <Button
+                      key={`${action.id}-${action.uri}`}
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="h-8 bg-amber-200/15 text-amber-100 hover:bg-amber-200/25"
+                      onClick={() => handleInputWarningAction(action)}
+                    >
+                      {action.label}
+                    </Button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

@@ -499,6 +499,11 @@ from src.mistral_stt import (
     format_mistral_segments_with_speakers,
     transcribe_with_mistral,
 )
+from src.assemblyai_async_stt import (
+    AssemblyAIUniversal3ProAsyncProcessor,
+    assemblyai_transcript_payload_to_text,
+    transcribe_with_assemblyai_pre_recorded,
+)
 
 LANGUAGE_MAP = {
     "auto": None,
@@ -919,34 +924,17 @@ class ScriberPipeline:
             )
 
         elif self.service_name == "assemblyai":
-            # Lazy import - only loaded when AssemblyAI is used
-            from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAIConnectionParams
-            if not _get_api_key("assemblyai"): raise ValueError("AssemblyAI API Key is missing.")
-            
-            # Always use multilingual model to support:
-            # 1. Auto language detection when LANGUAGE=auto
-            # 2. Non-English languages (German, French, Spanish, Italian, Portuguese)
-            # The 'universal-streaming-english' model only supports English
-            lang = _selected_language()
-            
-            # Configure connection params with multilingual speech model
-            connection_params = AssemblyAIConnectionParams(
-                speech_model="universal-streaming-multilingual"
+            if not _get_api_key("assemblyai"):
+                raise ValueError("AssemblyAI API Key is missing.")
+            logger.info("Using AssemblyAI Universal-3-Pro async transcription mode")
+            return AssemblyAIUniversal3ProAsyncProcessor(
+                api_key=_get_api_key("assemblyai"),
+                language=Config.LANGUAGE,
+                custom_vocab=Config.CUSTOM_VOCAB,
+                session=session,
+                on_progress=self.on_progress,
+                speaker_labels=False,  # Live mic: no diarization
             )
-            logger.info(f"AssemblyAI: Using multilingual model (language={lang or 'auto-detect'})")
-            
-            # When lang is None (auto), don't pass language param to enable auto-detection
-            if lang:
-                return AssemblyAISTTService(
-                    api_key=_get_api_key("assemblyai"), 
-                    language=lang,
-                    connection_params=connection_params
-                )
-            else:
-                return AssemblyAISTTService(
-                    api_key=_get_api_key("assemblyai"), 
-                    connection_params=connection_params
-                )
         
         elif self.service_name == "google":
             # Lazy import - only loaded when Google is used
@@ -1357,6 +1345,36 @@ class ScriberPipeline:
             }
             content_type = content_type_map.get(ext, mimetypes.guess_type(str(path))[0] or "application/octet-stream")
 
+            if self.service_name == "assemblyai":
+                api_key = Config.get_api_key("assemblyai")
+                if not api_key:
+                    raise ValueError("AssemblyAI API key is missing")
+
+                async with aiohttp.ClientSession() as session:
+                    with open(path, "rb") as f:
+                        payload = await transcribe_with_assemblyai_pre_recorded(
+                            session=session,
+                            api_key=api_key,
+                            audio_source=f,
+                            language=Config.LANGUAGE,
+                            custom_vocab=Config.CUSTOM_VOCAB or "",
+                            speaker_labels=True,  # File/Youtube: diarization enabled
+                            on_progress=self.on_progress,
+                            timeout_secs=900.0,
+                        )
+
+                text = assemblyai_transcript_payload_to_text(
+                    payload,
+                    prefer_speaker_labels=True,
+                )
+                if text and self.on_transcription:
+                    logger.info(f"AssemblyAI direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
             if self.service_name in ("mistral", "mistral_async"):
                 api_key = Config.get_api_key("mistral")
                 if not api_key:
@@ -1580,7 +1598,8 @@ class ScriberPipeline:
             or (self.service_name == "soniox" and Config.SONIOX_MODE == "async")
         )
         is_mistral_async = self.service_name == "mistral_async"
-        is_async_finalization = is_soniox_async or is_mistral_async
+        is_assemblyai_async = self.service_name == "assemblyai"
+        is_async_finalization = is_soniox_async or is_mistral_async or is_assemblyai_async
         if self.on_status_change:
             self.on_status_change("Transcribing..." if is_async_finalization else "Stopping...")
         # Force flush of segmented STT buffers before stopping audio input (EndFrame closes pipeline).

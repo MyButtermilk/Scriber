@@ -33,16 +33,37 @@ def input_warning_event(
     active: bool,
     *,
     message: str = "",
+    code: str = "",
+    actions: list[dict[str, str]] | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
-    return _optional_session(
-        {
-            "type": "input_warning",
-            "active": bool(active),
-            "message": str(message),
-        },
-        session_id,
-    )
+    payload: dict[str, Any] = {
+        "type": "input_warning",
+        "active": bool(active),
+        "message": str(message),
+    }
+    normalized_code = str(code or "").strip()
+    if normalized_code:
+        payload["code"] = normalized_code
+    if actions:
+        normalized_actions: list[dict[str, str]] = []
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            action_id = str(action.get("id", "")).strip()
+            label = str(action.get("label", "")).strip()
+            uri = str(action.get("uri", "")).strip()
+            if action_id and label and uri:
+                normalized_actions.append(
+                    {
+                        "id": action_id,
+                        "label": label,
+                        "uri": uri,
+                    }
+                )
+        if normalized_actions:
+            payload["actions"] = normalized_actions
+    return _optional_session(payload, session_id)
 
 
 def transcript_event(text: str, is_final: bool, *, session_id: str | None = None) -> dict[str, Any]:
@@ -96,6 +117,22 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
             raise WSContractError("input_warning event requires bool 'active'")
         if not isinstance(payload.get("message"), str):
             raise WSContractError("input_warning event requires string 'message'")
+        code = payload.get("code")
+        if code is not None and not isinstance(code, str):
+            raise WSContractError("input_warning event requires string 'code' when present")
+        actions = payload.get("actions")
+        if actions is not None:
+            if not isinstance(actions, list):
+                raise WSContractError("input_warning event requires list 'actions' when present")
+            for action in actions:
+                if not isinstance(action, dict):
+                    raise WSContractError("input_warning actions must be objects")
+                if not isinstance(action.get("id"), str):
+                    raise WSContractError("input_warning action requires string 'id'")
+                if not isinstance(action.get("label"), str):
+                    raise WSContractError("input_warning action requires string 'label'")
+                if not isinstance(action.get("uri"), str):
+                    raise WSContractError("input_warning action requires string 'uri'")
     elif event_type == "transcript":
         if not isinstance(payload.get("text"), str):
             raise WSContractError("transcript event requires string 'text'")

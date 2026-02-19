@@ -1017,29 +1017,36 @@ export default function Settings() {
                     <Label className="text-base">Transcription Model</Label>
                     <p className="text-sm text-muted-foreground">Select the AI model for live transcription</p>
                   </div>
-                  <Select value={transcriptionModel} onValueChange={handleTranscriptionModelChange}>
-                    <SelectTrigger className="w-[320px]">
-                      <SelectValue placeholder="Select model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="onnx_local">Local (ONNX) - No API Key</SelectItem>
-                      <SelectItem value="nemo_local">Local (NeMo) - Primeline</SelectItem>
-                      <SelectItem value="soniox-realtime">Soniox Realtime</SelectItem>
-                      <SelectItem value="soniox-async">Soniox Async</SelectItem>
-                      <SelectItem value="mistral-realtime">Mistral Realtime (Voxtral RT)</SelectItem>
-                      <SelectItem value="mistral-async">Mistral Async (Voxtral V2)</SelectItem>
-                      <SelectItem value="assemblyai">AssemblyAI</SelectItem>
-                      <SelectItem value="deepgram">Deepgram</SelectItem>
-                      <SelectItem value="openai">OpenAI</SelectItem>
-                      <SelectItem value="azure">Azure Speech</SelectItem>
-                      <SelectItem value="gladia">Gladia</SelectItem>
-                      <SelectItem value="groq">Groq</SelectItem>
-                      <SelectItem value="speechmatics">Speechmatics</SelectItem>
-                      <SelectItem value="elevenlabs">ElevenLabs</SelectItem>
-                      <SelectItem value="google">Google Cloud STT</SelectItem>
-                      <SelectItem value="aws">AWS Transcribe</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="space-y-2">
+                    <Select value={transcriptionModel} onValueChange={handleTranscriptionModelChange}>
+                      <SelectTrigger className="w-[320px]">
+                        <SelectValue placeholder="Select model" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="onnx_local">Local (ONNX) - No API Key</SelectItem>
+                        <SelectItem value="nemo_local">Local (NeMo) - Primeline</SelectItem>
+                        <SelectItem value="soniox-realtime">Soniox Realtime</SelectItem>
+                        <SelectItem value="soniox-async">Soniox Async</SelectItem>
+                        <SelectItem value="mistral-realtime">Mistral Realtime (Voxtral RT)</SelectItem>
+                        <SelectItem value="mistral-async">Mistral Async (Voxtral V2)</SelectItem>
+                        <SelectItem value="assemblyai">Assembly AI Universal-3-Pro</SelectItem>
+                        <SelectItem value="deepgram">Deepgram</SelectItem>
+                        <SelectItem value="openai">OpenAI</SelectItem>
+                        <SelectItem value="azure">Azure Speech</SelectItem>
+                        <SelectItem value="gladia">Gladia</SelectItem>
+                        <SelectItem value="groq">Groq</SelectItem>
+                        <SelectItem value="speechmatics">Speechmatics</SelectItem>
+                        <SelectItem value="elevenlabs">ElevenLabs</SelectItem>
+                        <SelectItem value="google">Google Cloud STT</SelectItem>
+                        <SelectItem value="aws">AWS Transcribe</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {transcriptionModel === "assemblyai" && (
+                      <p className="text-xs text-muted-foreground">
+                        Async mode: live transcript appears after you stop recording.
+                      </p>
+                    )}
+                  </div>
                 </div>
 
                 <Separator />
@@ -1472,7 +1479,9 @@ export default function Settings() {
                 <div className="space-y-3">
                   <div className="space-y-0.5">
                     <Label className="text-base">Custom Vocabulary</Label>
-                    <p className="text-sm text-muted-foreground">Add specific words or phrases to improve accuracy (comma separated)</p>
+                    <p className="text-sm text-muted-foreground">
+                      Add specific words or phrases to improve accuracy (comma separated). Used as Keyterms Prompting for Assembly AI Universal-3-Pro.
+                    </p>
                   </div>
                   <Textarea
                     value={customVocabulary}
@@ -1603,7 +1612,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>AssemblyAI API Key</Label>
+                  <Label>AssemblyAI API Key (Universal-3-Pro)</Label>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
