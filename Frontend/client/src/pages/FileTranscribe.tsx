@@ -1,6 +1,6 @@
 import { useCallback, useState, useEffect, memo, useMemo, useRef } from "react";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileAudio, CheckCircle2, Loader2, XCircle, Trash2, LayoutGrid, LayoutList, Square, Search, X, Copy, Check } from "lucide-react";
+import { UploadCloud, FileAudio, CheckCircle2, Loader2, XCircle, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,11 @@ import { SkeletonList } from "@/components/ui/skeleton-card";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useUrlQueryState } from "@/hooks/use-url-query-state";
+import { DeleteActionButton } from "@/components/ui/delete-action-button";
+import { CopyActionButton } from "@/components/ui/copy-action-button";
+
+const DELETE_GLITCH_DURATION_MS = 1200;
+const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
 
 // Memoized FileCard to prevent unnecessary re-renders
 interface FileCardProps {
@@ -43,19 +48,32 @@ const FileCard = memo(function FileCard({
   onHover,
 }: FileCardProps) {
   const prefersReducedMotion = useReducedMotion();
+  const durationClass = "duration-[1200ms]";
+  const listLayoutClasses = `grid transition-[grid-template-rows,margin-bottom] ease-in-out ${durationClass} ${isDeleting
+    ? "grid-rows-[0fr] mb-0 overflow-hidden"
+    : "grid-rows-[1fr] mb-4 last:mb-0 overflow-visible"
+    }`;
+  const layoutClasses = viewMode === "list" ? listLayoutClasses : "block";
+  const visualClasses = `!transition-all !ease-out !duration-[1200ms] w-full origin-top transform-gpu ${isDeleting
+    ? "hue-rotate-180 saturate-200 blur-md skew-x-[40deg] scale-y-50 translate-x-12 opacity-0"
+    : "hue-rotate-0 saturate-100 blur-0 skew-x-0 scale-y-100 translate-x-0 opacity-100"
+    }`;
 
   return (
     <motion.div
+      layout="position"
       initial={prefersReducedMotion ? false : { opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{
         delay: Math.min(index * 0.02, 0.1),
         duration: prefersReducedMotion ? 0 : 0.2,
         ease: "easeOut",
+        layout: { duration: prefersReducedMotion ? 0 : 0.45, ease: "easeInOut" },
       }}
+      className={layoutClasses}
     >
       <Card
-        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} p-4 cursor-pointer bg-transparent hover:scale-[1.01] group`}
+        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid h-[220px]" : ""} p-4 rounded-[20px] cursor-pointer group ${visualClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
         role="button"
@@ -102,38 +120,22 @@ const FileCard = memo(function FileCard({
                   Ready
                 </div>
               )}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
+              <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}
+                copied={isCopying}
                 title="Copy transcript"
-                aria-label={`Copy transcript ${item.title}`}
-                type="button"
-              >
-                {isCopying ? (
-                  <Check className="w-4 h-4 text-green-500" />
-                ) : (
-                  <Copy className="w-4 h-4" />
-                )}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                ariaLabel={`Copy transcript ${item.title}`}
+                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+              />
+              <DeleteActionButton
                 onClick={(e) => onDelete(e, item.id)}
                 disabled={isDeleting}
+                loading={isDeleting}
                 title="Delete transcript"
-                aria-label={`Delete transcript ${item.title}`}
-                type="button"
-              >
-                {isDeleting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Trash2 className="w-4 h-4" />
-                )}
-              </Button>
+                ariaLabel={`Delete transcript ${item.title}`}
+                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+              />
             </div>
           </div>
         ) : (
@@ -167,38 +169,24 @@ const FileCard = memo(function FileCard({
               <span>{item.date}</span>
             </div>
             <div className="flex items-center justify-end mt-2 gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
+              <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}
+                copied={isCopying}
                 title="Copy transcript"
-                aria-label={`Copy transcript ${item.title}`}
-                type="button"
-              >
-                {isCopying ? (
-                  <Check className="w-3 h-3 text-green-500" />
-                ) : (
-                  <Copy className="w-3 h-3" />
-                )}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                ariaLabel={`Copy transcript ${item.title}`}
+                size="sm"
+                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+              />
+              <DeleteActionButton
                 onClick={(e) => onDelete(e, item.id)}
                 disabled={isDeleting}
+                loading={isDeleting}
                 title="Delete transcript"
-                aria-label={`Delete transcript ${item.title}`}
-                type="button"
-              >
-                {isDeleting ? (
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                ) : (
-                  <Trash2 className="w-3 h-3" />
-                )}
-              </Button>
+                ariaLabel={`Delete transcript ${item.title}`}
+                size="sm"
+                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+              />
             </div>
           </div>
         )}
@@ -217,8 +205,15 @@ export default function FileTranscribe() {
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const deletingRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
-  const [viewMode, setViewMode] = useUrlQueryState<"list" | "grid">("view", "list", {
-    parse: (raw) => (raw === "grid" ? "grid" : "list"),
+  const getInitialViewMode = () => {
+    if (typeof window === "undefined") return "list" as const;
+    const stored = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+    if (stored === "list" || stored === "grid") return stored;
+    return "list" as const;
+  };
+  const initialViewMode = getInitialViewMode();
+  const [viewMode, setViewMode] = useUrlQueryState<"list" | "grid">("view", initialViewMode, {
+    parse: (raw) => (raw === "list" || raw === "grid" ? raw : initialViewMode),
   });
 
   // Search state
@@ -241,6 +236,11 @@ export default function FileTranscribe() {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
+  }, [viewMode]);
 
   const transcriptsQuery = useQuery({
     queryKey: transcriptsQueryKey,
@@ -326,6 +326,8 @@ export default function FileTranscribe() {
     deletingRef.current = id;
     setDeletingId(id);
     try {
+      await new Promise((resolve) => setTimeout(resolve, DELETE_GLITCH_DURATION_MS));
+
       const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
         method: "DELETE",
         credentials: "include",
@@ -472,7 +474,7 @@ export default function FileTranscribe() {
             <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Processing Queue</h3>
           </div>
           {processingItems.map((item: any) => (
-            <Card key={item.id} className="neu-recording-row perf-scroll-item p-4 bg-transparent">
+            <Card key={item.id} className="neu-recording-row perf-scroll-item p-4 rounded-[20px]">
               <div className="flex items-center gap-4">
                 <div className="p-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-lg">
                   <FileAudio className="w-5 h-5" />
@@ -558,7 +560,7 @@ export default function FileTranscribe() {
             <EmptyState type="file" />
           )
         ) : (
-          <div className={viewMode === "grid" ? "grid grid-cols-2 gap-4" : "flex flex-col gap-4"}>
+          <div className={viewMode === "grid" ? "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-stretch" : "flex flex-col"}>
             {completedItems.map((item: any, index: number) => (
               <FileCard
                 key={item.id}

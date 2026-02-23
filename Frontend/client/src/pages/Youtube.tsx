@@ -1,4 +1,4 @@
-import { ArrowRight, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, Trash2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList, Square, Search, X, Copy, Check } from "lucide-react";
+import { ArrowRight, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -16,6 +16,9 @@ import { SkeletonList } from "@/components/ui/skeleton-card";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useUrlQueryState } from "@/hooks/use-url-query-state";
+import { DeleteActionButton } from "@/components/ui/delete-action-button";
+import { CopyActionButton } from "@/components/ui/copy-action-button";
+import { friendlyError, responseErrorMessage } from "@/lib/request-errors";
 
 type YouTubeSearchItem = {
   videoId: string;
@@ -32,6 +35,8 @@ type YouTubeSearchItem = {
 };
 
 type SortOption = "date" | "likes" | "views";
+const DELETE_GLITCH_DURATION_MS = 1200;
+const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
 
 // Memoized YoutubeVideoCard to prevent unnecessary re-renders
 interface YoutubeVideoCardProps {
@@ -58,19 +63,32 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
   onHover,
 }: YoutubeVideoCardProps) {
   const prefersReducedMotion = useReducedMotion();
+  const durationClass = "duration-[1200ms]";
+  const listLayoutClasses = `grid transition-[grid-template-rows,margin-bottom] ease-in-out ${durationClass} ${isDeleting
+    ? "grid-rows-[0fr] mb-0 overflow-hidden"
+    : "grid-rows-[1fr] mb-4 last:mb-0 overflow-visible"
+    }`;
+  const layoutClasses = viewMode === "list" ? listLayoutClasses : "block";
+  const visualClasses = `!transition-all !ease-out !duration-[1200ms] w-full origin-top transform-gpu ${isDeleting
+    ? "hue-rotate-180 saturate-200 blur-md skew-x-[40deg] scale-y-50 translate-x-12 opacity-0"
+    : "hue-rotate-0 saturate-100 blur-0 skew-x-0 scale-y-100 translate-x-0 opacity-100"
+    }`;
 
   return (
     <motion.div
+      layout="position"
       initial={prefersReducedMotion ? false : { opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{
         delay: Math.min(index * 0.02, 0.1),
         duration: prefersReducedMotion ? 0 : 0.2,
         ease: "easeOut",
+        layout: { duration: prefersReducedMotion ? 0 : 0.45, ease: "easeInOut" },
       }}
+      className={layoutClasses}
     >
       <Card
-        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} overflow-hidden bg-transparent hover:scale-[1.01] group cursor-pointer rounded-xl`}
+        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} overflow-hidden rounded-[20px] group cursor-pointer ${visualClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
         role="button"
@@ -127,38 +145,22 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
             </div>
 
             <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-primary opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+              <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}
+                copied={isCopying}
                 title="Copy transcript"
-                aria-label={`Copy transcript ${item.title}`}
-                type="button"
-              >
-                {isCopying ? (
-                  <Check className="w-4 h-4 text-green-500" />
-                ) : (
-                  <Copy className="w-4 h-4" />
-                )}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-destructive opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+                ariaLabel={`Copy transcript ${item.title}`}
+                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+              />
+              <DeleteActionButton
                 onClick={(e) => onDelete(e, item.id)}
                 disabled={isDeleting}
+                loading={isDeleting}
                 title="Delete transcript"
-                aria-label={`Delete transcript ${item.title}`}
-                type="button"
-              >
-                {isDeleting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Trash2 className="w-4 h-4" />
-                )}
-              </Button>
+                ariaLabel={`Delete transcript ${item.title}`}
+                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+              />
             </div>
           </div>
         ) : (
@@ -202,45 +204,31 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
               <div className="flex items-center justify-between mt-2">
                 <span className="text-xs text-muted-foreground">{item.date}</span>
                 <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 text-muted-foreground hover:text-primary opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+                  <CopyActionButton
                     onClick={(e) => onCopy(e, item.id)}
                     disabled={isCopying}
+                    copied={isCopying}
                     title="Copy transcript"
-                    aria-label={`Copy transcript ${item.title}`}
-                    type="button"
-                  >
-                    {isCopying ? (
-                      <Check className="w-3 h-3 text-green-500" />
-                    ) : (
-                      <Copy className="w-3 h-3" />
-                    )}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 text-muted-foreground hover:text-destructive opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+                    ariaLabel={`Copy transcript ${item.title}`}
+                    size="sm"
+                    className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+                  />
+                  <DeleteActionButton
                     onClick={(e) => onDelete(e, item.id)}
                     disabled={isDeleting}
+                    loading={isDeleting}
                     title="Delete transcript"
-                    aria-label={`Delete transcript ${item.title}`}
-                    type="button"
-                  >
-                    {isDeleting ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <Trash2 className="w-3 h-3" />
-                    )}
-                  </Button>
+                    ariaLabel={`Delete transcript ${item.title}`}
+                    size="sm"
+                    className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+                  />
                 </div>
               </div>
             </div>
           </div>
         )
         }
-      </Card >
+      </Card>
     </motion.div >
   );
 });
@@ -258,6 +246,8 @@ export default function Youtube() {
   });
   const [searchResults, setSearchResults] = useState<YouTubeSearchItem[]>([]);
   const [searchError, setSearchError] = useState<string>("");
+  const [startError, setStartError] = useState<string>("");
+  const [lastFailedStartItem, setLastFailedStartItem] = useState<YouTubeSearchItem | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [startingVideoId, setStartingVideoId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -267,8 +257,15 @@ export default function Youtube() {
     parse: (raw) => (raw === "likes" || raw === "views" ? raw : "date"),
   });
   const queryClient = useQueryClient();
-  const [viewMode, setViewMode] = useUrlQueryState<"list" | "grid">("view", "list", {
-    parse: (raw) => (raw === "grid" ? "grid" : "list"),
+  const getInitialViewMode = () => {
+    if (typeof window === "undefined") return "list" as const;
+    const stored = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+    if (stored === "list" || stored === "grid") return stored;
+    return "list" as const;
+  };
+  const initialViewMode = getInitialViewMode();
+  const [viewMode, setViewMode] = useUrlQueryState<"list" | "grid">("view", initialViewMode, {
+    parse: (raw) => (raw === "list" || raw === "grid" ? raw : initialViewMode),
   });
 
   // History search state
@@ -287,6 +284,11 @@ export default function Youtube() {
     const timer = setTimeout(() => setDebouncedHistorySearch(historySearch), 300);
     return () => clearTimeout(timer);
   }, [historySearch]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
+  }, [viewMode]);
 
   const transcriptsQueryKey = useMemo(
     () => ["/api/transcripts", { q: debouncedHistorySearch, type: "youtube" }] as const,
@@ -348,6 +350,8 @@ export default function Youtube() {
 
     setIsSearching(true);
     setSearchError("");
+    setStartError("");
+    setLastFailedStartItem(null);
 
     try {
       // Check if input is a YouTube URL
@@ -356,8 +360,7 @@ export default function Youtube() {
         const url = apiUrl(`/api/youtube/video?url=${encodeURIComponent(q)}`);
         const res = await fetch(url, { credentials: "include" });
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.message || res.statusText);
+          throw new Error(await responseErrorMessage(res));
         }
         const video = await res.json();
         if (video && video.videoId) {
@@ -370,8 +373,7 @@ export default function Youtube() {
         const url = apiUrl(`/api/youtube/search?q=${encodeURIComponent(q)}&maxResults=10`);
         const res = await fetch(url, { credentials: "include" });
         if (!res.ok) {
-          const text = await res.text();
-          throw new Error(text || res.statusText);
+          throw new Error(await responseErrorMessage(res));
         }
         const payload = await res.json();
         const items = (payload?.items || []) as YouTubeSearchItem[];
@@ -379,7 +381,7 @@ export default function Youtube() {
         if (!items.length) setSearchError("No results found.");
       }
     } catch (e: any) {
-      const msg = String(e?.message || e);
+      const msg = friendlyError(e, "YouTube lookup failed.");
       setSearchError(msg);
       toast({
         title: "YouTube lookup failed",
@@ -393,6 +395,8 @@ export default function Youtube() {
 
   const startTranscription = async (item: YouTubeSearchItem) => {
     if (!item?.url || startingVideoId) return;
+    setStartError("");
+    setLastFailedStartItem(null);
     setStartingVideoId(item.videoId);
 
     try {
@@ -410,18 +414,20 @@ export default function Youtube() {
         }),
       });
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || res.statusText);
+        throw new Error(await responseErrorMessage(res));
       }
       const rec = await res.json();
       if (rec?.id) {
         setLocation(`/transcript/${rec.id}`);
       }
     } catch (e: any) {
-      const msg = String(e?.message || e);
+      const msg = friendlyError(e, "Failed to start transcription.");
+      setStartError(msg);
+      setLastFailedStartItem(item);
       toast({
         title: "Failed to start transcription",
         description: msg,
+        variant: "destructive",
         duration: 4000,
       });
     } finally {
@@ -436,6 +442,8 @@ export default function Youtube() {
     deletingRef.current = id;
     setDeletingId(id);
     try {
+      await new Promise((resolve) => setTimeout(resolve, DELETE_GLITCH_DURATION_MS));
+
       const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
         method: "DELETE",
         credentials: "include",
@@ -593,6 +601,15 @@ export default function Youtube() {
             />
           )}
 
+          {!isSearching && startError && (
+            <QueryErrorState
+              title="Could not start transcription"
+              description={startError}
+              onRetry={lastFailedStartItem ? () => startTranscription(lastFailedStartItem) : undefined}
+              className="mx-2"
+            />
+          )}
+
           {sortedResults.length > 0 && (
             <div className="grid gap-4 max-w-2xl mx-auto">
               {sortedResults.map((item) => {
@@ -601,7 +618,7 @@ export default function Youtube() {
                 return (
                   <Card
                     key={item.videoId}
-                    className="neu-recording-row perf-scroll-item overflow-hidden hover:scale-[1.01] transition-all group cursor-pointer bg-transparent"
+                    className="neu-recording-row perf-scroll-item overflow-hidden rounded-[20px] hover:scale-[1.01] transition-all group cursor-pointer"
                     onClick={() => startTranscription(item)}
                     role="button"
                     tabIndex={0}
@@ -732,7 +749,7 @@ export default function Youtube() {
               <EmptyState type="youtube" />
             )
           ) : (
-            <div className={viewMode === "grid" ? "grid grid-cols-3 gap-4" : "flex flex-col gap-4"}>
+            <div className={viewMode === "grid" ? "grid grid-cols-3 gap-4" : "flex flex-col"}>
               {recentVideos.map((item: any, index: number) => (
                 <YoutubeVideoCard
                   key={item.id}

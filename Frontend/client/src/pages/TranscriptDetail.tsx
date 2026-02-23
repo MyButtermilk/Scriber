@@ -1,5 +1,5 @@
-import { useParams, Link } from "wouter";
-import { ArrowLeft, Share2, Download, Copy, Play, Search, Clock, Calendar, Pencil, Check, Loader2, Sparkles, FileText, Square } from "lucide-react";
+import { useParams, Link, useLocation } from "wouter";
+import { ArrowLeft, Share2, Download, Copy, Play, Search, Clock, Calendar, Pencil, Check, Loader2, Sparkles, FileText, Square, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -19,6 +19,7 @@ import { apiUrl } from "@/lib/backend";
 import ReactMarkdown from "react-markdown";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
+import { extractFailureMessage, friendlyError, friendlyRequestMessage, responseErrorMessage } from "@/lib/request-errors";
 
 // Speaker colors for diarization - visually distinct palette
 const SPEAKER_COLORS = [
@@ -164,44 +165,59 @@ function FitText({ children, minFontSize = 12, maxFontSize = 24, className = "" 
   );
 }
 
-function DurationText({ status, duration }: { status?: string; duration?: string }) {
+function DurationText({
+  status,
+  duration,
+  startedAt,
+}: {
+  status?: string;
+  duration?: string;
+  startedAt?: string;
+}) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const startTimeRef = useRef<number | null>(null);
-  const isProcessingRef = useRef(false);
+  const fallbackStartedAtRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    const isNowProcessing = status === "processing";
-    if (isNowProcessing && !isProcessingRef.current) {
-      startTimeRef.current = Date.now();
-      setElapsedSeconds(0);
-    }
-    if (!isNowProcessing && isProcessingRef.current) {
-      startTimeRef.current = null;
-    }
-    isProcessingRef.current = isNowProcessing;
-  }, [status]);
+  const parsedStartMs = useMemo(() => {
+    const raw = (startedAt || "").trim();
+    if (!raw) return null;
+    const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+    const millis = Date.parse(normalized);
+    return Number.isFinite(millis) ? millis : null;
+  }, [startedAt]);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (startTimeRef.current && isProcessingRef.current) {
-        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
-        setElapsedSeconds(elapsed);
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  const formatElapsed = (seconds: number) => {
+  const formatElapsed = useCallback((seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  }, []);
 
-  const display = status === "processing"
-    ? formatElapsed(elapsedSeconds)
-    : (duration || "");
+  useEffect(() => {
+    if (status !== "processing") {
+      fallbackStartedAtRef.current = null;
+      setElapsedSeconds(0);
+      return;
+    }
 
+    if (parsedStartMs === null && fallbackStartedAtRef.current === null) {
+      fallbackStartedAtRef.current = Date.now();
+    }
+
+    const updateElapsed = () => {
+      const base = parsedStartMs ?? fallbackStartedAtRef.current;
+      if (base === null) {
+        setElapsedSeconds(0);
+        return;
+      }
+      const elapsed = Math.max(0, Math.floor((Date.now() - base) / 1000));
+      setElapsedSeconds(elapsed);
+    };
+
+    updateElapsed();
+    const interval = setInterval(updateElapsed, 1000);
+    return () => clearInterval(interval);
+  }, [parsedStartMs, status]);
+
+  const display = status === "processing" ? formatElapsed(elapsedSeconds) : (duration || "");
   return <span>{display}</span>;
 }
 
@@ -278,8 +294,10 @@ function SummarizeButton({ transcriptId, onComplete }: { transcriptId: string | 
 
 export default function TranscriptDetail() {
   const { id } = useParams();
+  const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
+  const [isRetryingYoutube, setIsRetryingYoutube] = useState(false);
   const queryClient = useQueryClient();
   const { isWsConnected } = useTranscriptAutoRefresh({
     transcriptId: id,
@@ -296,10 +314,20 @@ export default function TranscriptDetail() {
   const transcriptQuery = useQuery({
     queryKey: ["/api/transcripts", id],
     enabled: !!id,
-    refetchInterval: (data: any) => {
-      if (isWsConnected) return false;
+    refetchInterval: (query: any) => {
+      const data = query?.state?.data as any;
       const status = data?.status;
-      return status === "processing" || status === "recording" ? 1000 : false;
+      const isActive = status === "processing" || status === "recording";
+      if (isActive) {
+        // Keep a light polling fallback even with WS connected in case
+        // a WS event is missed or delayed.
+        return isWsConnected ? 3000 : 1000;
+      }
+      // If no data yet (or temporary fetch failure), keep retrying.
+      if (!data) {
+        return 1500;
+      }
+      return false;
     },
   });
 
@@ -321,6 +349,81 @@ export default function TranscriptDetail() {
     content: "",
     type: "mic",
   };
+  const isFailedYoutubeTranscript =
+    transcript?.status === "failed" && transcript?.type === "youtube";
+  const rawFailureMessage = useMemo(
+    () => extractFailureMessage(String(transcript?.content || ""), String(transcript?.step || "")),
+    [transcript?.content, transcript?.step],
+  );
+  const failedMessage = useMemo(
+    () => (isFailedYoutubeTranscript ? friendlyRequestMessage(rawFailureMessage, "Transcription failed.") : ""),
+    [isFailedYoutubeTranscript, rawFailureMessage],
+  );
+  const technicalFailureMessage = useMemo(() => {
+    if (!isFailedYoutubeTranscript) return "";
+    const technical = (rawFailureMessage || "").trim();
+    if (!technical || technical === failedMessage) return "";
+    return technical;
+  }, [failedMessage, isFailedYoutubeTranscript, rawFailureMessage]);
+  const failedContentLooksLikeErrorOnly = useMemo(() => {
+    if (!isFailedYoutubeTranscript) return false;
+    const content = String(transcript?.content || "").trim();
+    return /^\[(error|timeout|download error)\]/i.test(content);
+  }, [isFailedYoutubeTranscript, transcript?.content]);
+
+  const retryYoutubeTranscription = useCallback(async () => {
+    if (!id || isRetryingYoutube) return;
+    const sourceUrl = String(transcript?.sourceUrl || "").trim();
+    if (!sourceUrl) {
+      toast({
+        title: "Retry unavailable",
+        description: "No source URL is available for this transcript.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsRetryingYoutube(true);
+    try {
+      const res = await fetch(apiUrl("/api/youtube/transcribe"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          url: sourceUrl,
+          title: transcript?.title,
+          channelTitle: transcript?.channel,
+          thumbnailUrl: transcript?.thumbnailUrl,
+          duration: transcript?.duration,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(await responseErrorMessage(res));
+      }
+
+      const rec = await res.json();
+      if (!rec?.id) {
+        throw new Error("Retry started, but no transcript ID was returned.");
+      }
+
+      toast({
+        title: "Retry started",
+        description: "A new YouTube transcription attempt has been queued.",
+        duration: 3000,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/transcripts"] });
+      setLocation(`/transcript/${rec.id}`);
+    } catch (e) {
+      toast({
+        title: "Retry failed",
+        description: friendlyError(e, "Could not restart transcription."),
+        variant: "destructive",
+        duration: 5000,
+      });
+    } finally {
+      setIsRetryingYoutube(false);
+    }
+  }, [id, isRetryingYoutube, queryClient, setLocation, toast, transcript?.sourceUrl, transcript?.title, transcript?.channel, transcript?.thumbnailUrl, transcript?.duration]);
 
   const handleCopyTranscript = () => {
     navigator.clipboard.writeText(transcript?.content || "");
@@ -383,7 +486,7 @@ export default function TranscriptDetail() {
               {transcript?.title || "Transcript"}
             </FitText>
             <p className="text-xs text-muted-foreground truncate">
-              {transcript.date} • <DurationText status={transcript.status} duration={transcript.duration} />
+              {transcript.date} • <DurationText status={transcript.status} duration={transcript.duration} startedAt={transcript.createdAt} />
             </p>
           </div>
         </div>
@@ -473,6 +576,20 @@ export default function TranscriptDetail() {
           {transcript.status === "processing" && (
             <StopButton transcriptId={id!} onStop={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
           )}
+          {isFailedYoutubeTranscript && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                void retryYoutubeTranscription();
+              }}
+              disabled={isRetryingYoutube}
+              type="button"
+            >
+              {isRetryingYoutube ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <RotateCcw className="w-3 h-3 mr-1" />}
+              {isRetryingYoutube ? "Retrying..." : "Retry"}
+            </Button>
+          )}
           {transcript.status === "completed" && !transcript.summary && !autoSummarize && (
             <div className="hidden md:block">
               <SummarizeButton transcriptId={id} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
@@ -512,9 +629,26 @@ export default function TranscriptDetail() {
                   {transcript.step || "Processing..."}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Elapsed: <DurationText status={transcript.status} duration={transcript.duration} />
+                  Elapsed: <DurationText status={transcript.status} duration={transcript.duration} startedAt={transcript.createdAt} />
                 </p>
               </div>
+            </div>
+          )}
+
+          {isFailedYoutubeTranscript && (
+            <div className="space-y-2">
+              <QueryErrorState
+                title="YouTube transcription failed"
+                description={failedMessage || "The transcription failed. Please try again."}
+                onRetry={() => {
+                  void retryYoutubeTranscription();
+                }}
+              />
+              {technicalFailureMessage && (
+                <p className="text-xs text-muted-foreground px-1">
+                  Technical details: {technicalFailureMessage}
+                </p>
+              )}
             </div>
           )}
 
@@ -563,6 +697,10 @@ export default function TranscriptDetail() {
                     "Loading..."
                   ) : transcript.status === "processing" ? (
                     <span className="text-muted-foreground italic"></span>
+                  ) : isFailedYoutubeTranscript && failedContentLooksLikeErrorOnly ? (
+                    <span className="text-muted-foreground italic">
+                      {failedMessage || "No transcript text captured."}
+                    </span>
                   ) : transcript.content ? (
                     <SpeakerFormattedText content={transcript.content} />
                   ) : (

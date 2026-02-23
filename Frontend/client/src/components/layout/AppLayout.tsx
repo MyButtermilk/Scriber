@@ -139,8 +139,8 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                   <SidebarSearch placeholder="Search" onOpenCommandPalette={handleOpenCommandPaletteFromSheet} />
                 </div>
                 {renderNav(() => setMobileNavOpen(false))}
-                <div className="px-3 pb-4 pt-2">
-                  <ThemeToggle />
+                <div className="px-4 pb-5 pt-2">
+                  <ThemeToggle align="edge" />
                 </div>
               </div>
             </SheetContent>
@@ -179,8 +179,8 @@ export function AppLayout({ children, path }: AppLayoutProps) {
         {renderNav()}
 
         {/* Theme Toggle at bottom */}
-        <div className="px-3 pb-4 pt-2">
-          <ThemeToggle />
+        <div className="px-4 pb-5 pt-2">
+          <ThemeToggle align="edge" />
         </div>
       </aside>
 

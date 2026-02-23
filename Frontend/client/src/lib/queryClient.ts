@@ -1,30 +1,10 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { apiUrl } from "./backend";
-
-/**
- * Converts raw fetch errors into user-friendly messages
- */
-function friendlyErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    const msg = error.message.toLowerCase();
-    if (msg.includes("failed to fetch") || msg.includes("networkerror") || msg.includes("network request failed")) {
-      return "Cannot connect to the backend. Please ensure the application is running.";
-    }
-    if (msg.includes("timeout") || msg.includes("aborted")) {
-      return "Request timed out. The backend may be busy or unresponsive.";
-    }
-    if (msg.includes("cors") || msg.includes("cross-origin")) {
-      return "Connection blocked. Please check your network settings.";
-    }
-    return error.message;
-  }
-  return "An unexpected error occurred";
-}
+import { friendlyError, responseErrorMessage } from "./request-errors";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    throw new Error(await responseErrorMessage(res));
   }
 }
 
@@ -45,7 +25,7 @@ export async function apiRequest(
     return res;
   } catch (error) {
     // Re-throw with a friendlier message
-    throw new Error(friendlyErrorMessage(error));
+    throw new Error(friendlyError(error, "An unexpected error occurred."));
   }
 }
 
