@@ -206,3 +206,94 @@ async def test_stop_listening_marks_failed_when_stop_raises():
     assert "[Error] stop failed" in rec.content
     assert ctl._status == "Error"
     assert rec in ctl._history
+
+
+class _SlowStopPipeline:
+    service_name = "openai"
+
+    def __init__(self):
+        self.stop_gate = asyncio.Event()
+
+    async def stop(self):
+        await self.stop_gate.wait()
+
+
+@pytest.mark.asyncio
+async def test_hotkey_toggle_is_deferred_while_stop_is_in_progress():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    session_id = "deferred-hotkey-session"
+    rec = _make_record(session_id)
+    pipeline = _SlowStopPipeline()
+    ctl._current = rec
+    ctl._session_id = session_id
+    ctl._is_listening = True
+    ctl._pipeline = pipeline
+    ctl._pipeline_task = None
+
+    with (
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_to_db"),
+        patch.object(ctl, "start_listening", new=AsyncMock()) as start_mock,
+        patch("src.web_api.show_transcribing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        stop_task = asyncio.create_task(ctl.stop_listening())
+
+        for _ in range(50):
+            if ctl._is_stopping:
+                break
+            await asyncio.sleep(0.01)
+        assert ctl._is_stopping is True
+
+        await ctl._handle_hotkey_toggle()
+        assert ctl._pending_hotkey_toggle is True
+
+        pipeline.stop_gate.set()
+        await stop_task
+
+    start_mock.assert_awaited_once()
+    assert ctl._pending_hotkey_toggle is False
+
+
+@pytest.mark.asyncio
+async def test_dispatch_hotkey_toggle_debounces_rapid_events():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    ctl._loop = MagicMock()
+    ctl._hotkey_dispatch_debounce_seconds = 0.5
+
+    with patch("src.web_api.time.monotonic", side_effect=[10.0, 10.1, 10.8]):
+        ctl._dispatch_hotkey_toggle()
+        ctl._dispatch_hotkey_toggle()
+        ctl._dispatch_hotkey_toggle()
+
+    assert ctl._loop.call_soon_threadsafe.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_toggle_hotkey_poll_loop_triggers_only_on_rising_edge():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    states = [False, True, True, False, False]
+    idx = {"value": 0}
+
+    class _KeyboardStub:
+        def is_pressed(self, _hotkey: str) -> bool:
+            current = states[idx["value"]]
+            if idx["value"] < len(states) - 1:
+                idx["value"] += 1
+            return current
+
+    ctl._keyboard = _KeyboardStub()
+
+    with patch.object(ctl, "_dispatch_hotkey_toggle") as dispatch_mock:
+        task = asyncio.create_task(ctl._toggle_hotkey_poll_loop())
+        await asyncio.sleep(0.3)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    dispatch_mock.assert_called_once()

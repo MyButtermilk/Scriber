@@ -1,3 +1,5 @@
+import pytest
+
 from src import web_api
 
 
@@ -40,3 +42,31 @@ def test_upload_max_bytes_env(monkeypatch):
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
     monkeypatch.setenv("SCRIBER_UPLOAD_MAX_MB", "1")
     assert web_api._get_upload_max_bytes() == 1024 * 1024
+
+
+def test_allowed_upload_extensions_include_video_extensions():
+    assert web_api._VIDEO_EXTENSIONS.issubset(web_api._ALLOWED_UPLOAD_EXTENSIONS)
+
+
+def test_validate_default_stt_service_accepts_known():
+    assert web_api._validate_default_stt_service(" OpenAI ") == "openai"
+
+
+def test_validate_default_stt_service_rejects_unknown():
+    with pytest.raises(ValueError):
+        web_api._validate_default_stt_service("not-a-provider")
+
+
+def test_validate_summarization_model_accepts_known_prefixes():
+    assert web_api._validate_summarization_model("gemini-3-flash-preview") == "gemini-3-flash-preview"
+    assert web_api._validate_summarization_model("gpt-5-mini") == "gpt-5-mini"
+
+
+def test_validate_summarization_model_rejects_invalid_prefix():
+    with pytest.raises(ValueError):
+        web_api._validate_summarization_model("claude-3-opus")
+
+
+def test_validate_summarization_model_rejects_invalid_chars():
+    with pytest.raises(ValueError):
+        web_api._validate_summarization_model("gpt-5-mini;rm")

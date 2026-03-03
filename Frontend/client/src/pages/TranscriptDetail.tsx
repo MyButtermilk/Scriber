@@ -12,7 +12,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MOCK_TRANSCRIPTS } from "@/lib/mockData";
 import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect, useRef, useLayoutEffect, useCallback, useMemo } from "react";
 import { apiUrl } from "@/lib/backend";
@@ -20,6 +19,15 @@ import ReactMarkdown from "react-markdown";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { extractFailureMessage, friendlyError, friendlyRequestMessage, responseErrorMessage } from "@/lib/request-errors";
+
+function normalizeSummaryMarkdown(text: string): string {
+  return (text || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/\u200b/g, "")
+    .replace(/^([ \t]*)[•●◦▪▫‣⁃]\s+/gm, "$1- ")
+    .trim();
+}
 
 // Speaker colors for diarization - visually distinct palette
 const SPEAKER_COLORS = [
@@ -311,17 +319,49 @@ export default function TranscriptDetail() {
     },
   });
 
+  // Fetch settings to check if auto-summarize is enabled
+  const settingsQuery = useQuery({
+    queryKey: ["/api/settings"],
+    queryFn: async () => {
+      const res = await fetch(apiUrl("/api/settings"), {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!res.ok) return {};
+      return res.json();
+    },
+  });
+  const autoSummarizeEnabled = settingsQuery.data?.autoSummarize === true;
+
   const transcriptQuery = useQuery({
     queryKey: ["/api/transcripts", id],
     enabled: !!id,
     refetchInterval: (query: any) => {
       const data = query?.state?.data as any;
       const status = data?.status;
+      const step = String(data?.step || "").toLowerCase();
+      const summary = String(data?.summary || "").trim();
+      const type = String(data?.type || "");
       const isActive = status === "processing" || status === "recording";
       if (isActive) {
         // Keep a light polling fallback even with WS connected in case
         // a WS event is missed or delayed.
         return isWsConnected ? 3000 : 1000;
+      }
+      const updatedAtMs = Date.parse(String(data?.updatedAt || ""));
+      const isRecentlyUpdated = Number.isFinite(updatedAtMs)
+        ? Date.now() - updatedAtMs < 5 * 60 * 1000
+        : true;
+      const mayAutoSummarize = type !== "mic" && settingsQuery.data?.autoSummarize !== false;
+      const isSummaryPending =
+        status === "completed" &&
+        !summary &&
+        (step.includes("summariz") || mayAutoSummarize) &&
+        isRecentlyUpdated;
+      if (isSummaryPending) {
+        // Completed transcripts can still be in summarization.
+        // Poll lightly so summary appears even if a WS update was missed.
+        return isWsConnected ? 2500 : 1200;
       }
       // If no data yet (or temporary fetch failure), keep retrying.
       if (!data) {
@@ -330,25 +370,18 @@ export default function TranscriptDetail() {
       return false;
     },
   });
-
-  // Fetch settings to check if auto-summarize is enabled
-  const settingsQuery = useQuery({
-    queryKey: ["/api/settings"],
-    queryFn: async () => {
-      const res = await fetch(apiUrl("/api/settings"), { credentials: "include" });
-      if (!res.ok) return {};
-      return res.json();
-    },
-  });
-  const autoSummarize = settingsQuery.data?.autoSummarize === true;
-  const mock = MOCK_TRANSCRIPTS.find((t) => t.id === id);
-  const transcript: any = transcriptQuery.data || mock || {
+  const autoSummarize = autoSummarizeEnabled;
+  const transcript: any = transcriptQuery.data || {
     title: "Transcript",
     date: "",
     duration: "",
     content: "",
     type: "mic",
   };
+  const summaryMarkdown = useMemo(
+    () => normalizeSummaryMarkdown(String(transcript?.summary || "")),
+    [transcript?.summary],
+  );
   const isFailedYoutubeTranscript =
     transcript?.status === "failed" && transcript?.type === "youtube";
   const rawFailureMessage = useMemo(
@@ -438,7 +471,7 @@ export default function TranscriptDetail() {
 
   const [copiedSummary, setCopiedSummary] = useState(false);
   const handleCopySummary = () => {
-    navigator.clipboard.writeText(transcript?.summary || "");
+    navigator.clipboard.writeText(summaryMarkdown || "");
     setCopiedSummary(true);
     toast({
       title: "Copied to Clipboard",
@@ -612,7 +645,7 @@ export default function TranscriptDetail() {
             <Badge variant="secondary" className="px-3 py-1 font-normal neu-button"><Calendar className="w-3 h-3 mr-1.5" /> {transcript.date}</Badge>
           </div>
 
-          {transcriptQuery.isError && !mock && (
+          {transcriptQuery.isError && (
             <QueryErrorState
               title="Could not load transcript"
               description="Please retry loading this transcript."
@@ -671,7 +704,7 @@ export default function TranscriptDetail() {
               <AccordionContent className="px-4 pb-4">
                 {transcript.summary ? (
                   <div className="prose dark:prose-invert max-w-none">
-                    <ReactMarkdown>{transcript.summary}</ReactMarkdown>
+                    <ReactMarkdown>{summaryMarkdown}</ReactMarkdown>
                   </div>
                 ) : (
                   <p className="text-base text-muted-foreground italic">

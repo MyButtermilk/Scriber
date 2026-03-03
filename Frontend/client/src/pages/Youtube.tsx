@@ -418,6 +418,37 @@ export default function Youtube() {
       }
       const rec = await res.json();
       if (rec?.id) {
+        if (!debouncedHistorySearch) {
+          queryClient.setQueryData(transcriptsQueryKey, (previous: any) => {
+            const prevItems: any[] = Array.isArray(previous?.items) ? previous.items : [];
+            if (prevItems.some((x: any) => x?.id === rec.id)) {
+              return previous;
+            }
+
+            const optimistic = {
+              ...rec,
+              type: rec.type || "youtube",
+              title: rec.title || item.title,
+              channel: rec.channel || item.channelTitle || "",
+              thumbnailUrl: rec.thumbnailUrl || item.thumbnailUrl || "",
+              duration: rec.duration || item.duration || "",
+              status: rec.status || "processing",
+              step: rec.step || "Queued",
+            };
+
+            return {
+              ...(previous || {}),
+              items: [optimistic, ...prevItems],
+              total: typeof previous?.total === "number" ? previous.total + 1 : prevItems.length + 1,
+            };
+          });
+        }
+
+        queryClient.invalidateQueries({
+          predicate: (query) =>
+            query.queryKey[0] === "/api/transcripts" &&
+            (query.queryKey[1] as { type?: string })?.type === "youtube",
+        });
         setLocation(`/transcript/${rec.id}`);
       }
     } catch (e: any) {

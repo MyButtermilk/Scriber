@@ -38,6 +38,7 @@ export const getQueryFn = <T,>({
   try {
     const res = await fetch(apiUrl(queryKey.join("/") as string), {
       credentials: "include",
+      cache: "no-store",
     });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {

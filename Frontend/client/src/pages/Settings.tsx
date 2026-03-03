@@ -1,4 +1,4 @@
-import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronRight, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power, Key, Settings2, Star, Download, Trash2, Loader2 } from "lucide-react";
+import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronDown, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power, Key, Settings2, Star, Download, Trash2, Loader2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
@@ -45,6 +45,117 @@ type NemoModelInfo = {
   progress?: number;
   message?: string;
 };
+
+const LANGUAGE_OPTIONS = [
+  { value: "auto", label: "Auto-detect" },
+  { value: "de", label: "German" },
+  { value: "en", label: "English" },
+  { value: "es", label: "Spanish" },
+  { value: "fr", label: "French" },
+  { value: "it", label: "Italian" },
+] as const;
+
+const TRANSCRIPTION_MODEL_OPTIONS = [
+  { value: "onnx_local", label: "Local (ONNX) - No API Key" },
+  { value: "nemo_local", label: "Local (NeMo) - Primeline" },
+  { value: "soniox-realtime", label: "Soniox Realtime" },
+  { value: "soniox-async", label: "Soniox Async" },
+  { value: "mistral-realtime", label: "Mistral Realtime (Voxtral RT)" },
+  { value: "mistral-async", label: "Mistral Async (Voxtral V2)" },
+  { value: "assemblyai", label: "Assembly AI Universal-3-Pro" },
+  { value: "deepgram", label: "Deepgram" },
+  { value: "openai", label: "OpenAI" },
+  { value: "azure", label: "Azure Speech" },
+  { value: "gladia", label: "Gladia" },
+  { value: "groq", label: "Groq" },
+  { value: "speechmatics", label: "Speechmatics" },
+  { value: "elevenlabs", label: "ElevenLabs" },
+  { value: "google", label: "Google Cloud STT" },
+  { value: "aws", label: "AWS Transcribe" },
+] as const;
+
+const SUMMARIZATION_MODEL_OPTIONS = [
+  { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview (Recommended)" },
+  { value: "gemini-3-pro-preview", label: "Gemini 3 Pro" },
+  { value: "gpt-5.2", label: "OpenAI GPT 5.2" },
+  { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini" },
+  { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano" },
+] as const;
+
+function LanguageFlag({ value, className }: { value: string; className?: string }) {
+  if (value === "auto") {
+    return (
+      <span className={cn("language-flag-icon", className)} aria-hidden="true">
+        <Globe className="globe-svg" />
+      </span>
+    );
+  }
+
+  if (value === "de") {
+    return (
+      <span className={cn("language-flag-icon", className)} aria-hidden="true">
+        <svg className="rect-flag" viewBox="0 0 3 3" preserveAspectRatio="none">
+          <rect width="3" height="1" y="0" fill="#000000" />
+          <rect width="3" height="1" y="1" fill="#FF0000" />
+          <rect width="3" height="1" y="2" fill="#FFCC00" />
+        </svg>
+      </span>
+    );
+  }
+
+  if (value === "en") {
+    return (
+      <span className={cn("language-flag-icon", className)} aria-hidden="true">
+        <svg className="rect-flag" viewBox="0 0 64 64" preserveAspectRatio="none">
+          <rect width="64" height="64" fill="#012169" />
+          <line x1="0" y1="0" x2="64" y2="64" stroke="#fff" strokeWidth="12" />
+          <line x1="0" y1="64" x2="64" y2="0" stroke="#fff" strokeWidth="12" />
+          <line x1="0" y1="0" x2="64" y2="64" stroke="#C8102E" strokeWidth="6" />
+          <line x1="0" y1="64" x2="64" y2="0" stroke="#C8102E" strokeWidth="6" />
+          <line x1="32" y1="0" x2="32" y2="64" stroke="#fff" strokeWidth="16" />
+          <line x1="0" y1="32" x2="64" y2="32" stroke="#fff" strokeWidth="16" />
+          <line x1="32" y1="0" x2="32" y2="64" stroke="#C8102E" strokeWidth="10" />
+          <line x1="0" y1="32" x2="64" y2="32" stroke="#C8102E" strokeWidth="10" />
+        </svg>
+      </span>
+    );
+  }
+
+  if (value === "es") {
+    return (
+      <span className={cn("language-flag-icon", className)} aria-hidden="true">
+        <svg className="rect-flag" viewBox="0 0 3 3" preserveAspectRatio="none">
+          <rect width="3" height="0.75" y="0" fill="#AA151B" />
+          <rect width="3" height="1.5" y="0.75" fill="#F1BF00" />
+          <rect width="3" height="0.75" y="2.25" fill="#AA151B" />
+          <circle cx="0.8" cy="1.5" r="0.35" fill="#AA151B" />
+        </svg>
+      </span>
+    );
+  }
+
+  if (value === "fr") {
+    return (
+      <span className={cn("language-flag-icon", className)} aria-hidden="true">
+        <svg className="rect-flag" viewBox="0 0 3 3" preserveAspectRatio="none">
+          <rect width="1" height="3" x="0" fill="#0055A4" />
+          <rect width="1" height="3" x="1" fill="#FFFFFF" />
+          <rect width="1" height="3" x="2" fill="#EF4135" />
+        </svg>
+      </span>
+    );
+  }
+
+  return (
+    <span className={cn("language-flag-icon", className)} aria-hidden="true">
+      <svg className="rect-flag" viewBox="0 0 3 3" preserveAspectRatio="none">
+        <rect width="1" height="3" x="0" fill="#009246" />
+        <rect width="1" height="3" x="1" fill="#FFFFFF" />
+        <rect width="1" height="3" x="2" fill="#CE2B37" />
+      </svg>
+    </span>
+  );
+}
 
 export default function Settings() {
   const [openAIKey, setOpenAIKey] = useState("");
@@ -96,6 +207,10 @@ export default function Settings() {
   const [settingsError, setSettingsError] = useState("");
   const [micAlwaysOn, setMicAlwaysOn] = useState(false);
   const [favoriteMic, setFavoriteMic] = useState("");
+  const [isMicDropdownOpen, setIsMicDropdownOpen] = useState(false);
+  const [isLanguageDropdownOpen, setIsLanguageDropdownOpen] = useState(false);
+  const [isTranscriptionModelDropdownOpen, setIsTranscriptionModelDropdownOpen] = useState(false);
+  const [isSummarizationModelDropdownOpen, setIsSummarizationModelDropdownOpen] = useState(false);
 
   const [onnxAvailable, setOnnxAvailable] = useState<boolean | null>(null);
   const [onnxMessage, setOnnxMessage] = useState("");
@@ -351,6 +466,13 @@ export default function Settings() {
     }
   };
 
+  const handleMicDeviceSelectFromDropdown = async (deviceId: string) => {
+    await handleMicDeviceChange(deviceId);
+    window.setTimeout(() => {
+      setIsMicDropdownOpen(false);
+    }, 500);
+  };
+
   const handleSetFavoriteMic = async (deviceId: string) => {
     // Toggle favorite - if already favorite, clear it
     const originalFavorite = favoriteMic;  // Capture before optimistic update
@@ -409,6 +531,20 @@ export default function Settings() {
         duration: 4000,
       });
     }
+  };
+
+  const handleTranscriptionModelSelectFromDropdown = async (value: string) => {
+    await handleTranscriptionModelChange(value);
+    window.setTimeout(() => {
+      setIsTranscriptionModelDropdownOpen(false);
+    }, 500);
+  };
+
+  const handleLanguageSelectFromDropdown = async (value: string) => {
+    await handleLanguageChange(value);
+    window.setTimeout(() => {
+      setIsLanguageDropdownOpen(false);
+    }, 500);
   };
 
   const handleOnnxModelChange = async (value: string) => {
@@ -620,6 +756,13 @@ export default function Settings() {
         duration: 4000,
       });
     }
+  };
+
+  const handleSummarizationModelSelectFromDropdown = async (value: string) => {
+    await handleSummarizationModelChange(value);
+    window.setTimeout(() => {
+      setIsSummarizationModelDropdownOpen(false);
+    }, 500);
   };
 
   const handleAutoSummarizeChange = async (enabled: boolean) => {
@@ -851,6 +994,16 @@ export default function Settings() {
 
   const selectedOnnxModel = onnxModels.find((m) => m.id === onnxModel) || onnxModels[0];
   const selectedNemoModel = nemoModels.find((m) => m.id === nemoModel) || nemoModels[0];
+  const selectedMicDevice = inputDevices.find(
+    (device, index) => (device.deviceId || `device-${index}`) === selectedDeviceId
+  );
+  const selectedMicLabel = inputDevices.length === 0
+    ? "Loading devices..."
+    : (selectedMicDevice?.label || (selectedDeviceId === "default" ? "Default" : ""));
+  const hasSelectedMic = Boolean(selectedMicDevice || selectedDeviceId === "default");
+  const selectedLanguage = LANGUAGE_OPTIONS.find((option) => option.value === language) || LANGUAGE_OPTIONS[0];
+  const selectedTranscriptionModelOption = TRANSCRIPTION_MODEL_OPTIONS.find((option) => option.value === transcriptionModel);
+  const selectedSummarizationModelOption = SUMMARIZATION_MODEL_OPTIONS.find((option) => option.value === summarizationModel);
   const supportedQuantizations = selectedOnnxModel?.supportedQuantizations || ["int8", "fp32"];
   const quantizationSupported = supportedQuantizations.includes(onnxQuantization);
   const formatSize = (sizeMb?: number) => {
@@ -928,68 +1081,100 @@ export default function Settings() {
                       Select microphone for recording. Star a device to always use it when available.
                     </p>
                   </div>
-                  <div className="space-y-2">
-                    {inputDevices.length === 0 ? (
-                      <div className="text-sm text-muted-foreground py-2">Loading devices...</div>
-                    ) : (
-                      inputDevices.map((device, index) => {
-                        const deviceValue = device.deviceId || `device-${index}`;
-                        const isSelected = selectedDeviceId === deviceValue;
-                        const isFavorite = favoriteMic === deviceValue;
-                        return (
-                          <div
-                            key={`${deviceValue}-${index}`}
-                            className={cn(
-                              "flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all",
-                              isSelected
-                                ? "border-primary bg-primary/5"
-                                : "border-border/60 hover:border-primary/50 hover:bg-accent/5"
+                  <div className={cn("mic-device-dropdown", isMicDropdownOpen && "is-open")}>
+                    <button
+                      type="button"
+                      className="mic-device-dropdown-header"
+                      onClick={() => setIsMicDropdownOpen((prev) => !prev)}
+                      aria-label="Select input device"
+                      aria-expanded={isMicDropdownOpen}
+                      aria-controls="mic-device-dropdown-tray"
+                    >
+                      <span className="mic-device-dropdown-header-info">
+                        <span className={cn("mic-device-dropdown-selected-text", hasSelectedMic && "is-selected")}>
+                          {selectedMicLabel || "Select a device..."}
+                        </span>
+                      </span>
+                      <ChevronDown className="mic-device-dropdown-chevron" />
+                    </button>
+
+                    <div
+                      id="mic-device-dropdown-tray"
+                      className="mic-device-dropdown-tray"
+                      aria-hidden={!isMicDropdownOpen}
+                    >
+                      <div className="mic-device-dropdown-content">
+                        <div className="mic-device-dropdown-tray-inner">
+                          <div className="mic-device-list">
+                            {inputDevices.length === 0 ? (
+                              <div className="text-sm text-muted-foreground py-2 px-2">Loading devices...</div>
+                            ) : (
+                              inputDevices.map((device, index) => {
+                                const deviceValue = device.deviceId || `device-${index}`;
+                                const deviceLabel = device.label || `Device ${index + 1}`;
+                                const micInputId = `mic-device-${index}`;
+                                const favoriteInputId = `favorite-mic-${index}`;
+                                const isSelected = selectedDeviceId === deviceValue;
+                                const isFavorite = favoriteMic === deviceValue;
+                                return (
+                                  <div
+                                    key={`${deviceValue}-${index}`}
+                                    className={cn(
+                                      "mic-device-item",
+                                      isSelected && "is-selected",
+                                      isFavorite && "is-favorite"
+                                    )}
+                                  >
+                                    <div className="mic-device-row-waves" aria-hidden="true">
+                                      <div className="mic-device-wave-row" />
+                                    </div>
+
+                                    <input
+                                      type="radio"
+                                      id={micInputId}
+                                      name="mic-input-device"
+                                      className="mic-device-radio sr-only"
+                                      checked={isSelected}
+                                      onChange={() => handleMicDeviceSelectFromDropdown(deviceValue)}
+                                      aria-label={`Select microphone ${deviceLabel}`}
+                                    />
+                                    <label htmlFor={micInputId} className="mic-device-label">
+                                      <span className="mic-device-icon-wrapper" aria-hidden="true">
+                                        <AudioLines className="mic-device-icon" />
+                                      </span>
+                                      <span className="mic-device-name">{deviceLabel}</span>
+                                      <svg className="mic-device-check" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M 4 12 L 10 18 L 20 6" />
+                                      </svg>
+                                    </label>
+
+                                    <div className="mic-device-divider" aria-hidden="true" />
+
+                                    <input
+                                      type="checkbox"
+                                      id={favoriteInputId}
+                                      className="mic-device-star-radio sr-only"
+                                      checked={isFavorite}
+                                      onChange={() => handleSetFavoriteMic(deviceValue)}
+                                      aria-label={isFavorite ? `Remove ${deviceLabel} from favorites` : `Set ${deviceLabel} as favorite`}
+                                    />
+                                    <label
+                                      htmlFor={favoriteInputId}
+                                      className="mic-device-star-label"
+                                      title={isFavorite ? "Remove from favorites" : "Set as favorite"}
+                                    >
+                                      <svg className="mic-device-star" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                                      </svg>
+                                    </label>
+                                  </div>
+                                );
+                              })
                             )}
-                            onClick={() => handleMicDeviceChange(deviceValue)}
-                            role="button"
-                            tabIndex={0}
-                            aria-pressed={isSelected}
-                            aria-label={`Select microphone ${device.label || `Device ${index + 1}`}`}
-                            onKeyDown={(e) => {
-                              if (e.target !== e.currentTarget) return;
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                handleMicDeviceChange(deviceValue);
-                              }
-                            }}
-                          >
-                            <AudioLines className={cn(
-                              "w-4 h-4 shrink-0",
-                              isSelected ? "text-primary" : "text-muted-foreground"
-                            )} />
-                            <span className={cn(
-                              "flex-1 text-sm truncate",
-                              isSelected ? "font-medium" : ""
-                            )}>
-                              {device.label || `Device ${index + 1}`}
-                            </span>
-                            {isSelected && <Check className="w-4 h-4 text-primary shrink-0" />}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleSetFavoriteMic(deviceValue);
-                              }}
-                              className={cn(
-                                "p-1.5 rounded-md transition-all shrink-0",
-                                isFavorite
-                                  ? "text-amber-500 hover:bg-amber-500/10"
-                                  : "text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent"
-                              )}
-                              title={isFavorite ? "Remove from favorites" : "Set as favorite"}
-                              aria-label={isFavorite ? `Remove ${device.label || `Device ${index + 1}`} from favorites` : `Set ${device.label || `Device ${index + 1}`} as favorite`}
-                            >
-                              <Star className={cn("w-4 h-4", isFavorite && "fill-amber-500")} />
-                            </button>
                           </div>
-                        );
-                      })
-                    )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                   {favoriteMic && (
                     <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
@@ -1018,29 +1203,66 @@ export default function Settings() {
                     <p className="text-sm text-muted-foreground">Select the AI model for live transcription</p>
                   </div>
                   <div className="space-y-2">
-                    <Select value={transcriptionModel} onValueChange={handleTranscriptionModelChange}>
-                      <SelectTrigger className="w-[320px]">
-                        <SelectValue placeholder="Select model" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="onnx_local">Local (ONNX) - No API Key</SelectItem>
-                        <SelectItem value="nemo_local">Local (NeMo) - Primeline</SelectItem>
-                        <SelectItem value="soniox-realtime">Soniox Realtime</SelectItem>
-                        <SelectItem value="soniox-async">Soniox Async</SelectItem>
-                        <SelectItem value="mistral-realtime">Mistral Realtime (Voxtral RT)</SelectItem>
-                        <SelectItem value="mistral-async">Mistral Async (Voxtral V2)</SelectItem>
-                        <SelectItem value="assemblyai">Assembly AI Universal-3-Pro</SelectItem>
-                        <SelectItem value="deepgram">Deepgram</SelectItem>
-                        <SelectItem value="openai">OpenAI</SelectItem>
-                        <SelectItem value="azure">Azure Speech</SelectItem>
-                        <SelectItem value="gladia">Gladia</SelectItem>
-                        <SelectItem value="groq">Groq</SelectItem>
-                        <SelectItem value="speechmatics">Speechmatics</SelectItem>
-                        <SelectItem value="elevenlabs">ElevenLabs</SelectItem>
-                        <SelectItem value="google">Google Cloud STT</SelectItem>
-                        <SelectItem value="aws">AWS Transcribe</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div className={cn("model-dropdown w-[320px]", isTranscriptionModelDropdownOpen && "is-open")}>
+                      <button
+                        type="button"
+                        className="model-dropdown-header"
+                        onClick={() => setIsTranscriptionModelDropdownOpen((prev) => !prev)}
+                        aria-label="Select live transcription model"
+                        aria-expanded={isTranscriptionModelDropdownOpen}
+                        aria-controls="transcription-model-dropdown-tray"
+                      >
+                        <span className="model-dropdown-header-info">
+                          <span className="model-dropdown-selected-text is-selected">
+                            {selectedTranscriptionModelOption?.label || transcriptionModel || "Select model..."}
+                          </span>
+                        </span>
+                        <ChevronDown className="model-dropdown-chevron" />
+                      </button>
+
+                      <div
+                        id="transcription-model-dropdown-tray"
+                        className="model-dropdown-tray"
+                        aria-hidden={!isTranscriptionModelDropdownOpen}
+                      >
+                        <div className="model-dropdown-content">
+                          <div className="model-dropdown-tray-inner">
+                            <div className="model-list">
+                              {TRANSCRIPTION_MODEL_OPTIONS.map((option) => {
+                                const isSelected = option.value === transcriptionModel;
+                                const inputId = `transcription-model-option-${option.value}`;
+                                return (
+                                  <div
+                                    key={option.value}
+                                    className={cn("model-item", isSelected && "is-selected")}
+                                  >
+                                    <div className="model-row-waves" aria-hidden="true">
+                                      <div className="model-wave-row" />
+                                    </div>
+
+                                    <input
+                                      type="radio"
+                                      id={inputId}
+                                      name="transcription-model-option"
+                                      className="model-radio sr-only"
+                                      checked={isSelected}
+                                      onChange={() => handleTranscriptionModelSelectFromDropdown(option.value)}
+                                      aria-label={`Select ${option.label} as transcription model`}
+                                    />
+                                    <label htmlFor={inputId} className="model-option-label">
+                                      <span className="model-name">{option.label}</span>
+                                      <svg className="model-check" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M 4 12 L 10 18 L 20 6" />
+                                      </svg>
+                                    </label>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                     {transcriptionModel === "assemblyai" && (
                       <p className="text-xs text-muted-foreground">
                         Async mode: live transcript appears after you stop recording.
@@ -1299,49 +1521,68 @@ export default function Settings() {
                     <Label className="text-base">Default Language</Label>
                     <p className="text-sm text-muted-foreground">Fallback language for detection</p>
                   </div>
-                  <Select value={language} onValueChange={handleLanguageChange}>
-                    <SelectTrigger className="w-[320px]">
-                      <SelectValue placeholder="Select language" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="auto">
-                        <div className="flex items-center gap-2">
-                          <Globe className="w-4 h-4 text-muted-foreground" />
-                          <span>Auto-detect</span>
+                  <div className={cn("language-dropdown w-[320px]", isLanguageDropdownOpen && "is-open")}>
+                    <button
+                      type="button"
+                      className="language-dropdown-header"
+                      onClick={() => setIsLanguageDropdownOpen((prev) => !prev)}
+                      aria-label="Select default transcription language"
+                      aria-expanded={isLanguageDropdownOpen}
+                      aria-controls="language-dropdown-tray"
+                    >
+                      <span className="language-dropdown-header-info">
+                        <span className="language-dropdown-selected-value-wrapper">
+                          <LanguageFlag value={selectedLanguage.value} className="language-header-flag" />
+                          <span className="language-dropdown-selected-text is-selected">{selectedLanguage.label}</span>
+                        </span>
+                      </span>
+                      <ChevronDown className="language-dropdown-chevron" />
+                    </button>
+
+                    <div
+                      id="language-dropdown-tray"
+                      className="language-dropdown-tray"
+                      aria-hidden={!isLanguageDropdownOpen}
+                    >
+                      <div className="language-dropdown-content">
+                        <div className="language-dropdown-tray-inner">
+                          <div className="language-list">
+                            {LANGUAGE_OPTIONS.map((option) => {
+                              const isSelected = option.value === language;
+                              const inputId = `lang-option-${option.value}`;
+                              return (
+                                <div
+                                  key={option.value}
+                                  className={cn("language-item", isSelected && "is-selected")}
+                                >
+                                  <div className="language-row-waves" aria-hidden="true">
+                                    <div className="language-wave-row" />
+                                  </div>
+
+                                  <input
+                                    type="radio"
+                                    id={inputId}
+                                    name="default-transcription-language"
+                                    className="language-radio sr-only"
+                                    checked={isSelected}
+                                    onChange={() => handleLanguageSelectFromDropdown(option.value)}
+                                    aria-label={`Select ${option.label} as default transcription language`}
+                                  />
+                                  <label htmlFor={inputId} className="language-option-label">
+                                    <LanguageFlag value={option.value} />
+                                    <span className="language-name">{option.label}</span>
+                                    <svg className="language-check" viewBox="0 0 24 24" aria-hidden="true">
+                                      <path d="M 4 12 L 10 18 L 20 6" />
+                                    </svg>
+                                  </label>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </SelectItem>
-                      <SelectItem value="en">
-                        <div className="flex items-center gap-2">
-                          <span aria-hidden="true">🇺🇸</span>
-                          <span>English</span>
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="es">
-                        <div className="flex items-center gap-2">
-                          <span aria-hidden="true">🇪🇸</span>
-                          <span>Spanish</span>
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="fr">
-                        <div className="flex items-center gap-2">
-                          <span aria-hidden="true">🇫🇷</span>
-                          <span>French</span>
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="de">
-                        <div className="flex items-center gap-2">
-                          <span aria-hidden="true">🇩🇪</span>
-                          <span>German</span>
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="it">
-                        <div className="flex items-center gap-2">
-                          <span aria-hidden="true">🇮🇹</span>
-                          <span>Italian</span>
-                        </div>
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <Separator />
@@ -1351,18 +1592,66 @@ export default function Settings() {
                     <Label className="text-base">Summarization Model</Label>
                     <p className="text-sm text-muted-foreground">Select model for summarizing transcripts</p>
                   </div>
-                  <Select value={summarizationModel} onValueChange={handleSummarizationModelChange}>
-                    <SelectTrigger className="w-[320px]">
-                      <SelectValue placeholder="Select model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="gemini-3-flash-preview">Gemini 3.0 Flash Preview (Recommended)</SelectItem>
-                      <SelectItem value="gemini-3-pro-preview">Gemini 3 Pro</SelectItem>
-                      <SelectItem value="gpt-5.2">OpenAI GPT 5.2</SelectItem>
-                      <SelectItem value="gpt-5-mini">OpenAI GPT 5 Mini</SelectItem>
-                      <SelectItem value="gpt-5-nano">OpenAI GPT 5 Nano</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className={cn("model-dropdown w-[320px]", isSummarizationModelDropdownOpen && "is-open")}>
+                    <button
+                      type="button"
+                      className="model-dropdown-header"
+                      onClick={() => setIsSummarizationModelDropdownOpen((prev) => !prev)}
+                      aria-label="Select summarization model"
+                      aria-expanded={isSummarizationModelDropdownOpen}
+                      aria-controls="summarization-model-dropdown-tray"
+                    >
+                      <span className="model-dropdown-header-info">
+                        <span className="model-dropdown-selected-text is-selected">
+                          {selectedSummarizationModelOption?.label || summarizationModel || "Select model..."}
+                        </span>
+                      </span>
+                      <ChevronDown className="model-dropdown-chevron" />
+                    </button>
+
+                    <div
+                      id="summarization-model-dropdown-tray"
+                      className="model-dropdown-tray"
+                      aria-hidden={!isSummarizationModelDropdownOpen}
+                    >
+                      <div className="model-dropdown-content">
+                        <div className="model-dropdown-tray-inner">
+                          <div className="model-list">
+                            {SUMMARIZATION_MODEL_OPTIONS.map((option) => {
+                              const isSelected = option.value === summarizationModel;
+                              const inputId = `summarization-model-option-${option.value}`;
+                              return (
+                                <div
+                                  key={option.value}
+                                  className={cn("model-item", isSelected && "is-selected")}
+                                >
+                                  <div className="model-row-waves" aria-hidden="true">
+                                    <div className="model-wave-row" />
+                                  </div>
+
+                                  <input
+                                    type="radio"
+                                    id={inputId}
+                                    name="summarization-model-option"
+                                    className="model-radio sr-only"
+                                    checked={isSelected}
+                                    onChange={() => handleSummarizationModelSelectFromDropdown(option.value)}
+                                    aria-label={`Select ${option.label} as summarization model`}
+                                  />
+                                  <label htmlFor={inputId} className="model-option-label">
+                                    <span className="model-name">{option.label}</span>
+                                    <svg className="model-check" viewBox="0 0 24 24" aria-hidden="true">
+                                      <path d="M 4 12 L 10 18 L 20 6" />
+                                    </svg>
+                                  </label>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between">

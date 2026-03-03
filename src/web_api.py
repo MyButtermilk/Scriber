@@ -64,6 +64,12 @@ _DEFAULT_VIDEO_MAX_MB = 2048  # 2GB limit for raw video uploads (audio extracted
 
 # Video file extensions that require audio extraction
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
+_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac"}
+_ALLOWED_UPLOAD_EXTENSIONS = _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS
+_VALID_STT_SERVICES = frozenset(Config.SERVICE_LABELS.keys())
+_VALID_MODES = {"toggle", "push_to_talk"}
+_VALID_SONIOX_MODES = {"realtime", "async"}
+_VALID_SUMMARIZATION_MODEL_PREFIXES = ("gemini-", "gpt-")
 _INPUT_WARNING_CODE_LOW_LEVEL = "mic_level_very_low"
 _SETTINGS_URI_SOUND = "ms-settings:sound"
 _SETTINGS_URI_SOUND_INPUT_PROPERTIES = "ms-settings:sound-defaultinputproperties"
@@ -182,6 +188,45 @@ def _origin_allowed(origin: str) -> bool:
     if not host:
         return False
     return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _validate_mode(raw_mode: str) -> str:
+    mode = (raw_mode or "").strip().lower()
+    if mode not in _VALID_MODES:
+        raise ValueError(f"Invalid mode '{raw_mode}'. Allowed: {', '.join(sorted(_VALID_MODES))}")
+    return mode
+
+
+def _validate_soniox_mode(raw_mode: str) -> str:
+    mode = (raw_mode or "").strip().lower()
+    if mode not in _VALID_SONIOX_MODES:
+        raise ValueError(f"Invalid sonioxMode '{raw_mode}'. Allowed: {', '.join(sorted(_VALID_SONIOX_MODES))}")
+    return mode
+
+
+def _validate_default_stt_service(raw_service: str) -> str:
+    service = (raw_service or "").strip().lower()
+    if not service:
+        raise ValueError("defaultSttService must not be empty")
+    if service not in _VALID_STT_SERVICES:
+        raise ValueError(
+            f"Invalid defaultSttService '{raw_service}'. Allowed: {', '.join(sorted(_VALID_STT_SERVICES))}"
+        )
+    return service
+
+
+def _validate_summarization_model(raw_model: str) -> str:
+    model = (raw_model or "").strip()
+    if not model:
+        raise ValueError("summarizationModel must not be empty")
+    if not model.startswith(_VALID_SUMMARIZATION_MODEL_PREFIXES):
+        allowed = ", ".join(_VALID_SUMMARIZATION_MODEL_PREFIXES)
+        raise ValueError(f"Invalid summarizationModel '{raw_model}'. Must start with: {allowed}")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
+        raise ValueError(
+            "Invalid summarizationModel format. Allowed characters: letters, numbers, dot, underscore, hyphen."
+        )
+    return model
 
 
 def _get_upload_max_bytes() -> int:
@@ -529,6 +574,7 @@ class ScriberWebController:
         self._pipeline: Optional[ScriberPipeline] = None
         self._pipeline_task: Optional[asyncio.Task] = None
         self._ptt_task: Optional[asyncio.Task] = None
+        self._toggle_hotkey_poll_task: Optional[asyncio.Task] = None
         self._active_provider: str | None = None
         # Track running file/YouTube transcription tasks by transcript ID
         self._running_tasks: dict[str, asyncio.Task] = {}
@@ -570,6 +616,18 @@ class ScriberWebController:
         self._is_listening = False
         self._is_stopping = False  # Track if stop is in progress
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
+        self._pending_hotkey_toggle = False
+        self._last_hotkey_deferred_log = 0.0
+        self._last_ptt_error_log = 0.0
+        self._last_toggle_poll_error_log = 0.0
+        self._last_hotkey_dispatch_at = 0.0
+        try:
+            self._hotkey_dispatch_debounce_seconds = max(
+                0.05,
+                float(os.getenv("SCRIBER_HOTKEY_DISPATCH_DEBOUNCE_SEC", "0.25") or 0.25),
+            )
+        except Exception:
+            self._hotkey_dispatch_debounce_seconds = 0.25
         self._status = "Stopped"
         self._session_id: str | None = None
         self._recording_state_machine = RecordingStateMachine()
@@ -1682,7 +1740,11 @@ class ScriberWebController:
                         milestone=True,
                         outcome="started",
                     )
-                    rec.summary = await summarize_text(rec.content, Config.SUMMARIZATION_MODEL)
+                    rec.summary = await summarize_text(
+                        rec.content,
+                        Config.SUMMARIZATION_MODEL,
+                        duration=rec.duration,
+                    )
                     rec.step = "Completed"
                     logger.info(f"YouTube auto-summarization completed: {len(rec.summary)} chars")
                     self._emit_workflow_event(
@@ -1977,7 +2039,11 @@ class ScriberWebController:
                         milestone=True,
                         outcome="started",
                     )
-                    rec.summary = await summarize_text(rec.content, Config.SUMMARIZATION_MODEL)
+                    rec.summary = await summarize_text(
+                        rec.content,
+                        Config.SUMMARIZATION_MODEL,
+                        duration=rec.duration,
+                    )
                     rec.step = "Completed"
                     logger.info(f"File auto-summarization completed: {len(rec.summary)} chars")
                     self._emit_workflow_event(
@@ -2409,6 +2475,7 @@ class ScriberWebController:
             await self.broadcast(transcribing_payload)
 
         stop_error: Exception | None = None
+        retrigger_hotkey_toggle = False
         try:
             if pipeline:
                 await pipeline.stop()
@@ -2466,6 +2533,12 @@ class ScriberWebController:
                 else:
                     self._set_recording_state(RecordingState.COMPLETED, context="stop_listening")
                 self._set_recording_state(RecordingState.IDLE, context="stop_listening")
+                if self._pending_hotkey_toggle:
+                    if stop_error:
+                        logger.warning("Dropping deferred hotkey event because stop finished with an error.")
+                    else:
+                        retrigger_hotkey_toggle = True
+                    self._pending_hotkey_toggle = False
 
             if current:
                 current.finish("failed" if stop_error else "completed")
@@ -2498,6 +2571,9 @@ class ScriberWebController:
                     error_category=classify_error_message(str(stop_error)).value if stop_error else None,
                 )
             self._clear_hot_path_tracer(session_id)
+        if retrigger_hotkey_toggle:
+            logger.info("Applying deferred hotkey event after stop completed.")
+            await self.start_listening()
 
     async def toggle_listening(self) -> None:
         # Quick check without lock - if operation in progress, ignore
@@ -2508,6 +2584,52 @@ class ScriberWebController:
             await self.stop_listening()
         else:
             await self.start_listening()
+
+    def _dispatch_hotkey_toggle(self) -> None:
+        now = time.monotonic()
+        if now - self._last_hotkey_dispatch_at < self._hotkey_dispatch_debounce_seconds:
+            return
+        self._last_hotkey_dispatch_at = now
+        try:
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._handle_hotkey_toggle(), name="hotkey_toggle")
+            )
+        except Exception as exc:
+            logger.error(f"Failed to dispatch hotkey event: {exc}")
+
+    async def _toggle_hotkey_poll_loop(self) -> None:
+        """
+        Polling fallback for toggle mode.
+
+        Some keyboard-hook setups occasionally miss add_hotkey callbacks after long runtimes.
+        We keep a lightweight edge-triggered poller as a reliability backstop.
+        """
+        last_pressed = False
+        while True:
+            try:
+                kb = self._keyboard
+                is_pressed = bool(kb.is_pressed(Config.HOTKEY)) if kb and hasattr(kb, "is_pressed") else False
+                if is_pressed and not last_pressed:
+                    self._dispatch_hotkey_toggle()
+                last_pressed = is_pressed
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                now = time.monotonic()
+                if now - self._last_toggle_poll_error_log >= 5.0:
+                    self._last_toggle_poll_error_log = now
+                    logger.warning(f"Toggle-hotkey polling error for '{Config.HOTKEY}': {exc}")
+            await asyncio.sleep(0.05)
+
+    async def _handle_hotkey_toggle(self) -> None:
+        if self._is_stopping:
+            self._pending_hotkey_toggle = True
+            now = time.monotonic()
+            if now - self._last_hotkey_deferred_log >= 1.0:
+                self._last_hotkey_deferred_log = now
+                logger.info("Hotkey pressed while stop is in progress; deferring until stop completes.")
+            return
+        await self.toggle_listening()
 
     def register_hotkeys(self) -> None:
         try:
@@ -2539,6 +2661,11 @@ class ScriberWebController:
         if self._ptt_task:
             self._ptt_task.cancel()
             self._ptt_task = None
+        if self._toggle_hotkey_poll_task:
+            self._toggle_hotkey_poll_task.cancel()
+            self._toggle_hotkey_poll_task = None
+        self._pending_hotkey_toggle = False
+        self._last_hotkey_dispatch_at = 0.0
 
         try:
             kb.clear_all_hotkeys()
@@ -2548,9 +2675,14 @@ class ScriberWebController:
             else:
                 kb.add_hotkey(
                     Config.HOTKEY,
-                    lambda: self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self.toggle_listening())),
+                    self._dispatch_hotkey_toggle,
+                )
+                self._toggle_hotkey_poll_task = asyncio.create_task(
+                    self._toggle_hotkey_poll_loop(),
+                    name="toggle_hotkey_poll",
                 )
                 logger.info(f"Hotkey registered: {Config.HOTKEY} (Toggle)")
+                logger.debug(f"Toggle hotkey polling fallback active: {Config.HOTKEY}")
         except Exception as exc:
             logger.error(f"Failed to register hotkey: {exc}")
 
@@ -2565,21 +2697,27 @@ class ScriberWebController:
                 elif not is_pressed and last_state:
                     await self.stop_listening()
                 last_state = is_pressed
-            except Exception:
-                pass
+            except Exception as exc:
+                now = time.monotonic()
+                if now - self._last_ptt_error_log >= 5.0:
+                    self._last_ptt_error_log = now
+                    logger.warning(f"Push-to-Talk polling error for '{Config.HOTKEY}': {exc}")
             await asyncio.sleep(0.05)
 
     def shutdown(self) -> None:
         if self._ptt_task:
             self._ptt_task.cancel()
             self._ptt_task = None
+        if self._toggle_hotkey_poll_task:
+            self._toggle_hotkey_poll_task.cancel()
+            self._toggle_hotkey_poll_task = None
 
         kb = self._keyboard
         if kb and hasattr(kb, "clear_all_hotkeys"):
             try:
                 kb.clear_all_hotkeys()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"Hotkey cleanup warning: {exc}")
 
         try:
             self._device_monitor.stop()
@@ -2704,22 +2842,34 @@ class ScriberWebController:
     async def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         old_hotkey = Config.HOTKEY
         old_mode = Config.MODE
+        validated_mode: str | None = None
+        validated_service: str | None = None
+        validated_soniox_mode: str | None = None
+        validated_summarization_model: str | None = None
+
+        # Validate first to avoid partial updates on invalid payloads.
+        if "mode" in payload and isinstance(payload["mode"], str):
+            validated_mode = _validate_mode(payload["mode"])
+        if "defaultSttService" in payload and isinstance(payload["defaultSttService"], str):
+            validated_service = _validate_default_stt_service(payload["defaultSttService"])
+        if "sonioxMode" in payload and isinstance(payload["sonioxMode"], str):
+            validated_soniox_mode = _validate_soniox_mode(payload["sonioxMode"])
+        if "summarizationModel" in payload and isinstance(payload["summarizationModel"], str):
+            validated_summarization_model = _validate_summarization_model(payload["summarizationModel"])
 
         if "hotkey" in payload and isinstance(payload["hotkey"], str):
             normalized = _normalize_hotkey_for_backend(payload["hotkey"])
             if normalized:
                 Config.set_hotkey(normalized)
 
-        if "mode" in payload and isinstance(payload["mode"], str):
-            Config.set_mode(payload["mode"])
+        if validated_mode is not None:
+            Config.set_mode(validated_mode)
 
-        if "defaultSttService" in payload and isinstance(payload["defaultSttService"], str):
-            service = payload["defaultSttService"].strip().lower()
-            if service:
-                Config.set_default_service(service)
+        if validated_service is not None:
+            Config.set_default_service(validated_service)
 
-        if "sonioxMode" in payload and isinstance(payload["sonioxMode"], str):
-            Config.set_soniox_mode(payload["sonioxMode"])
+        if validated_soniox_mode is not None:
+            Config.set_soniox_mode(validated_soniox_mode)
 
         if "sonioxAsyncModel" in payload and isinstance(payload["sonioxAsyncModel"], str):
             Config.SONIOX_ASYNC_MODEL = payload["sonioxAsyncModel"].strip()
@@ -2747,8 +2897,8 @@ class ScriberWebController:
         if "summarizationPrompt" in payload and isinstance(payload["summarizationPrompt"], str):
             Config.set_summarization_prompt(payload["summarizationPrompt"])
 
-        if "summarizationModel" in payload and isinstance(payload["summarizationModel"], str):
-            Config.SUMMARIZATION_MODEL = payload["summarizationModel"].strip()
+        if validated_summarization_model is not None:
+            Config.SUMMARIZATION_MODEL = validated_summarization_model
             os.environ["SCRIBER_SUMMARIZATION_MODEL"] = Config.SUMMARIZATION_MODEL
 
         if "autoSummarize" in payload:
@@ -3204,8 +3354,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
             payload = await request.json()
         except Exception:
             return web.json_response({"message": "Invalid JSON"}, status=400)
-        updated = await ctl.update_settings(payload if isinstance(payload, dict) else {})
-        return web.json_response(updated)
+        try:
+            updated = await ctl.update_settings(payload if isinstance(payload, dict) else {})
+            return web.json_response(updated)
+        except ValueError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Failed to update settings")
+            return web.json_response({"message": str(exc) or "Failed to update settings"}, status=500)
 
     async def get_autostart(request: web.Request):
         """Check if autostart is enabled."""
@@ -3437,12 +3593,15 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 return web.json_response({"message": "No file uploaded"}, status=400)
 
             # Validate file extension
-            allowed_extensions = {".mp3", ".m4a", ".wav", ".mp4", ".mov", ".webm", ".ogg", ".flac", ".aac", ".avi", ".mkv", ".m4v"}
             safe_filename = _safe_upload_filename(original_filename)
             ext = Path(safe_filename).suffix.lower()
-            if ext not in allowed_extensions:
+            if ext not in _ALLOWED_UPLOAD_EXTENSIONS:
                 return web.json_response(
-                    {"message": f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(allowed_extensions))}"},
+                    {
+                        "message": (
+                            f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(_ALLOWED_UPLOAD_EXTENSIONS))}"
+                        )
+                    },
                     status=400,
                 )
 
@@ -3584,6 +3743,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         content = rec.content if rec else (full_data.get("content", "") if isinstance(full_data, dict) else "")
         status = rec.status if rec else (full_data.get("status", "") if isinstance(full_data, dict) else "")
+        duration = rec.duration if rec else (full_data.get("duration", "") if isinstance(full_data, dict) else "")
 
         if not content or not content.strip():
             return web.json_response({"message": "Transcript has no content to summarize"}, status=400)
@@ -3592,8 +3752,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Transcript is not yet completed"}, status=400)
 
         try:
-            model = getattr(Config, "SUMMARIZATION_MODEL", "gemini-2.0-flash")
-            summary = await summarize_text(content, model)
+            model = getattr(Config, "SUMMARIZATION_MODEL", "") or "gemini-3-flash-preview"
+            summary = await summarize_text(content, model, duration=duration)
             if rec:
                 rec.summary = summary
                 rec.updated_at = datetime.now().isoformat()

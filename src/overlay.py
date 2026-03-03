@@ -1140,12 +1140,28 @@ def get_overlay(on_stop: Optional[Callable[[], None]] = None) -> RecordingOverla
     If called with on_stop and overlay already exists, updates the callback.
     """
     global _overlay
+
+    def _overlay_worker_alive(overlay: RecordingOverlay) -> bool:
+        impl = getattr(overlay, "_impl", None)
+        if impl is None:
+            return False
+        worker = getattr(impl, "_thread", None)
+        if worker is None:
+            return True
+        return bool(worker.is_alive())
+
     if _overlay is None:
         _overlay = RecordingOverlay(on_stop=on_stop)
         _overlay.start()
-    elif on_stop is not None:
-        # Update callback if provided and overlay already exists
-        _overlay.set_on_stop(on_stop)
+    else:
+        desired_on_stop = on_stop if on_stop is not None else getattr(_overlay, "_on_stop", None)
+        if not _overlay_worker_alive(_overlay):
+            logger.warning("Overlay worker was not alive; recreating overlay instance")
+            _overlay = RecordingOverlay(on_stop=desired_on_stop)
+            _overlay.start()
+        elif on_stop is not None:
+            # Update callback if provided and overlay already exists
+            _overlay.set_on_stop(on_stop)
     return _overlay
 
 

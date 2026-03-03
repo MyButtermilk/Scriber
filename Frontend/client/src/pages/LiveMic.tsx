@@ -7,12 +7,25 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Input } from "@/components/ui/input";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
-import type { Transcript } from "@/lib/mockData";
 import { useLocation } from "wouter";
 import { motion, useReducedMotion } from "framer-motion";
 
 const DELETE_GLITCH_DURATION_MS = 1200;
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
+
+type Transcript = {
+  id: string;
+  title: string;
+  date: string;
+  duration: string;
+  status: "completed" | "processing" | "failed" | "recording" | "stopped";
+  type: "mic" | "youtube" | "file";
+  content?: string;
+  language?: string;
+  channel?: string;
+  fileSize?: string;
+  step?: string;
+};
 
 // Memoized TranscriptCard to prevent unnecessary re-renders
 interface TranscriptCardProps {

@@ -24,12 +24,16 @@ export function useTranscriptAutoRefresh({
 
   const refreshNow = useCallback(() => {
     if (transcriptId) {
-      queryClient.invalidateQueries({ queryKey: ["/api/transcripts", transcriptId] });
+      const detailKey = ["/api/transcripts", transcriptId] as const;
+      queryClient.invalidateQueries({ queryKey: detailKey, exact: true });
+      void queryClient.refetchQueries({ queryKey: detailKey, exact: true, type: "active" });
       return;
     }
 
     if (queryKey) {
-      queryClient.invalidateQueries({ queryKey: [...queryKey] });
+      const exactKey = [...queryKey];
+      queryClient.invalidateQueries({ queryKey: exactKey, exact: true });
+      void queryClient.refetchQueries({ queryKey: exactKey, exact: true, type: "active" });
       return;
     }
 

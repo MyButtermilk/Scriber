@@ -12,6 +12,7 @@ import subprocess
 import webbrowser
 import urllib.request
 import urllib.error
+import time
 from pathlib import Path
 from collections import deque
 
@@ -444,6 +445,7 @@ def watchdog_loop():
 STATE_CHECK_INTERVAL = 1  # Check state every 1 second
 state_monitor_running = True
 state_monitor_thread = None
+_last_menu_refresh_monotonic = 0.0
 
 
 def update_tray_icon_for_state(new_state: str) -> None:
@@ -474,8 +476,29 @@ def update_tray_icon_for_state(new_state: str) -> None:
         
         if old_state != new_state:
             write_log(f"[Tray] Icon state changed: {old_state} -> {new_state}")
+            _refresh_tray_menu(reason=f"state_changed:{old_state}->{new_state}")
     except Exception as e:
         write_log(f"[Tray] Failed to update icon: {e}")
+
+
+def _refresh_tray_menu(*, reason: str, min_interval_seconds: float = 1.0) -> None:
+    """Ask pystray to rebuild menu descriptors (required on some platforms)."""
+    global _last_menu_refresh_monotonic
+
+    icon = tray_icon
+    if icon is None:
+        return
+
+    now = time.monotonic()
+    if now - _last_menu_refresh_monotonic < min_interval_seconds:
+        return
+
+    try:
+        icon.update_menu()
+        _last_menu_refresh_monotonic = now
+        write_log(f"[Tray] Menu refresh requested ({reason})")
+    except Exception as exc:
+        write_log(f"[Tray] Menu refresh failed ({reason}): {exc}")
 
 
 def state_monitor_loop():
@@ -514,9 +537,12 @@ def state_monitor_loop():
                     if is_listening:
                         # Currently recording (highest priority)
                         new_state = "recording"
-                    elif current and current.get("status") == "processing":
-                        # Recording stopped, but transcription in progress
-                        new_state = "processing"
+                    elif current:
+                        current_status = str(current.get("status", "")).strip().lower()
+                        if current_status and current_status not in {"completed", "failed"}:
+                            # A live session object still exists (e.g. finalizing async STT).
+                            # Treat as processing until it is finalized and persisted.
+                            new_state = "processing"
                     elif status.lower() in ("transcribing", "processing"):
                         new_state = "processing"
                     elif background_processing:
@@ -620,7 +646,7 @@ def get_recent_transcripts():
                        created_at, updated_at
                 FROM transcripts
                 WHERE status = 'completed'
-                ORDER BY created_at DESC
+                ORDER BY COALESCE(updated_at, created_at) DESC
                 LIMIT 5
             """)
             rows = cursor.fetchall()
