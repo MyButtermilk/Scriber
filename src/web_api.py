@@ -1215,6 +1215,7 @@ class ScriberWebController:
             task is not None and not task.done()
             for task in self._running_tasks.values()
         )
+        recording_state = self._recording_state_machine.state
         return {
             "listening": self._is_listening,
             "status": self._status,
@@ -1224,7 +1225,8 @@ class ScriberWebController:
             "current": current.to_public(include_content=True) if current else None,
             "sessionId": self._session_id,
             "backgroundProcessing": has_background_processing,
-            "recordingState": self._recording_state_machine.state.value,
+            "recordingState": recording_state.value,
+            "transcribing": recording_state is RecordingState.FINALIZING,
         }
 
     def get_hot_path_metrics(self, *, limit: int = 50) -> dict[str, Any]:
@@ -1291,6 +1293,8 @@ class ScriberWebController:
         if session_id is None:
             session_id = self._session_id
         payload = status_event(status, self._is_listening, session_id=session_id)
+        payload["recordingState"] = self._recording_state_machine.state.value
+        payload["transcribing"] = self._recording_state_machine.state is RecordingState.FINALIZING
         payload["inputWarning"] = self._mic_input_warning
         payload["inputWarningCode"] = self._mic_input_warning_code
         payload["inputWarningActions"] = [dict(item) for item in self._mic_input_warning_actions]
@@ -1298,6 +1302,15 @@ class ScriberWebController:
         self._loop.call_soon_threadsafe(
             lambda: asyncio.create_task(self.broadcast(payload))
         )
+
+    def _set_live_pipeline_status(self, status: str, *, session_id: str | None = None) -> None:
+        normalized = str(status or "").strip() or "Stopped"
+        if (
+            normalized == "Listening"
+            and self._recording_state_machine.state is RecordingState.INITIALIZING
+        ):
+            normalized = "Preparing microphone..."
+        self._set_status(normalized, session_id=session_id)
 
     def _set_input_warning(
         self,
@@ -2212,9 +2225,16 @@ class ScriberWebController:
             def on_mic_ready():
                 if session_id != self._session_id:
                     return
+                if self._is_stopping:
+                    logger.debug("Ignoring on_mic_ready because stop is already in progress")
+                    return
+                if self._pipeline is None or self._recording_state_machine.state is not RecordingState.INITIALIZING:
+                    logger.debug("Ignoring stale on_mic_ready callback for inactive session")
+                    return
                 logger.debug("on_mic_ready callback triggered - transitioning overlay to recording mode")
                 self._mark_hot_path(session_id, "mic_ready")
                 self._set_recording_state(RecordingState.RECORDING, context="on_mic_ready")
+                self._set_status("Listening", session_id=session_id)
                 self._overlay_audio_enabled = True
                 show_recording_overlay()
                 logger.info("Microphone ready - recording started")
@@ -2328,7 +2348,7 @@ class ScriberWebController:
             self._active_provider = live_provider
             self._pipeline = ScriberPipeline(
                 service_name=live_provider,
-                on_status_change=lambda status: self._set_status(status, session_id=session_id),
+                on_status_change=lambda status: self._set_live_pipeline_status(status, session_id=session_id),
                 on_audio_level=lambda rms: self._on_audio_level(rms, session_id=session_id),
                 on_transcription=lambda text, is_final: self._on_transcription(text, is_final, session_id=session_id),
                 on_text_injected=on_text_injected,
@@ -2338,7 +2358,7 @@ class ScriberWebController:
             self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
             self._pipeline_task.add_done_callback(lambda task: self._on_pipeline_done(task, session_id=session_id))
             self._is_listening = True
-            self._set_status("Listening", session_id=session_id)
+            self._set_status("Preparing microphone...", session_id=session_id)
             self._emit_workflow_event(
                 message=f"Pipeline session started ({live_provider})",
                 event="pipeline.session.started",

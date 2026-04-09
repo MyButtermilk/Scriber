@@ -15,7 +15,8 @@ class RecordingState(str, Enum):
 
 _VALID_TRANSITIONS: dict[RecordingState, set[RecordingState]] = {
     RecordingState.IDLE: {RecordingState.INITIALIZING},
-    RecordingState.INITIALIZING: {RecordingState.RECORDING, RecordingState.FAILED},
+    # Users can cancel while the microphone is still warming up.
+    RecordingState.INITIALIZING: {RecordingState.RECORDING, RecordingState.FINALIZING, RecordingState.FAILED},
     RecordingState.RECORDING: {RecordingState.FINALIZING, RecordingState.FAILED},
     RecordingState.FINALIZING: {RecordingState.COMPLETED, RecordingState.FAILED},
     RecordingState.COMPLETED: {RecordingState.IDLE},

@@ -218,6 +218,24 @@ class _SlowStopPipeline:
         await self.stop_gate.wait()
 
 
+class _LateReadyPipeline:
+    service_name = "openai"
+    instances: list["_LateReadyPipeline"] = []
+
+    def __init__(self, *_, on_mic_ready=None, **__):
+        self.on_mic_ready = on_mic_ready
+        self.allow_stop = asyncio.Event()
+        self.stop_gate = asyncio.Event()
+        type(self).instances.append(self)
+
+    async def start(self):
+        await self.stop_gate.wait()
+
+    async def stop(self):
+        await self.allow_stop.wait()
+        self.stop_gate.set()
+
+
 @pytest.mark.asyncio
 async def test_hotkey_toggle_is_deferred_while_stop_is_in_progress():
     loop = asyncio.get_running_loop()
@@ -256,6 +274,45 @@ async def test_hotkey_toggle_is_deferred_while_stop_is_in_progress():
 
     start_mock.assert_awaited_once()
     assert ctl._pending_hotkey_toggle is False
+
+
+@pytest.mark.asyncio
+async def test_late_mic_ready_is_ignored_while_stop_is_in_progress():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    _LateReadyPipeline.instances.clear()
+
+    with (
+        patch("src.web_api.ScriberPipeline", _LateReadyPipeline),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_to_db"),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay") as show_recording_mock,
+        patch("src.web_api.show_transcribing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        await ctl.start_listening()
+        pipeline = _LateReadyPipeline.instances[-1]
+
+        stop_task = asyncio.create_task(ctl.stop_listening())
+        for _ in range(50):
+            if ctl._is_stopping:
+                break
+            await asyncio.sleep(0.01)
+        assert ctl._is_stopping is True
+
+        pipeline.on_mic_ready()
+        await asyncio.sleep(0.05)
+
+        assert ctl.get_state()["recordingState"] == "finalizing"
+        show_recording_mock.assert_not_called()
+
+        pipeline.allow_stop.set()
+        await stop_task
+
+    assert ctl.get_state()["recordingState"] == "idle"
 
 
 @pytest.mark.asyncio

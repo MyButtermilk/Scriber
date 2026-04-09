@@ -27,6 +27,22 @@ type Transcript = {
   step?: string;
 };
 
+type LiveRecordingState = "idle" | "initializing" | "recording" | "finalizing" | "completed" | "failed";
+
+function coerceRecordingState(value: unknown, fallback: LiveRecordingState = "idle"): LiveRecordingState {
+  switch (value) {
+    case "idle":
+    case "initializing":
+    case "recording":
+    case "finalizing":
+    case "completed":
+    case "failed":
+      return value;
+    default:
+      return fallback;
+  }
+}
+
 // Memoized TranscriptCard to prevent unnecessary re-renders
 interface TranscriptCardProps {
   item: Transcript;
@@ -384,6 +400,7 @@ import { formatDurationLikeYoutube } from "@/lib/duration";
 export default function LiveMic() {
   const { toast } = useToast();
   const [isRecording, setIsRecording] = useState(false);
+  const [recordingState, setRecordingState] = useState<LiveRecordingState>("idle");
   const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState<string>("Stopped");
   const [inputWarning, setInputWarning] = useState("");
@@ -419,6 +436,9 @@ export default function LiveMic() {
     [debouncedSearch],
   );
   const { refreshNow: refreshMicHistory } = useTranscriptAutoRefresh({ queryKey: transcriptsQueryKey });
+  const hasActiveSession = recordingState === "initializing" || recordingState === "recording" || recordingState === "finalizing";
+  const isPreparing = recordingState === "initializing";
+  const isTranscribing = recordingState === "finalizing";
 
   // Debounce search
   useEffect(() => {
@@ -508,7 +528,14 @@ export default function LiveMic() {
         } else if (!msg.listening) {
           activeSessionIdRef.current = null;
         }
-        setIsRecording(!!msg.listening);
+        {
+          const nextState = coerceRecordingState(msg.recordingState, msg.listening ? "recording" : "idle");
+          setRecordingState(nextState);
+          setIsRecording(nextState === "recording");
+          if (nextState !== "recording") {
+            audioLevelRef.current = 0;
+          }
+        }
         setStatus(msg.status || "Stopped");
         applyInputWarning(msg.inputWarning, msg.inputWarningCode, msg.inputWarningActions);
         if (msg.current?.content) {
@@ -520,7 +547,14 @@ export default function LiveMic() {
         if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
           break;
         }
-        setIsRecording(!!msg.listening);
+        {
+          const nextState = coerceRecordingState(msg.recordingState, msg.listening ? "recording" : "idle");
+          setRecordingState(nextState);
+          setIsRecording(nextState === "recording");
+          if (nextState !== "recording") {
+            audioLevelRef.current = 0;
+          }
+        }
         setStatus(msg.status || "Stopped");
         applyInputWarning(msg.inputWarning, msg.inputWarningCode, msg.inputWarningActions);
         break;
@@ -561,17 +595,30 @@ export default function LiveMic() {
         if (msgSessionId) {
           activeSessionIdRef.current = msgSessionId;
         }
-        setIsRecording(true);
-        setStatus("Listening");
+        audioLevelRef.current = 0;
+        setRecordingState("initializing");
+        setIsRecording(false);
+        setStatus("Preparing microphone...");
         applyInputWarning("", "", []);
         setFinalText("");
         setInterimText("");
+        break;
+      case "transcribing":
+        if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+          break;
+        }
+        audioLevelRef.current = 0;
+        setRecordingState("finalizing");
+        setIsRecording(false);
+        setStatus("Transcribing...");
         break;
       case "session_finished":
         if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
           break;
         }
         activeSessionIdRef.current = null;
+        audioLevelRef.current = 0;
+        setRecordingState("idle");
         setIsRecording(false);
         setStatus("Stopped");
         applyInputWarning("", "", []);
@@ -591,6 +638,8 @@ export default function LiveMic() {
           variant: "destructive",
           duration: 6000,
         });
+        audioLevelRef.current = 0;
+        setRecordingState("idle");
         setIsRecording(false);
         setStatus("Stopped");
         applyInputWarning("", "", []);
@@ -613,7 +662,7 @@ export default function LiveMic() {
 
   const handleToggle = async () => {
     try {
-      const endpoint = isRecording ? "/api/live-mic/stop" : "/api/live-mic/start";
+      const endpoint = hasActiveSession ? "/api/live-mic/stop" : "/api/live-mic/start";
       const res = await fetch(apiUrl(endpoint), { method: "POST", credentials: "include" });
       if (!res.ok) {
         const text = await res.text();
@@ -721,7 +770,13 @@ export default function LiveMic() {
           {/* Live Text Output - Debossed status well for unified design */}
           <div className="neu-status-well w-full max-w-lg min-h-[120px] text-center flex items-center justify-center p-6">
             <p className="sr-only" aria-live="assertive" aria-atomic="true">
-              {isRecording ? `Recording started. Elapsed ${formatTime(elapsed)}.` : "Recording stopped."}
+              {isRecording
+                ? `Recording started. Elapsed ${formatTime(elapsed)}.`
+                : isPreparing
+                  ? "Preparing microphone."
+                  : isTranscribing
+                    ? "Transcribing recording."
+                    : "Recording stopped."}
             </p>
             <div aria-live="polite" aria-atomic="true">
               {isRecording ? (
@@ -737,6 +792,8 @@ export default function LiveMic() {
                     <span className="text-foreground/90">"{status || "Listening"}..."</span>
                   )}
                 </p>
+              ) : isPreparing || isTranscribing ? (
+                <p className="text-muted-foreground relative z-10">{status}</p>
               ) : (
                 <p className="text-muted-foreground relative z-10">Ready to record. Tap the microphone to start.</p>
               )}
@@ -770,13 +827,13 @@ export default function LiveMic() {
           {/* Controls */}
           <div className="flex flex-col items-center justify-center gap-3">
             <GlossyMicButton
-              isRecording={isRecording}
+              isRecording={hasActiveSession}
               audioLevelRef={audioLevelRef}
               onToggle={handleToggle}
             />
 
             <div className="h-5 flex items-center justify-center">
-              <div className={`text-sm font-mono font-medium text-muted-foreground transition-opacity duration-200 ${isRecording ? "opacity-100" : "opacity-0"}`}>
+              <div className={`text-sm font-mono font-medium text-muted-foreground transition-opacity duration-200 ${hasActiveSession ? "opacity-100" : "opacity-0"}`}>
                 {formatTime(elapsed)}
               </div>
             </div>

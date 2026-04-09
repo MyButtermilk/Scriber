@@ -44,3 +44,12 @@ def test_failed_state_can_recover_to_idle():
     sm.transition(RecordingState.IDLE)
     assert sm.state is RecordingState.IDLE
 
+
+def test_initializing_can_transition_to_finalizing_when_stop_happens_early():
+    sm = RecordingStateMachine()
+    sm.transition(RecordingState.INITIALIZING)
+    sm.transition(RecordingState.FINALIZING)
+    sm.transition(RecordingState.COMPLETED)
+    sm.transition(RecordingState.IDLE)
+    assert sm.state is RecordingState.IDLE
+
