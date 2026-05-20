@@ -259,12 +259,20 @@ function StopButton({ transcriptId, onStop }: { transcriptId: string; onStop: ()
   );
 }
 
-function SummarizeButton({ transcriptId, onComplete }: { transcriptId: string | undefined; onComplete: () => void }) {
+function SummarizeButton({
+  transcriptId,
+  onComplete,
+  disabled = false,
+}: {
+  transcriptId: string | undefined;
+  onComplete: () => void;
+  disabled?: boolean;
+}) {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const { toast } = useToast();
 
   const handleSummarize = async () => {
-    if (!transcriptId || isSummarizing) return;
+    if (!transcriptId || isSummarizing || disabled) return;
     setIsSummarizing(true);
     try {
       const res = await fetch(apiUrl(`/api/transcripts/${transcriptId}/summarize`), {
@@ -293,7 +301,7 @@ function SummarizeButton({ transcriptId, onComplete }: { transcriptId: string | 
   };
 
   return (
-    <Button size="sm" variant="outline" onClick={handleSummarize} disabled={isSummarizing} type="button">
+    <Button size="sm" variant="outline" onClick={handleSummarize} disabled={isSummarizing || disabled} type="button">
       {isSummarizing ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Sparkles className="w-3 h-3 mr-1" />}
       {isSummarizing ? "Summarizing..." : "Summarize"}
     </Button>
@@ -331,8 +339,6 @@ export default function TranscriptDetail() {
       return res.json();
     },
   });
-  const autoSummarizeEnabled = settingsQuery.data?.autoSummarize === true;
-
   const transcriptQuery = useQuery({
     queryKey: ["/api/transcripts", id],
     enabled: !!id,
@@ -370,7 +376,6 @@ export default function TranscriptDetail() {
       return false;
     },
   });
-  const autoSummarize = autoSummarizeEnabled;
   const transcript: any = transcriptQuery.data || {
     title: "Transcript",
     date: "",
@@ -382,6 +387,13 @@ export default function TranscriptDetail() {
     () => normalizeSummaryMarkdown(String(transcript?.summary || "")),
     [transcript?.summary],
   );
+  const hasSummary = summaryMarkdown.length > 0;
+  const summaryStepLower = String(transcript?.step || "").toLowerCase();
+  const updatedAtMs = Date.parse(String(transcript?.updatedAt || ""));
+  const isSummaryStep = summaryStepLower.includes("summariz");
+  const isSummaryStepFresh = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs < 3 * 60 * 1000 : true;
+  const isSummaryInProgress = !hasSummary && isSummaryStep && isSummaryStepFresh;
+  const isSummaryStepStale = !hasSummary && isSummaryStep && !isSummaryStepFresh;
   const isFailedYoutubeTranscript =
     transcript?.status === "failed" && transcript?.type === "youtube";
   const rawFailureMessage = useMemo(
@@ -623,12 +635,12 @@ export default function TranscriptDetail() {
               {isRetryingYoutube ? "Retrying..." : "Retry"}
             </Button>
           )}
-          {transcript.status === "completed" && !transcript.summary && !autoSummarize && (
+          {transcript.status === "completed" && !hasSummary && !isSummaryInProgress && (
             <div className="hidden md:block">
               <SummarizeButton transcriptId={id} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
             </div>
           )}
-          {transcript.status === "completed" && !transcript.summary && !autoSummarize && (
+          {transcript.status === "completed" && !hasSummary && !isSummaryInProgress && (
             <div className="md:hidden">
               <SummarizeButton transcriptId={id} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
             </div>
@@ -693,23 +705,30 @@ export default function TranscriptDetail() {
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-primary" />
                   <span className="text-base font-semibold tracking-tight">Summary</span>
-                  {transcript.step?.includes("Summariz") && (
+                  {isSummaryInProgress && (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground ml-2">
                       <Loader2 className="w-3 h-3 animate-spin" />
                       {transcript.step}
                     </span>
                   )}
+                  {isSummaryStepStale && (
+                    <span className="text-xs text-amber-600 ml-2">Summarization timed out</span>
+                  )}
                 </div>
               </AccordionTrigger>
               <AccordionContent className="px-4 pb-4">
-                {transcript.summary ? (
+                {hasSummary ? (
                   <div className="prose dark:prose-invert max-w-none">
                     <ReactMarkdown>{summaryMarkdown}</ReactMarkdown>
                   </div>
                 ) : (
                   <p className="text-base text-muted-foreground italic">
                     {transcript.status === "completed"
-                      ? "No summary yet. Click 'Summarize' in the header to generate one."
+                      ? isSummaryInProgress
+                        ? "Summary is currently being generated."
+                        : isSummaryStepStale
+                          ? "Summary generation timed out. Click 'Summarize' in the header to retry."
+                          : "No summary yet. Click 'Summarize' in the header to generate one."
                       : "Summary will be available after transcription completes."}
                   </p>
                 )}

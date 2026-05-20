@@ -44,6 +44,110 @@ def test_upload_max_bytes_env(monkeypatch):
     assert web_api._get_upload_max_bytes() == 1024 * 1024
 
 
+def test_audio_upload_max_bytes_defaults_to_soniox_limit(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+    assert web_api._get_audio_upload_max_bytes("soniox") == 524_288_000
+    assert web_api._get_audio_upload_max_bytes("soniox_async") == 524_288_000
+
+
+def test_audio_upload_max_bytes_defaults_to_mistral_limit(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+    assert web_api._get_audio_upload_max_bytes("mistral") == 512 * 1024 * 1024
+    assert web_api._get_audio_upload_limit_label("mistral") == "512MB"
+
+
+def test_audio_upload_max_bytes_defaults_to_assemblyai_limit(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+    assert web_api._get_audio_upload_max_bytes("assemblyai") == 2_200_000_000
+    assert web_api._get_audio_upload_limit_label("assemblyai") == "2.2GB"
+
+
+def test_audio_upload_max_bytes_uses_generic_default_for_other_providers(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+    assert web_api._get_audio_upload_max_bytes("openai") == 2048 * 1024 * 1024
+
+
+def test_audio_upload_max_bytes_respects_env_override_for_soniox(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.setenv("SCRIBER_UPLOAD_MAX_MB", "300")
+    assert web_api._get_audio_upload_max_bytes("soniox") == 300 * 1024 * 1024
+
+
+def test_audio_ingest_max_bytes_allows_precompression_uploads():
+    assert web_api._get_audio_ingest_max_bytes("soniox") == 2048 * 1024 * 1024
+
+
+def test_audio_ingest_max_bytes_expands_for_larger_provider_limit(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+    assert web_api._get_audio_ingest_max_bytes("assemblyai") == 2_200_000_000
+
+
+def test_build_file_upload_limits_uses_provider_metadata(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+    limits = web_api._build_file_upload_limits("mistral")
+    assert limits["provider"] == "mistral"
+    assert limits["audioMaxLabel"] == "512MB"
+    assert limits["providerLabel"] == "Mistral (Realtime)"
+
+
+@pytest.mark.asyncio
+async def test_maybe_compress_audio_upload_skips_small_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_api, "_UPLOAD_COMPRESSION_THRESHOLD_BYTES", 2048)
+    upload_path = tmp_path / "small.mp3"
+    upload_path.write_bytes(b"x" * 1024)
+
+    got = await web_api._maybe_compress_audio_upload(upload_path)
+
+    assert got == upload_path
+
+
+@pytest.mark.asyncio
+async def test_maybe_compress_audio_upload_replaces_large_audio_with_webm(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_api, "_UPLOAD_COMPRESSION_THRESHOLD_BYTES", 2048)
+    upload_path = tmp_path / "large.mp3"
+    upload_path.write_bytes(b"x" * 4096)
+
+    async def _fake_transcode(source_path, target_path, *, bitrate):
+        assert source_path == upload_path
+        assert target_path.suffix == ".webm"
+        assert bitrate == web_api._COMPRESSED_AUDIO_BITRATE
+        target_path.write_bytes(b"y" * 2048)
+        return target_path
+
+    monkeypatch.setattr(web_api, "_transcode_media_to_webm_audio", _fake_transcode)
+
+    got = await web_api._maybe_compress_audio_upload(upload_path)
+
+    assert got.suffix == ".webm"
+    assert got.exists()
+    assert not upload_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_maybe_compress_audio_upload_keeps_original_when_not_smaller(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_api, "_UPLOAD_COMPRESSION_THRESHOLD_BYTES", 2048)
+    upload_path = tmp_path / "large.wav"
+    upload_path.write_bytes(b"x" * 4096)
+
+    async def _fake_transcode(_source_path, target_path, *, bitrate):
+        assert bitrate == web_api._COMPRESSED_AUDIO_BITRATE
+        target_path.write_bytes(b"y" * 8192)
+        return target_path
+
+    monkeypatch.setattr(web_api, "_transcode_media_to_webm_audio", _fake_transcode)
+
+    got = await web_api._maybe_compress_audio_upload(upload_path)
+
+    assert got == upload_path
+    assert upload_path.exists()
+
+
 def test_allowed_upload_extensions_include_video_extensions():
     assert web_api._VIDEO_EXTENSIONS.issubset(web_api._ALLOWED_UPLOAD_EXTENSIONS)
 

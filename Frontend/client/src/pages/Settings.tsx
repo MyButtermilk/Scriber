@@ -76,6 +76,7 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
 
 const SUMMARIZATION_MODEL_OPTIONS = [
   { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview (Recommended)" },
+  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite Preview" },
   { value: "gemini-3-pro-preview", label: "Gemini 3 Pro" },
   { value: "gpt-5.2", label: "OpenAI GPT 5.2" },
   { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini" },

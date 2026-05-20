@@ -22,6 +22,24 @@ import { CopyActionButton } from "@/components/ui/copy-action-button";
 
 const DELETE_GLITCH_DURATION_MS = 1200;
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
+const DEFAULT_COMPRESSION_THRESHOLD_BYTES = 50 * 1024 * 1024;
+const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"]);
+
+function getFileExtension(fileName: string): string {
+  const dotIndex = fileName.lastIndexOf(".");
+  return dotIndex >= 0 ? fileName.slice(dotIndex).toLowerCase() : "";
+}
+
+function inferServerProcessingLabel(file: File, compressionThresholdBytes: number): string {
+  const ext = getFileExtension(file.name);
+  if (VIDEO_EXTENSIONS.has(ext)) {
+    return `Extracting audio from ${file.name}...`;
+  }
+  if (file.size > compressionThresholdBytes) {
+    return `Compressing ${file.name}...`;
+  }
+  return `Preparing ${file.name}...`;
+}
 
 // Memoized FileCard to prevent unnecessary re-renders
 interface FileCardProps {
@@ -201,6 +219,7 @@ export default function FileTranscribe() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadingFileName, setUploadingFileName] = useState("");
+  const [uploadStatusText, setUploadStatusText] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const deletingRef = useRef<string | null>(null);
@@ -256,6 +275,36 @@ export default function FileTranscribe() {
     placeholderData: (previous) => previous,
   });
   const recentFromBackend: any[] = (transcriptsQuery.data as any)?.items || [];
+  const settingsQuery = useQuery({
+    queryKey: ["/api/settings"],
+    queryFn: async () => {
+      const res = await fetch(apiUrl("/api/settings"), { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load settings");
+      return res.json();
+    },
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+  const fileUploadLimits = (settingsQuery.data as any)?.fileUploadLimits;
+  const compressionThresholdBytes =
+    Number(fileUploadLimits?.compressionThresholdBytes) || DEFAULT_COMPRESSION_THRESHOLD_BYTES;
+  const uploadHint = useMemo(() => {
+    if (!fileUploadLimits) {
+      return "Audio: MP3, M4A, WAV (uploads over 50MB are auto-compressed to WebM) • Video: MP4, MOV, etc. (max 2GB, audio extracted)";
+    }
+
+    const providerLabel = fileUploadLimits.providerLabel || "Selected provider";
+    const compressionThresholdLabel = fileUploadLimits.compressionThresholdLabel || "50MB";
+    const audioLimitLabel = fileUploadLimits.audioMaxLabel || "unknown";
+    const rawAudioIngestLabel = fileUploadLimits.rawAudioIngestMaxLabel || "2GB";
+    const videoLimitLabel = fileUploadLimits.videoMaxLabel || "2GB";
+
+    const audioHint = fileUploadLimits.usesDirectProviderLimit
+      ? `Audio: MP3, M4A, WAV (uploads over ${compressionThresholdLabel} are auto-compressed to WebM; ${providerLabel} max ${audioLimitLabel}, raw ingest ${rawAudioIngestLabel})`
+      : `Audio: MP3, M4A, WAV (uploads over ${compressionThresholdLabel} are auto-compressed to WebM; ${providerLabel} processes files in-app up to ${audioLimitLabel})`;
+
+    return `${audioHint} • Video: MP4, MOV, etc. (max ${videoLimitLabel}, audio extracted)`;
+  }, [fileUploadLimits]);
 
   useTranscriptAutoRefresh({
     queryKey: transcriptsQueryKey,
@@ -272,28 +321,64 @@ export default function FileTranscribe() {
   const uploadFile = async (file: File) => {
     setIsUploading(true);
     setUploadingFileName(file.name);
-    setUploadProgress(10);
+    setUploadStatusText(`Uploading ${file.name}...`);
+    setUploadProgress(0);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
 
-      setUploadProgress(30);
+      const rec = await new Promise<any>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        let switchedToServerPhase = false;
+        const serverProcessingLabel = inferServerProcessingLabel(file, compressionThresholdBytes);
 
-      const res = await fetch(apiUrl("/api/file/transcribe"), {
-        method: "POST",
-        credentials: "include",
-        body: formData,
+        const switchToServerPhase = () => {
+          if (switchedToServerPhase) return;
+          switchedToServerPhase = true;
+          setUploadProgress(96);
+          setUploadStatusText(serverProcessingLabel);
+        };
+
+        xhr.open("POST", apiUrl("/api/file/transcribe"));
+        xhr.withCredentials = true;
+
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable || event.total <= 0) return;
+          const percent = Math.max(5, Math.min(95, Math.round((event.loaded / event.total) * 95)));
+          setUploadProgress(percent);
+          if (event.loaded >= event.total) {
+            switchToServerPhase();
+          }
+        };
+
+        xhr.upload.onload = () => {
+          switchToServerPhase();
+        };
+
+        xhr.onerror = () => {
+          reject(new Error("Network error during file upload"));
+        };
+
+        xhr.onload = () => {
+          const responseText = xhr.responseText || "";
+          let parsed: any = {};
+          try {
+            parsed = responseText ? JSON.parse(responseText) : {};
+          } catch {
+            parsed = {};
+          }
+
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(parsed);
+            return;
+          }
+
+          reject(new Error(parsed.message || xhr.statusText || "Upload failed"));
+        };
+
+        xhr.send(formData);
       });
-
-      setUploadProgress(80);
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.message || res.statusText);
-      }
-
-      const rec = await res.json();
       setUploadProgress(100);
 
       toast({
@@ -316,6 +401,7 @@ export default function FileTranscribe() {
       setIsUploading(false);
       setUploadProgress(0);
       setUploadingFileName("");
+      setUploadStatusText("");
     }
   };
 
@@ -455,13 +541,13 @@ export default function FileTranscribe() {
         <div className="space-y-1">
           {isUploading ? (
             <>
-              <p className="text-lg font-medium">Uploading {uploadingFileName}...</p>
+              <p className="text-lg font-medium">{uploadStatusText || `Uploading ${uploadingFileName}...`}</p>
               <Progress value={uploadProgress} className="h-2 w-48 mx-auto mt-2" />
             </>
           ) : (
             <>
               <p className="text-lg font-medium">Click to upload or drag and drop</p>
-              <p className="text-sm text-muted-foreground">Audio: MP3, M4A, WAV (max 200MB) • Video: MP4, MOV, etc. (max 2GB, audio extracted)</p>
+              <p className="text-sm text-muted-foreground">{uploadHint}</p>
             </>
           )}
         </div>

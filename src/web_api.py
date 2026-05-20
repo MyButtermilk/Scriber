@@ -59,8 +59,11 @@ _ALLOWED_ORIGINS_ENV = "SCRIBER_ALLOWED_ORIGINS"
 _UPLOAD_MAX_BYTES_ENV = "SCRIBER_UPLOAD_MAX_BYTES"
 _UPLOAD_MAX_MB_ENV = "SCRIBER_UPLOAD_MAX_MB"
 _DEFAULT_UPLOAD_MAX_MB = 200
-_DEFAULT_AUDIO_MAX_MB = 200  # Limit for extracted audio files
+_DEFAULT_AUDIO_INGEST_MAX_MB = 2048
 _DEFAULT_VIDEO_MAX_MB = 2048  # 2GB limit for raw video uploads (audio extracted)
+_UPLOAD_COMPRESSION_THRESHOLD_BYTES = 50 * 1024 * 1024
+_EXTRACTED_AUDIO_BITRATE = "64k"
+_COMPRESSED_AUDIO_BITRATE = "32k"
 
 # Video file extensions that require audio extraction
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
@@ -92,6 +95,19 @@ _INPUT_WARNING_ACTIONS_BY_CODE: dict[str, tuple[dict[str, str], ...]] = {
             "uri": _SETTINGS_URI_SOUND,
         },
     )
+}
+
+_DEFAULT_AUDIO_INGEST_MAX_BYTES = _DEFAULT_AUDIO_INGEST_MAX_MB * 1024 * 1024
+_PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, dict[str, Any]] = {
+    # Soniox REST files API documents 524288000 bytes max on POST /v1/files.
+    "soniox": {"max_bytes": 524_288_000, "label": "500MB"},
+    "soniox_async": {"max_bytes": 524_288_000, "label": "500MB"},
+    # Mistral documents 512 MB max on POST /v1/files; its audio transcription
+    # endpoint accepts the same File object and file_id from /v1/files.
+    "mistral": {"max_bytes": 512 * 1024 * 1024, "label": "512MB"},
+    "mistral_async": {"max_bytes": 512 * 1024 * 1024, "label": "512MB"},
+    # AssemblyAI local uploads go through /v2/upload, documented at 2.2GB.
+    "assemblyai": {"max_bytes": 2_200_000_000, "label": "2.2GB"},
 }
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -229,7 +245,18 @@ def _validate_summarization_model(raw_model: str) -> str:
     return model
 
 
-def _get_upload_max_bytes() -> int:
+def _normalize_upload_provider(provider: str | None) -> str:
+    return (provider or "").strip().lower()
+
+
+def _configured_file_upload_provider() -> str:
+    provider = _normalize_upload_provider(Config.DEFAULT_STT_SERVICE)
+    if provider == "soniox" and (Config.SONIOX_MODE or "").strip().lower() == "async":
+        return "soniox_async"
+    return provider
+
+
+def _get_upload_limit_override_bytes() -> int | None:
     raw_bytes = os.getenv(_UPLOAD_MAX_BYTES_ENV, "").strip()
     if raw_bytes:
         try:
@@ -246,10 +273,53 @@ def _get_upload_max_bytes() -> int:
                 return int(value * 1024 * 1024)
         except Exception:
             pass
+    return None
+
+
+def _get_default_audio_upload_limit(provider: str | None) -> dict[str, Any]:
+    key = _normalize_upload_provider(provider)
+    provider_limit = _PROVIDER_AUDIO_UPLOAD_LIMITS.get(key)
+    if provider_limit:
+        return dict(provider_limit)
+    if not supports_direct_file_upload(key):
+        return {
+            "max_bytes": _DEFAULT_AUDIO_INGEST_MAX_BYTES,
+            "label": _format_upload_limit(_DEFAULT_AUDIO_INGEST_MAX_BYTES),
+        }
+    fallback_bytes = _DEFAULT_UPLOAD_MAX_MB * 1024 * 1024
+    return {
+        "max_bytes": fallback_bytes,
+        "label": _format_upload_limit(fallback_bytes),
+    }
+
+
+def _get_upload_max_bytes() -> int:
+    override = _get_upload_limit_override_bytes()
+    if override is not None:
+        return override
     return _DEFAULT_UPLOAD_MAX_MB * 1024 * 1024
 
 
+def _get_audio_upload_max_bytes(provider: str | None = None) -> int:
+    override = _get_upload_limit_override_bytes()
+    if override is not None:
+        return override
+    return int(_get_default_audio_upload_limit(provider)["max_bytes"])
+
+
+def _get_audio_upload_limit_label(provider: str | None = None) -> str:
+    override = _get_upload_limit_override_bytes()
+    if override is not None:
+        return _format_upload_limit(override)
+    return str(_get_default_audio_upload_limit(provider)["label"])
+
+
 def _format_upload_limit(limit_bytes: int) -> str:
+    if limit_bytes >= 1024 * 1024 * 1024:
+        whole_gb, remainder = divmod(limit_bytes, 1024 * 1024 * 1024)
+        if remainder == 0:
+            return f"{whole_gb}GB"
+        return f"{limit_bytes / (1024 * 1024 * 1024):.1f}GB"
     return f"{limit_bytes / (1024 * 1024):.0f}MB"
 
 
@@ -258,9 +328,143 @@ def _get_video_max_bytes() -> int:
     return _DEFAULT_VIDEO_MAX_MB * 1024 * 1024
 
 
-def _get_audio_max_bytes() -> int:
+def _get_audio_ingest_max_bytes(provider: str | None = None) -> int:
+    """Get maximum bytes allowed for raw audio uploads before optional compression."""
+    return max(_DEFAULT_AUDIO_INGEST_MAX_BYTES, _get_audio_upload_max_bytes(provider))
+
+
+def _get_audio_ingest_limit_label(provider: str | None = None) -> str:
+    ingest_limit = _get_audio_ingest_max_bytes(provider)
+    final_limit = _get_audio_upload_max_bytes(provider)
+    if ingest_limit == final_limit and ingest_limit > _DEFAULT_AUDIO_INGEST_MAX_BYTES:
+        return _get_audio_upload_limit_label(provider)
+    return _format_upload_limit(ingest_limit)
+
+
+def _get_audio_max_bytes(provider: str | None = None) -> int:
     """Get maximum bytes allowed for audio files (after extraction from video)."""
-    return _DEFAULT_AUDIO_MAX_MB * 1024 * 1024
+    return _get_audio_upload_max_bytes(provider)
+
+
+def _build_file_upload_limits(provider: str | None = None) -> dict[str, Any]:
+    resolved_provider = _normalize_upload_provider(provider) or _configured_file_upload_provider()
+    audio_max_bytes = _get_audio_upload_max_bytes(resolved_provider)
+    return {
+        "provider": resolved_provider,
+        "providerLabel": Config.SERVICE_LABELS.get(
+            resolved_provider,
+            resolved_provider.replace("_", " ").title() if resolved_provider else "Configured provider",
+        ),
+        "usesDirectProviderLimit": supports_direct_file_upload(resolved_provider),
+        "audioMaxBytes": audio_max_bytes,
+        "audioMaxLabel": _get_audio_upload_limit_label(resolved_provider),
+        "rawAudioIngestMaxBytes": _get_audio_ingest_max_bytes(resolved_provider),
+        "rawAudioIngestMaxLabel": _get_audio_ingest_limit_label(resolved_provider),
+        "videoMaxBytes": _get_video_max_bytes(),
+        "videoMaxLabel": _format_upload_limit(_get_video_max_bytes()),
+        "compressionThresholdBytes": _UPLOAD_COMPRESSION_THRESHOLD_BYTES,
+        "compressionThresholdLabel": _format_upload_limit(_UPLOAD_COMPRESSION_THRESHOLD_BYTES),
+    }
+
+
+def _build_webm_audio_output_path(source_path: Path, *, label: str = "audio") -> Path:
+    if source_path.suffix.lower() == ".webm":
+        return source_path.with_name(f"{source_path.stem}.{label}.webm")
+    return source_path.with_suffix(".webm")
+
+
+async def _transcode_media_to_webm_audio(
+    source_path: Path,
+    target_path: Path,
+    *,
+    bitrate: str,
+) -> Path:
+    import shutil
+
+    ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found on PATH.")
+
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source_path),
+        "-vn",
+        "-c:a",
+        "libopus",
+        "-b:a",
+        bitrate,
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        str(target_path),
+    ]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    _, stderr = await proc.communicate()
+
+    if proc.returncode != 0:
+        err_msg = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
+        raise RuntimeError(f"ffmpeg audio transcode failed: {err_msg or f'exit code {proc.returncode}'}")
+
+    if not target_path.exists():
+        raise RuntimeError("Audio transcode completed but output file not found.")
+
+    return target_path
+
+
+async def _maybe_compress_audio_upload(upload_path: Path) -> Path:
+    if not upload_path.exists():
+        raise ValueError("Audio upload not found")
+
+    original_size = upload_path.stat().st_size
+    if original_size <= _UPLOAD_COMPRESSION_THRESHOLD_BYTES:
+        return upload_path
+
+    compressed_path = _build_webm_audio_output_path(upload_path, label="compressed")
+    try:
+        await _transcode_media_to_webm_audio(
+            upload_path,
+            compressed_path,
+            bitrate=_COMPRESSED_AUDIO_BITRATE,
+        )
+        compressed_size = compressed_path.stat().st_size
+    except Exception as exc:
+        compressed_path.unlink(missing_ok=True)
+        logger.warning(f"Automatic upload compression skipped for {upload_path.name}: {exc}")
+        return upload_path
+
+    if compressed_size >= original_size:
+        compressed_path.unlink(missing_ok=True)
+        logger.info(
+            f"Upload compression not beneficial for {upload_path.name}: "
+            f"{compressed_size / (1024 * 1024):.1f}MB >= {original_size / (1024 * 1024):.1f}MB"
+        )
+        return upload_path
+
+    if upload_path.suffix.lower() == ".webm":
+        upload_path.unlink(missing_ok=True)
+        compressed_path.replace(upload_path)
+        final_path = upload_path
+    else:
+        upload_path.unlink(missing_ok=True)
+        final_path = compressed_path
+
+    logger.info(
+        f"Compressed upload {upload_path.name}: "
+        f"{original_size / (1024 * 1024):.1f}MB -> {final_path.stat().st_size / (1024 * 1024):.1f}MB"
+    )
+    return final_path
 
 
 async def _extract_audio_from_video(video_path: Path, output_dir: Path) -> Path:
@@ -270,47 +474,22 @@ async def _extract_audio_from_video(video_path: Path, output_dir: Path) -> Path:
     Returns the path to the extracted audio file (WebM/Opus format).
     Raises RuntimeError if extraction fails.
     """
-    import shutil
-    
-    ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
-    if not ffmpeg:
-        raise RuntimeError("ffmpeg not found on PATH (required for video audio extraction).")
-    
     # Output as audio-only WebM/Opus for efficient upload across STT providers.
-    audio_filename = video_path.stem + ".webm"
+    audio_filename = _build_webm_audio_output_path(video_path).name
     audio_path = output_dir / audio_filename
-    
-    cmd = [
-        ffmpeg,
-        "-hide_banner",
-        "-loglevel", "error",
-        "-y",  # Overwrite output
-        "-i", str(video_path),
-        "-vn",  # No video
-        "-c:a", "libopus",
-        "-b:a", "64k",  # Good speech quality with small upload size
-        "-ar", "16000",
-        "-ac", "1",  # Mono (sufficient for transcription)
-        str(audio_path),
-    ]
-    
+
     logger.debug(f"Extracting audio from video: {video_path.name}")
-    
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    
-    _, stderr = await proc.communicate()
-    
-    if proc.returncode != 0:
-        err_msg = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
-        raise RuntimeError(f"ffmpeg audio extraction failed: {err_msg or f'exit code {proc.returncode}'}")
-    
-    if not audio_path.exists():
-        raise RuntimeError("Audio extraction completed but output file not found.")
-    
+    try:
+        await _transcode_media_to_webm_audio(
+            video_path,
+            audio_path,
+            bitrate=_EXTRACTED_AUDIO_BITRATE,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"ffmpeg audio extraction failed: {exc}"
+        ) from exc
+
     logger.debug(f"Audio extracted: {audio_path.name} ({audio_path.stat().st_size / (1024*1024):.1f}MB)")
     return audio_path
 
@@ -486,6 +665,11 @@ class TranscriptRecord:
             except (ValueError, TypeError):
                 pass  # Fall back to stored date if parsing fails
         
+        step_value = self.step
+        # If summary already exists, avoid showing a stale "Summarizing..." badge.
+        if self.summary and "summariz" in (self.step or "").lower():
+            step_value = "Completed"
+
         data: dict[str, Any] = {
             "id": self.id,
             "title": self.title,
@@ -494,7 +678,7 @@ class TranscriptRecord:
             "status": self.status,
             "type": self.type,
             "language": self.language,
-            "step": self.step,
+            "step": step_value,
             "sourceUrl": self.source_url,
             "channel": self.channel,
             "thumbnailUrl": self.thumbnail_url,
@@ -1719,6 +1903,11 @@ class ScriberWebController:
             logger.info(f"YouTube transcription completed: {len(rec.content)} chars")
             rec.status = "completed"
             rec.step = "Completed"
+            rec.updated_at = datetime.now().isoformat()
+            # Persist transcript immediately so a stuck/slow summarization
+            # cannot keep the transcript in memory-only state.
+            self._save_transcript_to_db(rec)
+            await self._broadcast_history_updated()
             logger.debug(f"YouTube record updated: status={rec.status}, step={rec.step}")
             self._emit_workflow_event(
                 message="YouTube transcription completed",
@@ -2019,6 +2208,11 @@ class ScriberWebController:
             logger.info(f"File transcription completed: {len(rec.content)} chars")
             rec.status = "completed"
             rec.step = "Completed"
+            rec.updated_at = datetime.now().isoformat()
+            # Persist transcript immediately so a stuck/slow summarization
+            # cannot keep the transcript in memory-only state.
+            self._save_transcript_to_db(rec)
+            await self._broadcast_history_updated()
             self._emit_workflow_event(
                 message="File transcription completed",
                 event="pipeline.transcription.completed",
@@ -2817,6 +3011,7 @@ class ScriberWebController:
             return "default"
 
         resolved_mic = resolve_mic_device_for_ui()
+        file_upload_limits = _build_file_upload_limits(_configured_file_upload_provider())
 
         return {
             "hotkey": _hotkey_to_display(Config.HOTKEY),
@@ -2841,6 +3036,7 @@ class ScriberWebController:
             "onnxUseGpu": bool(Config.ONNX_USE_GPU),
             "nemoModel": Config.NEMO_MODEL,
             "visualizerBarCount": Config.VISUALIZER_BAR_COUNT,
+            "fileUploadLimits": file_upload_limits,
             "apiKeys": {
                 "soniox": Config.SONIOX_API_KEY or "",
                 "mistral": getattr(Config, "MISTRAL_API_KEY", "") or "",
@@ -3627,18 +3823,33 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
             # Determine if this is a video file (needs audio extraction)
             is_video = ext in _VIDEO_EXTENSIONS
-            
-            # Use different size limits for video vs audio files
+            upload_provider = Config.DEFAULT_STT_SERVICE
+            try:
+                upload_provider = ctl._select_available_provider()
+            except Exception:
+                logger.debug(
+                    f"Falling back to configured provider for upload limit calculation: {Config.DEFAULT_STT_SERVICE}"
+                )
+
+            # Use a generous ingest limit for raw uploads, then enforce provider
+            # limits after optional audio extraction/compression.
             if is_video:
-                max_bytes = _get_video_max_bytes()  # 2GB for videos (audio will be extracted)
+                ingest_max_bytes = _get_video_max_bytes()
+                final_audio_limit = _get_audio_max_bytes(upload_provider)
             else:
-                max_bytes = _get_upload_max_bytes()  # 200MB for audio files
-            limit_label = _format_upload_limit(max_bytes)
+                ingest_max_bytes = _get_audio_ingest_max_bytes(upload_provider)
+                final_audio_limit = _get_audio_upload_max_bytes(upload_provider)
+            ingest_limit_label = (
+                _format_upload_limit(ingest_max_bytes)
+                if is_video
+                else _get_audio_ingest_limit_label(upload_provider)
+            )
+            final_audio_limit_label = _get_audio_upload_limit_label(upload_provider)
             
             # Check content-length header if available
-            if request.content_length is not None and request.content_length > max_bytes:
+            if request.content_length is not None and request.content_length > ingest_max_bytes:
                 return web.json_response(
-                    {"message": f"File too large (max {limit_label})."},
+                    {"message": f"File too large (max raw upload {ingest_limit_label})."},
                     status=413,
                 )
 
@@ -3657,7 +3868,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     if not chunk:
                         break
                     bytes_read += len(chunk)
-                    if bytes_read > max_bytes:
+                    if bytes_read > ingest_max_bytes:
                         too_large = True
                         break
                     f.write(chunk)
@@ -3669,7 +3880,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         shutil.rmtree(save_dir)
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to cleanup oversized upload: {cleanup_err}")
-                return web.json_response({"message": f"File too large (max {limit_label})."}, status=413)
+                return web.json_response(
+                    {"message": f"File too large (max raw upload {ingest_limit_label})."},
+                    status=413,
+                )
 
             # For video files, extract audio using ffmpeg
             transcribe_path = save_path
@@ -3677,16 +3891,21 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 try:
                     logger.info(f"Extracting audio from video: {safe_filename} ({bytes_read / (1024*1024):.1f}MB)")
                     audio_path = await _extract_audio_from_video(save_path, save_dir)
+                    audio_path = await _maybe_compress_audio_upload(audio_path)
                     
                     # Check if extracted audio is within size limit
                     audio_size = audio_path.stat().st_size
-                    audio_limit = _get_audio_max_bytes()
-                    if audio_size > audio_limit:
+                    if audio_size > final_audio_limit:
                         import shutil
                         if save_dir.exists():
                             shutil.rmtree(save_dir)
                         return web.json_response(
-                            {"message": f"Extracted audio too large ({audio_size / (1024*1024):.0f}MB, max {audio_limit / (1024*1024):.0f}MB)."},
+                            {
+                                "message": (
+                                    f"Extracted/compressed audio too large "
+                                    f"({audio_size / (1024*1024):.0f}MB, max {final_audio_limit_label})."
+                                )
+                            },
                             status=413,
                         )
                     
@@ -3711,6 +3930,22 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     return web.json_response(
                         {"message": f"Failed to extract audio from video: {extract_err}"},
                         status=500,
+                    )
+            else:
+                transcribe_path = await _maybe_compress_audio_upload(save_path)
+                compressed_size = transcribe_path.stat().st_size
+                if compressed_size > final_audio_limit:
+                    import shutil
+                    if save_dir.exists():
+                        shutil.rmtree(save_dir)
+                    return web.json_response(
+                        {
+                            "message": (
+                                f"Compressed audio still too large "
+                                f"({compressed_size / (1024*1024):.0f}MB, max {final_audio_limit_label})."
+                            )
+                        },
+                        status=413,
                     )
 
             # Start transcription

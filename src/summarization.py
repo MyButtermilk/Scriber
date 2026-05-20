@@ -5,21 +5,31 @@ Supports OpenAI (GPT-4) and Google Gemini models.
 
 from __future__ import annotations
 import asyncio
+import json
 import math
 import os
 import re
 from typing import Any, Literal
 
+import aiohttp
 from loguru import logger
 
 from src.config import Config
 
-SummarizationModel = Literal["gemini-3-flash-preview", "gemini-3-pro-preview", "gpt-5.2", "gpt-5-mini", "gpt-5-nano"]
+SummarizationModel = Literal[
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3-pro-preview",
+    "gpt-5.2",
+    "gpt-5-mini",
+    "gpt-5-nano",
+]
 _MODEL_OUTPUT_TOKEN_CAPS = {
     "gpt-5-nano": 4096,
     "gpt-5-mini": 8192,
     "gpt-5.2": 8192,
     "gemini-3-flash-preview": 8192,
+    "gemini-3.1-flash-lite-preview": 8192,
     "gemini-3-pro-preview": 12288,
 }
 _MARKDOWN_OUTPUT_GUARDRAIL = (
@@ -29,6 +39,36 @@ _MARKDOWN_OUTPUT_GUARDRAIL = (
     "- Hauptabschnitte als '##', Unterabschnitte als '###'.\n"
     "- Zwischen Abschnitten eine Leerzeile lassen."
 )
+
+
+def _summary_timeout_seconds() -> float:
+    """Global timeout guard for a single summarization request."""
+    raw = os.getenv("SCRIBER_SUMMARY_TIMEOUT_SEC", "240").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 240.0
+    # Keep a sane lower bound to avoid accidental immediate timeouts.
+    return max(15.0, value)
+
+
+def _is_retryable_gemini_failure(message: str) -> bool:
+    lower = (message or "").lower()
+    retry_markers = (
+        "gemini api error 429",
+        "gemini api error 500",
+        "gemini api error 503",
+        "resource_exhausted",
+        "unavailable",
+        "high demand",
+        "rate limit",
+        "timeout",
+    )
+    return any(marker in lower for marker in retry_markers)
+
+
+def _should_fallback_to_openai() -> bool:
+    return os.getenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENAI", "1").strip().lower() not in {"0", "false", "no"}
 
 
 def _summary_budget_for_text(
@@ -186,12 +226,56 @@ async def summarize_text(
         output_tokens,
     )
 
+    timeout_seconds = _summary_timeout_seconds()
+
     if model.startswith("gpt-"):
-        summary = await _summarize_openai(full_prompt, model, output_tokens)
+        summarize_coro = _summarize_openai(full_prompt, model, output_tokens)
     elif model.startswith("gemini-"):
-        summary = await _summarize_gemini(full_prompt, model, output_tokens)
+        summarize_coro = _summarize_gemini(full_prompt, model, output_tokens)
     else:
         raise ValueError(f"Unknown summarization model: {model}")
+
+    try:
+        summary = await asyncio.wait_for(summarize_coro, timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        timeout_display = max(1, int(round(timeout_seconds)))
+        logger.error(
+            "Summarization timed out after {}s (model={})",
+            timeout_seconds,
+            model,
+        )
+        raise RuntimeError(
+            f"Summarization timed out after {timeout_display}s. Please try again."
+        ) from exc
+    except RuntimeError as exc:
+        # Gemini can occasionally return transient 429/503 ("high demand").
+        # If configured and OpenAI key is available, fall back automatically.
+        if (
+            model.startswith("gemini-")
+            and _should_fallback_to_openai()
+            and bool(Config.OPENAI_API_KEY)
+            and _is_retryable_gemini_failure(str(exc))
+        ):
+            fallback_model = (os.getenv("SCRIBER_SUMMARY_FALLBACK_MODEL", "gpt-5-mini") or "").strip()
+            if fallback_model.startswith("gpt-"):
+                logger.warning(
+                    "Gemini summarization failed with retryable error. Falling back to OpenAI model '{}'.",
+                    fallback_model,
+                )
+                try:
+                    summary = await asyncio.wait_for(
+                        _summarize_openai(full_prompt, fallback_model, output_tokens),
+                        timeout=timeout_seconds,
+                    )
+                except asyncio.TimeoutError as timeout_exc:
+                    timeout_display = max(1, int(round(timeout_seconds)))
+                    raise RuntimeError(
+                        f"Summarization timed out after {timeout_display}s (fallback model: {fallback_model}). Please try again."
+                    ) from timeout_exc
+            else:
+                raise
+        else:
+            raise
     return _normalize_summary_markdown(summary)
 
 
@@ -206,7 +290,12 @@ async def _summarize_openai(prompt: str, model: str, max_output_tokens: int) -> 
     except ImportError:
         raise RuntimeError("openai library not installed. Run: pip install openai")
     
-    client = openai.AsyncOpenAI(api_key=api_key)
+    timeout_seconds = _summary_timeout_seconds()
+    try:
+        client = openai.AsyncOpenAI(api_key=api_key, timeout=timeout_seconds)
+    except TypeError:
+        # Older SDK versions may not expose timeout in the constructor.
+        client = openai.AsyncOpenAI(api_key=api_key)
     
     try:
         # gpt-5 models are most reliable with the Responses API and max_output_tokens.
@@ -215,18 +304,19 @@ async def _summarize_openai(prompt: str, model: str, max_output_tokens: int) -> 
                 model=model,
                 input=prompt,
                 max_output_tokens=max_output_tokens,
-                temperature=0.3,
             )
             content = _extract_openai_response_text(response)
             logger.info(f"OpenAI summarization complete: {len(content or '')} chars")
             return content or ""
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_output_tokens,
-            temperature=0.3,
-        )
+        chat_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_output_tokens,
+        }
+        if not model.startswith("gpt-5"):
+            chat_kwargs["temperature"] = 0.3
+        response = await client.chat.completions.create(**chat_kwargs)
         content = response.choices[0].message.content
         logger.info(f"OpenAI summarization complete: {len(content or '')} chars")
         return content or ""
@@ -265,37 +355,71 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
     api_key = Config.GOOGLE_API_KEY
     if not api_key:
         raise ValueError("Gemini API key not configured. Please add it in Settings.")
-    
+
     try:
-        import google.generativeai as genai
-    except ImportError:
-        raise RuntimeError("google-generativeai library not installed. Run: pip install google-generativeai")
-    
-    genai.configure(api_key=api_key)
-    
-    try:
-        # Run in executor since genai is synchronous
-        loop = asyncio.get_running_loop()
         temperature = min(1.0, max(0.0, float(os.getenv("SCRIBER_SUMMARY_GEMINI_TEMPERATURE", "0.1"))))
-        
-        def _generate():
-            gemini_model = genai.GenerativeModel(model)
-            response = gemini_model.generate_content(
-                prompt,
-                generation_config={
-                    "temperature": temperature,
-                    "max_output_tokens": max_output_tokens,
-                },
-            )
-            content = response.text or ""
-            candidates = getattr(response, "candidates", None) or []
-            finish_reason = getattr(candidates[0], "finish_reason", None) if candidates else None
-            usage = getattr(response, "usage_metadata", None)
-            candidate_tokens = getattr(usage, "candidates_token_count", None) if usage else None
-            total_tokens = getattr(usage, "total_token_count", None) if usage else None
-            return content, finish_reason, candidate_tokens, total_tokens
-        
-        content, finish_reason, candidate_tokens, total_tokens = await loop.run_in_executor(None, _generate)
+        timeout_seconds = _summary_timeout_seconds()
+        timeout = aiohttp.ClientTimeout(
+            total=timeout_seconds,
+            connect=min(15, timeout_seconds),
+            sock_connect=min(15, timeout_seconds),
+            sock_read=timeout_seconds,
+        )
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        payload: dict[str, Any] = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_output_tokens,
+            },
+        }
+
+        retries = max(0, int(os.getenv("SCRIBER_SUMMARY_GEMINI_RETRIES", "2")))
+        data: dict[str, Any] = {}
+        last_error: RuntimeError | None = None
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for attempt in range(retries + 1):
+                async with session.post(url, json=payload) as resp:
+                    raw = await resp.text()
+                    if resp.status >= 400:
+                        detail = raw[:600]
+                        err = RuntimeError(f"Gemini API error {resp.status}: {detail}")
+                        if resp.status in {429, 500, 503} and attempt < retries:
+                            delay = min(8.0, 1.5 * (2 ** attempt))
+                            logger.warning(
+                                "Gemini API transient error (status={}) on attempt {}/{}. Retrying in {:.1f}s.",
+                                resp.status,
+                                attempt + 1,
+                                retries + 1,
+                                delay,
+                            )
+                            await asyncio.sleep(delay)
+                            last_error = err
+                            continue
+                        raise err
+                    data = json.loads(raw)
+                    last_error = None
+                    break
+
+        if last_error is not None:
+            raise last_error
+
+        candidates = data.get("candidates", []) if isinstance(data, dict) else []
+        first = candidates[0] if candidates else {}
+        content_parts = first.get("content", {}).get("parts", []) if isinstance(first, dict) else []
+        content = "".join(
+            part.get("text", "")
+            for part in content_parts
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ).strip()
+
+        finish_reason = first.get("finishReason") if isinstance(first, dict) else None
+        usage = data.get("usageMetadata", {}) if isinstance(data, dict) else {}
+        candidate_tokens = usage.get("candidatesTokenCount")
+        total_tokens = usage.get("totalTokenCount")
+
         logger.info(
             "Gemini summarization complete: {} chars (finish_reason={}, candidate_tokens={}, total_tokens={})",
             len(content or ""),
@@ -303,13 +427,25 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
             candidate_tokens,
             total_tokens,
         )
-        if finish_reason == 2:
+
+        if finish_reason == "MAX_TOKENS":
             logger.warning(
                 "Gemini stopped due MAX_TOKENS (max_output_tokens={}). Consider increasing SCRIBER_SUMMARY_GEMINI_THINKING_RESERVE_TOKENS.",
                 max_output_tokens,
             )
-        return content or ""
-        
+
+        if not content:
+            prompt_feedback = data.get("promptFeedback") if isinstance(data, dict) else None
+            raise RuntimeError(f"Gemini returned empty response. promptFeedback={prompt_feedback}")
+
+        return content
+
+    except aiohttp.ClientError as e:
+        logger.exception("Gemini summarization HTTP error")
+        raise RuntimeError(f"Gemini summarization failed: {e}")
+    except json.JSONDecodeError as e:
+        logger.exception("Gemini summarization parse error")
+        raise RuntimeError(f"Gemini response parse failed: {e}")
     except Exception as e:
         logger.exception("Gemini summarization failed")
         raise RuntimeError(f"Gemini summarization failed: {e}")
