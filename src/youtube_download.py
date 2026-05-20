@@ -67,6 +67,23 @@ def _is_format_unavailable_error(message: str) -> bool:
     return "requested format is not available" in text
 
 
+async def _communicate_or_kill_on_cancel(proc) -> tuple[bytes | None, bytes | None]:
+    try:
+        return await proc.communicate()
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        except Exception as exc:
+            logger.debug(f"Could not kill cancelled subprocess: {exc}")
+        try:
+            await proc.wait()
+        except Exception as exc:
+            logger.debug(f"Could not wait for cancelled subprocess: {exc}")
+        raise
+
+
 async def _has_video_stream(path: Path) -> bool:
     """Return True when ffprobe sees at least one video stream."""
     ffprobe = shutil.which("ffprobe") or shutil.which("ffprobe.exe")
@@ -87,7 +104,7 @@ async def _has_video_stream(path: Path) -> bool:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout_b, _stderr_b = await proc.communicate()
+    stdout_b, _stderr_b = await _communicate_or_kill_on_cancel(proc)
     return bool((stdout_b or b"").decode("utf-8", errors="replace").strip())
 
 
@@ -119,7 +136,7 @@ async def _extract_audio_track(source_path: Path) -> Path:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _stdout_b, stderr_b = await proc.communicate()
+    _stdout_b, stderr_b = await _communicate_or_kill_on_cancel(proc)
     if proc.returncode != 0 or not target_path.exists():
         err_msg = (stderr_b or b"").decode("utf-8", errors="replace").strip()
         raise YouTubeDownloadError(
@@ -334,7 +351,7 @@ async def download_youtube_audio(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout_b, stderr_b = await proc.communicate()
+            stdout_b, stderr_b = await _communicate_or_kill_on_cancel(proc)
             stdout = (stdout_b or b"").decode("utf-8", errors="replace")
             stderr = (stderr_b or b"").decode("utf-8", errors="replace")
 

@@ -145,61 +145,62 @@ def _enumerate_microphones(
         return [{"deviceId": "default", "label": "Default"}]
 
     result: list[dict[str, str]] = [{"deviceId": "default", "label": "Default"}]
-    try:
-        all_devices = list(sd.query_devices())
-    except Exception as exc:
-        logger.debug(f"[DeviceMonitor] query_devices failed: {exc}")
-        return result
+    with get_device_guard_lock():
+        try:
+            all_devices = list(sd.query_devices())
+        except Exception as exc:
+            logger.debug(f"[DeviceMonitor] query_devices failed: {exc}")
+            return result
 
-    try:
-        host_priorities = get_input_hostapi_priorities(
-            sd,
+        try:
+            host_priorities = get_input_hostapi_priorities(
+                sd,
+                all_devices,
+                sample_rate=sample_rate,
+                channels=channels,
+            )
+        except Exception:
+            host_priorities = []
+
+        default_idx = _default_input_index()
+        default_norm = ""
+        if default_idx is not None and 0 <= default_idx < len(all_devices):
+            default_norm = normalize_device_name(str(all_devices[default_idx].get("name", "")))
+
+        selected_hostapi = _pick_primary_hostapi(
             all_devices,
-            sample_rate=sample_rate,
-            channels=channels,
+            default_idx=default_idx,
+            host_priorities=host_priorities,
         )
-    except Exception:
-        host_priorities = []
 
-    default_idx = _default_input_index()
-    default_norm = ""
-    if default_idx is not None and 0 <= default_idx < len(all_devices):
-        default_norm = normalize_device_name(str(all_devices[default_idx].get("name", "")))
+        best_by_norm: dict[str, tuple[tuple[int, int], str, bool]] = {}
+        for idx, device in enumerate(all_devices):
+            hostapi_idx = _to_int(device.get("hostapi", -1), -1)
+            if selected_hostapi is not None and hostapi_idx != selected_hostapi:
+                continue
 
-    selected_hostapi = _pick_primary_hostapi(
-        all_devices,
-        default_idx=default_idx,
-        host_priorities=host_priorities,
-    )
+            if _to_int(device.get("max_input_channels", 0), 0) <= 0:
+                continue
+            name = str(device.get("name", "")).strip()
+            if not name:
+                continue
+            if _looks_virtual_or_output(name):
+                continue
+            norm = normalize_device_name(name)
+            if not norm:
+                continue
 
-    best_by_norm: dict[str, tuple[tuple[int, int], str, bool]] = {}
-    for idx, device in enumerate(all_devices):
-        hostapi_idx = _to_int(device.get("hostapi", -1), -1)
-        if selected_hostapi is not None and hostapi_idx != selected_hostapi:
-            continue
+            is_default = (default_idx is not None and idx == default_idx) or (default_norm and norm == default_norm)
+            score = (0 if is_default else 1, idx)
 
-        if _to_int(device.get("max_input_channels", 0), 0) <= 0:
-            continue
-        name = str(device.get("name", "")).strip()
-        if not name:
-            continue
-        if _looks_virtual_or_output(name):
-            continue
-        norm = normalize_device_name(name)
-        if not norm:
-            continue
+            existing = best_by_norm.get(norm)
+            if existing is None or score < existing[0]:
+                best_by_norm[norm] = (score, name, bool(is_default))
 
-        is_default = (default_idx is not None and idx == default_idx) or (default_norm and norm == default_norm)
-        score = (0 if is_default else 1, idx)
-
-        existing = best_by_norm.get(norm)
-        if existing is None or score < existing[0]:
-            best_by_norm[norm] = (score, name, bool(is_default))
-
-    unique_items = sorted(best_by_norm.values(), key=lambda item: item[1].lower())
-    for _, name, is_default in unique_items:
-        label = f"{name} (Default)" if is_default else name
-        result.append({"deviceId": name, "label": label})
+        unique_items = sorted(best_by_norm.values(), key=lambda item: item[1].lower())
+        for _, name, is_default in unique_items:
+            label = f"{name} (Default)" if is_default else name
+            result.append({"deviceId": name, "label": label})
 
     return result
 

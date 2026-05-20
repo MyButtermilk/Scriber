@@ -34,6 +34,13 @@ except (ImportError, KeyError, OSError) as e:
     logger.warning(f"GUI libraries not available: {e}. Text injection will be mocked.")
 
 
+class _ClipboardAccessFailed:
+    pass
+
+
+_CLIPBOARD_ACCESS_FAILED = _ClipboardAccessFailed()
+
+
 # =============================================================================
 # SendInput API for instant keystroke injection (Windows only)
 # =============================================================================
@@ -160,7 +167,11 @@ def _get_pre_delay_for_window() -> int:
     return 0
 
 
-def _windows_clipboard_get_text(*, retries: int = 5, delay_secs: float = 0.005) -> str | None:
+def _windows_clipboard_get_text(
+    *,
+    retries: int = 5,
+    delay_secs: float = 0.005,
+) -> str | None | _ClipboardAccessFailed:
     """
     Get text from Windows clipboard with optimized retry loop.
     OPTIMIZED: Reduced from 10 retries @ 20ms to 5 retries @ 5ms (200ms -> 25ms worst case)
@@ -177,13 +188,15 @@ def _windows_clipboard_get_text(*, retries: int = 5, delay_secs: float = 0.005) 
             time.sleep(delay_secs)
             continue
         try:
+            if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+                return None
             handle = user32.GetClipboardData(CF_UNICODETEXT)
             if not handle:
-                return None
+                return _CLIPBOARD_ACCESS_FAILED
             kernel32.GlobalLock.restype = wintypes.LPVOID
             ptr = kernel32.GlobalLock(handle)
             if not ptr:
-                return None
+                return _CLIPBOARD_ACCESS_FAILED
             try:
                 return ctypes.wstring_at(ptr)
             finally:
@@ -191,7 +204,8 @@ def _windows_clipboard_get_text(*, retries: int = 5, delay_secs: float = 0.005) 
         finally:
             user32.CloseClipboard()
 
-    return None
+    logger.warning("Clipboard read access failed after retries")
+    return _CLIPBOARD_ACCESS_FAILED
 
 
 def _windows_clipboard_set_text(text: str, *, retries: int = 5, delay_secs: float = 0.005) -> bool:
@@ -263,7 +277,13 @@ def _paste_text(text: str, *, skip_clipboard_restore: bool = False) -> bool:
     # Only save previous clipboard if we're going to restore it
     previous_text = None if skip_clipboard_restore else _windows_clipboard_get_text()
 
+    if previous_text is _CLIPBOARD_ACCESS_FAILED:
+        logger.warning("Clipboard paste injection aborted because current clipboard could not be read")
+        return False
+
     if not _windows_clipboard_set_text(text):
+        if isinstance(previous_text, str):
+            _windows_clipboard_set_text(previous_text)
         return False
 
     try:

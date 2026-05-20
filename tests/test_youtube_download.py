@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import builtins
 from unittest.mock import AsyncMock, patch
@@ -9,6 +10,8 @@ import pytest
 from src.youtube_download import (
     YouTubeDownloadError,
     _ensure_audio_only_file,
+    _extract_audio_track,
+    _has_video_stream,
     download_youtube_audio,
 )
 
@@ -21,6 +24,23 @@ class _DummyProc:
 
     async def communicate(self):
         return self._stdout.encode("utf-8"), self._stderr.encode("utf-8")
+
+
+class _CancelledProc:
+    returncode = None
+
+    def __init__(self):
+        self.killed = False
+        self.waited = False
+
+    async def communicate(self):
+        raise asyncio.CancelledError()
+
+    def kill(self):
+        self.killed = True
+
+    async def wait(self):
+        self.waited = True
 
 
 @pytest.mark.asyncio
@@ -157,4 +177,60 @@ async def test_ensure_audio_only_file_converts_non_webm_audio(tmp_path: Path):
 
     assert got == webm_file
     extract_mock.assert_awaited_once_with(mp3_file)
+
+
+@pytest.mark.asyncio
+async def test_has_video_stream_kills_ffprobe_on_cancel(tmp_path: Path):
+    proc = _CancelledProc()
+
+    with patch("src.youtube_download.shutil.which", return_value="ffprobe"):
+        with patch(
+            "src.youtube_download.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _has_video_stream(tmp_path / "video.webm")
+
+    assert proc.killed is True
+    assert proc.waited is True
+
+
+@pytest.mark.asyncio
+async def test_extract_audio_track_kills_ffmpeg_on_cancel(tmp_path: Path):
+    proc = _CancelledProc()
+
+    with patch("src.youtube_download.shutil.which", return_value="ffmpeg"):
+        with patch(
+            "src.youtube_download.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _extract_audio_track(tmp_path / "video.mp4")
+
+    assert proc.killed is True
+    assert proc.waited is True
+
+
+@pytest.mark.asyncio
+async def test_download_youtube_audio_subprocess_kills_yt_dlp_on_cancel(tmp_path: Path):
+    proc = _CancelledProc()
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "yt_dlp":
+            raise ImportError("yt_dlp not available")
+        return real_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=fake_import):
+        with patch("src.youtube_download._require_ffmpeg"):
+            with patch("src.youtube_download.shutil.which", return_value=None):
+                with patch(
+                    "src.youtube_download.asyncio.create_subprocess_exec",
+                    new=AsyncMock(return_value=proc),
+                ):
+                    with pytest.raises(asyncio.CancelledError):
+                        await download_youtube_audio("https://example.com", output_dir=tmp_path)
+
+    assert proc.killed is True
+    assert proc.waited is True
 
