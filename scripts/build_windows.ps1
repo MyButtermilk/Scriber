@@ -19,6 +19,9 @@ param(
     [string]$UpdaterEndpoint = "",
     [string]$UpdaterPublicKey = "",
     [switch]$RequireUpdaterSignatures,
+    [switch]$RequireAuthenticodeSignature,
+    [string]$ExpectedAuthenticodePublisher = "",
+    [switch]$RequireAuthenticodeTimestamp,
     [switch]$SkipChecks,
     [switch]$SkipSmoke,
     [switch]$RunInstallerSmoke,
@@ -136,6 +139,7 @@ try {
     }
 
     $targetRelease = Join-Path $RepoRoot "Frontend\src-tauri\target\release"
+    $releaseExe = Join-Path $targetRelease "scriber-desktop.exe"
     $bundleRoot = Join-Path $targetRelease "bundle"
     $artifacts = @()
     if (Test-Path $bundleRoot) {
@@ -143,6 +147,41 @@ try {
             Get-ChildItem -Path $bundleRoot -Recurse -File -Include *.exe,*.msi |
                 Select-Object -ExpandProperty FullName
         )
+    }
+
+    if ($RequireAuthenticodeSignature) {
+        $authenticodeTargets = @()
+        if (Test-Path -LiteralPath $releaseExe) {
+            $authenticodeTargets += $releaseExe
+        }
+        foreach ($artifact in $artifacts) {
+            $authenticodeTargets += $artifact
+        }
+
+        if ($authenticodeTargets.Count -eq 0) {
+            throw "No Windows release artifacts were found for Authenticode validation."
+        }
+
+        Invoke-Checked -Label "Authenticode signature validation" -Command {
+            $authenticodeArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                (Join-Path $RepoRoot "scripts\validate_windows_authenticode.ps1"),
+                "-Path"
+            )
+            foreach ($artifact in $authenticodeTargets) {
+                $authenticodeArgs += $artifact
+            }
+            if ($ExpectedAuthenticodePublisher) {
+                $authenticodeArgs += @("-ExpectedPublisher", $ExpectedAuthenticodePublisher)
+            }
+            if ($RequireAuthenticodeTimestamp) {
+                $authenticodeArgs += "-RequireTimestamp"
+            }
+            powershell @authenticodeArgs
+        }
     }
 
     $metadataDir = Join-Path $targetRelease "release-metadata"
@@ -243,7 +282,7 @@ try {
         ok = $true
         bundles = $Bundles
         updaterEnabled = [bool]$EnableTauriUpdater
-        releaseExe = Join-Path $targetRelease "scriber-desktop.exe"
+        releaseExe = $releaseExe
         artifacts = $artifacts
         metadataDir = $metadataDir
     } | ConvertTo-Json -Compress

@@ -52,6 +52,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PATH }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE: ${{ vars.SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE }}
+          SCRIBER_AUTHENTICODE_PUBLISHER: ${{ vars.SCRIBER_AUTHENTICODE_PUBLISHER }}
+          SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP: ${{ vars.SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP }}
         run: |
           $buildArgs = @(
             "-NoProfile",
@@ -65,6 +68,15 @@ jobs:
             $buildArgs += "-EnableTauriUpdater"
             if ($env:SCRIBER_TAURI_UPDATER_ENDPOINT) {
               $buildArgs += @("-UpdaterEndpoint", $env:SCRIBER_TAURI_UPDATER_ENDPOINT)
+            }
+          }
+          if ($env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE -eq "1") {
+            $buildArgs += "-RequireAuthenticodeSignature"
+            if ($env:SCRIBER_AUTHENTICODE_PUBLISHER) {
+              $buildArgs += @("-ExpectedAuthenticodePublisher", $env:SCRIBER_AUTHENTICODE_PUBLISHER)
+            }
+            if ($env:SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP -eq "1") {
+              $buildArgs += "-RequireAuthenticodeTimestamp"
             }
           }
           powershell @buildArgs
