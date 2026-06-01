@@ -160,7 +160,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
 ### C) PyInstaller gezielt schlank halten
 1. In `scriber.spec` nur benoetigte `hiddenimports`/`datas` aufnehmen.
    - Status 2026-06-01: `packaging/scriber-backend.spec` listet SciPy/pyloudnorm explizit fuer den Pipecat-Startup-Pfad und schliesst schwere lokale ASR-Stacks aus.
-   - Status 2026-06-01: `scripts/check_backend_runtime_imports.py` prueft kritische Startup-Imports vor PyInstaller, damit fehlende Module wie SciPy den Build stoppen statt erst beim Endnutzer zu crashen.
+   - Status 2026-06-01: `scripts/check_backend_runtime_imports.py` prueft kritische Startup-Imports vor PyInstaller; danach startet der Build den gefrorenen `scriber-backend --runtime-import-check`, damit fehlende Module wie SciPy den Build stoppen statt erst beim Endnutzer zu crashen.
 2. Unnoetige Inhalte explizit ausschliessen:
    - `tests`, `__pycache__`, Dokumentation, Beispiele, nicht benoetigte Provider-Assets.
 3. Source Maps und Debug-Artefakte fuer Release-Build deaktivieren (Frontend + Python-Pakete soweit moeglich).
@@ -215,7 +215,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Status 2026-06-01: Der Rust-Supervisor bevorzugt `SCRIBER_BACKEND_EXE` bzw. `backend\scriber-backend.exe` neben der Tauri-Exe und faellt im Dev-Modus auf `python -m src.web_api` zurueck.
    - Status 2026-06-01: Der Standard-Sidecar ist ein Cloud-Provider/Lite-Build und schliesst schwere lokale ASR-Stacks (`torch`, NeMo, ONNX-ASR) aus.
    - Status 2026-06-01: Tauri bundelt `target/release/backend/` als Resource `backend/`, sodass installierte NSIS-Builds denselben Sidecar-Pfad nutzen.
-   - Status 2026-06-01: Der Sidecar-Build fuehrt vor PyInstaller einen Runtime-Import-Preflight aus, der unter anderem SciPy, pyloudnorm, Pipecat und `src.web_api` prueft.
+   - Status 2026-06-01: Der Sidecar-Build fuehrt vor PyInstaller einen Runtime-Import-Preflight aus und prueft danach den gefrorenen Sidecar mit `--runtime-import-check`; beides deckt unter anderem SciPy, pyloudnorm, Pipecat und `src.web_api` ab.
    - Status 2026-06-01: Der Tauri-Supervisor erzeugt ein zufaelliges `SCRIBER_SESSION_TOKEN`, uebergibt es an den Python-Worker und stellt es dem React-Frontend ueber `get_backend_access` bereit. Das Backend erzwingt den Token fuer lokale REST-/WebSocket-Zugriffe; `/api/health` bleibt fuer Readiness tokenfrei.
    - Status 2026-06-01: Die Windows-Tauri-Shell erzwingt Single-Instance-Start ueber den Named Mutex `Local\ScriberDesktopSingleInstance`, bevor der Backend-Supervisor einen Worker starten kann.
    - Status 2026-06-01: Windows-Autostart ist im Tauri-Pfad implementiert; `Frontend/client/src/lib/backend.ts` routet Settings-Autostart-Aufrufe in Desktop-Runtime auf Rust statt auf den Python-Endpoint.
@@ -249,7 +249,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Groessenreport (`size-report.json`) erzeugen und in CI publizieren.
 
 Lieferobjekte:
-1. `scripts/build_tauri_backend_sidecar.ps1` (umgesetzt fuer Sidecar, Import-Preflight, Frontend-Build, optionales FFmpeg/FFprobe-Bundling und Copy nach Tauri Release)
+1. `scripts/build_tauri_backend_sidecar.ps1` (umgesetzt fuer Sidecar, Import-Preflight, gefrorenen Runtime-Import-Check, Frontend-Build, optionales FFmpeg/FFprobe-Bundling und Copy nach Tauri Release)
 2. `packaging/scriber-backend.spec` (umgesetzt fuer Standard-Cloud-Sidecar inkl. `yt-dlp`, SciPy und pyloudnorm)
 3. `src/version.py` (umgesetzt)
 4. `src/runtime/paths.py` (teilweise umgesetzt: Runtime-Data-Pfade; Asset-Resolution offen)
@@ -393,8 +393,8 @@ Lieferobjekte:
 | `Frontend/src-tauri/src/lib.rs` | Umgesetzt: Rust-Supervisor, Session-Token-Bridge, Worker-Lifecycle, App-Menue/Tray fuer Shell-Aktionen, Windows-Named-Mutex fuer Single Instance, Windows-Autostart via HKCU Run-Key, globaler Hotkey via bestehende Live-Mic-API. |
 | `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar inkl. SciPy/pyloudnorm-Startup-Abhaengigkeiten. |
 | `installer/scriber.iss` | Inno Setup Script. |
-| `scripts/check_backend_runtime_imports.py` | Umgesetzt: Preflight fuer kritische Backend-Startup-Imports vor PyInstaller. |
-| `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Import-Preflight -> Frontend Build -> PyInstaller Sidecar -> optionales FFmpeg/FFprobe-Bundling -> optionaler Copy nach Tauri Release. |
+| `scripts/check_backend_runtime_imports.py` | Umgesetzt: Preflight fuer kritische Backend-Startup-Imports vor PyInstaller und als gefrorener Sidecar-Check via `--runtime-import-check`. |
+| `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Import-Preflight -> Frontend Build -> PyInstaller Sidecar -> gefrorener Runtime-Import-Check -> optionales FFmpeg/FFprobe-Bundling -> optionaler Copy nach Tauri Release. |
 | `scripts/build_windows.ps1` | Umgesetzt fuer Tests -> Tauri/NSIS Bundle -> Release-Metadaten -> Release-/Installer-Smoke-Test. Signierung und Updater bleiben offen. |
 | `scripts/smoke_windows_installer.ps1` | Umgesetzt: installiert das NSIS-Artefakt temporaer, prueft den installierten Tauri/Sidecar-Start ohne Python/Node-Dev-Fallback und entfernt die Testinstallation. |
 | `scripts/sync_version.py` | Umgesetzt: synchronisiert `src/version.py` in Python/Tauri/Cargo/npm-Manifeste. |

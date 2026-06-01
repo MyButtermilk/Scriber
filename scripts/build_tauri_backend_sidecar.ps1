@@ -95,6 +95,50 @@ function Invoke-BackendRuntimeImportCheck {
     }
 }
 
+function Invoke-FrozenBackendRuntimeImportCheck {
+    param(
+        [string]$SidecarExe,
+        [string]$SidecarDir,
+        [string]$LogRoot
+    )
+
+    $requiredPaths = @(
+        "_internal\scipy",
+        "_internal\scipy.libs"
+    )
+    $missingPaths = @()
+    foreach ($relativePath in $requiredPaths) {
+        $candidate = Join-Path $SidecarDir $relativePath
+        if (-not (Test-Path $candidate)) {
+            $missingPaths += $relativePath
+        }
+    }
+    if ($missingPaths.Count -gt 0) {
+        throw "Frozen backend sidecar is missing runtime dependencies: $($missingPaths -join ', ')"
+    }
+
+    New-Item -ItemType Directory -Force -Path $LogRoot | Out-Null
+    $stdoutPath = Join-Path $LogRoot "frozen-runtime-import-check.out"
+    $stderrPath = Join-Path $LogRoot "frozen-runtime-import-check.err"
+    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+
+    $process = Start-Process `
+        -FilePath $SidecarExe `
+        -ArgumentList @("--runtime-import-check") `
+        -WorkingDirectory $SidecarDir `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath `
+        -Wait `
+        -PassThru
+
+    if ($process.ExitCode -ne 0) {
+        $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
+        $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
+        throw "Frozen backend runtime dependency check failed with exit code $($process.ExitCode). stdout: $stdout stderr: $stderr"
+    }
+}
+
 function Resolve-MediaTool {
     param(
         [string[]]$Names,
@@ -229,6 +273,8 @@ if (-not (Test-Path $sidecarExe)) {
 if (-not (Test-Path $sidecarExe)) {
     throw "Sidecar build completed but executable was not found under $sidecarDir."
 }
+
+Invoke-FrozenBackendRuntimeImportCheck -SidecarExe $sidecarExe -SidecarDir $sidecarDir -LogRoot $WorkRoot
 
 $mediaToolsCopied = @()
 if ($BundleMediaTools -or $MediaToolsDir) {

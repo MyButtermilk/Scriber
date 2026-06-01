@@ -12,6 +12,7 @@ hiddenimports = [
     "src.azure_mai_stt",
     "src.mistral_stt",
     "src.smallest_stt",
+    "scripts.check_backend_runtime_imports",
     "PySide6.QtCore",
     "PySide6.QtGui",
     "PySide6.QtWidgets",
