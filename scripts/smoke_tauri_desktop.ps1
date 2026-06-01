@@ -5,7 +5,10 @@ Runs a Windows smoke test for the hybrid Tauri desktop runtime.
 .DESCRIPTION
 The script starts the release Tauri executable, waits for a newly managed
 backend process, verifies the Scriber health contract, hard-stops the Tauri
-process, and checks that the managed backend process exits with it.
+process, and checks that the managed backend process exits with it. With
+-SimulateBackendCrash, it also kills the managed worker, waits for the
+desktop frontend/supervisor recovery path to start a replacement, and verifies
+crash metadata was written.
 
 Build the executable first with:
   cd Frontend
@@ -24,6 +27,8 @@ param(
     [switch]$KeepAppOpen,
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
+    [switch]$SimulateBackendCrash,
+    [int]$CrashRecoveryTimeoutSec = 75,
     [switch]$DisableDevFallback
 )
 
@@ -133,6 +138,44 @@ function Convert-ToFullPath {
     return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
 }
 
+function Wait-ProcessExit {
+    param(
+        [int]$ProcessId,
+        [int]$DeadlineSec
+    )
+
+    $deadline = (Get-Date).AddSeconds($DeadlineSec)
+    while ((Get-Date) -lt $deadline) {
+        $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if (-not $process) {
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw "Process $ProcessId did not exit within ${DeadlineSec}s."
+}
+
+function Wait-BackendCrashMetadata {
+    param(
+        [string]$DataDir,
+        [int]$BackendPid,
+        [int]$DeadlineSec
+    )
+
+    $metadataPath = Join-Path $DataDir "logs\backend-crash-metadata.jsonl"
+    $deadline = (Get-Date).AddSeconds($DeadlineSec)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Path $metadataPath) {
+            $content = Get-Content -Raw -Path $metadataPath
+            if ($content -match '"event"\s*:\s*"managed_backend_exit"' -and $content -match "`"pid`"\s*:\s*$BackendPid") {
+                return $metadataPath
+            }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "Backend crash metadata for pid $BackendPid was not written under $metadataPath."
+}
+
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 if (-not $ExePath) {
     $ExePath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\scriber-desktop.exe"
@@ -205,6 +248,37 @@ try {
     if (-not (Convert-ToFullPath -Path $runtime.downloadsDir).StartsWith($DataDir, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Managed backend downloadsDir is not under dataDir: $($runtime.downloadsDir)"
     }
+    $crashRecovery = $null
+    if ($SimulateBackendCrash) {
+        $initialBackendPid = [int]$listener.BackendPid
+        $initialPort = [int]$listener.Port
+        Stop-Process -Id $initialBackendPid -Force -ErrorAction Stop
+        Wait-ProcessExit -ProcessId $initialBackendPid -DeadlineSec 10
+
+        $crashBaseline = @($baseline + $initialBackendPid)
+        $replacement = Wait-NewBackendListener -BaselinePids $crashBaseline -DeadlineSec $CrashRecoveryTimeoutSec
+        if ($replacement.BackendPid -eq $initialBackendPid) {
+            throw "Backend crash recovery reused the killed backend pid $initialBackendPid."
+        }
+        $replacementHealth = Wait-BackendHealth -Port $replacement.Port -DeadlineSec $BackendHealthTimeoutSec
+        $replacementRuntime = Get-BackendRuntime -Port $replacement.Port -Token $SessionToken
+        if ((Convert-ToFullPath -Path $replacementRuntime.dataDir) -ne $DataDir) {
+            throw "Recovered backend used unexpected dataDir: $($replacementRuntime.dataDir)"
+        }
+        $metadataPath = Wait-BackendCrashMetadata -DataDir $DataDir -BackendPid $initialBackendPid -DeadlineSec 10
+
+        $listener = $replacement
+        $health = $replacementHealth
+        $runtime = $replacementRuntime
+        $crashRecovery = [pscustomobject]@{
+            verified = $true
+            killedBackendPid = $initialBackendPid
+            replacementBackendPid = [int]$replacement.BackendPid
+            initialPort = $initialPort
+            replacementPort = [int]$replacement.Port
+            metadataPath = $metadataPath
+        }
+    }
     $result = [pscustomobject]@{
         ok = $true
         appPid = $app.Id
@@ -216,6 +290,7 @@ try {
         dataDir = $runtime.dataDir
         downloadsDir = $runtime.downloadsDir
         launchKind = $runtime.launchKind
+        crashRecovery = $crashRecovery
         cleanupVerified = $false
     }
 } finally {

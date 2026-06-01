@@ -50,7 +50,7 @@ Scriber laeuft als signierte, installierte Windows-App (per-user), startet singl
    - Stabiler `AppId` im Format `{GUID}` fuer saubere Upgrade-Erkennung.
    - Status 2026-06-01: Der produktive Installer-Pfad nutzt aktuell Tauri/NSIS statt Inno Setup. `Frontend/src-tauri/tauri.conf.json` setzt `bundle.active=true`, `targets=["nsis"]`, `installMode="currentUser"` und mappt den Backend-Sidecar als Resource nach `backend/`.
    - Status 2026-06-01: `scripts/build_windows.ps1` erzeugt den NSIS-Build ueber `npm run tauri:build -- --bundles nsis` und laesst Tauri vorher den Sidecar bauen/kopieren.
-   - Status 2026-06-01: `scripts/smoke_windows_installer.ps1` installiert das erzeugte Setup temporaer, startet die installierte App ohne Dev-Fallback, verifiziert `tauri-supervised` Sidecar-Start und entfernt Testinstallation/Testdaten wieder.
+   - Status 2026-06-01: `scripts/smoke_windows_installer.ps1` installiert das erzeugte Setup temporaer, startet die installierte App ohne Dev-Fallback, verifiziert `tauri-supervised` Sidecar-Start und entfernt Testinstallation/Testdaten wieder. Mit `-SimulateBackendCrash` toetet der Smoke den Worker, wartet auf den Tauri/Frontend-Recovery-Pfad und prueft `backend-crash-metadata.jsonl`.
 2. **Startmenue-Eintrag**, optional **Autostart** via Registry `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
    - Status 2026-06-01: In Tauri-Desktop-Runtime wird Autostart von Rust-Commands (`get_desktop_autostart`, `set_desktop_autostart`) verwaltet; Browser/Legacy nutzt weiter `web_api.py` (`GET/POST /api/autostart`).
    - Status 2026-06-01: Tauri schreibt `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Scriber` auf die aktuelle Desktop-Exe und behandelt alte Python-Tray-Kommandos als deaktiviert, damit der Tauri-Pfad nicht versehentlich Legacy-Tray startet.
@@ -66,6 +66,7 @@ Scriber laeuft als signierte, installierte Windows-App (per-user), startet singl
 4. **CloseApplications-Unterstuetzung**: Inno Setup `CloseApplications=yes` damit laufende Scriber-Instanzen vor dem Upgrade sauber heruntergefahren werden.
    - Voraussetzung: Die Scriber-App muss eine `AppMutex`/Named Mutex registrieren, die der Installer oder Updater als laufende Instanz erkennen kann.
    - Status 2026-06-01: Die Tauri-Shell registriert vor dem Backend-Start den Windows-Named-Mutex `Local\ScriberDesktopSingleInstance`; eine zweite Desktop-Instanz beendet sich dadurch frueh, ohne einen zweiten Worker zu starten.
+   - Status 2026-06-01: Die Tauri-Shell fuehrt einen eigenen Backend-Supervisor-Loop aus. Wenn der gemanagte Worker stirbt, schreibt Rust `backend-crash-metadata.jsonl` und startet einen Ersatz-Worker, ohne auf den React-Health-Poll angewiesen zu sein. `scripts/smoke_tauri_desktop.ps1 -SimulateBackendCrash` und der Installer-Smoke mit derselben Option pruefen diesen Pfad.
 
 ### 3) Updater-Komponente
 Status 2026-06-01: Fuer den Tauri-Desktop-Pfad ist der primaere Updater jetzt der Tauri-v2-Updater, nicht ein Python-Downloader. `Frontend/src-tauri/src/lib.rs` initialisiert `tauri-plugin-updater` und `tauri-plugin-process`, `Frontend/client/src/lib/desktop-updates.ts` stellt den Settings-Check/Install-Pfad bereit, und `scripts/build_windows.ps1 -EnableTauriUpdater` aktiviert signierte Tauri-Updater-Artefakte nur, wenn Public-Key, Endpoint und Tauri-Signing-Key vorhanden sind. Ohne diese Konfiguration bleibt die UI absichtlich inaktiv bzw. meldet "not configured".
@@ -262,8 +263,8 @@ Lieferobjekte:
 6. `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt` (umgesetzt)
 7. `size-report.json` (CI-Artefakt)
 8. Start/Healthcheck fuer gebaute App (Release-Smoke vorhanden; Sidecar-Pfad optional ueber `-BackendExePath`)
-9. `scripts/smoke_windows_installer.ps1` (umgesetzt: temporaere NSIS-Installation, Start ohne Dev-Fallback, Sidecar-Verifikation, Cleanup)
-10. `scripts/build_windows.ps1` (umgesetzt fuer Version-Sync, Tauri/NSIS-Release-Build, Release-Metadaten und Smoke-Test; Signing/Updater offen)
+9. `scripts/smoke_windows_installer.ps1` (umgesetzt: temporaere NSIS-Installation, Start ohne Dev-Fallback, Sidecar-Verifikation, optionaler Worker-Crash-Recovery-Check, Cleanup)
+10. `scripts/build_windows.ps1` (umgesetzt fuer Version-Sync, Tauri/NSIS-Release-Build, Release-Metadaten, Smoke-Test und optionalen Worker-Crash-Smoke; Signing/Updater offen)
 
 ### Phase 2 - Installer
 1. `installer/scriber.iss` erstellen.
@@ -401,8 +402,8 @@ Lieferobjekte:
 | `installer/scriber.iss` | Inno Setup Script. |
 | `scripts/check_backend_runtime_imports.py` | Umgesetzt: Preflight fuer kritische Backend-Startup-Imports vor PyInstaller und als gefrorener Sidecar-Check via `--runtime-import-check`. |
 | `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Import-Preflight -> Frontend Build -> PyInstaller Sidecar -> gefrorener Runtime-Import-Check -> optionales FFmpeg/FFprobe-Bundling -> optionaler Copy nach Tauri Release. |
-| `scripts/build_windows.ps1` | Umgesetzt fuer Tests -> Tauri/NSIS Bundle -> Release-Metadaten -> Release-/Installer-Smoke-Test. Zusaetzlich optional `-EnableTauriUpdater` fuer signierte Tauri-Updater-Artefakte und Manifest-Signatur-Gates. Authenticode-Signing bleibt offen. |
-| `scripts/smoke_windows_installer.ps1` | Umgesetzt: installiert das NSIS-Artefakt temporaer, prueft den installierten Tauri/Sidecar-Start ohne Python/Node-Dev-Fallback und entfernt die Testinstallation. |
+| `scripts/build_windows.ps1` | Umgesetzt fuer Tests -> Tauri/NSIS Bundle -> Release-Metadaten -> Release-/Installer-Smoke-Test. `-RunInstallerCrashSmoke` fuehrt den installierten Worker-Crash-Recovery-Gate aus. Zusaetzlich optional `-EnableTauriUpdater` fuer signierte Tauri-Updater-Artefakte und Manifest-Signatur-Gates. Authenticode-Signing bleibt offen. |
+| `scripts/smoke_windows_installer.ps1` | Umgesetzt: installiert das NSIS-Artefakt temporaer, prueft den installierten Tauri/Sidecar-Start ohne Python/Node-Dev-Fallback, kann mit `-SimulateBackendCrash` Worker-Recovery samt Crash-Metadata verifizieren und entfernt die Testinstallation. |
 | `scripts/sync_version.py` | Umgesetzt: synchronisiert `src/version.py` in Python/Tauri/Cargo/npm-Manifeste. |
 | `scripts/create_release_metadata.py` | Umgesetzt: erzeugt `latest.json` und `SHA256SUMS.txt` fuer Release-Artefakte. |
 | `.github/workflows/release-windows.yml` | Umgesetzt: manueller und Tag-basierter Windows-NSIS-Release-Build mit GitHub-Release-Publish auf `v*` Tags. |

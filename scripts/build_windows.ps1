@@ -21,7 +21,8 @@ param(
     [switch]$RequireUpdaterSignatures,
     [switch]$SkipChecks,
     [switch]$SkipSmoke,
-    [switch]$RunInstallerSmoke
+    [switch]$RunInstallerSmoke,
+    [switch]$RunInstallerCrashSmoke
 )
 
 $ErrorActionPreference = "Stop"
@@ -174,11 +175,21 @@ try {
         }
     }
 
-    if ($RunInstallerSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
-                powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1
+                $installerSmokeArgs = @(
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    "scripts\smoke_windows_installer.ps1"
+                )
+                if ($RunInstallerCrashSmoke) {
+                    $installerSmokeArgs += "-SimulateBackendCrash"
+                }
+                powershell @installerSmokeArgs
             } finally {
                 Pop-Location
             }

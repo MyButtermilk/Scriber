@@ -159,6 +159,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - The frontend appends the token as the `scriberToken` query parameter for backend REST and WebSocket URLs. Smoke/support scripts may also send `X-Scriber-Token`; browser WebSocket constructors cannot set custom headers.
 - The Windows Tauri shell enforces single-instance startup with a named mutex (`Local\ScriberDesktopSingleInstance`) before the backend supervisor starts. A second desktop process exits early and cannot create another managed worker.
 - The Tauri app menu and tray are owned by Rust. Current shell actions are intentionally limited to opening/focusing the main window, restarting the managed backend through `BackendManager.restart()`, and quitting the app. Do not add recording state to Rust tray code; route recording actions through existing Python endpoints if they are added later.
+- The Rust shell owns worker crash recovery. It runs a lightweight supervisor loop that periodically calls `ensure_backend_running()`, records managed child exits in `logs\backend-crash-metadata.jsonl`, and starts a replacement worker without depending on the React health poll.
 - Windows desktop autostart is owned by Tauri in desktop runtime. The Settings UI calls `get_desktop_autostart`/`set_desktop_autostart`; browser/legacy mode still uses backend `/api/autostart`. Tauri writes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Scriber` to the current desktop executable and treats old Python-tray commands as not enabled.
 - Global hotkey is owned by Tauri for managed desktop runtime. Rust reads `SCRIBER_HOTKEY`/`SCRIBER_MODE` through backend `/api/settings`, registers the shortcut with `tauri-plugin-global-shortcut`, disables Python keyboard hooks for managed workers via `SCRIBER_DISABLE_HOTKEYS=1`, and calls only existing backend endpoints (`/api/live-mic/toggle`, `/start`, `/stop`). Recording state remains exclusively in Python.
 - `POST /api/runtime/shutdown` is a local-control endpoint. It requires loopback access, a configured session token, and a valid token, then signals the aiohttp server stop event for controlled worker shutdown.
@@ -182,8 +183,8 @@ This file is the working guide for agents editing this repository. Keep it accur
 - On Windows, the managed Python child is spawned with `CREATE_NO_WINDOW`.
 - Managed backend startup has a timeout and will be restarted by `ensure_backend_running` instead of staying in `starting` forever.
 - `scripts/measure_hybrid_baseline.ps1` is the Phase 0 baseline runner. It measures Tauri startup/backend readiness, checks cleanup, pulls available `/api/metrics/hot-path` segments, can opt into live recording samples with `-RecordHotPathSamples`, runs `scripts/measure_upload_export_baseline.py` for synthetic upload/export load, runs `scripts/measure_ws_broadcast_baseline.py` for WebSocket/JSON costs, runs `scripts/measure_history_scroll_baseline.py` for synthetic browser history-scroll behavior, writes JSON to `tmp\hybrid-baseline\`, and leaves the gate incomplete when real recording text-injection timing is missing.
-- `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable with a random session token, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits.
-- `scripts/smoke_windows_installer.ps1` installs the generated NSIS setup into `tmp\installer-smoke\`, runs the desktop smoke without `SCRIBER_REPO_ROOT`/`SCRIBER_PYTHON` dev fallback, and removes the temporary install/data directories afterward.
+- `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable with a random session token, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits. With `-SimulateBackendCrash`, it kills the managed worker, waits for `ensure_backend_running` recovery, and verifies `backend-crash-metadata.jsonl`.
+- `scripts/smoke_windows_installer.ps1` installs the generated NSIS setup into `tmp\installer-smoke\`, runs the desktop smoke without `SCRIBER_REPO_ROOT`/`SCRIBER_PYTHON` dev fallback, and removes the temporary install/data directories afterward. Pass `-SimulateBackendCrash` to run the installed-package worker-crash recovery gate.
 - `scripts/build_windows.ps1 -RunInstallerSmoke` builds the NSIS package and then runs the installed-package smoke gate.
 - Current Tauri status: hybrid runtime with writable runtime-data paths, session-token protected worker API, native app menu/tray lifecycle actions, Windows single-instance guard, Windows desktop autostart commands, Tauri-owned global hotkey dispatch, redacted support bundles, sidecar backend launch support, bundled yt-dlp support, bundled ffmpeg/ffprobe resolution, NSIS installer generation, installed-package smoke coverage, updater plugin wiring, Settings UI update check/install controls, and signed-manifest gates. Real release updates still require configured signing keys and a published signed updater manifest.
 
@@ -233,6 +234,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -RunInstallerSmoke
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -RunInstallerCrashSmoke
 powershell -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 -Iterations 3 -DisableDevFallback
 ```
 
@@ -262,6 +264,7 @@ For the Windows Tauri release runtime, run after `npm run tauri:build`:
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1
+powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -SimulateBackendCrash
 ```
 
 For frontend changes, run:

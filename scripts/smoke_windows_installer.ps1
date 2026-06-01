@@ -6,7 +6,8 @@ Runs a smoke test against the installed Windows NSIS package.
 Installs the generated NSIS setup into a temporary per-repo directory, starts
 the installed app without development fallback, verifies that the packaged
 backend sidecar becomes healthy, then uninstalls the app unless -KeepInstalled
-is passed.
+is passed. With -SimulateBackendCrash, it also verifies that the installed
+desktop shell restarts a killed backend worker and writes crash metadata.
 #>
 
 param(
@@ -14,6 +15,7 @@ param(
     [string]$InstallerPath = "",
     [string]$InstallDir = "",
     [string]$DataDir = "",
+    [switch]$SimulateBackendCrash,
     [switch]$KeepInstalled
 )
 
@@ -137,11 +139,24 @@ try {
     Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer"
     $appExe = Resolve-InstalledAppExe -Root $InstallDir
 
-    $smokeJson = powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot "scripts\smoke_tauri_desktop.ps1") `
-        -RepoRoot $RepoRoot `
-        -ExePath $appExe `
-        -DataDir $DataDir `
-        -DisableDevFallback
+    $smokeArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        (Join-Path $RepoRoot "scripts\smoke_tauri_desktop.ps1"),
+        "-RepoRoot",
+        $RepoRoot,
+        "-ExePath",
+        $appExe,
+        "-DataDir",
+        $DataDir,
+        "-DisableDevFallback"
+    )
+    if ($SimulateBackendCrash) {
+        $smokeArgs += "-SimulateBackendCrash"
+    }
+    $smokeJson = powershell @smokeArgs
     if ($LASTEXITCODE -ne 0) {
         throw "Installed app smoke test failed."
     }
@@ -155,6 +170,7 @@ try {
         dataDir = $DataDir
         runtimeMode = $smoke.runtimeMode
         launchKind = $smoke.launchKind
+        crashRecovery = $smoke.crashRecovery
         cleanupVerified = $smoke.cleanupVerified
     } | ConvertTo-Json -Compress
 } finally {

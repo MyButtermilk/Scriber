@@ -38,6 +38,7 @@ use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
+const BACKEND_SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
 const FORCE_MANAGED_BACKEND_ENV: &str = "SCRIBER_FORCE_MANAGED_BACKEND";
 const SESSION_TOKEN_ENV: &str = "SCRIBER_SESSION_TOKEN";
 const DISABLE_HOTKEYS_ENV: &str = "SCRIBER_DISABLE_HOTKEYS";
@@ -479,6 +480,7 @@ pub fn run() {
             let manager = app.state::<BackendManager>();
             manager.set_resource_dir(app.path().resource_dir().ok());
             let _ = manager.ensure_started();
+            start_backend_supervisor(app.handle().clone());
             if let Err(err) = refresh_global_hotkey_for_app(app.handle()) {
                 write_shell_log(&format!("global hotkey registration skipped: {err}"));
             }
@@ -1034,6 +1036,16 @@ fn handle_global_shortcut_event(app: &AppHandle, event_state: ShortcutState) {
         if let Err(err) = post_backend_path(&access, path) {
             write_shell_log(&format!("global hotkey action failed path={path}: {err}"));
         }
+    });
+}
+
+fn start_backend_supervisor(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);
+        let Some(manager) = app.try_state::<BackendManager>() else {
+            break;
+        };
+        let _ = manager.ensure_started();
     });
 }
 
