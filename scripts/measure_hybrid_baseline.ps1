@@ -37,6 +37,10 @@ param(
     [int]$HistoryItems = 2000,
     [string]$HistoryRoutes = "/",
     [string]$HistoryViews = "list,grid",
+    [switch]$RecordHotPathSamples,
+    [int]$RecordingHotPathIterations = 1,
+    [double]$RecordingHotPathSeconds = 2.0,
+    [int]$RecordingHotPathTimeoutSec = 60,
     [switch]$Hidden,
     [switch]$SkipUiVisibleWait,
     [switch]$SkipUploadExportBenchmark,
@@ -460,6 +464,72 @@ function Invoke-HistoryScrollBenchmark {
     return Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
 }
 
+function Invoke-RecordingHotPathBenchmark {
+    param(
+        [int]$Port,
+        [string]$Token,
+        [string]$DataDir,
+        [int]$Iteration
+    )
+
+    $scriptPath = Join-Path $RepoRoot "scripts\measure_recording_hot_path_baseline.py"
+    if (-not (Test-Path $scriptPath)) {
+        throw "Missing recording hot-path baseline benchmark script: $scriptPath"
+    }
+
+    $benchmarkOutputPath = Join-Path $DataDir "recording-hot-path-$Iteration.json"
+    Assert-UnderRoot -Root (Join-Path $RepoRoot "tmp") -Path $benchmarkOutputPath -Label "Recording hot-path baseline output"
+
+    $stdoutPath = Join-Path $DataDir "recording-hot-path-$Iteration.out"
+    $stderrPath = Join-Path $DataDir "recording-hot-path-$Iteration.err"
+    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+
+    $process = Start-Process `
+        -FilePath $PythonPath `
+        -ArgumentList @(
+            $scriptPath,
+            "--base-url", "http://127.0.0.1:$Port",
+            "--token", $Token,
+            "--iterations", [string]$RecordingHotPathIterations,
+            "--record-seconds", [string]$RecordingHotPathSeconds,
+            "--start-timeout-sec", [string]$RecordingHotPathTimeoutSec,
+            "--stop-timeout-sec", [string]$RecordingHotPathTimeoutSec,
+            "--metric-timeout-sec", [string]$RecordingHotPathTimeoutSec,
+            "--output", $benchmarkOutputPath
+        ) `
+        -WorkingDirectory $RepoRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath `
+        -Wait `
+        -PassThru
+
+    if ($process.ExitCode -ne 0) {
+        $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
+        $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
+        return [pscustomobject]@{
+            ok = $false
+            error = "Recording hot-path benchmark failed with exit code $($process.ExitCode). stdout: $stdout stderr: $stderr"
+            summary = [pscustomobject]@{
+                complete = $false
+                requirements = [pscustomobject]@{}
+            }
+        }
+    }
+    if (-not (Test-Path $benchmarkOutputPath)) {
+        return [pscustomobject]@{
+            ok = $false
+            error = "Recording hot-path benchmark did not write output: $benchmarkOutputPath"
+            summary = [pscustomobject]@{
+                complete = $false
+                requirements = [pscustomobject]@{}
+            }
+        }
+    }
+
+    return Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
+}
+
 function Invoke-BaselineIteration {
     param(
         [int]$Index
@@ -531,6 +601,15 @@ function Invoke-BaselineIteration {
         $runtime = Invoke-BackendJson -Port $listener.backendPort -Path "/api/runtime" -Token $sessionToken
         $runtimeFetchMs = [math]::Round($watch.Elapsed.TotalMilliseconds - $runtimeFetchStart, 2)
 
+        $recordingHotPathBenchmark = $null
+        if ($RecordHotPathSamples) {
+            $recordingHotPathBenchmark = Invoke-RecordingHotPathBenchmark `
+                -Port $listener.backendPort `
+                -Token $sessionToken `
+                -DataDir $dataDir `
+                -Iteration $Index
+        }
+
         $hotPathMetrics = $null
         try {
             $hotPathMetrics = Invoke-BackendJson -Port $listener.backendPort -Path "/api/metrics/hot-path?limit=200" -Token $sessionToken
@@ -558,6 +637,7 @@ function Invoke-BaselineIteration {
             dataDir = $runtime.dataDir
             downloadsDir = $runtime.downloadsDir
             launchKind = $runtime.launchKind
+            recordingHotPathBenchmark = $recordingHotPathBenchmark
             hotPathMetrics = $hotPathMetrics
             cleanupVerified = $false
             cleanupMs = $null
@@ -648,6 +728,15 @@ if ($WsWarmup -lt 0) {
 if ($HistoryItems -lt 1) {
     throw "HistoryItems must be >= 1."
 }
+if ($RecordingHotPathIterations -lt 1) {
+    throw "RecordingHotPathIterations must be >= 1."
+}
+if ($RecordingHotPathSeconds -le 0) {
+    throw "RecordingHotPathSeconds must be > 0."
+}
+if ($RecordingHotPathTimeoutSec -lt 1) {
+    throw "RecordingHotPathTimeoutSec must be >= 1."
+}
 if (-not $OutputPath) {
     $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
     $OutputPath = Join-Path $RepoRoot "tmp\hybrid-baseline\hybrid-baseline-$stamp.json"
@@ -678,6 +767,53 @@ if (-not $SkipHistoryScrollBenchmark) {
 
 $segmentNames = @(Get-HotPathSegmentNames -Samples $samples)
 $hasHotPathSamples = @($samples | Where-Object { $_.hotPathMetrics -and $_.hotPathMetrics.summary -and [int]$_.hotPathMetrics.summary.count -gt 0 }).Count -gt 0
+$recordingHotPathBenchmarks = @(
+    $samples |
+        ForEach-Object { $_.recordingHotPathBenchmark } |
+        Where-Object { $null -ne $_ }
+)
+
+function Get-RecordingHotPathRequirementStatus {
+    param(
+        [string]$RequirementName,
+        [string]$SegmentName
+    )
+
+    $statuses = @()
+    foreach ($benchmark in $recordingHotPathBenchmarks) {
+        if (-not $benchmark.summary -or -not $benchmark.summary.requirements) {
+            continue
+        }
+        $property = $benchmark.summary.requirements.PSObject.Properties[$RequirementName]
+        if ($property -and $property.Value -and $property.Value.status) {
+            $statuses += [string]$property.Value.status
+        }
+    }
+
+    if ($statuses -contains "measured") {
+        return "measured"
+    }
+    if ($RecordHotPathSamples -and $statuses.Count -gt 0) {
+        return [string]($statuses | Select-Object -First 1)
+    }
+    if ($segmentNames -contains $SegmentName) {
+        return "measured"
+    }
+    if ($hasHotPathSamples) {
+        return "partial"
+    }
+    if (-not $RecordHotPathSamples) {
+        return "not_requested"
+    }
+    return "missing_samples"
+}
+
+function Get-RecordingHotPathRequirementNotes {
+    if (-not $RecordHotPathSamples) {
+        return "Run with -RecordHotPathSamples on a machine with microphone/provider access to collect live recording hot-path samples."
+    }
+    return ""
+}
 
 $requirements = @(
     New-Requirement `
@@ -691,16 +827,19 @@ $requirements = @(
         -Evidence "Tauri process start to /api/health ready"
     New-Requirement `
         -Name "hotkey_to_recording_state" `
-        -Status $(if ($segmentNames -contains "hotkey_received_to_mic_ready_ms") { "measured" } elseif ($hasHotPathSamples) { "partial" } else { "missing_samples" }) `
-        -Evidence "/api/metrics/hot-path segment hotkey_received_to_mic_ready_ms"
+        -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "hotkey_to_recording_state" -SegmentName "hotkey_received_to_mic_ready_ms") `
+        -Evidence "/api/metrics/hot-path segment hotkey_received_to_mic_ready_ms" `
+        -Notes $(Get-RecordingHotPathRequirementNotes)
     New-Requirement `
         -Name "hotkey_to_first_audio_frame" `
-        -Status $(if ($segmentNames -contains "hotkey_received_to_first_audio_frame_ms") { "measured" } elseif ($hasHotPathSamples) { "partial" } else { "missing_samples" }) `
-        -Evidence "/api/metrics/hot-path segment hotkey_received_to_first_audio_frame_ms"
+        -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "hotkey_to_first_audio_frame" -SegmentName "hotkey_received_to_first_audio_frame_ms") `
+        -Evidence "/api/metrics/hot-path segment hotkey_received_to_first_audio_frame_ms" `
+        -Notes $(Get-RecordingHotPathRequirementNotes)
     New-Requirement `
         -Name "stop_to_text_injection" `
-        -Status $(if ($segmentNames -contains "stop_requested_to_first_paste_ms") { "measured" } elseif ($hasHotPathSamples) { "partial" } else { "missing_samples" }) `
-        -Evidence "/api/metrics/hot-path segment stop_requested_to_first_paste_ms"
+        -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "stop_to_text_injection" -SegmentName "stop_requested_to_first_paste_ms") `
+        -Evidence "/api/metrics/hot-path segment stop_requested_to_first_paste_ms" `
+        -Notes $(Get-RecordingHotPathRequirementNotes)
     New-Requirement `
         -Name "upload_export_under_load" `
         -Status $(if ($SkipUploadExportBenchmark) { "skipped" } elseif ($uploadExportBenchmark -and $uploadExportBenchmark.ok) { "measured" } else { "missing" }) `
@@ -763,6 +902,10 @@ $result = [pscustomobject]@{
         historyItems = $HistoryItems
         historyRoutes = $HistoryRoutes
         historyViews = $HistoryViews
+        recordHotPathSamples = [bool]$RecordHotPathSamples
+        recordingHotPathIterations = $RecordingHotPathIterations
+        recordingHotPathSeconds = $RecordingHotPathSeconds
+        recordingHotPathTimeoutSec = $RecordingHotPathTimeoutSec
     }
     summary = [pscustomobject]@{
         coldStartToUiVisibleMs = New-SampleSummary -Samples $samples -PropertyName "coldStartToUiVisibleMs"
@@ -774,6 +917,7 @@ $result = [pscustomobject]@{
         uploadExportBenchmark = $(if ($uploadExportBenchmark) { $uploadExportBenchmark.summary } else { $null })
         webSocketBenchmark = $(if ($webSocketBenchmark) { $webSocketBenchmark.summary } else { $null })
         historyScrollBenchmark = $(if ($historyScrollBenchmark) { $historyScrollBenchmark.summary } else { $null })
+        recordingHotPathBenchmarks = @($recordingHotPathBenchmarks | ForEach-Object { $_.summary })
     }
     phase0Gate = [pscustomobject]@{
         complete = $incomplete.Count -eq 0
@@ -783,6 +927,7 @@ $result = [pscustomobject]@{
     uploadExportBenchmark = $uploadExportBenchmark
     webSocketBenchmark = $webSocketBenchmark
     historyScrollBenchmark = $historyScrollBenchmark
+    recordingHotPathBenchmarks = @($recordingHotPathBenchmarks)
     samples = $samples
 }
 

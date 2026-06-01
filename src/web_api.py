@@ -1464,17 +1464,20 @@ class ScriberWebController:
                 return
             tracer.mark(marker)
 
-    def _emit_hot_path_report_once(self, session_id: str | None) -> None:
+    def _emit_hot_path_report_once(self, session_id: str | None, *, required_marker: str | None = "first_paste") -> bool:
         if not session_id:
-            return
+            return False
+        report: dict[str, float] = {}
         with self._hot_path_lock:
             if session_id in self._hot_path_reports_emitted:
-                return
+                return False
             tracer = self._hot_path_tracers.get(session_id)
             if not tracer:
-                return
-            if not tracer.has_mark("hotkey_received") or not tracer.has_mark("first_paste"):
-                return
+                return False
+            if not tracer.has_mark("hotkey_received"):
+                return False
+            if required_marker and not tracer.has_mark(required_marker):
+                return False
             report = tracer.report()
             if report:
                 self._hot_path_reports_emitted.add(session_id)
@@ -1490,13 +1493,15 @@ class ScriberWebController:
                 record=self._current,
                 milestone=True,
                 outcome="success",
-                duration_ms=report.get("total_ms"),
+                duration_ms=report.get("hotkey_received_to_first_paste_ms") or max(report.values(), default=0.0),
                 meta=report,
             )
             try:
                 self._latency_metrics_store.record(session_id, report)
             except Exception as exc:  # pragma: no cover - best effort persistence
                 logger.warning(f"Failed to persist hot path timing for {session_id[:8]}: {exc}")
+            return True
+        return False
 
     def _clear_hot_path_tracer(self, session_id: str | None) -> None:
         if not session_id:
@@ -3066,6 +3071,8 @@ class ScriberWebController:
                     outcome="success" if not stop_error else "failure",
                     error_category=classify_error_message(str(stop_error)).value if stop_error else None,
                 )
+            self._mark_hot_path(session_id, "session_finished")
+            self._emit_hot_path_report_once(session_id, required_marker=None)
             self._clear_hot_path_tracer(session_id)
         if retrigger_hotkey_toggle:
             logger.info("Applying deferred hotkey event after stop completed.")

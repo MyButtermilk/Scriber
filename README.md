@@ -47,7 +47,7 @@ Current implementation highlights:
 - Runtime data path support via `SCRIBER_DATA_DIR`: the Tauri-supervised backend writes settings, SQLite data, downloads, and logs to a writable app data directory instead of relying on the repository or install directory.
 - Redacted support bundles for packaged diagnostics: runtime metadata, selected logs, and redacted settings/environment without API keys or session tokens.
 - Backend sidecar path for Tauri: the supervisor can start a packaged `scriber-backend` worker and falls back to the source checkout/virtualenv for development.
-- Hybrid architecture baseline runner for Phase 0 startup/worker, upload/export load, WebSocket/JSON, and synthetic browser history-scroll measurements with explicit incomplete-gate reporting for remaining missing hot-path samples.
+- Hybrid architecture baseline runner for Phase 0 startup/worker, opt-in live recording hot-path samples, upload/export load, WebSocket/JSON, and synthetic browser history-scroll measurements with explicit incomplete-gate reporting for remaining missing text-injection samples.
 
 Known limits:
 
@@ -871,7 +871,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 ## Roadmap / Open Engineering Work
 
 - Real app-level microphone prewarming for `SCRIBER_MIC_ALWAYS_ON`.
-- Real recording hot-path samples for hotkey-to-recording, first audio frame, and stop-to-injection timings.
+- Real recording text-injection samples for `stop_requested_to_first_paste_ms` after a spoken phrase is transcribed and injected during the opt-in baseline run.
 - Full bundled desktop packaging: signing and updater.
 - Broader runtime smoke tests for the Tauri supervisor: backend crash, startup timeout, external backend attach, dynamic port, and app-exit cleanup.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.

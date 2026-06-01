@@ -42,6 +42,29 @@ async def test_hot_path_audio_frame_marker_is_persisted(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_hot_path_partial_report_can_be_persisted_without_text_injection(tmp_path):
+    loop = asyncio.get_running_loop()
+    metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    ctl = ScriberWebController(loop, latency_metrics_store=metrics_store)
+    session_id = "session-partial-hot-path"
+
+    ctl._start_hot_path_tracer(session_id)
+    ctl._mark_hot_path(session_id, "mic_ready")
+    ctl._mark_hot_path(session_id, "first_audio_frame")
+    ctl._mark_hot_path(session_id, "stop_requested")
+    ctl._mark_hot_path(session_id, "session_finished")
+
+    assert ctl._emit_hot_path_report_once(session_id, required_marker=None) is True
+
+    rows = metrics_store.latest(limit=10)
+    assert len(rows) == 1
+    assert "hotkey_received_to_mic_ready_ms" in rows[0].segments
+    assert "hotkey_received_to_first_audio_frame_ms" in rows[0].segments
+    assert "stop_requested_to_session_finished_ms" in rows[0].segments
+    assert "stop_requested_to_first_paste_ms" not in rows[0].segments
+
+
+@pytest.mark.asyncio
 async def test_hot_path_metrics_summary_exposed(tmp_path):
     loop = asyncio.get_running_loop()
     metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")

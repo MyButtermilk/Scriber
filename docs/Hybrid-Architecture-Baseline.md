@@ -42,6 +42,12 @@ history UI and a synthetic paginated mock backend. Tune it with `-HistoryItems`,
 `-HistoryRoutes`, and `-HistoryViews`, or skip it with
 `-SkipHistoryScrollBenchmark`.
 
+Live recording hot-path samples are opt-in because they open the microphone and
+may inject transcribed text into the active app. Run with `-RecordHotPathSamples`
+on a machine with microphone and provider credentials. Speak a short phrase
+during the recording window if `stop_requested_to_first_paste_ms` should be
+measured.
+
 ## Automated Today
 
 `scripts/measure_hybrid_baseline.ps1` currently measures:
@@ -53,6 +59,9 @@ history UI and a synthetic paginated mock backend. Tune it with `-HistoryItems`,
 - `/api/runtime` fetch latency with the session token;
 - managed backend cleanup after Tauri exit;
 - available hot-path metric segment names from `/api/metrics/hot-path`.
+- optional live recording hot-path samples via
+  `scripts/measure_recording_hot_path_baseline.py` when
+  `-RecordHotPathSamples` is passed;
 - concurrent synthetic upload stream writes and parallel PDF/DOCX export
   rendering via `scripts/measure_upload_export_baseline.py`;
 - WebSocket JSON serialization, no-client broadcast fast path, and broadcast
@@ -81,11 +90,10 @@ connected frontend client.
 
 ## Still Open
 
-The following baseline requirements still need real samples:
+The following baseline requirement still needs a real spoken/injected sample:
 
-- hotkey to recording state;
-- hotkey to first audio frame;
 - stop to text injection.
 
-Until those are captured from real recording sessions, the Phase 0 gate must
-stay incomplete.
+`-RecordHotPathSamples` can measure hotkey/API-start to recording state and
+first audio frame even when no text is produced. The stop-to-injection segment
+is only present when STT returns text and injection succeeds.
