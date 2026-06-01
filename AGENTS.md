@@ -141,6 +141,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - Frontend routes: LiveMic is eager for first paint; YouTube, File, Settings, TranscriptDetail, and NotFound are lazy-loaded.
 - Intent prefetch exists for route chunks in the layout.
 - Production frontend build uses manual vendor chunks for React, TanStack Query, motion libraries, charts, and remaining vendor code.
+- `tests/perf/test_frontend_vendor_chunk_config.py` guards that Vite manual vendor chunk split; update the test with any deliberate chunking change.
 - Transcript history pages use infinite `/api/transcripts` pagination and shared scroll-container virtualization for large list/grid histories.
 
 ### Uploads, Jobs, and Exports

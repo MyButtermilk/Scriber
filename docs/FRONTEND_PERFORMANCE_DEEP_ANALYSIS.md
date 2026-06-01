@@ -4,7 +4,7 @@
 **Autor:** Automatisierte Codebase-Analyse  
 **Scope:** React Frontend (`Frontend/client/src/`)
 
-**Status-Update 2026-06-01:** Diese Analyse ist historisch. Seitdem sind WebSocket-Singleton, mehrere memoized Cards, Route-Lazy-Loading für YouTube/File/Settings/TranscriptDetail, Intent-Prefetches und Backend-Pagination umgesetzt. Weiter offen sind Vite-Vendor-Chunking, echte Listen-Virtualisierung/Infinite Query und einige isolierte Re-Render-Themen.
+**Status-Update 2026-06-02:** Diese Analyse ist historisch. Seitdem sind WebSocket-Singleton, mehrere memoized Cards, Route-Lazy-Loading für YouTube/File/Settings/TranscriptDetail, Intent-Prefetches, Backend-Pagination, Listenvirtualisierung/Infinite Query und manuelle Vite-Vendor-Chunks umgesetzt. Weiter offen sind isolierte Re-Render-Themen, optionales weiteres Chunk-Feintuning und echte Langzeit-UI-Messungen auf Referenzhardware.
 
 ---
 
@@ -53,7 +53,7 @@ Router
 └── /settings → Settings (lazy loaded ✓)
 ```
 
-**Aktueller Stand:** LiveMic bleibt bewusst eager für die erste Ansicht; schwere Nebenseiten werden lazy geladen und teilweise auf Navigation-Intent vorab geladen. Vite meldet aber weiterhin einen initialen Chunk >500 kB, daher bleibt Vendor-Chunking offen.
+**Aktueller Stand:** LiveMic bleibt bewusst eager für die erste Ansicht; schwere Nebenseiten werden lazy geladen und teilweise auf Navigation-Intent vorab geladen. Vite trennt React, TanStack Query, Motion, Chart-Abhängigkeiten und den restlichen Vendor-Code per `manualChunks`; `tests/perf/test_frontend_vendor_chunk_config.py` hält diese Build-Regel als Regression-Gate fest.
 
 ---
 

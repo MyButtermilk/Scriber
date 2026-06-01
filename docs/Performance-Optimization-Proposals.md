@@ -588,7 +588,6 @@ string during append.
 - [x] STT service pre-import / Hotkey response optimization (4.4) ✅ (2026-01-01)
 
 ### Pending (High Priority)
-- [ ] Vite Build Optimization (1.5) - ~15-25% Bundle, Low Effort
 - [ ] Generic WebSocket message batching (1.6 follow-up) - evaluate only if measured broadcast cost becomes meaningful with connected clients
 
 ### Pending (Medium Priority)
