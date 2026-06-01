@@ -1,4 +1,6 @@
 import asyncio
+import hmac
+import ipaddress
 import json
 import os
 import re
@@ -75,6 +77,9 @@ _AUDIO_ENGINE_ENV = "SCRIBER_AUDIO_ENGINE"
 _WEB_HOST_ENV = "SCRIBER_WEB_HOST"
 _WEB_PORT_ENV = "SCRIBER_WEB_PORT"
 _DISABLE_HOTKEYS_ENV = "SCRIBER_DISABLE_HOTKEYS"
+_SESSION_TOKEN_ENV = "SCRIBER_SESSION_TOKEN"
+_SESSION_TOKEN_HEADER = "X-Scriber-Token"
+_SESSION_TOKEN_QUERY = "scriberToken"
 
 # Video file extensions that require audio extraction
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
@@ -190,6 +195,49 @@ def _safe_upload_filename(name: str) -> str:
     if stem.upper() in _WINDOWS_RESERVED_NAMES:
         base = f"_{base}"
     return base
+
+
+def _configured_session_token() -> str:
+    return os.getenv(_SESSION_TOKEN_ENV, "").strip()
+
+
+def _request_session_token(request: web.Request) -> str:
+    header_token = request.headers.get(_SESSION_TOKEN_HEADER, "").strip()
+    if header_token:
+        return header_token
+
+    auth = request.headers.get("Authorization", "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+
+    return request.query.get(_SESSION_TOKEN_QUERY, "").strip()
+
+
+def _request_has_valid_session_token(request: web.Request, token: str | None = None) -> bool:
+    expected = (token if token is not None else _configured_session_token()).strip()
+    if not expected:
+        return False
+    provided = _request_session_token(request)
+    return bool(provided) and hmac.compare_digest(provided, expected)
+
+
+def _session_token_required() -> bool:
+    return bool(_configured_session_token())
+
+
+def _is_loopback_request(request: web.Request) -> bool:
+    peername = request.transport.get_extra_info("peername") if request.transport else None
+    if isinstance(peername, tuple) and peername:
+        host = str(peername[0]).split("%", 1)[0].lower()
+        if host == "localhost":
+            return True
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        mapped = getattr(address, "ipv4_mapped", None)
+        return bool(address.is_loopback or (mapped and mapped.is_loopback))
+    return False
 
 
 def _parse_allowed_origins() -> list[str]:
@@ -1582,6 +1630,7 @@ class ScriberWebController:
             "featureFlags": {
                 "audioEngine": os.getenv(_AUDIO_ENGINE_ENV, "python"),
                 "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
+                "sessionTokenRequired": _session_token_required(),
                 "validateWsContracts": bool(self._validate_ws_contracts),
             },
             "startup": {
@@ -3723,12 +3772,24 @@ async def cors_middleware(request: web.Request, handler):
     else:
         resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Allow-Headers"] = f"Content-Type, Authorization, {_SESSION_TOKEN_HEADER}"
     return resp
 
 
+@web.middleware
+async def session_token_middleware(request: web.Request, handler):
+    if request.method == "OPTIONS" or request.path == "/api/health":
+        return await handler(request)
+
+    token = _configured_session_token()
+    if token and not _request_has_valid_session_token(request, token):
+        return web.json_response({"message": "Session token required"}, status=401)
+
+    return await handler(request)
+
+
 def create_app(controller: ScriberWebController) -> web.Application:
-    app = web.Application(middlewares=[cors_middleware])
+    app = web.Application(middlewares=[cors_middleware, session_token_middleware])
     app["controller"] = controller
 
     async def http_session_ctx(app_: web.Application):
@@ -3774,6 +3835,23 @@ def create_app(controller: ScriberWebController) -> web.Application:
     async def get_runtime(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
         return web.json_response(ctl.get_runtime_info())
+
+    async def shutdown_runtime(request: web.Request):
+        if not _is_loopback_request(request):
+            return web.json_response({"message": "Runtime shutdown is only available on loopback"}, status=403)
+
+        token = _configured_session_token()
+        if not token:
+            return web.json_response({"message": "Runtime shutdown token is not configured"}, status=403)
+        if not _request_has_valid_session_token(request, token):
+            return web.json_response({"message": "Session token required"}, status=401)
+
+        stop_event = request.app.get("shutdown_event")
+        if not isinstance(stop_event, asyncio.Event):
+            return web.json_response({"message": "Runtime shutdown is not available"}, status=503)
+
+        stop_event.set()
+        return web.json_response({"ok": True, "message": "Shutdown requested"})
 
     async def get_hot_path_metrics(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
@@ -4323,6 +4401,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     app.router.add_get("/api/state", get_state)
     app.router.add_get("/api/runtime", get_runtime)
+    app.router.add_post("/api/runtime/shutdown", shutdown_runtime)
     app.router.add_get("/api/metrics/hot-path", get_hot_path_metrics)
     app.router.add_post("/api/live-mic/start", start_live)
     app.router.add_post("/api/live-mic/stop", stop_live)
@@ -4700,7 +4779,9 @@ async def run_server(host: str, port: int) -> None:
     controller = ScriberWebController(loop)
     controller.register_hotkeys()
 
+    stop_event = asyncio.Event()
     app = create_app(controller)
+    app["shutdown_event"] = stop_event
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)
@@ -4709,8 +4790,6 @@ async def run_server(host: str, port: int) -> None:
 
     # Start background initialization (improves first recording latency)
     asyncio.create_task(_background_init(controller), name="background_init")
-
-    stop_event = asyncio.Event()
 
     def _request_stop(*_args: Any) -> None:
         loop.call_soon_threadsafe(stop_event.set)

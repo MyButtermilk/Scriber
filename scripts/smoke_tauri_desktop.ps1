@@ -18,11 +18,13 @@ param(
     [string]$PythonPath = "",
     [string]$BackendExePath = "",
     [string]$DataDir = "",
+    [string]$SessionToken = "",
     [int]$TimeoutSec = 60,
     [int]$BackendHealthTimeoutSec = 20,
     [switch]$KeepAppOpen,
     [switch]$EnableHotkeys,
-    [switch]$EnableDeviceMonitor
+    [switch]$EnableDeviceMonitor,
+    [switch]$DisableDevFallback
 )
 
 $ErrorActionPreference = "Stop"
@@ -106,9 +108,16 @@ function Wait-BackendHealth {
 }
 
 function Get-BackendRuntime {
-    param([int]$Port)
+    param(
+        [int]$Port,
+        [string]$Token
+    )
 
-    $runtime = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/runtime" -TimeoutSec 5
+    $headers = @{}
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+    $runtime = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/runtime" -Headers $headers -TimeoutSec 5
     if (-not $runtime.dataDir) {
         throw "Managed backend runtime did not report dataDir."
     }
@@ -144,6 +153,9 @@ if (-not $DataDir) {
 }
 $DataDir = Convert-ToFullPath -Path $DataDir
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+if (-not $SessionToken) {
+    $SessionToken = [System.Guid]::NewGuid().ToString("N")
+}
 
 $baseline = @(Get-ManagedBackendProcesses | ForEach-Object { [int]$_.ProcessId })
 $oldRoot = $env:SCRIBER_REPO_ROOT
@@ -151,13 +163,20 @@ $oldPython = $env:SCRIBER_PYTHON
 $oldBackendExe = $env:SCRIBER_BACKEND_EXE
 $oldDataDir = $env:SCRIBER_DATA_DIR
 $oldForceManaged = $env:SCRIBER_FORCE_MANAGED_BACKEND
+$oldSessionToken = $env:SCRIBER_SESSION_TOKEN
 $oldHotkeys = $env:SCRIBER_DISABLE_HOTKEYS
 $oldMonitor = $env:SCRIBER_DISABLE_DEVICE_MONITOR
 
-$env:SCRIBER_REPO_ROOT = $RepoRoot
-$env:SCRIBER_PYTHON = $PythonPath
+if ($DisableDevFallback) {
+    $env:SCRIBER_REPO_ROOT = $null
+    $env:SCRIBER_PYTHON = $null
+} else {
+    $env:SCRIBER_REPO_ROOT = $RepoRoot
+    $env:SCRIBER_PYTHON = $PythonPath
+}
 $env:SCRIBER_DATA_DIR = $DataDir
 $env:SCRIBER_FORCE_MANAGED_BACKEND = "1"
+$env:SCRIBER_SESSION_TOKEN = $SessionToken
 if ($BackendExePath) {
     $env:SCRIBER_BACKEND_EXE = $BackendExePath
 } else {
@@ -179,7 +198,7 @@ try {
         throw "Tauri process exited early with code $($app.ExitCode)."
     }
     $health = Wait-BackendHealth -Port $listener.Port -DeadlineSec $BackendHealthTimeoutSec
-    $runtime = Get-BackendRuntime -Port $listener.Port
+    $runtime = Get-BackendRuntime -Port $listener.Port -Token $SessionToken
     if ((Convert-ToFullPath -Path $runtime.dataDir) -ne $DataDir) {
         throw "Managed backend used unexpected dataDir: $($runtime.dataDir)"
     }
@@ -228,6 +247,7 @@ try {
     $env:SCRIBER_BACKEND_EXE = $oldBackendExe
     $env:SCRIBER_DATA_DIR = $oldDataDir
     $env:SCRIBER_FORCE_MANAGED_BACKEND = $oldForceManaged
+    $env:SCRIBER_SESSION_TOKEN = $oldSessionToken
     $env:SCRIBER_DISABLE_HOTKEYS = $oldHotkeys
     $env:SCRIBER_DISABLE_DEVICE_MONITOR = $oldMonitor
 }

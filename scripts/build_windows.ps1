@@ -16,7 +16,8 @@ param(
     [string[]]$Bundles = @("nsis"),
     [string]$ReleaseBaseUrl = "",
     [switch]$SkipChecks,
-    [switch]$SkipSmoke
+    [switch]$SkipSmoke,
+    [switch]$RunInstallerSmoke
 )
 
 $ErrorActionPreference = "Stop"
@@ -118,6 +119,17 @@ if ($artifacts.Count -gt 0) {
                 $metadataArgs += @("--artifact", $artifact)
             }
             python @metadataArgs
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
+if ($RunInstallerSmoke) {
+    Invoke-Checked -Label "Installed package smoke" -Command {
+        Push-Location $RepoRoot
+        try {
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1
         } finally {
             Pop-Location
         }

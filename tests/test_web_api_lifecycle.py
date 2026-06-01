@@ -167,6 +167,7 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert runtime["capabilities"]["websocket"] is True
     assert runtime["capabilities"]["exports"] == ["pdf", "docx"]
     assert runtime["featureFlags"]["audioEngine"] == "python"
+    assert runtime["featureFlags"]["sessionTokenRequired"] is False
     assert runtime["startup"]["deviceMonitor"] == "disabled"
     assert health["ok"] is True
     assert health["ready"] is True

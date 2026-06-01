@@ -5,14 +5,14 @@ Nicht versierte Nutzer sollen Scriber wie eine normale Windows-App installieren 
 
 ## Empfohlene Zielvariante (optimal fuer Scriber jetzt)
 ### Primaerer Kanal
-`Tauri Desktop Shell` + `Python Worker/Sidecar` + `Inno Setup` + `GitHub Releases` + `Authenticode Signierung`
+`Tauri Desktop Shell` + `Python Worker/Sidecar` + `NSIS Installer` + `GitHub Releases` + `Authenticode Signierung`
 
 ### Warum diese Variante
 1. Passt zur aktuellen Python-Architektur ohne Re-Write: Rust/Tauri uebernimmt Shell/Lifecycle, Python bleibt STT-/Fachlogik.
 2. Schnell produktionsfaehig im Vergleich zu MSIX-only oder Squirrel-Integration.
-3. Silent Updates sind robust moeglich (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-`).
+3. Silent Updates sind robust moeglich; aktuell ueber Tauri/NSIS, spaeter bei Bedarf mit eigenem Updater/Launcher.
 4. Security kann sauber gehaertet werden (SHA256, Signaturpruefung, immutable Releases).
-5. Der aktuelle Code enthaelt bereits ein Tauri-2-Scaffold mit Rust-Supervisor; offen ist noch die vollstaendige Sidecar/Frozen-Packaging-Stufe.
+5. Der aktuelle Code enthaelt bereits Tauri 2 mit Rust-Supervisor, PyInstaller-Sidecar, NSIS-Build und installiertem Smoke-Test; offen bleiben Signierung und Updater.
 
 ### Warum nicht Electron/MSIX-only/Squirrel jetzt
 | Alternative        | Warum nicht jetzt                                                                       |
@@ -24,7 +24,7 @@ Nicht versierte Nutzer sollen Scriber wie eine normale Windows-App installieren 
 | PyUpdater / Esky   | Nicht mehr aktiv gepflegt (Stand 2026). Eigener Updater ist transparenter und robuster. |
 
 ### Zielbild in einem Satz
-Scriber laeuft als signierte, installierte Windows-App (per-user), startet eine lokale Python-Worker-Komponente unter Tauri-Supervision, prueft im Hintergrund Releases, laedt signierte Updates, installiert sie still im Leerlauf und startet sich neu.
+Scriber laeuft als signierte, installierte Windows-App (per-user), startet eine lokale Python-Worker-Komponente unter Tauri-Supervision, schuetzt den lokalen Worker per Session-Token, prueft im Hintergrund Releases, laedt signierte Updates, installiert sie still im Leerlauf und startet sich neu.
 
 ---
 
@@ -50,6 +50,7 @@ Scriber laeuft als signierte, installierte Windows-App (per-user), startet eine 
    - Stabiler `AppId` im Format `{GUID}` fuer saubere Upgrade-Erkennung.
    - Status 2026-06-01: Der produktive Installer-Pfad nutzt aktuell Tauri/NSIS statt Inno Setup. `Frontend/src-tauri/tauri.conf.json` setzt `bundle.active=true`, `targets=["nsis"]`, `installMode="currentUser"` und mappt den Backend-Sidecar als Resource nach `backend/`.
    - Status 2026-06-01: `scripts/build_windows.ps1` erzeugt den NSIS-Build ueber `npm run tauri:build -- --bundles nsis` und laesst Tauri vorher den Sidecar bauen/kopieren.
+   - Status 2026-06-01: `scripts/smoke_windows_installer.ps1` installiert das erzeugte Setup temporaer, startet die installierte App ohne Dev-Fallback, verifiziert `tauri-supervised` Sidecar-Start und entfernt Testinstallation/Testdaten wieder.
 2. **Startmenue-Eintrag**, optional **Autostart** via Registry `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
    - Autostart existiert bereits als Feature in `web_api.py` (`GET/POST /api/autostart`). Integration mit Installer pruefen.
 3. **Uninstall** ohne Loeschen von Nutzerdaten.
@@ -214,6 +215,8 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Status 2026-06-01: Der Standard-Sidecar ist ein Cloud-Provider/Lite-Build und schliesst schwere lokale ASR-Stacks (`torch`, NeMo, ONNX-ASR) aus.
    - Status 2026-06-01: Tauri bundelt `target/release/backend/` als Resource `backend/`, sodass installierte NSIS-Builds denselben Sidecar-Pfad nutzen.
    - Status 2026-06-01: Der Sidecar-Build fuehrt vor PyInstaller einen Runtime-Import-Preflight aus, der unter anderem SciPy, pyloudnorm, Pipecat und `src.web_api` prueft.
+   - Status 2026-06-01: Der Tauri-Supervisor erzeugt ein zufaelliges `SCRIBER_SESSION_TOKEN`, uebergibt es an den Python-Worker und stellt es dem React-Frontend ueber `get_backend_access` bereit. Das Backend erzwingt den Token fuer lokale REST-/WebSocket-Zugriffe; `/api/health` bleibt fuer Readiness tokenfrei.
+   - Status 2026-06-01: `POST /api/runtime/shutdown` existiert als loopback- und token-geschuetzter Shutdown-Endpunkt fuer kontrolliertes Worker-Beenden.
 2. **Frontend Production Build** in den Backend-Output integrieren:
    - `npm run build` erzeugt `Frontend/dist/public/` mit statischem HTML/JS/CSS.
    - `build_windows.ps1` kopiert diesen Output in das PyInstaller-Output-Verzeichnis.
@@ -232,7 +235,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
      - `yt-dlp`, `python-docx`, `reportlab`, `lxml`
    - Daten-Dateien einschliessen: `src/assets/`, `Frontend/dist/public/`, optionale FFmpeg/FFprobe-Binaries ueber `-BundleMediaTools`.
 5. **Reproduzierbarer Build** per Script.
-   - Status 2026-06-01: `scripts/build_windows.ps1` orchestriert Version-Sync, Tests, Frontend-Typecheck, Tauri/NSIS-Build, Release-Metadaten und optionalen Smoke-Test.
+   - Status 2026-06-01: `scripts/build_windows.ps1` orchestriert Version-Sync, Tests, Frontend-Typecheck, Tauri/NSIS-Build, Release-Metadaten und optionalen Release-/Installer-Smoke-Test.
 6. **Size-Profiling direkt in Phase 1**:
    - Status 2026-06-01: `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt` und `requirements-build.txt` existieren.
    - Lite-Build als Standard ist im Sidecar-Spec vorgespurt; Gesamtpipeline in `build_windows.ps1` bleibt offen.
@@ -246,8 +249,9 @@ Lieferobjekte:
 5. `src/runtime/media_tools.py` (umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp`)
 6. `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt` (umgesetzt)
 7. `size-report.json` (CI-Artefakt)
-8. Start/Healthcheck fuer gebaute App (Smoke-Test vorhanden; Sidecar-Pfad optional ueber `-BackendExePath`)
-9. `scripts/build_windows.ps1` (umgesetzt fuer Version-Sync, Tauri/NSIS-Release-Build, Release-Metadaten und Smoke-Test; Signing/Updater offen)
+8. Start/Healthcheck fuer gebaute App (Release-Smoke vorhanden; Sidecar-Pfad optional ueber `-BackendExePath`)
+9. `scripts/smoke_windows_installer.ps1` (umgesetzt: temporaere NSIS-Installation, Start ohne Dev-Fallback, Sidecar-Verifikation, Cleanup)
+10. `scripts/build_windows.ps1` (umgesetzt fuer Version-Sync, Tauri/NSIS-Release-Build, Release-Metadaten und Smoke-Test; Signing/Updater offen)
 
 ### Phase 2 - Installer
 1. `installer/scriber.iss` erstellen.
@@ -382,7 +386,8 @@ Lieferobjekte:
 | `installer/scriber.iss` | Inno Setup Script. |
 | `scripts/check_backend_runtime_imports.py` | Umgesetzt: Preflight fuer kritische Backend-Startup-Imports vor PyInstaller. |
 | `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Import-Preflight -> Frontend Build -> PyInstaller Sidecar -> optionales FFmpeg/FFprobe-Bundling -> optionaler Copy nach Tauri Release. |
-| `scripts/build_windows.ps1` | Umgesetzt fuer Tests -> Tauri/NSIS Bundle -> Release-Metadaten -> Smoke-Test. Signierung und Updater bleiben offen. |
+| `scripts/build_windows.ps1` | Umgesetzt fuer Tests -> Tauri/NSIS Bundle -> Release-Metadaten -> Release-/Installer-Smoke-Test. Signierung und Updater bleiben offen. |
+| `scripts/smoke_windows_installer.ps1` | Umgesetzt: installiert das NSIS-Artefakt temporaer, prueft den installierten Tauri/Sidecar-Start ohne Python/Node-Dev-Fallback und entfernt die Testinstallation. |
 | `scripts/sync_version.py` | Umgesetzt: synchronisiert `src/version.py` in Python/Tauri/Cargo/npm-Manifeste. |
 | `scripts/create_release_metadata.py` | Umgesetzt: erzeugt `latest.json` und `SHA256SUMS.txt` fuer Release-Artefakte. |
 | `.github/workflows/release-windows.yml` | Umgesetzt: manueller und Tag-basierter Windows-NSIS-Release-Build mit GitHub-Release-Publish auf `v*` Tags. |
@@ -392,7 +397,7 @@ Lieferobjekte:
 | Datei | Aenderung |
 |-------|-----------|
 | `src/tray.py` | Update-Menue-Eintraege, Launcher-Integration, `start_frontend()` konditional, Version im Tooltip. Named Mutex fuer Inno Setup. |
-| `src/web_api.py` | Update-Endpunkte (`/api/update/*`), Static-File-Serving fuer Frontend im Frozen-Modus, Version im Health-Endpoint. |
+| `src/web_api.py` | Teilweise umgesetzt: Version/Runtime im Health-Endpoint, Session-Token-Middleware und `/api/runtime/shutdown`. Offen: Update-Endpunkte (`/api/update/*`) und Static-File-Serving fuer Frontend im Frozen-Modus. |
 | `src/config.py` | Update-Settings (`AUTO_UPDATE`, `UPDATE_CHANNEL`, `UPDATE_CHECK_INTERVAL_HOURS`, `UPDATE_URL`). |
 | `Frontend/client/src/pages/Settings.tsx` | Update-Sektion im Settings-UI. |
 | `README.md` | Install/Update User Guide fuer Endnutzer. |

@@ -24,6 +24,7 @@ const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
 const FORCE_MANAGED_BACKEND_ENV: &str = "SCRIBER_FORCE_MANAGED_BACKEND";
+const SESSION_TOKEN_ENV: &str = "SCRIBER_SESSION_TOKEN";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -40,6 +41,13 @@ pub struct BackendStatus {
     launch_kind: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendAccess {
+    base_url: String,
+    session_token: String,
+}
+
 struct BackendState {
     base_url: String,
     port: u16,
@@ -49,6 +57,7 @@ struct BackendState {
     message: String,
     launch_kind: String,
     resource_dir: Option<PathBuf>,
+    session_token: String,
 }
 
 #[cfg(windows)]
@@ -89,6 +98,7 @@ impl BackendManager {
                 message: "Backend not started".to_string(),
                 launch_kind: "none".to_string(),
                 resource_dir: None,
+                session_token: resolve_session_token(),
             }),
         }
     }
@@ -104,6 +114,19 @@ impl BackendManager {
             .lock()
             .map(|state| state.base_url.clone())
             .unwrap_or_else(|_| base_url(DEFAULT_PORT))
+    }
+
+    fn access(&self) -> BackendAccess {
+        self.state
+            .lock()
+            .map(|state| BackendAccess {
+                base_url: state.base_url.clone(),
+                session_token: state.session_token.clone(),
+            })
+            .unwrap_or_else(|_| BackendAccess {
+                base_url: base_url(DEFAULT_PORT),
+                session_token: String::new(),
+            })
     }
 
     fn ensure_started(&self) -> BackendStatus {
@@ -208,6 +231,11 @@ fn get_backend_base_url(manager: tauri::State<'_, BackendManager>) -> String {
 }
 
 #[tauri::command]
+fn get_backend_access(manager: tauri::State<'_, BackendManager>) -> BackendAccess {
+    manager.access()
+}
+
+#[tauri::command]
 fn backend_status(manager: tauri::State<'_, BackendManager>) -> BackendStatus {
     manager.status()
 }
@@ -234,6 +262,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_backend_base_url,
+            get_backend_access,
             backend_status,
             ensure_backend_running,
             restart_backend
@@ -304,7 +333,7 @@ fn select_backend_port(current_port: u16) -> u16 {
 fn start_managed_backend(state: &mut BackendState, port: u16, message: &str) -> BackendStatus {
     state.port = port;
     state.base_url = base_url(port);
-    match spawn_backend(port, state.resource_dir.as_deref()) {
+    match spawn_backend(port, state.resource_dir.as_deref(), &state.session_token) {
         Ok((child, launch_kind)) => {
             let (job, job_warning) = attach_child_to_kill_job(&child);
             state.message = match job_warning {
@@ -344,6 +373,14 @@ fn force_managed_backend() -> bool {
         .unwrap_or(false)
 }
 
+fn resolve_session_token() -> String {
+    env::var(SESSION_TOKEN_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string())
+}
+
 struct BackendCommandSpec {
     program: PathBuf,
     args: Vec<String>,
@@ -351,7 +388,11 @@ struct BackendCommandSpec {
     launch_kind: String,
 }
 
-fn spawn_backend(port: u16, resource_dir: Option<&Path>) -> Result<(Child, String), String> {
+fn spawn_backend(
+    port: u16,
+    resource_dir: Option<&Path>,
+    session_token: &str,
+) -> Result<(Child, String), String> {
     let spec = resolve_backend_command(resource_dir)?;
     let data_dir = scriber_data_dir();
     fs::create_dir_all(&data_dir)
@@ -378,6 +419,7 @@ fn spawn_backend(port: u16, resource_dir: Option<&Path>) -> Result<(Child, Strin
         .env("SCRIBER_WEB_PORT", port.to_string())
         .env("SCRIBER_RUNTIME_MODE", "tauri-supervised")
         .env("SCRIBER_BACKEND_LAUNCH_KIND", &spec.launch_kind)
+        .env(SESSION_TOKEN_ENV, session_token)
         .env("SCRIBER_LOG_STDERR", "1")
         .env("SCRIBER_DATA_DIR", &data_dir)
         .stdin(Stdio::null())
@@ -722,7 +764,8 @@ fn health_response_ready(response: &str) -> bool {
 mod tests {
     use super::{
         backend_executable_names, find_backend_executable_in_dirs, health_response_ready,
-        managed_backend_start_timed_out, BACKEND_START_TIMEOUT,
+        managed_backend_start_timed_out, resolve_session_token, BACKEND_START_TIMEOUT,
+        SESSION_TOKEN_ENV,
     };
     use std::{
         fs,
@@ -779,6 +822,22 @@ mod tests {
             Some(now - BACKEND_START_TIMEOUT),
             now
         ));
+    }
+
+    #[test]
+    fn resolve_session_token_prefers_environment_and_can_generate() {
+        let previous = std::env::var(SESSION_TOKEN_ENV).ok();
+
+        std::env::set_var(SESSION_TOKEN_ENV, "known-token");
+        assert_eq!(resolve_session_token(), "known-token");
+
+        std::env::remove_var(SESSION_TOKEN_ENV);
+        assert!(resolve_session_token().len() >= 32);
+
+        match previous {
+            Some(value) => std::env::set_var(SESSION_TOKEN_ENV, value),
+            None => std::env::remove_var(SESSION_TOKEN_ENV),
+        }
     }
 
     #[test]

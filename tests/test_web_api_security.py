@@ -1,6 +1,10 @@
+import asyncio
+
 import pytest
+from aiohttp.test_utils import TestClient, TestServer
 
 from src import web_api
+from src.web_api import ScriberWebController
 
 
 def test_safe_upload_filename_strips_dirs():
@@ -32,6 +36,82 @@ def test_origin_allowed_from_env(monkeypatch):
 def test_origin_allowed_wildcard(monkeypatch):
     monkeypatch.setenv("SCRIBER_ALLOWED_ORIGINS", "*")
     assert web_api._origin_allowed("https://any.example")
+
+
+class _FakeTransport:
+    def __init__(self, peername=("127.0.0.1", 12345)):
+        self._peername = peername
+
+    def get_extra_info(self, name):
+        if name == "peername":
+            return self._peername
+        return None
+
+
+class _FakeRequest:
+    def __init__(self, *, headers=None, query=None, peername=("127.0.0.1", 12345)):
+        self.headers = headers or {}
+        self.query = query or {}
+        self.transport = _FakeTransport(peername)
+
+
+def test_session_token_accepts_header_authorization_and_query():
+    assert web_api._request_has_valid_session_token(
+        _FakeRequest(headers={"X-Scriber-Token": "secret"}),
+        "secret",
+    )
+    assert web_api._request_has_valid_session_token(
+        _FakeRequest(headers={"Authorization": "Bearer secret"}),
+        "secret",
+    )
+    assert web_api._request_has_valid_session_token(
+        _FakeRequest(query={"scriberToken": "secret"}),
+        "secret",
+    )
+    assert not web_api._request_has_valid_session_token(
+        _FakeRequest(headers={"X-Scriber-Token": "wrong"}),
+        "secret",
+    )
+
+
+def test_loopback_request_detection():
+    assert web_api._is_loopback_request(_FakeRequest(peername=("127.0.0.1", 12345)))
+    assert web_api._is_loopback_request(_FakeRequest(peername=("::1", 12345)))
+    assert web_api._is_loopback_request(_FakeRequest(peername=("::ffff:127.0.0.1", 12345)))
+    assert not web_api._is_loopback_request(_FakeRequest(peername=("10.0.0.2", 12345)))
+
+
+@pytest.mark.asyncio
+async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch):
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    shutdown_event = asyncio.Event()
+    app["shutdown_event"] = shutdown_event
+
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        health = await client.get("/api/health")
+        assert health.status == 200
+
+        unauthorized = await client.get("/api/runtime")
+        assert unauthorized.status == 401
+
+        authorized = await client.get("/api/runtime?scriberToken=secret")
+        assert authorized.status == 200
+        payload = await authorized.json()
+        assert payload["featureFlags"]["sessionTokenRequired"] is True
+
+        shutdown_unauthorized = await client.post("/api/runtime/shutdown")
+        assert shutdown_unauthorized.status == 401
+
+        shutdown = await client.post("/api/runtime/shutdown", headers={"X-Scriber-Token": "secret"})
+        assert shutdown.status == 200
+        assert shutdown_event.is_set()
+    finally:
+        await client.close()
 
 
 def test_upload_max_bytes_env(monkeypatch):
