@@ -8,10 +8,12 @@ the installed app without development fallback, verifies that the packaged
 backend sidecar becomes healthy, then uninstalls the app unless -KeepInstalled
 is passed. With -SimulateBackendCrash, it also verifies that the installed
 desktop shell restarts a killed backend worker and writes crash metadata. With
--VerifyLegacyDataMigration, it verifies that first-run legacy runtime data is
-copied into the installed app data directory. With -SimulateUpgrade, it runs
-the installer a second time against the same install/data directories and
-verifies that existing app data is preserved.
+-OccupyDefaultPort, it verifies that the installed supervisor avoids the
+occupied default backend port. With -VerifyLegacyDataMigration, it verifies
+that first-run legacy runtime data is copied into the installed app data
+directory. With -SimulateUpgrade, it runs the installer a second time against
+the same install/data directories and verifies that existing app data is
+preserved.
 #>
 
 param(
@@ -19,6 +21,7 @@ param(
     [string]$InstallerPath = "",
     [string]$InstallDir = "",
     [string]$DataDir = "",
+    [switch]$OccupyDefaultPort,
     [switch]$SimulateBackendCrash,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
@@ -136,6 +139,9 @@ function Invoke-InstalledDesktopSmoke {
     if ($SimulateBackendCrash) {
         $smokeArgs += "-SimulateBackendCrash"
     }
+    if ($OccupyDefaultPort) {
+        $smokeArgs += "-OccupyDefaultPort"
+    }
     if ($LegacyDataDir) {
         $smokeArgs += @("-LegacyDataDir", $LegacyDataDir)
     }
@@ -211,6 +217,7 @@ try {
             secondRuntimeMode = $secondSmoke.runtimeMode
             secondLaunchKind = $secondSmoke.launchKind
             secondCleanupVerified = $secondSmoke.cleanupVerified
+            portConflict = $secondSmoke.portConflict
             legacyDataMigration = $secondSmoke.legacyDataMigration
         }
         $smoke = $secondSmoke
@@ -224,6 +231,7 @@ try {
         dataDir = $DataDir
         runtimeMode = $smoke.runtimeMode
         launchKind = $smoke.launchKind
+        portConflict = $smoke.portConflict
         legacyDataMigration = $smoke.legacyDataMigration
         upgrade = $upgrade
         crashRecovery = $smoke.crashRecovery

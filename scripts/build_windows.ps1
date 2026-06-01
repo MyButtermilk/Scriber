@@ -23,6 +23,7 @@ param(
     [switch]$SkipSmoke,
     [switch]$RunInstallerSmoke,
     [switch]$RunInstallerCrashSmoke,
+    [switch]$RunInstallerPortConflictSmoke,
     [switch]$RunInstallerLegacyDataSmoke,
     [switch]$RunInstallerUpgradeSmoke
 )
@@ -177,7 +178,7 @@ try {
         }
     }
 
-    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
@@ -190,6 +191,9 @@ try {
                 )
                 if ($RunInstallerCrashSmoke) {
                     $installerSmokeArgs += "-SimulateBackendCrash"
+                }
+                if ($RunInstallerPortConflictSmoke) {
+                    $installerSmokeArgs += "-OccupyDefaultPort"
                 }
                 if ($RunInstallerLegacyDataSmoke) {
                     $installerSmokeArgs += @("-LegacyDataDir", $RepoRoot, "-VerifyLegacyDataMigration")

@@ -8,9 +8,10 @@ backend process, verifies the Scriber health contract, hard-stops the Tauri
 process, and checks that the managed backend process exits with it. With
 -SimulateBackendCrash, it also kills the managed worker, waits for the
 desktop frontend/supervisor recovery path to start a replacement, and verifies
-crash metadata was written. With -LegacyDataDir and -VerifyLegacyDataMigration,
-it verifies first-run migration into SCRIBER_DATA_DIR without printing secret
-values.
+crash metadata was written. With -OccupyDefaultPort, it binds the default
+backend port before launch and verifies that the supervisor selects a different
+loopback port. With -LegacyDataDir and -VerifyLegacyDataMigration, it verifies
+first-run migration into SCRIBER_DATA_DIR without printing secret values.
 
 Build the executable first with:
   cd Frontend
@@ -29,6 +30,7 @@ param(
     [switch]$KeepAppOpen,
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
+    [switch]$OccupyDefaultPort,
     [switch]$SimulateBackendCrash,
     [int]$CrashRecoveryTimeoutSec = 75,
     [string]$LegacyDataDir = "",
@@ -37,6 +39,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$DefaultBackendPort = 8765
 
 function Get-ManagedBackendProcesses {
     Get-CimInstance Win32_Process |
@@ -350,7 +353,16 @@ if ($LegacyDataDir) {
 
 $app = $null
 $result = $null
+$defaultPortBlocker = $null
 try {
+    if ($OccupyDefaultPort) {
+        $defaultPortBlocker = [System.Net.Sockets.TcpListener]::new(
+            [System.Net.IPAddress]::Parse("127.0.0.1"),
+            $DefaultBackendPort
+        )
+        $defaultPortBlocker.Start()
+    }
+
     $app = Start-Process -FilePath $ExePath -WorkingDirectory (Split-Path $ExePath) -WindowStyle Hidden -PassThru
     $listener = Wait-NewBackendListener -BaselinePids $baseline -DeadlineSec $TimeoutSec
     if ($app.HasExited) {
@@ -363,6 +375,18 @@ try {
     }
     if (-not (Convert-ToFullPath -Path $runtime.downloadsDir).StartsWith($DataDir, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Managed backend downloadsDir is not under dataDir: $($runtime.downloadsDir)"
+    }
+    $portConflict = $null
+    if ($OccupyDefaultPort) {
+        if ([int]$listener.Port -eq $DefaultBackendPort) {
+            throw "Managed backend used default port $DefaultBackendPort even though it was occupied."
+        }
+        $portConflict = [ordered]@{
+            verified = $true
+            occupiedPort = $DefaultBackendPort
+            initialBackendPort = [int]$listener.Port
+            recoveredBackendPort = $null
+        }
     }
     $legacyDataMigration = $null
     if ($VerifyLegacyDataMigration) {
@@ -380,6 +404,9 @@ try {
         if ($replacement.BackendPid -eq $initialBackendPid) {
             throw "Backend crash recovery reused the killed backend pid $initialBackendPid."
         }
+        if ($OccupyDefaultPort -and [int]$replacement.Port -eq $DefaultBackendPort) {
+            throw "Recovered backend used default port $DefaultBackendPort even though it was occupied."
+        }
         $replacementHealth = Wait-BackendHealth -Port $replacement.Port -DeadlineSec $BackendHealthTimeoutSec
         $replacementRuntime = Get-BackendRuntime -Port $replacement.Port -Token $SessionToken
         if ((Convert-ToFullPath -Path $replacementRuntime.dataDir) -ne $DataDir) {
@@ -390,6 +417,9 @@ try {
         $listener = $replacement
         $health = $replacementHealth
         $runtime = $replacementRuntime
+        if ($portConflict) {
+            $portConflict.recoveredBackendPort = [int]$replacement.Port
+        }
         $crashRecovery = [pscustomobject]@{
             verified = $true
             killedBackendPid = $initialBackendPid
@@ -398,6 +428,10 @@ try {
             replacementPort = [int]$replacement.Port
             metadataPath = $metadataPath
         }
+    }
+    $portConflictResult = $null
+    if ($portConflict) {
+        $portConflictResult = [pscustomobject]$portConflict
     }
     $result = [pscustomobject]@{
         ok = $true
@@ -410,11 +444,13 @@ try {
         dataDir = $runtime.dataDir
         downloadsDir = $runtime.downloadsDir
         launchKind = $runtime.launchKind
+        portConflict = $portConflictResult
         legacyDataMigration = $legacyDataMigration
         crashRecovery = $crashRecovery
         cleanupVerified = $false
     }
 } finally {
+    $cleanupFailure = $null
     if (-not $KeepAppOpen -and $app -and -not $app.HasExited) {
         Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
         Wait-Process -Id $app.Id -Timeout 10 -ErrorAction SilentlyContinue
@@ -431,11 +467,15 @@ try {
             foreach ($processId in $remaining) {
                 Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
             }
-            throw "Managed backend process remained after Tauri exit: $($remaining -join ', ')"
-        }
-        if ($result) {
+            $cleanupFailure = "Managed backend process remained after Tauri exit: $($remaining -join ', ')"
+        } elseif ($result) {
             $result.cleanupVerified = $true
         }
+    }
+
+    if ($defaultPortBlocker) {
+        $defaultPortBlocker.Stop()
+        $defaultPortBlocker = $null
     }
 
     $env:SCRIBER_REPO_ROOT = $oldRoot
@@ -447,6 +487,10 @@ try {
     $env:SCRIBER_DISABLE_HOTKEYS = $oldHotkeys
     $env:SCRIBER_DISABLE_DEVICE_MONITOR = $oldMonitor
     $env:SCRIBER_LEGACY_DATA_DIR = $oldLegacyDataDir
+
+    if ($cleanupFailure) {
+        throw $cleanupFailure
+    }
 }
 
 $result | ConvertTo-Json -Compress -Depth 8
