@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import sys
 from pathlib import Path
 from typing import Callable, Optional
+
 from loguru import logger
+
+from src.runtime.media_tools import find_media_tool, require_media_tool
 
 
 class YouTubeDownloadError(RuntimeError):
@@ -52,9 +54,10 @@ def _format_eta(seconds: int) -> str:
 
 
 def _require_ffmpeg() -> None:
-    ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
-    if not ffmpeg:
-        raise YouTubeDownloadError("ffmpeg not found on PATH.")
+    try:
+        require_media_tool("ffmpeg")
+    except RuntimeError as exc:
+        raise YouTubeDownloadError(str(exc)) from exc
 
 
 def _is_forbidden_error(message: str) -> bool:
@@ -86,7 +89,7 @@ async def _communicate_or_kill_on_cancel(proc) -> tuple[bytes | None, bytes | No
 
 async def _has_video_stream(path: Path) -> bool:
     """Return True when ffprobe sees at least one video stream."""
-    ffprobe = shutil.which("ffprobe") or shutil.which("ffprobe.exe")
+    ffprobe = find_media_tool("ffprobe")
     if not ffprobe:
         return False
 
@@ -110,9 +113,10 @@ async def _has_video_stream(path: Path) -> bool:
 
 async def _extract_audio_track(source_path: Path) -> Path:
     """Transcode media to audio-only WebM/Opus."""
-    ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
-    if not ffmpeg:
-        raise YouTubeDownloadError("ffmpeg not found on PATH.")
+    try:
+        ffmpeg = require_media_tool("ffmpeg")
+    except RuntimeError as exc:
+        raise YouTubeDownloadError(str(exc)) from exc
 
     if source_path.suffix.lower() == ".webm":
         target_path = source_path.with_name(f"{source_path.stem}.audio.webm")
@@ -315,7 +319,7 @@ async def download_youtube_audio(
         logger.warning("yt-dlp library not available, falling back to subprocess")
     
     # Fallback to subprocess if library import fails
-    exe = shutil.which("yt-dlp") or shutil.which("yt-dlp.exe")
+    exe = find_media_tool("yt-dlp")
     if not exe:
         exe_cmd = [sys.executable, "-m", "yt_dlp"]
     else:

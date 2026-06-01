@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 from pathlib import Path
 
 from loguru import logger
 from pipecat.frames.frames import InputAudioRawFrame, StartFrame, EndFrame
 from pipecat.transports.base_transport import TransportParams
+
+from src.runtime.media_tools import require_media_tool
 
 try:
     from pipecat.transports.base_input import BaseInputTransport
@@ -91,9 +92,7 @@ class FfmpegAudioFileInput(BaseInputTransport):
 
     async def _feed_audio(self) -> None:
         try:
-            ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
-            if not ffmpeg:
-                raise RuntimeError("ffmpeg not found on PATH.")
+            ffmpeg = require_media_tool("ffmpeg")
 
             bytes_per_frame = max(1, self._block_size) * int(self._params.audio_in_channels) * 2
             cmd = [

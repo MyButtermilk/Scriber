@@ -1,15 +1,15 @@
 import asyncio
 import aiohttp
 import subprocess
-import shutil
 import io
 import wave
 import contextlib
 import tempfile
 import os
 import time
-from loguru import logger
 from typing import Callable, Optional
+
+from loguru import logger
 
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask, PipelineParams
@@ -29,6 +29,8 @@ from pipecat.frames.frames import (
 )
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
+
+from src.runtime.media_tools import find_media_tool
 
 try:
     from pipecat.audio.streams.input import SoundDeviceAudioInputStream
@@ -374,7 +376,8 @@ class SonioxAsyncProcessor(FrameProcessor):
         num_samples = len(audio_bytes) // bytes_per_sample
         duration_secs = num_samples / sr
 
-        if prefer_webm and shutil.which("ffmpeg"):
+        ffmpeg = find_media_tool("ffmpeg") if prefer_webm else None
+        if ffmpeg:
             # Use temporary files for WebM - required for proper duration metadata
             # WebM/Matroska containers need seekable output to write duration to header
             tmp_input = None
@@ -390,7 +393,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 
                 # Two-pass encoding: input file → output file (allows FFmpeg to write duration)
                 cmd = [
-                    "ffmpeg", "-y",          # Overwrite output
+                    ffmpeg, "-y",            # Overwrite output
                     "-f", "s16le",           # Input format: signed 16-bit little-endian PCM
                     "-ar", str(sr),          # Input sample rate
                     "-ac", str(ch),          # Input channels

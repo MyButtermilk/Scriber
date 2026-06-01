@@ -15,6 +15,7 @@ hiddenimports = [
     "PySide6.QtCore",
     "PySide6.QtGui",
     "PySide6.QtWidgets",
+    "yt_dlp",
     "pipecat.services.google.stt",
     "pipecat.services.assemblyai.stt",
     "pipecat.services.deepgram.stt",
@@ -33,6 +34,7 @@ for package in (
     "keyboard",
     "pyautogui",
     "PIL",
+    "yt_dlp",
 ):
     try:
         hiddenimports += collect_submodules(package)
@@ -48,7 +50,7 @@ frontend_dist = repo_root / "Frontend" / "dist" / "public"
 if frontend_dist.exists():
     datas.append((str(frontend_dist), "Frontend/dist/public"))
 
-for package in ("pipecat", "google"):
+for package in ("pipecat", "google", "yt_dlp"):
     try:
         datas += collect_data_files(package)
     except Exception:

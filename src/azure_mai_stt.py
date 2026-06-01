@@ -6,7 +6,6 @@ import contextlib
 import asyncio
 import io
 import json
-import shutil
 import tempfile
 import wave
 from pathlib import Path
@@ -27,6 +26,8 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
+
+from src.runtime.media_tools import require_media_tool
 
 _AZURE_MAI_MODEL = "mai-transcribe-1"
 _AZURE_MAI_API_VERSION = "2025-10-15"
@@ -129,9 +130,7 @@ def azure_mai_transcript_payload_to_text(payload: dict[str, Any]) -> str:
 
 
 async def _transcode_to_mp3(source_path: Path, target_path: Path) -> Path:
-    ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
-    if not ffmpeg:
-        raise RuntimeError("ffmpeg not found on PATH.")
+    ffmpeg = require_media_tool("ffmpeg")
 
     proc = await asyncio.create_subprocess_exec(
         ffmpeg,

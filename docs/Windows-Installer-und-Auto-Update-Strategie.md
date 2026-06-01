@@ -40,9 +40,9 @@ Scriber laeuft als signierte, installierte Windows-App (per-user), startet eine 
    - Backend (`web_api.py`) muss die statischen Dateien als Fallback routen (aiohttp `StaticResource` oder `FileResponse`).
    - **Kein Node.js beim Endnutzer noetig.**
 3. FFmpeg als gebuendelte Dependency.
-   - Aktuell erwartet der Code `shutil.which("ffmpeg")` in `youtube_download.py`, `web_api.py`, `audio_file_input.py` und `pipeline.py`.
-   - Fuer die gebuendelte Version: FFmpeg-Binary in `dist/app/ffmpeg/` mitliefern und `PATH` zur Laufzeit erweitern.
-   - Alternativ: Pfad-Resolution in einer zentralen Funktion (`src/runtime/ffmpeg.py`) kapseln, die sowohl Dev-Modus (System-PATH) als auch Frozen-Modus (gebuendelter Pfad) unterstuetzt.
+   - Status 2026-06-01: `src/runtime/media_tools.py` kapselt `ffmpeg`, `ffprobe` und `yt-dlp` Resolution fuer Dev-Modus, Env-Overrides und gebuendelte Sidecar-Tools.
+   - Status 2026-06-01: `scripts/build_tauri_backend_sidecar.ps1 -BundleMediaTools` kopiert lokale `ffmpeg`/`ffprobe` Binaries nach `tools\ffmpeg\` im Sidecar.
+   - Status 2026-06-01: `packaging/scriber-backend.spec` buendelt das `yt-dlp` Python-Paket fuer den Standard-Sidecar.
 
 ### 2) Installer
 1. **Inno Setup**, per-user Install nach `%LocalAppData%\Scriber`.
@@ -213,7 +213,7 @@ Felder gegenueber Entwurf ergaenzt:
      - `PySide6`, `pystray`, `customtkinter`
      - `onnx-asr`, `nemo_toolkit`
      - `yt-dlp`, `python-docx`, `reportlab`, `lxml`
-   - Daten-Dateien einschliessen: `src/assets/`, `Frontend/dist/public/`, FFmpeg-Binary.
+   - Daten-Dateien einschliessen: `src/assets/`, `Frontend/dist/public/`, optionale FFmpeg/FFprobe-Binaries ueber `-BundleMediaTools`.
 5. **Reproduzierbarer Build** per Script.
 6. **Size-Profiling direkt in Phase 1**:
    - `requirements-base/local-asr/dev` einfuehren.
@@ -221,13 +221,14 @@ Felder gegenueber Entwurf ergaenzt:
    - Groessenreport (`size-report.json`) erzeugen und in CI publizieren.
 
 Lieferobjekte:
-1. `scripts/build_tauri_backend_sidecar.ps1` (teilweise umgesetzt)
-2. `packaging/scriber-backend.spec` (teilweise umgesetzt)
+1. `scripts/build_tauri_backend_sidecar.ps1` (umgesetzt fuer Sidecar, Frontend-Build, optionales FFmpeg/FFprobe-Bundling und Copy nach Tauri Release)
+2. `packaging/scriber-backend.spec` (umgesetzt fuer Standard-Cloud-Sidecar inkl. `yt-dlp`)
 3. `src/version.py`
-4. `src/runtime/paths.py` (teilweise umgesetzt: Runtime-Data-Pfade; Asset/FFmpeg-Resolution offen)
-5. `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt`
-6. `size-report.json` (CI-Artefakt)
-7. Start/Healthcheck fuer gebaute App (Smoke-Test vorhanden; Sidecar-Pfad optional ueber `-BackendExePath`)
+4. `src/runtime/paths.py` (teilweise umgesetzt: Runtime-Data-Pfade; Asset-Resolution offen)
+5. `src/runtime/media_tools.py` (umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp`)
+6. `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt`
+7. `size-report.json` (CI-Artefakt)
+8. Start/Healthcheck fuer gebaute App (Smoke-Test vorhanden; Sidecar-Pfad optional ueber `-BackendExePath`)
 
 ### Phase 2 - Installer
 1. `installer/scriber.iss` erstellen.
@@ -353,11 +354,12 @@ Lieferobjekte:
 |-------|-------------|
 | `src/version.py` | Zentrale Versionsnummer (`__version__`). |
 | `src/updater.py` | UpdateManager: Check, Download, Verify, Install. |
-| `src/runtime/paths.py` | Teilweise umgesetzt: Runtime-Data-Pfade fuer Settings, SQLite und Downloads. FFmpeg/Frontend-Asset-Resolution offen. |
+| `src/runtime/paths.py` | Teilweise umgesetzt: Runtime-Data-Pfade fuer Settings, SQLite und Downloads. Frontend-Asset-Resolution offen. |
+| `src/runtime/media_tools.py` | Umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp` ueber Env, Sidecar-Tools und System-PATH. |
 | `src/backend_worker.py` | Umgesetzt: Tauri/PyInstaller Worker-Entry-Point. |
 | `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar. |
 | `installer/scriber.iss` | Inno Setup Script. |
-| `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Frontend Build → PyInstaller Sidecar → optionaler Copy nach Tauri Release. |
+| `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Frontend Build → PyInstaller Sidecar → optionales FFmpeg/FFprobe-Bundling → optionaler Copy nach Tauri Release. |
 | `scripts/build_windows.ps1` | Noch offen: Gesamtpipeline inkl. Tauri Bundle, Inno Setup und Signierung. |
 | `.github/workflows/release-windows.yml` | CI/CD fuer Tag-basierte Releases. |
 | `LICENSE` | MIT License Datei. |
@@ -370,7 +372,7 @@ Lieferobjekte:
 | `src/config.py` | Update-Settings (`AUTO_UPDATE`, `UPDATE_CHANNEL`, `UPDATE_CHECK_INTERVAL_HOURS`, `UPDATE_URL`). |
 | `Frontend/client/src/pages/Settings.tsx` | Update-Sektion im Settings-UI. |
 | `README.md` | Install/Update User Guide fuer Endnutzer. |
-| `src/youtube_download.py` | FFmpeg-Pfad ueber zentrale Resolution (`runtime/paths.py`). |
+| `src/youtube_download.py` | FFmpeg/FFprobe/YT-DLP-Pfad ueber zentrale Resolution (`runtime/media_tools.py`). |
 | `src/audio_file_input.py` | FFmpeg-Pfad ueber zentrale Resolution. |
 | `src/pipeline.py` | FFmpeg-Pfad ueber zentrale Resolution. |
 

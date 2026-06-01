@@ -9,6 +9,7 @@ target\release\backend.
 
 Typical flow:
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
+  powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
   cd Frontend
   npm run tauri:build
 #>
@@ -18,8 +19,10 @@ param(
     [string]$PythonPath = "",
     [string]$DistRoot = "",
     [string]$WorkRoot = "",
+    [string]$MediaToolsDir = "",
     [switch]$SkipFrontendBuild,
     [switch]$InstallPyInstaller,
+    [switch]$BundleMediaTools,
     [switch]$CopyToTauriRelease
 )
 
@@ -70,6 +73,67 @@ function Test-PyInstaller {
     return $LASTEXITCODE -eq 0
 }
 
+function Resolve-MediaTool {
+    param(
+        [string[]]$Names,
+        [string]$SearchDir
+    )
+
+    if ($SearchDir) {
+        foreach ($name in $Names) {
+            $candidate = Join-Path $SearchDir $name
+            if (Test-Path $candidate) {
+                return (Resolve-Path $candidate).Path
+            }
+        }
+        return $null
+    }
+
+    foreach ($name in $Names) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($command -and $command.Source -and (Test-Path $command.Source)) {
+            return (Resolve-Path $command.Source).Path
+        }
+    }
+    return $null
+}
+
+function Copy-MediaTools {
+    param(
+        [string]$SidecarDir,
+        [string]$SearchDir
+    )
+
+    $toolsTarget = Join-Path $SidecarDir "tools\ffmpeg"
+    Assert-UnderRoot -Root $RepoRoot -Path $toolsTarget -Label "Bundled media tools target"
+    New-Item -ItemType Directory -Force -Path $toolsTarget | Out-Null
+
+    $copied = @()
+    $ffmpeg = Resolve-MediaTool -Names @("ffmpeg.exe", "ffmpeg") -SearchDir $SearchDir
+    if (-not $ffmpeg) {
+        if ($SearchDir) {
+            throw "ffmpeg was not found in MediaToolsDir: $SearchDir"
+        }
+        throw "ffmpeg was not found on PATH. Pass -MediaToolsDir or install ffmpeg before using -BundleMediaTools."
+    }
+    Copy-Item -LiteralPath $ffmpeg -Destination (Join-Path $toolsTarget (Split-Path $ffmpeg -Leaf)) -Force
+    $copied += (Join-Path $toolsTarget (Split-Path $ffmpeg -Leaf))
+
+    $ffprobe = Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir
+    if ($ffprobe) {
+        Copy-Item -LiteralPath $ffprobe -Destination (Join-Path $toolsTarget (Split-Path $ffprobe -Leaf)) -Force
+        $copied += (Join-Path $toolsTarget (Split-Path $ffprobe -Leaf))
+    }
+
+    $ytDlp = Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir $SearchDir
+    if ($ytDlp) {
+        Copy-Item -LiteralPath $ytDlp -Destination (Join-Path $toolsTarget (Split-Path $ytDlp -Leaf)) -Force
+        $copied += (Join-Path $toolsTarget (Split-Path $ytDlp -Leaf))
+    }
+
+    return $copied
+}
+
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 $PythonPath = Resolve-PythonPath -Root $RepoRoot -Requested $PythonPath
 if (-not $DistRoot) {
@@ -80,6 +144,9 @@ if (-not $WorkRoot) {
 }
 $DistRoot = Convert-ToFullPath -Path $DistRoot
 $WorkRoot = Convert-ToFullPath -Path $WorkRoot
+if ($MediaToolsDir) {
+    $MediaToolsDir = (Resolve-Path $MediaToolsDir).Path
+}
 $SpecPath = Join-Path $RepoRoot "packaging\scriber-backend.spec"
 
 Assert-UnderRoot -Root $RepoRoot -Path $DistRoot -Label "DistRoot"
@@ -139,6 +206,11 @@ if (-not (Test-Path $sidecarExe)) {
     throw "Sidecar build completed but executable was not found under $sidecarDir."
 }
 
+$mediaToolsCopied = @()
+if ($BundleMediaTools -or $MediaToolsDir) {
+    $mediaToolsCopied = @(Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir)
+}
+
 $copiedTo = $null
 if ($CopyToTauriRelease) {
     $targetDir = Join-Path $RepoRoot "Frontend\src-tauri\target\release\backend"
@@ -155,5 +227,6 @@ if ($CopyToTauriRelease) {
     ok = $true
     sidecarDir = $sidecarDir
     sidecarExe = $sidecarExe
+    mediaToolsCopied = $mediaToolsCopied
     copiedToTauriRelease = $copiedTo
 } | ConvertTo-Json -Compress

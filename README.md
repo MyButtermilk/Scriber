@@ -170,7 +170,7 @@ Provider routing, retry scheduling, and circuit-breaker logic exist in the backe
 
 - Python 3.10+
 - Node.js 20+ for the web UI
-- ffmpeg available on `PATH` for YouTube/file audio extraction
+- ffmpeg available on `PATH`, configured through `SCRIBER_FFMPEG_PATH`, or bundled with the desktop sidecar for YouTube/file audio extraction
 - Windows recommended for tray, global hotkey, overlay, and microphone device monitoring
 
 ### Windows
@@ -477,9 +477,15 @@ SCRIBER_BACKEND_EXE=
 SCRIBER_BACKEND_DIR=
 SCRIBER_BACKEND_LAUNCH_KIND=
 SCRIBER_FORCE_MANAGED_BACKEND=0
+SCRIBER_MEDIA_TOOLS_DIR=
+SCRIBER_FFMPEG_PATH=
+SCRIBER_FFPROBE_PATH=
+SCRIBER_YT_DLP_PATH=
 ```
 
 The Tauri supervisor prefers a packaged backend sidecar when `SCRIBER_BACKEND_EXE` points to one, or when a `scriber-backend` executable is found next to the Tauri app under `backend\` or `binaries\`. If no sidecar exists, development mode falls back to `python -m src.web_api` through `SCRIBER_PYTHON` or the local virtualenv.
+
+Media tools are resolved in this order: explicit tool env var, `SCRIBER_MEDIA_TOOLS_DIR`, bundled folders under the backend app root such as `tools\ffmpeg\`, then system `PATH`. The PyInstaller sidecar bundles the `yt-dlp` Python package; `-BundleMediaTools` copies local `ffmpeg`/`ffprobe` binaries into the sidecar output when they are available.
 
 ### Frontend
 
@@ -643,9 +649,10 @@ Build the backend sidecar with PyInstaller:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
+powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
 ```
 
-This builds `src/backend_worker.py` through `packaging\scriber-backend.spec` into `dist\tauri-sidecar\scriber-backend\` and optionally copies the onedir output to `Frontend\src-tauri\target\release\backend\`, where the Tauri supervisor can find it automatically.
+This builds `src/backend_worker.py` through `packaging\scriber-backend.spec` into `dist\tauri-sidecar\scriber-backend\` and optionally copies the onedir output to `Frontend\src-tauri\target\release\backend\`, where the Tauri supervisor can find it automatically. Use `-BundleMediaTools` to copy local `ffmpeg`/`ffprobe` binaries into `tools\ffmpeg\` inside the sidecar.
 
 The current sidecar spec is a standard cloud-provider build and intentionally excludes heavy local ASR stacks such as NeMo/ONNX-ASR/Torch. Local ASR packaging remains a separate optional package path.
 
@@ -791,13 +798,13 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 ### YouTube transcription fails
 
 - Set `YOUTUBE_API_KEY`.
-- Verify `yt-dlp` and ffmpeg availability.
+- Verify `yt-dlp` and ffmpeg availability. In packaged Tauri builds, check `tools\ffmpeg\` inside the backend sidecar or set `SCRIBER_FFMPEG_PATH`.
 - Check timeout settings and provider API keys.
 
 ### File upload fails
 
 - Verify extension and size limits.
-- For video, ensure ffmpeg can extract audio.
+- For video, ensure ffmpeg can extract audio from `PATH`, `SCRIBER_FFMPEG_PATH`, or the bundled sidecar tools directory.
 - Check provider-specific upload limits in backend logs/settings.
 
 ### Local models are missing
@@ -812,7 +819,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 
 - Real app-level microphone prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Frontend transcript-list virtualization or infinite query.
-- Full bundled desktop packaging: ffmpeg/yt-dlp inclusion, signing, installer, and updater.
+- Full bundled desktop packaging: signing, installer, and updater.
 - Broader runtime smoke tests for the Tauri supervisor: backend crash, startup timeout, external backend attach, dynamic port, and app-exit cleanup.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.
 - Stronger typed API contract between backend and frontend.

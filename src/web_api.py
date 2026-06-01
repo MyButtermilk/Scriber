@@ -46,6 +46,7 @@ from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.pipeline import ScriberPipeline, invalidate_mic_device_resolution_cache
 from src.runtime.paths import data_dir, downloads_dir
+from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
@@ -394,11 +395,7 @@ async def _transcode_media_to_webm_audio(
     *,
     bitrate: str,
 ) -> Path:
-    import shutil
-
-    ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
-    if not ffmpeg:
-        raise RuntimeError("ffmpeg not found on PATH.")
+    ffmpeg = require_media_tool("ffmpeg")
 
     cmd = [
         ffmpeg,
@@ -616,10 +613,9 @@ def _format_duration(seconds: float) -> str:
 def _probe_media_duration_seconds(file_path: Path) -> float | None:
     """Best-effort media duration probe via ffprobe."""
     import math
-    import shutil
     import subprocess
 
-    ffprobe = shutil.which("ffprobe") or shutil.which("ffprobe.exe")
+    ffprobe = find_media_tool("ffprobe")
     if not ffprobe:
         return None
 
