@@ -13,7 +13,7 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
 3. Frontend-Refetch-Stürme bei `history_updated`
 4. O(n²)-Stringaufbau bei Live-Transkriptsegmenten
 
-**Status-Update 2026-06-01:** Die FTS5-/Pagination-Empfehlung ist im Backend umgesetzt, `history_updated` ist global gedrosselt, `audio_level` läuft nur noch ~30fps, und der Mic-Hotpath wurde mit Device-Resolution-Cache, DeviceMonitor-Deferral und Audio-Callback-Throttling weiter optimiert. Weiter offen bleiben große Upload-/Export-I/O-Pfade, echte Frontend-Virtualisierung und der O(n²)-Content-Aufbau.
+**Status-Update 2026-06-02:** Die FTS5-/Pagination-Empfehlung ist im Backend umgesetzt, `history_updated` ist global gedrosselt, `audio_level` läuft nur noch ~30fps, und der Mic-Hotpath wurde mit Device-Resolution-Cache, DeviceMonitor-Deferral und Audio-Callback-Throttling weiter optimiert. Der O(n²)-Content-Aufbau bei Live-Segmenten ist durch gepufferte Final-Segmente und `scripts/check_transcript_buffer_growth.py` als synthetisches 30-Minuten-Guard abgedeckt. Weiter offen bleiben große Upload-/Export-I/O-Pfade, echte Frontend-Virtualisierung in allen Randfällen und reale Langzeit-Providerläufe.
 
 ## Findings (priorisiert)
 
@@ -75,6 +75,10 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
   - Alternativ Join nur bei `finish()` ausführen.
 - Erwarteter Impact:
   - Niedrigere CPU-Last und weniger temporäre Allokationen in langen Sessions.
+- Status 2026-06-02:
+  - ✅ `TranscriptRecord.append_final_text()` speichert nach dem ersten Segment weitere finale Segmente in `_pending_content_segments`.
+  - ✅ `content_text()` materialisiert den großen String erst bei explizitem Full-Content-Zugriff oder Session-Finish.
+  - ✅ `scripts/check_transcript_buffer_growth.py` simuliert standardmäßig 1800 finale Segmente und failt, wenn Metadaten-Reads den Content vorzeitig materialisieren.
 
 ### P1: Preview-Berechnung splitet kompletten Content pro Listeneintrag
 - Stelle:
@@ -157,7 +161,7 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
 1. P0: Streaming statt Voll-`read()` in `transcribe_file_direct`
 2. P0: MistralAsync auf spooled buffer umstellen
 3. ~~P0/P1: Transcript-Suche auf SQLite FTS5 + serverseitige Pagination~~ ✅ Backend umgesetzt
-4. P1: Inkrementeller `content`-Aufbau + cached preview
+4. ~~P1: Inkrementeller `content`-Aufbau + cached preview~~ ✅ Buffered append + preview cache umgesetzt
 5. P1/P2: Frontend Refetch-Strategie auf Delta-Updates umstellen
 
 ## Messplan (vor/nach)

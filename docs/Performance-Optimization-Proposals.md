@@ -537,12 +537,29 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
     return rec.to_public(include_content=True)
 ```
 
+3. **Buffered live transcript appends:**
+```python
+# src/web_api.py - TranscriptRecord.append_final_text()
+if not self.content and not self._pending_content_segments:
+    self.content = cleaned
+else:
+    self._pending_content_segments.append(cleaned)
+```
+
+`content_text()` materializes pending segments only when full content is explicitly
+requested or the session finishes. `scripts/check_transcript_buffer_growth.py`
+guards the Phase 8 long-session shape by simulating one final segment per second
+for 30 minutes and failing if metadata reads materialize the growing transcript
+string during append.
+
 **Updated Files:**
 - `src/database.py` - Added `load_transcript_metadata()` function
 - `src/web_api.py` - Uses metadata loading for lists, lazy loads content on demand
+- `scripts/check_transcript_buffer_growth.py` - Synthetic 30-minute transcript string-growth guard
+- `tests/perf/test_transcript_buffer_growth_script.py` - Guard-script coverage
 
 **Impact:** 80-90% memory reduction for transcript lists (10MB → 1MB for 1000 transcripts)
-**Status:** ✅ Completed (2026-01-13)
+**Status:** ✅ Completed (2026-01-13); long live transcript append guard added 2026-06-02
 
 ---
 
@@ -562,6 +579,7 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 - [x] **Audio callback channel-rescan/RMS throttle update ✅ (2026-06-01)**
 - [x] **Per-session keep_alive cleanup forced closed ✅ (2026-06-01)** - prevents orphaned PortAudio resources until a true app-level always-on mic manager exists
 - [x] **Lazy transcript content loading (3.3) ✅ (2026-01-13)** - 80-90% Memory reduction
+- [x] **Long live transcript append buffering guard ✅ (2026-06-02)** - synthetic 30-minute segment-growth check
 - [x] Lazy STT imports (2026-01-01) ✅
 - [x] Background overlay prewarming (2026-01-01) ✅
 - [x] Background ML model prewarming (2026-01-01) ✅

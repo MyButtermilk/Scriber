@@ -44,7 +44,7 @@ Current implementation highlights:
 - Tauri 2 desktop scaffold with a Rust supervisor that starts the Python backend, negotiates a runtime backend URL, checks the Scriber health contract, enforces one Windows desktop instance through a named mutex, owns the native app menu, tray lifecycle commands, Windows desktop autostart, and global hotkey dispatch, and avoids a visible Python console window on Windows.
 - Minimal Tauri desktop permissions: the webview only gets app version lookup, process relaunch, and the update check/install commands; backend process execution stays inside the Rust supervisor and is restricted to the Scriber backend sidecar names.
 - Tauri-supervised backend access is protected by a per-run session token: Rust passes `SCRIBER_SESSION_TOKEN` to the worker, React reads it through `get_backend_access`, and backend REST/WebSocket URLs carry a `scriberToken` query parameter.
-- Backend hot-path reductions: no-client WebSocket broadcasts skip JSON serialization, audio-level callbacks avoid UI broadcast work without clients/overlay, long transcript appends buffer final segments, and upload/export cleanup paths are offloaded from the event loop where practical.
+- Backend hot-path reductions: no-client WebSocket broadcasts skip JSON serialization, audio-level callbacks avoid UI broadcast work without clients/overlay, long transcript appends buffer final segments with a synthetic 30-minute guard, and upload/export cleanup paths are offloaded from the event loop where practical.
 - Runtime data path support via `SCRIBER_DATA_DIR`: the Tauri-supervised backend writes settings, SQLite data, downloads, and logs to a writable app data directory instead of relying on the repository or install directory.
 - Redacted support bundles for packaged diagnostics: runtime metadata, selected logs, and redacted settings/environment without API keys or session tokens.
 - Backend sidecar path for Tauri: the supervisor can start a packaged `scriber-backend` worker and falls back to the source checkout/virtualenv for development.
@@ -739,6 +739,14 @@ powershell -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 -It
 
 Use `-Hidden` for startup-only/headless runs. The script writes JSON under `tmp\hybrid-baseline\`, measures UI/backend readiness, backend cleanup, synthetic upload/export load with `/api/health` and `/api/state` responsiveness probes, WebSocket broadcast throughput, and JSON serialization cost, then reports which required baseline areas still need samples or dedicated benchmark automation. For live recording samples, `stop_to_text_injection` accepts either `stop_requested_to_first_paste_ms` or an already-injected-before-stop sample, which records the stop-to-text wait as `0 ms`.
 
+For the Phase 8 transcript string-growth guard, run:
+
+```bash
+python scripts/check_transcript_buffer_growth.py
+```
+
+The default shape simulates one final transcript segment per second over 30 minutes and fails if metadata reads materialize the growing transcript string before final content is explicitly requested.
+
 ### Tests
 
 ```bash
@@ -921,7 +929,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 - Real app-level microphone prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Real recording text-injection samples from `-RecordHotPathSamples`, either `stop_requested_to_first_paste_ms` for async injection after stop or an already-injected-before-stop realtime sample counted as `0 ms` stop-to-text wait.
 - Full bundled desktop release activation: Authenticode signing, Tauri updater signing keys, signed update artifacts, and published `latest.json`.
-- Full-duration Tauri runtime stability runs, for example 30-minute recording/provider sessions with memory-growth review.
+- Full-duration Tauri runtime stability runs, for example real 30-minute recording/provider sessions with memory-growth review beyond the synthetic transcript string-growth guard.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.
 - Stronger typed API contract between backend and frontend.
 - Smaller backend modules by splitting `src/web_api.py` into domains.
