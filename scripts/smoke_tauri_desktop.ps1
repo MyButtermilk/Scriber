@@ -21,7 +21,9 @@ it verifies first-run migration into SCRIBER_DATA_DIR without printing secret
 values. With -StabilityDurationSec, it keeps the app running for repeated
 health/state probes and verifies that the backend process remains stable.
 With -MaxBackendWorkingSetGrowthMB, the stability smoke also fails when backend
-working-set peak growth exceeds the configured threshold.
+working-set peak growth exceeds the configured threshold. With
+-MaxIdleCpuPercent, the stability smoke fails when normalized average idle CPU
+for the Tauri app plus backend exceeds the configured threshold.
 
 Build the executable first with:
   cd Frontend
@@ -41,6 +43,7 @@ param(
     [int]$StabilityDurationSec = 0,
     [int]$StabilityProbeIntervalSec = 5,
     [double]$MaxBackendWorkingSetGrowthMB = 0,
+    [double]$MaxIdleCpuPercent = 0,
     [switch]$KeepAppOpen,
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
@@ -212,6 +215,38 @@ function Invoke-TimedRestGet {
     }
 }
 
+function Get-ProcessTotalCpuSeconds {
+    param([int[]]$ProcessIds)
+
+    $cpuByPid = @{}
+    foreach ($processId in $ProcessIds) {
+        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+        if ($process) {
+            $cpuByPid[[int]$processId] = [double]$process.TotalProcessorTime.TotalSeconds
+        }
+    }
+    return $cpuByPid
+}
+
+function Get-DeltaCpuPercent {
+    param(
+        [object]$PreviousSeconds,
+        [object]$CurrentSeconds,
+        [double]$ElapsedSeconds,
+        [int]$LogicalProcessorCount
+    )
+
+    if ($null -eq $PreviousSeconds -or $null -eq $CurrentSeconds -or $ElapsedSeconds -le 0) {
+        return $null
+    }
+    $deltaSeconds = [double]$CurrentSeconds - [double]$PreviousSeconds
+    if ($deltaSeconds -lt 0) {
+        return $null
+    }
+    $normalized = ($deltaSeconds / ($ElapsedSeconds * [Math]::Max(1, $LogicalProcessorCount))) * 100
+    return [Math]::Round($normalized, 2)
+}
+
 function Test-RuntimeStability {
     param(
         [System.Diagnostics.Process]$AppProcess,
@@ -221,7 +256,8 @@ function Test-RuntimeStability {
         [string]$ExpectedRuntimeMode,
         [int]$DurationSec,
         [int]$ProbeIntervalSec,
-        [double]$MaxWorkingSetGrowthMB = 0
+        [double]$MaxWorkingSetGrowthMB = 0,
+        [double]$MaxIdleCpuPercent = 0
     )
 
     if ($DurationSec -le 0) {
@@ -236,6 +272,9 @@ function Test-RuntimeStability {
     $samples = @()
     $startedAt = Get-Date
     $deadline = $startedAt.AddSeconds($DurationSec)
+    $logicalProcessorCount = [Math]::Max(1, [Environment]::ProcessorCount)
+    $lastCpuSampleAt = Get-Date
+    $lastCpuTotals = Get-ProcessTotalCpuSeconds -ProcessIds @([int]$AppProcess.Id, $BackendPid)
     do {
         if ($AppProcess.HasExited) {
             throw "Tauri process exited during stability smoke with code $($AppProcess.ExitCode)."
@@ -260,12 +299,37 @@ function Test-RuntimeStability {
             throw "Stability smoke state probe returned unexpected payload."
         }
 
+        $currentCpuSampleAt = Get-Date
+        $currentCpuTotals = Get-ProcessTotalCpuSeconds -ProcessIds @([int]$AppProcess.Id, $BackendPid)
+        $cpuElapsedSec = ($currentCpuSampleAt - $lastCpuSampleAt).TotalSeconds
+        $appCpuPercent = Get-DeltaCpuPercent `
+            -PreviousSeconds $lastCpuTotals[[int]$AppProcess.Id] `
+            -CurrentSeconds $currentCpuTotals[[int]$AppProcess.Id] `
+            -ElapsedSeconds $cpuElapsedSec `
+            -LogicalProcessorCount $logicalProcessorCount
+        $backendCpuPercent = Get-DeltaCpuPercent `
+            -PreviousSeconds $lastCpuTotals[$BackendPid] `
+            -CurrentSeconds $currentCpuTotals[$BackendPid] `
+            -ElapsedSeconds $cpuElapsedSec `
+            -LogicalProcessorCount $logicalProcessorCount
+        $combinedCpuPercent = $null
+        if ($null -ne $appCpuPercent -or $null -ne $backendCpuPercent) {
+            $appCpuValue = if ($null -ne $appCpuPercent) { [double]$appCpuPercent } else { 0.0 }
+            $backendCpuValue = if ($null -ne $backendCpuPercent) { [double]$backendCpuPercent } else { 0.0 }
+            $combinedCpuPercent = [Math]::Round($appCpuValue + $backendCpuValue, 2)
+        }
+        $lastCpuSampleAt = $currentCpuSampleAt
+        $lastCpuTotals = $currentCpuTotals
+
         $processSnapshot = Get-Process -Id $BackendPid -ErrorAction Stop
         $samples += [pscustomobject]@{
             index = $samples.Count + 1
             elapsedSec = [Math]::Round(((Get-Date) - $startedAt).TotalSeconds, 2)
             backendPid = $BackendPid
             backendWorkingSetMb = [Math]::Round($processSnapshot.WorkingSet64 / 1MB, 2)
+            appCpuPercent = $appCpuPercent
+            backendCpuPercent = $backendCpuPercent
+            combinedCpuPercent = $combinedCpuPercent
             healthMs = $healthProbe.elapsedMs
             stateMs = $stateProbe.elapsedMs
             healthReady = [bool]$health.ready
@@ -287,18 +351,37 @@ function Test-RuntimeStability {
     if ($MaxWorkingSetGrowthMB -gt 0 -and $null -ne $workingSetPeakGrowth -and $workingSetPeakGrowth -gt $MaxWorkingSetGrowthMB) {
         throw "Stability smoke backend working-set peak growth ${workingSetPeakGrowth}MB exceeded ${MaxWorkingSetGrowthMB}MB."
     }
+    $appCpuValues = @($samples | Where-Object { $null -ne $_.appCpuPercent } | ForEach-Object { [double]$_.appCpuPercent })
+    $backendCpuValues = @($samples | Where-Object { $null -ne $_.backendCpuPercent } | ForEach-Object { [double]$_.backendCpuPercent })
+    $combinedCpuValues = @($samples | Where-Object { $null -ne $_.combinedCpuPercent } | ForEach-Object { [double]$_.combinedCpuPercent })
+    $appCpuMax = if ($appCpuValues.Count) { [double](($appCpuValues | Measure-Object -Maximum).Maximum) } else { $null }
+    $backendCpuMax = if ($backendCpuValues.Count) { [double](($backendCpuValues | Measure-Object -Maximum).Maximum) } else { $null }
+    $combinedCpuMax = if ($combinedCpuValues.Count) { [double](($combinedCpuValues | Measure-Object -Maximum).Maximum) } else { $null }
+    $combinedCpuAvg = if ($combinedCpuValues.Count) { [Math]::Round([double](($combinedCpuValues | Measure-Object -Average).Average), 2) } else { $null }
+    if ($MaxIdleCpuPercent -gt 0 -and -not $combinedCpuValues.Count) {
+        throw "Stability smoke could not collect idle CPU samples."
+    }
+    if ($MaxIdleCpuPercent -gt 0 -and $null -ne $combinedCpuAvg -and $combinedCpuAvg -gt $MaxIdleCpuPercent) {
+        throw "Stability smoke average idle CPU ${combinedCpuAvg}% exceeded ${MaxIdleCpuPercent}%."
+    }
     return [pscustomobject]@{
         verified = $true
         durationSec = $DurationSec
         probeIntervalSec = [Math]::Max(1, $ProbeIntervalSec)
         sampleCount = $samples.Count
         backendPid = $BackendPid
+        logicalProcessorCount = $logicalProcessorCount
         backendWorkingSetStartMb = $workingSetStart
         backendWorkingSetEndMb = $workingSetEnd
         backendWorkingSetMaxMb = $workingSetMax
         backendWorkingSetGrowthMb = $workingSetGrowth
         backendWorkingSetPeakGrowthMb = $workingSetPeakGrowth
         maxBackendWorkingSetGrowthMb = if ($MaxWorkingSetGrowthMB -gt 0) { $MaxWorkingSetGrowthMB } else { $null }
+        appCpuMaxPercent = $appCpuMax
+        backendCpuMaxPercent = $backendCpuMax
+        combinedCpuMaxPercent = $combinedCpuMax
+        combinedCpuAvgPercent = $combinedCpuAvg
+        maxIdleCpuPercent = if ($MaxIdleCpuPercent -gt 0) { $MaxIdleCpuPercent } else { $null }
         samples = $samples
     }
 }
@@ -818,7 +901,8 @@ try {
         -ExpectedRuntimeMode $expectedRuntimeMode `
         -DurationSec $StabilityDurationSec `
         -ProbeIntervalSec $StabilityProbeIntervalSec `
-        -MaxWorkingSetGrowthMB $MaxBackendWorkingSetGrowthMB
+        -MaxWorkingSetGrowthMB $MaxBackendWorkingSetGrowthMB `
+        -MaxIdleCpuPercent $MaxIdleCpuPercent
     $result = [pscustomobject]@{
         ok = $true
         appPid = $app.Id

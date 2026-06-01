@@ -31,6 +31,7 @@ param(
     [int]$InstallerStabilityDurationSec = 15,
     [int]$InstallerStabilityProbeIntervalSec = 5,
     [double]$InstallerMaxBackendWorkingSetGrowthMB = 0,
+    [double]$InstallerMaxIdleCpuPercent = 0,
     [switch]$RunInstallerLegacyDataSmoke,
     [switch]$RunInstallerUpgradeSmoke,
     [switch]$RunInstallerUninstallSmoke
@@ -217,6 +218,9 @@ try {
                     $installerSmokeArgs += @("-StabilityProbeIntervalSec", $InstallerStabilityProbeIntervalSec.ToString())
                     if ($InstallerMaxBackendWorkingSetGrowthMB -gt 0) {
                         $installerSmokeArgs += @("-MaxBackendWorkingSetGrowthMB", $InstallerMaxBackendWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                    }
+                    if ($InstallerMaxIdleCpuPercent -gt 0) {
+                        $installerSmokeArgs += @("-MaxIdleCpuPercent", $InstallerMaxIdleCpuPercent.ToString([System.Globalization.CultureInfo]::InvariantCulture))
                     }
                 }
                 if ($RunInstallerLegacyDataSmoke) {

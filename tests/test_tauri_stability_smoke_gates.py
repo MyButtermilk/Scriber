@@ -22,6 +22,18 @@ def test_desktop_stability_smoke_reports_memory_growth_gate() -> None:
     assert "-MaxWorkingSetGrowthMB $MaxBackendWorkingSetGrowthMB" in script
 
 
+def test_desktop_stability_smoke_reports_idle_cpu_gate() -> None:
+    script = read_script("scripts/smoke_tauri_desktop.ps1")
+
+    assert "[double]$MaxIdleCpuPercent = 0" in script
+    assert "Get-ProcessTotalCpuSeconds" in script
+    assert "combinedCpuMaxPercent = $combinedCpuMax" in script
+    assert "combinedCpuAvgPercent = $combinedCpuAvg" in script
+    assert "maxIdleCpuPercent =" in script
+    assert "average idle CPU" in script
+    assert "-MaxIdleCpuPercent $MaxIdleCpuPercent" in script
+
+
 def test_installer_and_build_scripts_forward_memory_growth_gate() -> None:
     installer = read_script("scripts/smoke_windows_installer.ps1")
     build = read_script("scripts/build_windows.ps1")
@@ -30,6 +42,16 @@ def test_installer_and_build_scripts_forward_memory_growth_gate() -> None:
     assert '"-MaxBackendWorkingSetGrowthMB", $MaxBackendWorkingSetGrowthMB.ToString' in installer
     assert "[double]$InstallerMaxBackendWorkingSetGrowthMB = 0" in build
     assert '"-MaxBackendWorkingSetGrowthMB", $InstallerMaxBackendWorkingSetGrowthMB.ToString' in build
+
+
+def test_installer_and_build_scripts_forward_idle_cpu_gate() -> None:
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+    build = read_script("scripts/build_windows.ps1")
+
+    assert "[double]$MaxIdleCpuPercent = 0" in installer
+    assert '"-MaxIdleCpuPercent", $MaxIdleCpuPercent.ToString' in installer
+    assert "[double]$InstallerMaxIdleCpuPercent = 0" in build
+    assert '"-MaxIdleCpuPercent", $InstallerMaxIdleCpuPercent.ToString' in build
 
 
 def test_installer_uninstall_smoke_is_a_strict_build_gate() -> None:

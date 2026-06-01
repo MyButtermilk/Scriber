@@ -21,8 +21,10 @@ against the same install/data directories and verifies that existing app data is
 preserved. With -StabilityDurationSec, the installed desktop smoke keeps the app
 running for repeated health/state probes before cleanup. With
 -MaxBackendWorkingSetGrowthMB, stability also fails on excessive backend
-working-set peak growth. With -VerifyUninstall, the silent uninstaller becomes
-a strict release gate: it must remove installed app artifacts while preserving
+working-set peak growth. With -MaxIdleCpuPercent, stability fails when
+normalized average idle CPU for the Tauri app plus backend exceeds the
+configured threshold. With -VerifyUninstall, the silent uninstaller becomes a
+strict release gate: it must remove installed app artifacts while preserving
 runtime data before the script removes temporary smoke-test directories.
 #>
 
@@ -39,6 +41,7 @@ param(
     [int]$StabilityDurationSec = 0,
     [int]$StabilityProbeIntervalSec = 5,
     [double]$MaxBackendWorkingSetGrowthMB = 0,
+    [double]$MaxIdleCpuPercent = 0,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
     [switch]$SimulateUpgrade,
@@ -315,6 +318,9 @@ function Invoke-InstalledDesktopSmoke {
         $smokeArgs += @("-StabilityProbeIntervalSec", $StabilityProbeIntervalSec.ToString())
         if ($MaxBackendWorkingSetGrowthMB -gt 0) {
             $smokeArgs += @("-MaxBackendWorkingSetGrowthMB", $MaxBackendWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+        }
+        if ($MaxIdleCpuPercent -gt 0) {
+            $smokeArgs += @("-MaxIdleCpuPercent", $MaxIdleCpuPercent.ToString([System.Globalization.CultureInfo]::InvariantCulture))
         }
     }
     if ($LegacyDataDir) {
