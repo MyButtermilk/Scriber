@@ -7,7 +7,11 @@ Installs the generated NSIS setup into a temporary per-repo directory, starts
 the installed app without development fallback, verifies that the packaged
 backend sidecar becomes healthy, then uninstalls the app unless -KeepInstalled
 is passed. With -SimulateBackendCrash, it also verifies that the installed
-desktop shell restarts a killed backend worker and writes crash metadata.
+desktop shell restarts a killed backend worker and writes crash metadata. With
+-VerifyLegacyDataMigration, it verifies that first-run legacy runtime data is
+copied into the installed app data directory. With -SimulateUpgrade, it runs
+the installer a second time against the same install/data directories and
+verifies that existing app data is preserved.
 #>
 
 param(
@@ -16,6 +20,9 @@ param(
     [string]$InstallDir = "",
     [string]$DataDir = "",
     [switch]$SimulateBackendCrash,
+    [string]$LegacyDataDir = "",
+    [switch]$VerifyLegacyDataMigration,
+    [switch]$SimulateUpgrade,
     [switch]$KeepInstalled
 )
 
@@ -106,6 +113,43 @@ function Resolve-InstalledAppExe {
     throw "Installed Scriber executable was not found under $Root."
 }
 
+function Invoke-InstalledDesktopSmoke {
+    param(
+        [string]$AppExe,
+        [string]$RuntimeDataDir
+    )
+
+    $smokeArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        (Join-Path $RepoRoot "scripts\smoke_tauri_desktop.ps1"),
+        "-RepoRoot",
+        $RepoRoot,
+        "-ExePath",
+        $AppExe,
+        "-DataDir",
+        $RuntimeDataDir,
+        "-DisableDevFallback"
+    )
+    if ($SimulateBackendCrash) {
+        $smokeArgs += "-SimulateBackendCrash"
+    }
+    if ($LegacyDataDir) {
+        $smokeArgs += @("-LegacyDataDir", $LegacyDataDir)
+    }
+    if ($VerifyLegacyDataMigration) {
+        $smokeArgs += "-VerifyLegacyDataMigration"
+    }
+
+    $smokeJson = powershell @smokeArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed app smoke test failed."
+    }
+    return ($smokeJson | ConvertFrom-Json)
+}
+
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 if (-not $InstallerPath) {
     $InstallerPath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe"
@@ -114,6 +158,14 @@ if (-not (Test-Path $InstallerPath)) {
     throw "Missing installer: $InstallerPath"
 }
 $InstallerPath = (Resolve-Path $InstallerPath).Path
+if ($LegacyDataDir) {
+    if (-not (Test-Path -LiteralPath $LegacyDataDir -PathType Container)) {
+        throw "Missing LegacyDataDir: $LegacyDataDir"
+    }
+    $LegacyDataDir = (Resolve-Path $LegacyDataDir).Path
+} elseif ($VerifyLegacyDataMigration) {
+    throw "-VerifyLegacyDataMigration requires -LegacyDataDir."
+}
 
 $tmpRoot = Join-Path $RepoRoot "tmp\installer-smoke"
 Assert-UnderRoot -Root (Join-Path $RepoRoot "tmp") -Path $tmpRoot -Label "Installer smoke temp root"
@@ -135,32 +187,34 @@ if (Test-Path $InstallDir) {
 New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
 
 $smoke = $null
+$upgrade = $null
 try {
     Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer"
     $appExe = Resolve-InstalledAppExe -Root $InstallDir
 
-    $smokeArgs = @(
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        (Join-Path $RepoRoot "scripts\smoke_tauri_desktop.ps1"),
-        "-RepoRoot",
-        $RepoRoot,
-        "-ExePath",
-        $appExe,
-        "-DataDir",
-        $DataDir,
-        "-DisableDevFallback"
-    )
-    if ($SimulateBackendCrash) {
-        $smokeArgs += "-SimulateBackendCrash"
+    $smoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
+
+    if ($SimulateUpgrade) {
+        $sentinelPath = Join-Path $DataDir "upgrade-sentinel.txt"
+        Set-Content -LiteralPath $sentinelPath -Value "preserve across installer rerun" -Encoding UTF8
+
+        Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer upgrade"
+        $appExe = Resolve-InstalledAppExe -Root $InstallDir
+        $secondSmoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
+        if (-not (Test-Path -LiteralPath $sentinelPath -PathType Leaf)) {
+            throw "Installer upgrade smoke did not preserve existing data sentinel: $sentinelPath"
+        }
+
+        $upgrade = [pscustomobject]@{
+            verified = $true
+            sentinelPreserved = $true
+            secondRuntimeMode = $secondSmoke.runtimeMode
+            secondLaunchKind = $secondSmoke.launchKind
+            secondCleanupVerified = $secondSmoke.cleanupVerified
+            legacyDataMigration = $secondSmoke.legacyDataMigration
+        }
+        $smoke = $secondSmoke
     }
-    $smokeJson = powershell @smokeArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "Installed app smoke test failed."
-    }
-    $smoke = $smokeJson | ConvertFrom-Json
 
     [pscustomobject]@{
         ok = $true
@@ -170,9 +224,11 @@ try {
         dataDir = $DataDir
         runtimeMode = $smoke.runtimeMode
         launchKind = $smoke.launchKind
+        legacyDataMigration = $smoke.legacyDataMigration
+        upgrade = $upgrade
         crashRecovery = $smoke.crashRecovery
         cleanupVerified = $smoke.cleanupVerified
-    } | ConvertTo-Json -Compress
+    } | ConvertTo-Json -Compress -Depth 8
 } finally {
     if (-not $KeepInstalled) {
         $uninstaller = Get-ChildItem -LiteralPath $InstallDir -Recurse -File -ErrorAction SilentlyContinue |

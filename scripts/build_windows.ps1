@@ -22,7 +22,9 @@ param(
     [switch]$SkipChecks,
     [switch]$SkipSmoke,
     [switch]$RunInstallerSmoke,
-    [switch]$RunInstallerCrashSmoke
+    [switch]$RunInstallerCrashSmoke,
+    [switch]$RunInstallerLegacyDataSmoke,
+    [switch]$RunInstallerUpgradeSmoke
 )
 
 $ErrorActionPreference = "Stop"
@@ -175,7 +177,7 @@ try {
         }
     }
 
-    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
@@ -188,6 +190,12 @@ try {
                 )
                 if ($RunInstallerCrashSmoke) {
                     $installerSmokeArgs += "-SimulateBackendCrash"
+                }
+                if ($RunInstallerLegacyDataSmoke) {
+                    $installerSmokeArgs += @("-LegacyDataDir", $RepoRoot, "-VerifyLegacyDataMigration")
+                }
+                if ($RunInstallerUpgradeSmoke) {
+                    $installerSmokeArgs += "-SimulateUpgrade"
                 }
                 powershell @installerSmokeArgs
             } finally {

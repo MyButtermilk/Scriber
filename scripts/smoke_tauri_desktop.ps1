@@ -8,7 +8,9 @@ backend process, verifies the Scriber health contract, hard-stops the Tauri
 process, and checks that the managed backend process exits with it. With
 -SimulateBackendCrash, it also kills the managed worker, waits for the
 desktop frontend/supervisor recovery path to start a replacement, and verifies
-crash metadata was written.
+crash metadata was written. With -LegacyDataDir and -VerifyLegacyDataMigration,
+it verifies first-run migration into SCRIBER_DATA_DIR without printing secret
+values.
 
 Build the executable first with:
   cd Frontend
@@ -29,6 +31,8 @@ param(
     [switch]$EnableDeviceMonitor,
     [switch]$SimulateBackendCrash,
     [int]$CrashRecoveryTimeoutSec = 75,
+    [string]$LegacyDataDir = "",
+    [switch]$VerifyLegacyDataMigration,
     [switch]$DisableDevFallback
 )
 
@@ -176,6 +180,106 @@ function Wait-BackendCrashMetadata {
     throw "Backend crash metadata for pid $BackendPid was not written under $metadataPath."
 }
 
+function Get-FileSha256 {
+    param([string]$Path)
+
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Test-LegacyDataMigration {
+    param(
+        [string]$SourceDir,
+        [string]$TargetDir
+    )
+
+    if (-not $SourceDir) {
+        throw "-VerifyLegacyDataMigration requires -LegacyDataDir."
+    }
+    if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
+        throw "LegacyDataDir does not exist: $SourceDir"
+    }
+
+    $sourceFull = Convert-ToFullPath -Path (Resolve-Path $SourceDir).Path
+    $targetFull = Convert-ToFullPath -Path $TargetDir
+    $fileResults = @()
+
+    foreach ($name in @(".env", "settings.json", "transcripts.db", "transcripts.db-wal", "transcripts.db-shm")) {
+        $sourcePath = Join-Path $sourceFull $name
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            continue
+        }
+
+        $targetPath = Join-Path $targetFull $name
+        if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
+            throw "Legacy migration did not copy $name to $targetFull."
+        }
+
+        $sourceItem = Get-Item -LiteralPath $sourcePath
+        $targetItem = Get-Item -LiteralPath $targetPath
+        if ($sourceItem.Length -gt 0 -and $targetItem.Length -le 0) {
+            throw "Legacy migration created an empty target for $name."
+        }
+
+        $entry = [ordered]@{
+            path = $name
+            sourceBytes = [int64]$sourceItem.Length
+            targetBytes = [int64]$targetItem.Length
+            hashVerified = $false
+        }
+
+        if ($name -in @(".env", "settings.json")) {
+            $entry.hashVerified = $true
+            $entry.hashMatches = (Get-FileSha256 -Path $sourcePath) -eq (Get-FileSha256 -Path $targetPath)
+            if (-not $entry.hashMatches) {
+                throw "Legacy migration changed $name while copying it."
+            }
+        }
+
+        $fileResults += [pscustomobject]$entry
+    }
+
+    $dirResults = @()
+    foreach ($name in @("downloads", "models")) {
+        $sourceDirPath = Join-Path $sourceFull $name
+        if (-not (Test-Path -LiteralPath $sourceDirPath -PathType Container)) {
+            continue
+        }
+
+        $targetDirPath = Join-Path $targetFull $name
+        $sourceDirFull = Convert-ToFullPath -Path $sourceDirPath
+        $sourceFiles = @(Get-ChildItem -LiteralPath $sourceDirFull -Recurse -File)
+        $missing = @()
+        foreach ($sourceFile in $sourceFiles) {
+            $relative = $sourceFile.FullName.Substring($sourceDirFull.Length).TrimStart('\', '/')
+            $targetFile = Join-Path $targetDirPath $relative
+            if (-not (Test-Path -LiteralPath $targetFile -PathType Leaf)) {
+                $missing += $relative
+            }
+        }
+        if ($missing.Count -gt 0) {
+            throw "Legacy migration missed $name files: $($missing -join ', ')"
+        }
+
+        $dirResults += [pscustomobject]@{
+            path = $name
+            sourceFiles = [int]$sourceFiles.Count
+            verifiedFiles = [int]$sourceFiles.Count
+        }
+    }
+
+    if ($fileResults.Count -eq 0 -and $dirResults.Count -eq 0) {
+        throw "LegacyDataDir did not contain migratable Scriber runtime data: $sourceFull"
+    }
+
+    return [pscustomobject]@{
+        verified = $true
+        source = $sourceFull
+        target = $targetFull
+        files = $fileResults
+        directories = $dirResults
+    }
+}
+
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 if (-not $ExePath) {
     $ExePath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\scriber-desktop.exe"
@@ -190,6 +294,14 @@ if ($BackendExePath) {
         throw "Missing backend sidecar executable: $BackendExePath"
     }
     $BackendExePath = (Resolve-Path $BackendExePath).Path
+}
+if ($LegacyDataDir) {
+    if (-not (Test-Path -LiteralPath $LegacyDataDir -PathType Container)) {
+        throw "Missing LegacyDataDir: $LegacyDataDir"
+    }
+    $LegacyDataDir = (Resolve-Path $LegacyDataDir).Path
+} elseif ($VerifyLegacyDataMigration) {
+    throw "-VerifyLegacyDataMigration requires -LegacyDataDir."
 }
 if (-not $DataDir) {
     $DataDir = Join-Path $RepoRoot ("tmp\tauri-smoke-data\" + [System.Guid]::NewGuid().ToString("N"))
@@ -209,6 +321,7 @@ $oldForceManaged = $env:SCRIBER_FORCE_MANAGED_BACKEND
 $oldSessionToken = $env:SCRIBER_SESSION_TOKEN
 $oldHotkeys = $env:SCRIBER_DISABLE_HOTKEYS
 $oldMonitor = $env:SCRIBER_DISABLE_DEVICE_MONITOR
+$oldLegacyDataDir = $env:SCRIBER_LEGACY_DATA_DIR
 
 if ($DisableDevFallback) {
     $env:SCRIBER_REPO_ROOT = $null
@@ -231,6 +344,9 @@ if (-not $EnableHotkeys) {
 if (-not $EnableDeviceMonitor) {
     $env:SCRIBER_DISABLE_DEVICE_MONITOR = "1"
 }
+if ($LegacyDataDir) {
+    $env:SCRIBER_LEGACY_DATA_DIR = $LegacyDataDir
+}
 
 $app = $null
 $result = $null
@@ -247,6 +363,10 @@ try {
     }
     if (-not (Convert-ToFullPath -Path $runtime.downloadsDir).StartsWith($DataDir, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Managed backend downloadsDir is not under dataDir: $($runtime.downloadsDir)"
+    }
+    $legacyDataMigration = $null
+    if ($VerifyLegacyDataMigration) {
+        $legacyDataMigration = Test-LegacyDataMigration -SourceDir $LegacyDataDir -TargetDir $DataDir
     }
     $crashRecovery = $null
     if ($SimulateBackendCrash) {
@@ -290,6 +410,7 @@ try {
         dataDir = $runtime.dataDir
         downloadsDir = $runtime.downloadsDir
         launchKind = $runtime.launchKind
+        legacyDataMigration = $legacyDataMigration
         crashRecovery = $crashRecovery
         cleanupVerified = $false
     }
@@ -325,6 +446,7 @@ try {
     $env:SCRIBER_SESSION_TOKEN = $oldSessionToken
     $env:SCRIBER_DISABLE_HOTKEYS = $oldHotkeys
     $env:SCRIBER_DISABLE_DEVICE_MONITOR = $oldMonitor
+    $env:SCRIBER_LEGACY_DATA_DIR = $oldLegacyDataDir
 }
 
-$result | ConvertTo-Json -Compress
+$result | ConvertTo-Json -Compress -Depth 8

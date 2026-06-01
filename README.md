@@ -688,12 +688,14 @@ powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -RunInstallerSmoke
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -RunInstallerCrashSmoke
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -RunInstallerLegacyDataSmoke -RunInstallerUpgradeSmoke
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -EnableTauriUpdater -UpdaterEndpoint "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
 ```
 
 This builds `src/backend_worker.py` through `packaging\scriber-backend.spec` into `dist\tauri-sidecar\scriber-backend\` and optionally copies the onedir output to `Frontend\src-tauri\target\release\backend\`, where the Tauri supervisor can find it automatically. Use `-BundleMediaTools` to copy local `ffmpeg`/`ffprobe` binaries into `tools\ffmpeg\` inside the sidecar. The sidecar build runs `scripts\check_backend_runtime_imports.py` before PyInstaller and then runs the frozen `scriber-backend --runtime-import-check`, so required startup dependencies such as SciPy and pyloudnorm cannot be missing silently.
 
-Application version lives in `src/version.py`. `scripts\sync_version.py` copies it into the Tauri, Cargo, npm, and lockfile manifests. `scripts\build_windows.ps1` runs the sync before checks/builds, invokes `npm run tauri:build -- --bundles nsis`, lets Tauri build/copy the backend sidecar before bundling, produces the NSIS installer under `Frontend\src-tauri\target\release\bundle\nsis\`, and writes `latest.json` plus `SHA256SUMS.txt` under `Frontend\src-tauri\target\release\release-metadata\`. Pass `-RunInstallerSmoke` to install the generated NSIS package into `tmp\installer-smoke\`, start the installed app without Python/Node dev fallback, verify the managed sidecar, and clean up the temporary install. Pass `-RunInstallerCrashSmoke` to include the installed worker-crash recovery gate. `.github/workflows/release-windows.yml` runs the same Windows release path on manual dispatch and `v*` tags.
+Application version lives in `src/version.py`. `scripts\sync_version.py` copies it into the Tauri, Cargo, npm, and lockfile manifests. `scripts\build_windows.ps1` runs the sync before checks/builds, invokes `npm run tauri:build -- --bundles nsis`, lets Tauri build/copy the backend sidecar before bundling, produces the NSIS installer under `Frontend\src-tauri\target\release\bundle\nsis\`, and writes `latest.json` plus `SHA256SUMS.txt` under `Frontend\src-tauri\target\release\release-metadata\`. Pass `-RunInstallerSmoke` to install the generated NSIS package into `tmp\installer-smoke\`, start the installed app without Python/Node dev fallback, verify the managed sidecar, and clean up the temporary install. Pass `-RunInstallerCrashSmoke` to include the installed worker-crash recovery gate. Pass `-RunInstallerLegacyDataSmoke` to start the installed package with the repo root as `SCRIBER_LEGACY_DATA_DIR` and verify first-run migration of `.env`, `settings.json`, and `transcripts.db`; combine it with `-RunInstallerUpgradeSmoke` to run the installer a second time against the same install/data directories and verify existing data is preserved. `.github/workflows/release-windows.yml` runs the same Windows release path on manual dispatch and `v*` tags.
 
 Tauri updater wiring is present but only becomes active for signed release builds. `-EnableTauriUpdater` runs `scripts\prepare_tauri_updater_config.py`, temporarily enables `bundle.createUpdaterArtifacts`, injects the updater public key/endpoints, and requires `TAURI_SIGNING_PRIVATE_KEY` or `TAURI_SIGNING_PRIVATE_KEY_PATH`. After metadata generation, `scripts\validate_tauri_updater_metadata.py` checks the `latest.json` schema and requires signatures for updater-enabled builds. The Settings page exposes manual check/install controls in installed Tauri builds; without signing configuration it reports that desktop updates are not configured.
 
@@ -705,9 +707,10 @@ After building the Windows release executable, run the desktop smoke test from t
 powershell -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -SimulateBackendCrash
+powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -LegacyDataDir path\to\old\Scriber -VerifyLegacyDataMigration -SimulateUpgrade
 ```
 
-The desktop smoke test starts `Frontend\src-tauri\target\release\scriber-desktop.exe` with a random session token, verifies that Tauri starts a managed backend with `runtimeMode=tauri-supervised`, then hard-stops the app and checks that no newly spawned backend process remains. Pass `-BackendExePath path\to\scriber-backend.exe` to force a specific sidecar. Pass `-SimulateBackendCrash` to kill the managed worker, wait for the Tauri/frontend recovery path to start a replacement, and verify `backend-crash-metadata.jsonl`. The installer smoke runs the same runtime gate against the installed NSIS package and disables the source-checkout Python fallback.
+The desktop smoke test starts `Frontend\src-tauri\target\release\scriber-desktop.exe` with a random session token, verifies that Tauri starts a managed backend with `runtimeMode=tauri-supervised`, then hard-stops the app and checks that no newly spawned backend process remains. Pass `-BackendExePath path\to\scriber-backend.exe` to force a specific sidecar. Pass `-SimulateBackendCrash` to kill the managed worker, wait for the Tauri/frontend recovery path to start a replacement, and verify `backend-crash-metadata.jsonl`. Pass `-LegacyDataDir <old-scriber-dir> -VerifyLegacyDataMigration` to verify first-run migration into `SCRIBER_DATA_DIR`; secrets are not printed, only paths, byte counts, and hash-match booleans for `.env`/`settings.json`. The installer smoke runs the same runtime gate against the installed NSIS package and disables the source-checkout Python fallback. Add `-SimulateUpgrade` to reinstall into the same temporary install directory, reuse the same data directory, and verify a data sentinel survives the installer rerun.
 
 For Phase 0 hybrid performance baselines, run:
 
@@ -753,6 +756,7 @@ git diff --check
 powershell -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -SimulateBackendCrash
+powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -LegacyDataDir path\to\old\Scriber -VerifyLegacyDataMigration -SimulateUpgrade
 ```
 
 ```bash
