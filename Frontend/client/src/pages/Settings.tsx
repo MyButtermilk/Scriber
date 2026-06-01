@@ -1,4 +1,4 @@
-import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronDown, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power, Key, Settings2, Star, Download, Trash2, Loader2 } from "lucide-react";
+import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronDown, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power, Key, Settings2, Star, Download, Trash2, Loader2, RefreshCw } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,13 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { QueryErrorState } from "@/components/ui/query-error-state";
+import {
+  checkDesktopUpdate,
+  initialDesktopUpdateStatus,
+  installDesktopUpdate,
+  type DesktopUpdateProgress,
+  type DesktopUpdateStatus,
+} from "@/lib/desktop-updates";
 
 type OnnxModelInfo = {
   id: string;
@@ -224,6 +231,10 @@ export default function Settings() {
   const [autostartAvailable, setAutostartAvailable] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settingsError, setSettingsError] = useState("");
+  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateStatus>(initialDesktopUpdateStatus);
+  const [desktopUpdateProgress, setDesktopUpdateProgress] = useState<DesktopUpdateProgress | null>(null);
+  const [isCheckingDesktopUpdate, setIsCheckingDesktopUpdate] = useState(false);
+  const [isInstallingDesktopUpdate, setIsInstallingDesktopUpdate] = useState(false);
   const [micAlwaysOn, setMicAlwaysOn] = useState(false);
   const [favoriteMic, setFavoriteMic] = useState("");
   const [isMicDropdownOpen, setIsMicDropdownOpen] = useState(false);
@@ -926,6 +937,59 @@ export default function Settings() {
     }
   };
 
+  const handleCheckDesktopUpdate = async () => {
+    setIsCheckingDesktopUpdate(true);
+    setDesktopUpdateProgress(null);
+    try {
+      const status = await checkDesktopUpdate();
+      setDesktopUpdate(status);
+      toast({
+        title: status.available ? "Update available" : "Update check finished",
+        description: status.message,
+        duration: 3500,
+      });
+    } catch (e: any) {
+      const message = String(e?.message || e);
+      setDesktopUpdate({
+        phase: "error",
+        enabled: false,
+        available: false,
+        message,
+      });
+      toast({
+        title: "Update check failed",
+        description: message,
+        duration: 5000,
+      });
+    } finally {
+      setIsCheckingDesktopUpdate(false);
+    }
+  };
+
+  const handleInstallDesktopUpdate = async () => {
+    setIsInstallingDesktopUpdate(true);
+    try {
+      const status = await installDesktopUpdate((progress) => {
+        setDesktopUpdateProgress(progress);
+      });
+      setDesktopUpdate(status);
+    } catch (e: any) {
+      const message = String(e?.message || e);
+      setDesktopUpdate((prev) => ({
+        ...prev,
+        phase: "error",
+        message,
+      }));
+      toast({
+        title: "Update failed",
+        description: message,
+        duration: 5000,
+      });
+    } finally {
+      setIsInstallingDesktopUpdate(false);
+    }
+  };
+
   const handleMicAlwaysOnChange = async (enabled: boolean) => {
     setMicAlwaysOn(enabled);
     try {
@@ -1057,6 +1121,21 @@ export default function Settings() {
     if (status === "error") return "destructive";
     return "outline";
   };
+  const desktopUpdateBadgeVariant: "default" | "secondary" | "destructive" | "outline" =
+    desktopUpdate.phase === "error"
+      ? "destructive"
+      : desktopUpdate.available
+        ? "default"
+        : desktopUpdate.enabled
+          ? "secondary"
+          : "outline";
+  const desktopUpdateBadgeLabel = desktopUpdate.available
+    ? "Available"
+    : desktopUpdate.phase === "idle"
+      ? "Not checked"
+      : desktopUpdate.enabled
+        ? "Current"
+        : "Not configured";
 
   return (
     <div className={`max-w-screen-md mx-auto px-4 py-6 md:py-8 transition-opacity duration-150 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
@@ -1854,6 +1933,92 @@ export default function Settings() {
                   />
                 </div>
 
+              </div>
+            </AccordionContent>
+          </div>
+        </AccordionItem>
+
+        {/* Desktop Updates */}
+        <AccordionItem value="updates" className="border-0">
+          <div className="neu-panel-raised bg-card rounded-xl overflow-hidden">
+            <AccordionTrigger className="px-6 py-4 hover:no-underline">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                  <Shield className="w-5 h-5" />
+                </div>
+                <div className="text-left">
+                  <h2 className="font-semibold text-foreground">Desktop Updates</h2>
+                  <p className="text-sm text-muted-foreground">Signed app updates for the installed Windows build</p>
+                </div>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent>
+              <div className="px-6 pb-6 space-y-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div className="space-y-1">
+                    <Label className="text-base">Update status</Label>
+                    <p className="text-sm text-muted-foreground">{desktopUpdate.message}</p>
+                  </div>
+                  <Badge variant={desktopUpdateBadgeVariant} className="w-fit">
+                    {desktopUpdateBadgeLabel}
+                  </Badge>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                    <p className="text-xs text-muted-foreground">Current version</p>
+                    <p className="font-medium text-foreground">{desktopUpdate.currentVersion || "Unknown"}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                    <p className="text-xs text-muted-foreground">Available version</p>
+                    <p className="font-medium text-foreground">{desktopUpdate.version || "None"}</p>
+                  </div>
+                </div>
+
+                {desktopUpdate.notes && (
+                  <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                    <p className="text-xs text-muted-foreground mb-1">Release notes</p>
+                    <p className="text-sm text-foreground whitespace-pre-wrap">{desktopUpdate.notes}</p>
+                  </div>
+                )}
+
+                {desktopUpdateProgress && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                      <span>{desktopUpdateProgress.message}</span>
+                      {typeof desktopUpdateProgress.percent === "number" && (
+                        <span>{desktopUpdateProgress.percent}%</span>
+                      )}
+                    </div>
+                    <Progress value={desktopUpdateProgress.percent ?? 0} />
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={handleCheckDesktopUpdate}
+                    disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}
+                  >
+                    {isCheckingDesktopUpdate ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4 mr-2" />
+                    )}
+                    Check for updates
+                  </Button>
+                  <Button
+                    onClick={handleInstallDesktopUpdate}
+                    disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}
+                  >
+                    {isInstallingDesktopUpdate ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4 mr-2" />
+                    )}
+                    Install and restart
+                  </Button>
+                </div>
               </div>
             </AccordionContent>
           </div>

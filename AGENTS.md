@@ -170,7 +170,9 @@ This file is the working guide for agents editing this repository. Keep it accur
 - Tauri `beforeBundleCommand` runs the sidecar build with `-SkipFrontendBuild -InstallPyInstaller -BundleMediaTools -CopyToTauriRelease`, so `npm run tauri:build -- --bundles nsis` can produce an installer with the backend resource included.
 - App version is centralized in `src/version.py`. Run `python scripts\sync_version.py` before release builds to sync `tauri.conf.json`, `Cargo.toml`, `Frontend/package.json`, and `Frontend/package-lock.json`. `scripts/build_windows.ps1` does this automatically.
 - `scripts/check_backend_runtime_imports.py` is the sidecar preflight for startup imports such as SciPy, pyloudnorm, Pipecat frames, and `src.web_api`; `scripts/build_tauri_backend_sidecar.ps1` runs it before PyInstaller and again through the frozen `scriber-backend --runtime-import-check` so missing bundled runtime dependencies fail the build early.
-- `scripts/create_release_metadata.py` writes `latest.json` and `SHA256SUMS.txt` for release artifacts. `.github/workflows/release-windows.yml` builds the Windows NSIS artifact on `workflow_dispatch` or `v*` tags and uploads/publishes these files.
+- `Frontend/src-tauri/src/lib.rs` initializes `tauri-plugin-updater` and `tauri-plugin-process`; `Frontend/client/src/lib/desktop-updates.ts` exposes a manual Settings UI update check/install path for installed Tauri builds. It is intentionally inert until the release build is configured with a Tauri updater public key, HTTPS `latest.json` endpoint, and signing key.
+- `scripts/create_release_metadata.py` writes `latest.json` and `SHA256SUMS.txt` for release artifacts. `scripts/validate_tauri_updater_metadata.py` validates the Tauri updater manifest shape and can require non-empty signatures. `scripts/prepare_tauri_updater_config.py` enables `createUpdaterArtifacts` and injects the updater public key/endpoints for signed release builds.
+- `.github/workflows/release-windows.yml` builds the Windows NSIS artifact on `workflow_dispatch` or `v*` tags and uploads/publishes release files. If `SCRIBER_TAURI_UPDATER_PUBLIC_KEY` and `TAURI_SIGNING_PRIVATE_KEY` are present, the workflow enables Tauri updater artifacts and signature-required metadata validation.
 - The current sidecar spec is the standard cloud-provider build and excludes heavy local ASR stacks (`torch`, NeMo, ONNX-ASR). Treat local ASR packaging as a separate optional package path.
 - Managed backend stdout/stderr go to `logs\tauri-backend.log` under `SCRIBER_DATA_DIR`.
 - Rust shell lifecycle logs go to `logs\tauri-shell.log`; managed backend exits are appended to `logs\backend-crash-metadata.jsonl`.
@@ -181,7 +183,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable with a random session token, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits.
 - `scripts/smoke_windows_installer.ps1` installs the generated NSIS setup into `tmp\installer-smoke\`, runs the desktop smoke without `SCRIBER_REPO_ROOT`/`SCRIBER_PYTHON` dev fallback, and removes the temporary install/data directories afterward.
 - `scripts/build_windows.ps1 -RunInstallerSmoke` builds the NSIS package and then runs the installed-package smoke gate.
-- Current Tauri status: hybrid runtime with writable runtime-data paths, session-token protected worker API, native app menu/tray lifecycle actions, Windows single-instance guard, Windows desktop autostart commands, Tauri-owned global hotkey dispatch, redacted support bundles, sidecar backend launch support, bundled yt-dlp support, bundled ffmpeg/ffprobe resolution, NSIS installer generation, and installed-package smoke coverage. Signing and updater remain open packaging work.
+- Current Tauri status: hybrid runtime with writable runtime-data paths, session-token protected worker API, native app menu/tray lifecycle actions, Windows single-instance guard, Windows desktop autostart commands, Tauri-owned global hotkey dispatch, redacted support bundles, sidecar backend launch support, bundled yt-dlp support, bundled ffmpeg/ffprobe resolution, NSIS installer generation, installed-package smoke coverage, updater plugin wiring, Settings UI update check/install controls, and signed-manifest gates. Real release updates still require configured signing keys and a published signed updater manifest.
 
 ## Commands
 
@@ -351,7 +353,7 @@ Current summarization default is `gemini-flash-latest`.
 
 - Real app-level mic prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Real recording text-injection samples for `stop_requested_to_first_paste_ms` when a spoken phrase is transcribed and injected during `-RecordHotPathSamples`.
-- Full bundled desktop packaging for the Tauri path: signing and updater.
+- Full bundled desktop release activation: Authenticode signing, Tauri updater signing keys, signed update artifacts, and published `latest.json`.
 - Broader Tauri runtime smoke tests for crash, startup-timeout, external-backend attach, dynamic-port, and controlled shutdown scenarios.
 - Remaining CPU-heavy media preprocessing profiling around ffmpeg/provider behavior.
 - More hardware regression tests for dock connect/disconnect, USB mic add/remove, and favorite mic fallback.

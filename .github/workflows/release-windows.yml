@@ -46,13 +46,35 @@ jobs:
 
       - name: Build Windows installer
         shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -SkipSmoke
+        env:
+          SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
+          SCRIBER_TAURI_UPDATER_ENDPOINT: ${{ vars.SCRIBER_TAURI_UPDATER_ENDPOINT }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PATH }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $buildArgs = @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "scripts\build_windows.ps1",
+            "-SkipSmoke"
+          )
+          if ($env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY -and ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)) {
+            $buildArgs += "-EnableTauriUpdater"
+            if ($env:SCRIBER_TAURI_UPDATER_ENDPOINT) {
+              $buildArgs += @("-UpdaterEndpoint", $env:SCRIBER_TAURI_UPDATER_ENDPOINT)
+            }
+          }
+          powershell @buildArgs
 
       - name: Collect release artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
-          Copy-Item Frontend\src-tauri\target\release\bundle\nsis\*.exe release-artifacts\
+          Get-ChildItem Frontend\src-tauri\target\release\bundle -Recurse -File -Include *.exe,*.msi,*.sig |
+            Copy-Item -Destination release-artifacts\
           Copy-Item Frontend\src-tauri\target\release\release-metadata\*.json release-artifacts\
           Copy-Item Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt release-artifacts\
 

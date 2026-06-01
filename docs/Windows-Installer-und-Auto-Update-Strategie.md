@@ -12,7 +12,7 @@ Nicht versierte Nutzer sollen Scriber wie eine normale Windows-App installieren 
 2. Schnell produktionsfaehig im Vergleich zu MSIX-only oder Squirrel-Integration.
 3. Silent Updates sind robust moeglich; aktuell ueber Tauri/NSIS, spaeter bei Bedarf mit eigenem Updater/Launcher.
 4. Security kann sauber gehaertet werden (SHA256, Signaturpruefung, immutable Releases).
-5. Der aktuelle Code enthaelt bereits Tauri 2 mit Rust-Supervisor, Windows-Single-Instance-Mutex, PyInstaller-Sidecar, NSIS-Build und installiertem Smoke-Test; offen bleiben Signierung und Updater.
+5. Der aktuelle Code enthaelt bereits Tauri 2 mit Rust-Supervisor, Windows-Single-Instance-Mutex, PyInstaller-Sidecar, NSIS-Build, installiertem Smoke-Test, Tauri-Updater-Plugin-Wiring und Manifest-Gates; offen bleiben echte Signier-Keys, signierte Release-Artefakte und die veroeffentlichte Update-Manifest-Aktivierung.
 
 ### Warum nicht Electron/MSIX-only/Squirrel jetzt
 | Alternative        | Warum nicht jetzt                                                                       |
@@ -66,6 +66,9 @@ Scriber laeuft als signierte, installierte Windows-App (per-user), startet singl
    - Status 2026-06-01: Die Tauri-Shell registriert vor dem Backend-Start den Windows-Named-Mutex `Local\ScriberDesktopSingleInstance`; eine zweite Desktop-Instanz beendet sich dadurch frueh, ohne einen zweiten Worker zu starten.
 
 ### 3) Updater-Komponente
+Status 2026-06-01: Fuer den Tauri-Desktop-Pfad ist der primaere Updater jetzt der Tauri-v2-Updater, nicht ein Python-Downloader. `Frontend/src-tauri/src/lib.rs` initialisiert `tauri-plugin-updater` und `tauri-plugin-process`, `Frontend/client/src/lib/desktop-updates.ts` stellt den Settings-Check/Install-Pfad bereit, und `scripts/build_windows.ps1 -EnableTauriUpdater` aktiviert signierte Tauri-Updater-Artefakte nur, wenn Public-Key, Endpoint und Tauri-Signing-Key vorhanden sind. Ohne diese Konfiguration bleibt die UI absichtlich inaktiv bzw. meldet "not configured".
+
+Frueherer Python-Plan, falls spaeter ein eigener Updater ausserhalb des Tauri-Plugins noetig wird:
 Neue Komponente `src/updater.py`:
 1. **Version Check** ueber GitHub Releases API (`https://api.github.com/repos/MyButtermilk/Scriber/releases/latest`) oder eigenes `latest.json` (gehostet als Release-Asset oder via GitHub Pages).
    - GitHub API hat Rate-Limits (60 Anfragen/h ohne Token). Fuer moderate Nutzerzahlen kein Problem.
@@ -101,7 +104,7 @@ Pro Release:
 3. `SHA256SUMS.txt` (signiert oder im Release-Body)
 4. `latest.json` (als Release-Asset)
 
-Status 2026-06-01: `scripts/create_release_metadata.py` erzeugt `SHA256SUMS.txt` und `latest.json` fuer die gebauten NSIS-Artefakte. `scripts/build_windows.ps1` ruft das Script nach erfolgreichem Bundle-Build automatisch auf.
+Status 2026-06-01: `scripts/create_release_metadata.py` erzeugt `SHA256SUMS.txt` und `latest.json` fuer die gebauten NSIS-Artefakte. `scripts/build_windows.ps1` ruft das Script nach erfolgreichem Bundle-Build automatisch auf. `scripts/validate_tauri_updater_metadata.py` prueft das Manifest gegen das Tauri-Updater-Schema und erzwingt bei updater-aktivierten Builds nicht-leere Signaturen.
 
 Aktuelles `latest.json`-Format:
 ```json
@@ -334,7 +337,8 @@ Lieferobjekte:
 2. **Build-Pipeline**:
    - Status 2026-06-01: Checkout -> Python/Node/Rust Setup -> `pip install` fuer base/dev/build -> `npm ci` -> `scripts/build_windows.ps1 -SkipSmoke` -> NSIS-Artefakt + `latest.json` + `SHA256SUMS.txt` als Workflow-Artefakt.
    - Status 2026-06-01: Bei `v*` Tags publiziert `softprops/action-gh-release` die erzeugten Artefakte als GitHub Release.
-   - Noch offen: Signing in CI und aktivierter Updater-Client.
+   - Status 2026-06-01: Tauri-Updater-Plugin, Frontend-Check/Install-UI und Manifest-/Signing-Gates sind integriert. Ohne `SCRIBER_TAURI_UPDATER_PUBLIC_KEY` und `TAURI_SIGNING_PRIVATE_KEY` bleibt der Workflow beim bisherigen NSIS-Release ohne Updater-Artefakte.
+   - Noch offen: Authenticode Signing in CI, echte Tauri-Updater-Keys, signierte Update-Artefakte und veroeffentlichtes `latest.json`.
 3. **Signierung**:
    - Authenticode mit OV- oder EV-Zertifikat.
    - Public-Trust Code-Signing verlangt heute hardwaregeschuetzten Schluessel (Token oder HSM/Cloud-HSM, je nach Anbieter). Fuer CI/CD sind Cloud-Signing-Dienste wie **Microsoft Trusted Signing** praktikabel.
@@ -385,17 +389,17 @@ Lieferobjekte:
 | Datei | Beschreibung |
 |-------|-------------|
 | `src/version.py` | Umgesetzt: zentrale Versionsnummer (`__version__`) und SemVer-Normalisierung. |
-| `src/updater.py` | UpdateManager: Check, Download, Verify, Install. |
+| `src/updater.py` | Zurueckgestellt fuer den Tauri-Pfad; primaer ist aktuell `tauri-plugin-updater`. Nur wieder aufnehmen, wenn ein eigener Python-Updater bewusst dem Tauri-Updater vorgezogen wird. |
 | `src/runtime/paths.py` | Teilweise umgesetzt: Runtime-Data-Pfade fuer Settings, SQLite und Downloads. Frontend-Asset-Resolution offen. |
 | `src/runtime/media_tools.py` | Umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp` ueber Env, Sidecar-Tools und System-PATH. |
 | `src/runtime/support_bundle.py` | Umgesetzt: redigiertes Support-ZIP mit Runtime-/State-Metadaten, Logs und redigierter Config/Env. |
 | `src/backend_worker.py` | Umgesetzt: Tauri/PyInstaller Worker-Entry-Point. |
-| `Frontend/src-tauri/src/lib.rs` | Umgesetzt: Rust-Supervisor, Session-Token-Bridge, Worker-Lifecycle, App-Menue/Tray fuer Shell-Aktionen, Windows-Named-Mutex fuer Single Instance, Windows-Autostart via HKCU Run-Key, globaler Hotkey via bestehende Live-Mic-API. |
+| `Frontend/src-tauri/src/lib.rs` | Umgesetzt: Rust-Supervisor, Session-Token-Bridge, Worker-Lifecycle, App-Menue/Tray fuer Shell-Aktionen, Windows-Named-Mutex fuer Single Instance, Windows-Autostart via HKCU Run-Key, globaler Hotkey via bestehende Live-Mic-API, Tauri-Updater- und Process-Plugin-Initialisierung. |
 | `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar inkl. SciPy/pyloudnorm-Startup-Abhaengigkeiten. |
 | `installer/scriber.iss` | Inno Setup Script. |
 | `scripts/check_backend_runtime_imports.py` | Umgesetzt: Preflight fuer kritische Backend-Startup-Imports vor PyInstaller und als gefrorener Sidecar-Check via `--runtime-import-check`. |
 | `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Import-Preflight -> Frontend Build -> PyInstaller Sidecar -> gefrorener Runtime-Import-Check -> optionales FFmpeg/FFprobe-Bundling -> optionaler Copy nach Tauri Release. |
-| `scripts/build_windows.ps1` | Umgesetzt fuer Tests -> Tauri/NSIS Bundle -> Release-Metadaten -> Release-/Installer-Smoke-Test. Signierung und Updater bleiben offen. |
+| `scripts/build_windows.ps1` | Umgesetzt fuer Tests -> Tauri/NSIS Bundle -> Release-Metadaten -> Release-/Installer-Smoke-Test. Zusaetzlich optional `-EnableTauriUpdater` fuer signierte Tauri-Updater-Artefakte und Manifest-Signatur-Gates. Authenticode-Signing bleibt offen. |
 | `scripts/smoke_windows_installer.ps1` | Umgesetzt: installiert das NSIS-Artefakt temporaer, prueft den installierten Tauri/Sidecar-Start ohne Python/Node-Dev-Fallback und entfernt die Testinstallation. |
 | `scripts/sync_version.py` | Umgesetzt: synchronisiert `src/version.py` in Python/Tauri/Cargo/npm-Manifeste. |
 | `scripts/create_release_metadata.py` | Umgesetzt: erzeugt `latest.json` und `SHA256SUMS.txt` fuer Release-Artefakte. |

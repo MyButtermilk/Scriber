@@ -15,6 +15,10 @@ param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string[]]$Bundles = @("nsis"),
     [string]$ReleaseBaseUrl = "",
+    [switch]$EnableTauriUpdater,
+    [string]$UpdaterEndpoint = "",
+    [string]$UpdaterPublicKey = "",
+    [switch]$RequireUpdaterSignatures,
     [switch]$SkipChecks,
     [switch]$SkipSmoke,
     [switch]$RunInstallerSmoke
@@ -38,6 +42,8 @@ function Invoke-Checked {
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 $frontendRoot = Join-Path $RepoRoot "Frontend"
 $bundleArg = ($Bundles -join ",")
+$tauriConfigPath = Join-Path $RepoRoot "Frontend\src-tauri\tauri.conf.json"
+$tauriConfigOriginal = $null
 
 if (-not (Test-Path (Join-Path $frontendRoot "package.json"))) {
     throw "Frontend package.json was not found under $frontendRoot."
@@ -72,74 +78,123 @@ if (-not $SkipChecks) {
     }
 }
 
-Invoke-Checked -Label "Tauri Windows bundle" -Command {
-    Push-Location $frontendRoot
-    try {
-        npm run tauri:build -- --bundles $bundleArg
-    } finally {
-        Pop-Location
-    }
-}
-
-if (-not $SkipSmoke) {
-    Invoke-Checked -Label "Tauri release smoke" -Command {
-        Push-Location $RepoRoot
-        try {
-            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1
-        } finally {
-            Pop-Location
-        }
-    }
-}
-
-$targetRelease = Join-Path $RepoRoot "Frontend\src-tauri\target\release"
-$bundleRoot = Join-Path $targetRelease "bundle"
-$artifacts = @()
-if (Test-Path $bundleRoot) {
-    $artifacts = @(
-        Get-ChildItem -Path $bundleRoot -Recurse -File -Include *.exe,*.msi |
-            Select-Object -ExpandProperty FullName
-    )
-}
-
-$metadataDir = Join-Path $targetRelease "release-metadata"
-if ($artifacts.Count -gt 0) {
-    Invoke-Checked -Label "Release metadata" -Command {
-        Push-Location $RepoRoot
-        try {
-            $metadataArgs = @(
-                "scripts\create_release_metadata.py",
-                "--output-dir",
-                $metadataDir
-            )
-            if ($ReleaseBaseUrl) {
-                $metadataArgs += @("--base-url", $ReleaseBaseUrl)
+try {
+    if ($EnableTauriUpdater) {
+        $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
+        Invoke-Checked -Label "Prepare Tauri updater config" -Command {
+            Push-Location $RepoRoot
+            try {
+                $updaterArgs = @(
+                    "scripts\prepare_tauri_updater_config.py",
+                    "--write"
+                )
+                if ($UpdaterEndpoint) {
+                    $updaterArgs += @("--endpoint", $UpdaterEndpoint)
+                }
+                if ($UpdaterPublicKey) {
+                    $updaterArgs += @("--public-key", $UpdaterPublicKey)
+                }
+                python @updaterArgs
+            } finally {
+                Pop-Location
             }
-            foreach ($artifact in $artifacts) {
-                $metadataArgs += @("--artifact", $artifact)
-            }
-            python @metadataArgs
-        } finally {
-            Pop-Location
         }
+        $RequireUpdaterSignatures = $true
     }
-}
 
-if ($RunInstallerSmoke) {
-    Invoke-Checked -Label "Installed package smoke" -Command {
-        Push-Location $RepoRoot
+    Invoke-Checked -Label "Tauri Windows bundle" -Command {
+        Push-Location $frontendRoot
         try {
-            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1
+            npm run tauri:build -- --bundles $bundleArg
         } finally {
             Pop-Location
         }
     }
-}
 
-[pscustomobject]@{
-    ok = $true
-    bundles = $Bundles
-    releaseExe = Join-Path $targetRelease "scriber-desktop.exe"
-    artifacts = $artifacts
-    metadataDir = $metadataDir
-} | ConvertTo-Json -Compress
+    if (-not $SkipSmoke) {
+        Invoke-Checked -Label "Tauri release smoke" -Command {
+            Push-Location $RepoRoot
+            try {
+                powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
+    $targetRelease = Join-Path $RepoRoot "Frontend\src-tauri\target\release"
+    $bundleRoot = Join-Path $targetRelease "bundle"
+    $artifacts = @()
+    if (Test-Path $bundleRoot) {
+        $artifacts = @(
+            Get-ChildItem -Path $bundleRoot -Recurse -File -Include *.exe,*.msi |
+                Select-Object -ExpandProperty FullName
+        )
+    }
+
+    $metadataDir = Join-Path $targetRelease "release-metadata"
+    if ($artifacts.Count -gt 0) {
+        Invoke-Checked -Label "Release metadata" -Command {
+            Push-Location $RepoRoot
+            try {
+                $metadataArgs = @(
+                    "scripts\create_release_metadata.py",
+                    "--output-dir",
+                    $metadataDir
+                )
+                if ($ReleaseBaseUrl) {
+                    $metadataArgs += @("--base-url", $ReleaseBaseUrl)
+                }
+                foreach ($artifact in $artifacts) {
+                    $metadataArgs += @("--artifact", $artifact)
+                }
+                python @metadataArgs
+            } finally {
+                Pop-Location
+            }
+        }
+
+        Invoke-Checked -Label "Tauri updater metadata validation" -Command {
+            Push-Location $RepoRoot
+            try {
+                $validationArgs = @(
+                    "scripts\validate_tauri_updater_metadata.py",
+                    "--metadata",
+                    (Join-Path $metadataDir "latest.json")
+                )
+                if ($RequireUpdaterSignatures) {
+                    $validationArgs += "--require-signatures"
+                } else {
+                    $validationArgs += "--allow-local-urls"
+                }
+                python @validationArgs
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
+    if ($RunInstallerSmoke) {
+        Invoke-Checked -Label "Installed package smoke" -Command {
+            Push-Location $RepoRoot
+            try {
+                powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
+    [pscustomobject]@{
+        ok = $true
+        bundles = $Bundles
+        updaterEnabled = [bool]$EnableTauriUpdater
+        releaseExe = Join-Path $targetRelease "scriber-desktop.exe"
+        artifacts = $artifacts
+        metadataDir = $metadataDir
+    } | ConvertTo-Json -Compress
+} finally {
+    if ($null -ne $tauriConfigOriginal) {
+        Set-Content -Path $tauriConfigPath -Value $tauriConfigOriginal -NoNewline -Encoding UTF8
+    }
+}

@@ -679,11 +679,14 @@ powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -RunInstallerSmoke
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -EnableTauriUpdater -UpdaterEndpoint "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
 ```
 
 This builds `src/backend_worker.py` through `packaging\scriber-backend.spec` into `dist\tauri-sidecar\scriber-backend\` and optionally copies the onedir output to `Frontend\src-tauri\target\release\backend\`, where the Tauri supervisor can find it automatically. Use `-BundleMediaTools` to copy local `ffmpeg`/`ffprobe` binaries into `tools\ffmpeg\` inside the sidecar. The sidecar build runs `scripts\check_backend_runtime_imports.py` before PyInstaller and then runs the frozen `scriber-backend --runtime-import-check`, so required startup dependencies such as SciPy and pyloudnorm cannot be missing silently.
 
 Application version lives in `src/version.py`. `scripts\sync_version.py` copies it into the Tauri, Cargo, npm, and lockfile manifests. `scripts\build_windows.ps1` runs the sync before checks/builds, invokes `npm run tauri:build -- --bundles nsis`, lets Tauri build/copy the backend sidecar before bundling, produces the NSIS installer under `Frontend\src-tauri\target\release\bundle\nsis\`, and writes `latest.json` plus `SHA256SUMS.txt` under `Frontend\src-tauri\target\release\release-metadata\`. Pass `-RunInstallerSmoke` to install the generated NSIS package into `tmp\installer-smoke\`, start the installed app without Python/Node dev fallback, verify the managed sidecar, and clean up the temporary install. `.github/workflows/release-windows.yml` runs the same Windows release path on manual dispatch and `v*` tags.
+
+Tauri updater wiring is present but only becomes active for signed release builds. `-EnableTauriUpdater` runs `scripts\prepare_tauri_updater_config.py`, temporarily enables `bundle.createUpdaterArtifacts`, injects the updater public key/endpoints, and requires `TAURI_SIGNING_PRIVATE_KEY` or `TAURI_SIGNING_PRIVATE_KEY_PATH`. After metadata generation, `scripts\validate_tauri_updater_metadata.py` checks the `latest.json` schema and requires signatures for updater-enabled builds. The Settings page exposes manual check/install controls in installed Tauri builds; without signing configuration it reports that desktop updates are not configured.
 
 The current sidecar spec is a standard cloud-provider build and intentionally excludes heavy local ASR stacks such as NeMo/ONNX-ASR/Torch. Local ASR packaging remains a separate optional package path.
 
@@ -872,7 +875,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 
 - Real app-level microphone prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Real recording text-injection samples for `stop_requested_to_first_paste_ms` after a spoken phrase is transcribed and injected during the opt-in baseline run.
-- Full bundled desktop packaging: signing and updater.
+- Full bundled desktop release activation: Authenticode signing, Tauri updater signing keys, signed update artifacts, and published `latest.json`.
 - Broader runtime smoke tests for the Tauri supervisor: backend crash, startup timeout, external backend attach, dynamic port, and app-exit cleanup.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.
 - Stronger typed API contract between backend and frontend.
