@@ -34,6 +34,7 @@ param(
     [string]$SessionToken = "",
     [int]$TimeoutSec = 60,
     [int]$BackendHealthTimeoutSec = 20,
+    [int]$CleanupTimeoutSec = 20,
     [switch]$KeepAppOpen,
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
@@ -211,6 +212,28 @@ function Wait-ProcessExit {
         Start-Sleep -Milliseconds 250
     }
     throw "Process $ProcessId did not exit within ${DeadlineSec}s."
+}
+
+function Wait-ManagedBackendProcessesExit {
+    param(
+        [int[]]$BaselinePids,
+        [int]$DeadlineSec
+    )
+
+    $deadline = (Get-Date).AddSeconds($DeadlineSec)
+    do {
+        $remaining = @(
+            Get-ManagedBackendProcesses |
+                Where-Object { $BaselinePids -notcontains [int]$_.ProcessId } |
+                ForEach-Object { [int]$_.ProcessId }
+        )
+        if ($remaining.Count -eq 0) {
+            return @()
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    return $remaining
 }
 
 function Test-LoopbackPortFree {
@@ -716,17 +739,12 @@ try {
     }
 
     if (-not $KeepAppOpen) {
-        Start-Sleep -Seconds 3
-        $remaining = @(
-            Get-ManagedBackendProcesses |
-                Where-Object { $baseline -notcontains [int]$_.ProcessId } |
-                ForEach-Object { [int]$_.ProcessId }
-        )
+        $remaining = Wait-ManagedBackendProcessesExit -BaselinePids $baseline -DeadlineSec $CleanupTimeoutSec
         if ($remaining.Count -gt 0) {
             foreach ($processId in $remaining) {
                 Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
             }
-            $cleanupFailure = "Managed backend process remained after Tauri exit: $($remaining -join ', ')"
+            $cleanupFailure = "Managed backend process remained after Tauri exit for ${CleanupTimeoutSec}s: $($remaining -join ', ')"
         } elseif ($result) {
             $result.cleanupVerified = $true
         }
