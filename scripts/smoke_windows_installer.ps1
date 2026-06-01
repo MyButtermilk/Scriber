@@ -13,10 +13,12 @@ occupied default backend port. With -SimulateBackendShutdown, it verifies the
 token-protected controlled worker shutdown and supervisor recovery path. With
 -AttachExternalBackend, it starts an external Python backend and verifies that
 the installed Tauri shell attaches without spawning a managed sidecar. With
--VerifyLegacyDataMigration, it verifies that first-run legacy runtime data is
-copied into the installed app data directory. With -SimulateUpgrade, it runs
-the installer a second time against the same install/data directories and
-verifies that existing app data is preserved.
+-SimulateBackendStartupTimeout, it verifies that the installed supervisor
+replaces a backend worker that never becomes ready. With -VerifyLegacyDataMigration,
+it verifies that first-run legacy runtime data is copied into the installed app
+data directory. With -SimulateUpgrade, it runs the installer a second time
+against the same install/data directories and verifies that existing app data is
+preserved.
 #>
 
 param(
@@ -28,6 +30,7 @@ param(
     [switch]$SimulateBackendCrash,
     [switch]$SimulateBackendShutdown,
     [switch]$AttachExternalBackend,
+    [switch]$SimulateBackendStartupTimeout,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
     [switch]$SimulateUpgrade,
@@ -150,6 +153,9 @@ function Invoke-InstalledDesktopSmoke {
     if ($AttachExternalBackend) {
         $smokeArgs += "-AttachExternalBackend"
     }
+    if ($SimulateBackendStartupTimeout) {
+        $smokeArgs += "-SimulateBackendStartupTimeout"
+    }
     if ($OccupyDefaultPort) {
         $smokeArgs += "-OccupyDefaultPort"
     }
@@ -231,6 +237,7 @@ try {
             externalAttach = $secondSmoke.externalAttach
             portConflict = $secondSmoke.portConflict
             controlledShutdown = $secondSmoke.controlledShutdown
+            startupTimeout = $secondSmoke.startupTimeout
             legacyDataMigration = $secondSmoke.legacyDataMigration
         }
         $smoke = $secondSmoke
@@ -250,6 +257,7 @@ try {
         upgrade = $upgrade
         crashRecovery = $smoke.crashRecovery
         controlledShutdown = $smoke.controlledShutdown
+        startupTimeout = $smoke.startupTimeout
         cleanupVerified = $smoke.cleanupVerified
     } | ConvertTo-Json -Compress -Depth 8
 } finally {

@@ -8,6 +8,18 @@ from pathlib import Path
 from scripts.check_backend_runtime_imports import REQUIRED_IMPORTS, check_imports
 
 
+def test_backend_worker_startup_timeout_simulation_is_once(monkeypatch, tmp_path):
+    from src import backend_worker
+
+    marker_path = tmp_path / "startup-timeout.marker"
+    monkeypatch.setenv("SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE", "1")
+    monkeypatch.setenv("SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER", str(marker_path))
+
+    assert backend_worker.should_simulate_startup_timeout_once() is True
+    assert marker_path.exists()
+    assert backend_worker.should_simulate_startup_timeout_once() is False
+
+
 def test_backend_runtime_import_check_covers_scipy_startup_dependency():
     required_modules = {module for module, _reason in REQUIRED_IMPORTS}
 

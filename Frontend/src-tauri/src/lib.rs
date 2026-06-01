@@ -38,6 +38,7 @@ use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
+const BACKEND_START_TIMEOUT_ENV: &str = "SCRIBER_BACKEND_START_TIMEOUT_MS";
 const BACKEND_SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
 const FORCE_MANAGED_BACKEND_ENV: &str = "SCRIBER_FORCE_MANAGED_BACKEND";
 const SESSION_TOKEN_ENV: &str = "SCRIBER_SESSION_TOKEN";
@@ -712,8 +713,17 @@ fn start_managed_backend(state: &mut BackendState, port: u16, message: &str) -> 
 
 fn managed_backend_start_timed_out(started_at: Option<Instant>, now: Instant) -> bool {
     started_at
-        .map(|started_at| now.duration_since(started_at) >= BACKEND_START_TIMEOUT)
+        .map(|started_at| now.duration_since(started_at) >= backend_start_timeout())
         .unwrap_or(false)
+}
+
+fn backend_start_timeout() -> Duration {
+    env::var(BACKEND_START_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(BACKEND_START_TIMEOUT)
 }
 
 fn force_managed_backend() -> bool {
@@ -1624,11 +1634,12 @@ fn health_response_ready(response: &str) -> bool {
 mod tests {
     use super::{
         acquire_single_instance_guard, autostart_command_for_exe, autostart_commands_match,
-        backend_executable_names, find_backend_executable_in_dirs, health_response_ready,
-        is_shell_menu_item, managed_backend_start_timed_out, normalize_global_shortcut,
-        normalize_hotkey_mode, parse_loopback_backend_url, resolve_session_token,
-        should_show_window_for_tray_click, split_http_response, BACKEND_START_TIMEOUT,
-        MENU_ITEM_QUIT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW, SESSION_TOKEN_ENV,
+        backend_executable_names, backend_start_timeout, find_backend_executable_in_dirs,
+        health_response_ready, is_shell_menu_item, managed_backend_start_timed_out,
+        normalize_global_shortcut, normalize_hotkey_mode, parse_loopback_backend_url,
+        resolve_session_token, should_show_window_for_tray_click, split_http_response,
+        BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, MENU_ITEM_QUIT,
+        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW, SESSION_TOKEN_ENV,
     };
     use std::{
         fs,
@@ -1686,6 +1697,19 @@ mod tests {
             Some(now - BACKEND_START_TIMEOUT),
             now
         ));
+    }
+
+    #[test]
+    fn backend_start_timeout_can_be_overridden_for_smoke_tests() {
+        let previous = std::env::var(BACKEND_START_TIMEOUT_ENV).ok();
+        std::env::set_var(BACKEND_START_TIMEOUT_ENV, "1250");
+
+        assert_eq!(backend_start_timeout(), Duration::from_millis(1250));
+
+        match previous {
+            Some(value) => std::env::set_var(BACKEND_START_TIMEOUT_ENV, value),
+            None => std::env::remove_var(BACKEND_START_TIMEOUT_ENV),
+        }
     }
 
     #[test]

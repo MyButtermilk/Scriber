@@ -26,6 +26,7 @@ param(
     [switch]$RunInstallerPortConflictSmoke,
     [switch]$RunInstallerControlledShutdownSmoke,
     [switch]$RunInstallerExternalBackendSmoke,
+    [switch]$RunInstallerStartupTimeoutSmoke,
     [switch]$RunInstallerLegacyDataSmoke,
     [switch]$RunInstallerUpgradeSmoke
 )
@@ -180,7 +181,7 @@ try {
         }
     }
 
-    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
@@ -202,6 +203,9 @@ try {
                 }
                 if ($RunInstallerExternalBackendSmoke) {
                     $installerSmokeArgs += "-AttachExternalBackend"
+                }
+                if ($RunInstallerStartupTimeoutSmoke) {
+                    $installerSmokeArgs += "-SimulateBackendStartupTimeout"
                 }
                 if ($RunInstallerLegacyDataSmoke) {
                     $installerSmokeArgs += @("-LegacyDataDir", $RepoRoot, "-VerifyLegacyDataMigration")

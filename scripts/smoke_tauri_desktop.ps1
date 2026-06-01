@@ -14,9 +14,11 @@ loopback port. With -SimulateBackendShutdown, it posts the token-protected
 runtime shutdown endpoint, waits for the worker to exit cleanly, and verifies
 supervisor recovery. With -AttachExternalBackend, it starts an external Python
 backend on the default port, starts Tauri without force-managed mode, and
-verifies that no managed sidecar is spawned. With -LegacyDataDir and
--VerifyLegacyDataMigration, it verifies first-run migration into
-SCRIBER_DATA_DIR without printing secret values.
+verifies that no managed sidecar is spawned. With -SimulateBackendStartupTimeout,
+it forces the first backend worker launch to block before readiness and verifies
+that the supervisor replaces it. With -LegacyDataDir and -VerifyLegacyDataMigration,
+it verifies first-run migration into SCRIBER_DATA_DIR without printing secret
+values.
 
 Build the executable first with:
   cd Frontend
@@ -39,6 +41,8 @@ param(
     [switch]$SimulateBackendCrash,
     [switch]$SimulateBackendShutdown,
     [switch]$AttachExternalBackend,
+    [switch]$SimulateBackendStartupTimeout,
+    [int]$BackendStartupTimeoutMs = 3000,
     [int]$CrashRecoveryTimeoutSec = 75,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
@@ -103,6 +107,28 @@ function Wait-NewBackendListener {
         }
     }
     throw "No managed backend listener appeared within ${DeadlineSec}s."
+}
+
+function Wait-NewBackendProcess {
+    param(
+        [int[]]$BaselinePids,
+        [int]$DeadlineSec
+    )
+
+    $deadline = (Get-Date).AddSeconds($DeadlineSec)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        $newProcess = Get-ManagedBackendProcesses |
+            Where-Object { $BaselinePids -notcontains [int]$_.ProcessId } |
+            Select-Object -First 1
+        if ($newProcess) {
+            return [pscustomobject]@{
+                BackendPid = [int]$newProcess.ProcessId
+                Name = $newProcess.Name
+            }
+        }
+    }
+    throw "No managed backend process appeared within ${DeadlineSec}s."
 }
 
 function Wait-BackendHealth {
@@ -394,11 +420,14 @@ if ($LegacyDataDir) {
 } elseif ($VerifyLegacyDataMigration) {
     throw "-VerifyLegacyDataMigration requires -LegacyDataDir."
 }
-if ($AttachExternalBackend -and ($OccupyDefaultPort -or $SimulateBackendCrash -or $SimulateBackendShutdown -or $BackendExePath)) {
-    throw "-AttachExternalBackend cannot be combined with -OccupyDefaultPort, -SimulateBackendCrash, -SimulateBackendShutdown, or -BackendExePath."
+if ($AttachExternalBackend -and ($OccupyDefaultPort -or $SimulateBackendCrash -or $SimulateBackendShutdown -or $SimulateBackendStartupTimeout -or $BackendExePath)) {
+    throw "-AttachExternalBackend cannot be combined with -OccupyDefaultPort, -SimulateBackendCrash, -SimulateBackendShutdown, -SimulateBackendStartupTimeout, or -BackendExePath."
 }
 if ($AttachExternalBackend -and $KeepAppOpen) {
     throw "-AttachExternalBackend cannot be combined with -KeepAppOpen because the smoke owns the external backend process."
+}
+if ($SimulateBackendStartupTimeout -and ($SimulateBackendCrash -or $SimulateBackendShutdown)) {
+    throw "-SimulateBackendStartupTimeout cannot be combined with -SimulateBackendCrash or -SimulateBackendShutdown."
 }
 if (-not $DataDir) {
     $DataDir = Join-Path $RepoRoot ("tmp\tauri-smoke-data\" + [System.Guid]::NewGuid().ToString("N"))
@@ -423,6 +452,9 @@ $oldWebHost = $env:SCRIBER_WEB_HOST
 $oldWebPort = $env:SCRIBER_WEB_PORT
 $oldRuntimeMode = $env:SCRIBER_RUNTIME_MODE
 $oldLaunchKind = $env:SCRIBER_BACKEND_LAUNCH_KIND
+$oldBackendStartTimeout = $env:SCRIBER_BACKEND_START_TIMEOUT_MS
+$oldSimulateStartupTimeout = $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE
+$oldSimulateStartupTimeoutMarker = $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER
 
 if ($DisableDevFallback) {
     $env:SCRIBER_REPO_ROOT = $null
@@ -456,6 +488,11 @@ if (-not $EnableDeviceMonitor) {
 if ($LegacyDataDir) {
     $env:SCRIBER_LEGACY_DATA_DIR = $LegacyDataDir
 }
+if ($SimulateBackendStartupTimeout) {
+    $env:SCRIBER_BACKEND_START_TIMEOUT_MS = $BackendStartupTimeoutMs.ToString()
+    $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE = "1"
+    $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER = Join-Path $DataDir "startup-timeout-once.marker"
+}
 
 $app = $null
 $result = $null
@@ -486,6 +523,7 @@ try {
     }
 
     $app = Start-Process -FilePath $ExePath -WorkingDirectory (Split-Path $ExePath) -WindowStyle Hidden -PassThru
+    $startupTimeout = $null
     if ($AttachExternalBackend) {
         Start-Sleep -Seconds 3
         if ($app.HasExited) {
@@ -497,7 +535,24 @@ try {
             Port = $DefaultBackendPort
         }
     } else {
-        $listener = Wait-NewBackendListener -BaselinePids $baseline -DeadlineSec $TimeoutSec
+        if ($SimulateBackendStartupTimeout) {
+            $initialBackend = Wait-NewBackendProcess -BaselinePids $baseline -DeadlineSec $TimeoutSec
+            Wait-ProcessExit -ProcessId $initialBackend.BackendPid -DeadlineSec ([Math]::Max(10, [Math]::Ceiling($BackendStartupTimeoutMs / 1000.0) + 10))
+            $startupTimeoutBaseline = @($baseline + [int]$initialBackend.BackendPid)
+            $listener = Wait-NewBackendListener -BaselinePids $startupTimeoutBaseline -DeadlineSec $CrashRecoveryTimeoutSec
+            if ($listener.BackendPid -eq $initialBackend.BackendPid) {
+                throw "Backend startup-timeout recovery reused timed-out backend pid $($initialBackend.BackendPid)."
+            }
+            $startupTimeout = [pscustomobject]@{
+                verified = $true
+                timedOutBackendPid = [int]$initialBackend.BackendPid
+                replacementBackendPid = [int]$listener.BackendPid
+                backendStartupTimeoutMs = $BackendStartupTimeoutMs
+                markerPath = $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER
+            }
+        } else {
+            $listener = Wait-NewBackendListener -BaselinePids $baseline -DeadlineSec $TimeoutSec
+        }
     }
     if ($app.HasExited) {
         throw "Tauri process exited early with code $($app.ExitCode)."
@@ -634,6 +689,7 @@ try {
         externalAttach = $externalAttach
         portConflict = $portConflictResult
         legacyDataMigration = $legacyDataMigration
+        startupTimeout = $startupTimeout
         crashRecovery = $crashRecovery
         controlledShutdown = $controlledShutdown
         cleanupVerified = $false
@@ -694,6 +750,9 @@ try {
     $env:SCRIBER_WEB_PORT = $oldWebPort
     $env:SCRIBER_RUNTIME_MODE = $oldRuntimeMode
     $env:SCRIBER_BACKEND_LAUNCH_KIND = $oldLaunchKind
+    $env:SCRIBER_BACKEND_START_TIMEOUT_MS = $oldBackendStartTimeout
+    $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE = $oldSimulateStartupTimeout
+    $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER = $oldSimulateStartupTimeoutMarker
 
     if ($cleanupFailure) {
         throw $cleanupFailure
