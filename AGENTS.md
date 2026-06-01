@@ -104,6 +104,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `_resolve_mic_device()` in `pipeline.py` caches device-name/favorite-to-index resolution for a short TTL. Default TTL is `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC=10.0`.
 - The mic resolution cache is invalidated when DeviceMonitor sees a device-list change and when `micDevice` or `favoriteMic` settings change.
 - `MIC_ALWAYS_ON` exists as a setting, but it is not a true app-level persistent prewarm stream. Current per-session pipeline cleanup calls `stop(..., close_stream=True)` to avoid orphaned PortAudio streams. A real always-on mic needs a separate app-level manager.
+- `SCRIBER_AUDIO_ENGINE=rust` is treated as requested-only until a measured Rust audio prototype exists. `/api/runtime.featureFlags.audioEngine` is the effective engine and must remain `python` while `rustAudioAvailable=false`; `requestedAudioEngine` and `rustAudioRequested` expose the opt-in request separately.
 - `MicrophoneInput` still queues raw audio on every PortAudio callback. Only UI/visualizer/input-warning RMS work is throttled to about 30fps.
 - Multi-channel capture rescans strongest-channel selection every 10 callback frames and reuses the last channel between rescans.
 
@@ -314,7 +315,7 @@ Important environment variables:
 - STT provider keys: `SONIOX_API_KEY`, `MISTRAL_API_KEY`, `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `GLADIA_API_KEY`, `GROQ_API_KEY`, `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, `GOOGLE_API_KEY`, `YOUTUBE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`
 - AWS STT: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
 - Provider/model behavior: `SCRIBER_DEFAULT_STT`, `SCRIBER_SONIOX_MODE`, `SCRIBER_SONIOX_ASYNC_MODEL`, `SCRIBER_SONIOX_RT_MODEL`, `SCRIBER_MISTRAL_RT_MODEL`, `SCRIBER_MISTRAL_ASYNC_MODEL`, `SCRIBER_OPENAI_STT_MODEL`
-- App behavior: `SCRIBER_HOTKEY`, `SCRIBER_MODE`, `SCRIBER_DISABLE_HOTKEYS`, `SCRIBER_INJECT_METHOD`, `SCRIBER_LANGUAGE`, `SCRIBER_DEBUG`, `SCRIBER_CUSTOM_VOCAB`, `SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC`
+- App behavior: `SCRIBER_HOTKEY`, `SCRIBER_MODE`, `SCRIBER_DISABLE_HOTKEYS`, `SCRIBER_INJECT_METHOD`, `SCRIBER_LANGUAGE`, `SCRIBER_DEBUG`, `SCRIBER_CUSTOM_VOCAB`, `SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC`, `SCRIBER_AUDIO_ENGINE`
 - Mic: `SCRIBER_MIC_DEVICE`, `SCRIBER_FAVORITE_MIC`, `SCRIBER_MIC_ALWAYS_ON`, `SCRIBER_MIC_BLOCK_SIZE`, `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC`
 - Upload/jobs/timeouts: `SCRIBER_UPLOAD_MAX_MB`, `SCRIBER_UPLOAD_MAX_BYTES`, `SCRIBER_JOB_MAX_ATTEMPTS`, `SCRIBER_JOB_RETRY_BASE_SEC`, `SCRIBER_JOB_RETRY_MAX_SEC`, `SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC`
 - Summaries: `SCRIBER_SUMMARIZATION_MODEL`, `SCRIBER_AUTO_SUMMARIZE`, `SCRIBER_SUMMARY_MIN_WORDS`, `SCRIBER_SUMMARY_MAX_WORDS`

@@ -210,6 +210,9 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert runtime["capabilities"]["websocket"] is True
     assert runtime["capabilities"]["exports"] == ["pdf", "docx"]
     assert runtime["featureFlags"]["audioEngine"] == "python"
+    assert runtime["featureFlags"]["requestedAudioEngine"] == "python"
+    assert runtime["featureFlags"]["rustAudioRequested"] is False
+    assert runtime["featureFlags"]["rustAudioAvailable"] is False
     assert runtime["featureFlags"]["sessionTokenRequired"] is False
     assert runtime["startup"]["deviceMonitor"] == "disabled"
     assert health["ok"] is True
@@ -219,6 +222,20 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert health["host"] == runtime["host"]
     assert health["port"] == runtime["port"]
     assert health["startedAt"] == runtime["startedAt"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_reports_rust_audio_as_requested_until_prototype_exists(monkeypatch):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust")
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    runtime = ctl.get_runtime_info()
+
+    assert runtime["featureFlags"]["requestedAudioEngine"] == "rust"
+    assert runtime["featureFlags"]["rustAudioRequested"] is True
+    assert runtime["featureFlags"]["rustAudioAvailable"] is False
+    assert runtime["featureFlags"]["audioEngine"] == "python"
 
 
 @pytest.mark.asyncio

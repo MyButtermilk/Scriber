@@ -66,6 +66,9 @@ def _validate_capabilities(capabilities: dict[str, Any], contract: str) -> None:
 
 def _validate_feature_flags(feature_flags: dict[str, Any], contract: str) -> None:
     _require_string(feature_flags, "audioEngine", contract)
+    _require_string(feature_flags, "requestedAudioEngine", contract)
+    _require_bool(feature_flags, "rustAudioRequested", contract)
+    _require_bool(feature_flags, "rustAudioAvailable", contract)
     _require_bool(feature_flags, "micAlwaysOn", contract)
     _require_bool(feature_flags, "sessionTokenRequired", contract)
     _require_bool(feature_flags, "validateWsContracts", contract)

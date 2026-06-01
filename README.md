@@ -536,6 +536,7 @@ SCRIBER_STT_FALLBACKS=
 SCRIBER_LANGUAGE=auto
 SCRIBER_DEBUG=0
 SCRIBER_CUSTOM_VOCAB=
+SCRIBER_AUDIO_ENGINE=python
 ```
 
 ### Provider Models
@@ -567,6 +568,8 @@ SCRIBER_PASTE_RESTORE_DELAY_MS=1500
 ```
 
 `SCRIBER_MIC_ALWAYS_ON` is currently not a real persistent prewarm stream. Leave it off unless you are testing the surrounding setting flow.
+
+`SCRIBER_AUDIO_ENGINE=rust` is only a requested experimental mode until a measured Rust audio prototype exists. `/api/runtime.featureFlags.audioEngine` remains the effective engine and stays `python`; `requestedAudioEngine`, `rustAudioRequested`, and `rustAudioAvailable` expose the requested/available state separately.
 
 ### Uploads, Jobs, Timeouts
 
@@ -681,7 +684,7 @@ npm run tauri:dev
 npm run tauri:build
 ```
 
-The current Tauri shell is a hybrid runtime: Rust owns the desktop window and supervises the Python backend. It prefers a packaged backend sidecar (`SCRIBER_BACKEND_EXE` or `backend\scriber-backend.exe` next to the Tauri executable), but explicit sidecar overrides must still use one of the known `scriber-backend` executable names. If no sidecar exists, development mode falls back to `SCRIBER_PYTHON`, `venv\Scripts\python.exe`, `.venv\Scripts\python.exe`, or `python` running `python -m src.web_api`. The backend reports `/api/health` and `/api/runtime` metadata including API version, runtime mode, launch kind, PID, host, port, start time, capabilities, startup flags, and whether session-token enforcement is active.
+The current Tauri shell is a hybrid runtime: Rust owns the desktop window and supervises the Python backend. It prefers a packaged backend sidecar (`SCRIBER_BACKEND_EXE` or `backend\scriber-backend.exe` next to the Tauri executable), but explicit sidecar overrides must still use one of the known `scriber-backend` executable names. If no sidecar exists, development mode falls back to `SCRIBER_PYTHON`, `venv\Scripts\python.exe`, `.venv\Scripts\python.exe`, or `python` running `python -m src.web_api`. The backend reports `/api/health` and `/api/runtime` metadata including API version, runtime mode, launch kind, PID, host, port, start time, capabilities, startup flags, effective/requested audio engine state, and whether session-token enforcement is active.
 
 For Tauri-managed backends, Rust creates a per-run `SCRIBER_SESSION_TOKEN`, passes it to the Python worker, and exposes it to React with `get_backend_access`. The frontend attaches that token to backend REST and WebSocket URLs. `POST /api/runtime/shutdown` is reserved for local, token-authenticated controlled worker shutdown. On Windows, the shell uses the `Local\ScriberDesktopSingleInstance` named mutex to keep desktop startup single-instance before any managed worker is launched. The Tauri app menu and tray expose only shell/lifecycle actions today: open/focus the main window, restart the managed backend through the existing `BackendManager`, or quit the app. Desktop autostart is handled by Tauri commands that write `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Scriber` to the current desktop executable; old Python-tray autostart commands are treated as not enabled and are overwritten when the user enables autostart in Tauri. Tauri also owns global hotkey dispatch for managed desktop runs: the Python worker is started with `SCRIBER_DISABLE_HOTKEYS=1`, Rust registers the configured shortcut, and shortcut events call the existing `/api/live-mic/toggle`, `/start`, and `/stop` endpoints without duplicating recording state. The Rust shell also runs a lightweight backend supervisor loop that detects managed worker exits, writes crash metadata, and starts a replacement without relying on the frontend health poll. Rust shell logs live in `logs\tauri-shell.log`, backend stdout/stderr in `logs\tauri-backend.log`, and managed backend exit metadata in `logs\backend-crash-metadata.jsonl` under `SCRIBER_DATA_DIR`.
 

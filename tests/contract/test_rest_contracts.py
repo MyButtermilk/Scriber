@@ -63,6 +63,9 @@ def test_runtime_contract_rejects_incompatible_payload() -> None:
         },
         "featureFlags": {
             "audioEngine": "python",
+            "requestedAudioEngine": "python",
+            "rustAudioRequested": False,
+            "rustAudioAvailable": False,
             "micAlwaysOn": False,
             "sessionTokenRequired": True,
             "validateWsContracts": False,

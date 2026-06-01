@@ -83,6 +83,7 @@ _WEB_HOST_ENV = "SCRIBER_WEB_HOST"
 _WEB_PORT_ENV = "SCRIBER_WEB_PORT"
 _DISABLE_HOTKEYS_ENV = "SCRIBER_DISABLE_HOTKEYS"
 _SESSION_TOKEN_ENV = "SCRIBER_SESSION_TOKEN"
+_RUST_AUDIO_PROTOTYPE_AVAILABLE = False
 _SESSION_TOKEN_HEADER = "X-Scriber-Token"
 _SESSION_TOKEN_QUERY = "scriberToken"
 
@@ -228,6 +229,23 @@ def _request_has_valid_session_token(request: web.Request, token: str | None = N
 
 def _session_token_required() -> bool:
     return bool(_configured_session_token())
+
+
+def _audio_engine_feature_flags() -> dict[str, Any]:
+    requested = (os.getenv(_AUDIO_ENGINE_ENV, "python") or "python").strip().lower() or "python"
+    if requested not in {"python", "rust"}:
+        requested = "python"
+
+    rust_requested = requested == "rust"
+    rust_available = bool(_RUST_AUDIO_PROTOTYPE_AVAILABLE)
+    effective = "rust" if rust_requested and rust_available else "python"
+
+    return {
+        "audioEngine": effective,
+        "requestedAudioEngine": requested,
+        "rustAudioRequested": rust_requested,
+        "rustAudioAvailable": rust_available,
+    }
 
 
 def _is_loopback_request(request: web.Request) -> bool:
@@ -1707,7 +1725,7 @@ class ScriberWebController:
                 "localStt": bool(Config.ONNX_MODEL or Config.NEMO_MODEL),
             },
             "featureFlags": {
-                "audioEngine": os.getenv(_AUDIO_ENGINE_ENV, "python"),
+                **_audio_engine_feature_flags(),
                 "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
                 "sessionTokenRequired": _session_token_required(),
                 "validateWsContracts": bool(self._validate_ws_contracts),
