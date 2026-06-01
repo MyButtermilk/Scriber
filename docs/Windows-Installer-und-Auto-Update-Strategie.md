@@ -180,18 +180,18 @@ Felder gegenueber Entwurf ergaenzt:
 
 ### Phase 0 - Grundlagen (Pflicht)
 1. `LICENSE`-Datei im Repo ergaenzen (MIT konsistent zu README).
-   - README referenziert `LICENSE` bereits (Zeile 470), die Datei existiert aber noch nicht im Root.
+   - Status 2026-06-01: Root-`LICENSE` existiert als MIT-Lizenzdatei.
 2. **Verbindliche Versionierung** einfuehren:
-   - Neue Datei `src/version.py` mit `__version__ = "1.0.0"`.
-   - SemVer-Format: `MAJOR.MINOR.PATCH`.
-   - Importiert in `config.py`, `tray.py` (Tooltip), `web_api.py` (Health-Endpoint, neues Feld `version`).
-   - Wird von `build_windows.ps1` als Quelle fuer die Installer-Versionsnummer verwendet.
+   - Status 2026-06-01: `src/version.py` existiert mit `__version__`, SemVer-Normalisierung und `SCRIBER_VERSION` Runtime-Override.
+   - Status 2026-06-01: `web_api.py` meldet `version` in `/api/runtime` und `/api/health`.
+   - Status 2026-06-01: `scripts/sync_version.py` synchronisiert `src/version.py` nach `tauri.conf.json`, `Cargo.toml`, `Frontend/package.json` und `Frontend/package-lock.json`.
+   - Status 2026-06-01: `build_windows.ps1` fuehrt die Version-Synchronisierung vor Tests/Build automatisch aus.
 3. Zielplattform fixieren: **Windows 10/11 x64** (Build 1809+).
 4. Install Scope festlegen: **per-user** (empfohlen, kein UAC).
 5. **Frozen-Mode-Erkennung** einfuehren:
    - Status 2026-06-01: `src/runtime/paths.py` existiert fuer `is_frozen()`, `SCRIBER_DATA_DIR`, `settings.json`, `transcripts.db` und Downloads.
-   - Noch offen: Pfad-Resolution fuer gebuendelte Assets, FFmpeg und Frontend-Static-Files (`sys._MEIPASS`/Tauri Resources).
-   - Betrifft weiterhin: `tray.py` (Icon-Lade-Pfad), `web_api.py` (Static-File-Serving), FFmpeg-Aufrufer.
+   - Noch offen: Pfad-Resolution fuer gebuendelte Assets und Frontend-Static-Files (`sys._MEIPASS`/Tauri Resources).
+   - Betrifft weiterhin: `tray.py` (Icon-Lade-Pfad), `web_api.py` (Static-File-Serving).
 
 ### Phase 1 - Produktisierbarer Build
 1. **Tauri Backend-Sidecar bereitstellen**:
@@ -227,13 +227,13 @@ Felder gegenueber Entwurf ergaenzt:
 Lieferobjekte:
 1. `scripts/build_tauri_backend_sidecar.ps1` (umgesetzt fuer Sidecar, Frontend-Build, optionales FFmpeg/FFprobe-Bundling und Copy nach Tauri Release)
 2. `packaging/scriber-backend.spec` (umgesetzt fuer Standard-Cloud-Sidecar inkl. `yt-dlp`)
-3. `src/version.py`
+3. `src/version.py` (umgesetzt)
 4. `src/runtime/paths.py` (teilweise umgesetzt: Runtime-Data-Pfade; Asset-Resolution offen)
 5. `src/runtime/media_tools.py` (umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp`)
 6. `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt`
 7. `size-report.json` (CI-Artefakt)
 8. Start/Healthcheck fuer gebaute App (Smoke-Test vorhanden; Sidecar-Pfad optional ueber `-BackendExePath`)
-9. `scripts/build_windows.ps1` (umgesetzt fuer Tauri/NSIS-Release-Build; Signing/Updater offen)
+9. `scripts/build_windows.ps1` (umgesetzt fuer Version-Sync, Tauri/NSIS-Release-Build und Smoke-Test; Signing/Updater offen)
 
 ### Phase 2 - Installer
 1. `installer/scriber.iss` erstellen.
@@ -357,7 +357,7 @@ Lieferobjekte:
 ### Neue Dateien
 | Datei | Beschreibung |
 |-------|-------------|
-| `src/version.py` | Zentrale Versionsnummer (`__version__`). |
+| `src/version.py` | Umgesetzt: zentrale Versionsnummer (`__version__`) und SemVer-Normalisierung. |
 | `src/updater.py` | UpdateManager: Check, Download, Verify, Install. |
 | `src/runtime/paths.py` | Teilweise umgesetzt: Runtime-Data-Pfade fuer Settings, SQLite und Downloads. Frontend-Asset-Resolution offen. |
 | `src/runtime/media_tools.py` | Umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp` ueber Env, Sidecar-Tools und System-PATH. |
@@ -366,8 +366,9 @@ Lieferobjekte:
 | `installer/scriber.iss` | Inno Setup Script. |
 | `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Frontend Build → PyInstaller Sidecar → optionales FFmpeg/FFprobe-Bundling → optionaler Copy nach Tauri Release. |
 | `scripts/build_windows.ps1` | Umgesetzt fuer Tests → Tauri/NSIS Bundle → Smoke-Test. Signierung und Updater bleiben offen. |
+| `scripts/sync_version.py` | Umgesetzt: synchronisiert `src/version.py` in Python/Tauri/Cargo/npm-Manifeste. |
 | `.github/workflows/release-windows.yml` | CI/CD fuer Tag-basierte Releases. |
-| `LICENSE` | MIT License Datei. |
+| `LICENSE` | Umgesetzt: MIT License Datei. |
 
 ### Anzupassende Dateien
 | Datei | Aenderung |

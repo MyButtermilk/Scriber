@@ -156,6 +156,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - The sidecar spec bundles the `yt-dlp` Python package. `scripts/build_tauri_backend_sidecar.ps1 -BundleMediaTools` copies local `ffmpeg`/`ffprobe` binaries into the sidecar output.
 - `Frontend/src-tauri/tauri.conf.json` enables the NSIS bundle and maps `target/release/backend/` to bundled resource path `backend/`. The supervisor also searches `app.path().resource_dir()/backend`.
 - Tauri `beforeBundleCommand` runs the sidecar build with `-SkipFrontendBuild -InstallPyInstaller -BundleMediaTools -CopyToTauriRelease`, so `npm run tauri:build -- --bundles nsis` can produce an installer with the backend resource included.
+- App version is centralized in `src/version.py`. Run `python scripts\sync_version.py` before release builds to sync `tauri.conf.json`, `Cargo.toml`, `Frontend/package.json`, and `Frontend/package-lock.json`. `scripts/build_windows.ps1` does this automatically.
 - The current sidecar spec is the standard cloud-provider build and excludes heavy local ASR stacks (`torch`, NeMo, ONNX-ASR). Treat local ASR packaging as a separate optional package path.
 - Managed backend stdout/stderr go to `logs\tauri-backend.log` under `SCRIBER_DATA_DIR`.
 - On Windows, the managed Python child is spawned with `CREATE_NO_WINDOW`.
@@ -202,6 +203,7 @@ npm run db:push
 ### Tauri Sidecar Build
 
 ```powershell
+python scripts\sync_version.py
 powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
 powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1

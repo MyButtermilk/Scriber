@@ -41,6 +41,15 @@ if (-not (Test-Path (Join-Path $frontendRoot "package.json"))) {
     throw "Frontend package.json was not found under $frontendRoot."
 }
 
+Invoke-Checked -Label "Version sync" -Command {
+    Push-Location $RepoRoot
+    try {
+        python scripts\sync_version.py
+    } finally {
+        Pop-Location
+    }
+}
+
 if (-not $SkipChecks) {
     Invoke-Checked -Label "Python tests" -Command {
         Push-Location $RepoRoot

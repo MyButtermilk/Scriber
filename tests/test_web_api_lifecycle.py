@@ -154,6 +154,7 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     health = ctl.get_health()
 
     assert runtime["apiVersion"]
+    assert runtime["version"] == web_api.app_version()
     assert runtime["workerVersion"]
     assert runtime["runtimeMode"] == "python-web"
     assert runtime["launchKind"] == "python-module"
@@ -169,6 +170,7 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert runtime["startup"]["deviceMonitor"] == "disabled"
     assert health["ok"] is True
     assert health["ready"] is True
+    assert health["version"] == runtime["version"]
     assert health["apiVersion"] == runtime["apiVersion"]
     assert health["host"] == runtime["host"]
     assert health["port"] == runtime["port"]

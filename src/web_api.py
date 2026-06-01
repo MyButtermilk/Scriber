@@ -49,6 +49,7 @@ from src.runtime.paths import data_dir, downloads_dir
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
+from src.version import app_version
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
 from src.overlay import get_overlay, show_recording_overlay, show_initializing_overlay, show_transcribing_overlay, hide_recording_overlay, update_overlay_audio
@@ -1555,6 +1556,7 @@ class ScriberWebController:
         except ValueError:
             port = 8765
         return {
+            "version": app_version(),
             "apiVersion": _API_VERSION,
             "workerVersion": os.getenv(_WORKER_VERSION_ENV, _API_VERSION),
             "runtimeMode": os.getenv(_RUNTIME_MODE_ENV, "python-web"),
@@ -1593,6 +1595,7 @@ class ScriberWebController:
         return {
             "ok": True,
             "ready": True,
+            "version": runtime["version"],
             "apiVersion": runtime["apiVersion"],
             "workerVersion": runtime["workerVersion"],
             "pid": runtime["pid"],
