@@ -12,9 +12,11 @@ crash metadata was written. With -OccupyDefaultPort, it binds the default
 backend port before launch and verifies that the supervisor selects a different
 loopback port. With -SimulateBackendShutdown, it posts the token-protected
 runtime shutdown endpoint, waits for the worker to exit cleanly, and verifies
-supervisor recovery. With -LegacyDataDir and -VerifyLegacyDataMigration, it
-verifies first-run migration into SCRIBER_DATA_DIR without printing secret
-values.
+supervisor recovery. With -AttachExternalBackend, it starts an external Python
+backend on the default port, starts Tauri without force-managed mode, and
+verifies that no managed sidecar is spawned. With -LegacyDataDir and
+-VerifyLegacyDataMigration, it verifies first-run migration into
+SCRIBER_DATA_DIR without printing secret values.
 
 Build the executable first with:
   cd Frontend
@@ -36,6 +38,7 @@ param(
     [switch]$OccupyDefaultPort,
     [switch]$SimulateBackendCrash,
     [switch]$SimulateBackendShutdown,
+    [switch]$AttachExternalBackend,
     [int]$CrashRecoveryTimeoutSec = 75,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
@@ -105,14 +108,15 @@ function Wait-NewBackendListener {
 function Wait-BackendHealth {
     param(
         [int]$Port,
-        [int]$DeadlineSec
+        [int]$DeadlineSec,
+        [string]$ExpectedRuntimeMode = "tauri-supervised"
     )
 
     $deadline = (Get-Date).AddSeconds($DeadlineSec)
     while ((Get-Date) -lt $deadline) {
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/health" -TimeoutSec 2
-            if ($health.ok -and $health.runtimeMode -eq "tauri-supervised" -and $health.apiVersion) {
+            if ($health.ok -and $health.runtimeMode -eq $ExpectedRuntimeMode -and $health.apiVersion) {
                 return $health
             }
             Start-Sleep -Milliseconds 500
@@ -120,7 +124,7 @@ function Wait-BackendHealth {
             Start-Sleep -Milliseconds 500
         }
     }
-    throw "Managed backend on port $Port did not return tauri-supervised health."
+    throw "Backend on port $Port did not return $ExpectedRuntimeMode health."
 }
 
 function Get-BackendRuntime {
@@ -181,6 +185,69 @@ function Wait-ProcessExit {
         Start-Sleep -Milliseconds 250
     }
     throw "Process $ProcessId did not exit within ${DeadlineSec}s."
+}
+
+function Test-LoopbackPortFree {
+    param([int]$Port)
+
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new(
+            [System.Net.IPAddress]::Parse("127.0.0.1"),
+            $Port
+        )
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) {
+            $listener.Stop()
+        }
+    }
+}
+
+function Get-LoopbackListenerPid {
+    param([int]$Port)
+
+    $connection = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+        Where-Object { $_.LocalAddress -in @("127.0.0.1", "0.0.0.0", "::1", "::") } |
+        Select-Object -First 1
+    if (-not $connection) {
+        return $null
+    }
+    return [int]$connection.OwningProcess
+}
+
+function Assert-NoNewBackendListeners {
+    param(
+        [int[]]$BaselinePids,
+        [int]$WaitSec
+    )
+
+    Start-Sleep -Seconds $WaitSec
+    $newProcesses = @(
+        Get-ManagedBackendProcesses |
+            Where-Object { $BaselinePids -notcontains [int]$_.ProcessId }
+    )
+    $newListeners = @()
+    foreach ($process in $newProcesses) {
+        $ports = @(
+            Get-NetTCPConnection -State Listen -OwningProcess ([int]$process.ProcessId) -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty LocalPort -Unique
+        )
+        if ($ports.Count -gt 0) {
+            $newListeners += [pscustomobject]@{
+                ProcessId = [int]$process.ProcessId
+                Name = $process.Name
+                Ports = @($ports)
+            }
+        }
+    }
+    if ($newListeners.Count -gt 0) {
+        $details = @($newListeners | ForEach-Object { "$($_.ProcessId):$($_.Name):$($_.Ports -join ',')" })
+        throw "Unexpected managed backend listener appeared: $($details -join '; ')"
+    }
 }
 
 function Wait-BackendCrashMetadata {
@@ -327,6 +394,12 @@ if ($LegacyDataDir) {
 } elseif ($VerifyLegacyDataMigration) {
     throw "-VerifyLegacyDataMigration requires -LegacyDataDir."
 }
+if ($AttachExternalBackend -and ($OccupyDefaultPort -or $SimulateBackendCrash -or $SimulateBackendShutdown -or $BackendExePath)) {
+    throw "-AttachExternalBackend cannot be combined with -OccupyDefaultPort, -SimulateBackendCrash, -SimulateBackendShutdown, or -BackendExePath."
+}
+if ($AttachExternalBackend -and $KeepAppOpen) {
+    throw "-AttachExternalBackend cannot be combined with -KeepAppOpen because the smoke owns the external backend process."
+}
 if (-not $DataDir) {
     $DataDir = Join-Path $RepoRoot ("tmp\tauri-smoke-data\" + [System.Guid]::NewGuid().ToString("N"))
 }
@@ -346,6 +419,10 @@ $oldSessionToken = $env:SCRIBER_SESSION_TOKEN
 $oldHotkeys = $env:SCRIBER_DISABLE_HOTKEYS
 $oldMonitor = $env:SCRIBER_DISABLE_DEVICE_MONITOR
 $oldLegacyDataDir = $env:SCRIBER_LEGACY_DATA_DIR
+$oldWebHost = $env:SCRIBER_WEB_HOST
+$oldWebPort = $env:SCRIBER_WEB_PORT
+$oldRuntimeMode = $env:SCRIBER_RUNTIME_MODE
+$oldLaunchKind = $env:SCRIBER_BACKEND_LAUNCH_KIND
 
 if ($DisableDevFallback) {
     $env:SCRIBER_REPO_ROOT = $null
@@ -355,7 +432,15 @@ if ($DisableDevFallback) {
     $env:SCRIBER_PYTHON = $PythonPath
 }
 $env:SCRIBER_DATA_DIR = $DataDir
-$env:SCRIBER_FORCE_MANAGED_BACKEND = "1"
+if ($AttachExternalBackend) {
+    $env:SCRIBER_FORCE_MANAGED_BACKEND = $null
+    $env:SCRIBER_WEB_HOST = "127.0.0.1"
+    $env:SCRIBER_WEB_PORT = $DefaultBackendPort.ToString()
+    $env:SCRIBER_RUNTIME_MODE = "external-python"
+    $env:SCRIBER_BACKEND_LAUNCH_KIND = "external-python"
+} else {
+    $env:SCRIBER_FORCE_MANAGED_BACKEND = "1"
+}
 $env:SCRIBER_SESSION_TOKEN = $SessionToken
 if ($BackendExePath) {
     $env:SCRIBER_BACKEND_EXE = $BackendExePath
@@ -375,7 +460,23 @@ if ($LegacyDataDir) {
 $app = $null
 $result = $null
 $defaultPortBlocker = $null
+$externalBackend = $null
+$externalBackendPid = $null
 try {
+    $backendBaselineForApp = $baseline
+    if ($AttachExternalBackend) {
+        if (-not (Test-LoopbackPortFree -Port $DefaultBackendPort)) {
+            throw "Default backend port $DefaultBackendPort is already occupied; cannot run external attach smoke."
+        }
+        $externalBackend = Start-Process -FilePath $PythonPath -ArgumentList @("-m", "src.web_api") -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
+        Wait-BackendHealth -Port $DefaultBackendPort -DeadlineSec $BackendHealthTimeoutSec -ExpectedRuntimeMode "external-python" | Out-Null
+        $externalBackendPid = Get-LoopbackListenerPid -Port $DefaultBackendPort
+        if (-not $externalBackendPid) {
+            throw "External backend became healthy, but no listener owner was found for port $DefaultBackendPort."
+        }
+        $backendBaselineForApp = @($baseline + [int]$externalBackend.Id + [int]$externalBackendPid | Select-Object -Unique)
+    }
+
     if ($OccupyDefaultPort) {
         $defaultPortBlocker = [System.Net.Sockets.TcpListener]::new(
             [System.Net.IPAddress]::Parse("127.0.0.1"),
@@ -385,17 +486,44 @@ try {
     }
 
     $app = Start-Process -FilePath $ExePath -WorkingDirectory (Split-Path $ExePath) -WindowStyle Hidden -PassThru
-    $listener = Wait-NewBackendListener -BaselinePids $baseline -DeadlineSec $TimeoutSec
+    if ($AttachExternalBackend) {
+        Start-Sleep -Seconds 3
+        if ($app.HasExited) {
+            throw "Tauri process exited early with code $($app.ExitCode)."
+        }
+        Assert-NoNewBackendListeners -BaselinePids $backendBaselineForApp -WaitSec 3
+        $listener = [pscustomobject]@{
+            BackendPid = [int]$externalBackendPid
+            Port = $DefaultBackendPort
+        }
+    } else {
+        $listener = Wait-NewBackendListener -BaselinePids $baseline -DeadlineSec $TimeoutSec
+    }
     if ($app.HasExited) {
         throw "Tauri process exited early with code $($app.ExitCode)."
     }
-    $health = Wait-BackendHealth -Port $listener.Port -DeadlineSec $BackendHealthTimeoutSec
+    $expectedRuntimeMode = if ($AttachExternalBackend) { "external-python" } else { "tauri-supervised" }
+    $health = Wait-BackendHealth -Port $listener.Port -DeadlineSec $BackendHealthTimeoutSec -ExpectedRuntimeMode $expectedRuntimeMode
     $runtime = Get-BackendRuntime -Port $listener.Port -Token $SessionToken
     if ((Convert-ToFullPath -Path $runtime.dataDir) -ne $DataDir) {
         throw "Managed backend used unexpected dataDir: $($runtime.dataDir)"
     }
     if (-not (Convert-ToFullPath -Path $runtime.downloadsDir).StartsWith($DataDir, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Managed backend downloadsDir is not under dataDir: $($runtime.downloadsDir)"
+    }
+    $externalAttach = $null
+    if ($AttachExternalBackend) {
+        if ($runtime.launchKind -ne "external-python") {
+            throw "External attach smoke expected launchKind external-python, got $($runtime.launchKind)."
+        }
+        $externalAttach = [pscustomobject]@{
+            verified = $true
+            externalBackendPid = [int]$externalBackendPid
+            port = $DefaultBackendPort
+            runtimeMode = $health.runtimeMode
+            launchKind = $runtime.launchKind
+            managedBackendSpawned = $false
+        }
     }
     $portConflict = $null
     if ($OccupyDefaultPort) {
@@ -503,6 +631,7 @@ try {
         dataDir = $runtime.dataDir
         downloadsDir = $runtime.downloadsDir
         launchKind = $runtime.launchKind
+        externalAttach = $externalAttach
         portConflict = $portConflictResult
         legacyDataMigration = $legacyDataMigration
         crashRecovery = $crashRecovery
@@ -514,6 +643,20 @@ try {
     if (-not $KeepAppOpen -and $app -and -not $app.HasExited) {
         Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
         Wait-Process -Id $app.Id -Timeout 10 -ErrorAction SilentlyContinue
+    }
+
+    if ($externalBackendPid) {
+        try {
+            Invoke-BackendShutdown -Port $DefaultBackendPort -Token $SessionToken | Out-Null
+            Wait-ProcessExit -ProcessId $externalBackendPid -DeadlineSec 15
+        } catch {
+            Stop-Process -Id $externalBackendPid -Force -ErrorAction SilentlyContinue
+            Wait-Process -Id $externalBackendPid -Timeout 10 -ErrorAction SilentlyContinue
+        }
+    }
+    if ($externalBackend -and -not $externalBackend.HasExited) {
+        Stop-Process -Id $externalBackend.Id -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $externalBackend.Id -Timeout 10 -ErrorAction SilentlyContinue
     }
 
     if (-not $KeepAppOpen) {
@@ -547,6 +690,10 @@ try {
     $env:SCRIBER_DISABLE_HOTKEYS = $oldHotkeys
     $env:SCRIBER_DISABLE_DEVICE_MONITOR = $oldMonitor
     $env:SCRIBER_LEGACY_DATA_DIR = $oldLegacyDataDir
+    $env:SCRIBER_WEB_HOST = $oldWebHost
+    $env:SCRIBER_WEB_PORT = $oldWebPort
+    $env:SCRIBER_RUNTIME_MODE = $oldRuntimeMode
+    $env:SCRIBER_BACKEND_LAUNCH_KIND = $oldLaunchKind
 
     if ($cleanupFailure) {
         throw $cleanupFailure

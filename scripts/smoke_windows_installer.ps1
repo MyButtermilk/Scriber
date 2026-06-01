@@ -11,6 +11,8 @@ desktop shell restarts a killed backend worker and writes crash metadata. With
 -OccupyDefaultPort, it verifies that the installed supervisor avoids the
 occupied default backend port. With -SimulateBackendShutdown, it verifies the
 token-protected controlled worker shutdown and supervisor recovery path. With
+-AttachExternalBackend, it starts an external Python backend and verifies that
+the installed Tauri shell attaches without spawning a managed sidecar. With
 -VerifyLegacyDataMigration, it verifies that first-run legacy runtime data is
 copied into the installed app data directory. With -SimulateUpgrade, it runs
 the installer a second time against the same install/data directories and
@@ -25,6 +27,7 @@ param(
     [switch]$OccupyDefaultPort,
     [switch]$SimulateBackendCrash,
     [switch]$SimulateBackendShutdown,
+    [switch]$AttachExternalBackend,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
     [switch]$SimulateUpgrade,
@@ -144,6 +147,9 @@ function Invoke-InstalledDesktopSmoke {
     if ($SimulateBackendShutdown) {
         $smokeArgs += "-SimulateBackendShutdown"
     }
+    if ($AttachExternalBackend) {
+        $smokeArgs += "-AttachExternalBackend"
+    }
     if ($OccupyDefaultPort) {
         $smokeArgs += "-OccupyDefaultPort"
     }
@@ -222,6 +228,7 @@ try {
             secondRuntimeMode = $secondSmoke.runtimeMode
             secondLaunchKind = $secondSmoke.launchKind
             secondCleanupVerified = $secondSmoke.cleanupVerified
+            externalAttach = $secondSmoke.externalAttach
             portConflict = $secondSmoke.portConflict
             controlledShutdown = $secondSmoke.controlledShutdown
             legacyDataMigration = $secondSmoke.legacyDataMigration
@@ -237,6 +244,7 @@ try {
         dataDir = $DataDir
         runtimeMode = $smoke.runtimeMode
         launchKind = $smoke.launchKind
+        externalAttach = $smoke.externalAttach
         portConflict = $smoke.portConflict
         legacyDataMigration = $smoke.legacyDataMigration
         upgrade = $upgrade
