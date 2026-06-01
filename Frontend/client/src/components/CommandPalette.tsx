@@ -20,7 +20,7 @@ import {
   Home,
 } from "lucide-react";
 import { apiUrl } from "@/lib/backend";
-import { useSharedWebSocket } from "@/contexts/WebSocketContext";
+import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
 
 interface CommandPaletteProps {
@@ -47,7 +47,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const { toast } = useToast();
 
   // Track recording state via WebSocket
-  const handleWsMessage = useCallback((msg: any) => {
+  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     if (!msg || typeof msg !== "object") return;
 
     switch (msg.type) {

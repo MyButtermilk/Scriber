@@ -217,6 +217,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Status 2026-06-01: Der Sidecar-Build fuehrt vor PyInstaller einen Runtime-Import-Preflight aus, der unter anderem SciPy, pyloudnorm, Pipecat und `src.web_api` prueft.
    - Status 2026-06-01: Der Tauri-Supervisor erzeugt ein zufaelliges `SCRIBER_SESSION_TOKEN`, uebergibt es an den Python-Worker und stellt es dem React-Frontend ueber `get_backend_access` bereit. Das Backend erzwingt den Token fuer lokale REST-/WebSocket-Zugriffe; `/api/health` bleibt fuer Readiness tokenfrei.
    - Status 2026-06-01: `POST /api/runtime/shutdown` existiert als loopback- und token-geschuetzter Shutdown-Endpunkt fuer kontrolliertes Worker-Beenden.
+   - Status 2026-06-01: WebSocket-Events tragen `apiVersion` und werden ueber `src/core/ws_contracts.py` sowie `tests/contract/test_ws_events.py` gegen bekannte Eventtypen validiert. Das React-Frontend nutzt dafuer eine typisierte `ScriberWebSocketMessage`-Union.
 2. **Frontend Production Build** in den Backend-Output integrieren:
    - `npm run build` erzeugt `Frontend/dist/public/` mit statischem HTML/JS/CSS.
    - `build_windows.ps1` kopiert diesen Output in das PyInstaller-Output-Verzeichnis.

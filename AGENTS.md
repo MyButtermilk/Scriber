@@ -128,6 +128,8 @@ This file is the working guide for agents editing this repository. Keep it accur
 
 - The frontend uses one shared WebSocket through `WebSocketProvider`.
 - Backend sends events such as `state`, `status`, `transcript`, `audio_level`, `input_warning`, `transcribing`, `session_started`, `session_finished`, `history_updated`, and `error`.
+- WebSocket events are versioned with `apiVersion`. Use builders and validators in `src/core/ws_contracts.py` or explicitly wrap manual payloads with `version_event_payload()`.
+- `tests/contract/test_ws_events.py` is the gate for WebSocket payload compatibility. Add new event types there before broadcasting them.
 - `audio_level` is throttled around 30fps.
 - `broadcast()` skips JSON serialization when there are no connected WebSocket clients.
 - `_on_audio_level()` avoids scheduling UI broadcast work when there are no WebSocket clients and the native overlay is not consuming waveform updates.
@@ -296,6 +298,7 @@ Current summarization default is `gemini-flash-latest`.
 ### TypeScript and React
 
 - TypeScript strict mode is enabled. Avoid `any`; narrow API responses.
+- WebSocket consumers should use `ScriberWebSocketMessage` from `Frontend/client/src/contexts/WebSocketContext.tsx`, not untyped `any` handlers.
 - Components are functional and `PascalCase`; hooks are `useX`.
 - Import order: external packages, aliases (`@/`, `@shared/`), then relative imports.
 - Prefer `@/` alias for client imports.

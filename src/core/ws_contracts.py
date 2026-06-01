@@ -7,8 +7,17 @@ class WSContractError(ValueError):
     pass
 
 
-def _optional_session(payload: dict[str, Any], session_id: str | None) -> dict[str, Any]:
+WS_API_VERSION = "1"
+
+
+def version_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
     out = dict(payload)
+    out.setdefault("apiVersion", WS_API_VERSION)
+    return out
+
+
+def _optional_session(payload: dict[str, Any], session_id: str | None) -> dict[str, Any]:
+    out = version_event_payload(payload)
     if session_id:
         out["sessionId"] = session_id
     return out
@@ -82,7 +91,7 @@ def error_event(message: str, *, session_id: str | None = None) -> dict[str, Any
 
 
 def history_updated_event() -> dict[str, Any]:
-    return {"type": "history_updated"}
+    return version_event_payload({"type": "history_updated"})
 
 
 def transcribing_event(*, session_id: str | None = None) -> dict[str, Any]:
@@ -97,26 +106,60 @@ def session_finished_event(session: dict[str, Any], *, session_id: str | None = 
     return _optional_session({"type": "session_finished", "session": dict(session)}, session_id)
 
 
+def state_event(state: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(state)
+    payload["type"] = "state"
+    return version_event_payload(payload)
+
+
+def _require_string(payload: dict[str, Any], field: str, event_type: str) -> None:
+    if not isinstance(payload.get(field), str):
+        raise WSContractError(f"{event_type} event requires string '{field}'")
+
+
+def _require_bool(payload: dict[str, Any], field: str, event_type: str) -> None:
+    if not isinstance(payload.get(field), bool):
+        raise WSContractError(f"{event_type} event requires bool '{field}'")
+
+
+def _require_number(payload: dict[str, Any], field: str, event_type: str) -> None:
+    if not isinstance(payload.get(field), (int, float)):
+        raise WSContractError(f"{event_type} event requires numeric '{field}'")
+
+
+def _validate_model_progress(payload: dict[str, Any], event_type: str) -> None:
+    _require_string(payload, "modelId", event_type)
+    _require_number(payload, "progress", event_type)
+    _require_string(payload, "status", event_type)
+    message = payload.get("message")
+    if message is not None and not isinstance(message, str):
+        raise WSContractError(f"{event_type} event requires string 'message' when present")
+
+
 def validate_event_payload(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise WSContractError("WebSocket payload must be a dict")
     event_type = payload.get("type")
     if not isinstance(event_type, str) or not event_type:
         raise WSContractError("WebSocket payload requires non-empty string 'type'")
+    api_version = payload.get("apiVersion")
+    if api_version != WS_API_VERSION:
+        raise WSContractError(f"WebSocket payload requires apiVersion '{WS_API_VERSION}'")
 
-    if event_type == "status":
-        if not isinstance(payload.get("status"), str):
-            raise WSContractError("status event requires string 'status'")
-        if not isinstance(payload.get("listening"), bool):
-            raise WSContractError("status event requires bool 'listening'")
+    if event_type == "state":
+        _require_bool(payload, "listening", event_type)
+        _require_string(payload, "status", event_type)
+        _require_bool(payload, "backgroundProcessing", event_type)
+        _require_string(payload, "recordingState", event_type)
+        _require_bool(payload, "transcribing", event_type)
+    elif event_type == "status":
+        _require_string(payload, "status", event_type)
+        _require_bool(payload, "listening", event_type)
     elif event_type == "audio_level":
-        if not isinstance(payload.get("rms"), (int, float)):
-            raise WSContractError("audio_level event requires numeric 'rms'")
+        _require_number(payload, "rms", event_type)
     elif event_type == "input_warning":
-        if not isinstance(payload.get("active"), bool):
-            raise WSContractError("input_warning event requires bool 'active'")
-        if not isinstance(payload.get("message"), str):
-            raise WSContractError("input_warning event requires string 'message'")
+        _require_bool(payload, "active", event_type)
+        _require_string(payload, "message", event_type)
         code = payload.get("code")
         if code is not None and not isinstance(code, str):
             raise WSContractError("input_warning event requires string 'code' when present")
@@ -134,18 +177,27 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
                 if not isinstance(action.get("uri"), str):
                     raise WSContractError("input_warning action requires string 'uri'")
     elif event_type == "transcript":
-        if not isinstance(payload.get("text"), str):
-            raise WSContractError("transcript event requires string 'text'")
-        if not isinstance(payload.get("isFinal"), bool):
-            raise WSContractError("transcript event requires bool 'isFinal'")
+        _require_string(payload, "text", event_type)
+        _require_bool(payload, "isFinal", event_type)
     elif event_type == "error":
-        if not isinstance(payload.get("message"), str):
-            raise WSContractError("error event requires string 'message'")
-    elif event_type in {"history_updated", "transcribing"}:
+        _require_string(payload, "message", event_type)
+    elif event_type in {"history_updated", "settings_updated", "transcribing", "nemo_models_updated"}:
         pass
     elif event_type in {"session_started", "session_finished"}:
         if not isinstance(payload.get("session"), dict):
             raise WSContractError(f"{event_type} event requires object 'session'")
+    elif event_type == "microphones_updated":
+        devices = payload.get("devices")
+        if not isinstance(devices, list):
+            raise WSContractError("microphones_updated event requires list 'devices'")
+        if not isinstance(payload.get("favoriteMicRestored"), bool):
+            raise WSContractError("microphones_updated event requires bool 'favoriteMicRestored'")
+    elif event_type in {"onnx_download_progress", "nemo_download_progress"}:
+        _validate_model_progress(payload, event_type)
+    elif event_type == "onnx_models_updated":
+        _require_string(payload, "modelId", event_type)
+    else:
+        raise WSContractError(f"Unknown WebSocket event type: {event_type}")
 
     session_id = payload.get("sessionId")
     if session_id is not None and not isinstance(session_id, str):

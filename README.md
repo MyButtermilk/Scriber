@@ -65,6 +65,7 @@ Known limits:
   - `toggle`: press once to start, press again to stop.
   - `push_to_talk`: record while the hotkey is held.
 - Live WebSocket events for state, status, audio level, warnings, transcripts, session lifecycle, history updates, and errors.
+- WebSocket payloads include `apiVersion` and are validated by backend contract tests.
 - Favorite microphone selection with fallback to selected/default device.
 - Device hotplug detection via `DeviceMonitor`.
 - Low input-level warning flow for muted/quiet microphones.
@@ -383,6 +384,8 @@ flowchart LR
 ### WebSocket
 
 - `GET /ws`
+
+All JSON WebSocket events include `apiVersion: "1"` and a string `type`. The React client consumes them through the typed `ScriberWebSocketMessage` union in `Frontend/client/src/contexts/WebSocketContext.tsx`.
 
 Core event types:
 

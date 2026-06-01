@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Square, Loader2 } from "lucide-react";
 import { wsUrl, apiUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
-import { useSharedWebSocket } from "@/contexts/WebSocketContext";
+import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 
 const BAR_COUNT = 56; // ~30% reduction from 80
 
@@ -186,7 +186,7 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
     }, []);
 
     // WebSocket message handler with error support
-    const handleWsMessage = useCallback((msg: any) => {
+    const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
         if (!msg || typeof msg !== "object") return;
         const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
         const activeSessionId = activeSessionIdRef.current;

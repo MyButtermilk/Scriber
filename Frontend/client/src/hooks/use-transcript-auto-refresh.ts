@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useSharedWebSocket } from "@/contexts/WebSocketContext";
+import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 
 type TranscriptType = "mic" | "file" | "youtube";
 
@@ -55,7 +55,7 @@ export function useTranscriptAutoRefresh({
     });
   }, [queryClient, queryKey, transcriptId, type]);
 
-  const handleWsMessage = useCallback((msg: any) => {
+  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     if (!msg || typeof msg !== "object") {
       return;
     }

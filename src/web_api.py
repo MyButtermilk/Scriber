@@ -39,10 +39,12 @@ from src.core.ws_contracts import (
     input_warning_event,
     session_finished_event,
     session_started_event,
+    state_event,
     status_event,
     transcript_event,
     transcribing_event,
     validate_event_payload,
+    version_event_payload,
 )
 from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
@@ -1688,8 +1690,10 @@ class ScriberWebController:
         return self._client_count > 0
 
     async def broadcast(self, payload: dict[str, Any]) -> None:
+        payload_to_send = payload
         if self._validate_ws_contracts:
-            validate_event_payload(payload)
+            payload_to_send = version_event_payload(payload)
+            validate_event_payload(payload_to_send)
 
         if self._clients_dirty:
             async with self._clients_lock:
@@ -1701,7 +1705,9 @@ class ScriberWebController:
         if not clients:
             return
 
-        msg = json.dumps(payload, ensure_ascii=False)
+        if payload_to_send is payload:
+            payload_to_send = version_event_payload(payload)
+        msg = json.dumps(payload_to_send, ensure_ascii=False)
         
         async def send_safe(ws: web.WebSocketResponse):
             """Send message to client, return ws if failed or closed."""
@@ -3814,7 +3820,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         await ws.prepare(request)
         ctl: ScriberWebController = request.app["controller"]
         await ctl.add_client(ws)
-        await ws.send_str(json.dumps({"type": "state", **ctl.get_state()}))
+        await ws.send_str(json.dumps(state_event(ctl.get_state())))
 
         try:
             async for msg in ws:

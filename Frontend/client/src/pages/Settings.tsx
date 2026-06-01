@@ -15,7 +15,7 @@ import { apiUrl } from "@/lib/backend";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { useSharedWebSocket } from "@/contexts/WebSocketContext";
+import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 
 type OnnxModelInfo = {
@@ -947,7 +947,7 @@ export default function Settings() {
     }
   };
 
-  const handleWsMessage = useCallback((msg: any) => {
+  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     if (!msg) return;
     if (msg.type === "microphones_updated") {
       const devices = ((msg.devices || []) as { deviceId: string; label: string }[]);

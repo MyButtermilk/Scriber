@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, memo, useMemo, useRef, type CSSProperties } from "react";
-import { useSharedWebSocket } from "@/contexts/WebSocketContext";
+import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { Mic, Globe, Loader2, LayoutGrid, LayoutList, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -516,7 +516,7 @@ export default function LiveMic() {
   }, [toast]);
 
   // WebSocket with auto-reconnection
-  const handleWsMessage = useCallback((msg: any) => {
+  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     if (!msg || typeof msg !== "object") return;
     const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
     const activeSessionId = activeSessionIdRef.current;

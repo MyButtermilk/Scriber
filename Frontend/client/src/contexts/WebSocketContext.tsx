@@ -1,7 +1,89 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { wsUrl } from "@/lib/backend";
 
-type MessageHandler = (data: any) => void;
+type BaseWsMessage = {
+    apiVersion: string;
+    sessionId?: string | null;
+};
+
+type TranscriptSession = {
+    id?: string | number;
+    content?: string;
+    [key: string]: unknown;
+};
+
+type InputWarningAction = {
+    id: string;
+    label: string;
+    uri: string;
+};
+
+type ModelDownloadStatus = "downloading" | "ready" | "error" | "not_downloaded";
+
+export type ScriberWebSocketMessage =
+    | (BaseWsMessage & {
+        type: "state";
+        listening: boolean;
+        status: string;
+        inputWarning?: string;
+        inputWarningCode?: string;
+        inputWarningActions?: InputWarningAction[];
+        current?: TranscriptSession | null;
+        backgroundProcessing: boolean;
+        recordingState: string;
+        transcribing: boolean;
+    })
+    | (BaseWsMessage & {
+        type: "status";
+        status: string;
+        listening: boolean;
+        recordingState?: string;
+        transcribing?: boolean;
+        inputWarning?: string;
+        inputWarningCode?: string;
+        inputWarningActions?: InputWarningAction[];
+    })
+    | (BaseWsMessage & { type: "audio_level"; rms: number })
+    | (BaseWsMessage & {
+        type: "input_warning";
+        active: boolean;
+        message: string;
+        code?: string;
+        actions?: InputWarningAction[];
+    })
+    | (BaseWsMessage & { type: "transcript"; text: string; content?: string; isFinal: boolean })
+    | (BaseWsMessage & { type: "error"; message: string })
+    | (BaseWsMessage & { type: "history_updated" })
+    | (BaseWsMessage & { type: "transcribing" })
+    | (BaseWsMessage & { type: "session_started"; session: TranscriptSession })
+    | (BaseWsMessage & { type: "session_finished"; session: TranscriptSession })
+    | (BaseWsMessage & {
+        type: "microphones_updated";
+        devices: { deviceId: string; label: string; [key: string]: unknown }[];
+        favoriteMicRestored: boolean;
+        restoredDeviceId?: string;
+        restoredDeviceLabel?: string;
+    })
+    | (BaseWsMessage & { type: "settings_updated" })
+    | (BaseWsMessage & {
+        type: "onnx_download_progress" | "nemo_download_progress";
+        modelId: string;
+        progress: number;
+        status: ModelDownloadStatus;
+        message?: string;
+    })
+    | (BaseWsMessage & { type: "onnx_models_updated"; modelId: string })
+    | (BaseWsMessage & { type: "nemo_models_updated" });
+
+type MessageHandler = (data: ScriberWebSocketMessage) => void;
+
+function isScriberWebSocketMessage(data: unknown): data is ScriberWebSocketMessage {
+    if (!data || typeof data !== "object") {
+        return false;
+    }
+    const candidate = data as { apiVersion?: unknown; type?: unknown };
+    return typeof candidate.apiVersion === "string" && typeof candidate.type === "string";
+}
 
 interface WebSocketContextValue {
     /** Current connection status */
@@ -11,7 +93,7 @@ interface WebSocketContextValue {
     /** Subscribe to messages with a handler - returns unsubscribe function */
     subscribe: (handler: MessageHandler) => () => void;
     /** Send a message through the shared connection */
-    send: (data: any) => void;
+    send: (data: unknown) => void;
 }
 
 const WebSocketContext = createContext<WebSocketContextValue | null>(null);
@@ -78,7 +160,10 @@ export function WebSocketProvider({
 
             ws.onmessage = (event) => {
                 try {
-                    const data = JSON.parse(event.data);
+                    const data = JSON.parse(event.data) as unknown;
+                    if (!isScriberWebSocketMessage(data)) {
+                        return;
+                    }
                     // Broadcast to all subscribers
                     subscribersRef.current.forEach((handler) => {
                         try {
@@ -121,7 +206,7 @@ export function WebSocketProvider({
         }
     }, [path, reconnectDelay, maxReconnectAttempts]);
 
-    const send = useCallback((data: any) => {
+    const send = useCallback((data: unknown) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(typeof data === "string" ? data : JSON.stringify(data));
         }
@@ -197,7 +282,7 @@ export function useWebSocketContext(): WebSocketContextValue {
  *
  * @param onMessage - Callback for incoming messages
  */
-export function useSharedWebSocket(onMessage: MessageHandler): { isConnected: boolean; send: (data: any) => void } {
+export function useSharedWebSocket(onMessage: MessageHandler): { isConnected: boolean; send: (data: unknown) => void } {
     const { isConnected, subscribe, send } = useWebSocketContext();
     const onMessageRef = useRef(onMessage);
 
