@@ -148,12 +148,16 @@ This file is the working guide for agents editing this repository. Keep it accur
 
 - Tauri commands exposed by `Frontend/src-tauri/src/lib.rs`: `get_backend_base_url`, `backend_status`, `ensure_backend_running`, `restart_backend`.
 - The Rust supervisor first validates the current backend port through the Scriber `/api/health` contract (`ok`, `apiVersion`, `runtimeMode`) before attaching.
-- If the default backend port is unavailable, the supervisor selects a loopback port and starts `python -m src.web_api` with `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_RUNTIME_MODE=tauri-supervised`, and a writable `SCRIBER_DATA_DIR`.
+- If the default backend port is unavailable, the supervisor selects a loopback port and starts a managed backend with `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_RUNTIME_MODE=tauri-supervised`, `SCRIBER_BACKEND_LAUNCH_KIND`, and a writable `SCRIBER_DATA_DIR`.
+- `SCRIBER_FORCE_MANAGED_BACKEND=1` is for release/smoke tests that must ignore an already-running external dev backend on `127.0.0.1:8765`.
+- Backend launch priority: explicit `SCRIBER_BACKEND_EXE`, then `scriber-backend` beside the Tauri executable under `backend\` or `binaries\`, then development fallback to `python -m src.web_api`.
+- `src/backend_worker.py` is the standalone Python entry point for packaged backend workers. `packaging/scriber-backend.spec` and `scripts/build_tauri_backend_sidecar.ps1` build the PyInstaller onedir sidecar.
+- The current sidecar spec is the standard cloud-provider build and excludes heavy local ASR stacks (`torch`, NeMo, ONNX-ASR). Treat local ASR packaging as a separate optional package path.
 - Managed backend stdout/stderr go to `logs\tauri-backend.log` under `SCRIBER_DATA_DIR`.
 - On Windows, the managed Python child is spawned with `CREATE_NO_WINDOW`.
 - Managed backend startup has a timeout and will be restarted by `ensure_backend_running` instead of staying in `starting` forever.
 - `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits.
-- Current Tauri status: development/runtime scaffold with writable runtime-data paths. Full sidecar/frozen Python packaging, installer, signing, updater, and bundled ffmpeg/yt-dlp remain open packaging work.
+- Current Tauri status: hybrid runtime with writable runtime-data paths and sidecar backend launch support. Installer, signing, updater, and bundled ffmpeg/yt-dlp remain open packaging work.
 
 ## Commands
 
@@ -190,6 +194,14 @@ npm run db:push
 
 - `dev:client` and `dev` both use port `5000`; do not run them together.
 - Browser/dev backend API is expected at `http://127.0.0.1:8765` unless `VITE_BACKEND_URL` is set. In Tauri, prefer the runtime backend URL from the Rust supervisor.
+
+### Tauri Sidecar Build
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
+```
+
+Run this before packaging if you want the Tauri release executable to find `backend\scriber-backend.exe` automatically. Without the sidecar, Tauri development still falls back to the repo virtualenv.
 
 ### Tests
 
@@ -232,6 +244,7 @@ Important environment variables:
 
 - Web/API: `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_ALLOWED_ORIGINS`
 - Runtime storage: `SCRIBER_DATA_DIR`, `SCRIBER_DATABASE_PATH`, `SCRIBER_DOWNLOADS_DIR`
+- Tauri backend worker: `SCRIBER_BACKEND_EXE`, `SCRIBER_BACKEND_DIR`, `SCRIBER_BACKEND_LAUNCH_KIND`, `SCRIBER_FORCE_MANAGED_BACKEND`, `SCRIBER_PYTHON`
 - STT provider keys: `SONIOX_API_KEY`, `MISTRAL_API_KEY`, `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `GLADIA_API_KEY`, `GROQ_API_KEY`, `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, `GOOGLE_API_KEY`, `YOUTUBE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`
 - AWS STT: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
 - Provider/model behavior: `SCRIBER_DEFAULT_STT`, `SCRIBER_SONIOX_MODE`, `SCRIBER_SONIOX_ASYNC_MODEL`, `SCRIBER_SONIOX_RT_MODEL`, `SCRIBER_MISTRAL_RT_MODEL`, `SCRIBER_MISTRAL_ASYNC_MODEL`, `SCRIBER_OPENAI_STT_MODEL`
@@ -301,7 +314,7 @@ Current summarization default is `gemini-flash-latest`.
 
 - Real app-level mic prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Frontend transcript-list virtualization or infinite query.
-- Full bundled desktop packaging for the Tauri path: frozen/sidecar Python backend, ffmpeg/yt-dlp inclusion, installer, signing, and updater.
+- Full bundled desktop packaging for the Tauri path: ffmpeg/yt-dlp inclusion, installer, signing, and updater.
 - Broader Tauri runtime smoke tests for crash, startup-timeout, external-backend attach, dynamic-port, and app-exit cleanup scenarios.
 - Remaining CPU-heavy media preprocessing profiling around ffmpeg/provider behavior.
 - More hardware regression tests for dock connect/disconnect, USB mic add/remove, and favorite mic fallback.

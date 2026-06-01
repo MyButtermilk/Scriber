@@ -68,6 +68,7 @@ _COMPRESSED_AUDIO_BITRATE = "32k"
 _API_VERSION = "1"
 _WORKER_VERSION_ENV = "SCRIBER_WORKER_VERSION"
 _RUNTIME_MODE_ENV = "SCRIBER_RUNTIME_MODE"
+_BACKEND_LAUNCH_KIND_ENV = "SCRIBER_BACKEND_LAUNCH_KIND"
 _AUDIO_ENGINE_ENV = "SCRIBER_AUDIO_ENGINE"
 _WEB_HOST_ENV = "SCRIBER_WEB_HOST"
 _WEB_PORT_ENV = "SCRIBER_WEB_PORT"
@@ -1561,6 +1562,7 @@ class ScriberWebController:
             "apiVersion": _API_VERSION,
             "workerVersion": os.getenv(_WORKER_VERSION_ENV, _API_VERSION),
             "runtimeMode": os.getenv(_RUNTIME_MODE_ENV, "python-web"),
+            "launchKind": os.getenv(_BACKEND_LAUNCH_KIND_ENV, "python-module"),
             "pid": os.getpid(),
             "host": host,
             "port": port,

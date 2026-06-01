@@ -14,3 +14,6 @@ transcripts.db-shm
 settings.json
 .scriber.lock
 tmp/
+/build/
+/dist/tauri-sidecar/
+/Frontend/src-tauri/target/release/backend/

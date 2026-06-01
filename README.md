@@ -44,12 +44,13 @@ Current implementation highlights:
 - Tauri 2 desktop scaffold with a Rust supervisor that starts the Python backend, negotiates a runtime backend URL, checks the Scriber health contract, and avoids a visible Python console window on Windows.
 - Backend hot-path reductions: no-client WebSocket broadcasts skip JSON serialization, audio-level callbacks avoid UI broadcast work without clients/overlay, long transcript appends buffer final segments, and upload/export cleanup paths are offloaded from the event loop where practical.
 - Runtime data path support via `SCRIBER_DATA_DIR`: the Tauri-supervised backend writes settings, SQLite data, downloads, and logs to a writable app data directory instead of relying on the repository or install directory.
+- Backend sidecar path for Tauri: the supervisor can start a packaged `scriber-backend` worker and falls back to the source checkout/virtualenv for development.
 
 Known limits:
 
 - `SCRIBER_MIC_ALWAYS_ON` exists as a setting, but it is not a true app-level always-on/prewarmed microphone stream yet. Per-session streams are closed during cleanup to avoid orphaned PortAudio resources.
 - Frontend transcript-list virtualization/infinite loading is still open.
-- The Tauri shell currently supervises the existing Python backend from the repository/virtualenv. Full bundled sidecar/installer packaging is still a separate packaging phase, but writable runtime-data paths are in place.
+- The Tauri shell can supervise a packaged backend worker, but the full signed installer/updater pipeline is still a separate packaging phase.
 - Some CPU-heavy media preprocessing still depends on ffmpeg/provider behavior even though disk writes, cleanup, and export rendering are offloaded.
 
 ---
@@ -469,6 +470,17 @@ SCRIBER_DOWNLOADS_DIR=downloads
 
 In a normal source checkout, state defaults to the repository root for backwards compatibility. When `SCRIBER_DATA_DIR` is set, `settings.json`, `transcripts.db`, and relative download directories are resolved under that directory. The Tauri supervisor sets this automatically to a writable Scriber app-data directory for the managed backend.
 
+### Desktop Backend Worker
+
+```env
+SCRIBER_BACKEND_EXE=
+SCRIBER_BACKEND_DIR=
+SCRIBER_BACKEND_LAUNCH_KIND=
+SCRIBER_FORCE_MANAGED_BACKEND=0
+```
+
+The Tauri supervisor prefers a packaged backend sidecar when `SCRIBER_BACKEND_EXE` points to one, or when a `scriber-backend` executable is found next to the Tauri app under `backend\` or `binaries\`. If no sidecar exists, development mode falls back to `python -m src.web_api` through `SCRIBER_PYTHON` or the local virtualenv.
+
 ### Frontend
 
 ```env
@@ -625,7 +637,17 @@ npm run tauri:dev
 npm run tauri:build
 ```
 
-The current Tauri shell is a hybrid runtime: Rust owns the desktop window and supervises the existing Python backend. In development it locates the repository root and uses `SCRIBER_PYTHON`, `venv\Scripts\python.exe`, `.venv\Scripts\python.exe`, or `python` to run `python -m src.web_api`. The backend reports `/api/health` and `/api/runtime` metadata including API version, runtime mode, PID, host, port, start time, capabilities, and startup flags.
+The current Tauri shell is a hybrid runtime: Rust owns the desktop window and supervises the Python backend. It prefers a packaged backend sidecar (`SCRIBER_BACKEND_EXE` or `backend\scriber-backend.exe` next to the Tauri executable) and falls back in development to `SCRIBER_PYTHON`, `venv\Scripts\python.exe`, `.venv\Scripts\python.exe`, or `python` running `python -m src.web_api`. The backend reports `/api/health` and `/api/runtime` metadata including API version, runtime mode, launch kind, PID, host, port, start time, capabilities, and startup flags.
+
+Build the backend sidecar with PyInstaller:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
+```
+
+This builds `src/backend_worker.py` through `packaging\scriber-backend.spec` into `dist\tauri-sidecar\scriber-backend\` and optionally copies the onedir output to `Frontend\src-tauri\target\release\backend\`, where the Tauri supervisor can find it automatically.
+
+The current sidecar spec is a standard cloud-provider build and intentionally excludes heavy local ASR stacks such as NeMo/ONNX-ASR/Torch. Local ASR packaging remains a separate optional package path.
 
 After building the Windows release executable, run the desktop smoke test from the repository root:
 
@@ -633,7 +655,7 @@ After building the Windows release executable, run the desktop smoke test from t
 powershell -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1
 ```
 
-The smoke test starts `Frontend\src-tauri\target\release\scriber-desktop.exe`, verifies that Tauri starts a managed Python backend with `runtimeMode=tauri-supervised`, then hard-stops the app and checks that no newly spawned backend process remains.
+The smoke test starts `Frontend\src-tauri\target\release\scriber-desktop.exe`, verifies that Tauri starts a managed backend with `runtimeMode=tauri-supervised`, then hard-stops the app and checks that no newly spawned backend process remains. Pass `-BackendExePath path\to\scriber-backend.exe` to force a specific sidecar.
 
 ### Tests
 
@@ -790,7 +812,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 
 - Real app-level microphone prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Frontend transcript-list virtualization or infinite query.
-- Full bundled desktop packaging: Python sidecar/frozen backend, ffmpeg/yt-dlp inclusion, signing, installer, and updater.
+- Full bundled desktop packaging: ffmpeg/yt-dlp inclusion, signing, installer, and updater.
 - Broader runtime smoke tests for the Tauri supervisor: backend crash, startup timeout, external backend attach, dynamic port, and app-exit cleanup.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.
 - Stronger typed API contract between backend and frontend.

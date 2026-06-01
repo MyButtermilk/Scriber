@@ -17,6 +17,7 @@ interface TauriBackendStatus {
     pid: number | null;
     message: string;
     runtimeMode: string;
+    launchKind: string;
 }
 
 const BackendStatusContext = createContext<BackendStatus | null>(null);

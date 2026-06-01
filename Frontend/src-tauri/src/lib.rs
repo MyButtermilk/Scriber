@@ -23,6 +23,7 @@ use windows_sys::Win32::System::JobObjects::{
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
+const FORCE_MANAGED_BACKEND_ENV: &str = "SCRIBER_FORCE_MANAGED_BACKEND";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -36,6 +37,7 @@ pub struct BackendStatus {
     pid: Option<u32>,
     message: String,
     runtime_mode: String,
+    launch_kind: String,
 }
 
 struct BackendState {
@@ -45,6 +47,8 @@ struct BackendState {
     job: Option<BackendJob>,
     started_at: Option<Instant>,
     message: String,
+    launch_kind: String,
+    resource_dir: Option<PathBuf>,
 }
 
 #[cfg(windows)]
@@ -83,7 +87,15 @@ impl BackendManager {
                 job: None,
                 started_at: None,
                 message: "Backend not started".to_string(),
+                launch_kind: "none".to_string(),
+                resource_dir: None,
             }),
+        }
+    }
+
+    fn set_resource_dir(&self, resource_dir: Option<PathBuf>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.resource_dir = resource_dir;
         }
     }
 
@@ -97,7 +109,8 @@ impl BackendManager {
     fn ensure_started(&self) -> BackendStatus {
         if let Ok(mut state) = self.state.lock() {
             refresh_child_state(&mut state);
-            if health_ready(state.port) {
+            let force_managed = force_managed_backend();
+            if health_ready(state.port) && (!force_managed || state.child.is_some()) {
                 state.message = if state.child.is_some() {
                     "Managed backend is ready".to_string()
                 } else {
@@ -126,13 +139,15 @@ impl BackendManager {
             pid: None,
             message: "Backend state lock is poisoned".to_string(),
             runtime_mode: "tauri-supervised".to_string(),
+            launch_kind: "unknown".to_string(),
         }
     }
 
     fn status(&self) -> BackendStatus {
         if let Ok(mut state) = self.state.lock() {
             refresh_child_state(&mut state);
-            let ready = health_ready(state.port);
+            let force_managed = force_managed_backend();
+            let ready = health_ready(state.port) && (!force_managed || state.child.is_some());
             if ready && state.child.is_none() {
                 state.message = "Attached to existing backend".to_string();
             } else if !ready
@@ -151,6 +166,7 @@ impl BackendManager {
             pid: None,
             message: "Backend state lock is poisoned".to_string(),
             runtime_mode: "tauri-supervised".to_string(),
+            launch_kind: "unknown".to_string(),
         }
     }
 
@@ -160,7 +176,7 @@ impl BackendManager {
             .lock()
             .map_err(|_| "Backend state lock is poisoned".to_string())?;
         refresh_child_state(&mut state);
-        if state.child.is_none() && health_ready(state.port) {
+        if state.child.is_none() && health_ready(state.port) && !force_managed_backend() {
             let message =
                 "Cannot restart backend because the current backend is external".to_string();
             state.message = message.clone();
@@ -212,6 +228,7 @@ pub fn run() {
         .manage(BackendManager::new())
         .setup(|app| {
             let manager = app.state::<BackendManager>();
+            manager.set_resource_dir(app.path().resource_dir().ok());
             let _ = manager.ensure_started();
             Ok(())
         })
@@ -234,6 +251,11 @@ fn status_from_state(state: &BackendState, ready: bool) -> BackendStatus {
         pid: state.child.as_ref().map(Child::id),
         message: state.message.clone(),
         runtime_mode: "tauri-supervised".to_string(),
+        launch_kind: if ready && state.child.is_none() {
+            "external".to_string()
+        } else {
+            state.launch_kind.clone()
+        },
     }
 }
 
@@ -245,6 +267,7 @@ fn refresh_child_state(state: &mut BackendState) {
                 state.child = None;
                 state.job = None;
                 state.started_at = None;
+                state.launch_kind = "none".to_string();
             }
             Ok(None) => {}
             Err(err) => {
@@ -252,6 +275,7 @@ fn refresh_child_state(state: &mut BackendState) {
                 state.child = None;
                 state.job = None;
                 state.started_at = None;
+                state.launch_kind = "none".to_string();
             }
         }
     }
@@ -264,6 +288,7 @@ fn terminate_managed_child(state: &mut BackendState) {
     }
     state.job = None;
     state.started_at = None;
+    state.launch_kind = "none".to_string();
 }
 
 fn select_backend_port(current_port: u16) -> u16 {
@@ -279,15 +304,16 @@ fn select_backend_port(current_port: u16) -> u16 {
 fn start_managed_backend(state: &mut BackendState, port: u16, message: &str) -> BackendStatus {
     state.port = port;
     state.base_url = base_url(port);
-    match spawn_python_backend(port) {
-        Ok(child) => {
+    match spawn_backend(port, state.resource_dir.as_deref()) {
+        Ok((child, launch_kind)) => {
             let (job, job_warning) = attach_child_to_kill_job(&child);
             state.message = match job_warning {
-                Some(warning) => format!("{message}; {warning}"),
-                None => message.to_string(),
+                Some(warning) => format!("{message} ({launch_kind}); {warning}"),
+                None => format!("{message} ({launch_kind})"),
             };
             state.job = job;
             state.started_at = Some(Instant::now());
+            state.launch_kind = launch_kind;
             state.child = Some(child);
         }
         Err(err) => {
@@ -295,6 +321,7 @@ fn start_managed_backend(state: &mut BackendState, port: u16, message: &str) -> 
             state.job = None;
             state.started_at = None;
             state.child = None;
+            state.launch_kind = "none".to_string();
         }
     }
     status_from_state(state, health_ready(state.port))
@@ -306,10 +333,26 @@ fn managed_backend_start_timed_out(started_at: Option<Instant>, now: Instant) ->
         .unwrap_or(false)
 }
 
-fn spawn_python_backend(port: u16) -> Result<Child, String> {
-    let repo_root =
-        find_repo_root().ok_or_else(|| "Could not locate Scriber repository root".to_string())?;
-    let python = find_python(&repo_root);
+fn force_managed_backend() -> bool {
+    env::var(FORCE_MANAGED_BACKEND_ENV)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
+}
+
+struct BackendCommandSpec {
+    program: PathBuf,
+    args: Vec<String>,
+    working_dir: PathBuf,
+    launch_kind: String,
+}
+
+fn spawn_backend(port: u16, resource_dir: Option<&Path>) -> Result<(Child, String), String> {
+    let spec = resolve_backend_command(resource_dir)?;
     let data_dir = scriber_data_dir();
     fs::create_dir_all(&data_dir)
         .map_err(|err| format!("Could not create Scriber data directory: {err}"))?;
@@ -327,14 +370,14 @@ fn spawn_python_backend(port: u16) -> Result<Child, String> {
         .try_clone()
         .map_err(|err| format!("Could not clone backend log handle: {err}"))?;
 
-    let mut command = Command::new(&python);
+    let mut command = Command::new(&spec.program);
     command
-        .arg("-m")
-        .arg("src.web_api")
-        .current_dir(&repo_root)
+        .args(&spec.args)
+        .current_dir(&spec.working_dir)
         .env("SCRIBER_WEB_HOST", DEFAULT_HOST)
         .env("SCRIBER_WEB_PORT", port.to_string())
         .env("SCRIBER_RUNTIME_MODE", "tauri-supervised")
+        .env("SCRIBER_BACKEND_LAUNCH_KIND", &spec.launch_kind)
         .env("SCRIBER_LOG_STDERR", "1")
         .env("SCRIBER_DATA_DIR", &data_dir)
         .stdin(Stdio::null())
@@ -343,7 +386,112 @@ fn spawn_python_backend(port: u16) -> Result<Child, String> {
     hide_child_console_window(&mut command);
     command
         .spawn()
-        .map_err(|err| format!("Could not spawn {:?}: {err}", python))
+        .map(|child| (child, spec.launch_kind))
+        .map_err(|err| format!("Could not spawn {:?}: {err}", spec.program))
+}
+
+fn resolve_backend_command(resource_dir: Option<&Path>) -> Result<BackendCommandSpec, String> {
+    if let Some(program) = find_backend_executable(resource_dir)? {
+        let working_dir = program
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        return Ok(BackendCommandSpec {
+            program,
+            args: Vec::new(),
+            working_dir,
+            launch_kind: "sidecar".to_string(),
+        });
+    }
+
+    let repo_root =
+        find_repo_root().ok_or_else(|| "Could not locate Scriber repository root".to_string())?;
+    Ok(BackendCommandSpec {
+        program: find_python(&repo_root),
+        args: vec!["-m".to_string(), "src.web_api".to_string()],
+        working_dir: repo_root,
+        launch_kind: "python-module".to_string(),
+    })
+}
+
+fn find_backend_executable(resource_dir: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    if let Ok(raw) = env::var("SCRIBER_BACKEND_EXE") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let path = absolute_path(trimmed);
+            if path.is_file() {
+                return Ok(Some(path));
+            }
+            return Err(format!(
+                "SCRIBER_BACKEND_EXE does not exist: {}",
+                path.display()
+            ));
+        }
+    }
+
+    Ok(find_backend_executable_in_dirs(
+        &backend_executable_dirs(resource_dir),
+        backend_executable_names(),
+    ))
+}
+
+fn find_backend_executable_in_dirs(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
+    for dir in dirs {
+        for name in names {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn backend_executable_dirs(resource_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(raw) = env::var("SCRIBER_BACKEND_DIR") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            push_unique_dir(&mut dirs, absolute_path(trimmed));
+        }
+    }
+    if let Ok(exe) = env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            push_unique_dir(&mut dirs, exe_dir.to_path_buf());
+            push_unique_dir(&mut dirs, exe_dir.join("backend"));
+            push_unique_dir(&mut dirs, exe_dir.join("binaries"));
+        }
+    }
+    if let Some(resource_dir) = resource_dir {
+        push_unique_dir(&mut dirs, resource_dir.to_path_buf());
+        push_unique_dir(&mut dirs, resource_dir.join("backend"));
+        push_unique_dir(&mut dirs, resource_dir.join("binaries"));
+    }
+    dirs
+}
+
+fn push_unique_dir(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
+    if !dirs.iter().any(|existing| existing == &dir) {
+        dirs.push(dir);
+    }
+}
+
+#[cfg(windows)]
+fn backend_executable_names() -> &'static [&'static str] {
+    &[
+        "scriber-backend.exe",
+        "scriber-backend-x86_64-pc-windows-msvc.exe",
+    ]
+}
+
+#[cfg(not(windows))]
+fn backend_executable_names() -> &'static [&'static str] {
+    &[
+        "scriber-backend",
+        "scriber-backend-x86_64-unknown-linux-gnu",
+        "scriber-backend-aarch64-apple-darwin",
+        "scriber-backend-x86_64-apple-darwin",
+    ]
 }
 
 fn scriber_data_dir() -> PathBuf {
@@ -572,8 +720,15 @@ fn health_response_ready(response: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{health_response_ready, managed_backend_start_timed_out, BACKEND_START_TIMEOUT};
-    use std::time::{Duration, Instant};
+    use super::{
+        backend_executable_names, find_backend_executable_in_dirs, health_response_ready,
+        managed_backend_start_timed_out, BACKEND_START_TIMEOUT,
+    };
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn health_response_ready_requires_scriber_contract() {
@@ -624,5 +779,47 @@ mod tests {
             Some(now - BACKEND_START_TIMEOUT),
             now
         ));
+    }
+
+    #[test]
+    fn find_backend_executable_in_dirs_finds_sidecar_name() {
+        let dir = unique_test_dir("sidecar");
+        fs::create_dir_all(&dir).unwrap();
+        let sidecar = dir.join(backend_executable_names()[0]);
+        fs::write(&sidecar, b"test").unwrap();
+
+        let found = find_backend_executable_in_dirs(&[dir.clone()], backend_executable_names());
+
+        assert_eq!(found, Some(sidecar));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn find_backend_executable_in_dirs_prefers_earlier_directory() {
+        let first = unique_test_dir("sidecar-first");
+        let second = unique_test_dir("sidecar-second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let first_sidecar = first.join(backend_executable_names()[0]);
+        let second_sidecar = second.join(backend_executable_names()[0]);
+        fs::write(&first_sidecar, b"first").unwrap();
+        fs::write(&second_sidecar, b"second").unwrap();
+
+        let found = find_backend_executable_in_dirs(
+            &[first.clone(), second.clone()],
+            backend_executable_names(),
+        );
+
+        assert_eq!(found, Some(first_sidecar));
+        let _ = fs::remove_dir_all(first);
+        let _ = fs::remove_dir_all(second);
+    }
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("scriber-{label}-{}-{nanos}", std::process::id()))
     }
 }

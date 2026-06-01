@@ -156,6 +156,7 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert runtime["apiVersion"]
     assert runtime["workerVersion"]
     assert runtime["runtimeMode"] == "python-web"
+    assert runtime["launchKind"] == "python-module"
     assert runtime["pid"] == health["pid"]
     assert runtime["host"] == "127.0.0.1"
     assert runtime["port"] == 8765

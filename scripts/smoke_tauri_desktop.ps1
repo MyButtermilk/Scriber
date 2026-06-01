@@ -4,8 +4,8 @@ Runs a Windows smoke test for the hybrid Tauri desktop runtime.
 
 .DESCRIPTION
 The script starts the release Tauri executable, waits for a newly managed
-Python web API process, verifies the Scriber health contract, hard-stops the
-Tauri process, and checks that the managed backend process exits with it.
+backend process, verifies the Scriber health contract, hard-stops the Tauri
+process, and checks that the managed backend process exits with it.
 
 Build the executable first with:
   cd Frontend
@@ -16,6 +16,7 @@ param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$ExePath = "",
     [string]$PythonPath = "",
+    [string]$BackendExePath = "",
     [string]$DataDir = "",
     [int]$TimeoutSec = 60,
     [int]$BackendHealthTimeoutSec = 20,
@@ -26,9 +27,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Get-WebApiProcesses {
+function Get-ManagedBackendProcesses {
     Get-CimInstance Win32_Process |
-        Where-Object { $_.CommandLine -match "python.*-m\s+src\.web_api" }
+        Where-Object {
+            ($_.CommandLine -match "python.*-m\s+src\.web_api") -or
+            ($_.CommandLine -match "scriber-backend") -or
+            ($_.Name -match "^scriber-backend")
+        }
 }
 
 function Resolve-PythonPath {
@@ -60,7 +65,7 @@ function Wait-NewBackendListener {
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
         $newProcesses = @(
-            Get-WebApiProcesses |
+            Get-ManagedBackendProcesses |
                 Where-Object { $BaselinePids -notcontains [int]$_.ProcessId }
         )
         foreach ($process in $newProcesses) {
@@ -128,22 +133,36 @@ if (-not (Test-Path $ExePath)) {
 }
 $ExePath = (Resolve-Path $ExePath).Path
 $PythonPath = Resolve-PythonPath -Root $RepoRoot -Requested $PythonPath
+if ($BackendExePath) {
+    if (-not (Test-Path $BackendExePath)) {
+        throw "Missing backend sidecar executable: $BackendExePath"
+    }
+    $BackendExePath = (Resolve-Path $BackendExePath).Path
+}
 if (-not $DataDir) {
     $DataDir = Join-Path $RepoRoot ("tmp\tauri-smoke-data\" + [System.Guid]::NewGuid().ToString("N"))
 }
 $DataDir = Convert-ToFullPath -Path $DataDir
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
-$baseline = @(Get-WebApiProcesses | ForEach-Object { [int]$_.ProcessId })
+$baseline = @(Get-ManagedBackendProcesses | ForEach-Object { [int]$_.ProcessId })
 $oldRoot = $env:SCRIBER_REPO_ROOT
 $oldPython = $env:SCRIBER_PYTHON
+$oldBackendExe = $env:SCRIBER_BACKEND_EXE
 $oldDataDir = $env:SCRIBER_DATA_DIR
+$oldForceManaged = $env:SCRIBER_FORCE_MANAGED_BACKEND
 $oldHotkeys = $env:SCRIBER_DISABLE_HOTKEYS
 $oldMonitor = $env:SCRIBER_DISABLE_DEVICE_MONITOR
 
 $env:SCRIBER_REPO_ROOT = $RepoRoot
 $env:SCRIBER_PYTHON = $PythonPath
 $env:SCRIBER_DATA_DIR = $DataDir
+$env:SCRIBER_FORCE_MANAGED_BACKEND = "1"
+if ($BackendExePath) {
+    $env:SCRIBER_BACKEND_EXE = $BackendExePath
+} else {
+    $env:SCRIBER_BACKEND_EXE = $oldBackendExe
+}
 if (-not $EnableHotkeys) {
     $env:SCRIBER_DISABLE_HOTKEYS = "1"
 }
@@ -177,6 +196,7 @@ try {
         ready = $health.ready
         dataDir = $runtime.dataDir
         downloadsDir = $runtime.downloadsDir
+        launchKind = $runtime.launchKind
         cleanupVerified = $false
     }
 } finally {
@@ -188,7 +208,7 @@ try {
     if (-not $KeepAppOpen) {
         Start-Sleep -Seconds 3
         $remaining = @(
-            Get-WebApiProcesses |
+            Get-ManagedBackendProcesses |
                 Where-Object { $baseline -notcontains [int]$_.ProcessId } |
                 ForEach-Object { [int]$_.ProcessId }
         )
@@ -205,7 +225,9 @@ try {
 
     $env:SCRIBER_REPO_ROOT = $oldRoot
     $env:SCRIBER_PYTHON = $oldPython
+    $env:SCRIBER_BACKEND_EXE = $oldBackendExe
     $env:SCRIBER_DATA_DIR = $oldDataDir
+    $env:SCRIBER_FORCE_MANAGED_BACKEND = $oldForceManaged
     $env:SCRIBER_DISABLE_HOTKEYS = $oldHotkeys
     $env:SCRIBER_DISABLE_DEVICE_MONITOR = $oldMonitor
 }

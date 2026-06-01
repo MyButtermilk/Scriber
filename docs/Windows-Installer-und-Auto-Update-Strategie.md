@@ -192,16 +192,21 @@ Felder gegenueber Entwurf ergaenzt:
    - Betrifft weiterhin: `tray.py` (Icon-Lade-Pfad), `web_api.py` (Static-File-Serving), FFmpeg-Aufrufer.
 
 ### Phase 1 - Produktisierbarer Build
-1. **Frontend Production Build** in den Backend-Output integrieren:
+1. **Tauri Backend-Sidecar bereitstellen**:
+   - Status 2026-06-01: `src/backend_worker.py` existiert als eigenstaendiger Worker-Entry-Point.
+   - Status 2026-06-01: `packaging/scriber-backend.spec` und `scripts/build_tauri_backend_sidecar.ps1` bauen einen PyInstaller-`onedir`-Sidecar.
+   - Status 2026-06-01: Der Rust-Supervisor bevorzugt `SCRIBER_BACKEND_EXE` bzw. `backend\scriber-backend.exe` neben der Tauri-Exe und faellt im Dev-Modus auf `python -m src.web_api` zurueck.
+   - Status 2026-06-01: Der Standard-Sidecar ist ein Cloud-Provider/Lite-Build und schliesst schwere lokale ASR-Stacks (`torch`, NeMo, ONNX-ASR) aus.
+2. **Frontend Production Build** in den Backend-Output integrieren:
    - `npm run build` erzeugt `Frontend/dist/public/` mit statischem HTML/JS/CSS.
    - `build_windows.ps1` kopiert diesen Output in das PyInstaller-Output-Verzeichnis.
    - `web_api.py` erhaelt einen Static-File-Handler, der im Frozen-Modus `dist/public/` als Root served.
-2. **Tray/Backend Start umbauen**: `start_frontend()` in `tray.py` darf im Frozen-Modus **nicht** `npm run dev:client` starten.
+3. **Tray/Backend Start umbauen**: `start_frontend()` in `tray.py` darf im Frozen-Modus **nicht** `npm run dev:client` starten.
    - Konditional: Wenn `is_frozen()`, dann kein Frontend-Prozess starten; die statischen Dateien werden direkt vom Backend geserved.
    - Falls nicht frozen (Dev-Modus): bestehendes Verhalten beibehalten.
-3. **Freeze Build** erstellen:
-   - PyInstaller `onedir`, Zielverzeichnis `dist/app/`.
-   - Entry-Point: `src/tray.py` (startet Backend als Subprocess, managed Lifecycle).
+4. **Freeze Build** erstellen:
+   - PyInstaller `onedir`, Zielverzeichnis `dist/tauri-sidecar/scriber-backend/`.
+   - Entry-Point: `src/backend_worker.py` (wird vom Tauri-Supervisor gemanagt).
    - Hidden imports explizit listen (basierend auf Codebase-Analyse):
      - `pipecat-ai` Submodule (google, assemblyai, silero, deepgram, openai, azure, gladia, groq, speechmatics, aws, elevenlabs)
      - `sounddevice`, `pycaw`, `keyboard`, `pyautogui`
@@ -209,20 +214,20 @@ Felder gegenueber Entwurf ergaenzt:
      - `onnx-asr`, `nemo_toolkit`
      - `yt-dlp`, `python-docx`, `reportlab`, `lxml`
    - Daten-Dateien einschliessen: `src/assets/`, `Frontend/dist/public/`, FFmpeg-Binary.
-4. **Reproduzierbarer Build** per Script.
-5. **Size-Profiling direkt in Phase 1**:
+5. **Reproduzierbarer Build** per Script.
+6. **Size-Profiling direkt in Phase 1**:
    - `requirements-base/local-asr/dev` einfuehren.
-   - Lite-Build als Standard in `build_windows.ps1`.
+   - Lite-Build als Standard ist im Sidecar-Spec vorgespurt; Gesamtpipeline in `build_windows.ps1` bleibt offen.
    - Groessenreport (`size-report.json`) erzeugen und in CI publizieren.
 
 Lieferobjekte:
-1. `scripts/build_windows.ps1`
-2. `scriber.spec` (PyInstaller-Konfiguration)
+1. `scripts/build_tauri_backend_sidecar.ps1` (teilweise umgesetzt)
+2. `packaging/scriber-backend.spec` (teilweise umgesetzt)
 3. `src/version.py`
 4. `src/runtime/paths.py` (teilweise umgesetzt: Runtime-Data-Pfade; Asset/FFmpeg-Resolution offen)
 5. `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt`
 6. `size-report.json` (CI-Artefakt)
-7. Start/Healthcheck fuer gebaute App (manueller Smoke-Test)
+7. Start/Healthcheck fuer gebaute App (Smoke-Test vorhanden; Sidecar-Pfad optional ueber `-BackendExePath`)
 
 ### Phase 2 - Installer
 1. `installer/scriber.iss` erstellen.
@@ -349,8 +354,11 @@ Lieferobjekte:
 | `src/version.py` | Zentrale Versionsnummer (`__version__`). |
 | `src/updater.py` | UpdateManager: Check, Download, Verify, Install. |
 | `src/runtime/paths.py` | Teilweise umgesetzt: Runtime-Data-Pfade fuer Settings, SQLite und Downloads. FFmpeg/Frontend-Asset-Resolution offen. |
+| `src/backend_worker.py` | Umgesetzt: Tauri/PyInstaller Worker-Entry-Point. |
+| `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar. |
 | `installer/scriber.iss` | Inno Setup Script. |
-| `scripts/build_windows.ps1` | Build-Pipeline: Frontend Build → PyInstaller → Inno Setup. |
+| `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Frontend Build → PyInstaller Sidecar → optionaler Copy nach Tauri Release. |
+| `scripts/build_windows.ps1` | Noch offen: Gesamtpipeline inkl. Tauri Bundle, Inno Setup und Signierung. |
 | `.github/workflows/release-windows.yml` | CI/CD fuer Tag-basierte Releases. |
 | `LICENSE` | MIT License Datei. |
 
