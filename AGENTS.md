@@ -152,6 +152,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - Managed backend stdout/stderr go to `tmp/tauri-backend.log`.
 - On Windows, the managed Python child is spawned with `CREATE_NO_WINDOW`.
 - Managed backend startup has a timeout and will be restarted by `ensure_backend_running` instead of staying in `starting` forever.
+- `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits.
 - Current Tauri status: development/runtime scaffold only. Full sidecar/frozen Python packaging, installer, signing, updater, and bundled ffmpeg/yt-dlp remain open packaging work.
 
 ## Commands
@@ -207,6 +208,12 @@ Use targeted tests for the changed area first. Broaden when touching shared runt
 ```bash
 python -m py_compile src\microphone.py src\pipeline.py src\web_api.py
 git diff --check
+```
+
+For the Windows Tauri release runtime, run after `npm run tauri:build`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1
 ```
 
 For frontend changes, run:

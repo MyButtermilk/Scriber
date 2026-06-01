@@ -617,6 +617,14 @@ npm run tauri:build
 
 The current Tauri shell is a hybrid runtime: Rust owns the desktop window and supervises the existing Python backend. In development it locates the repository root and uses `SCRIBER_PYTHON`, `venv\Scripts\python.exe`, `.venv\Scripts\python.exe`, or `python` to run `python -m src.web_api`. The backend reports `/api/health` and `/api/runtime` metadata including API version, runtime mode, PID, host, port, start time, capabilities, and startup flags.
 
+After building the Windows release executable, run the desktop smoke test from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1
+```
+
+The smoke test starts `Frontend\src-tauri\target\release\scriber-desktop.exe`, verifies that Tauri starts a managed Python backend with `runtimeMode=tauri-supervised`, then hard-stops the app and checks that no newly spawned backend process remains.
+
 ### Tests
 
 ```bash
@@ -647,6 +655,10 @@ Useful focused tests:
 ```bash
 python -m py_compile src\microphone.py src\pipeline.py src\web_api.py
 git diff --check
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1
 ```
 
 ```bash
