@@ -739,6 +739,8 @@ powershell -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 -It
 
 Use `-Hidden` for startup-only/headless runs. The script writes JSON under `tmp\hybrid-baseline\`, measures UI/backend readiness, backend cleanup, synthetic upload/export load with `/api/health` and `/api/state` responsiveness probes, WebSocket broadcast throughput, and JSON serialization cost, then reports which required baseline areas still need samples or dedicated benchmark automation. For live recording samples, `stop_to_text_injection` accepts either `stop_requested_to_first_paste_ms` or an already-injected-before-stop sample, which records the stop-to-text wait as `0 ms`.
 
+The baseline JSON includes a Phase 8 `performanceBudget` with default startup limits of UI-visible P95 <= 3000 ms and backend-ready P95 <= 5000 ms. Add `-FailOnPerformanceBudget` to turn those limits into a hard exit gate; override the defaults with `-MaxUiVisibleP95Ms` and `-MaxBackendReadyP95Ms` when measuring a different reference device class.
+
 For the Phase 8 transcript string-growth guard, run:
 
 ```bash

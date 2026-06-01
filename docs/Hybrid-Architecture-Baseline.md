@@ -28,6 +28,14 @@ The script writes a JSON artifact under `tmp\hybrid-baseline\` and also prints
 the same JSON to stdout. Use `-FailOnIncompleteGate` when the run should fail
 unless every Phase 0 requirement is measured.
 
+The artifact also includes a Phase 8 `performanceBudget` section. Defaults are
+UI-visible P95 <= 3000 ms and backend-ready P95 <= 5000 ms, matching
+`docs/Hybrid-Architecture-Goal.md`. Use `-FailOnPerformanceBudget` to make
+those budgets a hard exit gate. Tune with `-MaxUiVisibleP95Ms` and
+`-MaxBackendReadyP95Ms` when measuring a slower or faster reference device
+class. Hidden/headless runs skip UI-visible timing, so `-FailOnPerformanceBudget`
+should be reserved for visible-window startup runs.
+
 WebSocket broadcast and JSON serialization cost are measured by default. Tune
 that synthetic benchmark with `-WsIterations`, `-WsWarmup`, and
 `-WsClientCounts`, or skip it with `-SkipWsBenchmark`.

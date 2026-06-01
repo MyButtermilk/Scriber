@@ -50,7 +50,10 @@ param(
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
     [switch]$DisableDevFallback,
-    [switch]$FailOnIncompleteGate
+    [switch]$FailOnIncompleteGate,
+    [switch]$FailOnPerformanceBudget,
+    [double]$MaxUiVisibleP95Ms = 3000.0,
+    [double]$MaxBackendReadyP95Ms = 5000.0
 )
 
 $ErrorActionPreference = "Stop"
@@ -276,6 +279,78 @@ function New-SampleSummary {
         p50Ms = Get-Percentile -Values $values -Percentile 50.0
         p95Ms = Get-Percentile -Values $values -Percentile 95.0
         maxMs = [math]::Round(($values | Measure-Object -Maximum).Maximum, 2)
+    }
+}
+
+function New-PerformanceBudgetCheck {
+    param(
+        [string]$Name,
+        [object]$Summary,
+        [double]$MaxP95Ms,
+        [string]$Evidence,
+        [string]$SkipReason = ""
+    )
+
+    if ($SkipReason) {
+        return [pscustomobject]@{
+            name = $Name
+            status = "skipped"
+            p95Ms = $null
+            maxP95Ms = $MaxP95Ms
+            evidence = $Evidence
+            notes = $SkipReason
+        }
+    }
+
+    if (-not $Summary -or [int]$Summary.count -eq 0 -or $null -eq $Summary.p95Ms) {
+        return [pscustomobject]@{
+            name = $Name
+            status = "missing"
+            p95Ms = $null
+            maxP95Ms = $MaxP95Ms
+            evidence = $Evidence
+            notes = "No samples available for this budget."
+        }
+    }
+
+    $p95 = [double]$Summary.p95Ms
+    return [pscustomobject]@{
+        name = $Name
+        status = $(if ($p95 -le $MaxP95Ms) { "passed" } else { "failed" })
+        p95Ms = $p95
+        maxP95Ms = $MaxP95Ms
+        evidence = $Evidence
+        notes = ""
+    }
+}
+
+function New-PerformanceBudget {
+    param(
+        [object]$Summary
+    )
+
+    $checks = @(
+        New-PerformanceBudgetCheck `
+            -Name "ui_visible_p95" `
+            -Summary $Summary.coldStartToUiVisibleMs `
+            -MaxP95Ms $MaxUiVisibleP95Ms `
+            -Evidence "coldStartToUiVisibleMs p95 from Tauri MainWindowHandle polling" `
+            -SkipReason $(if ($Hidden -or $SkipUiVisibleWait) { "UI-visible wait was skipped for this run." } else { "" })
+        New-PerformanceBudgetCheck `
+            -Name "backend_ready_p95" `
+            -Summary $Summary.backendReadyMs `
+            -MaxP95Ms $MaxBackendReadyP95Ms `
+            -Evidence "backendReadyMs p95 from Tauri process start to /api/health ready"
+    )
+    $notPassed = @($checks | Where-Object { $_.status -ne "passed" })
+    return [pscustomobject]@{
+        complete = $notPassed.Count -eq 0
+        failedBudgets = @($notPassed | ForEach-Object { $_.name })
+        thresholds = [pscustomobject]@{
+            maxUiVisibleP95Ms = $MaxUiVisibleP95Ms
+            maxBackendReadyP95Ms = $MaxBackendReadyP95Ms
+        }
+        checks = $checks
     }
 }
 
@@ -737,6 +812,12 @@ if ($RecordingHotPathSeconds -le 0) {
 if ($RecordingHotPathTimeoutSec -lt 1) {
     throw "RecordingHotPathTimeoutSec must be >= 1."
 }
+if ($MaxUiVisibleP95Ms -le 0) {
+    throw "MaxUiVisibleP95Ms must be > 0."
+}
+if ($MaxBackendReadyP95Ms -le 0) {
+    throw "MaxBackendReadyP95Ms must be > 0."
+}
 if (-not $OutputPath) {
     $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
     $OutputPath = Join-Path $RepoRoot "tmp\hybrid-baseline\hybrid-baseline-$stamp.json"
@@ -872,6 +953,20 @@ try {
     $gitBranch = ""
 }
 
+$summary = [pscustomobject]@{
+    coldStartToUiVisibleMs = New-SampleSummary -Samples $samples -PropertyName "coldStartToUiVisibleMs"
+    backendListenerMs = New-SampleSummary -Samples $samples -PropertyName "backendListenerMs"
+    backendReadyMs = New-SampleSummary -Samples $samples -PropertyName "backendReadyMs"
+    runtimeFetchMs = New-SampleSummary -Samples $samples -PropertyName "runtimeFetchMs"
+    cleanupMs = New-SampleSummary -Samples $samples -PropertyName "cleanupMs"
+    hotPathSegmentNames = @($segmentNames)
+    uploadExportBenchmark = $(if ($uploadExportBenchmark) { $uploadExportBenchmark.summary } else { $null })
+    webSocketBenchmark = $(if ($webSocketBenchmark) { $webSocketBenchmark.summary } else { $null })
+    historyScrollBenchmark = $(if ($historyScrollBenchmark) { $historyScrollBenchmark.summary } else { $null })
+    recordingHotPathBenchmarks = @($recordingHotPathBenchmarks | ForEach-Object { $_.summary })
+}
+$performanceBudget = New-PerformanceBudget -Summary $summary
+
 $result = [pscustomobject]@{
     schemaVersion = 1
     generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -906,19 +1001,12 @@ $result = [pscustomobject]@{
         recordingHotPathIterations = $RecordingHotPathIterations
         recordingHotPathSeconds = $RecordingHotPathSeconds
         recordingHotPathTimeoutSec = $RecordingHotPathTimeoutSec
+        failOnPerformanceBudget = [bool]$FailOnPerformanceBudget
+        maxUiVisibleP95Ms = $MaxUiVisibleP95Ms
+        maxBackendReadyP95Ms = $MaxBackendReadyP95Ms
     }
-    summary = [pscustomobject]@{
-        coldStartToUiVisibleMs = New-SampleSummary -Samples $samples -PropertyName "coldStartToUiVisibleMs"
-        backendListenerMs = New-SampleSummary -Samples $samples -PropertyName "backendListenerMs"
-        backendReadyMs = New-SampleSummary -Samples $samples -PropertyName "backendReadyMs"
-        runtimeFetchMs = New-SampleSummary -Samples $samples -PropertyName "runtimeFetchMs"
-        cleanupMs = New-SampleSummary -Samples $samples -PropertyName "cleanupMs"
-        hotPathSegmentNames = @($segmentNames)
-        uploadExportBenchmark = $(if ($uploadExportBenchmark) { $uploadExportBenchmark.summary } else { $null })
-        webSocketBenchmark = $(if ($webSocketBenchmark) { $webSocketBenchmark.summary } else { $null })
-        historyScrollBenchmark = $(if ($historyScrollBenchmark) { $historyScrollBenchmark.summary } else { $null })
-        recordingHotPathBenchmarks = @($recordingHotPathBenchmarks | ForEach-Object { $_.summary })
-    }
+    summary = $summary
+    performanceBudget = $performanceBudget
     phase0Gate = [pscustomobject]@{
         complete = $incomplete.Count -eq 0
         incompleteRequirements = @($incomplete | ForEach-Object { $_.name })
@@ -936,5 +1024,8 @@ Set-Content -LiteralPath $OutputPath -Value $json -Encoding UTF8
 Write-Output $json
 
 if ($FailOnIncompleteGate -and -not $result.phase0Gate.complete) {
+    exit 1
+}
+if ($FailOnPerformanceBudget -and -not $result.performanceBudget.complete) {
     exit 1
 }
