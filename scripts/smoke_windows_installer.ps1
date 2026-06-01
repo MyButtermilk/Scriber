@@ -19,7 +19,9 @@ it verifies that first-run legacy runtime data is copied into the installed app
 data directory. With -SimulateUpgrade, it runs the installer a second time
 against the same install/data directories and verifies that existing app data is
 preserved. With -StabilityDurationSec, the installed desktop smoke keeps the app
-running for repeated health/state probes before cleanup.
+running for repeated health/state probes before cleanup. With
+-MaxBackendWorkingSetGrowthMB, stability also fails on excessive backend
+working-set peak growth.
 #>
 
 param(
@@ -34,6 +36,7 @@ param(
     [switch]$SimulateBackendStartupTimeout,
     [int]$StabilityDurationSec = 0,
     [int]$StabilityProbeIntervalSec = 5,
+    [double]$MaxBackendWorkingSetGrowthMB = 0,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
     [switch]$SimulateUpgrade,
@@ -165,6 +168,9 @@ function Invoke-InstalledDesktopSmoke {
     if ($StabilityDurationSec -gt 0) {
         $smokeArgs += @("-StabilityDurationSec", $StabilityDurationSec.ToString())
         $smokeArgs += @("-StabilityProbeIntervalSec", $StabilityProbeIntervalSec.ToString())
+        if ($MaxBackendWorkingSetGrowthMB -gt 0) {
+            $smokeArgs += @("-MaxBackendWorkingSetGrowthMB", $MaxBackendWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+        }
     }
     if ($LegacyDataDir) {
         $smokeArgs += @("-LegacyDataDir", $LegacyDataDir)

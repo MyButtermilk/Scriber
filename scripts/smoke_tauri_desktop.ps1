@@ -20,6 +20,8 @@ that the supervisor replaces it. With -LegacyDataDir and -VerifyLegacyDataMigrat
 it verifies first-run migration into SCRIBER_DATA_DIR without printing secret
 values. With -StabilityDurationSec, it keeps the app running for repeated
 health/state probes and verifies that the backend process remains stable.
+With -MaxBackendWorkingSetGrowthMB, the stability smoke also fails when backend
+working-set peak growth exceeds the configured threshold.
 
 Build the executable first with:
   cd Frontend
@@ -38,6 +40,7 @@ param(
     [int]$CleanupTimeoutSec = 20,
     [int]$StabilityDurationSec = 0,
     [int]$StabilityProbeIntervalSec = 5,
+    [double]$MaxBackendWorkingSetGrowthMB = 0,
     [switch]$KeepAppOpen,
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
@@ -217,7 +220,8 @@ function Test-RuntimeStability {
         [string]$Token,
         [string]$ExpectedRuntimeMode,
         [int]$DurationSec,
-        [int]$ProbeIntervalSec
+        [int]$ProbeIntervalSec,
+        [double]$MaxWorkingSetGrowthMB = 0
     )
 
     if ($DurationSec -le 0) {
@@ -275,15 +279,26 @@ function Test-RuntimeStability {
     } while ((Get-Date) -lt $deadline)
 
     $workingSetValues = @($samples | ForEach-Object { [double]$_.backendWorkingSetMb })
+    $workingSetStart = if ($workingSetValues.Count) { [double]$workingSetValues[0] } else { $null }
+    $workingSetEnd = if ($workingSetValues.Count) { [double]$workingSetValues[-1] } else { $null }
+    $workingSetMax = if ($workingSetValues.Count) { [double](($workingSetValues | Measure-Object -Maximum).Maximum) } else { $null }
+    $workingSetGrowth = if ($null -ne $workingSetStart -and $null -ne $workingSetEnd) { [Math]::Round($workingSetEnd - $workingSetStart, 2) } else { $null }
+    $workingSetPeakGrowth = if ($null -ne $workingSetStart -and $null -ne $workingSetMax) { [Math]::Round($workingSetMax - $workingSetStart, 2) } else { $null }
+    if ($MaxWorkingSetGrowthMB -gt 0 -and $null -ne $workingSetPeakGrowth -and $workingSetPeakGrowth -gt $MaxWorkingSetGrowthMB) {
+        throw "Stability smoke backend working-set peak growth ${workingSetPeakGrowth}MB exceeded ${MaxWorkingSetGrowthMB}MB."
+    }
     return [pscustomobject]@{
         verified = $true
         durationSec = $DurationSec
         probeIntervalSec = [Math]::Max(1, $ProbeIntervalSec)
         sampleCount = $samples.Count
         backendPid = $BackendPid
-        backendWorkingSetStartMb = if ($workingSetValues.Count) { $workingSetValues[0] } else { $null }
-        backendWorkingSetEndMb = if ($workingSetValues.Count) { $workingSetValues[-1] } else { $null }
-        backendWorkingSetMaxMb = if ($workingSetValues.Count) { ($workingSetValues | Measure-Object -Maximum).Maximum } else { $null }
+        backendWorkingSetStartMb = $workingSetStart
+        backendWorkingSetEndMb = $workingSetEnd
+        backendWorkingSetMaxMb = $workingSetMax
+        backendWorkingSetGrowthMb = $workingSetGrowth
+        backendWorkingSetPeakGrowthMb = $workingSetPeakGrowth
+        maxBackendWorkingSetGrowthMb = if ($MaxWorkingSetGrowthMB -gt 0) { $MaxWorkingSetGrowthMB } else { $null }
         samples = $samples
     }
 }
@@ -802,7 +817,8 @@ try {
         -Token $SessionToken `
         -ExpectedRuntimeMode $expectedRuntimeMode `
         -DurationSec $StabilityDurationSec `
-        -ProbeIntervalSec $StabilityProbeIntervalSec
+        -ProbeIntervalSec $StabilityProbeIntervalSec `
+        -MaxWorkingSetGrowthMB $MaxBackendWorkingSetGrowthMB
     $result = [pscustomobject]@{
         ok = $true
         appPid = $app.Id

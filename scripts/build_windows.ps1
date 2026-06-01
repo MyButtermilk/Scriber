@@ -30,6 +30,7 @@ param(
     [switch]$RunInstallerStabilitySmoke,
     [int]$InstallerStabilityDurationSec = 15,
     [int]$InstallerStabilityProbeIntervalSec = 5,
+    [double]$InstallerMaxBackendWorkingSetGrowthMB = 0,
     [switch]$RunInstallerLegacyDataSmoke,
     [switch]$RunInstallerUpgradeSmoke
 )
@@ -213,6 +214,9 @@ try {
                 if ($RunInstallerStabilitySmoke) {
                     $installerSmokeArgs += @("-StabilityDurationSec", $InstallerStabilityDurationSec.ToString())
                     $installerSmokeArgs += @("-StabilityProbeIntervalSec", $InstallerStabilityProbeIntervalSec.ToString())
+                    if ($InstallerMaxBackendWorkingSetGrowthMB -gt 0) {
+                        $installerSmokeArgs += @("-MaxBackendWorkingSetGrowthMB", $InstallerMaxBackendWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                    }
                 }
                 if ($RunInstallerLegacyDataSmoke) {
                     $installerSmokeArgs += @("-LegacyDataDir", $RepoRoot, "-VerifyLegacyDataMigration")
