@@ -74,6 +74,28 @@ def test_session_token_accepts_header_authorization_and_query():
     )
 
 
+def test_request_microphone_refresh_schedules_device_monitor(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_api.DeviceMonitor, "start", lambda self: None)
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "0")
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    loop = asyncio.new_event_loop()
+    ctl = ScriberWebController(loop)
+    called = {"count": 0}
+
+    def request_refresh():
+        called["count"] += 1
+
+    monkeypatch.setattr(ctl._device_monitor, "request_refresh", request_refresh)
+
+    try:
+        result = ctl.request_microphone_refresh()
+    finally:
+        loop.close()
+
+    assert result == {"scheduled": True, "deviceMonitor": "running"}
+    assert called["count"] == 1
+
+
 def test_loopback_request_detection():
     assert web_api._is_loopback_request(_FakeRequest(peername=("127.0.0.1", 12345)))
     assert web_api._is_loopback_request(_FakeRequest(peername=("::1", 12345)))

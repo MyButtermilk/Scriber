@@ -268,6 +268,7 @@ python -m src.main
 Important microphone behavior:
 
 - DeviceMonitor keeps the frontend microphone list updated after USB/dock changes.
+- Browser/WebView `devicechange` events send a lightweight `/api/microphones/refresh` hint so hotplug changes do not wait for fallback polling while the UI is open.
 - PortAudio refresh is deferred during active recording to avoid native races.
 - Mic selection is cached briefly to avoid repeated device scans on consecutive starts.
 - `SCRIBER_MIC_ALWAYS_ON=1` does not yet keep a reusable app-level mic stream alive.
@@ -440,6 +441,7 @@ Expected body: `multipart/form-data` with field `file`.
 - `GET /api/settings`
 - `PUT /api/settings`
 - `GET /api/microphones`
+- `POST /api/microphones/refresh`
 - `GET /api/autostart`
 - `POST /api/autostart`
 

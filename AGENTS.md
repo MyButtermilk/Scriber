@@ -97,6 +97,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 
 - `DeviceMonitor` is implemented. It uses native Windows endpoint notifications through pycaw when available and falls back to polling.
 - Default DeviceMonitor polling is intentionally slow when native events are available: 60 seconds with native events, 10 seconds for polling-only fallback.
+- `Frontend/client/src/hooks/use-device-change-refresh.ts` listens for browser/WebView `devicechange` events and posts `/api/microphones/refresh` as a best-effort hint. The backend still owns authoritative enumeration, PortAudio locking, and active-stream deferral through `DeviceMonitor`.
 - PortAudio access is guarded by `get_device_guard_lock()` across monitor refresh, mic enumeration, and stream open/stop/close.
 - PortAudio cache refresh is recording-aware. If an input stream is active, refresh is deferred and then run once after the stream becomes idle.
 - `_enumerate_microphones()` runs under the shared device guard lock. Do not remove this lock; it protects against native `sounddevice`/PortAudio races.

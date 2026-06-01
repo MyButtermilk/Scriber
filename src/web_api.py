@@ -3549,6 +3549,13 @@ class ScriberWebController:
 
         return devices
 
+    def request_microphone_refresh(self) -> dict[str, Any]:
+        """Schedule a safe microphone refresh from an external device-change hint."""
+        if self._device_monitor_enabled:
+            self._device_monitor.request_refresh()
+            return {"scheduled": True, "deviceMonitor": "running"}
+        return {"scheduled": False, "deviceMonitor": "disabled"}
+
     def resolve_microphone_device(self, device_name: str) -> str:
         """Resolve a device name to the current device index.
         
@@ -4004,6 +4011,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
         ctl: ScriberWebController = request.app["controller"]
         return web.json_response({"devices": ctl.list_microphones()})
 
+    async def refresh_microphones(request: web.Request):
+        ctl: ScriberWebController = request.app["controller"]
+        return web.json_response(ctl.request_microphone_refresh())
+
     async def transcripts(request: web.Request):
         """List transcripts with optional search, filtering, and pagination.
 
@@ -4455,6 +4466,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/autostart", get_autostart)
     app.router.add_post("/api/autostart", set_autostart)
     app.router.add_get("/api/microphones", microphones)
+    app.router.add_post("/api/microphones/refresh", refresh_microphones)
 
     app.router.add_get("/api/transcripts", transcripts)
     app.router.add_get("/api/transcripts/{id}", transcript_detail)

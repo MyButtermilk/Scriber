@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ThemeProvider } from "@/components/theme-provider";
 import { BackendStatusProvider } from "@/hooks/use-backend-status";
+import { useDeviceChangeRefresh } from "@/hooks/use-device-change-refresh";
 import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
 import { WebSocketProvider } from "@/contexts/WebSocketContext";
 import { lazy, Suspense, useEffect, useState } from "react";
@@ -73,6 +74,8 @@ function App() {
       cancelled = true;
     };
   }, []);
+
+  useDeviceChangeRefresh(backendBaseReady);
 
   if (!backendBaseReady) {
     return (

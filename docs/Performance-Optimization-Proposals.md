@@ -425,6 +425,7 @@ def _audio_callback(self, indata, frames, time, status):
 
 **Current State:**
 - `DeviceMonitor` uses native Windows endpoint notifications when available, with a slower polling fallback.
+- The frontend also sends a debounced `/api/microphones/refresh` hint from browser/WebView `devicechange` events while the UI is open.
 - PortAudio cache refresh is deferred while an input stream is active, then executed once after the stream becomes idle.
 - Microphone enumeration and stream open/close share the same guard lock.
 - `_resolve_mic_device()` caches name/favorite-to-index resolution for repeated recording starts.
@@ -441,7 +442,7 @@ if _ACTIVE_STREAMS > 0:
 SCRIBER_MIC_DEVICE_CACHE_TTL_SEC = 10.0  # default
 ```
 
-**Impact:** Fewer PortAudio refreshes during active recordings, less log noise, lower start-path overhead on repeated recordings.
+**Impact:** Fewer PortAudio refreshes during active recordings, less log noise, lower start-path overhead on repeated recordings, and faster hotplug UI refreshes without shortening fallback polling intervals.
 **Status:** ✅ Completed (2026-06-01)
 
 ---
