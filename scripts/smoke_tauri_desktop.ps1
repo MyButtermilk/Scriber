@@ -10,8 +10,11 @@ process, and checks that the managed backend process exits with it. With
 desktop frontend/supervisor recovery path to start a replacement, and verifies
 crash metadata was written. With -OccupyDefaultPort, it binds the default
 backend port before launch and verifies that the supervisor selects a different
-loopback port. With -LegacyDataDir and -VerifyLegacyDataMigration, it verifies
-first-run migration into SCRIBER_DATA_DIR without printing secret values.
+loopback port. With -SimulateBackendShutdown, it posts the token-protected
+runtime shutdown endpoint, waits for the worker to exit cleanly, and verifies
+supervisor recovery. With -LegacyDataDir and -VerifyLegacyDataMigration, it
+verifies first-run migration into SCRIBER_DATA_DIR without printing secret
+values.
 
 Build the executable first with:
   cd Frontend
@@ -32,6 +35,7 @@ param(
     [switch]$EnableDeviceMonitor,
     [switch]$OccupyDefaultPort,
     [switch]$SimulateBackendCrash,
+    [switch]$SimulateBackendShutdown,
     [int]$CrashRecoveryTimeoutSec = 75,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
@@ -137,6 +141,23 @@ function Get-BackendRuntime {
         throw "Managed backend runtime did not report downloadsDir."
     }
     return $runtime
+}
+
+function Invoke-BackendShutdown {
+    param(
+        [int]$Port,
+        [string]$Token
+    )
+
+    $headers = @{}
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+    $response = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/api/runtime/shutdown" -Headers $headers -TimeoutSec 5
+    if (-not $response.ok) {
+        throw "Runtime shutdown endpoint on port $Port did not return ok=true."
+    }
+    return $response
 }
 
 function Convert-ToFullPath {
@@ -429,6 +450,44 @@ try {
             metadataPath = $metadataPath
         }
     }
+    $controlledShutdown = $null
+    if ($SimulateBackendShutdown) {
+        $shutdownBackendPid = [int]$listener.BackendPid
+        $shutdownPort = [int]$listener.Port
+        $shutdownBaseline = @(Get-ManagedBackendProcesses | ForEach-Object { [int]$_.ProcessId })
+        $shutdownResponse = Invoke-BackendShutdown -Port $shutdownPort -Token $SessionToken
+        Wait-ProcessExit -ProcessId $shutdownBackendPid -DeadlineSec 15
+
+        $replacement = Wait-NewBackendListener -BaselinePids $shutdownBaseline -DeadlineSec $CrashRecoveryTimeoutSec
+        if ($replacement.BackendPid -eq $shutdownBackendPid) {
+            throw "Backend shutdown recovery reused the stopped backend pid $shutdownBackendPid."
+        }
+        if ($OccupyDefaultPort -and [int]$replacement.Port -eq $DefaultBackendPort) {
+            throw "Recovered backend used default port $DefaultBackendPort even though it was occupied."
+        }
+        $replacementHealth = Wait-BackendHealth -Port $replacement.Port -DeadlineSec $BackendHealthTimeoutSec
+        $replacementRuntime = Get-BackendRuntime -Port $replacement.Port -Token $SessionToken
+        if ((Convert-ToFullPath -Path $replacementRuntime.dataDir) -ne $DataDir) {
+            throw "Recovered backend used unexpected dataDir: $($replacementRuntime.dataDir)"
+        }
+        $metadataPath = Wait-BackendCrashMetadata -DataDir $DataDir -BackendPid $shutdownBackendPid -DeadlineSec 10
+
+        $listener = $replacement
+        $health = $replacementHealth
+        $runtime = $replacementRuntime
+        if ($portConflict) {
+            $portConflict.recoveredBackendPort = [int]$replacement.Port
+        }
+        $controlledShutdown = [pscustomobject]@{
+            verified = $true
+            shutdownBackendPid = $shutdownBackendPid
+            replacementBackendPid = [int]$replacement.BackendPid
+            initialPort = $shutdownPort
+            replacementPort = [int]$replacement.Port
+            responseMessage = $shutdownResponse.message
+            metadataPath = $metadataPath
+        }
+    }
     $portConflictResult = $null
     if ($portConflict) {
         $portConflictResult = [pscustomobject]$portConflict
@@ -447,6 +506,7 @@ try {
         portConflict = $portConflictResult
         legacyDataMigration = $legacyDataMigration
         crashRecovery = $crashRecovery
+        controlledShutdown = $controlledShutdown
         cleanupVerified = $false
     }
 } finally {

@@ -9,11 +9,12 @@ backend sidecar becomes healthy, then uninstalls the app unless -KeepInstalled
 is passed. With -SimulateBackendCrash, it also verifies that the installed
 desktop shell restarts a killed backend worker and writes crash metadata. With
 -OccupyDefaultPort, it verifies that the installed supervisor avoids the
-occupied default backend port. With -VerifyLegacyDataMigration, it verifies
-that first-run legacy runtime data is copied into the installed app data
-directory. With -SimulateUpgrade, it runs the installer a second time against
-the same install/data directories and verifies that existing app data is
-preserved.
+occupied default backend port. With -SimulateBackendShutdown, it verifies the
+token-protected controlled worker shutdown and supervisor recovery path. With
+-VerifyLegacyDataMigration, it verifies that first-run legacy runtime data is
+copied into the installed app data directory. With -SimulateUpgrade, it runs
+the installer a second time against the same install/data directories and
+verifies that existing app data is preserved.
 #>
 
 param(
@@ -23,6 +24,7 @@ param(
     [string]$DataDir = "",
     [switch]$OccupyDefaultPort,
     [switch]$SimulateBackendCrash,
+    [switch]$SimulateBackendShutdown,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
     [switch]$SimulateUpgrade,
@@ -139,6 +141,9 @@ function Invoke-InstalledDesktopSmoke {
     if ($SimulateBackendCrash) {
         $smokeArgs += "-SimulateBackendCrash"
     }
+    if ($SimulateBackendShutdown) {
+        $smokeArgs += "-SimulateBackendShutdown"
+    }
     if ($OccupyDefaultPort) {
         $smokeArgs += "-OccupyDefaultPort"
     }
@@ -218,6 +223,7 @@ try {
             secondLaunchKind = $secondSmoke.launchKind
             secondCleanupVerified = $secondSmoke.cleanupVerified
             portConflict = $secondSmoke.portConflict
+            controlledShutdown = $secondSmoke.controlledShutdown
             legacyDataMigration = $secondSmoke.legacyDataMigration
         }
         $smoke = $secondSmoke
@@ -235,6 +241,7 @@ try {
         legacyDataMigration = $smoke.legacyDataMigration
         upgrade = $upgrade
         crashRecovery = $smoke.crashRecovery
+        controlledShutdown = $smoke.controlledShutdown
         cleanupVerified = $smoke.cleanupVerified
     } | ConvertTo-Json -Compress -Depth 8
 } finally {
