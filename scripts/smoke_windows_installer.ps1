@@ -52,6 +52,37 @@ function Invoke-ProcessChecked {
     }
 }
 
+function Stop-ProcessesUnderPath {
+    param(
+        [string]$Root,
+        [string]$Label
+    )
+
+    if (-not (Test-Path $Root)) {
+        return
+    }
+    $rootFull = (Convert-ToFullPath -Path $Root).ToLowerInvariant()
+    $processes = @(
+        Get-CimInstance Win32_Process |
+            Where-Object {
+                $cmd = if ($_.CommandLine) { $_.CommandLine.ToLowerInvariant() } else { "" }
+                $exe = if ($_.ExecutablePath) { $_.ExecutablePath.ToLowerInvariant() } else { "" }
+                $cmd.Contains($rootFull) -or $exe.StartsWith($rootFull)
+            }
+    )
+    foreach ($process in $processes) {
+        try {
+            Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop
+            Write-Host "Stopped stale $Label process $($process.ProcessId) ($($process.Name))."
+        } catch {
+            Write-Warning "Could not stop stale $Label process $($process.ProcessId): $_"
+        }
+    }
+    if ($processes.Count -gt 0) {
+        Start-Sleep -Seconds 2
+    }
+}
+
 function Resolve-InstalledAppExe {
     param([string]$Root)
 
@@ -96,6 +127,7 @@ Assert-UnderRoot -Root $tmpRoot -Path $InstallDir -Label "InstallDir"
 Assert-UnderRoot -Root $tmpRoot -Path $DataDir -Label "DataDir"
 
 if (Test-Path $InstallDir) {
+    Stop-ProcessesUnderPath -Root $InstallDir -Label "installer-smoke"
     Remove-Item -LiteralPath $InstallDir -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
