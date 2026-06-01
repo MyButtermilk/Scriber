@@ -10,7 +10,11 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{
+    menu::{MenuBuilder, SubmenuBuilder},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager, Runtime,
+};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
@@ -42,6 +46,11 @@ const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstance";
 const AUTOSTART_REGISTRY_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const AUTOSTART_REGISTRY_VALUE: &str = "Scriber";
 const HOTKEY_DISPATCH_DEBOUNCE: Duration = Duration::from_millis(250);
+const MAIN_WINDOW_LABEL: &str = "main";
+const TRAY_ID: &str = "scriber-tray";
+const MENU_ITEM_SHOW_WINDOW: &str = "scriber-show-window";
+const MENU_ITEM_RESTART_BACKEND: &str = "scriber-restart-backend";
+const MENU_ITEM_QUIT: &str = "scriber-quit";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -457,10 +466,14 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .on_menu_event(|app, event| {
+            handle_shell_menu_event(app, event.id().as_ref());
+        })
         .manage(single_instance_guard)
         .manage(DesktopHotkeyState::new())
         .manage(BackendManager::new())
         .setup(|app| {
+            configure_desktop_shell(app)?;
             let manager = app.state::<BackendManager>();
             manager.set_resource_dir(app.path().resource_dir().ok());
             let _ = manager.ensure_started();
@@ -482,6 +495,123 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Scriber desktop shell");
+}
+
+fn configure_desktop_shell<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
+    install_application_menu(app)?;
+    install_tray(app)?;
+    Ok(())
+}
+
+fn install_application_menu<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
+    let handle = app.handle();
+    let app_submenu = SubmenuBuilder::new(handle, "Scriber")
+        .text(MENU_ITEM_SHOW_WINDOW, "Open Scriber")
+        .text(MENU_ITEM_RESTART_BACKEND, "Restart Backend")
+        .separator()
+        .text(MENU_ITEM_QUIT, "Quit")
+        .build()?;
+    let menu = MenuBuilder::new(handle).item(&app_submenu).build()?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
+fn install_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
+    let handle = app.handle();
+    let tray_menu = MenuBuilder::new(handle)
+        .text(MENU_ITEM_SHOW_WINDOW, "Open Scriber")
+        .text(MENU_ITEM_RESTART_BACKEND, "Restart Backend")
+        .separator()
+        .text(MENU_ITEM_QUIT, "Quit")
+        .build()?;
+    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
+        .tooltip("Scriber")
+        .menu(&tray_menu)
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            if should_show_window_for_tray_event(&event) {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+
+    tray.build(app)?;
+    Ok(())
+}
+
+fn handle_shell_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
+    if !is_shell_menu_item(item_id) {
+        return;
+    }
+
+    match item_id {
+        MENU_ITEM_SHOW_WINDOW => show_main_window(app),
+        MENU_ITEM_RESTART_BACKEND => restart_backend_from_shell(app),
+        MENU_ITEM_QUIT => app.exit(0),
+        _ => {}
+    }
+}
+
+fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        write_shell_log("main window focus requested, but the main window was not found");
+        return;
+    };
+
+    if let Err(err) = window.show() {
+        write_shell_log(&format!("main window show failed: {err}"));
+    }
+    if let Err(err) = window.unminimize() {
+        write_shell_log(&format!("main window unminimize failed: {err}"));
+    }
+    if let Err(err) = window.set_focus() {
+        write_shell_log(&format!("main window focus failed: {err}"));
+    }
+}
+
+fn restart_backend_from_shell<R: Runtime>(app: &AppHandle<R>) {
+    let manager = app.state::<BackendManager>();
+    match manager.restart() {
+        Ok(status) => write_shell_log(&format!(
+            "backend restart requested from shell menu; pid={:?} ready={} launch_kind={}",
+            status.pid, status.ready, status.launch_kind
+        )),
+        Err(err) => write_shell_log(&format!("backend restart from shell menu failed: {err}")),
+    }
+}
+
+fn is_shell_menu_item(item_id: &str) -> bool {
+    matches!(
+        item_id,
+        MENU_ITEM_SHOW_WINDOW | MENU_ITEM_RESTART_BACKEND | MENU_ITEM_QUIT
+    )
+}
+
+fn should_show_window_for_tray_event(event: &TrayIconEvent) -> bool {
+    match event {
+        TrayIconEvent::Click {
+            button,
+            button_state,
+            ..
+        } => should_show_window_for_tray_click(*button, Some(*button_state)),
+        TrayIconEvent::DoubleClick { button, .. } => {
+            should_show_window_for_tray_click(*button, None)
+        }
+        _ => false,
+    }
+}
+
+fn should_show_window_for_tray_click(
+    button: MouseButton,
+    button_state: Option<MouseButtonState>,
+) -> bool {
+    button == MouseButton::Left
+        && button_state
+            .map(|state| state == MouseButtonState::Up)
+            .unwrap_or(true)
 }
 
 fn status_from_state(state: &BackendState, ready: bool) -> BackendStatus {
@@ -1481,15 +1611,17 @@ mod tests {
     use super::{
         acquire_single_instance_guard, autostart_command_for_exe, autostart_commands_match,
         backend_executable_names, find_backend_executable_in_dirs, health_response_ready,
-        managed_backend_start_timed_out, normalize_global_shortcut, normalize_hotkey_mode,
-        parse_loopback_backend_url, resolve_session_token, split_http_response,
-        BACKEND_START_TIMEOUT, SESSION_TOKEN_ENV,
+        is_shell_menu_item, managed_backend_start_timed_out, normalize_global_shortcut,
+        normalize_hotkey_mode, parse_loopback_backend_url, resolve_session_token,
+        should_show_window_for_tray_click, split_http_response, BACKEND_START_TIMEOUT,
+        MENU_ITEM_QUIT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW, SESSION_TOKEN_ENV,
     };
     use std::{
         fs,
         path::PathBuf,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
+    use tauri::tray::{MouseButton, MouseButtonState};
 
     #[test]
     fn health_response_ready_requires_scriber_contract() {
@@ -1669,6 +1801,31 @@ mod tests {
 
         assert_eq!(status, "HTTP/1.1 200 OK");
         assert_eq!(body, "{\"ok\":true}");
+    }
+
+    #[test]
+    fn shell_menu_item_filter_accepts_only_owned_items() {
+        assert!(is_shell_menu_item(MENU_ITEM_SHOW_WINDOW));
+        assert!(is_shell_menu_item(MENU_ITEM_RESTART_BACKEND));
+        assert!(is_shell_menu_item(MENU_ITEM_QUIT));
+        assert!(!is_shell_menu_item("copy"));
+    }
+
+    #[test]
+    fn tray_left_click_reopens_main_window() {
+        assert!(should_show_window_for_tray_click(
+            MouseButton::Left,
+            Some(MouseButtonState::Up)
+        ));
+        assert!(should_show_window_for_tray_click(MouseButton::Left, None));
+        assert!(!should_show_window_for_tray_click(
+            MouseButton::Left,
+            Some(MouseButtonState::Down)
+        ));
+        assert!(!should_show_window_for_tray_click(
+            MouseButton::Right,
+            Some(MouseButtonState::Up)
+        ));
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

@@ -464,6 +464,7 @@ Hinweis: In der Tauri-Desktop-Runtime laeuft Autostart ueber Rust-Commands statt
 - Legacy-Tray nutzt weiterhin Lock-File-Verhalten; die Tauri-Desktop-Shell nutzt einen Windows-Named-Mutex (`Local\ScriberDesktopSingleInstance`) und beendet zweite Desktop-Instanzen vor dem Backend-Start.
 - Tauri-Desktop verwaltet Windows-Autostart direkt ueber `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Scriber`; Legacy-Tray nutzt weiter den Python-Web-API-Pfad.
 - Tauri-Desktop verwaltet den globalen Hotkey und deaktiviert Python-Keyboard-Hooks fuer managed Worker; Legacy-Tray nutzt weiter den Python-Hotkey-Pfad.
+- Tauri-Desktop stellt ein natives App-Menue und Tray-Menue bereit. Aktuelle Aktionen: Hauptfenster oeffnen/fokussieren, managed Backend ueber den Rust-Supervisor neu starten, App beenden. Recording-State bleibt im Python-Backend.
 - Startet Backend (`python -m src.web_api`) als Subprocess
 - Startet Frontend (Express) als Subprocess
 - System-Tray-Icon mit Kontextmenü: Öffnen, Logs, Restart, Autostart (Windows Registry), Beenden
