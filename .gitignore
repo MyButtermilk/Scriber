@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .DS_Store
 *.log
+latest.structured.jsonl
 src/assets/flags/*.png
 downloads/
 *.db
