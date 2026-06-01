@@ -14,6 +14,7 @@ import { Slider } from "@/components/ui/slider";
 import {
   apiUrl,
   getAutostartStatus,
+  refreshGlobalHotkey,
   setAutostartEnabled as setDesktopAutostartEnabled,
 } from "@/lib/backend";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -818,6 +819,7 @@ export default function Settings() {
   const handleSaveHotkey = async () => {
     try {
       const updated = await updateSettings({ hotkey });
+      await refreshGlobalHotkey();
       setHotkey(updated.hotkey || hotkey);
       toast({
         title: "Saved",
@@ -839,6 +841,7 @@ export default function Settings() {
     setRecordingMode(mode);
     try {
       await updateSettings({ mode: mode === "press_hold" ? "push_to_talk" : "toggle" });
+      await refreshGlobalHotkey();
     } catch (e: any) {
       toast({
         title: "Save failed",

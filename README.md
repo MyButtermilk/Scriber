@@ -41,7 +41,7 @@ Current implementation highlights:
 - Recording-aware PortAudio refresh: device refreshes are deferred while a recording stream is active and run once after the stream becomes idle.
 - Short-lived microphone device-resolution cache for selected/favorite mic lookup.
 - Route-level frontend lazy loading for non-default pages, manual vendor chunks, and a single shared WebSocket connection.
-- Tauri 2 desktop scaffold with a Rust supervisor that starts the Python backend, negotiates a runtime backend URL, checks the Scriber health contract, enforces one Windows desktop instance through a named mutex, owns Windows desktop autostart, and avoids a visible Python console window on Windows.
+- Tauri 2 desktop scaffold with a Rust supervisor that starts the Python backend, negotiates a runtime backend URL, checks the Scriber health contract, enforces one Windows desktop instance through a named mutex, owns Windows desktop autostart and global hotkey dispatch, and avoids a visible Python console window on Windows.
 - Tauri-supervised backend access is protected by a per-run session token: Rust passes `SCRIBER_SESSION_TOKEN` to the worker, React reads it through `get_backend_access`, and backend REST/WebSocket URLs carry a `scriberToken` query parameter.
 - Backend hot-path reductions: no-client WebSocket broadcasts skip JSON serialization, audio-level callbacks avoid UI broadcast work without clients/overlay, long transcript appends buffer final segments, and upload/export cleanup paths are offloaded from the event loop where practical.
 - Runtime data path support via `SCRIBER_DATA_DIR`: the Tauri-supervised backend writes settings, SQLite data, downloads, and logs to a writable app data directory instead of relying on the repository or install directory.
@@ -518,6 +518,8 @@ PORT=5000
 ```env
 SCRIBER_HOTKEY=ctrl+alt+s
 SCRIBER_MODE=toggle
+SCRIBER_TAURI_GLOBAL_HOTKEY=1
+SCRIBER_DISABLE_HOTKEYS=0
 SCRIBER_DEFAULT_STT=soniox
 SCRIBER_STT_FALLBACKS=
 SCRIBER_LANGUAGE=auto
@@ -666,7 +668,7 @@ npm run tauri:build
 
 The current Tauri shell is a hybrid runtime: Rust owns the desktop window and supervises the Python backend. It prefers a packaged backend sidecar (`SCRIBER_BACKEND_EXE` or `backend\scriber-backend.exe` next to the Tauri executable) and falls back in development to `SCRIBER_PYTHON`, `venv\Scripts\python.exe`, `.venv\Scripts\python.exe`, or `python` running `python -m src.web_api`. The backend reports `/api/health` and `/api/runtime` metadata including API version, runtime mode, launch kind, PID, host, port, start time, capabilities, startup flags, and whether session-token enforcement is active.
 
-For Tauri-managed backends, Rust creates a per-run `SCRIBER_SESSION_TOKEN`, passes it to the Python worker, and exposes it to React with `get_backend_access`. The frontend attaches that token to backend REST and WebSocket URLs. `POST /api/runtime/shutdown` is reserved for local, token-authenticated controlled worker shutdown. On Windows, the shell uses the `Local\ScriberDesktopSingleInstance` named mutex to keep desktop startup single-instance before any managed worker is launched. Desktop autostart is handled by Tauri commands that write `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Scriber` to the current desktop executable; old Python-tray autostart commands are treated as not enabled and are overwritten when the user enables autostart in Tauri. Rust shell logs live in `logs\tauri-shell.log`, backend stdout/stderr in `logs\tauri-backend.log`, and managed backend exit metadata in `logs\backend-crash-metadata.jsonl` under `SCRIBER_DATA_DIR`.
+For Tauri-managed backends, Rust creates a per-run `SCRIBER_SESSION_TOKEN`, passes it to the Python worker, and exposes it to React with `get_backend_access`. The frontend attaches that token to backend REST and WebSocket URLs. `POST /api/runtime/shutdown` is reserved for local, token-authenticated controlled worker shutdown. On Windows, the shell uses the `Local\ScriberDesktopSingleInstance` named mutex to keep desktop startup single-instance before any managed worker is launched. Desktop autostart is handled by Tauri commands that write `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Scriber` to the current desktop executable; old Python-tray autostart commands are treated as not enabled and are overwritten when the user enables autostart in Tauri. Tauri also owns global hotkey dispatch for managed desktop runs: the Python worker is started with `SCRIBER_DISABLE_HOTKEYS=1`, Rust registers the configured shortcut, and shortcut events call the existing `/api/live-mic/toggle`, `/start`, and `/stop` endpoints without duplicating recording state. Rust shell logs live in `logs\tauri-shell.log`, backend stdout/stderr in `logs\tauri-backend.log`, and managed backend exit metadata in `logs\backend-crash-metadata.jsonl` under `SCRIBER_DATA_DIR`.
 
 Build the backend sidecar with PyInstaller:
 

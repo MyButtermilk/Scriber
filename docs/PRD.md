@@ -124,6 +124,8 @@ CREATE INDEX idx_created_at ON transcripts(created_at DESC);
 - `toggle` (start_stop): Hotkey startet/stoppt Aufnahme abwechselnd
 - `push_to_talk` (press_hold): Aufnahme nur solange Hotkey gehalten wird
 
+In der Tauri-Desktop-Runtime registriert Rust den globalen Hotkey und ruft nur die bestehenden Live-Mic-API-Endpunkte auf. Der Recording-State bleibt im Python-Backend.
+
 **Pipeline:**
 1. Audio-Capture über sounddevice (konfigurierbare Block-Size, Default 512)
 2. VAD (Voice Activity Detection) via Silero
@@ -461,6 +463,7 @@ Hinweis: In der Tauri-Desktop-Runtime laeuft Autostart ueber Rust-Commands statt
 ### Tray-Modus (src.tray)
 - Legacy-Tray nutzt weiterhin Lock-File-Verhalten; die Tauri-Desktop-Shell nutzt einen Windows-Named-Mutex (`Local\ScriberDesktopSingleInstance`) und beendet zweite Desktop-Instanzen vor dem Backend-Start.
 - Tauri-Desktop verwaltet Windows-Autostart direkt ueber `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Scriber`; Legacy-Tray nutzt weiter den Python-Web-API-Pfad.
+- Tauri-Desktop verwaltet den globalen Hotkey und deaktiviert Python-Keyboard-Hooks fuer managed Worker; Legacy-Tray nutzt weiter den Python-Hotkey-Pfad.
 - Startet Backend (`python -m src.web_api`) als Subprocess
 - Startet Frontend (Express) als Subprocess
 - System-Tray-Icon mit Kontextmenü: Öffnen, Logs, Restart, Autostart (Windows Registry), Beenden
@@ -587,6 +590,7 @@ Scriber/
 ## 14. Nicht-funktionale Anforderungen
 
 - **Single-Instance:** Tauri-Desktop verhindert parallele Windows-Instanzen via Named Mutex; Legacy-Tray nutzt Lock-File-Verhalten.
+- **Keine doppelte Recording-Logik:** Tauri-Hotkey dispatcht nur an Python-Live-Mic-Endpunkte; Aufnahmezustand bleibt im Backend.
 - **CORS:** Konfigurierbar, Default localhost-only
 - **Security:** API-Keys in .env (nicht im Code), Datei-Upload mit Sanitisierung und Whitelist
 - **Resilience:** Circuit Breaker, Retry mit Backoff, Job-Resume nach Restart

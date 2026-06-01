@@ -10,7 +10,8 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tauri::Manager;
+use tauri::{AppHandle, Manager};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE,
@@ -35,9 +36,12 @@ const DEFAULT_PORT: u16 = 8765;
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
 const FORCE_MANAGED_BACKEND_ENV: &str = "SCRIBER_FORCE_MANAGED_BACKEND";
 const SESSION_TOKEN_ENV: &str = "SCRIBER_SESSION_TOKEN";
+const DISABLE_HOTKEYS_ENV: &str = "SCRIBER_DISABLE_HOTKEYS";
+const TAURI_GLOBAL_HOTKEY_ENV: &str = "SCRIBER_TAURI_GLOBAL_HOTKEY";
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstance";
 const AUTOSTART_REGISTRY_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const AUTOSTART_REGISTRY_VALUE: &str = "Scriber";
+const HOTKEY_DISPATCH_DEBOUNCE: Duration = Duration::from_millis(250);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -66,6 +70,16 @@ pub struct BackendAccess {
 pub struct DesktopAutostartStatus {
     enabled: bool,
     available: bool,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopHotkeyStatus {
+    registered: bool,
+    available: bool,
+    hotkey: String,
+    mode: String,
     message: String,
 }
 
@@ -128,6 +142,97 @@ impl Drop for SingleInstanceGuard {
 
 #[cfg(not(windows))]
 pub struct SingleInstanceGuard;
+
+struct DesktopHotkeyState {
+    inner: Mutex<DesktopHotkeyStateInner>,
+}
+
+struct DesktopHotkeyStateInner {
+    registered_hotkey: Option<String>,
+    mode: String,
+    available: bool,
+    message: String,
+    last_dispatched_at: Option<Instant>,
+}
+
+impl DesktopHotkeyState {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(DesktopHotkeyStateInner {
+                registered_hotkey: None,
+                mode: "toggle".to_string(),
+                available: false,
+                message: "Global hotkey not initialized".to_string(),
+                last_dispatched_at: None,
+            }),
+        }
+    }
+
+    fn status(&self) -> DesktopHotkeyStatus {
+        self.inner
+            .lock()
+            .map(|state| DesktopHotkeyStatus {
+                registered: state.registered_hotkey.is_some(),
+                available: state.available,
+                hotkey: state.registered_hotkey.clone().unwrap_or_default(),
+                mode: state.mode.clone(),
+                message: state.message.clone(),
+            })
+            .unwrap_or_else(|_| DesktopHotkeyStatus {
+                registered: false,
+                available: false,
+                hotkey: String::new(),
+                mode: "toggle".to_string(),
+                message: "Global hotkey state lock is poisoned".to_string(),
+            })
+    }
+
+    fn set_registered(&self, hotkey: String, mode: String, message: String) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.registered_hotkey = Some(hotkey);
+            state.mode = mode;
+            state.available = true;
+            state.message = message;
+        }
+    }
+
+    fn set_unregistered(&self, mode: String, available: bool, message: String) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.registered_hotkey = None;
+            state.mode = mode;
+            state.available = available;
+            state.message = message;
+        }
+    }
+
+    fn action_for_event(&self, event_state: ShortcutState, now: Instant) -> Option<&'static str> {
+        let mut state = self.inner.lock().ok()?;
+        match event_state {
+            ShortcutState::Pressed => {
+                if state
+                    .last_dispatched_at
+                    .map(|last| now.duration_since(last) < HOTKEY_DISPATCH_DEBOUNCE)
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                state.last_dispatched_at = Some(now);
+                if state.mode == "push_to_talk" {
+                    Some("/api/live-mic/start")
+                } else {
+                    Some("/api/live-mic/toggle")
+                }
+            }
+            ShortcutState::Released => {
+                if state.mode == "push_to_talk" {
+                    Some("/api/live-mic/stop")
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
 
 #[cfg(windows)]
 struct RegistryKey {
@@ -324,6 +429,16 @@ fn set_desktop_autostart(enabled: bool) -> Result<DesktopAutostartStatus, String
     Ok(desktop_autostart_status())
 }
 
+#[tauri::command]
+fn global_hotkey_status(hotkey_state: tauri::State<'_, DesktopHotkeyState>) -> DesktopHotkeyStatus {
+    hotkey_state.status()
+}
+
+#[tauri::command]
+fn refresh_global_hotkey(app: AppHandle) -> Result<DesktopHotkeyStatus, String> {
+    refresh_global_hotkey_for_app(&app)
+}
+
 pub fn run() {
     let single_instance_guard = match acquire_single_instance_guard(SINGLE_INSTANCE_MUTEX_NAME) {
         Ok(guard) => guard,
@@ -334,13 +449,24 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    handle_global_shortcut_event(app, event.state);
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .manage(single_instance_guard)
+        .manage(DesktopHotkeyState::new())
         .manage(BackendManager::new())
         .setup(|app| {
             let manager = app.state::<BackendManager>();
             manager.set_resource_dir(app.path().resource_dir().ok());
             let _ = manager.ensure_started();
+            if let Err(err) = refresh_global_hotkey_for_app(app.handle()) {
+                write_shell_log(&format!("global hotkey registration skipped: {err}"));
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -350,7 +476,9 @@ pub fn run() {
             ensure_backend_running,
             restart_backend,
             get_desktop_autostart,
-            set_desktop_autostart
+            set_desktop_autostart,
+            global_hotkey_status,
+            refresh_global_hotkey
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Scriber desktop shell");
@@ -696,6 +824,199 @@ fn format_registry_error(operation: &str, status: u32) -> String {
     )
 }
 
+fn refresh_global_hotkey_for_app(app: &AppHandle) -> Result<DesktopHotkeyStatus, String> {
+    let hotkey_state = app.state::<DesktopHotkeyState>();
+    if !tauri_global_hotkey_enabled() {
+        let _ = app.global_shortcut().unregister_all();
+        hotkey_state.set_unregistered(
+            "toggle".to_string(),
+            false,
+            format!("Global hotkey disabled via {TAURI_GLOBAL_HOTKEY_ENV}"),
+        );
+        return Ok(hotkey_state.status());
+    }
+
+    let manager = app.state::<BackendManager>();
+    let status = manager.ensure_started();
+    if !status.ready {
+        let message = format!(
+            "Backend is not ready for global hotkey registration: {}",
+            status.message
+        );
+        hotkey_state.set_unregistered("toggle".to_string(), true, message.clone());
+        return Err(message);
+    }
+
+    let access = manager.access();
+    let config = fetch_backend_hotkey_config(&access)?;
+    if config.hotkey.is_empty() {
+        let _ = app.global_shortcut().unregister_all();
+        hotkey_state.set_unregistered(config.mode, true, "No global hotkey configured".to_string());
+        return Ok(hotkey_state.status());
+    }
+
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|err| format!("Could not clear previous global shortcuts: {err}"))?;
+    app.global_shortcut()
+        .register(config.hotkey.as_str())
+        .map_err(|err| {
+            format!(
+                "Could not register global hotkey '{}': {err}",
+                config.hotkey
+            )
+        })?;
+
+    let message = format!(
+        "Global hotkey registered: {} ({})",
+        config.hotkey, config.mode
+    );
+    write_shell_log(&message);
+    hotkey_state.set_registered(config.hotkey, config.mode, message);
+    Ok(hotkey_state.status())
+}
+
+fn handle_global_shortcut_event(app: &AppHandle, event_state: ShortcutState) {
+    let Some(path) = app
+        .try_state::<DesktopHotkeyState>()
+        .and_then(|state| state.action_for_event(event_state, Instant::now()))
+    else {
+        return;
+    };
+
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let Some(manager) = app_handle.try_state::<BackendManager>() else {
+            write_shell_log("global hotkey ignored because backend manager is unavailable");
+            return;
+        };
+        let status = manager.ensure_started();
+        if !status.ready {
+            write_shell_log(&format!(
+                "global hotkey ignored because backend is not ready: {}",
+                status.message
+            ));
+            return;
+        }
+        let access = manager.access();
+        if let Err(err) = post_backend_path(&access, path) {
+            write_shell_log(&format!("global hotkey action failed path={path}: {err}"));
+        }
+    });
+}
+
+fn tauri_global_hotkey_enabled() -> bool {
+    env::var(TAURI_GLOBAL_HOTKEY_ENV)
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
+}
+
+struct BackendHotkeyConfig {
+    hotkey: String,
+    mode: String,
+}
+
+fn fetch_backend_hotkey_config(access: &BackendAccess) -> Result<BackendHotkeyConfig, String> {
+    let value = request_backend_json(access, "GET", "/api/settings")?;
+    let raw_hotkey = value
+        .get("hotkeyRaw")
+        .or_else(|| value.get("hotkey"))
+        .and_then(Value::as_str)
+        .unwrap_or("ctrl+alt+s");
+    let raw_mode = value
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("toggle");
+
+    Ok(BackendHotkeyConfig {
+        hotkey: normalize_global_shortcut(raw_hotkey),
+        mode: normalize_hotkey_mode(raw_mode),
+    })
+}
+
+fn normalize_hotkey_mode(mode: &str) -> String {
+    if mode.trim().eq_ignore_ascii_case("push_to_talk") {
+        "push_to_talk".to_string()
+    } else {
+        "toggle".to_string()
+    }
+}
+
+fn normalize_global_shortcut(hotkey: &str) -> String {
+    hotkey
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+fn post_backend_path(access: &BackendAccess, path: &str) -> Result<Value, String> {
+    request_backend_json(access, "POST", path)
+}
+
+fn request_backend_json(access: &BackendAccess, method: &str, path: &str) -> Result<Value, String> {
+    let (host, port) = parse_loopback_backend_url(&access.base_url)?;
+    let addr = SocketAddr::from((host, port));
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500))
+        .map_err(|err| format!("could not connect to backend: {err}"))?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+
+    let token_header = if access.session_token.is_empty() {
+        String::new()
+    } else {
+        format!("X-Scriber-Token: {}\r\n", access.session_token)
+    };
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {DEFAULT_HOST}:{port}\r\n{token_header}Content-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|err| format!("could not write backend request: {err}"))?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|err| format!("could not read backend response: {err}"))?;
+    let (status, body) = split_http_response(&response)?;
+    if !status.starts_with("HTTP/1.1 2") && !status.starts_with("HTTP/1.0 2") {
+        return Err(format!("backend returned {status}"));
+    }
+    serde_json::from_str::<Value>(body)
+        .map_err(|err| format!("backend returned invalid JSON: {err}"))
+}
+
+fn split_http_response(response: &str) -> Result<(&str, &str), String> {
+    let Some((head, body)) = response.split_once("\r\n\r\n") else {
+        return Err("backend returned malformed HTTP response".to_string());
+    };
+    let status = head.lines().next().unwrap_or_default();
+    Ok((status, body))
+}
+
+fn parse_loopback_backend_url(base_url: &str) -> Result<([u8; 4], u16), String> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let rest = trimmed
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("unsupported backend URL: {base_url}"))?;
+    let Some((host, port_raw)) = rest.rsplit_once(':') else {
+        return Err(format!("backend URL has no port: {base_url}"));
+    };
+    if host != DEFAULT_HOST && host != "localhost" {
+        return Err(format!("backend URL is not loopback: {base_url}"));
+    }
+    let port = port_raw
+        .parse::<u16>()
+        .map_err(|err| format!("backend URL has invalid port: {err}"))?;
+    Ok(([127, 0, 0, 1], port))
+}
+
 struct BackendCommandSpec {
     program: PathBuf,
     args: Vec<String>,
@@ -745,6 +1066,7 @@ fn spawn_backend(
         .env("SCRIBER_RUNTIME_MODE", "tauri-supervised")
         .env("SCRIBER_BACKEND_LAUNCH_KIND", &spec.launch_kind)
         .env(SESSION_TOKEN_ENV, session_token)
+        .env(DISABLE_HOTKEYS_ENV, "1")
         .env("SCRIBER_LOG_STDERR", "1")
         .env("SCRIBER_DATA_DIR", &data_dir)
         .stdin(Stdio::null())
@@ -1159,8 +1481,9 @@ mod tests {
     use super::{
         acquire_single_instance_guard, autostart_command_for_exe, autostart_commands_match,
         backend_executable_names, find_backend_executable_in_dirs, health_response_ready,
-        managed_backend_start_timed_out, resolve_session_token, BACKEND_START_TIMEOUT,
-        SESSION_TOKEN_ENV,
+        managed_backend_start_timed_out, normalize_global_shortcut, normalize_hotkey_mode,
+        parse_loopback_backend_url, resolve_session_token, split_http_response,
+        BACKEND_START_TIMEOUT, SESSION_TOKEN_ENV,
     };
     use std::{
         fs,
@@ -1307,6 +1630,45 @@ mod tests {
             r#""C:\Python313\python.exe" "C:\Scriber\src\tray.py""#,
             r#""C:\Program Files\Scriber\scriber-desktop.exe""#
         ));
+    }
+
+    #[test]
+    fn normalize_global_shortcut_matches_tauri_syntax() {
+        assert_eq!(normalize_global_shortcut("Ctrl + Alt + S"), "ctrl+alt+s");
+        assert_eq!(normalize_global_shortcut("ctrl+shift+s"), "ctrl+shift+s");
+    }
+
+    #[test]
+    fn normalize_hotkey_mode_falls_back_to_toggle() {
+        assert_eq!(normalize_hotkey_mode("push_to_talk"), "push_to_talk");
+        assert_eq!(normalize_hotkey_mode("toggle"), "toggle");
+        assert_eq!(normalize_hotkey_mode("unexpected"), "toggle");
+    }
+
+    #[test]
+    fn parse_loopback_backend_url_accepts_localhost_and_default_host() {
+        assert_eq!(
+            parse_loopback_backend_url("http://127.0.0.1:8765").unwrap(),
+            ([127, 0, 0, 1], 8765)
+        );
+        assert_eq!(
+            parse_loopback_backend_url("http://localhost:9999/").unwrap(),
+            ([127, 0, 0, 1], 9999)
+        );
+    }
+
+    #[test]
+    fn parse_loopback_backend_url_rejects_non_loopback_host() {
+        assert!(parse_loopback_backend_url("http://example.com:8765").is_err());
+    }
+
+    #[test]
+    fn split_http_response_returns_status_and_body() {
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}";
+        let (status, body) = split_http_response(response).unwrap();
+
+        assert_eq!(status, "HTTP/1.1 200 OK");
+        assert_eq!(body, "{\"ok\":true}");
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

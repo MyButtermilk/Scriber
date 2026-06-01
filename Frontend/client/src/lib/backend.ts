@@ -126,6 +126,14 @@ export async function setAutostartEnabled(enabled: boolean): Promise<AutostartSt
   return res.json();
 }
 
+export async function refreshGlobalHotkey(): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("refresh_global_hotkey");
+}
+
 export function wsUrl(path: string): string {
   const base = backendBaseUrl || window.location.origin;
   const wsBase = base.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");

@@ -148,7 +148,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 
 ### Hybrid Tauri Runtime
 
-- Tauri commands exposed by `Frontend/src-tauri/src/lib.rs`: `get_backend_access`, `get_backend_base_url`, `backend_status`, `ensure_backend_running`, `restart_backend`, `get_desktop_autostart`, `set_desktop_autostart`.
+- Tauri commands exposed by `Frontend/src-tauri/src/lib.rs`: `get_backend_access`, `get_backend_base_url`, `backend_status`, `ensure_backend_running`, `restart_backend`, `get_desktop_autostart`, `set_desktop_autostart`, `global_hotkey_status`, `refresh_global_hotkey`.
 - The Rust supervisor first validates the current backend port through the Scriber `/api/health` contract (`ok`, `apiVersion`, `runtimeMode`) before attaching.
 - If the default backend port is unavailable, the supervisor selects a loopback port and starts a managed backend with `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_RUNTIME_MODE=tauri-supervised`, `SCRIBER_BACKEND_LAUNCH_KIND`, `SCRIBER_SESSION_TOKEN`, and a writable `SCRIBER_DATA_DIR`.
 - The Rust supervisor creates a random per-run `SCRIBER_SESSION_TOKEN` unless one is already provided in the environment. The token is passed only to the managed Python worker and exposed to the React UI through `get_backend_access`.
@@ -156,6 +156,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - The frontend appends the token as the `scriberToken` query parameter for backend REST and WebSocket URLs. Smoke/support scripts may also send `X-Scriber-Token`; browser WebSocket constructors cannot set custom headers.
 - The Windows Tauri shell enforces single-instance startup with a named mutex (`Local\ScriberDesktopSingleInstance`) before the backend supervisor starts. A second desktop process exits early and cannot create another managed worker.
 - Windows desktop autostart is owned by Tauri in desktop runtime. The Settings UI calls `get_desktop_autostart`/`set_desktop_autostart`; browser/legacy mode still uses backend `/api/autostart`. Tauri writes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Scriber` to the current desktop executable and treats old Python-tray commands as not enabled.
+- Global hotkey is owned by Tauri for managed desktop runtime. Rust reads `SCRIBER_HOTKEY`/`SCRIBER_MODE` through backend `/api/settings`, registers the shortcut with `tauri-plugin-global-shortcut`, disables Python keyboard hooks for managed workers via `SCRIBER_DISABLE_HOTKEYS=1`, and calls only existing backend endpoints (`/api/live-mic/toggle`, `/start`, `/stop`). Recording state remains exclusively in Python.
 - `POST /api/runtime/shutdown` is a local-control endpoint. It requires loopback access, a configured session token, and a valid token, then signals the aiohttp server stop event for controlled worker shutdown.
 - `SCRIBER_FORCE_MANAGED_BACKEND=1` is for release/smoke tests that must ignore an already-running external dev backend on `127.0.0.1:8765`.
 - Backend launch priority: explicit `SCRIBER_BACKEND_EXE`, then `scriber-backend` beside the Tauri executable under `backend\` or `binaries\`, then development fallback to `python -m src.web_api`.
@@ -176,7 +177,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable with a random session token, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits.
 - `scripts/smoke_windows_installer.ps1` installs the generated NSIS setup into `tmp\installer-smoke\`, runs the desktop smoke without `SCRIBER_REPO_ROOT`/`SCRIBER_PYTHON` dev fallback, and removes the temporary install/data directories afterward.
 - `scripts/build_windows.ps1 -RunInstallerSmoke` builds the NSIS package and then runs the installed-package smoke gate.
-- Current Tauri status: hybrid runtime with writable runtime-data paths, session-token protected worker API, Windows single-instance guard, Windows desktop autostart commands, redacted support bundles, sidecar backend launch support, bundled yt-dlp support, bundled ffmpeg/ffprobe resolution, NSIS installer generation, and installed-package smoke coverage. Signing and updater remain open packaging work.
+- Current Tauri status: hybrid runtime with writable runtime-data paths, session-token protected worker API, Windows single-instance guard, Windows desktop autostart commands, Tauri-owned global hotkey dispatch, redacted support bundles, sidecar backend launch support, bundled yt-dlp support, bundled ffmpeg/ffprobe resolution, NSIS installer generation, and installed-package smoke coverage. Signing and updater remain open packaging work.
 
 ## Commands
 
@@ -270,13 +271,13 @@ Important environment variables:
 
 - Web/API: `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_ALLOWED_ORIGINS`
 - Runtime storage: `SCRIBER_DATA_DIR`, `SCRIBER_DATABASE_PATH`, `SCRIBER_DOWNLOADS_DIR`
-- Tauri backend worker: `SCRIBER_BACKEND_EXE`, `SCRIBER_BACKEND_DIR`, `SCRIBER_BACKEND_LAUNCH_KIND`, `SCRIBER_FORCE_MANAGED_BACKEND`, `SCRIBER_SESSION_TOKEN`, `SCRIBER_PYTHON`
+- Tauri backend worker: `SCRIBER_BACKEND_EXE`, `SCRIBER_BACKEND_DIR`, `SCRIBER_BACKEND_LAUNCH_KIND`, `SCRIBER_FORCE_MANAGED_BACKEND`, `SCRIBER_SESSION_TOKEN`, `SCRIBER_PYTHON`, `SCRIBER_TAURI_GLOBAL_HOTKEY`
 - Diagnostics: `SCRIBER_LOG_DIR`
 - Media tools: `SCRIBER_MEDIA_TOOLS_DIR`, `SCRIBER_FFMPEG_PATH`, `SCRIBER_FFPROBE_PATH`, `SCRIBER_YT_DLP_PATH`
 - STT provider keys: `SONIOX_API_KEY`, `MISTRAL_API_KEY`, `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `GLADIA_API_KEY`, `GROQ_API_KEY`, `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, `GOOGLE_API_KEY`, `YOUTUBE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`
 - AWS STT: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
 - Provider/model behavior: `SCRIBER_DEFAULT_STT`, `SCRIBER_SONIOX_MODE`, `SCRIBER_SONIOX_ASYNC_MODEL`, `SCRIBER_SONIOX_RT_MODEL`, `SCRIBER_MISTRAL_RT_MODEL`, `SCRIBER_MISTRAL_ASYNC_MODEL`, `SCRIBER_OPENAI_STT_MODEL`
-- App behavior: `SCRIBER_HOTKEY`, `SCRIBER_MODE`, `SCRIBER_INJECT_METHOD`, `SCRIBER_LANGUAGE`, `SCRIBER_DEBUG`, `SCRIBER_CUSTOM_VOCAB`
+- App behavior: `SCRIBER_HOTKEY`, `SCRIBER_MODE`, `SCRIBER_DISABLE_HOTKEYS`, `SCRIBER_INJECT_METHOD`, `SCRIBER_LANGUAGE`, `SCRIBER_DEBUG`, `SCRIBER_CUSTOM_VOCAB`
 - Mic: `SCRIBER_MIC_DEVICE`, `SCRIBER_FAVORITE_MIC`, `SCRIBER_MIC_ALWAYS_ON`, `SCRIBER_MIC_BLOCK_SIZE`, `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC`
 - Upload/jobs/timeouts: `SCRIBER_UPLOAD_MAX_MB`, `SCRIBER_UPLOAD_MAX_BYTES`, `SCRIBER_JOB_MAX_ATTEMPTS`, `SCRIBER_JOB_RETRY_BASE_SEC`, `SCRIBER_JOB_RETRY_MAX_SEC`, `SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC`
 - Summaries: `SCRIBER_SUMMARIZATION_MODEL`, `SCRIBER_AUTO_SUMMARIZE`, `SCRIBER_SUMMARY_MIN_WORDS`, `SCRIBER_SUMMARY_MAX_WORDS`

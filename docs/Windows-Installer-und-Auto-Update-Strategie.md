@@ -219,6 +219,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Status 2026-06-01: Der Tauri-Supervisor erzeugt ein zufaelliges `SCRIBER_SESSION_TOKEN`, uebergibt es an den Python-Worker und stellt es dem React-Frontend ueber `get_backend_access` bereit. Das Backend erzwingt den Token fuer lokale REST-/WebSocket-Zugriffe; `/api/health` bleibt fuer Readiness tokenfrei.
    - Status 2026-06-01: Die Windows-Tauri-Shell erzwingt Single-Instance-Start ueber den Named Mutex `Local\ScriberDesktopSingleInstance`, bevor der Backend-Supervisor einen Worker starten kann.
    - Status 2026-06-01: Windows-Autostart ist im Tauri-Pfad implementiert; `Frontend/client/src/lib/backend.ts` routet Settings-Autostart-Aufrufe in Desktop-Runtime auf Rust statt auf den Python-Endpoint.
+   - Status 2026-06-01: Globaler Hotkey ist im Tauri-Pfad implementiert; Rust registriert den in `/api/settings` konfigurierten Shortcut, deaktiviert Python-Keyboard-Hooks fuer managed Worker und ruft nur die bestehenden Live-Mic-Endpunkte auf.
    - Status 2026-06-01: `POST /api/runtime/shutdown` existiert als loopback- und token-geschuetzter Shutdown-Endpunkt fuer kontrolliertes Worker-Beenden.
    - Status 2026-06-01: WebSocket-Events tragen `apiVersion` und werden ueber `src/core/ws_contracts.py` sowie `tests/contract/test_ws_events.py` gegen bekannte Eventtypen validiert. Das React-Frontend nutzt dafuer eine typisierte `ScriberWebSocketMessage`-Union.
    - Status 2026-06-01: Tauri schreibt Shell-Lifecycle-Logs und Backend-Exit-Metadaten unter `SCRIBER_DATA_DIR\logs\`; `POST /api/runtime/support-bundle` erzeugt ein redigiertes Diagnose-ZIP ohne API-Keys oder Session-Tokens.
@@ -388,7 +389,7 @@ Lieferobjekte:
 | `src/runtime/media_tools.py` | Umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp` ueber Env, Sidecar-Tools und System-PATH. |
 | `src/runtime/support_bundle.py` | Umgesetzt: redigiertes Support-ZIP mit Runtime-/State-Metadaten, Logs und redigierter Config/Env. |
 | `src/backend_worker.py` | Umgesetzt: Tauri/PyInstaller Worker-Entry-Point. |
-| `Frontend/src-tauri/src/lib.rs` | Umgesetzt: Rust-Supervisor, Session-Token-Bridge, Worker-Lifecycle, Windows-Named-Mutex fuer Single Instance, Windows-Autostart via HKCU Run-Key. |
+| `Frontend/src-tauri/src/lib.rs` | Umgesetzt: Rust-Supervisor, Session-Token-Bridge, Worker-Lifecycle, Windows-Named-Mutex fuer Single Instance, Windows-Autostart via HKCU Run-Key, globaler Hotkey via bestehende Live-Mic-API. |
 | `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar inkl. SciPy/pyloudnorm-Startup-Abhaengigkeiten. |
 | `installer/scriber.iss` | Inno Setup Script. |
 | `scripts/check_backend_runtime_imports.py` | Umgesetzt: Preflight fuer kritische Backend-Startup-Imports vor PyInstaller. |
