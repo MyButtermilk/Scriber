@@ -30,3 +30,20 @@ def test_installer_and_build_scripts_forward_memory_growth_gate() -> None:
     assert '"-MaxBackendWorkingSetGrowthMB", $MaxBackendWorkingSetGrowthMB.ToString' in installer
     assert "[double]$InstallerMaxBackendWorkingSetGrowthMB = 0" in build
     assert '"-MaxBackendWorkingSetGrowthMB", $InstallerMaxBackendWorkingSetGrowthMB.ToString' in build
+
+
+def test_installer_uninstall_smoke_is_a_strict_build_gate() -> None:
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+    build = read_script("scripts/build_windows.ps1")
+
+    assert "[switch]$VerifyUninstall" in installer
+    assert "Invoke-InstalledUninstallCheck" in installer
+    assert "Silent uninstall verification failed" in installer
+    assert "installArtifactsRemoved" in installer
+    assert "dataDirPreserved" in installer
+    assert "uninstall = $null" in installer
+    assert "-VerifyUninstall cannot be combined with -KeepInstalled." in installer
+
+    assert "[switch]$RunInstallerUninstallSmoke" in build
+    assert "$RunInstallerUninstallSmoke" in build
+    assert '$installerSmokeArgs += "-VerifyUninstall"' in build

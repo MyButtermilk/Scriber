@@ -21,7 +21,9 @@ against the same install/data directories and verifies that existing app data is
 preserved. With -StabilityDurationSec, the installed desktop smoke keeps the app
 running for repeated health/state probes before cleanup. With
 -MaxBackendWorkingSetGrowthMB, stability also fails on excessive backend
-working-set peak growth.
+working-set peak growth. With -VerifyUninstall, the silent uninstaller becomes
+a strict release gate: it must remove installed app artifacts while preserving
+runtime data before the script removes temporary smoke-test directories.
 #>
 
 param(
@@ -40,6 +42,7 @@ param(
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
     [switch]$SimulateUpgrade,
+    [switch]$VerifyUninstall,
     [switch]$KeepInstalled
 )
 
@@ -130,6 +133,148 @@ function Resolve-InstalledAppExe {
     throw "Installed Scriber executable was not found under $Root."
 }
 
+function Resolve-InstalledUninstaller {
+    param([string]$Root)
+
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        return $null
+    }
+    $uninstaller = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @("uninstall.exe", "Uninstall.exe") -or $_.Name -match "^unins.*\.exe$" } |
+        Select-Object -First 1
+    if ($uninstaller) {
+        return $uninstaller.FullName
+    }
+    return $null
+}
+
+function Convert-ToRelativePath {
+    param(
+        [string]$Root,
+        [string]$Path
+    )
+
+    $rootFull = Convert-ToFullPath -Path $Root
+    $pathFull = Convert-ToFullPath -Path $Path
+    if ($pathFull.Equals($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return "."
+    }
+    $rootPrefix = $rootFull.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    if ($pathFull.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $pathFull.Substring($rootPrefix.Length)
+    }
+    return $pathFull
+}
+
+function Get-RemainingInstallArtifacts {
+    param([string]$Root)
+
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        return @()
+    }
+    return @(
+        Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue |
+            ForEach-Object { Convert-ToRelativePath -Root $Root -Path $_.FullName }
+    )
+}
+
+function Wait-InstallArtifactsRemoved {
+    param(
+        [string]$Root,
+        [int]$TimeoutSec = 15
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    do {
+        $remaining = @(Get-RemainingInstallArtifacts -Root $Root)
+        if ($remaining.Count -eq 0) {
+            return @()
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    return @(Get-RemainingInstallArtifacts -Root $Root)
+}
+
+function Invoke-InstalledUninstallCheck {
+    param(
+        [string]$InstallRoot,
+        [string]$RuntimeDataDir,
+        [switch]$Strict
+    )
+
+    $sentinelPath = Join-Path $RuntimeDataDir "uninstall-preserve-sentinel.txt"
+    New-Item -ItemType Directory -Force -Path $RuntimeDataDir | Out-Null
+    Set-Content -LiteralPath $sentinelPath -Value "preserve across silent uninstall" -Encoding UTF8
+
+    $result = [ordered]@{
+        attempted = $false
+        verified = $false
+        uninstallerPath = $null
+        installArtifactsRemoved = $false
+        dataDirPreserved = $false
+        dataSentinelPath = $sentinelPath
+        remainingInstallArtifacts = @()
+    }
+
+    $uninstaller = Resolve-InstalledUninstaller -Root $InstallRoot
+    if (-not $uninstaller) {
+        if ($Strict) {
+            throw "Silent uninstall verification failed: no uninstaller was found under $InstallRoot."
+        }
+        Write-Warning "No uninstaller was found under $InstallRoot."
+        return [pscustomobject]$result
+    }
+
+    $result.attempted = $true
+    $result.uninstallerPath = $uninstaller
+    try {
+        Invoke-ProcessChecked -FilePath $uninstaller -ArgumentList @("/S") -Label "Silent uninstaller"
+    } catch {
+        if ($Strict) {
+            throw
+        }
+        Write-Warning $_
+    }
+
+    $remaining = @(Wait-InstallArtifactsRemoved -Root $InstallRoot)
+    $result.remainingInstallArtifacts = $remaining
+    $result.installArtifactsRemoved = ($remaining.Count -eq 0)
+    $result.dataDirPreserved = Test-Path -LiteralPath $sentinelPath -PathType Leaf
+
+    if ($Strict -and -not $result.installArtifactsRemoved) {
+        throw "Silent uninstall verification failed: install artifacts remain under ${InstallRoot}: $($remaining -join ', ')"
+    }
+    if ($Strict -and -not $result.dataDirPreserved) {
+        throw "Silent uninstall verification failed: runtime data sentinel was removed: $sentinelPath"
+    }
+
+    $result.verified = ($result.attempted -and $result.installArtifactsRemoved -and $result.dataDirPreserved)
+    return [pscustomobject]$result
+}
+
+function Remove-InstallerSmokeArtifacts {
+    param(
+        [string]$InstallRoot,
+        [string]$RuntimeDataDir,
+        [string]$TempRoot
+    )
+
+    if (Test-Path -LiteralPath $InstallRoot -PathType Container) {
+        Stop-ProcessesUnderPath -Root $InstallRoot -Label "installer-smoke"
+        Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $RuntimeDataDir) {
+        Remove-Item -LiteralPath $RuntimeDataDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $TempRoot -PathType Container -ErrorAction SilentlyContinue) {
+        $remaining = @(Get-ChildItem -LiteralPath $TempRoot -Force -ErrorAction SilentlyContinue)
+        if ($remaining.Count -eq 0) {
+            Remove-Item -LiteralPath $TempRoot -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Invoke-InstalledDesktopSmoke {
     param(
         [string]$AppExe,
@@ -187,6 +332,9 @@ function Invoke-InstalledDesktopSmoke {
 }
 
 $RepoRoot = (Resolve-Path $RepoRoot).Path
+if ($VerifyUninstall -and $KeepInstalled) {
+    throw "-VerifyUninstall cannot be combined with -KeepInstalled."
+}
 if (-not $InstallerPath) {
     $InstallerPath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe"
 }
@@ -224,6 +372,7 @@ New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
 
 $smoke = $null
 $upgrade = $null
+$cleanupCompleted = $false
 try {
     Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer"
     $appExe = Resolve-InstalledAppExe -Root $InstallDir
@@ -257,7 +406,7 @@ try {
         $smoke = $secondSmoke
     }
 
-    [pscustomobject]@{
+    $result = [ordered]@{
         ok = $true
         installer = $InstallerPath
         installDir = $InstallDir
@@ -274,30 +423,32 @@ try {
         startupTimeout = $smoke.startupTimeout
         stability = $smoke.stability
         cleanupVerified = $smoke.cleanupVerified
-    } | ConvertTo-Json -Compress -Depth 8
+        uninstall = $null
+    }
+
+    if ($KeepInstalled) {
+        $result.uninstall = [pscustomobject]@{
+            attempted = $false
+            verified = $false
+            reason = "KeepInstalled"
+        }
+    } else {
+        $result.uninstall = Invoke-InstalledUninstallCheck -InstallRoot $InstallDir -RuntimeDataDir $DataDir -Strict:$VerifyUninstall
+        Remove-InstallerSmokeArtifacts -InstallRoot $InstallDir -RuntimeDataDir $DataDir -TempRoot $tmpRoot
+        $cleanupCompleted = $true
+    }
+
+    [pscustomobject]$result | ConvertTo-Json -Compress -Depth 8
 } finally {
-    if (-not $KeepInstalled) {
-        $uninstaller = Get-ChildItem -LiteralPath $InstallDir -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -in @("uninstall.exe", "Uninstall.exe") -or $_.Name -match "^unins.*\.exe$" } |
-            Select-Object -First 1
+    if (-not $KeepInstalled -and -not $cleanupCompleted) {
+        $uninstaller = Resolve-InstalledUninstaller -Root $InstallDir
         if ($uninstaller) {
             try {
-                Invoke-ProcessChecked -FilePath $uninstaller.FullName -ArgumentList @("/S") -Label "Silent uninstaller"
+                Invoke-ProcessChecked -FilePath $uninstaller -ArgumentList @("/S") -Label "Silent uninstaller"
             } catch {
                 Write-Warning $_
             }
         }
-        if (Test-Path $InstallDir) {
-            Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        if (Test-Path $DataDir) {
-            Remove-Item -LiteralPath $DataDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        if (Test-Path $tmpRoot -PathType Container -ErrorAction SilentlyContinue) {
-            $remaining = @(Get-ChildItem -LiteralPath $tmpRoot -Force -ErrorAction SilentlyContinue)
-            if ($remaining.Count -eq 0) {
-                Remove-Item -LiteralPath $tmpRoot -Force -ErrorAction SilentlyContinue
-            }
-        }
+        Remove-InstallerSmokeArtifacts -InstallRoot $InstallDir -RuntimeDataDir $DataDir -TempRoot $tmpRoot
     }
 }

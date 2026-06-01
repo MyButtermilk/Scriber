@@ -32,7 +32,8 @@ param(
     [int]$InstallerStabilityProbeIntervalSec = 5,
     [double]$InstallerMaxBackendWorkingSetGrowthMB = 0,
     [switch]$RunInstallerLegacyDataSmoke,
-    [switch]$RunInstallerUpgradeSmoke
+    [switch]$RunInstallerUpgradeSmoke,
+    [switch]$RunInstallerUninstallSmoke
 )
 
 $ErrorActionPreference = "Stop"
@@ -185,7 +186,7 @@ try {
         }
     }
 
-    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
@@ -223,6 +224,9 @@ try {
                 }
                 if ($RunInstallerUpgradeSmoke) {
                     $installerSmokeArgs += "-SimulateUpgrade"
+                }
+                if ($RunInstallerUninstallSmoke) {
+                    $installerSmokeArgs += "-VerifyUninstall"
                 }
                 powershell @installerSmokeArgs
             } finally {
