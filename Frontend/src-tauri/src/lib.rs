@@ -469,7 +469,6 @@ pub fn run() {
                 })
                 .build(),
         )
-        .plugin(tauri_plugin_opener::init())
         .on_menu_event(|app, event| {
             handle_shell_menu_event(app, event.id().as_ref());
         })
@@ -1282,6 +1281,12 @@ fn find_backend_executable(resource_dir: Option<&Path>) -> Result<Option<PathBuf
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
             let path = absolute_path(trimmed);
+            if !is_allowed_backend_executable_name(&path) {
+                return Err(format!(
+                    "SCRIBER_BACKEND_EXE must point to a Scriber backend sidecar executable named one of: {}",
+                    backend_executable_names().join(", ")
+                ));
+            }
             if path.is_file() {
                 return Ok(Some(path));
             }
@@ -1308,6 +1313,15 @@ fn find_backend_executable_in_dirs(dirs: &[PathBuf], names: &[&str]) -> Option<P
         }
     }
     None
+}
+
+fn is_allowed_backend_executable_name(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    backend_executable_names()
+        .iter()
+        .any(|allowed| file_name.eq_ignore_ascii_case(allowed))
 }
 
 fn backend_executable_dirs(resource_dir: Option<&Path>) -> Vec<PathBuf> {
@@ -1634,11 +1648,11 @@ fn health_response_ready(response: &str) -> bool {
 mod tests {
     use super::{
         acquire_single_instance_guard, autostart_command_for_exe, autostart_commands_match,
-        backend_executable_names, backend_start_timeout, find_backend_executable_in_dirs,
-        health_response_ready, is_shell_menu_item, managed_backend_start_timed_out,
-        normalize_global_shortcut, normalize_hotkey_mode, parse_loopback_backend_url,
-        resolve_session_token, should_show_window_for_tray_click, split_http_response,
-        BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, MENU_ITEM_QUIT,
+        backend_executable_names, backend_start_timeout, find_backend_executable,
+        find_backend_executable_in_dirs, health_response_ready, is_shell_menu_item,
+        managed_backend_start_timed_out, normalize_global_shortcut, normalize_hotkey_mode,
+        parse_loopback_backend_url, resolve_session_token, should_show_window_for_tray_click,
+        split_http_response, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, MENU_ITEM_QUIT,
         MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW, SESSION_TOKEN_ENV,
     };
     use std::{
@@ -1774,6 +1788,28 @@ mod tests {
         assert_eq!(found, Some(first_sidecar));
         let _ = fs::remove_dir_all(first);
         let _ = fs::remove_dir_all(second);
+    }
+
+    #[test]
+    fn backend_executable_override_rejects_unapproved_name() {
+        let previous = std::env::var("SCRIBER_BACKEND_EXE").ok();
+        let dir = unique_test_dir("sidecar-override");
+        fs::create_dir_all(&dir).unwrap();
+        let executable = dir.join("not-scriber-backend.exe");
+        fs::write(&executable, b"test").unwrap();
+        std::env::set_var("SCRIBER_BACKEND_EXE", &executable);
+
+        let result = find_backend_executable(None);
+
+        assert!(matches!(
+            result,
+            Err(message) if message.contains("must point to a Scriber backend sidecar executable")
+        ));
+        match previous {
+            Some(value) => std::env::set_var("SCRIBER_BACKEND_EXE", value),
+            None => std::env::remove_var("SCRIBER_BACKEND_EXE"),
+        }
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

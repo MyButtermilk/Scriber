@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Default capabilities for the Scriber desktop window",
   "windows": ["main"],
-  "permissions": ["core:default", "opener:default", "process:default", "updater:default"]
+  "permissions": [
+    "core:app:allow-version",
+    "process:allow-restart",
+    "updater:allow-check",
+    "updater:allow-download-and-install"
+  ]
 }

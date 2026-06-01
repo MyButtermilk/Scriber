@@ -218,10 +218,11 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
 1. **Tauri Backend-Sidecar bereitstellen**:
    - Status 2026-06-01: `src/backend_worker.py` existiert als eigenstaendiger Worker-Entry-Point.
    - Status 2026-06-01: `packaging/scriber-backend.spec` und `scripts/build_tauri_backend_sidecar.ps1` bauen einen PyInstaller-`onedir`-Sidecar.
-   - Status 2026-06-01: Der Rust-Supervisor bevorzugt `SCRIBER_BACKEND_EXE` bzw. `backend\scriber-backend.exe` neben der Tauri-Exe und faellt im Dev-Modus auf `python -m src.web_api` zurueck.
+   - Status 2026-06-01: Der Rust-Supervisor bevorzugt `SCRIBER_BACKEND_EXE` nur fuer erlaubte `scriber-backend`-Dateinamen bzw. `backend\scriber-backend.exe` neben der Tauri-Exe und faellt im Dev-Modus auf `python -m src.web_api` zurueck.
    - Status 2026-06-01: Der Standard-Sidecar ist ein Cloud-Provider/Lite-Build und schliesst schwere lokale ASR-Stacks (`torch`, NeMo, ONNX-ASR) aus.
    - Status 2026-06-01: Tauri bundelt `target/release/backend/` als Resource `backend/`, sodass installierte NSIS-Builds denselben Sidecar-Pfad nutzen.
    - Status 2026-06-01: Der Sidecar-Build fuehrt vor PyInstaller einen Runtime-Import-Preflight aus und prueft danach den gefrorenen Sidecar mit `--runtime-import-check`; beides deckt unter anderem SciPy, pyloudnorm, Pipecat und `src.web_api` ab.
+   - Status 2026-06-01: Die Default-Capability ist auf App-Version, Prozess-Relaunch und Updater-Check/Download-Install beschraenkt; Tauri-Shell- und Opener-Plugin sind nicht registriert. `tests/test_tauri_security_gates.py` prueft diese Grenze.
    - Status 2026-06-01: Der Tauri-Supervisor erzeugt ein zufaelliges `SCRIBER_SESSION_TOKEN`, uebergibt es an den Python-Worker und stellt es dem React-Frontend ueber `get_backend_access` bereit. Das Backend erzwingt den Token fuer lokale REST-/WebSocket-Zugriffe; `/api/health` bleibt fuer Readiness tokenfrei.
    - Status 2026-06-01: Die Windows-Tauri-Shell erzwingt Single-Instance-Start ueber den Named Mutex `Local\ScriberDesktopSingleInstance`, bevor der Backend-Supervisor einen Worker starten kann.
    - Status 2026-06-01: Windows-Autostart ist im Tauri-Pfad implementiert; `Frontend/client/src/lib/backend.ts` routet Settings-Autostart-Aufrufe in Desktop-Runtime auf Rust statt auf den Python-Endpoint.
