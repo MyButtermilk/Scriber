@@ -154,6 +154,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - The Rust supervisor creates a random per-run `SCRIBER_SESSION_TOKEN` unless one is already provided in the environment. The token is passed only to the managed Python worker and exposed to the React UI through `get_backend_access`.
 - When `SCRIBER_SESSION_TOKEN` is set, `src.web_api` requires the token for local REST and WebSocket access. `/api/health` remains public for readiness probing; `/api/runtime` reports `featureFlags.sessionTokenRequired=true`.
 - The frontend appends the token as the `scriberToken` query parameter for backend REST and WebSocket URLs. Smoke/support scripts may also send `X-Scriber-Token`; browser WebSocket constructors cannot set custom headers.
+- The Windows Tauri shell enforces single-instance startup with a named mutex (`Local\ScriberDesktopSingleInstance`) before the backend supervisor starts. A second desktop process exits early and cannot create another managed worker.
 - `POST /api/runtime/shutdown` is a local-control endpoint. It requires loopback access, a configured session token, and a valid token, then signals the aiohttp server stop event for controlled worker shutdown.
 - `SCRIBER_FORCE_MANAGED_BACKEND=1` is for release/smoke tests that must ignore an already-running external dev backend on `127.0.0.1:8765`.
 - Backend launch priority: explicit `SCRIBER_BACKEND_EXE`, then `scriber-backend` beside the Tauri executable under `backend\` or `binaries\`, then development fallback to `python -m src.web_api`.
@@ -174,7 +175,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable with a random session token, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits.
 - `scripts/smoke_windows_installer.ps1` installs the generated NSIS setup into `tmp\installer-smoke\`, runs the desktop smoke without `SCRIBER_REPO_ROOT`/`SCRIBER_PYTHON` dev fallback, and removes the temporary install/data directories afterward.
 - `scripts/build_windows.ps1 -RunInstallerSmoke` builds the NSIS package and then runs the installed-package smoke gate.
-- Current Tauri status: hybrid runtime with writable runtime-data paths, session-token protected worker API, redacted support bundles, sidecar backend launch support, bundled yt-dlp support, bundled ffmpeg/ffprobe resolution, NSIS installer generation, and installed-package smoke coverage. Signing and updater remain open packaging work.
+- Current Tauri status: hybrid runtime with writable runtime-data paths, session-token protected worker API, Windows single-instance guard, redacted support bundles, sidecar backend launch support, bundled yt-dlp support, bundled ffmpeg/ffprobe resolution, NSIS installer generation, and installed-package smoke coverage. Signing and updater remain open packaging work.
 
 ## Commands
 

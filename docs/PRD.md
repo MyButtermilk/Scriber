@@ -457,7 +457,7 @@ CREATE INDEX idx_created_at ON transcripts(created_at DESC);
 5. Browser öffnen: `http://localhost:5000`
 
 ### Tray-Modus (src.tray)
-- Single-Instance-Lock via `.scriber.lock`
+- Legacy-Tray nutzt weiterhin Lock-File-Verhalten; die Tauri-Desktop-Shell nutzt einen Windows-Named-Mutex (`Local\ScriberDesktopSingleInstance`) und beendet zweite Desktop-Instanzen vor dem Backend-Start.
 - Startet Backend (`python -m src.web_api`) als Subprocess
 - Startet Frontend (Express) als Subprocess
 - System-Tray-Icon mit Kontextmenü: Öffnen, Logs, Restart, Autostart (Windows Registry), Beenden
@@ -583,7 +583,7 @@ Scriber/
 
 ## 14. Nicht-funktionale Anforderungen
 
-- **Single-Instance:** Nur eine Scriber-Instanz gleichzeitig (Lock-File)
+- **Single-Instance:** Tauri-Desktop verhindert parallele Windows-Instanzen via Named Mutex; Legacy-Tray nutzt Lock-File-Verhalten.
 - **CORS:** Konfigurierbar, Default localhost-only
 - **Security:** API-Keys in .env (nicht im Code), Datei-Upload mit Sanitisierung und Whitelist
 - **Resilience:** Circuit Breaker, Retry mit Backoff, Job-Resume nach Restart

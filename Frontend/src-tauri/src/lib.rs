@@ -12,19 +12,22 @@ use std::{
 };
 use tauri::Manager;
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
 
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
 const FORCE_MANAGED_BACKEND_ENV: &str = "SCRIBER_FORCE_MANAGED_BACKEND";
 const SESSION_TOKEN_ENV: &str = "SCRIBER_SESSION_TOKEN";
+const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstance";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -81,6 +84,32 @@ impl Drop for BackendJob {
 
 #[cfg(not(windows))]
 struct BackendJob;
+
+#[cfg(windows)]
+pub struct SingleInstanceGuard {
+    handle: HANDLE,
+}
+
+#[cfg(windows)]
+unsafe impl Send for SingleInstanceGuard {}
+
+#[cfg(windows)]
+unsafe impl Sync for SingleInstanceGuard {}
+
+#[cfg(windows)]
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.handle.is_null() {
+                let _ = ReleaseMutex(self.handle);
+                let _ = CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub struct SingleInstanceGuard;
 
 pub struct BackendManager {
     state: Mutex<BackendState>,
@@ -251,8 +280,17 @@ fn restart_backend(manager: tauri::State<'_, BackendManager>) -> Result<BackendS
 }
 
 pub fn run() {
+    let single_instance_guard = match acquire_single_instance_guard(SINGLE_INSTANCE_MUTEX_NAME) {
+        Ok(guard) => guard,
+        Err(err) => {
+            write_shell_log(&err);
+            return;
+        }
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(single_instance_guard)
         .manage(BackendManager::new())
         .setup(|app| {
             let manager = app.state::<BackendManager>();
@@ -386,6 +424,37 @@ fn resolve_session_token() -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string())
+}
+
+#[cfg(windows)]
+fn acquire_single_instance_guard(name: &str) -> Result<SingleInstanceGuard, String> {
+    let wide_name = wide_null(name);
+    unsafe {
+        let handle = CreateMutexW(std::ptr::null(), 1, wide_name.as_ptr());
+        if handle.is_null() {
+            return Err(format!(
+                "single-instance mutex creation failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let _ = CloseHandle(handle);
+            return Err("another Scriber desktop instance is already running".to_string());
+        }
+
+        Ok(SingleInstanceGuard { handle })
+    }
+}
+
+#[cfg(not(windows))]
+fn acquire_single_instance_guard(_name: &str) -> Result<SingleInstanceGuard, String> {
+    Ok(SingleInstanceGuard)
+}
+
+#[cfg(windows)]
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 struct BackendCommandSpec {
@@ -849,9 +918,9 @@ fn health_response_ready(response: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        backend_executable_names, find_backend_executable_in_dirs, health_response_ready,
-        managed_backend_start_timed_out, resolve_session_token, BACKEND_START_TIMEOUT,
-        SESSION_TOKEN_ENV,
+        acquire_single_instance_guard, backend_executable_names, find_backend_executable_in_dirs,
+        health_response_ready, managed_backend_start_timed_out, resolve_session_token,
+        BACKEND_START_TIMEOUT, SESSION_TOKEN_ENV,
     };
     use std::{
         fs,
@@ -926,6 +995,20 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn single_instance_guard_blocks_second_acquisition() {
+        let name = format!("Local\\ScriberDesktopTest-{}", unique_test_id());
+        let first = acquire_single_instance_guard(&name).unwrap();
+
+        let second = acquire_single_instance_guard(&name);
+        assert!(matches!(second, Err(message) if message.contains("already running")));
+
+        drop(first);
+        let third = acquire_single_instance_guard(&name);
+        assert!(third.is_ok());
+    }
+
     #[test]
     fn find_backend_executable_in_dirs_finds_sidecar_name() {
         let dir = unique_test_dir("sidecar");
@@ -961,10 +1044,14 @@ mod tests {
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("scriber-{label}-{}", unique_test_id()))
+    }
+
+    fn unique_test_id() -> String {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("scriber-{label}-{}-{nanos}", std::process::id()))
+        format!("{}-{nanos}", std::process::id())
     }
 }

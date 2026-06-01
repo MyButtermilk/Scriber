@@ -12,7 +12,7 @@ Nicht versierte Nutzer sollen Scriber wie eine normale Windows-App installieren 
 2. Schnell produktionsfaehig im Vergleich zu MSIX-only oder Squirrel-Integration.
 3. Silent Updates sind robust moeglich; aktuell ueber Tauri/NSIS, spaeter bei Bedarf mit eigenem Updater/Launcher.
 4. Security kann sauber gehaertet werden (SHA256, Signaturpruefung, immutable Releases).
-5. Der aktuelle Code enthaelt bereits Tauri 2 mit Rust-Supervisor, PyInstaller-Sidecar, NSIS-Build und installiertem Smoke-Test; offen bleiben Signierung und Updater.
+5. Der aktuelle Code enthaelt bereits Tauri 2 mit Rust-Supervisor, Windows-Single-Instance-Mutex, PyInstaller-Sidecar, NSIS-Build und installiertem Smoke-Test; offen bleiben Signierung und Updater.
 
 ### Warum nicht Electron/MSIX-only/Squirrel jetzt
 | Alternative        | Warum nicht jetzt                                                                       |
@@ -24,7 +24,7 @@ Nicht versierte Nutzer sollen Scriber wie eine normale Windows-App installieren 
 | PyUpdater / Esky   | Nicht mehr aktiv gepflegt (Stand 2026). Eigener Updater ist transparenter und robuster. |
 
 ### Zielbild in einem Satz
-Scriber laeuft als signierte, installierte Windows-App (per-user), startet eine lokale Python-Worker-Komponente unter Tauri-Supervision, schuetzt den lokalen Worker per Session-Token, prueft im Hintergrund Releases, laedt signierte Updates, installiert sie still im Leerlauf und startet sich neu.
+Scriber laeuft als signierte, installierte Windows-App (per-user), startet single-instance, fuehrt eine lokale Python-Worker-Komponente unter Tauri-Supervision aus, schuetzt den lokalen Worker per Session-Token, prueft im Hintergrund Releases, laedt signierte Updates, installiert sie still im Leerlauf und startet sich neu.
 
 ---
 
@@ -61,8 +61,8 @@ Scriber laeuft als signierte, installierte Windows-App (per-user), startet eine 
      - `downloads/` (heruntergeladene YouTube-Audio-Dateien)
    - Inno Setup: `[InstallDelete]` fuer alte Versionsdateien nutzen, aber Nutzerdaten unangetastet lassen.
 4. **CloseApplications-Unterstuetzung**: Inno Setup `CloseApplications=yes` damit laufende Scriber-Instanzen vor dem Upgrade sauber heruntergefahren werden.
-   - Voraussetzung: Die Scriber-App muss eine `AppMutex` registrieren, die Inno Setup nutzen kann.
-   - Aktuell existiert bereits `acquire_single_instance_lock()` in `tray.py` (Zeile 74-100). Diese kann als Grundlage fuer eine Named Mutex dienen.
+   - Voraussetzung: Die Scriber-App muss eine `AppMutex`/Named Mutex registrieren, die der Installer oder Updater als laufende Instanz erkennen kann.
+   - Status 2026-06-01: Die Tauri-Shell registriert vor dem Backend-Start den Windows-Named-Mutex `Local\ScriberDesktopSingleInstance`; eine zweite Desktop-Instanz beendet sich dadurch frueh, ohne einen zweiten Worker zu starten.
 
 ### 3) Updater-Komponente
 Neue Komponente `src/updater.py`:
@@ -216,6 +216,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Status 2026-06-01: Tauri bundelt `target/release/backend/` als Resource `backend/`, sodass installierte NSIS-Builds denselben Sidecar-Pfad nutzen.
    - Status 2026-06-01: Der Sidecar-Build fuehrt vor PyInstaller einen Runtime-Import-Preflight aus, der unter anderem SciPy, pyloudnorm, Pipecat und `src.web_api` prueft.
    - Status 2026-06-01: Der Tauri-Supervisor erzeugt ein zufaelliges `SCRIBER_SESSION_TOKEN`, uebergibt es an den Python-Worker und stellt es dem React-Frontend ueber `get_backend_access` bereit. Das Backend erzwingt den Token fuer lokale REST-/WebSocket-Zugriffe; `/api/health` bleibt fuer Readiness tokenfrei.
+   - Status 2026-06-01: Die Windows-Tauri-Shell erzwingt Single-Instance-Start ueber den Named Mutex `Local\ScriberDesktopSingleInstance`, bevor der Backend-Supervisor einen Worker starten kann.
    - Status 2026-06-01: `POST /api/runtime/shutdown` existiert als loopback- und token-geschuetzter Shutdown-Endpunkt fuer kontrolliertes Worker-Beenden.
    - Status 2026-06-01: WebSocket-Events tragen `apiVersion` und werden ueber `src/core/ws_contracts.py` sowie `tests/contract/test_ws_events.py` gegen bekannte Eventtypen validiert. Das React-Frontend nutzt dafuer eine typisierte `ScriberWebSocketMessage`-Union.
    - Status 2026-06-01: Tauri schreibt Shell-Lifecycle-Logs und Backend-Exit-Metadaten unter `SCRIBER_DATA_DIR\logs\`; `POST /api/runtime/support-bundle` erzeugt ein redigiertes Diagnose-ZIP ohne API-Keys oder Session-Tokens.
@@ -269,7 +270,7 @@ Lieferobjekte:
      Compression=lzma2/ultra64
      SolidCompression=yes
      CloseApplications=yes
-     AppMutex=ScriberSingleInstanceMutex
+     AppMutex=Local\ScriberDesktopSingleInstance
      UninstallDisplayIcon={app}\Scriber.exe
      ```
    - `[Files]`: Alle Dateien aus `dist/app/`.
@@ -385,6 +386,7 @@ Lieferobjekte:
 | `src/runtime/media_tools.py` | Umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp` ueber Env, Sidecar-Tools und System-PATH. |
 | `src/runtime/support_bundle.py` | Umgesetzt: redigiertes Support-ZIP mit Runtime-/State-Metadaten, Logs und redigierter Config/Env. |
 | `src/backend_worker.py` | Umgesetzt: Tauri/PyInstaller Worker-Entry-Point. |
+| `Frontend/src-tauri/src/lib.rs` | Umgesetzt: Rust-Supervisor, Session-Token-Bridge, Worker-Lifecycle, Windows-Named-Mutex fuer Single Instance. |
 | `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar inkl. SciPy/pyloudnorm-Startup-Abhaengigkeiten. |
 | `installer/scriber.iss` | Inno Setup Script. |
 | `scripts/check_backend_runtime_imports.py` | Umgesetzt: Preflight fuer kritische Backend-Startup-Imports vor PyInstaller. |
@@ -399,7 +401,7 @@ Lieferobjekte:
 ### Anzupassende Dateien
 | Datei | Aenderung |
 |-------|-----------|
-| `src/tray.py` | Update-Menue-Eintraege, Launcher-Integration, `start_frontend()` konditional, Version im Tooltip. Named Mutex fuer Inno Setup. |
+| `src/tray.py` | Update-Menue-Eintraege, Launcher-Integration, `start_frontend()` konditional, Version im Tooltip. |
 | `src/web_api.py` | Teilweise umgesetzt: Version/Runtime im Health-Endpoint, Session-Token-Middleware, `/api/runtime/shutdown` und `/api/runtime/support-bundle`. Offen: Update-Endpunkte (`/api/update/*`) und Static-File-Serving fuer Frontend im Frozen-Modus. |
 | `src/config.py` | Update-Settings (`AUTO_UPDATE`, `UPDATE_CHANNEL`, `UPDATE_CHECK_INTERVAL_HOURS`, `UPDATE_URL`). |
 | `Frontend/client/src/pages/Settings.tsx` | Update-Sektion im Settings-UI. |
