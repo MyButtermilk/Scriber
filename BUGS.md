@@ -184,13 +184,13 @@ Kurzbegruendung fuer wichtige Re-Klassifizierungen:
 
 ### R8. `_active_capture_channel` ohne Thread-Synchronisation
 
-**Status (2026-02-27):** ⏳ Needs reproduction
+**Status (2026-06-01):** ❌ Relativiert / aktuell nicht als Cross-Thread-Bug bestätigt
 
-**File:** `src/microphone.py:299`
+**File:** `src/microphone.py`
 
-**Issue:** Wird aus dem PortAudio-Callback-Thread geschrieben, aber aus dem asyncio-Thread gelesen. Keine Synchronisation → theoretisch torn reads.
+**Issue:** Die ursprüngliche Annahme war, dass `_active_capture_channel` aus dem PortAudio-Callback-Thread geschrieben und aus dem asyncio-Thread gelesen wird. Im aktuellen Code wird der Wert beim Start vor Stream-Aktivierung zurückgesetzt und danach im Callback verwendet. Zusätzlich wird die Channel-Auswahl nur noch periodisch rescanned, um Callback-CPU zu reduzieren.
 
-**Fix:** `threading.Lock` oder `queue.Queue` für Thread-sichere Kommunikation.
+**Rest-Risiko:** Wenn künftig asyncio-seitige Reads/Writes hinzukommen, wieder mit Lock oder Queue absichern.
 
 ---
 

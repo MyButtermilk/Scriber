@@ -39,6 +39,8 @@ The UI is functional and can talk to the Python backend (HTTP + WebSocket). It a
 - Most screens fetch data from the backend via `/api/...` and listen to `/ws` for updates.
 - `TranscriptDetail` falls back to mock content from `Frontend/client/src/lib/mockData.ts` when needed.
 - `Settings` loads/saves via `/api/settings` (API keys, hotkey/mode, mic device, language, etc.).
+- LiveMic is loaded eagerly for first paint; YouTube, File, Settings and TranscriptDetail are lazy-loaded route chunks with intent prefetch in the layout.
+- Current production build succeeds, but Vite still warns about an initial chunk above 500 kB; manual vendor chunking remains open.
 
 ## Related docs
 

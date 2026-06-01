@@ -152,8 +152,10 @@ CREATE INDEX idx_created_at ON transcripts(created_at DESC);
 **Mikrofon-Features:**
 - Geräteliste über `GET /api/microphones`
 - Favoriten-Mikrofon (automatische Auswahl bei Verfügbarkeit)
-- Hotplug-Erkennung (USB-Mikrofone automatisch erkannt via DeviceMonitor)
-- `MIC_ALWAYS_ON` – Mikrofon dauerhaft geöffnet halten
+- Hotplug-Erkennung via `DeviceMonitor` mit nativen Windows-Endpoint-Events und Polling-Fallback
+- Recording-aware PortAudio-Refresh: Device-Refreshes werden während aktiver Streams zurückgestellt und nach Stop einmalig nachgeholt
+- Kurzlebiger Cache für Mikrofon-Name/Favorit → Device-Index-Auflösung (`SCRIBER_MIC_DEVICE_CACHE_TTL_SEC`)
+- `MIC_ALWAYS_ON` – Einstellung vorhanden; aktuell wird der per-session Stream beim Cleanup bewusst geschlossen. Echtes Always-On/Prewarming benötigt noch einen App-Level-Mikrofonmanager.
 
 ### 5.2 YouTube-Transkription
 
@@ -220,7 +222,7 @@ CREATE INDEX idx_created_at ON transcripts(created_at DESC);
 ### 5.5 Zusammenfassung (Summarization)
 
 **Provider:**
-- Google Gemini 3.0 Flash/Pro Preview (Default)
+- Google Gemini Flash Latest / Gemini 3.5 Flash (Default)
 - OpenAI GPT-5.x
 
 **Features:**
@@ -302,7 +304,7 @@ CREATE INDEX idx_created_at ON transcripts(created_at DESC);
 - **Provider-spezifisch:** Soniox-Modus/Modell, Mistral-Modell, OpenAI-Modell
 - **Sprache:** Sprachauswahl
 - **API-Keys:** Gruppierte Eingabe aller Provider-Keys
-- **Mikrofon:** Geräteauswahl + Favorit + Always-On
+- **Mikrofon:** Geräteauswahl + Favorit + Always-On-Setting (echtes Prewarming noch ausstehend)
 - **Injection:** Methoden-Auswahl (auto/sendinput/paste/type) + Delays
 - **Lokale Modelle:** ONNX-/NeMo-Download/Lösch-Management mit Fortschritt
 - **Zusammenfassung:** Modell, Auto-Summarize Toggle, Custom Prompt (Textarea)
@@ -404,8 +406,9 @@ CREATE INDEX idx_created_at ON transcripts(created_at DESC);
 **Mikrofon:**
 - `SCRIBER_MIC_DEVICE` (default | Gerätename)
 - `SCRIBER_FAVORITE_MIC` (Gerätename für Auto-Auswahl)
-- `SCRIBER_MIC_ALWAYS_ON` (0 | 1)
+- `SCRIBER_MIC_ALWAYS_ON` (0 | 1; derzeit kein echter persistenter Prewarm-Stream)
 - `SCRIBER_MIC_BLOCK_SIZE` (default: 512)
+- `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC` (default: 10.0)
 
 **Injection:**
 - `SCRIBER_INJECT_METHOD` (auto | sendinput | paste | type)
@@ -423,7 +426,7 @@ CREATE INDEX idx_created_at ON transcripts(created_at DESC);
 - `SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC` (default: 300)
 
 **Summarization:**
-- `SCRIBER_SUMMARIZATION_MODEL` (default: gemini-3-flash-preview)
+- `SCRIBER_SUMMARIZATION_MODEL` (default: gemini-flash-latest)
 - `SCRIBER_AUTO_SUMMARIZE` (0 | 1)
 - `SCRIBER_SUMMARY_MIN_WORDS` (default: 180)
 - `SCRIBER_SUMMARY_MAX_WORDS` (default: 2200)
@@ -473,8 +476,11 @@ CREATE INDEX idx_created_at ON transcripts(created_at DESC);
 - Thread-lokale DB-Connections (kein wiederholtes Öffnen/Schließen)
 - WAL-Modus für parallele Lesezugriffe
 - Analyzer-Caching (VAD, SmartTurn) für schnelleren Pipeline-Start
+- Mikrofon-Geräteauflösung mit TTL-Cache + Invalidation bei Device-/Settings-Änderungen
+- Audio-Callback optimiert: vollständiger Audiofluss bleibt erhalten, UI/RMS-Arbeit auf ~30fps limitiert, Multi-Channel-Auswahl periodisch statt pro Callback
+- DeviceMonitor vermeidet PortAudio-Refresh während aktiver Aufnahme und nutzt native Device-Events, wo verfügbar
 - SpooledTemporaryFile für große Audio-Buffer (10 MB RAM-Cap)
-- WebSocket Event-Batching (history_updated)
+- WebSocket Event-Throttling (`audio_level`, `history_updated`)
 - Circuit Breaker gegen wiederholte Provider-Fehler
 - Hot-Path-Tracing für Latenz-Monitoring
 
@@ -507,12 +513,12 @@ CREATE INDEX idx_created_at ON transcripts(created_at DESC);
 
 **Framework:** pytest + pytest-asyncio + pytest-mock
 
-**Coverage (21 Testdateien):**
+**Coverage (25 Testdateien):**
 - Pipeline-Lifecycle, Stop-Verhalten
 - Text-Injection (alle Methoden)
 - YouTube API + Download
 - Web API: Security, Jobs, Lifecycle, Timeouts, Reliability, Hot-Path-Metriken
-- Mikrofon: Geräteauswahl, Kanalhandling
+- Mikrofon: Geräteauswahl, Kanalhandling, DeviceMonitor, Audio-Callback-Hotpath
 - AssemblyAI-Integration
 - Summarization (LLM-Aufrufe)
 - Konfiguration

@@ -56,7 +56,7 @@ def test_summary_budget_gemini_includes_thinking_reserve(monkeypatch: pytest.Mon
     monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_THINKING_RESERVE_TOKENS", "2400")
 
     _, _, gpt_tokens = summarization._summary_budget_for_text(_words(1800), "gpt-5-mini")
-    _, _, gemini_tokens = summarization._summary_budget_for_text(_words(1800), "gemini-3-flash-preview")
+    _, _, gemini_tokens = summarization._summary_budget_for_text(_words(1800), "gemini-flash-latest")
 
     assert gemini_tokens > gpt_tokens
 
@@ -129,6 +129,6 @@ async def test_summarize_text_normalizes_markdown_bullets(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(summarization, "_summarize_gemini", _fake_gemini)
 
-    out = await summarization.summarize_text("x y z", model="gemini-3-flash-preview")
+    out = await summarization.summarize_text("x y z", model="gemini-flash-latest")
 
     assert out == "Zusammenfassung\n\n- Punkt A\n- Punkt B"

@@ -32,6 +32,7 @@ class Config:
     # API Keys
     SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
     MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+    SMALLEST_API_KEY = os.getenv("SMALLEST_API_KEY")
     ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
     ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") # For Gemini
@@ -42,6 +43,8 @@ class Config:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
     AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
+    AZURE_MAI_SPEECH_KEY = os.getenv("AZURE_MAI_SPEECH_KEY")
+    AZURE_MAI_REGION = os.getenv("SCRIBER_AZURE_MAI_REGION", "northeurope")
     GLADIA_API_KEY = os.getenv("GLADIA_API_KEY")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     SPEECHMATICS_API_KEY = os.getenv("SPEECHMATICS_API_KEY")
@@ -75,11 +78,14 @@ class Config:
         "soniox_async": "SONIOX_API_KEY",
         "mistral": "MISTRAL_API_KEY",
         "mistral_async": "MISTRAL_API_KEY",
+        "smallest": "SMALLEST_API_KEY",
+        "smallest_async": "SMALLEST_API_KEY",
         "assemblyai": "ASSEMBLYAI_API_KEY",
         "elevenlabs": "ELEVENLABS_API_KEY",
         "deepgram": "DEEPGRAM_API_KEY",
         "openai": "OPENAI_API_KEY",
         "azure": "AZURE_SPEECH_KEY",
+        "azure_mai": "AZURE_MAI_SPEECH_KEY",
         "gladia": "GLADIA_API_KEY",
         "groq": "GROQ_API_KEY",
         "speechmatics": "SPEECHMATICS_API_KEY",
@@ -92,12 +98,15 @@ class Config:
         "soniox_async": "Soniox (Async)",
         "mistral": "Mistral (Realtime)",
         "mistral_async": "Mistral (Async)",
+        "smallest": "Smallest AI (Realtime)",
+        "smallest_async": "Smallest AI (Async)",
         "assemblyai": "Assembly AI Universal-3-Pro",
         "google": "Google Cloud",
         "elevenlabs": "ElevenLabs",
         "deepgram": "Deepgram",
         "openai": "OpenAI",
         "azure": "Azure",
+        "azure_mai": "Microsoft MAI Transcribe",
         "gladia": "Gladia",
         "groq": "Groq",
         "speechmatics": "Speechmatics",
@@ -109,7 +118,7 @@ class Config:
     # Mode: "toggle" (default) or "push_to_talk"
     MODE = os.getenv("SCRIBER_MODE", "toggle").lower()
 
-    # Custom Vocabulary (Soniox/Mistral context biasing)
+    # Custom Vocabulary (Soniox/Mistral context biasing, Smallest realtime keywords)
     # e.g. "Scriber, Pipecat, Soniox, Voxtral"
     CUSTOM_VOCAB = os.getenv("SCRIBER_CUSTOM_VOCAB", "")
 
@@ -142,7 +151,8 @@ Input:"""
     SUMMARIZATION_PROMPT = _json_settings.get("summarizationPrompt") or os.getenv("SCRIBER_SUMMARIZATION_PROMPT") or _DEFAULT_SUMMARIZATION_PROMPT
 
     # Summarization model for LLM transcript summarization
-    SUMMARIZATION_MODEL = os.getenv("SCRIBER_SUMMARIZATION_MODEL", "gemini-3-flash-preview")
+    DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest"
+    SUMMARIZATION_MODEL = os.getenv("SCRIBER_SUMMARIZATION_MODEL", DEFAULT_SUMMARIZATION_MODEL)
 
     # Auto-summarize transcripts when completed
     AUTO_SUMMARIZE = os.getenv("SCRIBER_AUTO_SUMMARIZE", "0") in ("1", "true", "True")
@@ -280,6 +290,7 @@ Input:"""
 
         add("SONIOX_API_KEY", cls.SONIOX_API_KEY or "")
         add("MISTRAL_API_KEY", cls.MISTRAL_API_KEY or "")
+        add("SMALLEST_API_KEY", cls.SMALLEST_API_KEY or "")
         add("ASSEMBLYAI_API_KEY", cls.ASSEMBLYAI_API_KEY or "")
         add("ELEVENLABS_API_KEY", cls.ELEVENLABS_API_KEY or "")
         add("GOOGLE_APPLICATION_CREDENTIALS", cls.GOOGLE_APPLICATION_CREDENTIALS or "")
@@ -289,6 +300,8 @@ Input:"""
         add("OPENAI_API_KEY", cls.OPENAI_API_KEY or "")
         add("AZURE_SPEECH_KEY", cls.AZURE_SPEECH_KEY or "")
         add("AZURE_SPEECH_REGION", cls.AZURE_SPEECH_REGION or "")
+        add("AZURE_MAI_SPEECH_KEY", cls.AZURE_MAI_SPEECH_KEY or "")
+        add("SCRIBER_AZURE_MAI_REGION", cls.AZURE_MAI_REGION or "northeurope")
         add("GLADIA_API_KEY", cls.GLADIA_API_KEY or "")
         add("GROQ_API_KEY", cls.GROQ_API_KEY or "")
         add("SPEECHMATICS_API_KEY", cls.SPEECHMATICS_API_KEY or "")
@@ -304,7 +317,7 @@ Input:"""
         add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
         # Note: SUMMARIZATION_PROMPT is not persisted to .env (multi-line value causes parsing issues)
         # The default prompt from config.py will be used
-        add("SCRIBER_SUMMARIZATION_MODEL", cls.SUMMARIZATION_MODEL or "gemini-3-flash-preview")
+        add("SCRIBER_SUMMARIZATION_MODEL", cls.SUMMARIZATION_MODEL or cls.DEFAULT_SUMMARIZATION_MODEL)
         add("SCRIBER_AUTO_SUMMARIZE", "1" if cls.AUTO_SUMMARIZE else "0")
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)

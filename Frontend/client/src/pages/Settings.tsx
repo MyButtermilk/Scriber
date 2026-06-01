@@ -62,10 +62,13 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "soniox-async", label: "Soniox Async" },
   { value: "mistral-realtime", label: "Mistral Realtime (Voxtral RT)" },
   { value: "mistral-async", label: "Mistral Async (Voxtral V2)" },
+  { value: "smallest-realtime", label: "Smallest AI Realtime (Pulse)" },
+  { value: "smallest-async", label: "Smallest AI Async (Pulse)" },
   { value: "assemblyai", label: "Assembly AI Universal-3-Pro" },
   { value: "deepgram", label: "Deepgram" },
   { value: "openai", label: "OpenAI" },
   { value: "azure", label: "Azure Speech" },
+  { value: "azure_mai", label: "Microsoft MAI Transcribe" },
   { value: "gladia", label: "Gladia" },
   { value: "groq", label: "Groq" },
   { value: "speechmatics", label: "Speechmatics" },
@@ -74,8 +77,12 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "aws", label: "AWS Transcribe" },
 ] as const;
 
+const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
+
 const SUMMARIZATION_MODEL_OPTIONS = [
-  { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview (Recommended)" },
+  { value: "gemini-flash-latest", label: "Gemini Flash Latest (Recommended)" },
+  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+  { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview" },
   { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite Preview" },
   { value: "gemini-3-pro-preview", label: "Gemini 3 Pro" },
   { value: "gpt-5.2", label: "OpenAI GPT 5.2" },
@@ -166,9 +173,12 @@ export default function Settings() {
   const [youtubeKey, setYoutubeKey] = useState("");
   const [sonioxKey, setSonioxKey] = useState("");
   const [mistralKey, setMistralKey] = useState("");
+  const [smallestKey, setSmallestKey] = useState("");
   const [elevenLabsKey, setElevenLabsKey] = useState("");
   const [azureKey, setAzureKey] = useState("");
   const [azureRegion, setAzureRegion] = useState("");
+  const [azureMaiKey, setAzureMaiKey] = useState("");
+  const [azureMaiRegion, setAzureMaiRegion] = useState("northeurope");
   const [gladiaKey, setGladiaKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
   const [awsKey, setAwsKey] = useState("");
@@ -183,8 +193,10 @@ export default function Settings() {
   const [showYoutubeKey, setShowYoutubeKey] = useState(false);
   const [showSonioxKey, setShowSonioxKey] = useState(false);
   const [showMistralKey, setShowMistralKey] = useState(false);
+  const [showSmallestKey, setShowSmallestKey] = useState(false);
   const [showElevenLabsKey, setShowElevenLabsKey] = useState(false);
   const [showAzureKey, setShowAzureKey] = useState(false);
+  const [showAzureMaiKey, setShowAzureMaiKey] = useState(false);
   const [showGladiaKey, setShowGladiaKey] = useState(false);
   const [showGroqKey, setShowGroqKey] = useState(false);
   const [showAwsKey, setShowAwsKey] = useState(false);
@@ -198,7 +210,7 @@ export default function Settings() {
   const [inputDevices, setInputDevices] = useState<{ deviceId: string, label: string }[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState("default");
   const [transcriptionModel, setTranscriptionModel] = useState("soniox-realtime");
-  const [summarizationModel, setSummarizationModel] = useState("gemini-3-flash-preview");
+  const [summarizationModel, setSummarizationModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [language, setLanguage] = useState("auto");
   const [visualizerBarCount, setVisualizerBarCount] = useState(45);
@@ -281,6 +293,9 @@ export default function Settings() {
       if (service === "mistral" || service === "mistral_async") {
         return service === "mistral_async" ? "mistral-async" : "mistral-realtime";
       }
+      if (service === "smallest" || service === "smallest_async") {
+        return service === "smallest_async" ? "smallest-async" : "smallest-realtime";
+      }
       return service || "soniox-realtime";
     };
 
@@ -312,7 +327,7 @@ export default function Settings() {
         setTranscriptionModel(serviceToModel(settings.defaultSttService || "", settings.sonioxMode || "realtime"));
         setCustomVocabulary(settings.customVocab || "");
         setSummarizationPrompt(settings.summarizationPrompt || "");
-        setSummarizationModel(settings.summarizationModel || "gemini-3-flash-preview");
+        setSummarizationModel(settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
         setAutoSummarize(settings.autoSummarize === true);
         setVisualizerBarCount(settings.visualizerBarCount || 45);
         setMicAlwaysOn(settings.micAlwaysOn === true);
@@ -321,6 +336,7 @@ export default function Settings() {
 
         setSonioxKey(keys.soniox || "");
         setMistralKey(keys.mistral || "");
+        setSmallestKey(keys.smallest || "");
         setAssemblyAIKey(keys.assemblyai || "");
         setDeepgramKey(keys.deepgram || "");
         setOpenAIKey(keys.openai || "");
@@ -329,6 +345,8 @@ export default function Settings() {
         setElevenLabsKey(keys.elevenlabs || "");
         setAzureKey(keys.azureSpeechKey || "");
         setAzureRegion(keys.azureSpeechRegion || "");
+        setAzureMaiKey(keys.azureMaiSpeechKey || "");
+        setAzureMaiRegion(keys.azureMaiRegion || "northeurope");
         setGladiaKey(keys.gladia || "");
         setGroqKey(keys.groq || "");
 
@@ -410,10 +428,13 @@ export default function Settings() {
       if (provider === "YouTube") apiKeys.youtubeApiKey = youtubeKey;
       if (provider === "Soniox") apiKeys.soniox = sonioxKey;
       if (provider === "Mistral") apiKeys.mistral = mistralKey;
+      if (provider === "Smallest AI") apiKeys.smallest = smallestKey;
       if (provider === "ElevenLabs") apiKeys.elevenlabs = elevenLabsKey;
       if (provider === "Azure") {
         apiKeys.azureSpeechKey = azureKey;
         apiKeys.azureSpeechRegion = azureRegion;
+        apiKeys.azureMaiSpeechKey = azureMaiKey;
+        apiKeys.azureMaiRegion = azureMaiRegion || "northeurope";
       }
       if (provider === "Gladia") apiKeys.gladia = gladiaKey;
       if (provider === "Groq") apiKeys.groq = groqKey;
@@ -509,6 +530,10 @@ export default function Settings() {
         await updateSettings({ defaultSttService: "mistral_async" });
       } else if (value === "mistral-realtime") {
         await updateSettings({ defaultSttService: "mistral" });
+      } else if (value === "smallest-async") {
+        await updateSettings({ defaultSttService: "smallest_async" });
+      } else if (value === "smallest-realtime") {
+        await updateSettings({ defaultSttService: "smallest" });
       } else {
         await updateSettings({ defaultSttService: value });
       }
@@ -2023,6 +2048,36 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
+                  <Label>Smallest AI API Key</Label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Input
+                        type={showSmallestKey ? "text" : "password"}
+                        value={smallestKey}
+                        onChange={(e) => setSmallestKey(e.target.value)}
+                        placeholder="Enter your Smallest AI key"
+                        className="font-mono text-sm pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowSmallestKey(!showSmallestKey)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      >
+                        {showSmallestKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <Button
+                      variant={savedKeys['Smallest AI'] ? "default" : "outline"}
+                      onClick={() => handleSaveApiKey('Smallest AI')}
+                      className={savedKeys['Smallest AI'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
+                    >
+                      {savedKeys['Smallest AI'] ? <Check className="w-4 h-4 mr-2" /> : null}
+                      {savedKeys['Smallest AI'] ? "Saved" : "Save"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2">
                   <Label>Mistral API Key</Label>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
@@ -2117,10 +2172,52 @@ export default function Settings() {
                   <Input
                     value={azureRegion}
                     onChange={(e) => setAzureRegion(e.target.value)}
-                    placeholder="e.g. westus"
+                    placeholder="e.g. westeurope"
                     className="font-mono text-sm"
                   />
-                  <p className="text-xs text-muted-foreground">Required for Azure Speech STT.</p>
+                  <p className="text-xs text-muted-foreground">Required for standard Azure Speech STT.</p>
+                </div>
+
+                <div className="space-y-2 pt-2">
+                  <Label>Azure MAI Speech Key</Label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Input
+                        type={showAzureMaiKey ? "text" : "password"}
+                        value={azureMaiKey}
+                        onChange={(e) => setAzureMaiKey(e.target.value)}
+                        placeholder="Enter your Azure MAI Speech key"
+                        className="font-mono text-sm pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowAzureMaiKey(!showAzureMaiKey)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      >
+                        {showAzureMaiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <Button
+                      variant={savedKeys['Azure'] ? "default" : "outline"}
+                      onClick={() => handleSaveApiKey('Azure')}
+                      className={savedKeys['Azure'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
+                    >
+                      {savedKeys['Azure'] ? <Check className="w-4 h-4 mr-2" /> : null}
+                      {savedKeys['Azure'] ? "Saved" : "Save"}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Must belong to a region that supports mai-transcribe-1.</p>
+                </div>
+
+                <div className="space-y-2 pt-2">
+                  <Label>Azure MAI Region</Label>
+                  <Input
+                    value={azureMaiRegion}
+                    onChange={(e) => setAzureMaiRegion(e.target.value)}
+                    placeholder="northeurope"
+                    className="font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground">Nearest supported Europe region for mai-transcribe-1 is northeurope.</p>
                 </div>
 
                 <div className="space-y-2 pt-2">

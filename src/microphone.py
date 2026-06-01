@@ -119,6 +119,10 @@ class MicrophoneInput(BaseInputTransport):
         self._speech_hold_until = 0.0
         self._visual_level = 0.0
         self._active_capture_channel = None
+        self._channel_selection_counter = 0
+        self._channel_selection_interval_frames = 10
+        self._last_audio_level_at = 0.0
+        self._audio_level_interval = 1.0 / 30.0
         self._stream_claimed = False
 
     def _claim_active_stream(self) -> None:
@@ -140,6 +144,8 @@ class MicrophoneInput(BaseInputTransport):
         self._loop = asyncio.get_running_loop()
         self._running = True
         self._active_capture_channel = None
+        self._channel_selection_counter = 0
+        self._last_audio_level_at = 0.0
 
         try:
             # Device enumeration/open is guarded against concurrent PortAudio refresh.
@@ -286,17 +292,34 @@ class MicrophoneInput(BaseInputTransport):
                 and indata.shape[1] > self._target_channels
                 and self._target_channels == 1
             ):
-                output_data, chosen_channel = _select_best_mono_channel(
-                    indata,
-                    self._active_capture_channel,
+                self._channel_selection_counter += 1
+                previous_channel = self._active_capture_channel
+                should_rescan_channel = (
+                    previous_channel is None
+                    or previous_channel < 0
+                    or previous_channel >= indata.shape[1]
+                    or self._channel_selection_counter >= self._channel_selection_interval_frames
                 )
-                if chosen_channel != self._active_capture_channel and chosen_channel is not None:
-                    logger.debug(
-                        "Microphone channel selection changed: {} -> {}",
-                        self._active_capture_channel,
-                        chosen_channel,
+                if should_rescan_channel:
+                    self._channel_selection_counter = 0
+                    output_data, chosen_channel = _select_best_mono_channel(
+                        indata,
+                        previous_channel,
                     )
-                self._active_capture_channel = chosen_channel
+                    if chosen_channel != previous_channel and chosen_channel is not None:
+                        logger.debug(
+                            "Microphone channel selection changed: {} -> {}",
+                            previous_channel,
+                            chosen_channel,
+                        )
+                    self._active_capture_channel = chosen_channel
+                else:
+                    mono = indata[:, previous_channel]
+                    if mono.dtype != np.int16:
+                        mono = np.clip(mono, -32768, 32767).astype(np.int16)
+                    else:
+                        mono = np.ascontiguousarray(mono)
+                    output_data = mono.reshape(-1, 1)
 
             audio_bytes = output_data.tobytes()
             try:
@@ -308,9 +331,14 @@ class MicrophoneInput(BaseInputTransport):
                 self._running = False
                 return
 
-            # RMS calculation for visualization (every callback for responsiveness)
+            # Visualizer/input-warning calculation is capped to UI frame rate. The
+            # raw audio still flows downstream on every callback.
             if self.on_audio_level:
                 try:
+                    now = time.monotonic()
+                    if now - self._last_audio_level_at < self._audio_level_interval:
+                        return
+                    self._last_audio_level_at = now
                     # Optimized RMS: use int16 view directly, compute in float32 for speed
                     # Use the exact frame we send downstream (after channel selection/downmix).
                     samples = np.asarray(output_data).astype(np.int16, copy=False).ravel()
@@ -319,7 +347,6 @@ class MicrophoneInput(BaseInputTransport):
 
                     # Speech-focused gating (dynamic noise floor + hysteresis)
                     db = 20.0 * float(np.log10(rms + 1e-6))
-                    now = time.monotonic()
 
                     # Update noise floor: quick to drop, very slow to rise (avoid "locking out" speech)
                     if (not self._speech_active) or (db < self._noise_floor_db + 3.0):
@@ -395,17 +422,18 @@ class MicrophoneInput(BaseInputTransport):
                 self._release_active_stream()
             raise  # Re-raise to properly complete cancellation
 
-    async def stop(self, frame: EndFrame):
+    async def stop(self, frame: EndFrame, *, close_stream: bool | None = None):
         self._running = False
 
         # OPTIMIZED: Always stop stream to prevent CPU usage and buffer overflow
         # With keep_alive: pause stream (fast restart via stream.start())
         # Without keep_alive: close stream entirely
+        should_close_stream = (not self.keep_alive) if close_stream is None else bool(close_stream)
         with get_device_guard_lock():
             if self.stream:
                 try:
                     self.stream.stop()  # Stops callbacks, saves CPU, prevents overflow
-                    if not self.keep_alive:
+                    if should_close_stream:
                         self.stream.close()
                         self.stream = None
                 except Exception:

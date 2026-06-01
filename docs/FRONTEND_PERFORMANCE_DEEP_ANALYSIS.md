@@ -4,6 +4,8 @@
 **Autor:** Automatisierte Codebase-Analyse  
 **Scope:** React Frontend (`Frontend/client/src/`)
 
+**Status-Update 2026-06-01:** Diese Analyse ist historisch. Seitdem sind WebSocket-Singleton, mehrere memoized Cards, Route-Lazy-Loading für YouTube/File/Settings/TranscriptDetail, Intent-Prefetches und Backend-Pagination umgesetzt. Weiter offen sind Vite-Vendor-Chunking, echte Listen-Virtualisierung/Infinite Query und einige isolierte Re-Render-Themen.
+
 ---
 
 ## Executive Summary
@@ -46,12 +48,12 @@ App.tsx
 Router
 ├── /transcript/:id → TranscriptDetail (lazy loaded ✓)
 ├── / → LiveMic (eager loaded)
-├── /youtube → Youtube (eager loaded)
-├── /file → FileTranscribe (eager loaded)
-└── /settings → Settings (eager loaded)
+├── /youtube → Youtube (lazy loaded ✓)
+├── /file → FileTranscribe (lazy loaded ✓)
+└── /settings → Settings (lazy loaded ✓)
 ```
 
-**Analyse:** Nur `TranscriptDetail` und `NotFound` sind lazy loaded. Die Haupt-Tabs werden alle im initialen Bundle geladen.
+**Aktueller Stand:** LiveMic bleibt bewusst eager für die erste Ansicht; schwere Nebenseiten werden lazy geladen und teilweise auf Navigation-Intent vorab geladen. Vite meldet aber weiterhin einen initialen Chunk >500 kB, daher bleibt Vendor-Chunking offen.
 
 ---
 

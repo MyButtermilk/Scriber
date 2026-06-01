@@ -35,6 +35,10 @@ _EXCLUDE_PATTERNS = (
 )
 _OUTPUT_HINTS = ("output", "speaker", "lautsprecher", "headphone", "pc-lautsprecher")
 _GENERIC_INPUT_RE = re.compile(r"^\s*input\s*\(\s*\)\s*$", re.IGNORECASE)
+_WINDOWS_ENDPOINT_FLOW_RE = re.compile(r"\{0\.0\.(\d+)\.", re.IGNORECASE)
+_E_RENDER = 0
+_E_CAPTURE = 1
+_E_ALL = 2
 
 
 def get_device_guard_lock() -> threading.RLock:
@@ -63,6 +67,30 @@ def _to_int(value, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _flow_to_int(flow) -> int | None:
+    value = getattr(flow, "value", flow)
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _flow_is_capture_or_all(flow) -> bool:
+    flow_int = _flow_to_int(flow)
+    if flow_int is None:
+        return True
+    return flow_int in (_E_CAPTURE, _E_ALL)
+
+
+def _endpoint_id_flow_hint(device_id) -> int | None:
+    if not device_id:
+        return None
+    match = _WINDOWS_ENDPOINT_FLOW_RE.search(str(device_id))
+    if not match:
+        return None
+    return _to_int(match.group(1), -1)
 
 
 def _default_input_index() -> int | None:
@@ -236,12 +264,11 @@ class DeviceMonitor:
         self,
         *,
         debounce_seconds: float = 0.5,
-        poll_seconds: float = 10.0,
+        poll_seconds: float | None = None,
         sample_rate: int = 16000,
         channels: int = 1,
     ) -> None:
         self._debounce_seconds = max(0.1, float(debounce_seconds))
-        self._poll_seconds = max(1.0, float(poll_seconds))
         self._sample_rate = max(8000, int(sample_rate or 16000))
         self._channels = max(1, int(channels or 1))
 
@@ -253,6 +280,8 @@ class DeviceMonitor:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._pending_refresh_at = 0.0
+        self._refresh_deferred_until_idle = False
+        self._deferred_refresh_trigger = ""
 
         self._enumerator = None
         self._notification_client = None
@@ -272,6 +301,12 @@ class DeviceMonitor:
                 self._supports_native_events = True
             except Exception as exc:
                 logger.info(f"[DeviceMonitor] Native COM monitor unavailable, polling only: {exc}")
+
+        default_poll_seconds = 60.0 if self._supports_native_events else 10.0
+        self._poll_seconds = max(
+            1.0,
+            float(default_poll_seconds if poll_seconds is None else poll_seconds),
+        )
 
     def on_devices_changed(self, callback: Callable[[list[dict[str, str]]], None]) -> None:
         if not callable(callback):
@@ -319,13 +354,66 @@ class DeviceMonitor:
     def _schedule_refresh(self, *, reason: str, immediate: bool) -> None:
         now = time.monotonic()
         due_at = now if immediate else now + self._debounce_seconds
+        scheduled = False
         with self._state_lock:
+            if self._refresh_deferred_until_idle:
+                return
             current = self._pending_refresh_at
-            if current <= 0.0:
+            if current <= 0.0 or due_at < current:
                 self._pending_refresh_at = due_at
-            else:
-                self._pending_refresh_at = min(current, due_at)
-        logger.debug(f"[DeviceMonitor] refresh scheduled ({reason})")
+                scheduled = True
+        if scheduled:
+            logger.debug(f"[DeviceMonitor] refresh scheduled ({reason})")
+
+    def _defer_refresh_until_idle(self, *, trigger: str) -> None:
+        should_log = False
+        with self._state_lock:
+            if not self._refresh_deferred_until_idle:
+                self._refresh_deferred_until_idle = True
+                self._deferred_refresh_trigger = trigger
+                should_log = True
+            elif not self._deferred_refresh_trigger:
+                self._deferred_refresh_trigger = trigger
+        if should_log:
+            logger.debug(f"[DeviceMonitor] refresh deferred until active stream stops ({trigger})")
+
+    def _take_deferred_refresh_trigger_if_idle(self) -> str | None:
+        if get_active_stream_count() > 0:
+            return None
+        with self._state_lock:
+            if not self._refresh_deferred_until_idle:
+                return None
+            trigger = self._deferred_refresh_trigger or "deferred"
+            self._refresh_deferred_until_idle = False
+            self._deferred_refresh_trigger = ""
+        return f"{trigger}_stream_idle"
+
+    def _clear_deferred_refresh(self) -> None:
+        with self._state_lock:
+            self._refresh_deferred_until_idle = False
+            self._deferred_refresh_trigger = ""
+
+    def _schedule_endpoint_refresh(self, *, reason: str, device_id, immediate: bool) -> None:
+        if self._endpoint_is_capture_or_unknown(device_id):
+            self._schedule_refresh(reason=reason, immediate=immediate)
+
+    def _schedule_flow_refresh(self, *, reason: str, flow, immediate: bool) -> None:
+        if _flow_is_capture_or_all(flow):
+            self._schedule_refresh(reason=reason, immediate=immediate)
+
+    def _endpoint_is_capture_or_unknown(self, device_id) -> bool:
+        audio_utilities = self._pycaw_audio_utilities
+        get_endpoint_data_flow = getattr(audio_utilities, "GetEndpointDataFlow", None)
+        if callable(get_endpoint_data_flow):
+            try:
+                return _flow_is_capture_or_all(get_endpoint_data_flow(device_id, outputType=1))
+            except Exception:
+                pass
+
+        flow_hint = _endpoint_id_flow_hint(device_id)
+        if flow_hint is None:
+            return True
+        return _flow_is_capture_or_all(flow_hint)
 
     @staticmethod
     def _signature_for(devices: list[dict[str, str]]) -> tuple[tuple[str, str], ...]:
@@ -343,10 +431,11 @@ class DeviceMonitor:
     def _refresh_devices(self, *, trigger: str, force: bool) -> None:
         _did_refresh, deferred = _refresh_portaudio_cache()
         if deferred:
-            # Active live stream: retry shortly without forcing stop/restart.
-            self._schedule_refresh(reason=f"{trigger}_deferred_active_stream", immediate=False)
+            # Active live stream: remember the refresh and run it once after the stream closes.
+            self._defer_refresh_until_idle(trigger=trigger)
             return
 
+        self._clear_deferred_refresh()
         devices = _enumerate_microphones(sample_rate=self._sample_rate, channels=self._channels)
         signature = self._signature_for(devices)
         changed = False
@@ -376,6 +465,10 @@ class DeviceMonitor:
                         self._pending_refresh_at = 0.0
                     self._refresh_devices(trigger="event", force=False)
 
+                deferred_trigger = self._take_deferred_refresh_trigger_if_idle()
+                if deferred_trigger:
+                    self._refresh_devices(trigger=deferred_trigger, force=False)
+
                 if now >= next_poll_at:
                     next_poll_at = now + self._poll_seconds
                     self._refresh_devices(trigger="poll", force=False)
@@ -400,19 +493,39 @@ class DeviceMonitor:
 
         class _NotificationClient(base_cls):  # type: ignore[misc, valid-type]
             def on_device_state_changed(self, device_id, new_state, new_state_id=None):
-                monitor._schedule_refresh(reason="device_state_changed", immediate=False)
+                monitor._schedule_endpoint_refresh(
+                    reason="device_state_changed",
+                    device_id=device_id,
+                    immediate=False,
+                )
 
             def on_device_added(self, device_id):
-                monitor._schedule_refresh(reason="device_added", immediate=False)
+                monitor._schedule_endpoint_refresh(
+                    reason="device_added",
+                    device_id=device_id,
+                    immediate=False,
+                )
 
             def on_device_removed(self, device_id):
-                monitor._schedule_refresh(reason="device_removed", immediate=False)
+                monitor._schedule_endpoint_refresh(
+                    reason="device_removed",
+                    device_id=device_id,
+                    immediate=False,
+                )
 
             def on_default_device_changed(self, flow, role, default_device_id):
-                monitor._schedule_refresh(reason="default_device_changed", immediate=False)
+                monitor._schedule_flow_refresh(
+                    reason="default_device_changed",
+                    flow=flow,
+                    immediate=False,
+                )
 
             def on_property_value_changed(self, device_id, property_struct, fmtid=None):
-                monitor._schedule_refresh(reason="property_value_changed", immediate=False)
+                monitor._schedule_endpoint_refresh(
+                    reason="property_value_changed",
+                    device_id=device_id,
+                    immediate=False,
+                )
 
         try:
             self._notification_client = _NotificationClient()

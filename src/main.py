@@ -145,10 +145,37 @@ async def _ptt_loop():
             pass
         await asyncio.sleep(0.05)
 
+def is_backend_running() -> bool:
+    """Check if the backend API is running locally on port 8765."""
+    import urllib.request
+    import urllib.error
+    try:
+        # Request health check endpoint with small timeout
+        url = "http://127.0.0.1:8765/api/health"
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=0.2) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
 def register_hotkey():
     global ptt_task
     if not HAS_KEYBOARD:
         logger.warning("Hotkeys disabled (keyboard module missing or headless env).")
+        return
+
+    # Check if background web server backend is active to avoid double key trigger
+    if is_backend_running():
+        logger.info("Background Web API backend detected on port 8765. Skipping global hotkey registration in Desktop UI to prevent double-triggering.")
+        # Ensure any local keyboard listeners/tasks are cleaned up
+        if ptt_task and not ptt_task.cancelled():
+            ptt_task.cancel()
+            ptt_task = None
+        try:
+            if hasattr(keyboard, "clear_all_hotkeys"):
+                keyboard.clear_all_hotkeys()
+        except Exception:
+            pass
         return
 
     # Some keyboard builds lack internal hotkey sets; create stubs to avoid attribute errors.

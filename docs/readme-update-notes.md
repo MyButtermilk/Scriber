@@ -18,7 +18,9 @@
   - Video-Erkennung für Extraktion: `.mp4,.mov,.webm,.avi,.mkv,.flv,.wmv,.m4v`
 - CORS: `SCRIBER_ALLOWED_ORIGINS` (CSV) mit Standard nur localhost/127.0.0.1/::1.
 - WebSocket sendet State + Events auf `'/ws'`; Events sind `state`/`status`/`transcript`/`audio_level`/`input_warning`/`transcribing`/`session_*`/`history_updated`/`error`.
-- Wichtiger Hinweis: `summarize_transcript` nutzt intern noch Fallback `gemini-2.0-flash`, obwohl Config-Default `gemini-3-flash-preview` ist.
+- Summarization nutzt zentral `gemini-flash-latest` als Default.
+- Update 2026-06-01: `DeviceMonitor` ist recording-aware (PortAudio-Refresh während aktiver Streams wird deferred), Mic-Enumeration nutzt den gemeinsamen Guard-Lock, und die Pipeline invalidiert den Mic-Resolution-Cache bei Device-/Mic-Settings-Änderungen.
+- Update 2026-06-01: `SCRIBER_MIC_ALWAYS_ON` bleibt dokumentiert, ist aber derzeit kein echter persistenter Prewarm-Stream. Per-session Streams werden beim Cleanup geschlossen, bis ein App-Level-Mic-Manager existiert.
 
 ## Frontend-Verhalten
 - Routen in `Frontend/client/src/App.tsx`: `/`, `/youtube`, `/file`, `/transcript/:id`, `/settings`.
@@ -36,4 +38,4 @@
   - `live_mic.png`, `youtube.png`, `file_upload.png`, `transcript_detail.png`, `settings.png`
 - Standardgröße aktuell: 1600x2200
 
-Stand: 2026-02-27 19:32:56
+Stand: 2026-06-01

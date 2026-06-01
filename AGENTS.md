@@ -1,148 +1,310 @@
-# Repository Guidelines
+# Scriber Agent Guide
 
-## Project Overview
-- Scriber is an AI-powered voice transcription app with both a web UI (React) and a desktop UI (Tkinter).
-- Backend is Python (aiohttp + Pipecat pipeline). Frontend is Vite/React/Tailwind + shadcn/ui.
-- Primary modes: live mic dictation, YouTube transcription, and file transcription with optional LLM summaries.
+Last verified: 2026-06-01
 
-## Project Structure
-- `src/`: Python backend and desktop UI
-  - `tray.py`: system tray entrypoint + lifecycle
-  - `main.py`: Tkinter entrypoint
-  - `web_api.py`: HTTP + WebSocket API (aiohttp)
-  - `pipeline.py`: STT pipeline orchestration (Pipecat)
-  - `microphone.py`: sounddevice input transport
-  - `audio_file_input.py`: ffmpeg file input transport
-  - `injector.py`: text injection logic (type/paste/auto)
-  - `summarization.py`: OpenAI/Gemini summarization
-  - `youtube_api.py`: YouTube Data API integration
-  - `youtube_download.py`: yt-dlp audio extraction
-  - `overlay.py`: recording overlay (PySide6 with Tk fallback)
-  - `database.py`: SQLite persistence
-  - `export.py`: PDF/DOCX export
-  - `onnx_local_service.py`, `nemo_local_service.py`: local STT providers
-  - `config.py`: env + settings.json configuration
-- `Frontend/`: React web UI (Vite 7, React 19, Tailwind v4, shadcn/ui)
-  - `client/`: main React app
-  - `server/`: Express server for dev/prod
-  - `shared/`: shared types and Drizzle schema
-  - `components/`: shadcn/ui components
-- `tests/`: pytest tests
-  - `test_config.py`, `test_injector.py`, `test_injector_paste.py`, `test_pipeline_stop.py`, `test_web_api_security.py`
-- Root scripts: `start.bat` (Windows), `start.sh` (Linux/macOS), `check_imports.py` (dependency sanity check)
+This file is the working guide for agents editing this repository. Keep it accurate when implementation status changes. Prefer the code over old docs when there is a conflict, then update the docs as part of the same task.
 
-## Build, Test, and Development Commands
-### Backend (from repo root)
-- Create venv: `python -m venv venv`
-- Activate venv: `venv\\Scripts\\activate` (Windows) or `source venv/bin/activate`
-- Install deps: `pip install -r requirements.txt`
-- Desktop UI: `python -m src.main`
-- Tray entrypoint (debug): `python -m src.tray`
-- Web API backend: `python -m src.web_api`
-- Dependency check: `python check_imports.py`
+## Product Snapshot
 
-### Frontend (from `Frontend/`)
-- Install: `npm install`
-- Dev client only: `npm run dev:client` (port 5000)
-- Dev server: `npm run dev`
-- Type check: `npm run check`
-- Build: `npm run build`
-- Prod: `npm start`
-- Drizzle schema push: `npm run db:push`
+- Scriber is an AI-powered transcription app with a Python backend, a React web UI, and a legacy Tkinter desktop UI.
+- Main user workflows are live microphone dictation, YouTube transcription, file transcription, transcript management, summaries, and PDF/DOCX export.
+- Backend default: `127.0.0.1:8765`, implemented with `aiohttp`, WebSocket events, SQLite, Pipecat pipeline code, and provider-specific STT adapters.
+- Frontend default: `localhost:5000`, implemented with Vite 7, React 19, TypeScript, Tailwind v4, Radix/shadcn-style components, Wouter, and TanStack Query.
+- Runtime is primarily Windows-oriented. Linux/macOS support exists mainly for fallback paths.
 
-### Tests (from repo root)
-- Run all tests: `pytest`
-- Run one file: `pytest tests/test_web_api_security.py`
-- Run one test (preferred): `pytest tests/test_web_api_security.py::test_origin_allowed_defaults`
-- Run by keyword: `pytest -k origin_allowed`
+## Repository Map
 
-### Lint/Format
-- No Python formatter or linter configured; keep formatting consistent with nearby code.
-- Use `python check_imports.py` for backend dependency sanity.
-- Use `npm run check` for TypeScript strict type checking.
+### Backend and Desktop Code
+
+- `src/web_api.py`: main aiohttp controller, REST routes, WebSocket server, settings, jobs, transcript history, mic control, upload endpoints.
+- `src/pipeline.py`: STT pipeline orchestration, provider factory, analyzer cache, mic device resolution, async/direct transcription helpers.
+- `src/microphone.py`: `sounddevice` input transport, channel selection, RMS/visualizer callback, stream lifecycle.
+- `src/audio_devices.py`: microphone normalization, host API priority, compatibility checks, deduplicated input list.
+- `src/device_monitor.py`: microphone hotplug monitor, native Windows endpoint callbacks, polling fallback, PortAudio refresh guarding.
+- `src/audio_file_input.py`: ffmpeg-backed file input transport for pipeline use.
+- `src/config.py`: environment configuration and `.env` persistence helpers.
+- `src/database.py`: SQLite transcript persistence, WAL mode, metadata loading, FTS5 search.
+- `src/data/job_store.py`: persistent file/YouTube job metadata.
+- `src/data/latency_metrics_store.py`: hot-path latency metrics storage.
+- `src/runtime/provider_router.py`: provider routing.
+- `src/runtime/retry_scheduler.py`: retry/backoff scheduling.
+- `src/core/`: error taxonomy, state machine, circuit breaker, provider capabilities, WebSocket event contracts, hot-path tracing, logging helpers.
+- `src/injector.py`: text injection via paste, SendInput, typing fallback.
+- `src/youtube_api.py`: YouTube Data API search/video metadata.
+- `src/youtube_download.py`: yt-dlp download and ffmpeg extraction.
+- `src/summarization.py`: Gemini/OpenAI summarization.
+- `src/export.py`: PDF/DOCX export.
+- `src/overlay.py`: recording overlay, PySide6 preferred with Tk fallback.
+- `src/tray.py`: tray lifecycle, backend/frontend process management, autostart.
+- `src/main.py`, `src/ui.py`: legacy Tkinter entrypoints/UI.
+- Provider modules include `mistral_stt.py`, `assemblyai_async_stt.py`, `azure_mai_stt.py`, `smallest_stt.py`, `gemini_transcribe.py`, `onnx_*`, and `nemo_*`.
+
+### Frontend Code
+
+- `Frontend/client/src/App.tsx`: Wouter routing and route-level lazy loading.
+- `Frontend/client/src/pages/`: Live Mic, YouTube, File Upload, Transcript Detail, Settings.
+- `Frontend/client/src/contexts/WebSocketContext.tsx`: single shared WebSocket connection.
+- `Frontend/client/src/components/`: app layout, command palette, recording popup, UI primitives.
+- `Frontend/client/src/lib/`: API URL helpers, React Query helpers, request error handling, mock data fallback.
+- `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system and neumorphic classes.
+- `Frontend/server/`: Express host for dev/prod frontend serving.
+- `Frontend/shared/`: shared TS types and Drizzle schema.
+
+### Tests
+
+- Tests live in `tests/` plus subfolders `tests/core/`, `tests/data/`, `tests/runtime/`, `tests/perf/`, and `tests/contract/`.
+- Current suite has 36 `test_*.py` files.
+- Important focused test areas:
+  - `tests/test_device_monitor.py`
+  - `tests/test_microphone_device_resolution.py`
+  - `tests/test_microphone_channel_selection.py`
+  - `tests/test_microphone_callback.py`
+  - `tests/test_pipeline_stop.py`
+  - `tests/test_web_api_security.py`
+  - `tests/test_web_api_lifecycle.py`
+  - `tests/test_web_api_jobs.py`
+  - `tests/test_web_api_job_resume.py`
+  - `tests/contract/test_ws_events.py`
+  - `tests/runtime/test_provider_router.py`
+  - `tests/runtime/test_retry_scheduler.py`
+  - `tests/core/test_state_machine.py`
+  - `tests/core/test_provider_circuit_breaker.py`
+  - `tests/perf/test_hot_path_tracer.py`
+
+### Documentation
+
+- `README.md`: user-facing overview and setup.
+- `AGENTS.md`: this agent guide.
+- `frontend.md`: frontend architecture notes.
+- `pipeline.md`: pipeline robustness proposals.
+- `performance.md`: current performance analysis.
+- `BUGS.md`, `CODE_REVIEW.md`, `AntigravityBugs.md`: bug/risk review notes.
+- `docs/PRD.md`: broad product/architecture snapshot.
+- `docs/Performance-Optimization-Proposals.md`: implementation status for performance roadmap.
+- `docs/Mic-Performance-Enhancement.md`: mic latency and prewarming status.
+- `docs/Startup-Latency-Analysis.md`: startup optimization status.
+- `docs/PIPELINE_ARCHITECTURE.md`: live mic pipeline architecture.
+
+## Current Implementation Status
+
+### Live Mic and Device Handling
+
+- `DeviceMonitor` is implemented. It uses native Windows endpoint notifications through pycaw when available and falls back to polling.
+- Default DeviceMonitor polling is intentionally slow when native events are available: 60 seconds with native events, 10 seconds for polling-only fallback.
+- PortAudio access is guarded by `get_device_guard_lock()` across monitor refresh, mic enumeration, and stream open/stop/close.
+- PortAudio cache refresh is recording-aware. If an input stream is active, refresh is deferred and then run once after the stream becomes idle.
+- `_enumerate_microphones()` runs under the shared device guard lock. Do not remove this lock; it protects against native `sounddevice`/PortAudio races.
+- `_resolve_mic_device()` in `pipeline.py` caches device-name/favorite-to-index resolution for a short TTL. Default TTL is `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC=10.0`.
+- The mic resolution cache is invalidated when DeviceMonitor sees a device-list change and when `micDevice` or `favoriteMic` settings change.
+- `MIC_ALWAYS_ON` exists as a setting, but it is not a true app-level persistent prewarm stream. Current per-session pipeline cleanup calls `stop(..., close_stream=True)` to avoid orphaned PortAudio streams. A real always-on mic needs a separate app-level manager.
+- `MicrophoneInput` still queues raw audio on every PortAudio callback. Only UI/visualizer/input-warning RMS work is throttled to about 30fps.
+- Multi-channel capture rescans strongest-channel selection every 10 callback frames and reuses the last channel between rescans.
+
+### Pipeline and Providers
+
+- Analyzer caching exists for expensive VAD/SmartTurn setup.
+- STT provider imports are mostly lazy inside `_create_stt_service()` to keep startup lighter.
+- Provider routing and circuit breaker logic exist in `src/runtime/` and `src/core/`.
+- Soniox supports realtime and async modes.
+- Mistral supports realtime and async modes.
+- AssemblyAI Universal-3-Pro async, Azure MAI, Smallest, OpenAI, Deepgram, Gladia, Groq, Speechmatics, ElevenLabs, Google, AWS, ONNX, and NeMo paths exist, but verify exact behavior in code before changing provider contracts.
+- OpenAI segmented STT requires VAD. Keep mic input mono for provider compatibility where possible.
+- Adding a provider usually touches `Config.SERVICE_API_KEY_MAP`, `Config.SERVICE_LABELS`, provider capabilities/routing, settings API/UI, and `_create_stt_service()`.
+
+### Transcript Storage and Search
+
+- SQLite uses WAL mode and thread-local connections in `database.py`.
+- Transcript list endpoints use pagination with `offset` and `limit`; `limit` is clamped to `1..100`.
+- Metadata/list views avoid loading full transcript content when possible.
+- FTS5 search exists for transcript search.
+- `_history_by_id` is used for O(1) in-memory transcript lookups.
+- `history_updated` WebSocket events are globally throttled/coalesced.
+
+### WebSocket and Frontend Data Flow
+
+- The frontend uses one shared WebSocket through `WebSocketProvider`.
+- Backend sends events such as `state`, `status`, `transcript`, `audio_level`, `input_warning`, `transcribing`, `session_started`, `session_finished`, `history_updated`, and `error`.
+- `audio_level` is throttled around 30fps.
+- A remaining backend performance opportunity is skipping `json.dumps` and task scheduling when no WebSocket clients are connected.
+- Frontend routes: LiveMic is eager for first paint; YouTube, File, Settings, TranscriptDetail, and NotFound are lazy-loaded.
+- Intent prefetch exists for route chunks in the layout.
+- Production frontend build succeeds, but Vite can still warn about an initial chunk over 500 kB. Manual vendor chunking is still open.
+- True transcript-list virtualization/infinite query is still open.
+
+### Uploads, Jobs, and Exports
+
+- File and YouTube jobs use persistent job metadata, retry scheduling, and resume flows.
+- Upload limits are enforced with audio/video distinctions. Verify provider-specific upload limits in `web_api.py` before changing file flow.
+- Some upload and export work is still synchronous in async request paths. Use `asyncio.to_thread` or a worker-style design when addressing these paths.
+- PDF/DOCX export is synchronous today.
+
+## Commands
+
+Run commands from the repository root unless specified.
+
+### Backend
+
+```bash
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+python check_imports.py
+python -m src.web_api
+python -m src.tray
+python -m src.main
+```
+
+On Linux/macOS, activate with `source venv/bin/activate`.
+
+### Frontend
+
+```bash
+cd Frontend
+npm install
+npm run dev:client
+npm run dev
+npm run check
+npm run build
+npm start
+npm run db:push
+```
+
+- `dev:client` and `dev` both use port `5000`; do not run them together.
+- Backend API is expected at `http://127.0.0.1:8765` unless `VITE_BACKEND_URL` is set.
+
+### Tests
+
+```bash
+pytest
+pytest tests/test_device_monitor.py
+pytest tests/test_microphone_device_resolution.py tests/test_microphone_callback.py
+pytest tests/test_web_api_security.py::test_origin_allowed_defaults
+pytest -k origin_allowed
+```
+
+Use targeted tests for the changed area first. Broaden when touching shared runtime, WebSocket contracts, settings, database, or provider factory code.
+
+### Useful Verification
+
+```bash
+python -m py_compile src\microphone.py src\pipeline.py src\web_api.py
+git diff --check
+```
+
+For frontend changes, run:
+
+```bash
+cd Frontend
+npm run check
+npm run build
+```
 
 ## Configuration
-- `.env` stores API keys and settings. Never commit this file.
-- `settings.json` stores multi-line settings (summarization prompt). Also gitignored.
-- Default hotkey: `ctrl+alt+s`
-- Default mode: `toggle`
 
-Key env vars:
-- STT keys: `SONIOX_API_KEY`, `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`,
-  `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `GLADIA_API_KEY`, `GROQ_API_KEY`,
-  `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`
-- Summarization: `GOOGLE_API_KEY`, `SCRIBER_SUMMARIZATION_MODEL`, `SCRIBER_AUTO_SUMMARIZE`
-- App behavior: `SCRIBER_DEFAULT_STT`, `SCRIBER_HOTKEY`, `SCRIBER_MODE`,
-  `SCRIBER_INJECT_METHOD`, `SCRIBER_LANGUAGE`, `SCRIBER_MIC_DEVICE`,
-  `SCRIBER_FAVORITE_MIC`, `SCRIBER_MIC_ALWAYS_ON`, `SCRIBER_DEBUG`
-- OpenAI STT model override: `SCRIBER_OPENAI_STT_MODEL`
-- Local STT: `SCRIBER_ONNX_MODEL`, `SCRIBER_ONNX_QUANTIZATION`, `SCRIBER_ONNX_USE_GPU`,
-  `SCRIBER_NEMO_MODEL`
-- Web API security: `SCRIBER_ALLOWED_ORIGINS`, `SCRIBER_UPLOAD_MAX_MB`, `SCRIBER_UPLOAD_MAX_BYTES`
+Never commit `.env`, `settings.json`, `transcripts.db`, `downloads/`, or temp artifacts.
 
-## Pipeline Notes
-- OpenAI STT is segmented and requires VAD; Silero VAD is used for segmented STT.
-- Keep mic input mono when possible for better VAD and WAV encoding.
-- Soniox supports async mode with buffered upload in `SonioxAsyncProcessor`.
-- Adding a provider requires updates in `Config.SERVICE_API_KEY_MAP`,
-  `Config.SERVICE_LABELS`, and `_create_stt_service` in `pipeline.py`.
+Important environment variables:
 
-## Web API Notes
-- Backend default host/port: `127.0.0.1:8765`.
-- Web UI default port: `5000`.
-- CORS is restricted by default to localhost; set `SCRIBER_ALLOWED_ORIGINS` to allow others.
-- File uploads have a size cap; adjust via env vars if needed.
+- Web/API: `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_ALLOWED_ORIGINS`
+- STT provider keys: `SONIOX_API_KEY`, `MISTRAL_API_KEY`, `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `GLADIA_API_KEY`, `GROQ_API_KEY`, `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, `GOOGLE_API_KEY`, `YOUTUBE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`
+- AWS STT: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
+- Provider/model behavior: `SCRIBER_DEFAULT_STT`, `SCRIBER_SONIOX_MODE`, `SCRIBER_SONIOX_ASYNC_MODEL`, `SCRIBER_SONIOX_RT_MODEL`, `SCRIBER_MISTRAL_RT_MODEL`, `SCRIBER_MISTRAL_ASYNC_MODEL`, `SCRIBER_OPENAI_STT_MODEL`
+- App behavior: `SCRIBER_HOTKEY`, `SCRIBER_MODE`, `SCRIBER_INJECT_METHOD`, `SCRIBER_LANGUAGE`, `SCRIBER_DEBUG`, `SCRIBER_CUSTOM_VOCAB`
+- Mic: `SCRIBER_MIC_DEVICE`, `SCRIBER_FAVORITE_MIC`, `SCRIBER_MIC_ALWAYS_ON`, `SCRIBER_MIC_BLOCK_SIZE`, `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC`
+- Upload/jobs/timeouts: `SCRIBER_UPLOAD_MAX_MB`, `SCRIBER_UPLOAD_MAX_BYTES`, `SCRIBER_DOWNLOADS_DIR`, `SCRIBER_JOB_MAX_ATTEMPTS`, `SCRIBER_JOB_RETRY_BASE_SEC`, `SCRIBER_JOB_RETRY_MAX_SEC`, `SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC`
+- Summaries: `SCRIBER_SUMMARIZATION_MODEL`, `SCRIBER_AUTO_SUMMARIZE`, `SCRIBER_SUMMARY_MIN_WORDS`, `SCRIBER_SUMMARY_MAX_WORDS`
+- Local models: `SCRIBER_ONNX_MODEL`, `SCRIBER_ONNX_QUANTIZATION`, `SCRIBER_ONNX_USE_GPU`, `SCRIBER_NEMO_MODEL`
+- UI: `SCRIBER_VISUALIZER_BAR_COUNT`
 
-## Testing Guidelines
-- Use pytest with async support where needed.
-- Name files `test_*.py` and functions `test_*`.
-- Mock GUI/keyboard to avoid side effects (use `unittest.mock.patch`).
-- `tests/conftest.py` sets safe defaults for injection behavior; avoid changing it unless required.
-- For new STT providers, add tests that exercise `_create_stt_service` branches.
+Current summarization default is `gemini-flash-latest`.
 
-## Coding Style (Python)
-- Python 3.10+, PEP 8, 4-space indents, prefer type hints.
-- Imports order: standard library, third-party, local (`src.*`), with blank lines between groups.
-- Use built-in generics (`list[str]`, `dict[str, Any]`) over `typing.List`.
-- Naming: `snake_case` for functions/vars, `PascalCase` for classes, `UPPER_SNAKE` for constants.
-- Booleans should read well (`is_`, `has_`, `should_`).
-- Prefer `pathlib.Path` for filesystem paths and avoid hard-coded separators.
-- Async code: avoid blocking the event loop; use `asyncio` APIs and `await` I/O.
-- Logging: use `loguru` (`logger.info/warning/error/exception`); avoid `print`.
-- Error handling: validate inputs early; raise `ValueError` for config/user errors; log and surface user-friendly messages at API boundaries.
+## Coding Rules
 
-## Coding Style (TypeScript/React)
-- TypeScript `strict` is enabled; avoid `any` when possible and narrow API data.
-- Components are functional, PascalCase; hooks are `useX`.
-- Imports: external packages first, then alias imports (`@/`, `@shared/`), then relative paths.
-- Prefer `@/` path alias for client imports.
-- Keep formatting consistent with the surrounding file (indentation/semicolons vary across vendor code).
-- UI uses Tailwind v4 + shadcn/ui; prefer utility classes and existing neumorphic classes (`neu-panel-raised`, `neu-button`).
-- Micro-interactions via CSS transitions; avoid JS animations unless needed.
-- Use `toast` for user-visible errors; log to console sparingly.
+### Python
+
+- Python 3.10+.
+- Use 4-space indentation and type hints for new public functions.
+- Import order: standard library, third-party, local `src.*`, with blank lines between groups.
+- Prefer built-in generics such as `list[str]` and `dict[str, Any]`.
+- Prefer `pathlib.Path` for filesystem paths.
+- Use `asyncio` APIs in async code. Do not block the event loop with CPU or file I/O in request handlers if avoidable.
+- Use `loguru` for logging. Avoid `print`.
+- Validate user/config input early. Raise `ValueError` for user-facing config issues where existing patterns do that.
+- Be careful with PortAudio/sounddevice. Any new device enumeration or stream lifecycle code must respect `get_device_guard_lock()`.
+- Do not make `MIC_ALWAYS_ON` look implemented as true prewarming unless an app-level manager is actually added.
+
+### TypeScript and React
+
+- TypeScript strict mode is enabled. Avoid `any`; narrow API responses.
+- Components are functional and `PascalCase`; hooks are `useX`.
+- Import order: external packages, aliases (`@/`, `@shared/`), then relative imports.
+- Prefer `@/` alias for client imports.
+- Use existing neumorphic classes and the current Tailwind v4 CSS-first setup.
+- Use CSS transitions for small interactions; avoid JS animation unless needed.
+- Use toast for user-visible errors.
+- Keep WebSocket subscriptions through `WebSocketProvider` unless there is a clear architectural reason not to.
+- For list performance, prefer pagination/infinite query/virtualization over loading unbounded lists.
+
+## Testing Guidance by Change Type
+
+- Device monitor or mic device selection:
+  - `pytest tests/test_device_monitor.py tests/test_microphone_device_resolution.py`
+- Microphone callback/channel handling:
+  - `pytest tests/test_microphone_channel_selection.py tests/test_microphone_callback.py`
+- Pipeline stop/lifecycle:
+  - `pytest tests/test_pipeline_stop.py tests/test_web_api_lifecycle.py`
+- WebSocket payload changes:
+  - `pytest tests/contract/test_ws_events.py tests/test_web_api_lifecycle.py`
+- Settings/security/CORS:
+  - `pytest tests/test_config.py tests/test_web_api_security.py`
+- Job retry/resume:
+  - `pytest tests/test_web_api_jobs.py tests/test_web_api_job_resume.py tests/runtime/test_retry_scheduler.py`
+- Provider routing/circuit breaker:
+  - `pytest tests/runtime/test_provider_router.py tests/core/test_provider_circuit_breaker.py tests/core/test_provider_capabilities.py`
+- YouTube:
+  - `pytest tests/test_youtube_api.py tests/test_youtube_download.py`
+- Injection:
+  - `pytest tests/test_injector.py tests/test_injector_methods.py tests/test_injector_paste.py`
+- Summarization:
+  - `pytest tests/test_summarization.py`
+- Frontend:
+  - `cd Frontend && npm run check`
+  - `cd Frontend && npm run build`
+
+## Known Open Engineering Work
+
+- Real app-level mic prewarming for `SCRIBER_MIC_ALWAYS_ON`.
+- Frontend transcript-list virtualization or infinite query.
+- Vite manual vendor chunking to reduce initial chunk size.
+- WebSocket no-client fast path before JSON serialization and task scheduling.
+- Background/off-thread upload preprocessing and export generation.
+- O(n^2) live transcript content string growth in long live sessions.
+- Settings write coalescing/debounce for slider-style controls.
+- More hardware regression tests for dock connect/disconnect, USB mic add/remove, and favorite mic fallback.
+- Stronger typed API contract between backend and frontend.
+- Splitting `web_api.py` into smaller domain modules.
 
 ## Repository Hygiene
-- Never commit secrets or local artifacts: `.env`, `settings.json`, `transcripts.db`, `downloads/`, `tmp/`.
-- Do not delete or overwrite unrelated changes in the working tree.
-- Keep changes scoped to the feature or fix you are implementing.
 
-## Commit and PR Guidelines
-- Commit messages: short, imperative (optionally `feat:`, `fix:`, `refactor:`).
-- Include tests run in PR description.
-- For UI changes, include screenshots when possible.
+- Do not delete or overwrite unrelated working-tree changes.
+- Do not run destructive git commands unless explicitly asked.
+- Keep changes scoped to the requested behavior.
+- Do not commit secrets or local runtime artifacts.
+- Avoid large unrelated formatting churn.
+- If a file already has user changes, read around the changed area and work with it rather than reverting it.
 
-## Frontend UI/UX Notes
-- Uses a neumorphic design system with custom classes (`neu-panel-raised`, `neu-button`, etc.).
-- Tailwind CSS v4 with `@tailwindcss/vite` plugin (CSS-first config in `Frontend/client/src/index.css`).
-- shadcn/ui components wrap Radix UI primitives.
-- Micro-interactions handled via CSS transitions, not JavaScript.
+## Documentation Rules
 
-## Cursor/Copilot Rules
-- No `.cursor/rules`, `.cursorrules`, or `.github/copilot-instructions.md` found in this repo.
+- Update docs when behavior or implementation status changes.
+- Do not leave stale claims like "`MIC_ALWAYS_ON` keeps the microphone open" unless true app-level prewarming exists.
+- Keep `README.md` user-facing.
+- Keep `docs/PRD.md` broad and current.
+- Keep performance docs explicit about completed, partial, and pending work.
+- Keep `AGENTS.md` focused on how future agents should safely work in the repo.
 
-## Documentation
-- `README.md`: user-facing documentation
-- `AGENTS.md`: this file
-- `frontend.md`: frontend architecture details
-- `docs/Mic-Performance-Enhancement.md`: microphone latency improvements
-- `docs/Performance-Optimization-Proposals.md`: performance improvement roadmap
+## Commit and PR Notes
+
+- Commit messages should be short and imperative, optionally prefixed with `feat:`, `fix:`, `refactor:`, or `docs:`.
+- Include tests run in PR descriptions.
+- For UI changes, include screenshots or at least state why screenshots were not needed.
+- For behavior changes, mention affected endpoints, settings, and compatibility concerns.

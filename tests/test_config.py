@@ -23,3 +23,13 @@ class TestConfig(unittest.TestCase):
         self.assertIn("mistral_async", Config.SERVICE_API_KEY_MAP)
         self.assertIn("mistral", Config.SERVICE_LABELS)
         self.assertIn("mistral_async", Config.SERVICE_LABELS)
+
+    def test_smallest_service_mapping_exists(self):
+        self.assertIn("smallest", Config.SERVICE_API_KEY_MAP)
+        self.assertIn("smallest_async", Config.SERVICE_API_KEY_MAP)
+        self.assertIn("smallest", Config.SERVICE_LABELS)
+        self.assertIn("smallest_async", Config.SERVICE_LABELS)
+
+    def test_azure_mai_service_mapping_exists(self):
+        self.assertIn("azure_mai", Config.SERVICE_API_KEY_MAP)
+        self.assertIn("azure_mai", Config.SERVICE_LABELS)

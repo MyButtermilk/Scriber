@@ -3,6 +3,11 @@
 **Date:** 2026-01-12
 **Focus:** Reducing latency in audio transcription and text injection pipelines
 
+**Current Status Update (2026-06-01):**
+- ✅ Implemented from this roadmap: single-pass FFmpeg pipe encoding, adaptive polling for Soniox async, faster text injection fallback, analyzer/VAD cache, overlay/ML prewarming, and WebSocket/history throttling.
+- ✅ Newly implemented mic-start optimizations: DeviceMonitor deferred PortAudio refresh, guard-locked mic enumeration, mic device resolution cache, and 30fps visualizer/RMS throttling without dropping STT audio frames.
+- 🔄 Still open or only partially implemented: true app-level `MIC_ALWAYS_ON` prewarmed stream, rolling pre-buffer, frontend virtualized transcript lists, no-client WebSocket serialization fast path, and fully backgrounded upload preprocessing for large files.
+
 ---
 
 ## Executive Summary

@@ -347,6 +347,11 @@ is_connection_error = (
 3. Fall back to system default
 4. Show error if all fail
 
+Current implementation notes:
+- Favorite/selected name resolution is cached briefly per sounddevice module, sample rate, channel count and favorite name.
+- The cache is invalidated when the DeviceMonitor reports a changed microphone list or when `micDevice`/`favoriteMic` settings change.
+- PortAudio cache refresh is deferred while a stream is active; it runs once after the stream becomes idle.
+
 ---
 
 ### 3. STT API Errors
@@ -648,9 +653,10 @@ def _audio_callback(self, indata, frames, time_info, status):
             self._queue.put_nowait, audio_bytes
         )
 
-        # Calculate RMS for visualization
-        if self.on_audio_level:
-            samples = indata.view(np.int16).ravel()
+        # Calculate RMS for visualization, capped to ~30fps.
+        # Raw audio is still queued every callback.
+        if self.on_audio_level and enough_time_elapsed():
+            samples = output_data.view(np.int16).ravel()
             rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) / 32768.0
 
             # Speech gating with hysteresis
@@ -665,6 +671,12 @@ def _audio_callback(self, indata, frames, time_info, status):
                 float(rms) if self._speech_active else max(0.0, rms * 0.3)
             )
 ```
+
+Current implementation details:
+- Multi-channel endpoints are captured with extra channels when useful, then the strongest channel is selected for mono STT.
+- Channel energy is rescanned every 10 callback frames; in-between callbacks reuse the previously selected channel.
+- Visualizer/input-warning RMS work is throttled to ~30fps, but `InputAudioRawFrame` delivery is not throttled.
+- Stream open/stop/close is guarded by the same PortAudio lock used by `DeviceMonitor`.
 
 #### Queue Consumer (lines 229-264)
 

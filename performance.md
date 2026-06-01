@@ -1,8 +1,10 @@
 # Performance-Analyse (revalidiert + erweitert)
 
-Stand: 2026-02-27
+Stand: 2026-06-01
 
 Vierter Full-Review: Alle Aussagen wurden erneut gegen den aktuellen Code geprüft. Falsche Annahmen wurden korrigiert, neue valide Bottlenecks ergänzt.
+
+Update 2026-06-01: Der Live-Mic-Hotpath wurde erweitert optimiert. `MicrophoneInput` throttelt Visualizer/Input-Warning-RMS bereits im PortAudio-Callback auf ~30fps, rescanned Multi-Channel-Auswahl nur periodisch, und `_resolve_mic_device()` nutzt einen invalidierbaren TTL-Cache. Die unten genannten Backend-Bottlenecks zu no-client WebSocket-Serialisierung, synchronem Upload/Export und O(n²)-Content-Aufbau bleiben weiterhin valide.
 
 ## Kurzfazit
 
@@ -61,13 +63,15 @@ Die größten realen Hebel sind:
 
 ### P0-1: `audio_level` erzeugt unnötige Arbeit ohne Clients
 - **Befund:**
-  - `_on_audio_level` läuft mit ~30fps (`src/web_api.py:1377-1390`).
+  - `MicrophoneInput` begrenzt UI/RMS-Arbeit bereits auf ~30fps, und `_on_audio_level` sendet ebenfalls nur ~30fps.
   - Jeder Tick plant Task + Broadcast (`src/web_api.py:1388-1389`), auch ohne Clients.
   - `broadcast()` serialisiert vor Client-Check (`src/web_api.py:1248`, `:1255`).
 - **Verbesserung:**
   - Early-Return in `_on_audio_level`, wenn keine Clients.
   - In `broadcast()` zuerst Client-Check, dann `json.dumps`.
   - Optional Coalescing pro Event-Loop-Tick.
+- **Status 2026-06-01:**
+  - Teilweise entschärft durch früheres Callback-Throttling; der no-client Fast-Path ist noch offen.
 
 ### P0-2: Upload schreibt synchron im async Request
 - **Befund:**

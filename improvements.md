@@ -8,7 +8,7 @@ This document lists further improvement ideas based on the current codebase revi
 ## 🔴 High Impact (Product + Reliability)
 1. ~~Unify file/youtube transcription path to respect the selected STT provider~~ ✅ DONE
 2. ~~Add user-visible cancel/stop for file and YouTube transcription tasks (both backend cancel + UI action).~~ ✅ DONE
-3. Centralize microphone device resolution so web UI and Tk UI behave identically (single helper used by pipeline + mic preview).
+3. ~~Centralize microphone device resolution so web UI and Tk UI behave identically (single helper used by pipeline + mic preview).~~ ✅ MOSTLY DONE: pipeline, web settings and DeviceMonitor now share normalized device matching, favorite handling, guarded PortAudio access, and cache invalidation. Remaining: legacy Tk preview should be rechecked against the same helper before calling this fully closed.
 4. Add lightweight transcript export endpoints (txt/markdown/json) and wire the UI "Export" button.
 5. Introduce retry/backoff policies per provider (network and rate limit errors) with clear user messages.
 6. **NEW**: Extend language support to Deepgram, Gladia, Speechmatics, AWS (Bug #4).
@@ -55,8 +55,10 @@ This document lists further improvement ideas based on the current codebase revi
 1. **NEW**: Lazy-load STT service imports (already done for most, verify all paths).
 2. **NEW**: Use streaming JSON for large transcript lists instead of loading all into memory.
 3. **NEW**: Cache FFmpeg probe results to avoid repeated startup checks.
-4. **NEW**: Profile overlay rendering on low-end hardware and optimize if needed.
-5. **NEW**: Use WebSocket binary frames for audio level updates (reduce JSON overhead).
+4. ~~**NEW**: Profile overlay rendering on low-end hardware and optimize if needed.~~ ✅ PARTLY DONE: overlay is prewarmed and audio updates are throttled; still worth profiling low-end hardware.
+5. **NEW**: Add no-client fast path before WebSocket `json.dumps` for high-frequency events.
+6. **NEW**: Implement true app-level microphone prewarming for `SCRIBER_MIC_ALWAYS_ON`; current per-session streams are force-closed for safety.
+7. **NEW**: Use WebSocket binary frames for audio level updates (reduce JSON overhead) if JSON still shows measurable overhead after no-client fast path.
 
 ---
 
@@ -106,4 +108,3 @@ This document lists further improvement ideas based on the current codebase revi
 8. **NEW**: Audio playback with synchronized transcript highlighting.
 9. **NEW**: Custom vocabulary UI in settings (currently only via .env).
 10. **NEW**: Multi-user support with separate transcript libraries.
-

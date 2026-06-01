@@ -1,7 +1,8 @@
-# README-Analyse: Frontend API (Stand 2026-02-27)
+# README-Analyse: Frontend API (Stand 2026-06-01)
 
 ## Routing / Navigationsstruktur
 - Wouter-Routing in `Frontend/client/src/App.tsx`.
+- LiveMic bleibt eager für die Startansicht; YouTube, File, Settings, TranscriptDetail und NotFound werden lazy geladen.
 - Routen:
   - `/` => Live Mic
   - `/youtube` => YouTube
@@ -17,6 +18,7 @@
 - State/Events:
   - Globaler `WebSocketProvider` auf `/ws`.
   - Transkriptlisten mit React Query + Auto-Refresh Hook.
+  - `history_updated` und `audio_level` werden backendseitig gedrosselt; echte Listen-Virtualisierung ist frontendseitig noch offen.
 
 ## Feature-Check gegen Code
 - Live Mic Page zeigt Liste (Typ `mic`) + Live-Kontrolle, Mikrofon-Status und visuelle Audioanzeige.

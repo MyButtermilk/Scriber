@@ -37,7 +37,22 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
     ),
+    "smallest": ProviderCapabilities(
+        supports_live_streaming=True,
+        supports_direct_file_upload=True,
+        injects_immediately_in_live_mode=True,
+    ),
+    "smallest_async": ProviderCapabilities(
+        supports_live_streaming=True,
+        supports_direct_file_upload=True,
+        injects_immediately_in_live_mode=False,
+    ),
     "assemblyai": ProviderCapabilities(
+        supports_live_streaming=True,
+        supports_direct_file_upload=True,
+        injects_immediately_in_live_mode=False,
+    ),
+    "azure_mai": ProviderCapabilities(
         supports_live_streaming=True,
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,

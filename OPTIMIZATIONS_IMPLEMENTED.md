@@ -318,11 +318,19 @@ else:
 
 ## Next Steps (Optional Future Optimizations)
 
+### 2026-06-01 Hot-Path Additions
+1. ✅ DeviceMonitor now defers PortAudio refresh while a recording stream is active and refreshes once after idle.
+2. ✅ Microphone enumeration/open/close share the PortAudio guard lock to avoid native `sounddevice` races.
+3. ✅ Mic device name/favorite resolution is cached briefly and invalidated on device or mic-setting changes.
+4. ✅ Audio callback still queues every STT frame, but visualizer/input-warning RMS work is capped to ~30fps and multi-channel channel selection is rescanned every 10 frames.
+5. ✅ Per-session pipeline cleanup force-closes `keep_alive` streams; true app-level `MIC_ALWAYS_ON` prewarming remains a separate future design.
+
 ### Phase 2: High-Impact (Not Yet Implemented)
 1. Use in-memory buffers for all file operations
 2. Enable Soniox VAD endpoint detection (300-500ms saving)
 3. Direct upload for all STT services (1-3s saving per file)
 4. Parallel model warming on startup
+5. True app-level microphone prewarming manager for `SCRIBER_MIC_ALWAYS_ON`
 
 ### Phase 3: Advanced (Future)
 1. Server-sent events to eliminate polling entirely

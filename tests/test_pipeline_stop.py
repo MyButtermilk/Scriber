@@ -29,6 +29,14 @@ class _DummyTask:
         self._done_event.set()
 
 
+class _DummyAudioInput:
+    def __init__(self) -> None:
+        self.close_stream = None
+
+    async def stop(self, frame, *, close_stream=None):
+        self.close_stream = close_stream
+
+
 @pytest.mark.asyncio
 async def test_stop_waits_for_start_done_gracefully():
     pipeline = ScriberPipeline(service_name="soniox", on_status_change=None)
@@ -54,3 +62,14 @@ async def test_stop_times_out_and_cancels():
     assert pipeline.task.stop_when_done_called is True
     assert pipeline.task.cancel_called is True
 
+
+@pytest.mark.asyncio
+async def test_cleanup_audio_input_forces_stream_close():
+    pipeline = ScriberPipeline(service_name="soniox", on_status_change=None)
+    audio_input = _DummyAudioInput()
+    pipeline.audio_input = audio_input
+
+    await pipeline._cleanup_audio_input()
+
+    assert audio_input.close_stream is True
+    assert pipeline.audio_input is None

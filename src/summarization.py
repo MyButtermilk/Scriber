@@ -17,6 +17,8 @@ from loguru import logger
 from src.config import Config
 
 SummarizationModel = Literal[
+    "gemini-flash-latest",
+    "gemini-3.5-flash",
     "gemini-3-flash-preview",
     "gemini-3.1-flash-lite-preview",
     "gemini-3-pro-preview",
@@ -28,6 +30,8 @@ _MODEL_OUTPUT_TOKEN_CAPS = {
     "gpt-5-nano": 4096,
     "gpt-5-mini": 8192,
     "gpt-5.2": 8192,
+    "gemini-flash-latest": 65536,
+    "gemini-3.5-flash": 65536,
     "gemini-3-flash-preview": 8192,
     "gemini-3.1-flash-lite-preview": 8192,
     "gemini-3-pro-preview": 12288,
@@ -69,6 +73,10 @@ def _is_retryable_gemini_failure(message: str) -> bool:
 
 def _should_fallback_to_openai() -> bool:
     return os.getenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENAI", "1").strip().lower() not in {"0", "false", "no"}
+
+
+def _is_gemini_thinking_model(model: str) -> bool:
+    return model.startswith("gemini-3") or model == "gemini-flash-latest"
 
 
 def _summary_budget_for_text(
@@ -131,7 +139,7 @@ def _summary_budget_for_text(
 
     # Gemini 3 uses hidden "thinking" budget within max_output_tokens.
     # Reserve additional tokens so visible output is not cut to 1-2 lines.
-    if model.startswith("gemini-3"):
+    if _is_gemini_thinking_model(model):
         thinking_reserve = max(0, int(os.getenv("SCRIBER_SUMMARY_GEMINI_THINKING_RESERVE_TOKENS", "2400")))
         if thinking_reserve > 0:
             output_tokens = min(budget_cap, output_tokens + thinking_reserve)
@@ -205,7 +213,7 @@ async def summarize_text(
     if not text or not text.strip():
         return ""
     
-    model = model or getattr(Config, "SUMMARIZATION_MODEL", "gemini-3-flash-preview")
+    model = model or getattr(Config, "SUMMARIZATION_MODEL", Config.DEFAULT_SUMMARIZATION_MODEL)
     base_prompt = Config.SUMMARIZATION_PROMPT or "Summarize the following transcript:"
     duration_seconds = _parse_duration_seconds(duration)
     input_words, target_words, output_tokens = _summary_budget_for_text(
@@ -357,7 +365,6 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
         raise ValueError("Gemini API key not configured. Please add it in Settings.")
 
     try:
-        temperature = min(1.0, max(0.0, float(os.getenv("SCRIBER_SUMMARY_GEMINI_TEMPERATURE", "0.1"))))
         timeout_seconds = _summary_timeout_seconds()
         timeout = aiohttp.ClientTimeout(
             total=timeout_seconds,
@@ -367,12 +374,16 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
         )
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        generation_config: dict[str, Any] = {
+            "maxOutputTokens": max_output_tokens,
+        }
+        temperature_raw = os.getenv("SCRIBER_SUMMARY_GEMINI_TEMPERATURE", "").strip()
+        if temperature_raw:
+            generation_config["temperature"] = min(1.0, max(0.0, float(temperature_raw)))
+
         payload: dict[str, Any] = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_output_tokens,
-            },
+            "generationConfig": generation_config,
         }
 
         retries = max(0, int(os.getenv("SCRIBER_SUMMARY_GEMINI_RETRIES", "2")))

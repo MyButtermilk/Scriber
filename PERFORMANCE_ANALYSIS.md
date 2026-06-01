@@ -4,6 +4,12 @@
 **Analysis Scope:** React Frontend + Python Backend
 **Categories Analyzed:** N+1 Queries, React Re-renders, Algorithm Efficiency, State Management
 
+**Current Status Update (2026-06-01):** This file is now a historical baseline. Several critical backend findings have since been implemented or partially mitigated:
+- ✅ Transcript listing now supports `offset`/`limit`, metadata-only list loading, SQLite FTS5 search, preview storage, and a `created_at` index.
+- ✅ WebSocket connection sharing, `history_updated` throttling, `audio_level` throttling, and `_history_by_id` lookups are implemented.
+- ✅ Mic hotpath improvements now include DeviceMonitor deferred refresh, guarded PortAudio enumeration, mic device resolution cache, and audio callback UI/RMS throttling.
+- 🔄 Remaining relevant items: frontend list virtualization, Vite vendor chunk optimization, no-client WebSocket serialization fast path, synchronous upload/export I/O, and O(n²) live content string growth.
+
 ---
 
 ## Executive Summary

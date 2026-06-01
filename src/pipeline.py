@@ -7,6 +7,7 @@ import wave
 import contextlib
 import tempfile
 import os
+import time
 from loguru import logger
 from typing import Callable, Optional
 
@@ -499,6 +500,20 @@ from src.mistral_stt import (
     format_mistral_segments_with_speakers,
     transcribe_with_mistral,
 )
+from src.smallest_stt import (
+    SmallestAsyncProcessor,
+    SmallestRealtimeSTTService,
+    smallest_transcript_payload_to_text,
+    transcribe_with_smallest_pre_recorded,
+)
+from src.azure_mai_stt import (
+    AzureMaiTranscribeProcessor,
+    azure_mai_content_type,
+    azure_mai_transcript_payload_to_text,
+    prepared_azure_mai_audio_file,
+    transcribe_with_azure_mai,
+    validate_azure_mai_region,
+)
 from src.assemblyai_async_stt import (
     AssemblyAIUniversal3ProAsyncProcessor,
     assemblyai_transcript_payload_to_text,
@@ -525,6 +540,56 @@ def _normalize_device_name(name: str) -> str:
     return normalize_device_name(name)
 
 
+_MIC_DEVICE_CACHE_LOCK = threading.Lock()
+_MIC_DEVICE_CACHE: dict[tuple[int, str, str, int, int], tuple[float, str]] = {}
+
+
+def invalidate_mic_device_resolution_cache() -> None:
+    """Clear cached microphone-name-to-index resolutions."""
+    with _MIC_DEVICE_CACHE_LOCK:
+        _MIC_DEVICE_CACHE.clear()
+
+
+def _mic_device_resolution_cache_ttl() -> float:
+    try:
+        return max(0.0, float(os.getenv("SCRIBER_MIC_DEVICE_CACHE_TTL_SEC", "10.0") or 10.0))
+    except Exception:
+        return 10.0
+
+
+def _mic_device_cache_key(sd_module, device_name: str, sample_rate: int, channels: int) -> tuple[int, str, str, int, int]:
+    return (
+        id(sd_module),
+        str(device_name or "default"),
+        str(getattr(Config, "FAVORITE_MIC", "") or ""),
+        int(sample_rate),
+        int(channels),
+    )
+
+
+def _get_cached_mic_resolution(key: tuple[int, str, str, int, int]) -> str | None:
+    ttl = _mic_device_resolution_cache_ttl()
+    if ttl <= 0:
+        return None
+    now = time.monotonic()
+    with _MIC_DEVICE_CACHE_LOCK:
+        cached = _MIC_DEVICE_CACHE.get(key)
+        if not cached:
+            return None
+        cached_at, resolved = cached
+        if now - cached_at > ttl:
+            _MIC_DEVICE_CACHE.pop(key, None)
+            return None
+        return resolved
+
+
+def _set_cached_mic_resolution(key: tuple[int, str, str, int, int], resolved: str) -> None:
+    if _mic_device_resolution_cache_ttl() <= 0:
+        return
+    with _MIC_DEVICE_CACHE_LOCK:
+        _MIC_DEVICE_CACHE[key] = (time.monotonic(), resolved)
+
+
 def _resolve_mic_device(device_name: str) -> str:
     """Resolve a saved device name to the current device index.
     
@@ -544,6 +609,14 @@ def _resolve_mic_device(device_name: str) -> str:
     
     sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
     requested_channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
+    cache_key = _mic_device_cache_key(sd, device_name, sample_rate, requested_channels)
+    cached = _get_cached_mic_resolution(cache_key)
+    if cached:
+        return cached
+
+    def remember(resolved: str) -> str:
+        _set_cached_mic_resolution(cache_key, resolved)
+        return resolved
 
     def find_device_by_name(name: str) -> str | None:
         """Find a compatible device index by name, preferring active host APIs."""
@@ -698,7 +771,7 @@ def _resolve_mic_device(device_name: str) -> str:
         favorite_idx = find_device_by_name(favorite)
         if favorite_idx:
             logger.info(f"Using favorite microphone '{favorite}' (device index {favorite_idx})")
-            return favorite_idx
+            return remember(favorite_idx)
 
     # Try selected device unless "default" is explicitly requested.
     if device_name not in ("default", "", None):
@@ -716,17 +789,17 @@ def _resolve_mic_device(device_name: str) -> str:
                 sample_rate=sample_rate,
                 channels=requested_channels,
             ):
-                return str(idx)
+                return remember(str(idx))
             logger.warning(f"Legacy device index {device_name} not valid; selecting fallback microphone")
         except ValueError:
             device_idx = find_device_by_name(device_name)
             if device_idx:
                 logger.info(f"Resolved microphone '{device_name}' to device index {device_idx}")
-                return device_idx
+                return remember(device_idx)
             logger.warning(f"Microphone '{device_name}' not available; selecting fallback microphone")
 
     # Default or unavailable selection: choose first compatible endpoint.
-    return fallback_to_available_device()
+    return remember(fallback_to_available_device())
 
 
 class ConnectionErrorHandlerProcessor(FrameProcessor):
@@ -844,7 +917,10 @@ class ScriberPipeline:
             if not audio_input:
                 return
             try:
-                await audio_input.stop(EndFrame())
+                # Pipeline instances are per-session, so keep_alive streams cannot
+                # be safely reused here. Always close to avoid orphaned PortAudio
+                # resources; a real always-on mic needs an app-level manager.
+                await audio_input.stop(EndFrame(), close_stream=True)
             except Exception as exc:
                 logger.debug(f"Audio input cleanup warning: {exc}")
             finally:
@@ -923,6 +999,29 @@ class ScriberPipeline:
                 aiohttp_session=session,
             )
 
+        elif self.service_name in ("smallest", "smallest_async"):
+            if not _get_api_key("smallest"):
+                raise ValueError("Smallest AI API Key is missing.")
+
+            if self.service_name == "smallest_async":
+                logger.info("Using Smallest AI Pulse async transcription mode")
+                return SmallestAsyncProcessor(
+                    api_key=_get_api_key("smallest"),
+                    language=Config.LANGUAGE,
+                    session=session,
+                    on_progress=self.on_progress,
+                    diarize=False,
+                )
+
+            logger.info("Using Smallest AI Pulse realtime transcription mode")
+            return SmallestRealtimeSTTService(
+                api_key=_get_api_key("smallest"),
+                language=Config.LANGUAGE,
+                custom_vocab=Config.CUSTOM_VOCAB,
+                aiohttp_session=session,
+                sample_rate=Config.SAMPLE_RATE,
+            )
+
         elif self.service_name == "assemblyai":
             if not _get_api_key("assemblyai"):
                 raise ValueError("AssemblyAI API Key is missing.")
@@ -980,6 +1079,19 @@ class ScriberPipeline:
             if not Config.AZURE_SPEECH_KEY or not Config.AZURE_SPEECH_REGION: raise ValueError("Azure Speech Key or Region is missing.")
             lang = Language.EN_US if Config.LANGUAGE == "en" else _selected_language()
             return AzureSTTService(api_key=Config.AZURE_SPEECH_KEY, region=Config.AZURE_SPEECH_REGION, language=lang)
+
+        elif self.service_name == "azure_mai":
+            api_key = _get_api_key("azure_mai")
+            if not api_key:
+                raise ValueError("Azure MAI Speech Key is missing.")
+            logger.info("Using Microsoft MAI Transcribe buffered transcription mode")
+            return AzureMaiTranscribeProcessor(
+                speech_key=api_key,
+                region=validate_azure_mai_region(getattr(Config, "AZURE_MAI_REGION", None)),
+                language=Config.LANGUAGE,
+                session=session,
+                on_progress=self.on_progress,
+            )
         
         elif self.service_name == "gladia":
             # Lazy import - only loaded when Gladia is used
@@ -1423,6 +1535,69 @@ class ScriberPipeline:
                     self.on_progress("Completed")
                 return
 
+            if self.service_name in ("smallest", "smallest_async"):
+                api_key = Config.get_api_key("smallest")
+                if not api_key:
+                    raise ValueError("Smallest AI API key is missing")
+
+                async with aiohttp.ClientSession() as session:
+                    with open(path, "rb") as f:
+                        payload = await transcribe_with_smallest_pre_recorded(
+                            session=session,
+                            api_key=api_key,
+                            audio_source=f,
+                            language=Config.LANGUAGE,
+                            word_timestamps=True,
+                            diarize=True,
+                            on_progress=self.on_progress,
+                            timeout_secs=900.0,
+                        )
+
+                text = smallest_transcript_payload_to_text(
+                    payload,
+                    prefer_speaker_labels=True,
+                )
+                if text and self.on_transcription:
+                    logger.info(f"Smallest AI direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
+            if self.service_name == "azure_mai":
+                api_key = Config.get_api_key("azure_mai")
+                if not api_key:
+                    raise ValueError("Azure Speech key is missing")
+
+                region = validate_azure_mai_region(getattr(Config, "AZURE_MAI_REGION", None))
+                if self.on_progress:
+                    self.on_progress("Preparing audio...")
+
+                async with aiohttp.ClientSession() as session:
+                    async with prepared_azure_mai_audio_file(path) as upload_path:
+                        with open(upload_path, "rb") as f:
+                            payload = await transcribe_with_azure_mai(
+                                session=session,
+                                speech_key=api_key,
+                                region=region,
+                                audio_source=f,
+                                filename=upload_path.name,
+                                content_type=azure_mai_content_type(upload_path),
+                                language=Config.LANGUAGE,
+                                on_progress=self.on_progress,
+                                timeout_secs=900.0,
+                            )
+
+                text = azure_mai_transcript_payload_to_text(payload)
+                if text and self.on_transcription:
+                    logger.info(f"Azure MAI direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
             api_key = Config.get_api_key("soniox")
             if not api_key:
                 raise ValueError("Soniox API key is missing")
@@ -1598,8 +1773,16 @@ class ScriberPipeline:
             or (self.service_name == "soniox" and Config.SONIOX_MODE == "async")
         )
         is_mistral_async = self.service_name == "mistral_async"
+        is_smallest_async = self.service_name == "smallest_async"
+        is_azure_mai_async = self.service_name == "azure_mai"
         is_assemblyai_async = self.service_name == "assemblyai"
-        is_async_finalization = is_soniox_async or is_mistral_async or is_assemblyai_async
+        is_async_finalization = (
+            is_soniox_async
+            or is_mistral_async
+            or is_smallest_async
+            or is_azure_mai_async
+            or is_assemblyai_async
+        )
         if self.on_status_change:
             self.on_status_change("Transcribing..." if is_async_finalization else "Stopping...")
         # Force flush of segmented STT buffers before stopping audio input (EndFrame closes pipeline).

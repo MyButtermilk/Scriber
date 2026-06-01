@@ -44,7 +44,7 @@ atexit.register(_close_all_connections)  # Cleanup on exit
 
 ---
 
-### 1.2 Frontend Bundle Optimization ✅ IMPLEMENTED (Code Splitting)
+### 1.2 Frontend Bundle Optimization ✅ PARTIALLY IMPLEMENTED (Code Splitting)
 
 **Current State:**
 - React 19 with Vite 7, full bundle loaded on initial page load
@@ -54,9 +54,10 @@ atexit.register(_close_all_connections)  # Cleanup on exit
 ```tsx
 // Frontend/client/src/App.tsx
 import { lazy, Suspense } from "react";
+import LiveMic from "@/pages/LiveMic";
 
-// Each page is now a separate chunk, loaded on demand
-const LiveMic = lazy(() => import("@/pages/LiveMic"));
+// Non-default pages are separate chunks, loaded on demand.
+// LiveMic stays eager for fastest first paint.
 const Youtube = lazy(() => import("@/pages/Youtube"));
 const FileTranscribe = lazy(() => import("@/pages/FileTranscribe"));
 const Settings = lazy(() => import("@/pages/Settings"));
@@ -77,9 +78,10 @@ function TabRoutes() {
 **Remaining Optimizations (Optional):**
 - Tree-shake Lucide Icons using individual imports
 - Lazy load Framer Motion for animated pages only
+- Manual vendor chunks / bundle splitting in `vite.config.ts`
 
 **Impact:** 30-50% reduction in initial bundle size
-**Status:** ✅ Code Splitting Completed (2026-01-01)
+**Status:** ✅ Route code splitting completed (2026-01-01); 🔄 vendor chunk optimization still pending. Latest `npm run build` succeeds, but Vite still reports an initial chunk above 500 kB.
 
 ---
 
@@ -267,34 +269,36 @@ build: {
 
 ---
 
-### 1.6 WebSocket Message Batching
+### 1.6 WebSocket Message Throttling ✅ PARTIALLY IMPLEMENTED
 
 **Current State:**
-- `ScriberWebController.broadcast()` sends individual messages for each event
-- Audio level updates fire continuously during recording
+- `ScriberWebController._on_audio_level()` throttles audio-level broadcasts to ~30fps.
+- `MicrophoneInput._audio_callback()` also throttles visualizer/input-warning RMS work to ~30fps before the WebSocket path.
+- `history_updated` broadcasts are globally throttled/coalesced to avoid refetch storms.
+- `broadcast()` still serializes the payload before checking whether a client snapshot exists.
 
 **Problem:**
-- High message frequency can overwhelm the frontend
-- Each `audio_level` update triggers a React re-render
+- High message frequency can still do unnecessary backend work when no UI is connected.
+- Frontend visualizer rendering is already isolated from broad page re-renders; remaining concern is mostly backend serialization/task overhead and any future multi-client usage.
 
-**Proposed Solution:**
+**Implemented throttle + remaining fast path:**
 ```python
-# Throttle audio level broadcasts to max 30fps
 class ScriberWebController:
     def __init__(self, ...):
         self._last_audio_broadcast = 0
         self._audio_broadcast_interval = 1/30  # 30fps
 
     def _on_audio_level(self, rms: float):
+        if not self.has_clients():
+            return  # remaining improvement
         now = time.monotonic()
         if now - self._last_audio_broadcast < self._audio_broadcast_interval:
-            return  # Skip this update
+            return
         self._last_audio_broadcast = now
-        # ... existing broadcast logic
 ```
 
-**Impact:** Reduce WebSocket traffic by 50-70%, smoother UI
-**Effort:** Low (2 hours)
+**Impact:** Audio-level and history-update traffic are already reduced. Remaining low-effort improvement: skip `json.dumps` and task scheduling entirely when no WebSocket clients are connected.
+**Status:** ✅ Audio/history throttling implemented; 🔄 no-client fast path still pending.
 
 ---
 
@@ -403,26 +407,52 @@ class _AnalyzerCache:
 
 **Current State:**
 - `MicrophoneInput._audio_callback()` processes audio synchronously
-- RMS calculation done per frame
+- Raw audio is still queued on every callback
+- UI-only RMS and input-warning work is capped to the UI frame rate
+- Multi-channel capture rescans the strongest channel periodically instead of recomputing full channel energy every callback
 
 **Implemented Solution:**
 ```python
 # src/microphone.py - _audio_callback method
 def _audio_callback(self, indata, frames, time, status):
-    audio_bytes = indata.tobytes()
+    output_data = select_or_reuse_capture_channel(indata)
+    audio_bytes = output_data.tobytes()
     self._loop.call_soon_threadsafe(self._queue.put_nowait, audio_bytes)
-    
-    # Throttled RMS calculation (every 2nd callback = ~30fps)
-    self._rms_callback_count += 1
-    if self.on_audio_level and (self._rms_callback_count & 1) == 0:
-        samples = indata.view(np.int16).ravel()
-        # Use float32 for faster computation
+
+    # Throttled UI/RMS calculation (~30fps); audio frames are not dropped.
+    if self.on_audio_level and enough_time_elapsed():
+        samples = np.asarray(output_data).astype(np.int16, copy=False).ravel()
         rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) / 32768.0
         self.on_audio_level(float(rms))
 ```
 
-**Impact:** ~10-20% CPU reduction during recording, 50% fewer callbacks
-**Status:** ✅ Completed (2026-01-01)
+**Impact:** Lower callback CPU during recording without sacrificing STT audio throughput.
+**Status:** ✅ Initial optimization completed (2026-01-01); ✅ channel-rescan + 30fps UI/RMS throttle updated (2026-06-01).
+
+---
+
+### 2.4 Device Monitor and Mic Device Resolution ✅ IMPLEMENTED
+
+**Current State:**
+- `DeviceMonitor` uses native Windows endpoint notifications when available, with a slower polling fallback.
+- PortAudio cache refresh is deferred while an input stream is active, then executed once after the stream becomes idle.
+- Microphone enumeration and stream open/close share the same guard lock.
+- `_resolve_mic_device()` caches name/favorite-to-index resolution for repeated recording starts.
+
+**Implemented Solution:**
+```python
+# src/device_monitor.py
+default_poll_seconds = 60.0 if self._supports_native_events else 10.0
+
+if _ACTIVE_STREAMS > 0:
+    return False, True  # defer PortAudio reinitialization until idle
+
+# src/pipeline.py
+SCRIBER_MIC_DEVICE_CACHE_TTL_SEC = 10.0  # default
+```
+
+**Impact:** Fewer PortAudio refreshes during active recordings, less log noise, lower start-path overhead on repeated recordings.
+**Status:** ✅ Completed (2026-06-01)
 
 ---
 
@@ -536,6 +566,10 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 - [x] **Transcript Pagination API (2.2) ✅ (2026-01-13)** - Backend complete
 - [x] STT/Analyzer caching (2.2) ✅ (2026-01-01)
 - [x] Audio frame optimization (2.3) ✅ (2026-01-01)
+- [x] **DeviceMonitor deferred refresh + safer PortAudio locking ✅ (2026-06-01)**
+- [x] **Microphone device resolution cache ✅ (2026-06-01)**
+- [x] **Audio callback channel-rescan/RMS throttle update ✅ (2026-06-01)**
+- [x] **Per-session keep_alive cleanup forced closed ✅ (2026-06-01)** - prevents orphaned PortAudio resources until a true app-level always-on mic manager exists
 - [x] **Lazy transcript content loading (3.3) ✅ (2026-01-13)** - 80-90% Memory reduction
 - [x] Lazy STT imports (2026-01-01) ✅
 - [x] Background overlay prewarming (2026-01-01) ✅
@@ -545,10 +579,12 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 
 ### Pending (High Priority)
 - [ ] Vite Build Optimization (1.5) - ~15-25% Bundle, Low Effort
-- [ ] WebSocket Message Batching (1.6) - 50-70% weniger Traffic, Low Effort
+- [ ] WebSocket no-client fast path / generic message batching (1.6) - avoids serialization when UI is closed
 
 ### Pending (Medium Priority)
 - [ ] Frontend Virtual Scrolling (2.2) - Use pagination API with infinite scroll
+- [ ] True app-level microphone prewarming manager - current `MIC_ALWAYS_ON` flag does not keep a reusable per-app stream alive
+- [ ] Background upload preprocessing for large files - current upload path still performs blocking file writes/preprocessing in request flow
 
 ### Future
 - [ ] Async database (3.1)
@@ -560,11 +596,11 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 
 | Metric | Before | After | Target | Status |
 |--------|--------|-------|--------|--------|
-| Recording start latency | ~800ms | ~300ms | <300ms | ✅ Achieved |
+| Recording start latency | ~800ms | ~300ms + cached repeated device resolution | <300ms | ✅ Improved |
 | Initial page load (LCP) | ~2.5s | ~1.8s | <1.5s | 🔄 Improved |
 | Memory usage (100 transcripts) | ~15MB | ~2MB | <5MB | ✅ Achieved |
 | WebSocket connections | 5 | 1 | 1 | ✅ Achieved |
-| WebSocket messages/sec (recording) | ~60/s | ~30/s | <30/s | ✅ Achieved |
+| WebSocket messages/sec (recording) | ~60/s | ~30/s for audio_level | <30/s | ✅ Achieved for audio_level |
 | Bundle size (gzipped) | ~800KB | ~650KB | <400KB | 🔄 Improved |
 | Database query time (1000+ items) | ~150ms | ~50ms | <100ms | ✅ Achieved |
 

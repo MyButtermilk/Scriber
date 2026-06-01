@@ -6,8 +6,8 @@ Based on code analysis, the app startup time is affected by several heavyweight 
 
 1. **Heavy Imports** (~500-1500ms) ✅ FIXED
 2. **ML Model Loading** (~300-800ms) ✅ FIXED (prewarming)
-3. **Qt/GUI Initialization** (~200-500ms)
-4. **Database Load** (~50-200ms)
+3. **Qt/GUI Initialization** (~200-500ms) ✅ FIXED (background prewarming)
+4. **Database Load** (~50-200ms) ✅ PARTIALLY FIXED (background metadata load)
 
 ---
 
@@ -54,16 +54,17 @@ async def _prewarm_cache() -> None:
 
 ---
 
-### 3. Qt/PySide6 Overlay Initialization (~200-500ms)
+### 3. Qt/PySide6 Overlay Initialization (~200-500ms) ✅ FIXED
 
 **Location:** `src/overlay.py` lines 18-24, `src/web_api.py` line 281
 
-**Problem:**
-The overlay is initialized eagerly at web_api startup.
+**Original Problem:**
+The overlay was initialized eagerly at web_api startup.
 
-**Status:** Not yet optimized (future improvement)
+**Current Status:**
+The overlay is prewarmed by the background cache task after startup, so it no longer blocks initial API availability while still being ready before the first typical hotkey use.
 
-**Solution:** Initialize overlay lazily on first hotkey press
+**Remaining Note:** This is overlay prewarming, not microphone stream prewarming.
 
 ---
 
@@ -74,7 +75,7 @@ The overlay is initialized eagerly at web_api startup.
 **Problem:**
 All transcripts are loaded synchronously from SQLite at startup.
 
-**Status:** Partially optimized via thread-local connection pooling (1.1)
+**Status:** Optimized for startup by background metadata loading and thread-local connection pooling. Full transcript content is loaded on demand.
 
 ---
 
@@ -123,8 +124,10 @@ The overlay supports updating its `on_stop` callback after creation, so it can b
 | Overlay prewarming | ✅ Done | ~400ms |
 | ML cache prewarming | ✅ Done | ~400ms |
 | Background transcript load | ✅ Done | ~100ms |
+| Mic device resolution cache | ✅ Done (2026-06-01) | repeat start-path avoids repeated name/favorite resolution |
+| True `MIC_ALWAYS_ON` prewarmed stream | ⏳ Pending | requires app-level mic manager |
 
-**All startup optimizations complete!**
+**Startup optimizations are complete for current architecture.** The remaining low-latency microphone item is a separate always-on/prewarmed stream design, not a startup task.
 
 ---
 

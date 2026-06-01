@@ -44,7 +44,7 @@ from src.core.ws_contracts import (
 )
 from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
-from src.pipeline import ScriberPipeline
+from src.pipeline import ScriberPipeline, invalidate_mic_device_resolution_cache
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
@@ -106,6 +106,11 @@ _PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, dict[str, Any]] = {
     # endpoint accepts the same File object and file_id from /v1/files.
     "mistral": {"max_bytes": 512 * 1024 * 1024, "label": "512MB"},
     "mistral_async": {"max_bytes": 512 * 1024 * 1024, "label": "512MB"},
+    # Smallest AI Pulse pre-recorded REST API documents a 25 MB max file size.
+    "smallest": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
+    "smallest_async": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
+    # MAI Transcribe LLM Speech API documents a 70 MB limit for this model.
+    "azure_mai": {"max_bytes": 70 * 1024 * 1024, "label": "70MB"},
     # AssemblyAI local uploads go through /v2/upload, documented at 2.2GB.
     "assemblyai": {"max_bytes": 2_200_000_000, "label": "2.2GB"},
 }
@@ -349,6 +354,7 @@ def _get_audio_max_bytes(provider: str | None = None) -> int:
 def _build_file_upload_limits(provider: str | None = None) -> dict[str, Any]:
     resolved_provider = _normalize_upload_provider(provider) or _configured_file_upload_provider()
     audio_max_bytes = _get_audio_upload_max_bytes(resolved_provider)
+    compression_threshold_bytes = min(_UPLOAD_COMPRESSION_THRESHOLD_BYTES, audio_max_bytes)
     return {
         "provider": resolved_provider,
         "providerLabel": Config.SERVICE_LABELS.get(
@@ -362,8 +368,8 @@ def _build_file_upload_limits(provider: str | None = None) -> dict[str, Any]:
         "rawAudioIngestMaxLabel": _get_audio_ingest_limit_label(resolved_provider),
         "videoMaxBytes": _get_video_max_bytes(),
         "videoMaxLabel": _format_upload_limit(_get_video_max_bytes()),
-        "compressionThresholdBytes": _UPLOAD_COMPRESSION_THRESHOLD_BYTES,
-        "compressionThresholdLabel": _format_upload_limit(_UPLOAD_COMPRESSION_THRESHOLD_BYTES),
+        "compressionThresholdBytes": compression_threshold_bytes,
+        "compressionThresholdLabel": _format_upload_limit(compression_threshold_bytes),
     }
 
 
@@ -423,12 +429,15 @@ async def _transcode_media_to_webm_audio(
     return target_path
 
 
-async def _maybe_compress_audio_upload(upload_path: Path) -> Path:
+async def _maybe_compress_audio_upload(upload_path: Path, *, max_bytes: int | None = None) -> Path:
     if not upload_path.exists():
         raise ValueError("Audio upload not found")
 
     original_size = upload_path.stat().st_size
-    if original_size <= _UPLOAD_COMPRESSION_THRESHOLD_BYTES:
+    compression_threshold = _UPLOAD_COMPRESSION_THRESHOLD_BYTES
+    if max_bytes and max_bytes > 0:
+        compression_threshold = min(compression_threshold, max_bytes)
+    if original_size <= compression_threshold:
         return upload_path
 
     compressed_path = _build_webm_audio_output_path(upload_path, label="compressed")
@@ -889,6 +898,7 @@ class ScriberWebController:
             logger.warning(f"Failed to schedule devices-changed handler: {exc}")
 
     async def _handle_devices_changed(self, devices: list[dict[str, str]]) -> None:
+        invalidate_mic_device_resolution_cache()
         favorite = (getattr(Config, "FAVORITE_MIC", "") or "").strip()
         favorite_restored = False
         restored_device_id = ""
@@ -3028,7 +3038,7 @@ class ScriberWebController:
             "debug": bool(Config.DEBUG),
             "customVocab": Config.CUSTOM_VOCAB or "",
             "summarizationPrompt": Config.SUMMARIZATION_PROMPT or "",
-            "summarizationModel": Config.SUMMARIZATION_MODEL or "gemini-3-flash-preview",
+            "summarizationModel": Config.SUMMARIZATION_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL,
             "autoSummarize": bool(Config.AUTO_SUMMARIZE),
             "openaiSttModel": Config.OPENAI_STT_MODEL,
             "onnxModel": Config.ONNX_MODEL,
@@ -3040,11 +3050,14 @@ class ScriberWebController:
             "apiKeys": {
                 "soniox": Config.SONIOX_API_KEY or "",
                 "mistral": getattr(Config, "MISTRAL_API_KEY", "") or "",
+                "smallest": getattr(Config, "SMALLEST_API_KEY", "") or "",
                 "assemblyai": Config.ASSEMBLYAI_API_KEY or "",
                 "deepgram": Config.DEEPGRAM_API_KEY or "",
                 "openai": Config.OPENAI_API_KEY or "",
                 "azureSpeechKey": Config.AZURE_SPEECH_KEY or "",
                 "azureSpeechRegion": Config.AZURE_SPEECH_REGION or "",
+                "azureMaiSpeechKey": getattr(Config, "AZURE_MAI_SPEECH_KEY", "") or "",
+                "azureMaiRegion": getattr(Config, "AZURE_MAI_REGION", "") or "northeurope",
                 "gladia": Config.GLADIA_API_KEY or "",
                 "groq": Config.GROQ_API_KEY or "",
                 "speechmatics": Config.SPEECHMATICS_API_KEY or "",
@@ -3096,9 +3109,11 @@ class ScriberWebController:
 
         if "micDevice" in payload and isinstance(payload["micDevice"], str):
             Config.set_mic_device(payload["micDevice"])
+            invalidate_mic_device_resolution_cache()
 
         if "favoriteMic" in payload and isinstance(payload["favoriteMic"], str):
             Config.set_favorite_mic(payload["favoriteMic"])
+            invalidate_mic_device_resolution_cache()
 
         if "micAlwaysOn" in payload:
             Config.set_mic_always_on(bool(payload["micAlwaysOn"]))
@@ -3148,6 +3163,7 @@ class ScriberWebController:
             mapping: dict[str, tuple[str, Callable[[str], None] | None]] = {
                 "soniox": ("soniox", lambda v: Config.set_api_key("soniox", v)),
                 "mistral": ("mistral", lambda v: Config.set_api_key("mistral", v)),
+                "smallest": ("smallest", lambda v: Config.set_api_key("smallest", v)),
                 "assemblyai": ("assemblyai", lambda v: Config.set_api_key("assemblyai", v)),
                 "deepgram": ("deepgram", lambda v: Config.set_api_key("deepgram", v)),
                 "openai": ("openai", lambda v: Config.set_api_key("openai", v)),
@@ -3166,6 +3182,12 @@ class ScriberWebController:
             if "azureSpeechRegion" in api_keys and isinstance(api_keys["azureSpeechRegion"], str):
                 Config.AZURE_SPEECH_REGION = api_keys["azureSpeechRegion"].strip()
                 os.environ["AZURE_SPEECH_REGION"] = Config.AZURE_SPEECH_REGION
+            if "azureMaiSpeechKey" in api_keys and isinstance(api_keys["azureMaiSpeechKey"], str):
+                Config.AZURE_MAI_SPEECH_KEY = api_keys["azureMaiSpeechKey"].strip()
+                os.environ["AZURE_MAI_SPEECH_KEY"] = Config.AZURE_MAI_SPEECH_KEY
+            if "azureMaiRegion" in api_keys and isinstance(api_keys["azureMaiRegion"], str):
+                Config.AZURE_MAI_REGION = api_keys["azureMaiRegion"].strip() or "northeurope"
+                os.environ["SCRIBER_AZURE_MAI_REGION"] = Config.AZURE_MAI_REGION
 
             if "googleApiKey" in api_keys and isinstance(api_keys["googleApiKey"], str):
                 Config.GOOGLE_API_KEY = api_keys["googleApiKey"].strip()
@@ -3225,7 +3247,7 @@ class ScriberWebController:
         """
         try:
             devices = self._device_monitor.get_devices()
-            if devices:
+            if devices and len(devices) > 1:
                 return devices
         except Exception as exc:
             logger.debug(f"[DeviceMonitor] fallback to direct listing: {exc}")
@@ -3891,7 +3913,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 try:
                     logger.info(f"Extracting audio from video: {safe_filename} ({bytes_read / (1024*1024):.1f}MB)")
                     audio_path = await _extract_audio_from_video(save_path, save_dir)
-                    audio_path = await _maybe_compress_audio_upload(audio_path)
+                    audio_path = await _maybe_compress_audio_upload(audio_path, max_bytes=final_audio_limit)
                     
                     # Check if extracted audio is within size limit
                     audio_size = audio_path.stat().st_size
@@ -3932,7 +3954,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         status=500,
                     )
             else:
-                transcribe_path = await _maybe_compress_audio_upload(save_path)
+                transcribe_path = await _maybe_compress_audio_upload(save_path, max_bytes=final_audio_limit)
                 compressed_size = transcribe_path.stat().st_size
                 if compressed_size > final_audio_limit:
                     import shutil
@@ -4007,7 +4029,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Transcript is not yet completed"}, status=400)
 
         try:
-            model = getattr(Config, "SUMMARIZATION_MODEL", "") or "gemini-3-flash-preview"
+            model = getattr(Config, "SUMMARIZATION_MODEL", "") or Config.DEFAULT_SUMMARIZATION_MODEL
             summary = await summarize_text(content, model, duration=duration)
             if rec:
                 rec.summary = summary
@@ -4612,6 +4634,10 @@ def _prewarm_stt_service(service_name: str) -> None:
             from pipecat.services.aws.stt import AWSTranscribeSTTService  # noqa: F401
         elif service_name in {"mistral", "mistral_async"}:
             from src.mistral_stt import MistralRealtimeSTTService, MistralAsyncProcessor  # noqa: F401
+        elif service_name in {"smallest", "smallest_async"}:
+            from src.smallest_stt import SmallestRealtimeSTTService, SmallestAsyncProcessor  # noqa: F401
+        elif service_name == "azure_mai":
+            from src.azure_mai_stt import AzureMaiTranscribeProcessor  # noqa: F401
         # soniox is already imported at module level
     except ImportError as e:
         logger.debug(f"Could not prewarm STT service {service_name}: {e}")

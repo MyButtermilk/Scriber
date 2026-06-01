@@ -65,6 +65,21 @@ def test_audio_upload_max_bytes_defaults_to_assemblyai_limit(monkeypatch):
     assert web_api._get_audio_upload_limit_label("assemblyai") == "2.2GB"
 
 
+def test_audio_upload_max_bytes_defaults_to_smallest_limit(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+    assert web_api._get_audio_upload_max_bytes("smallest") == 25 * 1024 * 1024
+    assert web_api._get_audio_upload_max_bytes("smallest_async") == 25 * 1024 * 1024
+    assert web_api._get_audio_upload_limit_label("smallest") == "25MB"
+
+
+def test_audio_upload_max_bytes_defaults_to_azure_mai_limit(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+    assert web_api._get_audio_upload_max_bytes("azure_mai") == 70 * 1024 * 1024
+    assert web_api._get_audio_upload_limit_label("azure_mai") == "70MB"
+
+
 def test_audio_upload_max_bytes_uses_generic_default_for_other_providers(monkeypatch):
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
@@ -96,6 +111,15 @@ def test_build_file_upload_limits_uses_provider_metadata(monkeypatch):
     assert limits["providerLabel"] == "Mistral (Realtime)"
 
 
+def test_build_file_upload_limits_uses_smallest_compression_threshold(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+    limits = web_api._build_file_upload_limits("smallest")
+    assert limits["provider"] == "smallest"
+    assert limits["audioMaxLabel"] == "25MB"
+    assert limits["compressionThresholdLabel"] == "25MB"
+
+
 @pytest.mark.asyncio
 async def test_maybe_compress_audio_upload_skips_small_files(monkeypatch, tmp_path):
     monkeypatch.setattr(web_api, "_UPLOAD_COMPRESSION_THRESHOLD_BYTES", 2048)
@@ -105,6 +129,26 @@ async def test_maybe_compress_audio_upload_skips_small_files(monkeypatch, tmp_pa
     got = await web_api._maybe_compress_audio_upload(upload_path)
 
     assert got == upload_path
+
+
+@pytest.mark.asyncio
+async def test_maybe_compress_audio_upload_uses_provider_limit(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_api, "_UPLOAD_COMPRESSION_THRESHOLD_BYTES", 10_000)
+    upload_path = tmp_path / "over-provider-limit.mp3"
+    upload_path.write_bytes(b"x" * 4096)
+
+    async def _fake_transcode(source_path, target_path, *, bitrate):
+        assert source_path == upload_path
+        assert bitrate == web_api._COMPRESSED_AUDIO_BITRATE
+        target_path.write_bytes(b"y" * 1024)
+        return target_path
+
+    monkeypatch.setattr(web_api, "_transcode_media_to_webm_audio", _fake_transcode)
+
+    got = await web_api._maybe_compress_audio_upload(upload_path, max_bytes=2048)
+
+    assert got.suffix == ".webm"
+    assert got.exists()
 
 
 @pytest.mark.asyncio
@@ -162,7 +206,8 @@ def test_validate_default_stt_service_rejects_unknown():
 
 
 def test_validate_summarization_model_accepts_known_prefixes():
-    assert web_api._validate_summarization_model("gemini-3-flash-preview") == "gemini-3-flash-preview"
+    assert web_api._validate_summarization_model("gemini-flash-latest") == "gemini-flash-latest"
+    assert web_api._validate_summarization_model("gemini-3.5-flash") == "gemini-3.5-flash"
     assert web_api._validate_summarization_model("gpt-5-mini") == "gpt-5-mini"
 
 

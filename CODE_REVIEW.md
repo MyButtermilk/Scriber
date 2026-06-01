@@ -4,6 +4,8 @@
 **Version:** 1.2
 **Reviewer:** GPT-5 (Codex CLI)
 
+**Status-Update 2026-06-01:** Dieses Review ist historisch. Zusätzlich umgesetzt wurden DeviceMonitor-Deferral/PortAudio-Guarding, Mic-Resolution-TTL-Cache, Audio-Callback-RMS-Throttling und per-session Stream-Cleanup mit `close_stream=True`. Weiter offene Performance-Risiken sind vor allem no-client WebSocket-Serialisierung, große Upload-/Export-I/O-Pfade und der O(n²)-Live-Content-Aufbau.
+
 ---
 
 ## Inhaltsverzeichnis

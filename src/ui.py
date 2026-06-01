@@ -494,6 +494,15 @@ class ScriberUI(ctk.CTk):
         # Select Dashboard by default
         self._select_nav("dashboard")
 
+        # Tracking focus & mapping for smart mic management
+        self._window_has_focus = True
+        self._window_is_mapped = True
+
+        self.bind("<FocusIn>", self._on_window_focus_in)
+        self.bind("<FocusOut>", self._on_window_focus_out)
+        self.bind("<Unmap>", self._on_window_unmap)
+        self.bind("<Map>", self._on_window_map)
+
         # Start a mic-preview stream so the visualizer reacts even before STT starts.
         try:
             bars = getattr(self.visualizer, "n_bars", 24)
@@ -799,15 +808,45 @@ class ScriberUI(ctk.CTk):
         if not preview:
             return
         if enabled:
+            # Enforce focus, window mapping (visibility), and busy status constraints
+            busy = any(word in self.status_var.get() for word in ("Listening", "Transcribing", "Stopping"))
+            should_run = getattr(self, "_window_has_focus", True) and getattr(self, "_window_is_mapped", True) and not busy
+            if not should_run:
+                preview.stop()
+                return
             preview.start()
         else:
             preview.stop()
 
+    def _update_mic_preview_state(self) -> None:
+        status = self.status_var.get()
+        busy = any(word in status for word in ("Listening", "Transcribing", "Stopping"))
+        self.set_mic_preview_enabled(not busy)
+
+    def _on_window_focus_in(self, event) -> None:
+        if event.widget == self:
+            self._window_has_focus = True
+            self._update_mic_preview_state()
+
+    def _on_window_focus_out(self, event) -> None:
+        if event.widget == self:
+            self._window_has_focus = False
+            self._update_mic_preview_state()
+
+    def _on_window_map(self, event) -> None:
+        if event.widget == self:
+            self._window_is_mapped = True
+            self._update_mic_preview_state()
+
+    def _on_window_unmap(self, event) -> None:
+        if event.widget == self:
+            self._window_is_mapped = False
+            self._update_mic_preview_state()
+
     def _apply_status_ui(self, status: str) -> None:
         self.status_var.set(status)
 
-        busy = any(word in status for word in ("Listening", "Transcribing", "Stopping"))
-        self.set_mic_preview_enabled(not busy)
+        self._update_mic_preview_state()
 
         if "Listening" in status:
             self.hero_btn.configure(

@@ -13,6 +13,8 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
 3. Frontend-Refetch-Stürme bei `history_updated`
 4. O(n²)-Stringaufbau bei Live-Transkriptsegmenten
 
+**Status-Update 2026-06-01:** Die FTS5-/Pagination-Empfehlung ist im Backend umgesetzt, `history_updated` ist global gedrosselt, `audio_level` läuft nur noch ~30fps, und der Mic-Hotpath wurde mit Device-Resolution-Cache, DeviceMonitor-Deferral und Audio-Callback-Throttling weiter optimiert. Weiter offen bleiben große Upload-/Export-I/O-Pfade, echte Frontend-Virtualisierung und der O(n²)-Content-Aufbau.
+
 ## Findings (priorisiert)
 
 ### P0: Große Dateien werden vollständig in RAM geladen
@@ -57,6 +59,9 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
   - In-Memory-Filter nur als Fallback.
 - Erwarteter Impact:
   - Große Beschleunigung bei vielen/langen Transkripten.
+- Status 2026-06-01:
+  - ✅ Backend umgesetzt: SQLite FTS5, `created_at`-Index, Preview/Metadata-Listen und `offset`/`limit`-Pagination sind vorhanden.
+  - 🔄 Frontend-Virtualisierung/Infinite Scroll bleibt offen.
 
 ### P1: O(n²)-Aufbau von `content` bei Live-Segmenten
 - Stelle:
@@ -98,6 +103,9 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
   - `staleTime` für Listen anheben (z. B. 5-15s) bei WebSocket-getriebenen Updates.
 - Erwarteter Impact:
   - Weniger Netzverkehr/Renderzyklen, glattere UI.
+- Status 2026-06-01:
+  - ✅ Backend-seitig globales `history_updated`-Throttling/Coalescing vorhanden.
+  - 🔄 Delta-Events und vollständiger Ersatz globaler Refetches bleiben offen.
 
 ### P2: Doppelte Aktualisierung in TranscriptDetail (Polling + WebSocket)
 - Stelle:
@@ -125,6 +133,10 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
   - Payload komprimieren/quantisieren (z. B. `uint8` Level).
 - Erwarteter Impact:
   - Weniger CPU/Netzwerk bei aktiver Aufnahme.
+- Status 2026-06-01:
+  - ✅ Broadcast-Frequenz ist auf ~30fps begrenzt.
+  - ✅ `MicrophoneInput` berechnet UI/RMS-Werte ebenfalls nur ~30fps, ohne Audioframes für STT zu droppen.
+  - 🔄 No-client Fast-Path vor `json.dumps` ist noch offen.
 
 ### P2: Startup-Init ist teilweise sequenziell und Mistral-Prewarm fehlt
 - Stelle:
@@ -144,7 +156,7 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
 ## Empfohlene Reihenfolge
 1. P0: Streaming statt Voll-`read()` in `transcribe_file_direct`
 2. P0: MistralAsync auf spooled buffer umstellen
-3. P0/P1: Transcript-Suche auf SQLite FTS5 + serverseitige Pagination
+3. ~~P0/P1: Transcript-Suche auf SQLite FTS5 + serverseitige Pagination~~ ✅ Backend umgesetzt
 4. P1: Inkrementeller `content`-Aufbau + cached preview
 5. P1/P2: Frontend Refetch-Strategie auf Delta-Updates umstellen
 
@@ -160,4 +172,5 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
 ## Quick Wins (geringer Aufwand)
 - `src/web_api.py:356` Join-Strategie ersetzen (inkrementell)
 - `Frontend/client/src/pages/TranscriptDetail.tsx` Polling bei WS-Verbindung deaktivieren
-- `src/web_api.py` `audio_level` von 60fps auf 30fps reduzieren
+- ~~`src/web_api.py` `audio_level` von 60fps auf 30fps reduzieren~~ ✅ umgesetzt
+- `src/web_api.py` no-client Fast-Path vor `json.dumps` ergänzen

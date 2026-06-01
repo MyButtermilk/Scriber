@@ -1,6 +1,6 @@
 # Microphone Performance Enhancement
 
-## Implementation Status ✅
+## Implementation Status (2026-06-01)
 
 **Fully Implemented Solutions:**
 - ✅ **Solution 1 (Ready Signal)**: Added `on_ready` callback to `MicrophoneInput` that fires when the stream is actually started
@@ -9,9 +9,12 @@
   - Overlay shows "Preparing..." immediately on hotkey press
   - Transitions to "Recording" with waveform when mic is ready
   - Transitions to "Transcribing" spinner when processing async transcription
+- ✅ **Mic device resolution cache**: Repeated recording starts reuse the resolved device index for a short TTL and invalidate on mic/favorite setting changes or device-change events
+- ✅ **DeviceMonitor active-stream deferral**: PortAudio cache refreshes are deferred while a stream is active and run once after the stream becomes idle
+- ✅ **Audio callback hot-path reduction**: Raw audio still flows every callback, but visualizer/input-warning RMS work is capped to ~30fps and multi-channel selection is rescanned every 10 frames
 
-**Available but Optional:**
-- ⚙️ **Solution 2 (Pre-warming)**: Available via `MIC_ALWAYS_ON` setting in Settings > Transcription Settings > Mic Pre-warming
+**Configured but not a true prewarm yet:**
+- ⚠️ **Solution 2 (Pre-warming)**: The `MIC_ALWAYS_ON` setting exists, but current per-session pipeline cleanup force-closes streams to avoid orphaned PortAudio resources. A real always-on/prewarmed mic needs an app-level manager that owns one reusable stream across sessions.
 
 **Not Implemented:**
 - ❌ **Solution 3 (Pre-buffer)**: Planned for future if needed
@@ -85,10 +88,15 @@ The overlay is shown **immediately** after calling `_pipeline.start()`, but the 
 
 **Concept**: Keep the microphone in standby mode so it's instantly ready when the hotkey is pressed.
 
-**Implementation**:
+**Implementation target**:
 1. When `MIC_ALWAYS_ON` is enabled, keep the stream open
 2. On hotkey press, immediately start processing the already-flowing audio
-3. Use the existing `keep_alive` parameter in `MicrophoneInput`
+3. Use an app-level microphone manager, not a per-session `ScriberPipeline`, so the stream can be safely reused across sessions
+
+**Current behavior (2026-06-01):**
+- `MicrophoneInput.stop()` still supports `keep_alive` semantics locally.
+- `ScriberPipeline._cleanup_audio_input()` currently calls `stop(..., close_stream=True)` because pipeline instances are per-session and cannot safely own a reusable always-on stream.
+- This avoids lingering PortAudio streams after stop, but does not deliver true instant mic prewarming yet.
 
 **Pros**:
 - Near-instant response
@@ -179,17 +187,12 @@ The overlay is shown **immediately** after calling `_pipeline.start()`, but the 
 
 ## Implementation Priority
 
-1. **Quick Win**: Solution 4 (Visual feedback) - Can be implemented in ~1 hour
-2. **Proper Fix**: Solution 1 (Ready signal) - ~2-3 hours  
-3. **Best UX**: Solution 5 (Hybrid) - ~4-6 hours
-4. **Maximum Reliability**: Solution 3 (Pre-buffer) - ~8+ hours
+1. ✅ **Completed**: Solution 4 (Visual feedback)
+2. ✅ **Completed**: Solution 1 (Ready signal)
+3. ✅ **Completed**: Solution 5 (Hybrid)
+4. 🔄 **Next meaningful step**: App-level microphone prewarming manager for true `MIC_ALWAYS_ON`
+5. ⏳ **Future**: Solution 3 (Pre-buffer) if users still lose first speech after prewarming
 
 ## Recommendation
 
-Start with **Solution 5 (Hybrid)** as it provides the best user experience:
-- Immediate visual feedback
-- Accurate recording state indication
-- Minimal resource overhead
-- Clear user guidance on when to start speaking
-
-If time is limited, implement **Solution 4** first as a quick improvement, then add **Solution 1** later.
+The current production path should keep the hybrid ready-signal flow and the safe per-session stream cleanup. The next improvement should be a separate app-level mic manager that explicitly owns privacy/resource tradeoffs for `MIC_ALWAYS_ON`; do not try to reuse per-session pipeline-owned streams for that.

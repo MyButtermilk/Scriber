@@ -8,6 +8,7 @@ from src.audio_devices import get_default_input_device_index
 from src.config import Config
 from src.pipeline import _normalize_device_name as normalize_pipeline_device_name
 from src.pipeline import _resolve_mic_device
+from src.pipeline import invalidate_mic_device_resolution_cache
 from src.web_api import ScriberWebController
 
 
@@ -19,7 +20,7 @@ def _install_fake_sounddevice(
     default_input: int = 0,
     default_hostapi: int | None = None,
     invalid_check_indices: set[int] | None = None,
-) -> None:
+) -> types.SimpleNamespace:
     module = types.SimpleNamespace()
     if default_hostapi is None and 0 <= default_input < len(devices):
         try:
@@ -69,6 +70,8 @@ def _install_fake_sounddevice(
 
     module.check_input_settings = check_input_settings
     monkeypatch.setitem(sys.modules, "sounddevice", module)
+    invalidate_mic_device_resolution_cache()
+    return module
 
 
 def test_normalize_device_name_ignores_hostapi_and_unstable_index():
@@ -224,6 +227,35 @@ def test_resolve_mic_device_fallback_ignores_soundmapper(monkeypatch: pytest.Mon
     resolved = _resolve_mic_device("default")
 
     assert resolved == "1"
+
+
+def test_resolve_mic_device_uses_cache_for_repeated_resolution(monkeypatch: pytest.MonkeyPatch):
+    query_count = 0
+    module = _install_fake_sounddevice(
+        monkeypatch,
+        devices=[
+            {"name": "Built-in Mic, MME", "max_input_channels": 1, "hostapi": 0},
+            {"name": "Dock Mic, MME", "max_input_channels": 1, "hostapi": 0},
+        ],
+        hostapis=[{"name": "MME"}],
+        default_input=0,
+    )
+    original_query_devices = module.query_devices
+
+    def counting_query_devices(*args, **kwargs):
+        nonlocal query_count
+        query_count += 1
+        return original_query_devices(*args, **kwargs)
+
+    module.query_devices = counting_query_devices
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "Dock Mic, MME", raising=False)
+
+    assert _resolve_mic_device("default") == "1"
+    first_query_count = query_count
+    assert first_query_count > 0
+
+    assert _resolve_mic_device("default") == "1"
+    assert query_count == first_query_count
 
 
 @pytest.mark.asyncio
