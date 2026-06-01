@@ -568,7 +568,7 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 
 ### Pending (High Priority)
 - [ ] Vite Build Optimization (1.5) - ~15-25% Bundle, Low Effort
-- [ ] WebSocket no-client fast path / generic message batching (1.6) - avoids serialization when UI is closed
+- [ ] Generic WebSocket message batching (1.6 follow-up) - evaluate only if measured broadcast cost becomes meaningful with connected clients
 
 ### Pending (Medium Priority)
 - [ ] Frontend Virtual Scrolling (2.2) - Use pagination API with infinite scroll
@@ -583,7 +583,7 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 
 ## Metrics to Track
 
-Status 2026-06-01: `scripts/measure_hybrid_baseline.ps1` creates a JSON baseline artifact for the hybrid Tauri/Python runtime. It measures startup/backend readiness and reads available hot-path metric segments, but intentionally marks the Phase 0 gate incomplete until upload/export load, WebSocket throughput/serialization, and large-history scroll benchmarks are automated or attached as separate artifacts.
+Status 2026-06-01: `scripts/measure_hybrid_baseline.ps1` creates a JSON baseline artifact for the hybrid Tauri/Python runtime. It measures startup/backend readiness, reads available hot-path metric segments, and embeds `scripts/measure_ws_broadcast_baseline.py` results for WebSocket throughput and JSON serialization. The Phase 0 gate intentionally stays incomplete until upload/export load and large-history scroll benchmarks are automated or attached as separate artifacts, and until real recording hot-path samples exist.
 
 | Metric | Before | After | Target | Status |
 |--------|--------|-------|--------|--------|

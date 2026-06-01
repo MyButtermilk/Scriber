@@ -25,8 +25,12 @@ param(
     [int]$TimeoutSec = 60,
     [int]$BackendHealthTimeoutSec = 20,
     [int]$UiVisibleTimeoutSec = 20,
+    [int]$WsIterations = 2000,
+    [int]$WsWarmup = 100,
+    [string]$WsClientCounts = "1,5",
     [switch]$Hidden,
     [switch]$SkipUiVisibleWait,
+    [switch]$SkipWsBenchmark,
     [switch]$KeepArtifacts,
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
@@ -301,6 +305,53 @@ function New-Requirement {
     }
 }
 
+function Invoke-WebSocketBroadcastBenchmark {
+    param(
+        [string]$BaselineOutputPath
+    )
+
+    $scriptPath = Join-Path $RepoRoot "scripts\measure_ws_broadcast_baseline.py"
+    if (-not (Test-Path $scriptPath)) {
+        throw "Missing WebSocket baseline benchmark script: $scriptPath"
+    }
+
+    $outputDir = Split-Path $BaselineOutputPath
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($BaselineOutputPath)
+    $wsOutputPath = Join-Path $outputDir "$baseName-websocket.json"
+    Assert-UnderRoot -Root (Join-Path $RepoRoot "tmp") -Path $wsOutputPath -Label "WebSocket baseline output"
+
+    $stdoutPath = Join-Path $outputDir "$baseName-websocket.out"
+    $stderrPath = Join-Path $outputDir "$baseName-websocket.err"
+    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+
+    $process = Start-Process `
+        -FilePath $PythonPath `
+        -ArgumentList @(
+            $scriptPath,
+            "--iterations", [string]$WsIterations,
+            "--warmup", [string]$WsWarmup,
+            "--clients", $WsClientCounts,
+            "--output", $wsOutputPath
+        ) `
+        -WorkingDirectory $RepoRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath `
+        -Wait `
+        -PassThru
+
+    if ($process.ExitCode -ne 0) {
+        $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
+        $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
+        throw "WebSocket baseline benchmark failed with exit code $($process.ExitCode). stdout: $stdout stderr: $stderr"
+    }
+    if (-not (Test-Path $wsOutputPath)) {
+        throw "WebSocket baseline benchmark did not write output: $wsOutputPath"
+    }
+
+    return Get-Content -LiteralPath $wsOutputPath -Raw | ConvertFrom-Json
+}
+
 function Invoke-BaselineIteration {
     param(
         [int]$Index
@@ -462,6 +513,12 @@ if ($BackendExePath) {
 if ($Iterations -lt 1) {
     throw "Iterations must be >= 1."
 }
+if ($WsIterations -lt 1) {
+    throw "WsIterations must be >= 1."
+}
+if ($WsWarmup -lt 0) {
+    throw "WsWarmup must be >= 0."
+}
 if (-not $OutputPath) {
     $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
     $OutputPath = Join-Path $RepoRoot "tmp\hybrid-baseline\hybrid-baseline-$stamp.json"
@@ -473,6 +530,11 @@ New-Item -ItemType Directory -Force -Path (Split-Path $OutputPath) | Out-Null
 $samples = @()
 for ($i = 1; $i -le $Iterations; $i++) {
     $samples += Invoke-BaselineIteration -Index $i
+}
+
+$webSocketBenchmark = $null
+if (-not $SkipWsBenchmark) {
+    $webSocketBenchmark = Invoke-WebSocketBroadcastBenchmark -BaselineOutputPath $OutputPath
 }
 
 $segmentNames = @(Get-HotPathSegmentNames -Samples $samples)
@@ -506,8 +568,9 @@ $requirements = @(
         -Evidence "No load runner wired into this baseline script yet."
     New-Requirement `
         -Name "websocket_events_and_json_serialize_cost" `
-        -Status "not_automated_yet" `
-        -Evidence "No WebSocket throughput benchmark wired into this baseline script yet."
+        -Status $(if ($SkipWsBenchmark) { "skipped" } elseif ($webSocketBenchmark -and $webSocketBenchmark.ok) { "measured" } else { "missing" }) `
+        -Evidence "scripts/measure_ws_broadcast_baseline.py measures JSON serialization, no-client fast path, and broadcast throughput with synthetic WebSocket clients." `
+        -Notes $(if ($SkipWsBenchmark) { "Run without -SkipWsBenchmark to collect WebSocket throughput and serialization baseline." } else { "" })
     New-Requirement `
         -Name "history_scroll_many_transcripts" `
         -Status "not_automated_yet" `
@@ -544,6 +607,10 @@ $result = [pscustomobject]@{
         disableDevFallback = [bool]$DisableDevFallback
         enableHotkeys = [bool]$EnableHotkeys
         enableDeviceMonitor = [bool]$EnableDeviceMonitor
+        skipWsBenchmark = [bool]$SkipWsBenchmark
+        wsIterations = $WsIterations
+        wsWarmup = $WsWarmup
+        wsClientCounts = $WsClientCounts
     }
     summary = [pscustomobject]@{
         coldStartToUiVisibleMs = New-SampleSummary -Samples $samples -PropertyName "coldStartToUiVisibleMs"
@@ -552,12 +619,14 @@ $result = [pscustomobject]@{
         runtimeFetchMs = New-SampleSummary -Samples $samples -PropertyName "runtimeFetchMs"
         cleanupMs = New-SampleSummary -Samples $samples -PropertyName "cleanupMs"
         hotPathSegmentNames = @($segmentNames)
+        webSocketBenchmark = $(if ($webSocketBenchmark) { $webSocketBenchmark.summary } else { $null })
     }
     phase0Gate = [pscustomobject]@{
         complete = $incomplete.Count -eq 0
         incompleteRequirements = @($incomplete | ForEach-Object { $_.name })
         requirements = $requirements
     }
+    webSocketBenchmark = $webSocketBenchmark
     samples = $samples
 }
 

@@ -28,6 +28,10 @@ The script writes a JSON artifact under `tmp\hybrid-baseline\` and also prints
 the same JSON to stdout. Use `-FailOnIncompleteGate` when the run should fail
 unless every Phase 0 requirement is measured.
 
+WebSocket broadcast and JSON serialization cost are measured by default. Tune
+that synthetic benchmark with `-WsIterations`, `-WsWarmup`, and
+`-WsClientCounts`, or skip it with `-SkipWsBenchmark`.
+
 ## Automated Today
 
 `scripts/measure_hybrid_baseline.ps1` currently measures:
@@ -39,6 +43,8 @@ unless every Phase 0 requirement is measured.
 - `/api/runtime` fetch latency with the session token;
 - managed backend cleanup after Tauri exit;
 - available hot-path metric segment names from `/api/metrics/hot-path`.
+- WebSocket JSON serialization, no-client broadcast fast path, and broadcast
+  throughput with synthetic clients via `scripts/measure_ws_broadcast_baseline.py`.
 
 The runner intentionally reports an incomplete Phase 0 gate until all required
 measurements are present. Missing fields are listed in
@@ -64,7 +70,6 @@ connected frontend client.
 The following baseline requirements are not automated yet:
 
 - upload/export under load;
-- WebSocket events/sec and JSON serialization cost;
 - history scrolling with many transcripts.
 
 Until those are wired into the runner or separate benchmark artifacts, the

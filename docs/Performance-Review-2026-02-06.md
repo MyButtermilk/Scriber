@@ -136,7 +136,7 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
 - Status 2026-06-01:
   - ✅ Broadcast-Frequenz ist auf ~30fps begrenzt.
   - ✅ `MicrophoneInput` berechnet UI/RMS-Werte ebenfalls nur ~30fps, ohne Audioframes für STT zu droppen.
-  - 🔄 No-client Fast-Path vor `json.dumps` ist noch offen.
+  - ✅ No-client Fast-Path vor `json.dumps` ist inzwischen umgesetzt und wird ueber die Hybrid-Baseline mitgemessen.
 
 ### P2: Startup-Init ist teilweise sequenziell und Mistral-Prewarm fehlt
 - Stelle:
