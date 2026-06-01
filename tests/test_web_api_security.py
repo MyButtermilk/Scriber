@@ -82,8 +82,9 @@ def test_loopback_request_detection():
 
 
 @pytest.mark.asyncio
-async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch):
+async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     ctl = ScriberWebController(asyncio.get_running_loop())
     app = web_api.create_app(ctl)
     shutdown_event = asyncio.Event()
@@ -103,6 +104,13 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch):
         assert authorized.status == 200
         payload = await authorized.json()
         assert payload["featureFlags"]["sessionTokenRequired"] is True
+
+        support_unauthorized = await client.post("/api/runtime/support-bundle")
+        assert support_unauthorized.status == 401
+
+        support = await client.post("/api/runtime/support-bundle", headers={"X-Scriber-Token": "secret"})
+        assert support.status == 200
+        assert (await support.read()).startswith(b"PK")
 
         shutdown_unauthorized = await client.post("/api/runtime/shutdown")
         assert shutdown_unauthorized.status == 401

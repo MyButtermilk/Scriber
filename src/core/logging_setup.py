@@ -7,6 +7,8 @@ from typing import Any
 
 from loguru import logger
 
+from src.runtime.paths import logs_dir
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PRETTY_LOG_PATH = PROJECT_ROOT / "latest.log"
@@ -24,6 +26,11 @@ def _normalize_level(level: str | None) -> str:
     return "INFO"
 
 
+def _log_paths() -> tuple[Path, Path]:
+    base_dir = logs_dir()
+    return base_dir / "latest.log", base_dir / "latest.structured.jsonl"
+
+
 def setup_logging(
     *,
     component: str = "app",
@@ -31,18 +38,19 @@ def setup_logging(
     add_stderr: bool = True,
 ) -> dict[str, str]:
     global _CONFIGURED
+    pretty_log_path, structured_log_path = _log_paths()
 
     if _CONFIGURED and not force:
         return {
-            "pretty": str(PRETTY_LOG_PATH),
-            "structured": str(STRUCTURED_LOG_PATH),
+            "pretty": str(pretty_log_path),
+            "structured": str(structured_log_path),
         }
 
     if force:
         logger.remove()
 
-    PRETTY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STRUCTURED_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    pretty_log_path.parent.mkdir(parents=True, exist_ok=True)
+    structured_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     logger.configure(extra={"component": component, "trace": "------", "stage": component})
 
@@ -68,7 +76,7 @@ def setup_logging(
         )
 
     logger.add(
-        PRETTY_LOG_PATH,
+        pretty_log_path,
         level=level_name,
         format=fmt,
         colorize=False,
@@ -80,7 +88,7 @@ def setup_logging(
     )
 
     logger.add(
-        STRUCTURED_LOG_PATH,
+        structured_log_path,
         level=level_name,
         serialize=True,
         enqueue=False,
@@ -92,8 +100,8 @@ def setup_logging(
 
     _CONFIGURED = True
     return {
-        "pretty": str(PRETTY_LOG_PATH),
-        "structured": str(STRUCTURED_LOG_PATH),
+        "pretty": str(pretty_log_path),
+        "structured": str(structured_log_path),
     }
 
 
@@ -147,4 +155,3 @@ def emit_event(
 
     logger_obj = bound_logger.bind(**extras) if extras else bound_logger
     logger_obj.log(_normalize_level(level), message)
-

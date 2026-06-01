@@ -218,6 +218,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Status 2026-06-01: Der Tauri-Supervisor erzeugt ein zufaelliges `SCRIBER_SESSION_TOKEN`, uebergibt es an den Python-Worker und stellt es dem React-Frontend ueber `get_backend_access` bereit. Das Backend erzwingt den Token fuer lokale REST-/WebSocket-Zugriffe; `/api/health` bleibt fuer Readiness tokenfrei.
    - Status 2026-06-01: `POST /api/runtime/shutdown` existiert als loopback- und token-geschuetzter Shutdown-Endpunkt fuer kontrolliertes Worker-Beenden.
    - Status 2026-06-01: WebSocket-Events tragen `apiVersion` und werden ueber `src/core/ws_contracts.py` sowie `tests/contract/test_ws_events.py` gegen bekannte Eventtypen validiert. Das React-Frontend nutzt dafuer eine typisierte `ScriberWebSocketMessage`-Union.
+   - Status 2026-06-01: Tauri schreibt Shell-Lifecycle-Logs und Backend-Exit-Metadaten unter `SCRIBER_DATA_DIR\logs\`; `POST /api/runtime/support-bundle` erzeugt ein redigiertes Diagnose-ZIP ohne API-Keys oder Session-Tokens.
 2. **Frontend Production Build** in den Backend-Output integrieren:
    - `npm run build` erzeugt `Frontend/dist/public/` mit statischem HTML/JS/CSS.
    - `build_windows.ps1` kopiert diesen Output in das PyInstaller-Output-Verzeichnis.
@@ -382,6 +383,7 @@ Lieferobjekte:
 | `src/updater.py` | UpdateManager: Check, Download, Verify, Install. |
 | `src/runtime/paths.py` | Teilweise umgesetzt: Runtime-Data-Pfade fuer Settings, SQLite und Downloads. Frontend-Asset-Resolution offen. |
 | `src/runtime/media_tools.py` | Umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp` ueber Env, Sidecar-Tools und System-PATH. |
+| `src/runtime/support_bundle.py` | Umgesetzt: redigiertes Support-ZIP mit Runtime-/State-Metadaten, Logs und redigierter Config/Env. |
 | `src/backend_worker.py` | Umgesetzt: Tauri/PyInstaller Worker-Entry-Point. |
 | `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar inkl. SciPy/pyloudnorm-Startup-Abhaengigkeiten. |
 | `installer/scriber.iss` | Inno Setup Script. |
@@ -398,7 +400,7 @@ Lieferobjekte:
 | Datei | Aenderung |
 |-------|-----------|
 | `src/tray.py` | Update-Menue-Eintraege, Launcher-Integration, `start_frontend()` konditional, Version im Tooltip. Named Mutex fuer Inno Setup. |
-| `src/web_api.py` | Teilweise umgesetzt: Version/Runtime im Health-Endpoint, Session-Token-Middleware und `/api/runtime/shutdown`. Offen: Update-Endpunkte (`/api/update/*`) und Static-File-Serving fuer Frontend im Frozen-Modus. |
+| `src/web_api.py` | Teilweise umgesetzt: Version/Runtime im Health-Endpoint, Session-Token-Middleware, `/api/runtime/shutdown` und `/api/runtime/support-bundle`. Offen: Update-Endpunkte (`/api/update/*`) und Static-File-Serving fuer Frontend im Frozen-Modus. |
 | `src/config.py` | Update-Settings (`AUTO_UPDATE`, `UPDATE_CHANNEL`, `UPDATE_CHECK_INTERVAL_HOURS`, `UPDATE_URL`). |
 | `Frontend/client/src/pages/Settings.tsx` | Update-Sektion im Settings-UI. |
 | `README.md` | Install/Update User Guide fuer Endnutzer. |

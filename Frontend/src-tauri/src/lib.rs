@@ -1,5 +1,5 @@
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{
     env,
     fs::{self, OpenOptions},
@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
 #[cfg(windows)]
@@ -292,6 +292,9 @@ fn refresh_child_state(state: &mut BackendState) {
     if let Some(child) = state.child.as_mut() {
         match child.try_wait() {
             Ok(Some(status)) => {
+                let pid = child.id();
+                let launch_kind = state.launch_kind.clone();
+                write_backend_exit_metadata(pid, &launch_kind, &status.to_string());
                 state.message = format!("Managed backend exited with {status}");
                 state.child = None;
                 state.job = None;
@@ -300,6 +303,9 @@ fn refresh_child_state(state: &mut BackendState) {
             }
             Ok(None) => {}
             Err(err) => {
+                let pid = child.id();
+                let launch_kind = state.launch_kind.clone();
+                write_backend_exit_metadata(pid, &launch_kind, &format!("inspect failed: {err}"));
                 state.message = format!("Failed to inspect backend process: {err}");
                 state.child = None;
                 state.job = None;
@@ -312,6 +318,7 @@ fn refresh_child_state(state: &mut BackendState) {
 
 fn terminate_managed_child(state: &mut BackendState) {
     if let Some(mut child) = state.child.take() {
+        write_shell_log(&format!("terminating managed backend pid={}", child.id()));
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -397,6 +404,16 @@ fn spawn_backend(
     let data_dir = scriber_data_dir();
     fs::create_dir_all(&data_dir)
         .map_err(|err| format!("Could not create Scriber data directory: {err}"))?;
+    write_shell_log_to_dir(
+        &data_dir,
+        &format!(
+            "starting backend launch_kind={} program={} port={} data_dir={}",
+            spec.launch_kind,
+            spec.program.display(),
+            port,
+            data_dir.display()
+        ),
+    );
     let log_path = data_dir.join("logs").join("tauri-backend.log");
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)
@@ -426,10 +443,30 @@ fn spawn_backend(
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
     hide_child_console_window(&mut command);
-    command
-        .spawn()
-        .map(|child| (child, spec.launch_kind))
-        .map_err(|err| format!("Could not spawn {:?}: {err}", spec.program))
+    match command.spawn() {
+        Ok(child) => {
+            write_shell_log_to_dir(
+                &data_dir,
+                &format!(
+                    "backend started pid={} launch_kind={} backend_log={}",
+                    child.id(),
+                    spec.launch_kind,
+                    log_path.display()
+                ),
+            );
+            Ok((child, spec.launch_kind))
+        }
+        Err(err) => {
+            write_shell_log_to_dir(
+                &data_dir,
+                &format!(
+                    "backend spawn failed program={} error={err}",
+                    spec.program.display()
+                ),
+            );
+            Err(format!("Could not spawn {:?}: {err}", spec.program))
+        }
+    }
 }
 
 fn resolve_backend_command(resource_dir: Option<&Path>) -> Result<BackendCommandSpec, String> {
@@ -592,6 +629,55 @@ fn scriber_data_dir() -> PathBuf {
     env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("scriber-data")
+}
+
+fn timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn write_shell_log(message: &str) {
+    let data_dir = scriber_data_dir();
+    write_shell_log_to_dir(&data_dir, message);
+}
+
+fn write_shell_log_to_dir(data_dir: &Path, message: &str) {
+    let log_dir = data_dir.join("logs");
+    if fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+    let path = log_dir.join("tauri-shell.log");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{} {}", timestamp_millis(), message);
+    }
+}
+
+fn write_backend_exit_metadata(pid: u32, launch_kind: &str, status: &str) {
+    let data_dir = scriber_data_dir();
+    let log_dir = data_dir.join("logs");
+    if fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+    let payload = json!({
+        "timestampMs": timestamp_millis(),
+        "event": "managed_backend_exit",
+        "pid": pid,
+        "launchKind": launch_kind,
+        "status": status,
+    });
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join("backend-crash-metadata.jsonl"))
+    {
+        let _ = writeln!(file, "{payload}");
+    }
+    write_shell_log_to_dir(
+        &data_dir,
+        &format!("managed backend exited pid={pid} launch_kind={launch_kind} status={status}"),
+    );
 }
 
 fn absolute_path(raw: &str) -> PathBuf {

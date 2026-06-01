@@ -45,6 +45,7 @@ Current implementation highlights:
 - Tauri-supervised backend access is protected by a per-run session token: Rust passes `SCRIBER_SESSION_TOKEN` to the worker, React reads it through `get_backend_access`, and backend REST/WebSocket URLs carry a `scriberToken` query parameter.
 - Backend hot-path reductions: no-client WebSocket broadcasts skip JSON serialization, audio-level callbacks avoid UI broadcast work without clients/overlay, long transcript appends buffer final segments, and upload/export cleanup paths are offloaded from the event loop where practical.
 - Runtime data path support via `SCRIBER_DATA_DIR`: the Tauri-supervised backend writes settings, SQLite data, downloads, and logs to a writable app data directory instead of relying on the repository or install directory.
+- Redacted support bundles for packaged diagnostics: runtime metadata, selected logs, and redacted settings/environment without API keys or session tokens.
 - Backend sidecar path for Tauri: the supervisor can start a packaged `scriber-backend` worker and falls back to the source checkout/virtualenv for development.
 
 Known limits:
@@ -374,10 +375,13 @@ flowchart LR
 - `GET /api/health`
 - `GET /api/runtime`
 - `POST /api/runtime/shutdown`
+- `POST /api/runtime/support-bundle`
 - `GET /api/state`
 - `GET /api/metrics/hot-path?limit=n`
 
 `/api/health` is intentionally token-free for local readiness checks. When `SCRIBER_SESSION_TOKEN` is configured, other local REST/WebSocket calls require the token via `X-Scriber-Token`, `Authorization: Bearer ...`, or `scriberToken` query parameter. `/api/runtime/shutdown` additionally requires loopback access and a valid token before it signals controlled server shutdown.
+
+`/api/runtime/support-bundle` creates a diagnostic ZIP in the runtime data directory and returns it as a download. It redacts sensitive config, environment, and log values before writing entries to the bundle.
 
 `limit` for hot-path metrics is clamped to `1..500`.
 
@@ -477,9 +481,10 @@ Default CORS allows localhost, `127.0.0.1`, and `::1`. `SCRIBER_ALLOWED_ORIGINS=
 SCRIBER_DATA_DIR=
 SCRIBER_DATABASE_PATH=
 SCRIBER_DOWNLOADS_DIR=downloads
+SCRIBER_LOG_DIR=
 ```
 
-In a normal source checkout, state defaults to the repository root for backwards compatibility. When `SCRIBER_DATA_DIR` is set, `settings.json`, `transcripts.db`, and relative download directories are resolved under that directory. The Tauri supervisor sets this automatically to a writable Scriber app-data directory for the managed backend.
+In a normal source checkout, state defaults to the repository root for backwards compatibility. When `SCRIBER_DATA_DIR` is set, `settings.json`, `transcripts.db`, relative download directories, logs, and support bundles are resolved under that directory. The Tauri supervisor sets this automatically to a writable Scriber app-data directory for the managed backend.
 
 ### Desktop Backend Worker
 
@@ -659,7 +664,7 @@ npm run tauri:build
 
 The current Tauri shell is a hybrid runtime: Rust owns the desktop window and supervises the Python backend. It prefers a packaged backend sidecar (`SCRIBER_BACKEND_EXE` or `backend\scriber-backend.exe` next to the Tauri executable) and falls back in development to `SCRIBER_PYTHON`, `venv\Scripts\python.exe`, `.venv\Scripts\python.exe`, or `python` running `python -m src.web_api`. The backend reports `/api/health` and `/api/runtime` metadata including API version, runtime mode, launch kind, PID, host, port, start time, capabilities, startup flags, and whether session-token enforcement is active.
 
-For Tauri-managed backends, Rust creates a per-run `SCRIBER_SESSION_TOKEN`, passes it to the Python worker, and exposes it to React with `get_backend_access`. The frontend attaches that token to backend REST and WebSocket URLs. `POST /api/runtime/shutdown` is reserved for local, token-authenticated controlled worker shutdown.
+For Tauri-managed backends, Rust creates a per-run `SCRIBER_SESSION_TOKEN`, passes it to the Python worker, and exposes it to React with `get_backend_access`. The frontend attaches that token to backend REST and WebSocket URLs. `POST /api/runtime/shutdown` is reserved for local, token-authenticated controlled worker shutdown. Rust shell logs live in `logs\tauri-shell.log`, backend stdout/stderr in `logs\tauri-backend.log`, and managed backend exit metadata in `logs\backend-crash-metadata.jsonl` under `SCRIBER_DATA_DIR`.
 
 Build the backend sidecar with PyInstaller:
 

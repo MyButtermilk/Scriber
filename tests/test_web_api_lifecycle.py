@@ -163,6 +163,9 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert runtime["port"] == 8765
     assert runtime["startedAt"].endswith("Z")
     assert runtime["uptimeSeconds"] >= 0
+    assert runtime["dataDir"]
+    assert runtime["downloadsDir"]
+    assert runtime["logsDir"]
     assert runtime["capabilities"]["rest"] is True
     assert runtime["capabilities"]["websocket"] is True
     assert runtime["capabilities"]["exports"] == ["pdf", "docx"]

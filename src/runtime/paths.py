@@ -78,3 +78,17 @@ def downloads_dir(default_name: str = "downloads") -> Path:
     if uses_user_data_dir():
         return (data_dir() / default_name).resolve()
     return Path(default_name).resolve()
+
+
+def logs_dir() -> Path:
+    raw = os.getenv("SCRIBER_LOG_DIR", "").strip()
+    if raw:
+        path = Path(raw).expanduser()
+        return path.resolve() if path.is_absolute() else (data_dir() / path).resolve()
+    if uses_user_data_dir():
+        return (data_dir() / "logs").resolve()
+    return repo_root()
+
+
+def support_bundles_dir() -> Path:
+    return (data_dir() / "support-bundles").resolve()

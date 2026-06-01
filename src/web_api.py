@@ -49,10 +49,11 @@ from src.core.ws_contracts import (
 from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.pipeline import ScriberPipeline, invalidate_mic_device_resolution_cache
-from src.runtime.paths import data_dir, downloads_dir
+from src.runtime.paths import data_dir, downloads_dir, logs_dir
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
+from src.runtime.support_bundle import create_support_bundle
 from src.version import app_version
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
@@ -1618,6 +1619,7 @@ class ScriberWebController:
             "uptimeSeconds": max(0.0, time.monotonic() - self._started_at_monotonic),
             "dataDir": str(data_dir()),
             "downloadsDir": str(self._downloads_dir),
+            "logsDir": str(logs_dir()),
             "activeSession": self._session_id,
             "recordingState": recording_state.value,
             "capabilities": {
@@ -3859,6 +3861,25 @@ def create_app(controller: ScriberWebController) -> web.Application:
         stop_event.set()
         return web.json_response({"ok": True, "message": "Shutdown requested"})
 
+    async def create_runtime_support_bundle(request: web.Request):
+        ctl: ScriberWebController = request.app["controller"]
+        try:
+            bundle_path = await asyncio.to_thread(
+                create_support_bundle,
+                runtime_info=ctl.get_runtime_info(),
+                app_state=ctl.get_state(),
+            )
+        except Exception:
+            logger.exception("Failed to create support bundle")
+            return web.json_response({"message": "Failed to create support bundle"}, status=500)
+
+        return web.FileResponse(
+            bundle_path,
+            headers={
+                "Content-Disposition": f'attachment; filename="{bundle_path.name}"',
+            },
+        )
+
     async def get_hot_path_metrics(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
         try:
@@ -4408,6 +4429,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/state", get_state)
     app.router.add_get("/api/runtime", get_runtime)
     app.router.add_post("/api/runtime/shutdown", shutdown_runtime)
+    app.router.add_post("/api/runtime/support-bundle", create_runtime_support_bundle)
     app.router.add_get("/api/metrics/hot-path", get_hot_path_metrics)
     app.router.add_post("/api/live-mic/start", start_live)
     app.router.add_post("/api/live-mic/stop", stop_live)

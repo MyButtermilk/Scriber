@@ -40,3 +40,18 @@ def test_database_path_can_be_overridden(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATABASE_PATH", str(custom_db))
 
     assert paths.database_path() == custom_db.resolve()
+
+
+def test_logs_and_support_bundle_dirs_use_data_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("SCRIBER_LOG_DIR", raising=False)
+
+    assert paths.logs_dir() == (tmp_path / "data" / "logs").resolve()
+    assert paths.support_bundles_dir() == (tmp_path / "data" / "support-bundles").resolve()
+
+
+def test_logs_dir_can_be_overridden(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SCRIBER_LOG_DIR", "diagnostics")
+
+    assert paths.logs_dir() == (tmp_path / "data" / "diagnostics").resolve()

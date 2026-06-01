@@ -167,12 +167,14 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `scripts/create_release_metadata.py` writes `latest.json` and `SHA256SUMS.txt` for release artifacts. `.github/workflows/release-windows.yml` builds the Windows NSIS artifact on `workflow_dispatch` or `v*` tags and uploads/publishes these files.
 - The current sidecar spec is the standard cloud-provider build and excludes heavy local ASR stacks (`torch`, NeMo, ONNX-ASR). Treat local ASR packaging as a separate optional package path.
 - Managed backend stdout/stderr go to `logs\tauri-backend.log` under `SCRIBER_DATA_DIR`.
+- Rust shell lifecycle logs go to `logs\tauri-shell.log`; managed backend exits are appended to `logs\backend-crash-metadata.jsonl`.
+- `POST /api/runtime/support-bundle` creates a redacted diagnostic ZIP under `support-bundles\` in `SCRIBER_DATA_DIR`. It includes runtime/state metadata, selected logs, redacted settings/env data, and must not contain API keys or session tokens.
 - On Windows, the managed Python child is spawned with `CREATE_NO_WINDOW`.
 - Managed backend startup has a timeout and will be restarted by `ensure_backend_running` instead of staying in `starting` forever.
 - `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable with a random session token, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits.
 - `scripts/smoke_windows_installer.ps1` installs the generated NSIS setup into `tmp\installer-smoke\`, runs the desktop smoke without `SCRIBER_REPO_ROOT`/`SCRIBER_PYTHON` dev fallback, and removes the temporary install/data directories afterward.
 - `scripts/build_windows.ps1 -RunInstallerSmoke` builds the NSIS package and then runs the installed-package smoke gate.
-- Current Tauri status: hybrid runtime with writable runtime-data paths, session-token protected worker API, sidecar backend launch support, bundled yt-dlp support, bundled ffmpeg/ffprobe resolution, NSIS installer generation, and installed-package smoke coverage. Signing and updater remain open packaging work.
+- Current Tauri status: hybrid runtime with writable runtime-data paths, session-token protected worker API, redacted support bundles, sidecar backend launch support, bundled yt-dlp support, bundled ffmpeg/ffprobe resolution, NSIS installer generation, and installed-package smoke coverage. Signing and updater remain open packaging work.
 
 ## Commands
 
@@ -267,6 +269,7 @@ Important environment variables:
 - Web/API: `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_ALLOWED_ORIGINS`
 - Runtime storage: `SCRIBER_DATA_DIR`, `SCRIBER_DATABASE_PATH`, `SCRIBER_DOWNLOADS_DIR`
 - Tauri backend worker: `SCRIBER_BACKEND_EXE`, `SCRIBER_BACKEND_DIR`, `SCRIBER_BACKEND_LAUNCH_KIND`, `SCRIBER_FORCE_MANAGED_BACKEND`, `SCRIBER_SESSION_TOKEN`, `SCRIBER_PYTHON`
+- Diagnostics: `SCRIBER_LOG_DIR`
 - Media tools: `SCRIBER_MEDIA_TOOLS_DIR`, `SCRIBER_FFMPEG_PATH`, `SCRIBER_FFPROBE_PATH`, `SCRIBER_YT_DLP_PATH`
 - STT provider keys: `SONIOX_API_KEY`, `MISTRAL_API_KEY`, `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `GLADIA_API_KEY`, `GROQ_API_KEY`, `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, `GOOGLE_API_KEY`, `YOUTUBE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`
 - AWS STT: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
@@ -320,6 +323,8 @@ Current summarization default is `gemini-flash-latest`.
   - `pytest tests/contract/test_ws_events.py tests/test_web_api_lifecycle.py`
 - Settings/security/CORS:
   - `pytest tests/test_config.py tests/test_web_api_security.py`
+- Diagnostics/support bundle:
+  - `pytest tests/runtime/test_support_bundle.py tests/test_runtime_paths.py tests/test_web_api_security.py`
 - Job retry/resume:
   - `pytest tests/test_web_api_jobs.py tests/test_web_api_job_resume.py tests/runtime/test_retry_scheduler.py`
 - Provider routing/circuit breaker:
