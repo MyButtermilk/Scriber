@@ -60,7 +60,9 @@ Scriber laeuft als signierte, installierte Windows-App (per-user), startet singl
      - `settings.json`
      - `.env`
      - `downloads/` (heruntergeladene YouTube-Audio-Dateien)
+      - `models/` (lokale Modell-Caches)
    - Inno Setup: `[InstallDelete]` fuer alte Versionsdateien nutzen, aber Nutzerdaten unangetastet lassen.
+   - Status 2026-06-01: `.env`, `settings.json`, `transcripts.db`, Downloads und Modelle werden im Tauri/Python-Pfad unter `SCRIBER_DATA_DIR` gefuehrt. Beim ersten Start mit User-Data-Verzeichnis kopiert `src.runtime.paths.migrate_legacy_runtime_data()` fehlende Dateien aus `SCRIBER_LEGACY_DATA_DIR` oder typischen Source-Checkout-Pfaden wie `Documents\Github\Scriber`, ohne vorhandene Zieldaten zu ueberschreiben.
 4. **CloseApplications-Unterstuetzung**: Inno Setup `CloseApplications=yes` damit laufende Scriber-Instanzen vor dem Upgrade sauber heruntergefahren werden.
    - Voraussetzung: Die Scriber-App muss eine `AppMutex`/Named Mutex registrieren, die der Installer oder Updater als laufende Instanz erkennen kann.
    - Status 2026-06-01: Die Tauri-Shell registriert vor dem Backend-Start den Windows-Named-Mutex `Local\ScriberDesktopSingleInstance`; eine zweite Desktop-Instanz beendet sich dadurch frueh, ohne einen zweiten Worker zu starten.

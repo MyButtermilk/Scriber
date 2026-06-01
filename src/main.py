@@ -227,7 +227,7 @@ def save_settings():
     Config.set_mic_always_on(ui.mic_always_on_var.get())
     Config.CUSTOM_VOCAB = ui.custom_vocab_var.get().strip()
     # Persist current settings to .env so they are remembered.
-    Config.persist_to_env_file(".env")
+    Config.persist_to_env_file()
 
     if Config.HOTKEY != old_hotkey or Config.MODE != old_mode:
         register_hotkey()

@@ -1,10 +1,30 @@
 import os
 import json
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
-from src.runtime.paths import settings_path
+from src.runtime.paths import env_path, migrate_legacy_runtime_data, repo_root, settings_path
 
-load_dotenv()
+_BOOTSTRAP_ENV_KEYS = {
+    "SCRIBER_AUTO_MIGRATE_LEGACY_DATA",
+    "SCRIBER_DATA_DIR",
+    "SCRIBER_LEGACY_DATA_DIR",
+    "SCRIBER_SKIP_LEGACY_DATA_MIGRATION",
+}
+
+
+def _bootstrap_runtime_env() -> None:
+    """Load only path-related env vars needed before the canonical .env path exists."""
+    legacy_env = repo_root() / ".env"
+    if not legacy_env.is_file():
+        return
+    for key, value in dotenv_values(legacy_env).items():
+        if key in _BOOTSTRAP_ENV_KEYS and value is not None and key not in os.environ:
+            os.environ[key] = value
+
+
+_bootstrap_runtime_env()
+migrate_legacy_runtime_data()
+load_dotenv(env_path())
 
 # JSON settings file for complex values (multi-line prompts, etc.)
 _JSON_SETTINGS_PATH = settings_path()
@@ -276,8 +296,9 @@ Input:"""
         _save_json_settings(_json_settings)
 
     @classmethod
-    def persist_to_env_file(cls, path: str = ".env") -> None:
+    def persist_to_env_file(cls, path: str | None = None) -> None:
         """Persist current settings and API keys to the .env file."""
+        target_path = env_path() if path is None else path
         lines = []
         def add(k, v):
             # Escape newlines and quote values with special characters for python-dotenv
@@ -343,5 +364,5 @@ Input:"""
         add("SCRIBER_PASTE_RESTORE_DELAY_MS", str(cls.PASTE_RESTORE_DELAY_MS))
         add("SCRIBER_VISUALIZER_BAR_COUNT", str(cls.VISUALIZER_BAR_COUNT))
 
-        with open(path, "w", encoding="utf-8") as f:
+        with open(target_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

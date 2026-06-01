@@ -487,9 +487,14 @@ SCRIBER_DATA_DIR=
 SCRIBER_DATABASE_PATH=
 SCRIBER_DOWNLOADS_DIR=downloads
 SCRIBER_LOG_DIR=
+SCRIBER_LEGACY_DATA_DIR=
+SCRIBER_AUTO_MIGRATE_LEGACY_DATA=
+SCRIBER_SKIP_LEGACY_DATA_MIGRATION=0
 ```
 
-In a normal source checkout, state defaults to the repository root for backwards compatibility. When `SCRIBER_DATA_DIR` is set, `settings.json`, `transcripts.db`, relative download directories, logs, and support bundles are resolved under that directory. The Tauri supervisor sets this automatically to a writable Scriber app-data directory for the managed backend.
+In a normal source checkout, state defaults to the repository root for backwards compatibility. When `SCRIBER_DATA_DIR` is set, `.env`, `settings.json`, `transcripts.db`, relative download directories, logs, and support bundles are resolved under that directory. The Tauri supervisor sets this automatically to a writable Scriber app-data directory for the managed backend.
+
+On first run with a user data directory, Scriber performs a non-destructive legacy data migration. It copies missing `.env`, `settings.json`, `transcripts.db` (+ WAL/SHM files), `downloads/`, and `models/` from `SCRIBER_LEGACY_DATA_DIR` when set, or from common source-checkout locations such as `Documents\Github\Scriber`. Existing files in the app-data directory are never overwritten. Set `SCRIBER_SKIP_LEGACY_DATA_MIGRATION=1` to disable this behavior.
 
 ### Desktop Backend Worker
 
@@ -672,6 +677,8 @@ npm run tauri:build
 The current Tauri shell is a hybrid runtime: Rust owns the desktop window and supervises the Python backend. It prefers a packaged backend sidecar (`SCRIBER_BACKEND_EXE` or `backend\scriber-backend.exe` next to the Tauri executable) and falls back in development to `SCRIBER_PYTHON`, `venv\Scripts\python.exe`, `.venv\Scripts\python.exe`, or `python` running `python -m src.web_api`. The backend reports `/api/health` and `/api/runtime` metadata including API version, runtime mode, launch kind, PID, host, port, start time, capabilities, startup flags, and whether session-token enforcement is active.
 
 For Tauri-managed backends, Rust creates a per-run `SCRIBER_SESSION_TOKEN`, passes it to the Python worker, and exposes it to React with `get_backend_access`. The frontend attaches that token to backend REST and WebSocket URLs. `POST /api/runtime/shutdown` is reserved for local, token-authenticated controlled worker shutdown. On Windows, the shell uses the `Local\ScriberDesktopSingleInstance` named mutex to keep desktop startup single-instance before any managed worker is launched. The Tauri app menu and tray expose only shell/lifecycle actions today: open/focus the main window, restart the managed backend through the existing `BackendManager`, or quit the app. Desktop autostart is handled by Tauri commands that write `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Scriber` to the current desktop executable; old Python-tray autostart commands are treated as not enabled and are overwritten when the user enables autostart in Tauri. Tauri also owns global hotkey dispatch for managed desktop runs: the Python worker is started with `SCRIBER_DISABLE_HOTKEYS=1`, Rust registers the configured shortcut, and shortcut events call the existing `/api/live-mic/toggle`, `/start`, and `/stop` endpoints without duplicating recording state. Rust shell logs live in `logs\tauri-shell.log`, backend stdout/stderr in `logs\tauri-backend.log`, and managed backend exit metadata in `logs\backend-crash-metadata.jsonl` under `SCRIBER_DATA_DIR`.
+
+The managed backend also reads and writes `.env` under `SCRIBER_DATA_DIR`, not beside the packaged executable. This keeps API keys and user settings with the rest of the app data and allows the first-run legacy migration to preserve source-checkout installs.
 
 Build the backend sidecar with PyInstaller:
 

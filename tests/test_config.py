@@ -1,6 +1,8 @@
-import unittest
-from src.config import Config
 import os
+import unittest
+
+import src.config as config_module
+from src.config import Config
 
 class TestConfig(unittest.TestCase):
     def test_default_values(self):
@@ -33,3 +35,33 @@ class TestConfig(unittest.TestCase):
     def test_azure_mai_service_mapping_exists(self):
         self.assertIn("azure_mai", Config.SERVICE_API_KEY_MAP)
         self.assertIn("azure_mai", Config.SERVICE_LABELS)
+
+
+def test_bootstrap_runtime_env_reads_only_path_keys(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    (tmp_path / ".env").write_text(
+        f"SCRIBER_DATA_DIR={data_dir}\n"
+        "SCRIBER_LEGACY_DATA_DIR=C:\\Legacy\\Scriber\n"
+        "SONIOX_API_KEY=should-not-bootstrap\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "repo_root", lambda: tmp_path)
+    monkeypatch.delenv("SCRIBER_DATA_DIR", raising=False)
+    monkeypatch.delenv("SCRIBER_LEGACY_DATA_DIR", raising=False)
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+
+    config_module._bootstrap_runtime_env()
+
+    assert os.environ["SCRIBER_DATA_DIR"] == str(data_dir)
+    assert os.environ["SCRIBER_LEGACY_DATA_DIR"] == "C:\\Legacy\\Scriber"
+    assert "SONIOX_API_KEY" not in os.environ
+
+
+def test_bootstrap_runtime_env_keeps_process_values(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text("SCRIBER_DATA_DIR=C:\\Old\\Scriber\n", encoding="utf-8")
+    monkeypatch.setattr(config_module, "repo_root", lambda: tmp_path)
+    monkeypatch.setenv("SCRIBER_DATA_DIR", "C:\\Process\\Scriber")
+
+    config_module._bootstrap_runtime_env()
+
+    assert os.environ["SCRIBER_DATA_DIR"] == "C:\\Process\\Scriber"

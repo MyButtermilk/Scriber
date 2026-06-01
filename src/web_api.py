@@ -3483,7 +3483,7 @@ class ScriberWebController:
                 os.environ["YOUTUBE_API_KEY"] = Config.YOUTUBE_API_KEY
 
         # Persist current settings to .env so they are remembered.
-        Config.persist_to_env_file(".env")
+        Config.persist_to_env_file()
 
         if Config.HOTKEY != old_hotkey or Config.MODE != old_mode:
             self.register_hotkeys()
