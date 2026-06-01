@@ -29,7 +29,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `src/data/latency_metrics_store.py`: hot-path latency metrics storage.
 - `src/runtime/provider_router.py`: provider routing.
 - `src/runtime/retry_scheduler.py`: retry/backoff scheduling.
-- `src/core/`: error taxonomy, state machine, circuit breaker, provider capabilities, WebSocket event contracts, hot-path tracing, logging helpers.
+- `src/core/`: error taxonomy, state machine, circuit breaker, provider capabilities, REST/WebSocket contracts, hot-path tracing, logging helpers.
 - `src/injector.py`: text injection via paste, SendInput, typing fallback.
 - `src/youtube_api.py`: YouTube Data API search/video metadata.
 - `src/youtube_download.py`: yt-dlp download and ffmpeg extraction.
@@ -133,6 +133,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - Backend sends events such as `state`, `status`, `transcript`, `audio_level`, `input_warning`, `transcribing`, `session_started`, `session_finished`, `history_updated`, and `error`.
 - WebSocket events are versioned with `apiVersion`. Use builders and validators in `src/core/ws_contracts.py` or explicitly wrap manual payloads with `version_event_payload()`.
 - `tests/contract/test_ws_events.py` is the gate for WebSocket payload compatibility. Add new event types there before broadcasting them.
+- `/api/health` and `/api/runtime` payloads are versioned with `apiVersion` and validated by `src/core/rest_contracts.py`; `tests/contract/test_rest_contracts.py` is the gate for REST runtime/readiness payload compatibility.
 - `audio_level` is throttled around 30fps.
 - `broadcast()` skips JSON serialization when there are no connected WebSocket clients.
 - `_on_audio_level()` avoids scheduling UI broadcast work when there are no WebSocket clients and the native overlay is not consuming waveform updates.

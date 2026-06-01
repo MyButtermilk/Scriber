@@ -386,6 +386,8 @@ flowchart LR
 
 `/api/runtime/support-bundle` creates a diagnostic ZIP in the runtime data directory and returns it as a download. It redacts sensitive config, environment, and log values before writing entries to the bundle.
 
+`/api/health` and `/api/runtime` are versioned REST contracts validated by `src/core/rest_contracts.py`; update `tests/contract/test_rest_contracts.py` before changing those payload shapes.
+
 `limit` for hot-path metrics is clamped to `1..500`.
 
 ### WebSocket
@@ -771,6 +773,8 @@ Useful focused tests:
   - `pytest tests/test_pipeline_stop.py tests/test_web_api_lifecycle.py`
 - WebSocket contracts:
   - `pytest tests/contract/test_ws_events.py`
+- REST runtime/readiness contracts:
+  - `pytest tests/contract/test_rest_contracts.py`
 - Provider routing/circuit breaker:
   - `pytest tests/runtime/test_provider_router.py tests/core/test_provider_circuit_breaker.py`
 
