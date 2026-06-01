@@ -650,9 +650,12 @@ Build the backend sidecar with PyInstaller:
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
 powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 ```
 
 This builds `src/backend_worker.py` through `packaging\scriber-backend.spec` into `dist\tauri-sidecar\scriber-backend\` and optionally copies the onedir output to `Frontend\src-tauri\target\release\backend\`, where the Tauri supervisor can find it automatically. Use `-BundleMediaTools` to copy local `ffmpeg`/`ffprobe` binaries into `tools\ffmpeg\` inside the sidecar.
+
+For a complete Windows desktop release, prefer `scripts\build_windows.ps1`. It runs checks, invokes `npm run tauri:build -- --bundles nsis`, lets Tauri build/copy the backend sidecar before bundling, and produces the NSIS installer under `Frontend\src-tauri\target\release\bundle\nsis\`.
 
 The current sidecar spec is a standard cloud-provider build and intentionally excludes heavy local ASR stacks such as NeMo/ONNX-ASR/Torch. Local ASR packaging remains a separate optional package path.
 
@@ -819,7 +822,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 
 - Real app-level microphone prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Frontend transcript-list virtualization or infinite query.
-- Full bundled desktop packaging: signing, installer, and updater.
+- Full bundled desktop packaging: signing and updater.
 - Broader runtime smoke tests for the Tauri supervisor: backend crash, startup timeout, external backend attach, dynamic port, and app-exit cleanup.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.
 - Stronger typed API contract between backend and frontend.

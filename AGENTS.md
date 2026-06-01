@@ -154,12 +154,14 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `src/backend_worker.py` is the standalone Python entry point for packaged backend workers. `packaging/scriber-backend.spec` and `scripts/build_tauri_backend_sidecar.ps1` build the PyInstaller onedir sidecar.
 - Media tool resolution is centralized in `src/runtime/media_tools.py`: explicit tool env var, `SCRIBER_MEDIA_TOOLS_DIR`, bundled app-root folders such as `tools\ffmpeg\`, then system `PATH`.
 - The sidecar spec bundles the `yt-dlp` Python package. `scripts/build_tauri_backend_sidecar.ps1 -BundleMediaTools` copies local `ffmpeg`/`ffprobe` binaries into the sidecar output.
+- `Frontend/src-tauri/tauri.conf.json` enables the NSIS bundle and maps `target/release/backend/` to bundled resource path `backend/`. The supervisor also searches `app.path().resource_dir()/backend`.
+- Tauri `beforeBundleCommand` runs the sidecar build with `-SkipFrontendBuild -InstallPyInstaller -BundleMediaTools -CopyToTauriRelease`, so `npm run tauri:build -- --bundles nsis` can produce an installer with the backend resource included.
 - The current sidecar spec is the standard cloud-provider build and excludes heavy local ASR stacks (`torch`, NeMo, ONNX-ASR). Treat local ASR packaging as a separate optional package path.
 - Managed backend stdout/stderr go to `logs\tauri-backend.log` under `SCRIBER_DATA_DIR`.
 - On Windows, the managed Python child is spawned with `CREATE_NO_WINDOW`.
 - Managed backend startup has a timeout and will be restarted by `ensure_backend_running` instead of staying in `starting` forever.
 - `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits.
-- Current Tauri status: hybrid runtime with writable runtime-data paths, sidecar backend launch support, bundled yt-dlp support, and bundled ffmpeg/ffprobe resolution. Installer, signing, and updater remain open packaging work.
+- Current Tauri status: hybrid runtime with writable runtime-data paths, sidecar backend launch support, bundled yt-dlp support, bundled ffmpeg/ffprobe resolution, and NSIS installer generation. Signing and updater remain open packaging work.
 
 ## Commands
 
@@ -202,9 +204,10 @@ npm run db:push
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
 powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 ```
 
-Run this before packaging if you want the Tauri release executable to find `backend\scriber-backend.exe` automatically. Use `-BundleMediaTools` when local `ffmpeg`/`ffprobe` binaries should be copied into the sidecar. Without the sidecar, Tauri development still falls back to the repo virtualenv.
+Run the sidecar script before raw release smoke tests if you want the Tauri release executable to find `backend\scriber-backend.exe` automatically. For a complete NSIS installer build, prefer `scripts\build_windows.ps1`; it lets Tauri run the sidecar build before bundling. Without the sidecar, Tauri development still falls back to the repo virtualenv.
 
 ### Tests
 
@@ -318,7 +321,7 @@ Current summarization default is `gemini-flash-latest`.
 
 - Real app-level mic prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Frontend transcript-list virtualization or infinite query.
-- Full bundled desktop packaging for the Tauri path: installer, signing, and updater.
+- Full bundled desktop packaging for the Tauri path: signing and updater.
 - Broader Tauri runtime smoke tests for crash, startup-timeout, external-backend attach, dynamic-port, and app-exit cleanup scenarios.
 - Remaining CPU-heavy media preprocessing profiling around ffmpeg/provider behavior.
 - More hardware regression tests for dock connect/disconnect, USB mic add/remove, and favorite mic fallback.

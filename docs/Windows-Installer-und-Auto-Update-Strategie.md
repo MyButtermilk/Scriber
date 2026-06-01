@@ -48,6 +48,8 @@ Scriber laeuft als signierte, installierte Windows-App (per-user), startet eine 
 1. **Inno Setup**, per-user Install nach `%LocalAppData%\Scriber`.
    - Per-user vermeidet UAC-Prompts und erfordert keine Admin-Rechte.
    - Stabiler `AppId` im Format `{GUID}` fuer saubere Upgrade-Erkennung.
+   - Status 2026-06-01: Der produktive Installer-Pfad nutzt aktuell Tauri/NSIS statt Inno Setup. `Frontend/src-tauri/tauri.conf.json` setzt `bundle.active=true`, `targets=["nsis"]`, `installMode="currentUser"` und mappt den Backend-Sidecar als Resource nach `backend/`.
+   - Status 2026-06-01: `scripts/build_windows.ps1` erzeugt den NSIS-Build ueber `npm run tauri:build -- --bundles nsis` und laesst Tauri vorher den Sidecar bauen/kopieren.
 2. **Startmenue-Eintrag**, optional **Autostart** via Registry `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
    - Autostart existiert bereits als Feature in `web_api.py` (`GET/POST /api/autostart`). Integration mit Installer pruefen.
 3. **Uninstall** ohne Loeschen von Nutzerdaten.
@@ -197,6 +199,7 @@ Felder gegenueber Entwurf ergaenzt:
    - Status 2026-06-01: `packaging/scriber-backend.spec` und `scripts/build_tauri_backend_sidecar.ps1` bauen einen PyInstaller-`onedir`-Sidecar.
    - Status 2026-06-01: Der Rust-Supervisor bevorzugt `SCRIBER_BACKEND_EXE` bzw. `backend\scriber-backend.exe` neben der Tauri-Exe und faellt im Dev-Modus auf `python -m src.web_api` zurueck.
    - Status 2026-06-01: Der Standard-Sidecar ist ein Cloud-Provider/Lite-Build und schliesst schwere lokale ASR-Stacks (`torch`, NeMo, ONNX-ASR) aus.
+   - Status 2026-06-01: Tauri bundelt `target/release/backend/` als Resource `backend/`, sodass installierte NSIS-Builds denselben Sidecar-Pfad nutzen.
 2. **Frontend Production Build** in den Backend-Output integrieren:
    - `npm run build` erzeugt `Frontend/dist/public/` mit statischem HTML/JS/CSS.
    - `build_windows.ps1` kopiert diesen Output in das PyInstaller-Output-Verzeichnis.
@@ -215,6 +218,7 @@ Felder gegenueber Entwurf ergaenzt:
      - `yt-dlp`, `python-docx`, `reportlab`, `lxml`
    - Daten-Dateien einschliessen: `src/assets/`, `Frontend/dist/public/`, optionale FFmpeg/FFprobe-Binaries ueber `-BundleMediaTools`.
 5. **Reproduzierbarer Build** per Script.
+   - Status 2026-06-01: `scripts/build_windows.ps1` orchestriert Tests, Frontend-Typecheck, Tauri/NSIS-Build und optionalen Smoke-Test.
 6. **Size-Profiling direkt in Phase 1**:
    - `requirements-base/local-asr/dev` einfuehren.
    - Lite-Build als Standard ist im Sidecar-Spec vorgespurt; Gesamtpipeline in `build_windows.ps1` bleibt offen.
@@ -229,6 +233,7 @@ Lieferobjekte:
 6. `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt`
 7. `size-report.json` (CI-Artefakt)
 8. Start/Healthcheck fuer gebaute App (Smoke-Test vorhanden; Sidecar-Pfad optional ueber `-BackendExePath`)
+9. `scripts/build_windows.ps1` (umgesetzt fuer Tauri/NSIS-Release-Build; Signing/Updater offen)
 
 ### Phase 2 - Installer
 1. `installer/scriber.iss` erstellen.
@@ -360,7 +365,7 @@ Lieferobjekte:
 | `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar. |
 | `installer/scriber.iss` | Inno Setup Script. |
 | `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Frontend Build → PyInstaller Sidecar → optionales FFmpeg/FFprobe-Bundling → optionaler Copy nach Tauri Release. |
-| `scripts/build_windows.ps1` | Noch offen: Gesamtpipeline inkl. Tauri Bundle, Inno Setup und Signierung. |
+| `scripts/build_windows.ps1` | Umgesetzt fuer Tests → Tauri/NSIS Bundle → Smoke-Test. Signierung und Updater bleiben offen. |
 | `.github/workflows/release-windows.yml` | CI/CD fuer Tag-basierte Releases. |
 | `LICENSE` | MIT License Datei. |
 
