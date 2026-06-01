@@ -45,6 +45,7 @@ from src.core.ws_contracts import (
 from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.pipeline import ScriberPipeline, invalidate_mic_device_resolution_cache
+from src.runtime.paths import data_dir, downloads_dir
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
@@ -979,7 +980,7 @@ class ScriberWebController:
         self._history_broadcast_handle: asyncio.TimerHandle | None = None       
         self._history_broadcast_interval = 0.25
 
-        self._downloads_dir = Path(os.getenv("SCRIBER_DOWNLOADS_DIR", "downloads")).resolve()
+        self._downloads_dir = downloads_dir()
 
         # Overlay is initialized in background after server starts (see _prewarm_cache)
         # This avoids blocking app startup while ensuring overlay is ready for first hotkey
@@ -1565,7 +1566,7 @@ class ScriberWebController:
             "port": port,
             "startedAt": self._started_at_iso,
             "uptimeSeconds": max(0.0, time.monotonic() - self._started_at_monotonic),
-            "dataDir": str(Path.cwd().resolve()),
+            "dataDir": str(data_dir()),
             "downloadsDir": str(self._downloads_dir),
             "activeSession": self._session_id,
             "recordingState": recording_state.value,

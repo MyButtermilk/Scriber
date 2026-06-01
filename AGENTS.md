@@ -148,12 +148,12 @@ This file is the working guide for agents editing this repository. Keep it accur
 
 - Tauri commands exposed by `Frontend/src-tauri/src/lib.rs`: `get_backend_base_url`, `backend_status`, `ensure_backend_running`, `restart_backend`.
 - The Rust supervisor first validates the current backend port through the Scriber `/api/health` contract (`ok`, `apiVersion`, `runtimeMode`) before attaching.
-- If the default backend port is unavailable, the supervisor selects a loopback port and starts `python -m src.web_api` with `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, and `SCRIBER_RUNTIME_MODE=tauri-supervised`.
-- Managed backend stdout/stderr go to `tmp/tauri-backend.log`.
+- If the default backend port is unavailable, the supervisor selects a loopback port and starts `python -m src.web_api` with `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_RUNTIME_MODE=tauri-supervised`, and a writable `SCRIBER_DATA_DIR`.
+- Managed backend stdout/stderr go to `logs\tauri-backend.log` under `SCRIBER_DATA_DIR`.
 - On Windows, the managed Python child is spawned with `CREATE_NO_WINDOW`.
 - Managed backend startup has a timeout and will be restarted by `ensure_backend_running` instead of staying in `starting` forever.
 - `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits.
-- Current Tauri status: development/runtime scaffold only. Full sidecar/frozen Python packaging, installer, signing, updater, and bundled ffmpeg/yt-dlp remain open packaging work.
+- Current Tauri status: development/runtime scaffold with writable runtime-data paths. Full sidecar/frozen Python packaging, installer, signing, updater, and bundled ffmpeg/yt-dlp remain open packaging work.
 
 ## Commands
 
@@ -231,12 +231,13 @@ Never commit `.env`, `settings.json`, `transcripts.db`, `downloads/`, or temp ar
 Important environment variables:
 
 - Web/API: `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_ALLOWED_ORIGINS`
+- Runtime storage: `SCRIBER_DATA_DIR`, `SCRIBER_DATABASE_PATH`, `SCRIBER_DOWNLOADS_DIR`
 - STT provider keys: `SONIOX_API_KEY`, `MISTRAL_API_KEY`, `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `GLADIA_API_KEY`, `GROQ_API_KEY`, `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, `GOOGLE_API_KEY`, `YOUTUBE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`
 - AWS STT: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
 - Provider/model behavior: `SCRIBER_DEFAULT_STT`, `SCRIBER_SONIOX_MODE`, `SCRIBER_SONIOX_ASYNC_MODEL`, `SCRIBER_SONIOX_RT_MODEL`, `SCRIBER_MISTRAL_RT_MODEL`, `SCRIBER_MISTRAL_ASYNC_MODEL`, `SCRIBER_OPENAI_STT_MODEL`
 - App behavior: `SCRIBER_HOTKEY`, `SCRIBER_MODE`, `SCRIBER_INJECT_METHOD`, `SCRIBER_LANGUAGE`, `SCRIBER_DEBUG`, `SCRIBER_CUSTOM_VOCAB`
 - Mic: `SCRIBER_MIC_DEVICE`, `SCRIBER_FAVORITE_MIC`, `SCRIBER_MIC_ALWAYS_ON`, `SCRIBER_MIC_BLOCK_SIZE`, `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC`
-- Upload/jobs/timeouts: `SCRIBER_UPLOAD_MAX_MB`, `SCRIBER_UPLOAD_MAX_BYTES`, `SCRIBER_DOWNLOADS_DIR`, `SCRIBER_JOB_MAX_ATTEMPTS`, `SCRIBER_JOB_RETRY_BASE_SEC`, `SCRIBER_JOB_RETRY_MAX_SEC`, `SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC`
+- Upload/jobs/timeouts: `SCRIBER_UPLOAD_MAX_MB`, `SCRIBER_UPLOAD_MAX_BYTES`, `SCRIBER_JOB_MAX_ATTEMPTS`, `SCRIBER_JOB_RETRY_BASE_SEC`, `SCRIBER_JOB_RETRY_MAX_SEC`, `SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC`
 - Summaries: `SCRIBER_SUMMARIZATION_MODEL`, `SCRIBER_AUTO_SUMMARIZE`, `SCRIBER_SUMMARY_MIN_WORDS`, `SCRIBER_SUMMARY_MAX_WORDS`
 - Local models: `SCRIBER_ONNX_MODEL`, `SCRIBER_ONNX_QUANTIZATION`, `SCRIBER_ONNX_USE_GPU`, `SCRIBER_NEMO_MODEL`
 - UI: `SCRIBER_VISUALIZER_BAR_COUNT`
@@ -300,7 +301,7 @@ Current summarization default is `gemini-flash-latest`.
 
 - Real app-level mic prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Frontend transcript-list virtualization or infinite query.
-- Full bundled desktop packaging for the Tauri path: frozen/sidecar Python backend, ffmpeg/yt-dlp inclusion, installer, signing, updater, and writable data-path strategy.
+- Full bundled desktop packaging for the Tauri path: frozen/sidecar Python backend, ffmpeg/yt-dlp inclusion, installer, signing, and updater.
 - Broader Tauri runtime smoke tests for crash, startup-timeout, external-backend attach, dynamic-port, and app-exit cleanup scenarios.
 - Remaining CPU-heavy media preprocessing profiling around ffmpeg/provider behavior.
 - More hardware regression tests for dock connect/disconnect, USB mic add/remove, and favorite mic fallback.

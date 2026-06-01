@@ -310,7 +310,10 @@ fn spawn_python_backend(port: u16) -> Result<Child, String> {
     let repo_root =
         find_repo_root().ok_or_else(|| "Could not locate Scriber repository root".to_string())?;
     let python = find_python(&repo_root);
-    let log_path = repo_root.join("tmp").join("tauri-backend.log");
+    let data_dir = scriber_data_dir();
+    fs::create_dir_all(&data_dir)
+        .map_err(|err| format!("Could not create Scriber data directory: {err}"))?;
+    let log_path = data_dir.join("logs").join("tauri-backend.log");
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| format!("Could not create log directory: {err}"))?;
@@ -333,6 +336,7 @@ fn spawn_python_backend(port: u16) -> Result<Child, String> {
         .env("SCRIBER_WEB_PORT", port.to_string())
         .env("SCRIBER_RUNTIME_MODE", "tauri-supervised")
         .env("SCRIBER_LOG_STDERR", "1")
+        .env("SCRIBER_DATA_DIR", &data_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
@@ -340,6 +344,75 @@ fn spawn_python_backend(port: u16) -> Result<Child, String> {
     command
         .spawn()
         .map_err(|err| format!("Could not spawn {:?}: {err}", python))
+}
+
+fn scriber_data_dir() -> PathBuf {
+    if let Ok(raw) = env::var("SCRIBER_DATA_DIR") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return absolute_path(trimmed);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+            let trimmed = local_app_data.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed).join("Scriber");
+            }
+        }
+        if let Ok(app_data) = env::var("APPDATA") {
+            let trimmed = app_data.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed).join("Scriber");
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        if let Ok(xdg_data_home) = env::var("XDG_DATA_HOME") {
+            let trimmed = xdg_data_home.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed).join("scriber");
+            }
+        }
+        if let Ok(home) = env::var("HOME") {
+            let trimmed = home.trim();
+            if !trimmed.is_empty() {
+                #[cfg(target_os = "macos")]
+                {
+                    return PathBuf::from(trimmed)
+                        .join("Library")
+                        .join("Application Support")
+                        .join("Scriber");
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    return PathBuf::from(trimmed)
+                        .join(".local")
+                        .join("share")
+                        .join("scriber");
+                }
+            }
+        }
+    }
+
+    env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("scriber-data")
+}
+
+fn absolute_path(raw: &str) -> PathBuf {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
 }
 
 #[cfg(windows)]

@@ -187,9 +187,9 @@ Felder gegenueber Entwurf ergaenzt:
 3. Zielplattform fixieren: **Windows 10/11 x64** (Build 1809+).
 4. Install Scope festlegen: **per-user** (empfohlen, kein UAC).
 5. **Frozen-Mode-Erkennung** einfuehren:
-   - Zentrale Hilfsfunktion `is_frozen()` basierend auf `getattr(sys, 'frozen', False)`.
-   - Pfad-Resolution fuer Data-Dateien (`assets/`, `Frontend/dist/`) anpassen: `sys._MEIPASS` im Frozen-Modus vs. `Path(__file__).parent` im Dev-Modus.
-   - Betrifft: `tray.py` (Icon-Lade-Pfad), `web_api.py` (Static-File-Serving), `config.py` (Settings-Pfade).
+   - Status 2026-06-01: `src/runtime/paths.py` existiert fuer `is_frozen()`, `SCRIBER_DATA_DIR`, `settings.json`, `transcripts.db` und Downloads.
+   - Noch offen: Pfad-Resolution fuer gebuendelte Assets, FFmpeg und Frontend-Static-Files (`sys._MEIPASS`/Tauri Resources).
+   - Betrifft weiterhin: `tray.py` (Icon-Lade-Pfad), `web_api.py` (Static-File-Serving), FFmpeg-Aufrufer.
 
 ### Phase 1 - Produktisierbarer Build
 1. **Frontend Production Build** in den Backend-Output integrieren:
@@ -219,7 +219,7 @@ Lieferobjekte:
 1. `scripts/build_windows.ps1`
 2. `scriber.spec` (PyInstaller-Konfiguration)
 3. `src/version.py`
-4. `src/runtime/paths.py` (Frozen/Dev Pfad-Resolution)
+4. `src/runtime/paths.py` (teilweise umgesetzt: Runtime-Data-Pfade; Asset/FFmpeg-Resolution offen)
 5. `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt`
 6. `size-report.json` (CI-Artefakt)
 7. Start/Healthcheck fuer gebaute App (manueller Smoke-Test)
@@ -348,7 +348,7 @@ Lieferobjekte:
 |-------|-------------|
 | `src/version.py` | Zentrale Versionsnummer (`__version__`). |
 | `src/updater.py` | UpdateManager: Check, Download, Verify, Install. |
-| `src/runtime/paths.py` | Frozen/Dev Pfad-Resolution (Data-Dateien, FFmpeg, Frontend). |
+| `src/runtime/paths.py` | Teilweise umgesetzt: Runtime-Data-Pfade fuer Settings, SQLite und Downloads. FFmpeg/Frontend-Asset-Resolution offen. |
 | `installer/scriber.iss` | Inno Setup Script. |
 | `scripts/build_windows.ps1` | Build-Pipeline: Frontend Build → PyInstaller → Inno Setup. |
 | `.github/workflows/release-windows.yml` | CI/CD fuer Tag-basierte Releases. |

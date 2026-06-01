@@ -43,12 +43,13 @@ Current implementation highlights:
 - Route-level frontend lazy loading for non-default pages, manual vendor chunks, and a single shared WebSocket connection.
 - Tauri 2 desktop scaffold with a Rust supervisor that starts the Python backend, negotiates a runtime backend URL, checks the Scriber health contract, and avoids a visible Python console window on Windows.
 - Backend hot-path reductions: no-client WebSocket broadcasts skip JSON serialization, audio-level callbacks avoid UI broadcast work without clients/overlay, long transcript appends buffer final segments, and upload/export cleanup paths are offloaded from the event loop where practical.
+- Runtime data path support via `SCRIBER_DATA_DIR`: the Tauri-supervised backend writes settings, SQLite data, downloads, and logs to a writable app data directory instead of relying on the repository or install directory.
 
 Known limits:
 
 - `SCRIBER_MIC_ALWAYS_ON` exists as a setting, but it is not a true app-level always-on/prewarmed microphone stream yet. Per-session streams are closed during cleanup to avoid orphaned PortAudio resources.
 - Frontend transcript-list virtualization/infinite loading is still open.
-- The Tauri shell currently supervises the existing Python backend from the repository/virtualenv. Full bundled sidecar/installer packaging is still a separate packaging phase.
+- The Tauri shell currently supervises the existing Python backend from the repository/virtualenv. Full bundled sidecar/installer packaging is still a separate packaging phase, but writable runtime-data paths are in place.
 - Some CPU-heavy media preprocessing still depends on ffmpeg/provider behavior even though disk writes, cleanup, and export rendering are offloaded.
 
 ---
@@ -458,6 +459,16 @@ SCRIBER_ALLOWED_ORIGINS=
 
 Default CORS allows localhost, `127.0.0.1`, and `::1`. `SCRIBER_ALLOWED_ORIGINS=*` allows all origins.
 
+### Runtime Storage
+
+```env
+SCRIBER_DATA_DIR=
+SCRIBER_DATABASE_PATH=
+SCRIBER_DOWNLOADS_DIR=downloads
+```
+
+In a normal source checkout, state defaults to the repository root for backwards compatibility. When `SCRIBER_DATA_DIR` is set, `settings.json`, `transcripts.db`, and relative download directories are resolved under that directory. The Tauri supervisor sets this automatically to a writable Scriber app-data directory for the managed backend.
+
 ### Frontend
 
 ```env
@@ -512,7 +523,6 @@ SCRIBER_PASTE_RESTORE_DELAY_MS=1500
 ```env
 SCRIBER_UPLOAD_MAX_MB=200
 SCRIBER_UPLOAD_MAX_BYTES=
-SCRIBER_DOWNLOADS_DIR=downloads
 SCRIBER_JOB_MAX_ATTEMPTS=3
 SCRIBER_JOB_RETRY_BASE_SEC=5
 SCRIBER_JOB_RETRY_MAX_SEC=120
@@ -780,7 +790,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 
 - Real app-level microphone prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Frontend transcript-list virtualization or infinite query.
-- Full bundled desktop packaging: Python sidecar/frozen backend, ffmpeg/yt-dlp inclusion, signing, installer, updater, and writable data-path strategy.
+- Full bundled desktop packaging: Python sidecar/frozen backend, ffmpeg/yt-dlp inclusion, signing, installer, and updater.
 - Broader runtime smoke tests for the Tauri supervisor: backend crash, startup timeout, external backend attach, dynamic port, and app-exit cleanup.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.
 - Stronger typed API contract between backend and frontend.

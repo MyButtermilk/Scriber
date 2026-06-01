@@ -1,12 +1,13 @@
 import os
 import json
-from pathlib import Path
 from dotenv import load_dotenv
+
+from src.runtime.paths import settings_path
 
 load_dotenv()
 
 # JSON settings file for complex values (multi-line prompts, etc.)
-_JSON_SETTINGS_PATH = Path(__file__).parent.parent / "settings.json"
+_JSON_SETTINGS_PATH = settings_path()
 
 def _load_json_settings() -> dict:
     """Load settings from JSON file."""

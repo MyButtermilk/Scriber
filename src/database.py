@@ -7,15 +7,14 @@ import re
 import sqlite3
 import threading
 from dataclasses import asdict
-from pathlib import Path
 from typing import Optional, List, Any
 from datetime import datetime
 
 from loguru import logger
 
-# Database file location - use absolute path based on project root
-_PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-_DB_PATH = _PROJECT_ROOT / "transcripts.db"
+from src.runtime.paths import database_path
+
+_DB_PATH = database_path()
 
 # Thread-local storage for database connections
 # Each thread gets its own connection to avoid repeated open/close overhead
@@ -71,6 +70,7 @@ def _get_connection() -> sqlite3.Connection:
     every database operation (~10-50ms savings per call).
     """
     if not hasattr(_thread_local, 'conn') or _thread_local.conn is None:
+        _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(_DB_PATH, check_same_thread=False, timeout=30.0)
         conn.row_factory = sqlite3.Row
         # Enable WAL mode for better concurrent read performance

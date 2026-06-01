@@ -16,6 +16,7 @@ param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$ExePath = "",
     [string]$PythonPath = "",
+    [string]$DataDir = "",
     [int]$TimeoutSec = 60,
     [int]$BackendHealthTimeoutSec = 20,
     [switch]$KeepAppOpen,
@@ -99,6 +100,25 @@ function Wait-BackendHealth {
     throw "Managed backend on port $Port did not return tauri-supervised health."
 }
 
+function Get-BackendRuntime {
+    param([int]$Port)
+
+    $runtime = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/runtime" -TimeoutSec 5
+    if (-not $runtime.dataDir) {
+        throw "Managed backend runtime did not report dataDir."
+    }
+    if (-not $runtime.downloadsDir) {
+        throw "Managed backend runtime did not report downloadsDir."
+    }
+    return $runtime
+}
+
+function Convert-ToFullPath {
+    param([string]$Path)
+
+    return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+}
+
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 if (-not $ExePath) {
     $ExePath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\scriber-desktop.exe"
@@ -108,15 +128,22 @@ if (-not (Test-Path $ExePath)) {
 }
 $ExePath = (Resolve-Path $ExePath).Path
 $PythonPath = Resolve-PythonPath -Root $RepoRoot -Requested $PythonPath
+if (-not $DataDir) {
+    $DataDir = Join-Path $RepoRoot ("tmp\tauri-smoke-data\" + [System.Guid]::NewGuid().ToString("N"))
+}
+$DataDir = Convert-ToFullPath -Path $DataDir
+New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
 $baseline = @(Get-WebApiProcesses | ForEach-Object { [int]$_.ProcessId })
 $oldRoot = $env:SCRIBER_REPO_ROOT
 $oldPython = $env:SCRIBER_PYTHON
+$oldDataDir = $env:SCRIBER_DATA_DIR
 $oldHotkeys = $env:SCRIBER_DISABLE_HOTKEYS
 $oldMonitor = $env:SCRIBER_DISABLE_DEVICE_MONITOR
 
 $env:SCRIBER_REPO_ROOT = $RepoRoot
 $env:SCRIBER_PYTHON = $PythonPath
+$env:SCRIBER_DATA_DIR = $DataDir
 if (-not $EnableHotkeys) {
     $env:SCRIBER_DISABLE_HOTKEYS = "1"
 }
@@ -133,6 +160,13 @@ try {
         throw "Tauri process exited early with code $($app.ExitCode)."
     }
     $health = Wait-BackendHealth -Port $listener.Port -DeadlineSec $BackendHealthTimeoutSec
+    $runtime = Get-BackendRuntime -Port $listener.Port
+    if ((Convert-ToFullPath -Path $runtime.dataDir) -ne $DataDir) {
+        throw "Managed backend used unexpected dataDir: $($runtime.dataDir)"
+    }
+    if (-not (Convert-ToFullPath -Path $runtime.downloadsDir).StartsWith($DataDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Managed backend downloadsDir is not under dataDir: $($runtime.downloadsDir)"
+    }
     $result = [pscustomobject]@{
         ok = $true
         appPid = $app.Id
@@ -141,6 +175,8 @@ try {
         runtimeMode = $health.runtimeMode
         apiVersion = $health.apiVersion
         ready = $health.ready
+        dataDir = $runtime.dataDir
+        downloadsDir = $runtime.downloadsDir
         cleanupVerified = $false
     }
 } finally {
@@ -169,6 +205,7 @@ try {
 
     $env:SCRIBER_REPO_ROOT = $oldRoot
     $env:SCRIBER_PYTHON = $oldPython
+    $env:SCRIBER_DATA_DIR = $oldDataDir
     $env:SCRIBER_DISABLE_HOTKEYS = $oldHotkeys
     $env:SCRIBER_DISABLE_DEVICE_MONITOR = $oldMonitor
 }
