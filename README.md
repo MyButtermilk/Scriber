@@ -588,8 +588,11 @@ SCRIBER_BREAKER_FAILURE_THRESHOLD=3
 SCRIBER_BREAKER_COOLDOWN_SEC=30
 SCRIBER_VALIDATE_WS_CONTRACTS=0
 SCRIBER_HOTKEY_DISPATCH_DEBOUNCE_SEC=0.25
+SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC=0.5
 SCRIBER_LOG_STDERR=1
 ```
+
+`PUT /api/settings` updates the live backend config immediately, but `.env` persistence is debounced by `SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC` so rapid settings changes are written once. Pending changes are flushed during backend shutdown.
 
 ### Summarization
 

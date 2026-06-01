@@ -13,7 +13,7 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
 3. Frontend-Refetch-Stürme bei `history_updated`
 4. O(n²)-Stringaufbau bei Live-Transkriptsegmenten
 
-**Status-Update 2026-06-02:** Die FTS5-/Pagination-Empfehlung ist im Backend umgesetzt, `history_updated` ist global gedrosselt, `audio_level` läuft nur noch ~30fps, und der Mic-Hotpath wurde mit Device-Resolution-Cache, DeviceMonitor-Deferral und Audio-Callback-Throttling weiter optimiert. Der O(n²)-Content-Aufbau bei Live-Segmenten ist durch gepufferte Final-Segmente und `scripts/check_transcript_buffer_growth.py` als synthetisches 30-Minuten-Guard abgedeckt. Weiter offen bleiben große Upload-/Export-I/O-Pfade, echte Frontend-Virtualisierung in allen Randfällen und reale Langzeit-Providerläufe.
+**Status-Update 2026-06-02:** Die FTS5-/Pagination-Empfehlung ist im Backend umgesetzt, `history_updated` ist global gedrosselt, `audio_level` läuft nur noch ~30fps, und der Mic-Hotpath wurde mit Device-Resolution-Cache, DeviceMonitor-Deferral und Audio-Callback-Throttling weiter optimiert. Der O(n²)-Content-Aufbau bei Live-Segmenten ist durch gepufferte Final-Segmente und `scripts/check_transcript_buffer_growth.py` als synthetisches 30-Minuten-Guard abgedeckt. Settings-Updates schreiben `.env` jetzt debounced statt pro `PUT /api/settings`, mit Shutdown-Flush. Weiter offen bleiben große Upload-/Export-I/O-Pfade, echte Frontend-Virtualisierung in allen Randfällen und reale Langzeit-Providerläufe.
 
 ## Findings (priorisiert)
 

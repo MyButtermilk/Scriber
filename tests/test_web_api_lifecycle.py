@@ -102,6 +102,46 @@ async def test_render_transcript_export_async_runs_renderer(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_update_settings_debounces_env_persistence(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "0.05")
+    persist_mock = MagicMock()
+    monkeypatch.setattr(web_api.Config, "persist_to_env_file", persist_mock)
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    await ctl.update_settings({"language": "en"})
+    await ctl.update_settings({"customVocab": "alpha beta"})
+
+    assert persist_mock.call_count == 0
+
+    await asyncio.sleep(0.08)
+
+    assert persist_mock.call_count == 1
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_update_settings_flushes_pending_persist_on_shutdown(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    persist_mock = MagicMock()
+    monkeypatch.setattr(web_api.Config, "persist_to_env_file", persist_mock)
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    await ctl.update_settings({"language": "de"})
+
+    assert persist_mock.call_count == 0
+
+    ctl.shutdown()
+
+    assert persist_mock.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_on_pipeline_done_ignores_stale_task():
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)

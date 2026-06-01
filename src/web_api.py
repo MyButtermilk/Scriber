@@ -78,6 +78,7 @@ _WORKER_VERSION_ENV = "SCRIBER_WORKER_VERSION"
 _RUNTIME_MODE_ENV = "SCRIBER_RUNTIME_MODE"
 _BACKEND_LAUNCH_KIND_ENV = "SCRIBER_BACKEND_LAUNCH_KIND"
 _AUDIO_ENGINE_ENV = "SCRIBER_AUDIO_ENGINE"
+_SETTINGS_PERSIST_DEBOUNCE_ENV = "SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC"
 _WEB_HOST_ENV = "SCRIBER_WEB_HOST"
 _WEB_PORT_ENV = "SCRIBER_WEB_PORT"
 _DISABLE_HOTKEYS_ENV = "SCRIBER_DISABLE_HOTKEYS"
@@ -1028,8 +1029,19 @@ class ScriberWebController:
         except Exception:
             self._mic_low_rms_warn_after_secs = 6.0
         self._history_broadcast_last = 0.0
-        self._history_broadcast_handle: asyncio.TimerHandle | None = None       
+        self._history_broadcast_handle: asyncio.TimerHandle | None = None
         self._history_broadcast_interval = 0.25
+        self._settings_persist_handle: asyncio.TimerHandle | None = None
+        self._settings_persist_task: asyncio.Task | None = None
+        self._settings_persist_pending = False
+        self._settings_persist_lock = asyncio.Lock()
+        try:
+            self._settings_persist_debounce_seconds = max(
+                0.0,
+                float(os.getenv(_SETTINGS_PERSIST_DEBOUNCE_ENV, "0.5") or 0.5),
+            )
+        except Exception:
+            self._settings_persist_debounce_seconds = 0.5
 
         self._downloads_dir = downloads_dir()
 
@@ -1055,6 +1067,57 @@ class ScriberWebController:
         if not disable_device_monitor:
             self._device_monitor.on_devices_changed(self._on_devices_changed)
             self._device_monitor.start()
+
+    def _cancel_settings_persist_timer(self) -> None:
+        if self._settings_persist_handle is not None:
+            self._settings_persist_handle.cancel()
+            self._settings_persist_handle = None
+
+    def _on_settings_persist_done(self, task: asyncio.Task) -> None:
+        if self._settings_persist_task is task:
+            self._settings_persist_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(f"Failed to persist debounced settings: {exc}")
+
+    def _schedule_settings_persist(self) -> None:
+        """Debounce .env writes while keeping in-memory settings immediate."""
+        self._settings_persist_pending = True
+        self._cancel_settings_persist_timer()
+        if self._settings_persist_debounce_seconds <= 0:
+            self._settings_persist_task = self._loop.create_task(self._flush_settings_persist())
+            self._settings_persist_task.add_done_callback(self._on_settings_persist_done)
+            return
+        self._settings_persist_handle = self._loop.call_later(
+            self._settings_persist_debounce_seconds,
+            self._start_settings_persist_flush,
+        )
+
+    def _start_settings_persist_flush(self) -> None:
+        self._settings_persist_handle = None
+        if self._loop.is_closed():
+            return
+        self._settings_persist_task = self._loop.create_task(self._flush_settings_persist())
+        self._settings_persist_task.add_done_callback(self._on_settings_persist_done)
+
+    async def _flush_settings_persist(self) -> None:
+        self._cancel_settings_persist_timer()
+        if not self._settings_persist_pending:
+            return
+        self._settings_persist_pending = False
+        async with self._settings_persist_lock:
+            await asyncio.to_thread(Config.persist_to_env_file)
+
+    def _flush_settings_persist_sync(self) -> None:
+        self._cancel_settings_persist_timer()
+        persist_in_flight = self._settings_persist_task is not None and not self._settings_persist_task.done()
+        if not self._settings_persist_pending and not persist_in_flight:
+            return
+        self._settings_persist_pending = False
+        Config.persist_to_env_file()
 
     @staticmethod
     def _trace_id_for(value: str | None) -> str | None:
@@ -3231,6 +3294,11 @@ class ScriberWebController:
         except Exception as exc:
             logger.debug(f"[DeviceMonitor] stop warning: {exc}")
 
+        try:
+            self._flush_settings_persist_sync()
+        except Exception as exc:
+            logger.warning(f"Settings persist flush during shutdown failed: {exc}")
+
     def get_settings(self) -> dict[str, Any]:
         # Track favorite mic availability for UI feedback
         _favorite_mic_available = False
@@ -3483,8 +3551,8 @@ class ScriberWebController:
                 Config.YOUTUBE_API_KEY = api_keys["youtubeApiKey"].strip()
                 os.environ["YOUTUBE_API_KEY"] = Config.YOUTUBE_API_KEY
 
-        # Persist current settings to .env so they are remembered.
-        Config.persist_to_env_file()
+        # Persist current settings to .env once rapid setting changes settle.
+        self._schedule_settings_persist()
 
         if Config.HOTKEY != old_hotkey or Config.MODE != old_mode:
             self.register_hotkeys()
