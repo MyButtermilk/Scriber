@@ -38,6 +38,9 @@ export function BackendOfflineBanner() {
                                 is running properly.
                             </>
                         )}
+                        {error && !["Backend is not running", "Connection timed out"].includes(error) && (
+                            <span className="mt-3 block text-sm">{error}</span>
+                        )}
                     </p>
 
                     <div className="flex flex-col gap-3 sm:flex-row">

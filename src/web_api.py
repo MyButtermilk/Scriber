@@ -6,7 +6,7 @@ import signal
 import time
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional
 from urllib.parse import urlparse
@@ -64,6 +64,13 @@ _DEFAULT_VIDEO_MAX_MB = 2048  # 2GB limit for raw video uploads (audio extracted
 _UPLOAD_COMPRESSION_THRESHOLD_BYTES = 50 * 1024 * 1024
 _EXTRACTED_AUDIO_BITRATE = "64k"
 _COMPRESSED_AUDIO_BITRATE = "32k"
+_API_VERSION = "1"
+_WORKER_VERSION_ENV = "SCRIBER_WORKER_VERSION"
+_RUNTIME_MODE_ENV = "SCRIBER_RUNTIME_MODE"
+_AUDIO_ENGINE_ENV = "SCRIBER_AUDIO_ENGINE"
+_WEB_HOST_ENV = "SCRIBER_WEB_HOST"
+_WEB_PORT_ENV = "SCRIBER_WEB_PORT"
+_DISABLE_HOTKEYS_ENV = "SCRIBER_DISABLE_HOTKEYS"
 
 # Video file extensions that require audio extraction
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
@@ -503,6 +510,98 @@ async def _extract_audio_from_video(video_path: Path, output_dir: Path) -> Path:
     return audio_path
 
 
+async def _write_upload_stream_to_disk(
+    file_field: Any,
+    save_path: Path,
+    *,
+    max_bytes: int,
+    chunk_size: int = 1024 * 1024,
+) -> tuple[int, bool]:
+    bytes_read = 0
+    too_large = False
+    file_obj = await asyncio.to_thread(open, save_path, "wb")
+    try:
+        while True:
+            chunk = await file_field.read_chunk(size=chunk_size)
+            if not chunk:
+                break
+            bytes_read += len(chunk)
+            if bytes_read > max_bytes:
+                too_large = True
+                break
+            await asyncio.to_thread(file_obj.write, chunk)
+    finally:
+        await asyncio.to_thread(file_obj.close)
+    return bytes_read, too_large
+
+
+def _remove_tree(path: Path) -> None:
+    import shutil
+
+    if path.exists():
+        shutil.rmtree(path)
+
+
+async def _remove_tree_if_exists(path: Path) -> None:
+    await asyncio.to_thread(_remove_tree, path)
+
+
+def _render_transcript_export(
+    *,
+    export_format: str,
+    title: str,
+    content: str,
+    summary: str,
+    date: str,
+    duration: str,
+) -> tuple[bytes, str, str]:
+    from src.export import export_to_docx, export_to_pdf
+
+    if export_format == "pdf":
+        return (
+            export_to_pdf(
+                title=title or "Transcript",
+                content=content,
+                summary=summary,
+                date=date,
+                duration=duration,
+            ),
+            "application/pdf",
+            "pdf",
+        )
+    return (
+        export_to_docx(
+            title=title or "Transcript",
+            content=content,
+            summary=summary,
+            date=date,
+            duration=duration,
+        ),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "docx",
+    )
+
+
+async def _render_transcript_export_async(
+    *,
+    export_format: str,
+    title: str,
+    content: str,
+    summary: str,
+    date: str,
+    duration: str,
+) -> tuple[bytes, str, str]:
+    return await asyncio.to_thread(
+        _render_transcript_export,
+        export_format=export_format,
+        title=title,
+        content=content,
+        summary=summary,
+        date=date,
+        duration=duration,
+    )
+
+
 def _format_duration(seconds: float) -> str:
     total = max(0, int(seconds))
     hours, remainder = divmod(total, 3600)
@@ -660,8 +759,16 @@ class TranscriptRecord:
     _preview: str = ""
     _preview_words: list[str] = field(default_factory=list)
     _preview_has_more: bool = False
+    _pending_content_segments: list[str] = field(default_factory=list, repr=False)
     _content_loaded: bool = True
     _summary_loaded: bool = True
+
+    def content_text(self) -> str:
+        if self._pending_content_segments:
+            pending = "\n\n".join(self._pending_content_segments)
+            self.content = f"{self.content}\n\n{pending}" if self.content else pending
+            self._pending_content_segments.clear()
+        return self.content
 
     def to_public(self, *, include_content: bool) -> dict[str, Any]:
         # Dynamically calculate date label based on created_at to ensure
@@ -695,9 +802,10 @@ class TranscriptRecord:
             "updatedAt": self.updated_at,
         }
         
+        content = self.content_text() if include_content or not self._preview else self.content
         preview = self._preview
-        if not preview and self.content:
-            sample_words = _preview_words(self.content, max_words=6)
+        if not preview and content:
+            sample_words = _preview_words(content, max_words=6)
             preview = _preview_from_words(
                 sample_words[:5],
                 max_words=5,
@@ -706,7 +814,7 @@ class TranscriptRecord:
         data["preview"] = preview or self.title
 
         if include_content:
-            data["content"] = self.content
+            data["content"] = content
             data["summary"] = self.summary
         return data
 
@@ -714,6 +822,7 @@ class TranscriptRecord:
         self._started_at_monotonic = time.monotonic()
 
     def finish(self, status: TranscriptStatus) -> None:
+        self.content_text()
         self.status = status
         elapsed = 0.0
         if self._started_at_monotonic is not None:
@@ -728,10 +837,10 @@ class TranscriptRecord:
         # Avoid repeats from some providers.
         if self._last_segment == cleaned:
             return
-        if self.content:
-            self.content = f"{self.content}\n\n{cleaned}"
-        else:
+        if not self.content and not self._pending_content_segments:
             self.content = cleaned
+        else:
+            self._pending_content_segments.append(cleaned)
         self._last_segment = cleaned
         segment_words = _preview_words(cleaned, max_words=128)
         if segment_words:
@@ -763,6 +872,7 @@ class ScriberWebController:
         self._clients_lock = asyncio.Lock()
         self._clients_snapshot: tuple[web.WebSocketResponse, ...] = ()
         self._clients_dirty = False
+        self._client_count = 0
 
         self._pipeline: Optional[ScriberPipeline] = None
         self._pipeline_task: Optional[asyncio.Task] = None
@@ -822,6 +932,13 @@ class ScriberWebController:
         except Exception:
             self._hotkey_dispatch_debounce_seconds = 0.25
         self._status = "Stopped"
+        self._started_at_iso = (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        self._started_at_monotonic = time.monotonic()
         self._session_id: str | None = None
         self._recording_state_machine = RecordingStateMachine()
         self._hot_path_tracers: dict[str, HotPathTracer] = {}
@@ -877,8 +994,15 @@ class ScriberWebController:
             sample_rate=int(getattr(Config, "SAMPLE_RATE", 16000) or 16000),
             channels=max(1, int(getattr(Config, "CHANNELS", 1) or 1)),
         )
-        self._device_monitor.on_devices_changed(self._on_devices_changed)
-        self._device_monitor.start()
+        disable_device_monitor = os.getenv("SCRIBER_DISABLE_DEVICE_MONITOR", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        self._device_monitor_enabled = not disable_device_monitor
+        if not disable_device_monitor:
+            self._device_monitor.on_devices_changed(self._on_devices_changed)
+            self._device_monitor.start()
 
     @staticmethod
     def _trace_id_for(value: str | None) -> str | None:
@@ -890,6 +1014,8 @@ class ScriberWebController:
 
     def _on_devices_changed(self, devices: list[dict[str, str]]) -> None:
         """Bridge device monitor thread callbacks onto the asyncio loop."""
+        if self._loop.is_closed():
+            return
         try:
             self._loop.call_soon_threadsafe(
                 lambda d=devices: asyncio.create_task(self._handle_devices_changed(d))
@@ -1423,6 +1549,63 @@ class ScriberWebController:
             "transcribing": recording_state is RecordingState.FINALIZING,
         }
 
+    def get_runtime_info(self) -> dict[str, Any]:
+        recording_state = self._recording_state_machine.state
+        host = os.getenv(_WEB_HOST_ENV, "127.0.0.1")
+        try:
+            port = int(os.getenv(_WEB_PORT_ENV, "8765"))
+        except ValueError:
+            port = 8765
+        return {
+            "apiVersion": _API_VERSION,
+            "workerVersion": os.getenv(_WORKER_VERSION_ENV, _API_VERSION),
+            "runtimeMode": os.getenv(_RUNTIME_MODE_ENV, "python-web"),
+            "pid": os.getpid(),
+            "host": host,
+            "port": port,
+            "startedAt": self._started_at_iso,
+            "uptimeSeconds": max(0.0, time.monotonic() - self._started_at_monotonic),
+            "dataDir": str(Path.cwd().resolve()),
+            "downloadsDir": str(self._downloads_dir),
+            "activeSession": self._session_id,
+            "recordingState": recording_state.value,
+            "capabilities": {
+                "rest": True,
+                "websocket": True,
+                "liveMic": True,
+                "fileTranscription": True,
+                "youtubeTranscription": True,
+                "exports": ["pdf", "docx"],
+                "localStt": bool(Config.ONNX_MODEL or Config.NEMO_MODEL),
+            },
+            "featureFlags": {
+                "audioEngine": os.getenv(_AUDIO_ENGINE_ENV, "python"),
+                "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
+                "validateWsContracts": bool(self._validate_ws_contracts),
+            },
+            "startup": {
+                "transcriptsLoaded": bool(self._transcripts_loaded),
+                "deviceMonitor": "running" if self._device_monitor_enabled else "disabled",
+            },
+        }
+
+    def get_health(self) -> dict[str, Any]:
+        runtime = self.get_runtime_info()
+        return {
+            "ok": True,
+            "ready": True,
+            "apiVersion": runtime["apiVersion"],
+            "workerVersion": runtime["workerVersion"],
+            "pid": runtime["pid"],
+            "host": runtime["host"],
+            "port": runtime["port"],
+            "startedAt": runtime["startedAt"],
+            "uptimeSeconds": runtime["uptimeSeconds"],
+            "activeSession": runtime["activeSession"],
+            "recordingState": runtime["recordingState"],
+            "runtimeMode": runtime["runtimeMode"],
+        }
+
     def get_hot_path_metrics(self, *, limit: int = 50) -> dict[str, Any]:
         query_limit = max(1, min(500, int(limit)))
         summary = self._latency_metrics_store.summarize(limit=query_limit)
@@ -1441,25 +1624,33 @@ class ScriberWebController:
     async def add_client(self, ws: web.WebSocketResponse) -> None:
         async with self._clients_lock:
             self._clients.add(ws)
+            self._client_count = len(self._clients)
             self._clients_dirty = True
 
     async def remove_client(self, ws: web.WebSocketResponse) -> None:
         async with self._clients_lock:
             self._clients.discard(ws)
+            self._client_count = len(self._clients)
             self._clients_dirty = True
+
+    def _has_ws_clients(self) -> bool:
+        return self._client_count > 0
 
     async def broadcast(self, payload: dict[str, Any]) -> None:
         if self._validate_ws_contracts:
             validate_event_payload(payload)
-        msg = json.dumps(payload, ensure_ascii=False)
+
         if self._clients_dirty:
             async with self._clients_lock:
                 if self._clients_dirty:
                     self._clients_snapshot = tuple(self._clients)
+                    self._client_count = len(self._clients)
                     self._clients_dirty = False
         clients = self._clients_snapshot
         if not clients:
             return
+
+        msg = json.dumps(payload, ensure_ascii=False)
         
         async def send_safe(ws: web.WebSocketResponse):
             """Send message to client, return ws if failed or closed."""
@@ -1478,6 +1669,7 @@ class ScriberWebController:
             async with self._clients_lock:
                 for ws in dead:
                     self._clients.discard(ws)
+                self._client_count = len(self._clients)
                 self._clients_dirty = True
 
     def _set_status(self, status: str, *, session_id: str | None = None) -> None:
@@ -1591,6 +1783,11 @@ class ScriberWebController:
         if session_id is not None and session_id != self._session_id:
             return
         self._update_input_warning(rms, session_id=session_id)
+
+        has_ws_clients = self._has_ws_clients()
+        if not has_ws_clients and not self._overlay_audio_enabled:
+            return
+
         # Called from the sounddevice callback thread; throttle broadcasts to ~30fps.
         now = time.monotonic()
         if now - self._last_audio_broadcast < 0.033:  # ~30fps
@@ -1599,6 +1796,8 @@ class ScriberWebController:
         # Update native overlay waveform only when recording overlay is active
         if self._overlay_audio_enabled:
             update_overlay_audio(rms)
+        if not has_ws_clients:
+            return
         if session_id is None:
             session_id = self._session_id
         payload = audio_level_event(float(rms), session_id=session_id)
@@ -1862,7 +2061,10 @@ class ScriberWebController:
                 if not is_final:
                     return
                 rec.append_final_text(text)
-                logger.debug(f"YouTube transcription received: {len(text)} chars, total: {len(rec.content)} chars")
+                logger.debug(
+                    "YouTube transcription received: "
+                    f"{len(text)} chars, buffered segments: {len(rec._pending_content_segments)}"
+                )
 
             def on_progress(step: str) -> None:
                 rec.step = step
@@ -1910,7 +2112,8 @@ class ScriberWebController:
                     timeout_label="YouTube transcription",
                 )
 
-            logger.info(f"YouTube transcription completed: {len(rec.content)} chars")
+            content = rec.content_text()
+            logger.info(f"YouTube transcription completed: {len(content)} chars")
             rec.status = "completed"
             rec.step = "Completed"
             rec.updated_at = datetime.now().isoformat()
@@ -1930,11 +2133,11 @@ class ScriberWebController:
                 milestone=True,
                 duration_ms=(time.monotonic() - transcribe_started) * 1000,
                 outcome="success",
-                meta={"chars": len(rec.content)},
+                meta={"chars": len(content)},
             )
 
             # Auto-summarize if enabled
-            if Config.AUTO_SUMMARIZE and rec.content:
+            if Config.AUTO_SUMMARIZE and content:
                 try:
                     from src.summarization import summarize_text
                     rec.step = "Summarizing..."
@@ -1953,7 +2156,7 @@ class ScriberWebController:
                         outcome="started",
                     )
                     rec.summary = await summarize_text(
-                        rec.content,
+                        content,
                         Config.SUMMARIZATION_MODEL,
                         duration=rec.duration,
                     )
@@ -2088,9 +2291,8 @@ class ScriberWebController:
             await self._broadcast_history_updated()
             # Cleanup: delete the downloaded audio file and directory
             try:
-                import shutil
                 if out_dir.exists():
-                    shutil.rmtree(out_dir)
+                    await _remove_tree_if_exists(out_dir)
                     logger.debug(f"Cleaned up YouTube download directory: {out_dir}")
             except Exception as cleanup_err:
                 logger.warning(f"Failed to cleanup YouTube download: {cleanup_err}")
@@ -2178,7 +2380,10 @@ class ScriberWebController:
                 if not is_final:
                     return
                 rec.append_final_text(text)
-                logger.debug(f"File transcription received: {len(text)} chars, total: {len(rec.content)} chars")
+                logger.debug(
+                    "File transcription received: "
+                    f"{len(text)} chars, buffered segments: {len(rec._pending_content_segments)}"
+                )
 
             def on_progress(step: str) -> None:
                 rec.step = step
@@ -2215,7 +2420,8 @@ class ScriberWebController:
                     timeout_label="File transcription",
                 )
 
-            logger.info(f"File transcription completed: {len(rec.content)} chars")
+            content = rec.content_text()
+            logger.info(f"File transcription completed: {len(content)} chars")
             rec.status = "completed"
             rec.step = "Completed"
             rec.updated_at = datetime.now().isoformat()
@@ -2234,11 +2440,11 @@ class ScriberWebController:
                 milestone=True,
                 duration_ms=(time.monotonic() - transcribe_started) * 1000,
                 outcome="success",
-                meta={"chars": len(rec.content)},
+                meta={"chars": len(content)},
             )
 
             # Auto-summarize if enabled
-            if Config.AUTO_SUMMARIZE and rec.content:
+            if Config.AUTO_SUMMARIZE and content:
                 try:
                     from src.summarization import summarize_text
                     rec.step = "Summarizing..."
@@ -2257,7 +2463,7 @@ class ScriberWebController:
                         outcome="started",
                     )
                     rec.summary = await summarize_text(
-                        rec.content,
+                        content,
                         Config.SUMMARIZATION_MODEL,
                         duration=rec.duration,
                     )
@@ -2373,10 +2579,9 @@ class ScriberWebController:
             await self._broadcast_history_updated()
             # Cleanup: delete the uploaded file and its directory
             try:
-                import shutil
                 file_dir = file_path.parent
                 if rec.status != "processing" and file_dir.exists() and file_dir.name != "files":
-                    shutil.rmtree(file_dir)
+                    await _remove_tree_if_exists(file_dir)
                     logger.debug(f"Cleaned up uploaded file directory: {file_dir}")
             except Exception as cleanup_err:
                 logger.warning(f"Failed to cleanup uploaded file: {cleanup_err}")
@@ -2856,6 +3061,9 @@ class ScriberWebController:
         await self.toggle_listening()
 
     def register_hotkeys(self) -> None:
+        if os.getenv(_DISABLE_HOTKEYS_ENV, "").strip().lower() in {"1", "true", "yes"}:
+            logger.info("Hotkeys disabled via SCRIBER_DISABLE_HOTKEYS")
+            return
         try:
             import keyboard as kb  # type: ignore
         except Exception as exc:  # pragma: no cover - platform/env dependent
@@ -3481,6 +3689,7 @@ class ScriberWebController:
                 full_data = db.get_transcript(transcript_id)
                 if full_data:
                     rec.content = full_data.get("content", rec.content)
+                    rec._pending_content_segments.clear()
                     rec.summary = full_data.get("summary", rec.summary)
                     if not rec._preview:
                         rec._preview = full_data.get("preview", "") or rec._preview
@@ -3529,8 +3738,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     app.cleanup_ctx.append(http_session_ctx)
 
-    async def health(_request: web.Request):
-        return web.json_response({"ok": True})
+    async def health(request: web.Request):
+        ctl: ScriberWebController = request.app["controller"]
+        return web.json_response(ctl.get_health())
 
     async def ws_handler(request: web.Request):
         origin = request.headers.get("Origin")
@@ -3558,6 +3768,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
     async def get_state(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
         return web.json_response(ctl.get_state())
+
+    async def get_runtime(request: web.Request):
+        ctl: ScriberWebController = request.app["controller"]
+        return web.json_response(ctl.get_runtime_info())
 
     async def get_hot_path_metrics(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
@@ -3881,25 +4095,15 @@ def create_app(controller: ScriberWebController) -> web.Application:
             save_dir.mkdir(parents=True, exist_ok=True)
             save_path = save_dir / safe_filename
 
-            # Stream file to disk
-            bytes_read = 0
-            too_large = False
-            with open(save_path, "wb") as f:
-                while True:
-                    chunk = await file_field.read_chunk(size=1024 * 1024)  # 1MB chunks
-                    if not chunk:
-                        break
-                    bytes_read += len(chunk)
-                    if bytes_read > ingest_max_bytes:
-                        too_large = True
-                        break
-                    f.write(chunk)
+            bytes_read, too_large = await _write_upload_stream_to_disk(
+                file_field,
+                save_path,
+                max_bytes=ingest_max_bytes,
+            )
 
             if too_large:
                 try:
-                    import shutil
-                    if save_dir.exists():
-                        shutil.rmtree(save_dir)
+                    await _remove_tree_if_exists(save_dir)
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to cleanup oversized upload: {cleanup_err}")
                 return web.json_response(
@@ -3918,9 +4122,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     # Check if extracted audio is within size limit
                     audio_size = audio_path.stat().st_size
                     if audio_size > final_audio_limit:
-                        import shutil
-                        if save_dir.exists():
-                            shutil.rmtree(save_dir)
+                        await _remove_tree_if_exists(save_dir)
                         return web.json_response(
                             {
                                 "message": (
@@ -3945,9 +4147,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     logger.info(f"Audio extracted successfully: {safe_filename} ({audio_size / (1024*1024):.1f}MB)")
                     
                 except RuntimeError as extract_err:
-                    import shutil
-                    if save_dir.exists():
-                        shutil.rmtree(save_dir)
+                    await _remove_tree_if_exists(save_dir)
                     logger.error(f"Audio extraction failed: {extract_err}")
                     return web.json_response(
                         {"message": f"Failed to extract audio from video: {extract_err}"},
@@ -3957,9 +4157,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 transcribe_path = await _maybe_compress_audio_upload(save_path, max_bytes=final_audio_limit)
                 compressed_size = transcribe_path.stat().st_size
                 if compressed_size > final_audio_limit:
-                    import shutil
-                    if save_dir.exists():
-                        shutil.rmtree(save_dir)
+                    await _remove_tree_if_exists(save_dir)
                     return web.json_response(
                         {
                             "message": (
@@ -4018,7 +4216,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if not rec and not full_data:
             return web.json_response({"message": "Transcript not found"}, status=404)
 
-        content = rec.content if rec else (full_data.get("content", "") if isinstance(full_data, dict) else "")
+        content = rec.content_text() if rec else (full_data.get("content", "") if isinstance(full_data, dict) else "")
         status = rec.status if rec else (full_data.get("status", "") if isinstance(full_data, dict) else "")
         duration = rec.duration if rec else (full_data.get("duration", "") if isinstance(full_data, dict) else "")
 
@@ -4066,8 +4264,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def export_transcript(request: web.Request):
         """Export transcript as PDF or DOCX."""
-        from src.export import export_to_pdf, export_to_docx
-        
         ctl: ScriberWebController = request.app["controller"]
         transcript_id = request.match_info.get("id", "")
         export_format = request.match_info.get("format", "pdf").lower()
@@ -4084,7 +4280,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if not rec and not full_data:
             return web.json_response({"message": "Transcript not found"}, status=404)
 
-        content = rec.content if rec else (full_data.get("content", "") if isinstance(full_data, dict) else "")
+        content = rec.content_text() if rec else (full_data.get("content", "") if isinstance(full_data, dict) else "")
         summary = rec.summary if rec else (full_data.get("summary", "") if isinstance(full_data, dict) else "")
         title = rec.title if rec else (full_data.get("title", "") if isinstance(full_data, dict) else "")
         date = rec.date if rec else (full_data.get("date", "") if isinstance(full_data, dict) else "")
@@ -4094,26 +4290,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Transcript has no content to export"}, status=400)
 
         try:
-            if export_format == "pdf":
-                data = export_to_pdf(
-                    title=title or "Transcript",
-                    content=content,
-                    summary=summary,
-                    date=date,
-                    duration=duration,
-                )
-                content_type = "application/pdf"
-                ext = "pdf"
-            else:
-                data = export_to_docx(
-                    title=title or "Transcript",
-                    content=content,
-                    summary=summary,
-                    date=date,
-                    duration=duration,
-                )
-                content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                ext = "docx"
+            data, content_type, ext = await _render_transcript_export_async(
+                export_format=export_format,
+                title=title or "Transcript",
+                content=content,
+                summary=summary,
+                date=date,
+                duration=duration,
+            )
 
             # Sanitize filename
             safe_title = "".join(c for c in (title or "transcript") if c.isalnum() or c in " -_").strip()[:50]
@@ -4136,6 +4320,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/ws", ws_handler)
 
     app.router.add_get("/api/state", get_state)
+    app.router.add_get("/api/runtime", get_runtime)
     app.router.add_get("/api/metrics/hot-path", get_hot_path_metrics)
     app.router.add_post("/api/live-mic/start", start_live)
     app.router.add_post("/api/live-mic/stop", stop_live)

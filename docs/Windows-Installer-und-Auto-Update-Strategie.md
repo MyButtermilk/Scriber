@@ -4,25 +4,27 @@
 Nicht versierte Nutzer sollen Scriber wie eine normale Windows-App installieren und automatisch auf dem aktuellen Stand bleiben, ohne Python, Node oder manuelle Update-Schritte.
 
 ## Empfohlene Zielvariante (optimal fuer Scriber jetzt)
-### Primarer Kanal
-`Inno Setup` + `eigener Updater` + `GitHub Releases` + `Authenticode Signierung`
+### Primaerer Kanal
+`Tauri Desktop Shell` + `Python Worker/Sidecar` + `Inno Setup` + `GitHub Releases` + `Authenticode Signierung`
 
 ### Warum diese Variante
-1. Passt zur aktuellen Python-Architektur ohne Re-Write.
+1. Passt zur aktuellen Python-Architektur ohne Re-Write: Rust/Tauri uebernimmt Shell/Lifecycle, Python bleibt STT-/Fachlogik.
 2. Schnell produktionsfaehig im Vergleich zu MSIX-only oder Squirrel-Integration.
 3. Silent Updates sind robust moeglich (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-`).
 4. Security kann sauber gehaertet werden (SHA256, Signaturpruefung, immutable Releases).
+5. Der aktuelle Code enthaelt bereits ein Tauri-2-Scaffold mit Rust-Supervisor; offen ist noch die vollstaendige Sidecar/Frozen-Packaging-Stufe.
 
-### Warum kein Electron/Tauri/MSIX jetzt
+### Warum nicht Electron/MSIX-only/Squirrel jetzt
 | Alternative        | Warum nicht jetzt                                                                       |
 |--------------------|----------------------------------------------------------------------------------------|
-| Electron / Tauri   | Erfordert vollstaendigen Re-Write des Backends. Scriber ist eine Python-App.            |
+| Electron           | Deutlich groesserer Runtime-Footprint, kein Vorteil fuer die vorhandene Python-STT-Domaene. |
+| Tauri ohne Python-Sidecar | Nur sinnvoll, wenn STT-/Audio-/Providerlogik neu geschrieben wuerde. Der aktuelle Hybrid-Ansatz vermeidet diesen Rewrite. |
 | MSIX + AppInstaller| Erfordert saubere MSIX-Paketierung + Signierung; Update-Settings sind je nach Windows-Version unterschiedlich verfuegbar (Basis seit Windows 10, Version 1709). |
 | Squirrel.Windows   | Auch fuer Nicht-.NET-Apps nutzbar, aber NuGet/Squirrel-Artefaktmodell passt nicht direkt zur aktuellen Python-Build-Pipeline und erhoeht den Integrationsaufwand. |
 | PyUpdater / Esky   | Nicht mehr aktiv gepflegt (Stand 2026). Eigener Updater ist transparenter und robuster. |
 
 ### Zielbild in einem Satz
-Scriber laeuft als signierte, installierte Windows-App (per-user), prueft im Hintergrund Releases, laedt signierte Updates, installiert sie still im Leerlauf und startet sich neu.
+Scriber laeuft als signierte, installierte Windows-App (per-user), startet eine lokale Python-Worker-Komponente unter Tauri-Supervision, prueft im Hintergrund Releases, laedt signierte Updates, installiert sie still im Leerlauf und startet sich neu.
 
 ---
 

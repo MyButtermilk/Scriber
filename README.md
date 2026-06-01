@@ -29,7 +29,7 @@
 
 Last verified: 2026-06-01
 
-Scriber is a local-first transcription app with a Python backend, a React web UI, and a legacy Tkinter fallback UI. The current primary runtime is Windows with tray integration, global hotkeys, microphone device monitoring, and local SQLite persistence.
+Scriber is a local-first transcription app with a Python backend, a React web UI, a new experimental Tauri desktop shell, and a legacy Tkinter fallback UI. The current primary runtime is Windows with tray integration, global hotkeys, microphone device monitoring, and local SQLite persistence.
 
 Current implementation highlights:
 
@@ -40,15 +40,16 @@ Current implementation highlights:
 - DeviceMonitor for microphone hotplug handling with native Windows endpoint events where available and polling fallback.
 - Recording-aware PortAudio refresh: device refreshes are deferred while a recording stream is active and run once after the stream becomes idle.
 - Short-lived microphone device-resolution cache for selected/favorite mic lookup.
-- Route-level frontend lazy loading for non-default pages and a single shared WebSocket connection.
+- Route-level frontend lazy loading for non-default pages, manual vendor chunks, and a single shared WebSocket connection.
+- Tauri 2 desktop scaffold with a Rust supervisor that starts the Python backend, negotiates a runtime backend URL, checks the Scriber health contract, and avoids a visible Python console window on Windows.
+- Backend hot-path reductions: no-client WebSocket broadcasts skip JSON serialization, audio-level callbacks avoid UI broadcast work without clients/overlay, long transcript appends buffer final segments, and upload/export cleanup paths are offloaded from the event loop where practical.
 
 Known limits:
 
 - `SCRIBER_MIC_ALWAYS_ON` exists as a setting, but it is not a true app-level always-on/prewarmed microphone stream yet. Per-session streams are closed during cleanup to avoid orphaned PortAudio resources.
 - Frontend transcript-list virtualization/infinite loading is still open.
-- Vite production build can still warn about an initial chunk over 500 kB; manual vendor chunking is still open.
-- Some upload preprocessing and export generation still run synchronously in async request paths.
-- Very long live sessions can still hit O(n^2)-style string growth when appending final transcript chunks.
+- The Tauri shell currently supervises the existing Python backend from the repository/virtualenv. Full bundled sidecar/installer packaging is still a separate packaging phase.
+- Some CPU-heavy media preprocessing still depends on ffmpeg/provider behavior even though disk writes, cleanup, and export rendering are offloaded.
 
 ---
 
@@ -606,6 +607,16 @@ npm start
 
 Do not run `npm run dev:client` and `npm run dev` at the same time on the default port.
 
+### Tauri Desktop Commands
+
+```bash
+cd Frontend
+npm run tauri:dev
+npm run tauri:build
+```
+
+The current Tauri shell is a hybrid runtime: Rust owns the desktop window and supervises the existing Python backend. In development it locates the repository root and uses `SCRIBER_PYTHON`, `venv\Scripts\python.exe`, `.venv\Scripts\python.exe`, or `python` to run `python -m src.web_api`. The backend reports `/api/health` and `/api/runtime` metadata including API version, runtime mode, PID, host, port, start time, capabilities, and startup flags.
+
 ### Tests
 
 ```bash
@@ -673,7 +684,8 @@ Scriber/
 ├── Frontend/
 │   ├── client/                     # React app
 │   ├── server/                     # Express/Vite host
-│   └── shared/                     # shared TS schema/types
+│   ├── shared/                     # shared TS schema/types
+│   └── src-tauri/                  # Tauri 2 desktop shell and Rust supervisor
 ├── tests/                          # pytest suite
 ├── docs/                           # architecture and status docs
 ├── start.bat
@@ -756,10 +768,8 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 
 - Real app-level microphone prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Frontend transcript-list virtualization or infinite query.
-- Vite manual vendor chunking for smaller initial chunks.
-- WebSocket no-client fast path before JSON serialization and task scheduling.
-- Background/off-thread upload preprocessing and export generation.
-- O(n^2) live transcript content append behavior in very long sessions.
+- Full bundled desktop packaging: Python sidecar/frozen backend, ffmpeg/yt-dlp inclusion, signing, installer, updater, and writable data-path strategy.
+- Broader runtime smoke tests for the Tauri supervisor: backend crash, startup timeout, external backend attach, dynamic port, and app-exit cleanup.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.
 - Stronger typed API contract between backend and frontend.
 - Smaller backend modules by splitting `src/web_api.py` into domains.

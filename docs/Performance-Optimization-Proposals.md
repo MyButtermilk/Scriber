@@ -44,7 +44,7 @@ atexit.register(_close_all_connections)  # Cleanup on exit
 
 ---
 
-### 1.2 Frontend Bundle Optimization ✅ PARTIALLY IMPLEMENTED (Code Splitting)
+### 1.2 Frontend Bundle Optimization ✅ IMPLEMENTED (Code Splitting + Vendor Chunks)
 
 **Current State:**
 - React 19 with Vite 7, full bundle loaded on initial page load
@@ -78,10 +78,9 @@ function TabRoutes() {
 **Remaining Optimizations (Optional):**
 - Tree-shake Lucide Icons using individual imports
 - Lazy load Framer Motion for animated pages only
-- Manual vendor chunks / bundle splitting in `vite.config.ts`
 
 **Impact:** 30-50% reduction in initial bundle size
-**Status:** ✅ Route code splitting completed (2026-01-01); 🔄 vendor chunk optimization still pending. Latest `npm run build` succeeds, but Vite still reports an initial chunk above 500 kB.
+**Status:** ✅ Route code splitting completed (2026-01-01); ✅ manual vendor chunks completed (2026-06-01). Latest `npm run build` succeeds without the previous 500 kB initial chunk warning.
 
 ---
 
@@ -210,10 +209,10 @@ const handleNavigate = useCallback((id: string) => {
 
 ---
 
-### 1.5 Vite Build Optimization
+### 1.5 Vite Build Optimization ✅ IMPLEMENTED
 
-**Current State:**
-- `vite.config.ts:37-40` hat minimale Build-Konfiguration:
+**Previous State:**
+- `vite.config.ts` had minimal build configuration:
 ```typescript
 build: {
   outDir: path.resolve(import.meta.dirname, "dist/public"),
@@ -222,38 +221,28 @@ build: {
 ```
 
 **Problem:**
-- Keine `rollupOptions.output` für Chunk-Kontrolle
-- Keine explizite `minify` Spezifikation
-- Große Vendor-Chunks (React, Radix, Framer Motion zusammen)
+- No `rollupOptions.output` for chunk control.
+- Large vendor chunks were grouped together.
 
-**Proposed Solution:**
+**Implemented Solution:**
 ```typescript
 // Frontend/vite.config.ts
 build: {
   outDir: path.resolve(import.meta.dirname, "dist/public"),
   emptyOutDir: true,
-  minify: 'terser',
-  terserOptions: {
-    compress: {
-      drop_console: true,  // Entferne console.log in Production
-    },
-  },
   rollupOptions: {
     output: {
-      manualChunks: {
-        'react-vendor': ['react', 'react-dom'],
-        'radix-ui': [
-          '@radix-ui/react-dialog',
-          '@radix-ui/react-popover',
-          '@radix-ui/react-select',
-          '@radix-ui/react-tabs',
-        ],
-        'animation': ['framer-motion'],
-        'query': ['@tanstack/react-query'],
+      manualChunks(id) {
+        const normalizedId = id.replace(/\\/g, "/");
+        if (!normalizedId.includes("/node_modules/")) return undefined;
+        if (normalizedId.includes("/node_modules/react/")) return "vendor-react";
+        if (normalizedId.includes("/node_modules/@tanstack/")) return "vendor-query";
+        if (normalizedId.includes("/node_modules/framer-motion/")) return "vendor-motion";
+        if (normalizedId.includes("/node_modules/recharts/")) return "vendor-charts";
+        return "vendor";
       }
     }
-  },
-  reportCompressedSize: true,
+  }
 }
 ```
 
@@ -261,44 +250,44 @@ build: {
 - Bessere Cache-Nutzung (Vendor-Chunks ändern sich selten)
 - Paralleles Laden von unabhängigen Chunks
 - Kleinere initiale Bundle-Größe
-- Console.logs in Production entfernt
 
 **Impact:** ~15-25% Bundle-Reduktion, besseres Caching
 **Effort:** Low (1 Stunde)
 **Risk:** Gering
+**Status:** ✅ Completed (2026-06-01). Build output now separates React, TanStack Query, motion libraries, and the remaining vendor chunk. Radix stays in the remaining vendor chunk to avoid circular manual-chunk warnings with the current dependency graph.
 
 ---
 
-### 1.6 WebSocket Message Throttling ✅ PARTIALLY IMPLEMENTED
+### 1.6 WebSocket Message Throttling ✅ IMPLEMENTED
 
 **Current State:**
 - `ScriberWebController._on_audio_level()` throttles audio-level broadcasts to ~30fps.
 - `MicrophoneInput._audio_callback()` also throttles visualizer/input-warning RMS work to ~30fps before the WebSocket path.
 - `history_updated` broadcasts are globally throttled/coalesced to avoid refetch storms.
-- `broadcast()` still serializes the payload before checking whether a client snapshot exists.
+- `broadcast()` validates optional contracts first, then refreshes the client snapshot and returns before `json.dumps()` when no WebSocket clients are connected.
+- `_on_audio_level()` skips UI broadcast scheduling when no WebSocket clients are connected and the native overlay is not enabled.
 
 **Problem:**
-- High message frequency can still do unnecessary backend work when no UI is connected.
-- Frontend visualizer rendering is already isolated from broad page re-renders; remaining concern is mostly backend serialization/task overhead and any future multi-client usage.
+- High message frequency used to do unnecessary backend serialization/task work when no UI was connected.
+- Frontend visualizer rendering is already isolated from broad page re-renders.
 
-**Implemented throttle + remaining fast path:**
+**Implemented throttle + no-client fast path:**
 ```python
 class ScriberWebController:
-    def __init__(self, ...):
-        self._last_audio_broadcast = 0
-        self._audio_broadcast_interval = 1/30  # 30fps
-
-    def _on_audio_level(self, rms: float):
-        if not self.has_clients():
-            return  # remaining improvement
-        now = time.monotonic()
-        if now - self._last_audio_broadcast < self._audio_broadcast_interval:
+    async def broadcast(self, payload: dict[str, Any]) -> None:
+        clients = self._clients_snapshot
+        if not clients:
             return
-        self._last_audio_broadcast = now
+        msg = json.dumps(payload, ensure_ascii=False)
+
+    def _on_audio_level(self, rms: float, *, session_id: str | None = None) -> None:
+        has_ws_clients = self._has_ws_clients()
+        if not has_ws_clients and not self._overlay_audio_enabled:
+            return
 ```
 
-**Impact:** Audio-level and history-update traffic are already reduced. Remaining low-effort improvement: skip `json.dumps` and task scheduling entirely when no WebSocket clients are connected.
-**Status:** ✅ Audio/history throttling implemented; 🔄 no-client fast path still pending.
+**Impact:** Audio-level and history-update traffic are reduced, and idle/no-client sessions avoid repeated JSON serialization and broadcast task scheduling.
+**Status:** ✅ Completed (2026-06-01). Covered by `tests/test_web_api_lifecycle.py`.
 
 ---
 

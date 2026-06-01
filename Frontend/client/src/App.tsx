@@ -7,7 +7,8 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { BackendStatusProvider } from "@/hooks/use-backend-status";
 import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
 import { WebSocketProvider } from "@/contexts/WebSocketContext";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { isTauriRuntime, loadBackendBaseUrlFromTauri } from "@/lib/backend";
 
 // Keep default route eager for fastest first paint, lazy-load heavier routes.
 import LiveMic from "@/pages/LiveMic";
@@ -59,6 +60,28 @@ function Router() {
 }
 
 function App() {
+  const [backendBaseReady, setBackendBaseReady] = useState(!isTauriRuntime());
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadBackendBaseUrlFromTauri().finally(() => {
+      if (!cancelled) {
+        setBackendBaseReady(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!backendBaseReady) {
+    return (
+      <ThemeProvider defaultTheme="system" storageKey="scriber-theme">
+        <PageLoader />
+      </ThemeProvider>
+    );
+  }
+
   return (
     <ThemeProvider defaultTheme="system" storageKey="scriber-theme">
       <QueryClientProvider client={queryClient}>

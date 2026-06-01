@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
-import { apiUrl } from "@/lib/backend";
+import { apiUrl, isTauriRuntime, setBackendBaseUrl } from "@/lib/backend";
 
 interface BackendStatus {
     isOnline: boolean;
@@ -7,6 +7,16 @@ interface BackendStatus {
     lastChecked: Date | null;
     error: string | null;
     checkNow: () => Promise<boolean>;
+}
+
+interface TauriBackendStatus {
+    baseUrl: string;
+    running: boolean;
+    ready: boolean;
+    managed: boolean;
+    pid: number | null;
+    message: string;
+    runtimeMode: string;
 }
 
 const BackendStatusContext = createContext<BackendStatus | null>(null);
@@ -23,6 +33,20 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
     const checkHealth = useCallback(async (): Promise<boolean> => {
         setIsChecking(true);
         try {
+            if (isTauriRuntime()) {
+                const { invoke } = await import("@tauri-apps/api/core");
+                const status = await invoke<TauriBackendStatus>("ensure_backend_running");
+                if (status.baseUrl) {
+                    setBackendBaseUrl(status.baseUrl);
+                }
+                if (!status.ready) {
+                    setIsOnline(false);
+                    setError(status.message || (status.running ? "Backend is starting" : "Backend is not running"));
+                    setLastChecked(new Date());
+                    return false;
+                }
+            }
+
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 3000);
 

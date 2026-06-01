@@ -1,8 +1,10 @@
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src import web_api
 from src.web_api import ScriberWebController, TranscriptRecord
 
 
@@ -18,6 +20,85 @@ def _make_record(session_id: str) -> TranscriptRecord:
     )
     rec.start()
     return rec
+
+
+def test_transcript_record_buffers_final_segments_until_content_read():
+    rec = _make_record("buffered-session")
+
+    rec.append_final_text("first")
+    rec.append_final_text("second")
+    rec.append_final_text("third")
+
+    assert rec.content == "first"
+    assert rec._pending_content_segments == ["second", "third"]
+    assert rec.content_text() == "first\n\nsecond\n\nthird"
+    assert rec._pending_content_segments == []
+
+
+class _ChunkUploadField:
+    def __init__(self, chunks: list[bytes]):
+        self._chunks = list(chunks)
+
+    async def read_chunk(self, *, size: int) -> bytes:
+        del size
+        if not self._chunks:
+            return b""
+        return self._chunks.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_write_upload_stream_to_disk_writes_chunks_off_hot_path(tmp_path):
+    target = tmp_path / "upload.bin"
+    field = _ChunkUploadField([b"abc", b"def"])
+
+    bytes_read, too_large = await web_api._write_upload_stream_to_disk(
+        field,
+        target,
+        max_bytes=16,
+    )
+
+    assert bytes_read == 6
+    assert too_large is False
+    assert target.read_bytes() == b"abcdef"
+
+
+@pytest.mark.asyncio
+async def test_write_upload_stream_to_disk_stops_before_oversized_chunk(tmp_path):
+    target = tmp_path / "upload.bin"
+    field = _ChunkUploadField([b"abc", b"def"])
+
+    bytes_read, too_large = await web_api._write_upload_stream_to_disk(
+        field,
+        target,
+        max_bytes=4,
+    )
+
+    assert bytes_read == 6
+    assert too_large is True
+    assert target.read_bytes() == b"abc"
+
+
+@pytest.mark.asyncio
+async def test_render_transcript_export_async_runs_renderer(monkeypatch):
+    def fake_render(**kwargs):
+        assert kwargs["export_format"] == "pdf"
+        assert kwargs["title"] == "Title"
+        return b"pdf", "application/pdf", "pdf"
+
+    monkeypatch.setattr(web_api, "_render_transcript_export", fake_render)
+
+    data, content_type, ext = await web_api._render_transcript_export_async(
+        export_format="pdf",
+        title="Title",
+        content="Body",
+        summary="Summary",
+        date="Today",
+        duration="00:01",
+    )
+
+    assert data == b"pdf"
+    assert content_type == "application/pdf"
+    assert ext == "pdf"
 
 
 @pytest.mark.asyncio
@@ -65,6 +146,46 @@ async def test_get_state_reports_background_processing_flag():
 
 
 @pytest.mark.asyncio
+async def test_runtime_and_health_contract_include_sidecar_fields():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    runtime = ctl.get_runtime_info()
+    health = ctl.get_health()
+
+    assert runtime["apiVersion"]
+    assert runtime["workerVersion"]
+    assert runtime["runtimeMode"] == "python-web"
+    assert runtime["pid"] == health["pid"]
+    assert runtime["host"] == "127.0.0.1"
+    assert runtime["port"] == 8765
+    assert runtime["startedAt"].endswith("Z")
+    assert runtime["uptimeSeconds"] >= 0
+    assert runtime["capabilities"]["rest"] is True
+    assert runtime["capabilities"]["websocket"] is True
+    assert runtime["capabilities"]["exports"] == ["pdf", "docx"]
+    assert runtime["featureFlags"]["audioEngine"] == "python"
+    assert runtime["startup"]["deviceMonitor"] == "disabled"
+    assert health["ok"] is True
+    assert health["ready"] is True
+    assert health["apiVersion"] == runtime["apiVersion"]
+    assert health["host"] == runtime["host"]
+    assert health["port"] == runtime["port"]
+    assert health["startedAt"] == runtime["startedAt"]
+
+
+@pytest.mark.asyncio
+async def test_register_hotkeys_can_be_disabled_for_runtime_smoke(monkeypatch):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    monkeypatch.setenv("SCRIBER_DISABLE_HOTKEYS", "1")
+    ctl.register_hotkeys()
+
+    assert ctl._keyboard is None
+
+
+@pytest.mark.asyncio
 async def test_low_input_warning_emits_and_clears():
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
@@ -103,6 +224,56 @@ async def test_low_input_warning_emits_and_clears():
             if call.args and isinstance(call.args[0], dict) and call.args[0].get("type") == "input_warning"
         ]
         assert any(payload.get("active") is False for payload in inactive_payloads)
+
+
+@pytest.mark.asyncio
+async def test_broadcast_skips_serialization_without_clients():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    with patch.object(json, "dumps", side_effect=AssertionError("should not serialize")):
+        await ctl.broadcast({"type": "status", "status": "Idle"})
+
+
+@pytest.mark.asyncio
+async def test_audio_level_skips_broadcast_work_without_clients_or_overlay():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    ctl._session_id = "s1"
+    ctl._is_listening = True
+
+    with (
+        patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock,
+        patch.object(ctl._loop, "call_soon_threadsafe") as call_soon_mock,
+        patch("src.web_api.update_overlay_audio") as overlay_mock,
+    ):
+        ctl._on_audio_level(0.02, session_id="s1")
+        await asyncio.sleep(0)
+
+    call_soon_mock.assert_not_called()
+    broadcast_mock.assert_not_awaited()
+    overlay_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_audio_level_updates_overlay_without_ws_clients():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    ctl._session_id = "s1"
+    ctl._is_listening = True
+    ctl._overlay_audio_enabled = True
+
+    with (
+        patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock,
+        patch.object(ctl._loop, "call_soon_threadsafe") as call_soon_mock,
+        patch("src.web_api.update_overlay_audio") as overlay_mock,
+    ):
+        ctl._on_audio_level(0.02, session_id="s1")
+        await asyncio.sleep(0)
+
+    overlay_mock.assert_called_once_with(0.02)
+    call_soon_mock.assert_not_called()
+    broadcast_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

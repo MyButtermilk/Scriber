@@ -214,6 +214,7 @@ export default function Settings() {
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [language, setLanguage] = useState("auto");
   const [visualizerBarCount, setVisualizerBarCount] = useState(45);
+  const [savedVisualizerBarCount, setSavedVisualizerBarCount] = useState(45);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartAvailable, setAutostartAvailable] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -329,7 +330,9 @@ export default function Settings() {
         setSummarizationPrompt(settings.summarizationPrompt || "");
         setSummarizationModel(settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
         setAutoSummarize(settings.autoSummarize === true);
-        setVisualizerBarCount(settings.visualizerBarCount || 45);
+        const loadedVisualizerBarCount = settings.visualizerBarCount || 45;
+        setVisualizerBarCount(loadedVisualizerBarCount);
+        setSavedVisualizerBarCount(loadedVisualizerBarCount);
         setMicAlwaysOn(settings.micAlwaysOn === true);
         setFavoriteMic(settings.favoriteMic || "");
         setNemoModel(settings.nemoModel || "");
@@ -871,14 +874,21 @@ export default function Settings() {
     }
   };
 
-  const handleVisualizerBarCountChange = async (value: number[]) => {
+  const handleVisualizerBarCountChange = (value: number[]) => {
     const count = value[0];
-    const prevCount = visualizerBarCount;
     setVisualizerBarCount(count);
+  };
+
+  const handleVisualizerBarCountCommit = async (value: number[]) => {
+    const count = value[0];
+    if (count === savedVisualizerBarCount) {
+      return;
+    }
     try {
       await updateSettings({ visualizerBarCount: count });
+      setSavedVisualizerBarCount(count);
     } catch (e: any) {
-      setVisualizerBarCount(prevCount);
+      setVisualizerBarCount(savedVisualizerBarCount);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
@@ -1820,6 +1830,7 @@ export default function Settings() {
                       <Slider
                         value={[visualizerBarCount]}
                         onValueChange={handleVisualizerBarCountChange}
+                        onValueCommit={handleVisualizerBarCountCommit}
                         min={16}
                         max={128}
                         step={1}

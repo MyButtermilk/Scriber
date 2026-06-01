@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Scriber",
+  "version": "0.1.0",
+  "identifier": "app.scriber.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev:client",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5000",
+    "frontendDist": "../dist/public"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Scriber",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": ["icons/icon.ico"]
+  }
+}

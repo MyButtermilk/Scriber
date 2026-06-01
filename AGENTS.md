@@ -6,10 +6,11 @@ This file is the working guide for agents editing this repository. Keep it accur
 
 ## Product Snapshot
 
-- Scriber is an AI-powered transcription app with a Python backend, a React web UI, and a legacy Tkinter desktop UI.
+- Scriber is an AI-powered transcription app with a Python backend, a React web UI, an experimental Tauri desktop shell, and a legacy Tkinter desktop UI.
 - Main user workflows are live microphone dictation, YouTube transcription, file transcription, transcript management, summaries, and PDF/DOCX export.
 - Backend default: `127.0.0.1:8765`, implemented with `aiohttp`, WebSocket events, SQLite, Pipecat pipeline code, and provider-specific STT adapters.
 - Frontend default: `localhost:5000`, implemented with Vite 7, React 19, TypeScript, Tailwind v4, Radix/shadcn-style components, Wouter, and TanStack Query.
+- Tauri shell: `Frontend/src-tauri/`, implemented with Tauri 2 and a Rust supervisor that starts or attaches to the Python backend through the `/api/health` contract.
 - Runtime is primarily Windows-oriented. Linux/macOS support exists mainly for fallback paths.
 
 ## Repository Map
@@ -42,6 +43,8 @@ This file is the working guide for agents editing this repository. Keep it accur
 ### Frontend Code
 
 - `Frontend/client/src/App.tsx`: Wouter routing and route-level lazy loading.
+- `Frontend/client/src/lib/backend.ts`: backend URL resolver for browser/dev/Tauri runtime.
+- `Frontend/client/src/hooks/use-backend-status.tsx`: backend health polling and Tauri `ensure_backend_running` integration.
 - `Frontend/client/src/pages/`: Live Mic, YouTube, File Upload, Transcript Detail, Settings.
 - `Frontend/client/src/contexts/WebSocketContext.tsx`: single shared WebSocket connection.
 - `Frontend/client/src/components/`: app layout, command palette, recording popup, UI primitives.
@@ -49,6 +52,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system and neumorphic classes.
 - `Frontend/server/`: Express host for dev/prod frontend serving.
 - `Frontend/shared/`: shared TS types and Drizzle schema.
+- `Frontend/src-tauri/`: Tauri 2 desktop shell, Rust backend supervisor, capabilities, config, icon, Cargo manifest.
 
 ### Tests
 
@@ -125,18 +129,30 @@ This file is the working guide for agents editing this repository. Keep it accur
 - The frontend uses one shared WebSocket through `WebSocketProvider`.
 - Backend sends events such as `state`, `status`, `transcript`, `audio_level`, `input_warning`, `transcribing`, `session_started`, `session_finished`, `history_updated`, and `error`.
 - `audio_level` is throttled around 30fps.
-- A remaining backend performance opportunity is skipping `json.dumps` and task scheduling when no WebSocket clients are connected.
+- `broadcast()` skips JSON serialization when there are no connected WebSocket clients.
+- `_on_audio_level()` avoids scheduling UI broadcast work when there are no WebSocket clients and the native overlay is not consuming waveform updates.
 - Frontend routes: LiveMic is eager for first paint; YouTube, File, Settings, TranscriptDetail, and NotFound are lazy-loaded.
 - Intent prefetch exists for route chunks in the layout.
-- Production frontend build succeeds, but Vite can still warn about an initial chunk over 500 kB. Manual vendor chunking is still open.
+- Production frontend build uses manual vendor chunks for React, TanStack Query, motion libraries, charts, and remaining vendor code.
 - True transcript-list virtualization/infinite query is still open.
 
 ### Uploads, Jobs, and Exports
 
 - File and YouTube jobs use persistent job metadata, retry scheduling, and resume flows.
 - Upload limits are enforced with audio/video distinctions. Verify provider-specific upload limits in `web_api.py` before changing file flow.
-- Some upload and export work is still synchronous in async request paths. Use `asyncio.to_thread` or a worker-style design when addressing these paths.
-- PDF/DOCX export is synchronous today.
+- Multipart upload writes use a chunked helper that offloads file writes with `asyncio.to_thread`.
+- Cleanup of upload/download directories and PDF/DOCX export rendering are offloaded from async request paths with `asyncio.to_thread`.
+- ffmpeg/provider work can still dominate file workflows; treat it separately from the request-handler file I/O fixes.
+
+### Hybrid Tauri Runtime
+
+- Tauri commands exposed by `Frontend/src-tauri/src/lib.rs`: `get_backend_base_url`, `backend_status`, `ensure_backend_running`, `restart_backend`.
+- The Rust supervisor first validates the current backend port through the Scriber `/api/health` contract (`ok`, `apiVersion`, `runtimeMode`) before attaching.
+- If the default backend port is unavailable, the supervisor selects a loopback port and starts `python -m src.web_api` with `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, and `SCRIBER_RUNTIME_MODE=tauri-supervised`.
+- Managed backend stdout/stderr go to `tmp/tauri-backend.log`.
+- On Windows, the managed Python child is spawned with `CREATE_NO_WINDOW`.
+- Managed backend startup has a timeout and will be restarted by `ensure_backend_running` instead of staying in `starting` forever.
+- Current Tauri status: development/runtime scaffold only. Full sidecar/frozen Python packaging, installer, signing, updater, and bundled ffmpeg/yt-dlp remain open packaging work.
 
 ## Commands
 
@@ -165,12 +181,14 @@ npm run dev:client
 npm run dev
 npm run check
 npm run build
+npm run tauri:dev
+npm run tauri:build
 npm start
 npm run db:push
 ```
 
 - `dev:client` and `dev` both use port `5000`; do not run them together.
-- Backend API is expected at `http://127.0.0.1:8765` unless `VITE_BACKEND_URL` is set.
+- Browser/dev backend API is expected at `http://127.0.0.1:8765` unless `VITE_BACKEND_URL` is set. In Tauri, prefer the runtime backend URL from the Rust supervisor.
 
 ### Tests
 
@@ -275,11 +293,9 @@ Current summarization default is `gemini-flash-latest`.
 
 - Real app-level mic prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Frontend transcript-list virtualization or infinite query.
-- Vite manual vendor chunking to reduce initial chunk size.
-- WebSocket no-client fast path before JSON serialization and task scheduling.
-- Background/off-thread upload preprocessing and export generation.
-- O(n^2) live transcript content string growth in long live sessions.
-- Settings write coalescing/debounce for slider-style controls.
+- Full bundled desktop packaging for the Tauri path: frozen/sidecar Python backend, ffmpeg/yt-dlp inclusion, installer, signing, updater, and writable data-path strategy.
+- Broader Tauri runtime smoke tests for crash, startup-timeout, external-backend attach, dynamic-port, and app-exit cleanup scenarios.
+- Remaining CPU-heavy media preprocessing profiling around ffmpeg/provider behavior.
 - More hardware regression tests for dock connect/disconnect, USB mic add/remove, and favorite mic fallback.
 - Stronger typed API contract between backend and frontend.
 - Splitting `web_api.py` into smaller domain modules.
