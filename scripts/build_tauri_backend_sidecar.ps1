@@ -73,6 +73,28 @@ function Test-PyInstaller {
     return $LASTEXITCODE -eq 0
 }
 
+function Invoke-BackendRuntimeImportCheck {
+    param(
+        [string]$Python,
+        [string]$Root
+    )
+
+    $checkScript = Join-Path $Root "scripts\check_backend_runtime_imports.py"
+    if (-not (Test-Path $checkScript)) {
+        throw "Missing backend runtime import check: $checkScript"
+    }
+
+    Push-Location $Root
+    try {
+        & $Python $checkScript
+    } finally {
+        Pop-Location
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Backend runtime dependency check failed. Install the standard build dependencies with: $Python -m pip install -r requirements-base.txt"
+    }
+}
+
 function Resolve-MediaTool {
     param(
         [string[]]$Names,
@@ -165,6 +187,8 @@ if (-not (Test-PyInstaller -Python $PythonPath)) {
         throw "Failed to install PyInstaller."
     }
 }
+
+Invoke-BackendRuntimeImportCheck -Python $PythonPath -Root $RepoRoot
 
 if (-not $SkipFrontendBuild) {
     Push-Location (Join-Path $RepoRoot "Frontend")

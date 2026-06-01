@@ -622,6 +622,8 @@ python check_imports.py
 python -m src.web_api
 ```
 
+`requirements.txt` installs the full developer/runtime set, including optional local ASR dependencies. For the standard cloud-provider desktop build, use `requirements-base.txt`, plus `requirements-dev.txt` for tests and `requirements-build.txt` for PyInstaller.
+
 ### Frontend Commands
 
 ```bash
@@ -654,9 +656,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 ```
 
-This builds `src/backend_worker.py` through `packaging\scriber-backend.spec` into `dist\tauri-sidecar\scriber-backend\` and optionally copies the onedir output to `Frontend\src-tauri\target\release\backend\`, where the Tauri supervisor can find it automatically. Use `-BundleMediaTools` to copy local `ffmpeg`/`ffprobe` binaries into `tools\ffmpeg\` inside the sidecar.
+This builds `src/backend_worker.py` through `packaging\scriber-backend.spec` into `dist\tauri-sidecar\scriber-backend\` and optionally copies the onedir output to `Frontend\src-tauri\target\release\backend\`, where the Tauri supervisor can find it automatically. Use `-BundleMediaTools` to copy local `ffmpeg`/`ffprobe` binaries into `tools\ffmpeg\` inside the sidecar. The sidecar build runs `scripts\check_backend_runtime_imports.py` before PyInstaller so required startup dependencies such as SciPy and pyloudnorm cannot be missing silently.
 
-Application version lives in `src/version.py`. `scripts\sync_version.py` copies it into the Tauri, Cargo, npm, and lockfile manifests. `scripts\build_windows.ps1` runs the sync before checks/builds, invokes `npm run tauri:build -- --bundles nsis`, lets Tauri build/copy the backend sidecar before bundling, and produces the NSIS installer under `Frontend\src-tauri\target\release\bundle\nsis\`.
+Application version lives in `src/version.py`. `scripts\sync_version.py` copies it into the Tauri, Cargo, npm, and lockfile manifests. `scripts\build_windows.ps1` runs the sync before checks/builds, invokes `npm run tauri:build -- --bundles nsis`, lets Tauri build/copy the backend sidecar before bundling, produces the NSIS installer under `Frontend\src-tauri\target\release\bundle\nsis\`, and writes `latest.json` plus `SHA256SUMS.txt` under `Frontend\src-tauri\target\release\release-metadata\`. `.github/workflows/release-windows.yml` runs the same Windows release path on manual dispatch and `v*` tags.
 
 The current sidecar spec is a standard cloud-provider build and intentionally excludes heavy local ASR stacks such as NeMo/ONNX-ASR/Torch. Local ASR packaging remains a separate optional package path.
 
@@ -745,7 +747,11 @@ Scriber/
 ├── docs/                           # architecture and status docs
 ├── start.bat
 ├── start.sh
-├── requirements.txt
+├── requirements-base.txt            # standard runtime dependencies
+├── requirements-local-asr.txt       # optional local ASR stack
+├── requirements-dev.txt             # pytest/dev tooling
+├── requirements-build.txt           # PyInstaller/build tooling
+├── requirements.txt                 # full aggregate install
 └── README.md
 ```
 

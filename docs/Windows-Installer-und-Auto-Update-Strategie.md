@@ -99,26 +99,36 @@ Pro Release:
 3. `SHA256SUMS.txt` (signiert oder im Release-Body)
 4. `latest.json` (als Release-Asset)
 
-Beispiel `latest.json`:
+Status 2026-06-01: `scripts/create_release_metadata.py` erzeugt `SHA256SUMS.txt` und `latest.json` fuer die gebauten NSIS-Artefakte. `scripts/build_windows.ps1` ruft das Script nach erfolgreichem Bundle-Build automatisch auf.
+
+Aktuelles `latest.json`-Format:
 ```json
 {
-  "version": "1.4.0",
-  "channel": "stable",
-  "published_at": "2026-03-03T18:00:00Z",
-  "installer_url": "https://github.com/MyButtermilk/Scriber/releases/download/v1.4.0/Scriber-Setup-x64.exe",
-  "installer_size_bytes": 85000000,
-  "sha256": "a1b2c3d4e5f6...",
-  "notes_url": "https://github.com/MyButtermilk/Scriber/releases/tag/v1.4.0",
-  "release_notes": "Neue Features: ...",
-  "min_supported_version": "1.2.0",
-  "min_updater_version": "1.0.0"
+  "version": "0.1.0",
+  "notes": "",
+  "pub_date": "2026-06-01T13:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "",
+      "url": "https://github.com/MyButtermilk/Scriber/releases/download/v0.1.0/Scriber_0.1.0_x64-setup.exe"
+    }
+  },
+  "artifacts": [
+    {
+      "name": "Scriber_0.1.0_x64-setup.exe",
+      "url": "https://github.com/MyButtermilk/Scriber/releases/download/v0.1.0/Scriber_0.1.0_x64-setup.exe",
+      "sha256": "a1b2c3d4e5f6...",
+      "sizeBytes": 205000000,
+      "signature": ""
+    }
+  ]
 }
 ```
 
-Felder gegenueber Entwurf ergaenzt:
-- `installer_size_bytes`: Ermoeglicht Speicherplatzpruefung und Fortschrittsanzeige vor dem Download.
-- `release_notes`: Inline Release-Notes fuer direkten Anzeige im Update-Dialog, ohne URL-Abruf.
-- `min_updater_version`: Falls der Launcher selbst ein kritisches Update benoetigt.
+Felder gegenueber Tauri-Updater-Minimum ergaenzt:
+- `artifacts[].sha256`: Ermoeglicht zusaetzliche Integritaetspruefung und manuellen Release-Asset-Abgleich.
+- `artifacts[].sizeBytes`: Ermoeglicht Speicherplatzpruefung und Fortschrittsanzeige vor dem Download.
+- `artifacts[].signature`: Wird leer geschrieben, bis Updater-Signierung konfiguriert ist; spaeter Inhalt der `.sig`-Datei.
 
 ---
 
@@ -136,16 +146,19 @@ Felder gegenueber Entwurf ergaenzt:
    - Power-User bekommen weiterhin lokale/offline Features.
 
 ### B) Python-Dependencies in Build-Profile aufteilen
-1. `requirements.txt` aufteilen in:
+1. Status 2026-06-01: `requirements.txt` ist ein Aggregator aus:
    - `requirements-base.txt` (Runtime fuer Standardnutzer),
    - `requirements-local-asr.txt` (nur lokale ASR-Provider),
    - `requirements-dev.txt` (Tests/Tools).
-2. Release-Build nutzt nur `requirements-base.txt`.
-3. Lokale Provider werden per **Lazy Import** geladen (erst wenn Nutzer sie aktiviert).
-4. Nicht genutzte Provider im Standard-Build per Feature-Flag deaktivieren.
+2. Status 2026-06-01: `requirements-base.txt` enthaelt explizit `scipy`, weil Pipecat ueber `pyloudnorm` beim Backend-Start davon abhaengt.
+3. Status 2026-06-01: Der GitHub Release-Build nutzt `requirements-base.txt`, `requirements-dev.txt` und `requirements-build.txt`, aber nicht `requirements-local-asr.txt`.
+4. Lokale Provider werden per **Lazy Import** geladen (erst wenn Nutzer sie aktiviert).
+5. Nicht genutzte Provider im Standard-Build per Feature-Flag deaktivieren.
 
 ### C) PyInstaller gezielt schlank halten
 1. In `scriber.spec` nur benoetigte `hiddenimports`/`datas` aufnehmen.
+   - Status 2026-06-01: `packaging/scriber-backend.spec` listet SciPy/pyloudnorm explizit fuer den Pipecat-Startup-Pfad und schliesst schwere lokale ASR-Stacks aus.
+   - Status 2026-06-01: `scripts/check_backend_runtime_imports.py` prueft kritische Startup-Imports vor PyInstaller, damit fehlende Module wie SciPy den Build stoppen statt erst beim Endnutzer zu crashen.
 2. Unnoetige Inhalte explizit ausschliessen:
    - `tests`, `__pycache__`, Dokumentation, Beispiele, nicht benoetigte Provider-Assets.
 3. Source Maps und Debug-Artefakte fuer Release-Build deaktivieren (Frontend + Python-Pakete soweit moeglich).
@@ -200,6 +213,7 @@ Felder gegenueber Entwurf ergaenzt:
    - Status 2026-06-01: Der Rust-Supervisor bevorzugt `SCRIBER_BACKEND_EXE` bzw. `backend\scriber-backend.exe` neben der Tauri-Exe und faellt im Dev-Modus auf `python -m src.web_api` zurueck.
    - Status 2026-06-01: Der Standard-Sidecar ist ein Cloud-Provider/Lite-Build und schliesst schwere lokale ASR-Stacks (`torch`, NeMo, ONNX-ASR) aus.
    - Status 2026-06-01: Tauri bundelt `target/release/backend/` als Resource `backend/`, sodass installierte NSIS-Builds denselben Sidecar-Pfad nutzen.
+   - Status 2026-06-01: Der Sidecar-Build fuehrt vor PyInstaller einen Runtime-Import-Preflight aus, der unter anderem SciPy, pyloudnorm, Pipecat und `src.web_api` prueft.
 2. **Frontend Production Build** in den Backend-Output integrieren:
    - `npm run build` erzeugt `Frontend/dist/public/` mit statischem HTML/JS/CSS.
    - `build_windows.ps1` kopiert diesen Output in das PyInstaller-Output-Verzeichnis.
@@ -212,28 +226,28 @@ Felder gegenueber Entwurf ergaenzt:
    - Entry-Point: `src/backend_worker.py` (wird vom Tauri-Supervisor gemanagt).
    - Hidden imports explizit listen (basierend auf Codebase-Analyse):
      - `pipecat-ai` Submodule (google, assemblyai, silero, deepgram, openai, azure, gladia, groq, speechmatics, aws, elevenlabs)
+     - `scipy`, `scipy.signal`, `pyloudnorm`
      - `sounddevice`, `pycaw`, `keyboard`, `pyautogui`
      - `PySide6`, `pystray`, `customtkinter`
-     - `onnx-asr`, `nemo_toolkit`
      - `yt-dlp`, `python-docx`, `reportlab`, `lxml`
    - Daten-Dateien einschliessen: `src/assets/`, `Frontend/dist/public/`, optionale FFmpeg/FFprobe-Binaries ueber `-BundleMediaTools`.
 5. **Reproduzierbarer Build** per Script.
-   - Status 2026-06-01: `scripts/build_windows.ps1` orchestriert Tests, Frontend-Typecheck, Tauri/NSIS-Build und optionalen Smoke-Test.
+   - Status 2026-06-01: `scripts/build_windows.ps1` orchestriert Version-Sync, Tests, Frontend-Typecheck, Tauri/NSIS-Build, Release-Metadaten und optionalen Smoke-Test.
 6. **Size-Profiling direkt in Phase 1**:
-   - `requirements-base/local-asr/dev` einfuehren.
+   - Status 2026-06-01: `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt` und `requirements-build.txt` existieren.
    - Lite-Build als Standard ist im Sidecar-Spec vorgespurt; Gesamtpipeline in `build_windows.ps1` bleibt offen.
    - Groessenreport (`size-report.json`) erzeugen und in CI publizieren.
 
 Lieferobjekte:
-1. `scripts/build_tauri_backend_sidecar.ps1` (umgesetzt fuer Sidecar, Frontend-Build, optionales FFmpeg/FFprobe-Bundling und Copy nach Tauri Release)
-2. `packaging/scriber-backend.spec` (umgesetzt fuer Standard-Cloud-Sidecar inkl. `yt-dlp`)
+1. `scripts/build_tauri_backend_sidecar.ps1` (umgesetzt fuer Sidecar, Import-Preflight, Frontend-Build, optionales FFmpeg/FFprobe-Bundling und Copy nach Tauri Release)
+2. `packaging/scriber-backend.spec` (umgesetzt fuer Standard-Cloud-Sidecar inkl. `yt-dlp`, SciPy und pyloudnorm)
 3. `src/version.py` (umgesetzt)
 4. `src/runtime/paths.py` (teilweise umgesetzt: Runtime-Data-Pfade; Asset-Resolution offen)
 5. `src/runtime/media_tools.py` (umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp`)
-6. `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt`
+6. `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt` (umgesetzt)
 7. `size-report.json` (CI-Artefakt)
 8. Start/Healthcheck fuer gebaute App (Smoke-Test vorhanden; Sidecar-Pfad optional ueber `-BackendExePath`)
-9. `scripts/build_windows.ps1` (umgesetzt fuer Version-Sync, Tauri/NSIS-Release-Build und Smoke-Test; Signing/Updater offen)
+9. `scripts/build_windows.ps1` (umgesetzt fuer Version-Sync, Tauri/NSIS-Release-Build, Release-Metadaten und Smoke-Test; Signing/Updater offen)
 
 ### Phase 2 - Installer
 1. `installer/scriber.iss` erstellen.
@@ -304,10 +318,12 @@ Lieferobjekte:
 ### Phase 4 - CI/CD + Signierung
 1. **GitHub Action** fuer Tag-Releases (`v*`):
    - `.github/workflows/release-windows.yml`
-   - Trigger: Push von Tags `v*`.
-   - Matrix: Windows-latest, Python 3.11+, Node 20+.
+   - Status 2026-06-01: Workflow existiert fuer `workflow_dispatch` und Push von Tags `v*`.
+   - Status 2026-06-01: Runner ist `windows-latest` mit Python 3.13, Node 20 und Rust stable.
 2. **Build-Pipeline**:
-   - Checkout → Python/Node Setup → `pip install` → `npm ci && npm run build` (Frontend) → PyInstaller → Inno Setup → Signierung → Checksums → Release Upload.
+   - Status 2026-06-01: Checkout -> Python/Node/Rust Setup -> `pip install` fuer base/dev/build -> `npm ci` -> `scripts/build_windows.ps1 -SkipSmoke` -> NSIS-Artefakt + `latest.json` + `SHA256SUMS.txt` als Workflow-Artefakt.
+   - Status 2026-06-01: Bei `v*` Tags publiziert `softprops/action-gh-release` die erzeugten Artefakte als GitHub Release.
+   - Noch offen: Signing in CI und aktivierter Updater-Client.
 3. **Signierung**:
    - Authenticode mit OV- oder EV-Zertifikat.
    - Public-Trust Code-Signing verlangt heute hardwaregeschuetzten Schluessel (Token oder HSM/Cloud-HSM, je nach Anbieter). Fuer CI/CD sind Cloud-Signing-Dienste wie **Microsoft Trusted Signing** praktikabel.
@@ -362,12 +378,14 @@ Lieferobjekte:
 | `src/runtime/paths.py` | Teilweise umgesetzt: Runtime-Data-Pfade fuer Settings, SQLite und Downloads. Frontend-Asset-Resolution offen. |
 | `src/runtime/media_tools.py` | Umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp` ueber Env, Sidecar-Tools und System-PATH. |
 | `src/backend_worker.py` | Umgesetzt: Tauri/PyInstaller Worker-Entry-Point. |
-| `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar. |
+| `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar inkl. SciPy/pyloudnorm-Startup-Abhaengigkeiten. |
 | `installer/scriber.iss` | Inno Setup Script. |
-| `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Frontend Build → PyInstaller Sidecar → optionales FFmpeg/FFprobe-Bundling → optionaler Copy nach Tauri Release. |
-| `scripts/build_windows.ps1` | Umgesetzt fuer Tests → Tauri/NSIS Bundle → Smoke-Test. Signierung und Updater bleiben offen. |
+| `scripts/check_backend_runtime_imports.py` | Umgesetzt: Preflight fuer kritische Backend-Startup-Imports vor PyInstaller. |
+| `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Import-Preflight -> Frontend Build -> PyInstaller Sidecar -> optionales FFmpeg/FFprobe-Bundling -> optionaler Copy nach Tauri Release. |
+| `scripts/build_windows.ps1` | Umgesetzt fuer Tests -> Tauri/NSIS Bundle -> Release-Metadaten -> Smoke-Test. Signierung und Updater bleiben offen. |
 | `scripts/sync_version.py` | Umgesetzt: synchronisiert `src/version.py` in Python/Tauri/Cargo/npm-Manifeste. |
-| `.github/workflows/release-windows.yml` | CI/CD fuer Tag-basierte Releases. |
+| `scripts/create_release_metadata.py` | Umgesetzt: erzeugt `latest.json` und `SHA256SUMS.txt` fuer Release-Artefakte. |
+| `.github/workflows/release-windows.yml` | Umgesetzt: manueller und Tag-basierter Windows-NSIS-Release-Build mit GitHub-Release-Publish auf `v*` Tags. |
 | `LICENSE` | Umgesetzt: MIT License Datei. |
 
 ### Anzupassende Dateien

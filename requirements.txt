@@ -1,22 +1,3 @@
-pipecat-ai[google,assemblyai,silero,local-smart-turn-v3,deepgram,openai,azure,gladia,groq,speechmatics,aws,elevenlabs]
-sounddevice
-pycaw
-keyboard
-pyautogui
-python-dotenv
-google-generativeai
-loguru
-pytest
-pytest-asyncio
-pytest-mock
-customtkinter
-pillow
-numpy
-yt-dlp
-PySide6-Essentials
-pystray
-python-docx
-reportlab
-lxml
-onnx-asr[cpu,hub]>=0.5.0
-nemo_toolkit[asr]>=2.0.0
+-r requirements-base.txt
+-r requirements-local-asr.txt
+-r requirements-dev.txt

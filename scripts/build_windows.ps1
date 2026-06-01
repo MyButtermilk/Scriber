@@ -14,6 +14,7 @@ Typical flow:
 param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string[]]$Bundles = @("nsis"),
+    [string]$ReleaseBaseUrl = "",
     [switch]$SkipChecks,
     [switch]$SkipSmoke
 )
@@ -100,9 +101,33 @@ if (Test-Path $bundleRoot) {
     )
 }
 
+$metadataDir = Join-Path $targetRelease "release-metadata"
+if ($artifacts.Count -gt 0) {
+    Invoke-Checked -Label "Release metadata" -Command {
+        Push-Location $RepoRoot
+        try {
+            $metadataArgs = @(
+                "scripts\create_release_metadata.py",
+                "--output-dir",
+                $metadataDir
+            )
+            if ($ReleaseBaseUrl) {
+                $metadataArgs += @("--base-url", $ReleaseBaseUrl)
+            }
+            foreach ($artifact in $artifacts) {
+                $metadataArgs += @("--artifact", $artifact)
+            }
+            python @metadataArgs
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
 [pscustomobject]@{
     ok = $true
     bundles = $Bundles
     releaseExe = Join-Path $targetRelease "scriber-desktop.exe"
     artifacts = $artifacts
+    metadataDir = $metadataDir
 } | ConvertTo-Json -Compress
