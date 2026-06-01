@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import statistics
@@ -181,6 +182,153 @@ async def measure_exports(
     }
 
 
+async def probe_endpoint(client: Any, *, path: str, endpoint: str) -> dict[str, Any]:
+    started = time.perf_counter_ns()
+    status = 0
+    payload_ok = False
+    error = ""
+    try:
+        response = await client.get(path)
+        status = int(response.status)
+        try:
+            payload = await response.json()
+        finally:
+            response.close()
+
+        if endpoint == "health":
+            payload_ok = bool(isinstance(payload, dict) and payload.get("ok") is True)
+        elif endpoint == "state":
+            payload_ok = bool(
+                isinstance(payload, dict)
+                and isinstance(payload.get("status"), str)
+                and isinstance(payload.get("recordingState"), str)
+            )
+        else:
+            payload_ok = isinstance(payload, dict)
+    except Exception as exc:  # pragma: no cover - returned in benchmark payload
+        error = f"{type(exc).__name__}: {exc}"
+
+    duration_ms = (time.perf_counter_ns() - started) / 1_000_000
+    return {
+        "endpoint": endpoint,
+        "path": path,
+        "status": status,
+        "durationMs": round(duration_ms, 4),
+        "payloadOk": payload_ok,
+        "ok": status == 200 and payload_ok and not error,
+        "error": error,
+    }
+
+
+def summarize_endpoint_samples(
+    samples: list[dict[str, Any]],
+    *,
+    p95_threshold_ms: float,
+    max_threshold_ms: float,
+) -> dict[str, Any]:
+    by_endpoint: dict[str, dict[str, Any]] = {}
+    for endpoint in ("health", "state"):
+        matching = [sample for sample in samples if sample["endpoint"] == endpoint]
+        durations = [float(sample["durationMs"]) for sample in matching]
+        duration_summary = summarize_durations(durations)
+        by_endpoint[endpoint] = {
+            "path": f"/api/{endpoint}",
+            "durations": duration_summary,
+            "ok": bool(matching)
+            and all(bool(sample["ok"]) for sample in matching)
+            and float(duration_summary["p95Ms"]) <= p95_threshold_ms
+            and float(duration_summary["maxMs"]) <= max_threshold_ms,
+            "errors": [sample for sample in matching if not sample["ok"]],
+        }
+
+    return {
+        "thresholds": {
+            "p95Ms": p95_threshold_ms,
+            "maxMs": max_threshold_ms,
+        },
+        "endpoints": by_endpoint,
+        "sampleCount": len(samples),
+        "ok": all(endpoint_summary["ok"] for endpoint_summary in by_endpoint.values()),
+    }
+
+
+async def measure_upload_export_with_endpoint_probes(
+    temp_dir: Path,
+    *,
+    file_count: int,
+    file_size_bytes: int,
+    chunk_size_bytes: int,
+    export_paragraphs: int,
+    export_iterations: int,
+    export_concurrency: int,
+    probe_interval_ms: float,
+    endpoint_p95_threshold_ms: float,
+    endpoint_max_threshold_ms: float,
+) -> dict[str, Any]:
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from src.web_api import ScriberWebController, create_app
+
+    loop = asyncio.get_running_loop()
+    controller = ScriberWebController(loop)
+    client = TestClient(TestServer(create_app(controller)))
+    await client.start_server()
+
+    async def run_load() -> tuple[dict[str, Any], dict[str, Any]]:
+        upload_result, export_result = await asyncio.gather(
+            measure_upload_streams(
+                temp_dir,
+                file_count=file_count,
+                file_size_bytes=file_size_bytes,
+                chunk_size_bytes=chunk_size_bytes,
+            ),
+            measure_exports(
+                paragraphs=export_paragraphs,
+                iterations=export_iterations,
+                concurrency=export_concurrency,
+            ),
+        )
+        return upload_result, export_result
+
+    load_task = asyncio.create_task(run_load())
+    samples: list[dict[str, Any]] = []
+    probe_interval_seconds = max(0.001, probe_interval_ms / 1000.0)
+    started = time.perf_counter_ns()
+    try:
+        while True:
+            health_sample, state_sample = await asyncio.gather(
+                probe_endpoint(client, path="/api/health", endpoint="health"),
+                probe_endpoint(client, path="/api/state", endpoint="state"),
+            )
+            samples.extend([health_sample, state_sample])
+            if load_task.done():
+                break
+            await asyncio.sleep(probe_interval_seconds)
+
+        upload, export = await load_task
+    finally:
+        if not load_task.done():
+            load_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await load_task
+        await client.close()
+
+    total_ms = (time.perf_counter_ns() - started) / 1_000_000
+    responsiveness = summarize_endpoint_samples(
+        samples,
+        p95_threshold_ms=endpoint_p95_threshold_ms,
+        max_threshold_ms=endpoint_max_threshold_ms,
+    )
+    responsiveness["probeIntervalMs"] = probe_interval_ms
+    responsiveness["totalMs"] = round(total_ms, 3)
+    return {
+        "upload": upload,
+        "export": export,
+        "endpointResponsiveness": responsiveness,
+        "ok": bool(upload["ok"]) and bool(export["ok"]) and bool(responsiveness["ok"]),
+    }
+
+
 async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     upload_file_size_bytes = int(args.upload_size_mb * 1024 * 1024)
     upload_chunk_size_bytes = int(args.upload_chunk_mb * 1024 * 1024)
@@ -197,16 +345,17 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         os.environ.update(managed_env)
         try:
             temp_path = Path(temp_dir)
-            upload = await measure_upload_streams(
+            measured = await measure_upload_export_with_endpoint_probes(
                 temp_path,
                 file_count=args.upload_files,
                 file_size_bytes=upload_file_size_bytes,
                 chunk_size_bytes=upload_chunk_size_bytes,
-            )
-            export = await measure_exports(
-                paragraphs=args.export_paragraphs,
-                iterations=args.export_iterations,
-                concurrency=args.export_concurrency,
+                export_paragraphs=args.export_paragraphs,
+                export_iterations=args.export_iterations,
+                export_concurrency=args.export_concurrency,
+                probe_interval_ms=args.endpoint_probe_interval_ms,
+                endpoint_p95_threshold_ms=args.endpoint_p95_ms,
+                endpoint_max_threshold_ms=args.endpoint_max_ms,
             )
         finally:
             for name, old_value in old_env.items():
@@ -219,10 +368,11 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "schemaVersion": 1,
         "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "summary": {
-            "upload": upload,
-            "export": export,
+            "upload": measured["upload"],
+            "export": measured["export"],
+            "endpointResponsiveness": measured["endpointResponsiveness"],
         },
-        "ok": bool(upload["ok"]) and bool(export["ok"]),
+        "ok": bool(measured["ok"]),
     }
 
 
@@ -234,6 +384,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--export-iterations", type=int, default=2)
     parser.add_argument("--export-concurrency", type=int, default=2)
     parser.add_argument("--export-paragraphs", type=int, default=120)
+    parser.add_argument("--endpoint-probe-interval-ms", type=float, default=50.0)
+    parser.add_argument("--endpoint-p95-ms", type=float, default=500.0)
+    parser.add_argument("--endpoint-max-ms", type=float, default=2000.0)
     parser.add_argument("--output", default="")
     return parser.parse_args(argv)
 
@@ -246,6 +399,9 @@ def main(argv: list[str] | None = None) -> int:
     args.export_iterations = max(1, int(args.export_iterations))
     args.export_concurrency = max(1, int(args.export_concurrency))
     args.export_paragraphs = max(1, int(args.export_paragraphs))
+    args.endpoint_probe_interval_ms = max(1.0, float(args.endpoint_probe_interval_ms))
+    args.endpoint_p95_ms = max(1.0, float(args.endpoint_p95_ms))
+    args.endpoint_max_ms = max(args.endpoint_p95_ms, float(args.endpoint_max_ms))
     result = asyncio.run(run_benchmark(args))
     output = json.dumps(result, indent=2, ensure_ascii=False)
     if args.output:

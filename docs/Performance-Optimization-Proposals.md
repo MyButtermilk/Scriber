@@ -575,7 +575,7 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 ### Pending (Medium Priority)
 - [x] Frontend Virtual Scrolling (2.2) ✅ (2026-06-01) - Uses pagination API with infinite scroll and virtualized history rows
 - [ ] True app-level microphone prewarming manager - current `MIC_ALWAYS_ON` flag does not keep a reusable per-app stream alive
-- [ ] Background upload preprocessing for large files - current upload path still performs blocking file writes/preprocessing in request flow
+- [ ] Background upload preprocessing for large files - upload writes/exports are off the event loop and `measure_upload_export_baseline.py` now probes `/api/health` and `/api/state` responsiveness under synthetic load, but heavy compression/transcription preprocessing is still request-scoped instead of fully job-detached
 
 ### Future
 - [ ] Async database (3.1)
@@ -585,7 +585,7 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 
 ## Metrics to Track
 
-Status 2026-06-01: `scripts/measure_hybrid_baseline.ps1` creates a JSON baseline artifact for the hybrid Tauri/Python runtime. It measures startup/backend readiness, reads available hot-path metric segments, can opt into live recording samples with `scripts/measure_recording_hot_path_baseline.py`, embeds `scripts/measure_upload_export_baseline.py` results for synthetic upload/export load, embeds `scripts/measure_ws_broadcast_baseline.py` results for WebSocket throughput and JSON serialization, and embeds `scripts/measure_history_scroll_baseline.py` results for synthetic browser history scrolling against paginated transcript history. `scripts/smoke_frontend_browser.py` adds a separate real-browser frontend route smoke with a synthetic backend and console/page-error checks for Live Mic, YouTube, File, Settings, and Transcript Detail. The Phase 0 gate intentionally stays incomplete until a real spoken/injected sample captures stop-to-text-injection timing.
+Status 2026-06-01: `scripts/measure_hybrid_baseline.ps1` creates a JSON baseline artifact for the hybrid Tauri/Python runtime. It measures startup/backend readiness, reads available hot-path metric segments, can opt into live recording samples with `scripts/measure_recording_hot_path_baseline.py`, embeds `scripts/measure_upload_export_baseline.py` results for synthetic upload/export load and `/api/health`/`/api/state` responsiveness under that load, embeds `scripts/measure_ws_broadcast_baseline.py` results for WebSocket throughput and JSON serialization, and embeds `scripts/measure_history_scroll_baseline.py` results for synthetic browser history scrolling against paginated transcript history. `scripts/smoke_frontend_browser.py` adds a separate real-browser frontend route smoke with a synthetic backend and console/page-error checks for Live Mic, YouTube, File, Settings, and Transcript Detail. The Phase 0 gate intentionally stays incomplete until a real spoken/injected sample captures stop-to-text-injection timing.
 
 | Metric | Before | After | Target | Status |
 |--------|--------|-------|--------|--------|

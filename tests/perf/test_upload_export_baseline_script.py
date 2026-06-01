@@ -45,6 +45,11 @@ def test_upload_export_baseline_script_writes_benchmark_artifact(tmp_path: Path)
     assert payload["summary"]["export"]["totalExports"] == 2
     assert payload["summary"]["export"]["byFormat"]["pdf"]["ok"] is True
     assert payload["summary"]["export"]["byFormat"]["docx"]["ok"] is True
+    responsiveness = payload["summary"]["endpointResponsiveness"]
+    assert responsiveness["ok"] is True
+    assert responsiveness["sampleCount"] >= 2
+    assert responsiveness["endpoints"]["health"]["durations"]["count"] >= 1
+    assert responsiveness["endpoints"]["state"]["durations"]["count"] >= 1
 
 
 def test_hybrid_baseline_runner_wires_upload_export_benchmark():

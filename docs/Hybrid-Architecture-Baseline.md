@@ -67,8 +67,9 @@ measured.
 - optional live recording hot-path samples via
   `scripts/measure_recording_hot_path_baseline.py` when
   `-RecordHotPathSamples` is passed;
-- concurrent synthetic upload stream writes and parallel PDF/DOCX export
-  rendering via `scripts/measure_upload_export_baseline.py`;
+- concurrent synthetic upload stream writes, parallel PDF/DOCX export
+  rendering, and `/api/health` plus `/api/state` responsiveness during that
+  load via `scripts/measure_upload_export_baseline.py`;
 - WebSocket JSON serialization, no-client broadcast fast path, and broadcast
   throughput with synthetic clients via `scripts/measure_ws_broadcast_baseline.py`.
 - large transcript-history browser scrolling, API pagination, and rendered-card

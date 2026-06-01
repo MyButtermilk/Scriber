@@ -843,7 +843,7 @@ $requirements = @(
     New-Requirement `
         -Name "upload_export_under_load" `
         -Status $(if ($SkipUploadExportBenchmark) { "skipped" } elseif ($uploadExportBenchmark -and $uploadExportBenchmark.ok) { "measured" } else { "missing" }) `
-        -Evidence "scripts/measure_upload_export_baseline.py measures concurrent synthetic upload stream writes and parallel PDF/DOCX export rendering." `
+        -Evidence "scripts/measure_upload_export_baseline.py measures concurrent synthetic upload stream writes, parallel PDF/DOCX export rendering, and /api/health plus /api/state responsiveness under that load." `
         -Notes $(if ($SkipUploadExportBenchmark) { "Run without -SkipUploadExportBenchmark to collect upload/export load baseline." } else { "" })
     New-Requirement `
         -Name "websocket_events_and_json_serialize_cost" `
