@@ -583,7 +583,7 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 
 ## Metrics to Track
 
-Status 2026-06-01: `scripts/measure_hybrid_baseline.ps1` creates a JSON baseline artifact for the hybrid Tauri/Python runtime. It measures startup/backend readiness, reads available hot-path metric segments, and embeds `scripts/measure_ws_broadcast_baseline.py` results for WebSocket throughput and JSON serialization. The Phase 0 gate intentionally stays incomplete until upload/export load and large-history scroll benchmarks are automated or attached as separate artifacts, and until real recording hot-path samples exist.
+Status 2026-06-01: `scripts/measure_hybrid_baseline.ps1` creates a JSON baseline artifact for the hybrid Tauri/Python runtime. It measures startup/backend readiness, reads available hot-path metric segments, embeds `scripts/measure_upload_export_baseline.py` results for synthetic upload/export load, and embeds `scripts/measure_ws_broadcast_baseline.py` results for WebSocket throughput and JSON serialization. The Phase 0 gate intentionally stays incomplete until large-history scroll benchmarks are automated or attached as separate artifacts, and until real recording hot-path samples exist.
 
 | Metric | Before | After | Target | Status |
 |--------|--------|-------|--------|--------|

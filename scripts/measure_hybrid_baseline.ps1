@@ -25,11 +25,18 @@ param(
     [int]$TimeoutSec = 60,
     [int]$BackendHealthTimeoutSec = 20,
     [int]$UiVisibleTimeoutSec = 20,
+    [int]$UploadFiles = 4,
+    [double]$UploadSizeMb = 4.0,
+    [double]$UploadChunkMb = 1.0,
+    [int]$ExportIterations = 2,
+    [int]$ExportConcurrency = 2,
+    [int]$ExportParagraphs = 120,
     [int]$WsIterations = 2000,
     [int]$WsWarmup = 100,
     [string]$WsClientCounts = "1,5",
     [switch]$Hidden,
     [switch]$SkipUiVisibleWait,
+    [switch]$SkipUploadExportBenchmark,
     [switch]$SkipWsBenchmark,
     [switch]$KeepArtifacts,
     [switch]$EnableHotkeys,
@@ -352,6 +359,56 @@ function Invoke-WebSocketBroadcastBenchmark {
     return Get-Content -LiteralPath $wsOutputPath -Raw | ConvertFrom-Json
 }
 
+function Invoke-UploadExportBenchmark {
+    param(
+        [string]$BaselineOutputPath
+    )
+
+    $scriptPath = Join-Path $RepoRoot "scripts\measure_upload_export_baseline.py"
+    if (-not (Test-Path $scriptPath)) {
+        throw "Missing upload/export baseline benchmark script: $scriptPath"
+    }
+
+    $outputDir = Split-Path $BaselineOutputPath
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($BaselineOutputPath)
+    $benchmarkOutputPath = Join-Path $outputDir "$baseName-upload-export.json"
+    Assert-UnderRoot -Root (Join-Path $RepoRoot "tmp") -Path $benchmarkOutputPath -Label "Upload/export baseline output"
+
+    $stdoutPath = Join-Path $outputDir "$baseName-upload-export.out"
+    $stderrPath = Join-Path $outputDir "$baseName-upload-export.err"
+    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+
+    $process = Start-Process `
+        -FilePath $PythonPath `
+        -ArgumentList @(
+            $scriptPath,
+            "--upload-files", [string]$UploadFiles,
+            "--upload-size-mb", [string]$UploadSizeMb,
+            "--upload-chunk-mb", [string]$UploadChunkMb,
+            "--export-iterations", [string]$ExportIterations,
+            "--export-concurrency", [string]$ExportConcurrency,
+            "--export-paragraphs", [string]$ExportParagraphs,
+            "--output", $benchmarkOutputPath
+        ) `
+        -WorkingDirectory $RepoRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath `
+        -Wait `
+        -PassThru
+
+    if ($process.ExitCode -ne 0) {
+        $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
+        $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
+        throw "Upload/export baseline benchmark failed with exit code $($process.ExitCode). stdout: $stdout stderr: $stderr"
+    }
+    if (-not (Test-Path $benchmarkOutputPath)) {
+        throw "Upload/export baseline benchmark did not write output: $benchmarkOutputPath"
+    }
+
+    return Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
+}
+
 function Invoke-BaselineIteration {
     param(
         [int]$Index
@@ -513,6 +570,24 @@ if ($BackendExePath) {
 if ($Iterations -lt 1) {
     throw "Iterations must be >= 1."
 }
+if ($UploadFiles -lt 1) {
+    throw "UploadFiles must be >= 1."
+}
+if ($UploadSizeMb -le 0) {
+    throw "UploadSizeMb must be > 0."
+}
+if ($UploadChunkMb -le 0) {
+    throw "UploadChunkMb must be > 0."
+}
+if ($ExportIterations -lt 1) {
+    throw "ExportIterations must be >= 1."
+}
+if ($ExportConcurrency -lt 1) {
+    throw "ExportConcurrency must be >= 1."
+}
+if ($ExportParagraphs -lt 1) {
+    throw "ExportParagraphs must be >= 1."
+}
 if ($WsIterations -lt 1) {
     throw "WsIterations must be >= 1."
 }
@@ -530,6 +605,11 @@ New-Item -ItemType Directory -Force -Path (Split-Path $OutputPath) | Out-Null
 $samples = @()
 for ($i = 1; $i -le $Iterations; $i++) {
     $samples += Invoke-BaselineIteration -Index $i
+}
+
+$uploadExportBenchmark = $null
+if (-not $SkipUploadExportBenchmark) {
+    $uploadExportBenchmark = Invoke-UploadExportBenchmark -BaselineOutputPath $OutputPath
 }
 
 $webSocketBenchmark = $null
@@ -564,8 +644,9 @@ $requirements = @(
         -Evidence "/api/metrics/hot-path segment stop_requested_to_first_paste_ms"
     New-Requirement `
         -Name "upload_export_under_load" `
-        -Status "not_automated_yet" `
-        -Evidence "No load runner wired into this baseline script yet."
+        -Status $(if ($SkipUploadExportBenchmark) { "skipped" } elseif ($uploadExportBenchmark -and $uploadExportBenchmark.ok) { "measured" } else { "missing" }) `
+        -Evidence "scripts/measure_upload_export_baseline.py measures concurrent synthetic upload stream writes and parallel PDF/DOCX export rendering." `
+        -Notes $(if ($SkipUploadExportBenchmark) { "Run without -SkipUploadExportBenchmark to collect upload/export load baseline." } else { "" })
     New-Requirement `
         -Name "websocket_events_and_json_serialize_cost" `
         -Status $(if ($SkipWsBenchmark) { "skipped" } elseif ($webSocketBenchmark -and $webSocketBenchmark.ok) { "measured" } else { "missing" }) `
@@ -607,6 +688,13 @@ $result = [pscustomobject]@{
         disableDevFallback = [bool]$DisableDevFallback
         enableHotkeys = [bool]$EnableHotkeys
         enableDeviceMonitor = [bool]$EnableDeviceMonitor
+        skipUploadExportBenchmark = [bool]$SkipUploadExportBenchmark
+        uploadFiles = $UploadFiles
+        uploadSizeMb = $UploadSizeMb
+        uploadChunkMb = $UploadChunkMb
+        exportIterations = $ExportIterations
+        exportConcurrency = $ExportConcurrency
+        exportParagraphs = $ExportParagraphs
         skipWsBenchmark = [bool]$SkipWsBenchmark
         wsIterations = $WsIterations
         wsWarmup = $WsWarmup
@@ -619,6 +707,7 @@ $result = [pscustomobject]@{
         runtimeFetchMs = New-SampleSummary -Samples $samples -PropertyName "runtimeFetchMs"
         cleanupMs = New-SampleSummary -Samples $samples -PropertyName "cleanupMs"
         hotPathSegmentNames = @($segmentNames)
+        uploadExportBenchmark = $(if ($uploadExportBenchmark) { $uploadExportBenchmark.summary } else { $null })
         webSocketBenchmark = $(if ($webSocketBenchmark) { $webSocketBenchmark.summary } else { $null })
     }
     phase0Gate = [pscustomobject]@{
@@ -626,6 +715,7 @@ $result = [pscustomobject]@{
         incompleteRequirements = @($incomplete | ForEach-Object { $_.name })
         requirements = $requirements
     }
+    uploadExportBenchmark = $uploadExportBenchmark
     webSocketBenchmark = $webSocketBenchmark
     samples = $samples
 }

@@ -32,6 +32,11 @@ WebSocket broadcast and JSON serialization cost are measured by default. Tune
 that synthetic benchmark with `-WsIterations`, `-WsWarmup`, and
 `-WsClientCounts`, or skip it with `-SkipWsBenchmark`.
 
+Upload stream and export rendering load are also measured by default. Tune that
+synthetic benchmark with `-UploadFiles`, `-UploadSizeMb`, `-UploadChunkMb`,
+`-ExportIterations`, `-ExportConcurrency`, and `-ExportParagraphs`, or skip it
+with `-SkipUploadExportBenchmark`.
+
 ## Automated Today
 
 `scripts/measure_hybrid_baseline.ps1` currently measures:
@@ -43,6 +48,8 @@ that synthetic benchmark with `-WsIterations`, `-WsWarmup`, and
 - `/api/runtime` fetch latency with the session token;
 - managed backend cleanup after Tauri exit;
 - available hot-path metric segment names from `/api/metrics/hot-path`.
+- concurrent synthetic upload stream writes and parallel PDF/DOCX export
+  rendering via `scripts/measure_upload_export_baseline.py`;
 - WebSocket JSON serialization, no-client broadcast fast path, and broadcast
   throughput with synthetic clients via `scripts/measure_ws_broadcast_baseline.py`.
 
@@ -69,7 +76,6 @@ connected frontend client.
 
 The following baseline requirements are not automated yet:
 
-- upload/export under load;
 - history scrolling with many transcripts.
 
 Until those are wired into the runner or separate benchmark artifacts, the

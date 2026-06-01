@@ -47,7 +47,7 @@ Current implementation highlights:
 - Runtime data path support via `SCRIBER_DATA_DIR`: the Tauri-supervised backend writes settings, SQLite data, downloads, and logs to a writable app data directory instead of relying on the repository or install directory.
 - Redacted support bundles for packaged diagnostics: runtime metadata, selected logs, and redacted settings/environment without API keys or session tokens.
 - Backend sidecar path for Tauri: the supervisor can start a packaged `scriber-backend` worker and falls back to the source checkout/virtualenv for development.
-- Hybrid architecture baseline runner for Phase 0 startup/worker and WebSocket/JSON measurements with explicit incomplete-gate reporting for missing hot-path/load/browser benchmarks.
+- Hybrid architecture baseline runner for Phase 0 startup/worker, upload/export load, and WebSocket/JSON measurements with explicit incomplete-gate reporting for missing hot-path/browser benchmarks.
 
 Known limits:
 
@@ -702,7 +702,7 @@ For Phase 0 hybrid performance baselines, run:
 powershell -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 -Iterations 3 -DisableDevFallback
 ```
 
-Use `-Hidden` for startup-only/headless runs. The script writes JSON under `tmp\hybrid-baseline\`, measures UI/backend readiness, backend cleanup, WebSocket broadcast throughput, and JSON serialization cost, then reports which required baseline areas still need samples or dedicated benchmark automation.
+Use `-Hidden` for startup-only/headless runs. The script writes JSON under `tmp\hybrid-baseline\`, measures UI/backend readiness, backend cleanup, synthetic upload/export load, WebSocket broadcast throughput, and JSON serialization cost, then reports which required baseline areas still need samples or dedicated benchmark automation.
 
 ### Tests
 

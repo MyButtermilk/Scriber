@@ -87,6 +87,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `docs/Performance-Optimization-Proposals.md`: implementation status for performance roadmap.
 - `docs/Mic-Performance-Enhancement.md`: mic latency and prewarming status.
 - `docs/Startup-Latency-Analysis.md`: startup optimization status.
+- `docs/Hybrid-Architecture-Goal.md`: authoritative Codex goal and gates for the Tauri/Rust shell + Python worker architecture.
 - `docs/Hybrid-Architecture-Baseline.md`: Phase 0 baseline gate and measurement status for the Tauri/Python hybrid runtime.
 - `docs/PIPELINE_ARCHITECTURE.md`: live mic pipeline architecture.
 
@@ -176,7 +177,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `POST /api/runtime/support-bundle` creates a redacted diagnostic ZIP under `support-bundles\` in `SCRIBER_DATA_DIR`. It includes runtime/state metadata, selected logs, redacted settings/env data, and must not contain API keys or session tokens.
 - On Windows, the managed Python child is spawned with `CREATE_NO_WINDOW`.
 - Managed backend startup has a timeout and will be restarted by `ensure_backend_running` instead of staying in `starting` forever.
-- `scripts/measure_hybrid_baseline.ps1` is the Phase 0 baseline runner. It measures Tauri startup/backend readiness, checks cleanup, pulls available `/api/metrics/hot-path` segments, runs `scripts/measure_ws_broadcast_baseline.py` for WebSocket/JSON costs, writes JSON to `tmp\hybrid-baseline\`, and leaves the gate incomplete when required hot-path/load/browser measurements are missing.
+- `scripts/measure_hybrid_baseline.ps1` is the Phase 0 baseline runner. It measures Tauri startup/backend readiness, checks cleanup, pulls available `/api/metrics/hot-path` segments, runs `scripts/measure_upload_export_baseline.py` for synthetic upload/export load, runs `scripts/measure_ws_broadcast_baseline.py` for WebSocket/JSON costs, writes JSON to `tmp\hybrid-baseline\`, and leaves the gate incomplete when required hot-path/browser measurements are missing.
 - `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable with a random session token, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits.
 - `scripts/smoke_windows_installer.ps1` installs the generated NSIS setup into `tmp\installer-smoke\`, runs the desktop smoke without `SCRIBER_REPO_ROOT`/`SCRIBER_PYTHON` dev fallback, and removes the temporary install/data directories afterward.
 - `scripts/build_windows.ps1 -RunInstallerSmoke` builds the NSIS package and then runs the installed-package smoke gate.
