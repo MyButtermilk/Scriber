@@ -48,7 +48,7 @@ Current implementation highlights:
 - Runtime data path support via `SCRIBER_DATA_DIR`: the Tauri-supervised backend writes settings, SQLite data, downloads, and logs to a writable app data directory instead of relying on the repository or install directory.
 - Redacted support bundles for packaged diagnostics: runtime metadata, selected logs, and redacted settings/environment without API keys or session tokens.
 - Backend sidecar path for Tauri: the supervisor can start a packaged `scriber-backend` worker and falls back to the source checkout/virtualenv for development.
-- Hybrid architecture baseline runner for Phase 0 startup/worker, opt-in live recording hot-path samples, upload/export load, WebSocket/JSON, and synthetic browser history-scroll measurements with explicit incomplete-gate reporting for remaining missing text-injection samples.
+- Hybrid architecture baseline runner for Phase 0 startup/worker, opt-in live recording hot-path samples, upload/export load, WebSocket/JSON, and synthetic browser history-scroll measurements with explicit incomplete-gate reporting for remaining missing text-injection samples. Realtime text that was already injected before stop is counted as `0 ms` stop-to-text wait.
 
 Known limits:
 
@@ -737,7 +737,7 @@ For Phase 0 hybrid performance baselines, run:
 powershell -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 -Iterations 3 -DisableDevFallback
 ```
 
-Use `-Hidden` for startup-only/headless runs. The script writes JSON under `tmp\hybrid-baseline\`, measures UI/backend readiness, backend cleanup, synthetic upload/export load with `/api/health` and `/api/state` responsiveness probes, WebSocket broadcast throughput, and JSON serialization cost, then reports which required baseline areas still need samples or dedicated benchmark automation.
+Use `-Hidden` for startup-only/headless runs. The script writes JSON under `tmp\hybrid-baseline\`, measures UI/backend readiness, backend cleanup, synthetic upload/export load with `/api/health` and `/api/state` responsiveness probes, WebSocket broadcast throughput, and JSON serialization cost, then reports which required baseline areas still need samples or dedicated benchmark automation. For live recording samples, `stop_to_text_injection` accepts either `stop_requested_to_first_paste_ms` or an already-injected-before-stop sample, which records the stop-to-text wait as `0 ms`.
 
 ### Tests
 
@@ -919,7 +919,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 ## Roadmap / Open Engineering Work
 
 - Real app-level microphone prewarming for `SCRIBER_MIC_ALWAYS_ON`.
-- Real recording text-injection samples for `stop_requested_to_first_paste_ms` after a spoken phrase is transcribed and injected during the opt-in baseline run.
+- Real recording text-injection samples from `-RecordHotPathSamples`, either `stop_requested_to_first_paste_ms` for async injection after stop or an already-injected-before-stop realtime sample counted as `0 ms` stop-to-text wait.
 - Full bundled desktop release activation: Authenticode signing, Tauri updater signing keys, signed update artifacts, and published `latest.json`.
 - Full-duration Tauri runtime stability runs, for example 30-minute recording/provider sessions with memory-growth review.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.

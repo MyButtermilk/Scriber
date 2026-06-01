@@ -17,6 +17,8 @@ SEGMENTS_BY_REQUIREMENT = {
     "hotkey_to_first_audio_frame": "hotkey_received_to_first_audio_frame_ms",
     "stop_to_text_injection": "stop_requested_to_first_paste_ms",
 }
+STOP_TO_TEXT_SEGMENT = "stop_requested_to_first_paste_ms"
+TEXT_BEFORE_STOP_SEGMENT = "first_paste_to_stop_requested_ms"
 
 
 def percentile(values: list[float], pct: float) -> float:
@@ -36,6 +38,39 @@ def summarize(values: list[float]) -> dict[str, float | int]:
         "p50Ms": round(percentile(values, 50.0), 3),
         "p95Ms": round(percentile(values, 95.0), 3),
         "maxMs": round(max(values), 3),
+    }
+
+
+def requirement_values(
+    samples: list[dict[str, Any]],
+    requirement: str,
+    segment_name: str,
+) -> tuple[list[float], dict[str, Any]]:
+    if requirement != "stop_to_text_injection":
+        return [
+            float((sample.get("segments") or {}).get(segment_name))
+            for sample in samples
+            if segment_name in (sample.get("segments") or {})
+        ], {"sourceSegments": [segment_name]}
+
+    values: list[float] = []
+    after_stop_samples = 0
+    already_injected_samples = 0
+    for sample in samples:
+        segments = sample.get("segments") or {}
+        if STOP_TO_TEXT_SEGMENT in segments:
+            values.append(float(segments[STOP_TO_TEXT_SEGMENT]))
+            after_stop_samples += 1
+        elif TEXT_BEFORE_STOP_SEGMENT in segments:
+            # Real-time providers can inject text before the user stops recording.
+            # In that case the stop-to-text wait is measured as zero, not missing.
+            values.append(0.0)
+            already_injected_samples += 1
+
+    return values, {
+        "sourceSegments": [STOP_TO_TEXT_SEGMENT, TEXT_BEFORE_STOP_SEGMENT],
+        "afterStopInjectionSamples": after_stop_samples,
+        "alreadyInjectedBeforeStopSamples": already_injected_samples,
     }
 
 
@@ -172,17 +207,14 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
 def build_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
     requirements: dict[str, Any] = {}
     for requirement, segment_name in SEGMENTS_BY_REQUIREMENT.items():
-        values = [
-            float((sample.get("segments") or {}).get(segment_name))
-            for sample in samples
-            if segment_name in (sample.get("segments") or {})
-        ]
+        values, details = requirement_values(samples, requirement, segment_name)
         status = "measured" if values else "missing"
         if requirement == "stop_to_text_injection" and not values:
             status = "missing_text_injection"
         requirements[requirement] = {
             "status": status,
             "segment": segment_name,
+            **details,
             "durations": summarize(values),
         }
 
@@ -222,6 +254,8 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
         "segments": {
             "hotkey_received_to_mic_ready_ms": 120.0,
             "hotkey_received_to_first_audio_frame_ms": 180.0,
+            "hotkey_received_to_first_paste_ms": 260.0,
+            "first_paste_to_stop_requested_ms": 350.0,
             "stop_requested_to_session_finished_ms": 90.0,
         },
         "validateOnly": True,

@@ -1,6 +1,6 @@
 # Hybrid Architecture Baseline
 
-Last verified: 2026-06-01
+Last verified: 2026-06-02
 
 This document tracks the Phase 0 baseline gate for the hybrid architecture work:
 React UI + Tauri/Rust desktop shell + Python worker.
@@ -50,8 +50,11 @@ without requiring real API keys, microphone hardware, or the Python backend.
 Live recording hot-path samples are opt-in because they open the microphone and
 may inject transcribed text into the active app. Run with `-RecordHotPathSamples`
 on a machine with microphone and provider credentials. Speak a short phrase
-during the recording window if `stop_requested_to_first_paste_ms` should be
-measured.
+during the recording window if text-injection timing should be measured. Async
+providers produce `stop_requested_to_first_paste_ms` when text is injected after
+stop; realtime providers may already have injected text before stop, which is
+detected via `first_paste_to_stop_requested_ms` and counted as `0 ms`
+stop-to-text wait.
 
 ## Automated Today
 
@@ -90,6 +93,8 @@ recording sample has run and text injection has completed:
 - `hotkey_received_to_mic_ready_ms`
 - `hotkey_received_to_first_audio_frame_ms`
 - `stop_requested_to_first_paste_ms`
+- `first_paste_to_stop_requested_ms` for realtime text that was already
+  injected before stop
 - `hotkey_received_to_first_paste_ms`
 
 `first_audio_frame` is marked from the audio callback path before WebSocket/UI
@@ -103,5 +108,7 @@ The following baseline requirement still needs a real spoken/injected sample:
 - stop to text injection.
 
 `-RecordHotPathSamples` can measure hotkey/API-start to recording state and
-first audio frame even when no text is produced. The stop-to-injection segment
-is only present when STT returns text and injection succeeds.
+first audio frame even when no text is produced. Stop-to-injection is measured
+when STT returns text and injection succeeds, either after stop
+(`stop_requested_to_first_paste_ms`) or before stop for realtime providers
+(`first_paste_to_stop_requested_ms`, recorded as `0 ms` wait from stop).

@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scripts.measure_recording_hot_path_baseline import build_summary
+
 
 def test_recording_hot_path_baseline_script_validate_only_writes_artifact(tmp_path: Path):
     repo_root = Path(__file__).resolve().parents[2]
@@ -31,7 +33,46 @@ def test_recording_hot_path_baseline_script_validate_only_writes_artifact(tmp_pa
     assert payload["ok"] is True
     assert payload["summary"]["requirements"]["hotkey_to_recording_state"]["status"] == "measured"
     assert payload["summary"]["requirements"]["hotkey_to_first_audio_frame"]["status"] == "measured"
-    assert payload["summary"]["requirements"]["stop_to_text_injection"]["status"] == "missing_text_injection"
+    stop_requirement = payload["summary"]["requirements"]["stop_to_text_injection"]
+    assert stop_requirement["status"] == "measured"
+    assert stop_requirement["durations"]["p95Ms"] == 0.0
+    assert stop_requirement["alreadyInjectedBeforeStopSamples"] == 1
+
+
+def test_recording_hot_path_summary_measures_text_injection_after_stop():
+    summary = build_summary(
+        [
+            {
+                "segments": {
+                    "stop_requested_to_first_paste_ms": 82.5,
+                }
+            }
+        ]
+    )
+
+    stop_requirement = summary["requirements"]["stop_to_text_injection"]
+    assert stop_requirement["status"] == "measured"
+    assert stop_requirement["durations"]["p95Ms"] == 82.5
+    assert stop_requirement["afterStopInjectionSamples"] == 1
+    assert stop_requirement["alreadyInjectedBeforeStopSamples"] == 0
+
+
+def test_recording_hot_path_summary_treats_text_before_stop_as_zero_wait():
+    summary = build_summary(
+        [
+            {
+                "segments": {
+                    "first_paste_to_stop_requested_ms": 220.0,
+                }
+            }
+        ]
+    )
+
+    stop_requirement = summary["requirements"]["stop_to_text_injection"]
+    assert stop_requirement["status"] == "measured"
+    assert stop_requirement["durations"]["p95Ms"] == 0.0
+    assert stop_requirement["afterStopInjectionSamples"] == 0
+    assert stop_requirement["alreadyInjectedBeforeStopSamples"] == 1
 
 
 def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
