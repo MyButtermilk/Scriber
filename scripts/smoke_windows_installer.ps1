@@ -18,7 +18,8 @@ replaces a backend worker that never becomes ready. With -VerifyLegacyDataMigrat
 it verifies that first-run legacy runtime data is copied into the installed app
 data directory. With -SimulateUpgrade, it runs the installer a second time
 against the same install/data directories and verifies that existing app data is
-preserved.
+preserved. With -StabilityDurationSec, the installed desktop smoke keeps the app
+running for repeated health/state probes before cleanup.
 #>
 
 param(
@@ -31,6 +32,8 @@ param(
     [switch]$SimulateBackendShutdown,
     [switch]$AttachExternalBackend,
     [switch]$SimulateBackendStartupTimeout,
+    [int]$StabilityDurationSec = 0,
+    [int]$StabilityProbeIntervalSec = 5,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
     [switch]$SimulateUpgrade,
@@ -159,6 +162,10 @@ function Invoke-InstalledDesktopSmoke {
     if ($OccupyDefaultPort) {
         $smokeArgs += "-OccupyDefaultPort"
     }
+    if ($StabilityDurationSec -gt 0) {
+        $smokeArgs += @("-StabilityDurationSec", $StabilityDurationSec.ToString())
+        $smokeArgs += @("-StabilityProbeIntervalSec", $StabilityProbeIntervalSec.ToString())
+    }
     if ($LegacyDataDir) {
         $smokeArgs += @("-LegacyDataDir", $LegacyDataDir)
     }
@@ -238,6 +245,7 @@ try {
             portConflict = $secondSmoke.portConflict
             controlledShutdown = $secondSmoke.controlledShutdown
             startupTimeout = $secondSmoke.startupTimeout
+            stability = $secondSmoke.stability
             legacyDataMigration = $secondSmoke.legacyDataMigration
         }
         $smoke = $secondSmoke
@@ -258,6 +266,7 @@ try {
         crashRecovery = $smoke.crashRecovery
         controlledShutdown = $smoke.controlledShutdown
         startupTimeout = $smoke.startupTimeout
+        stability = $smoke.stability
         cleanupVerified = $smoke.cleanupVerified
     } | ConvertTo-Json -Compress -Depth 8
 } finally {

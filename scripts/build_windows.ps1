@@ -27,6 +27,9 @@ param(
     [switch]$RunInstallerControlledShutdownSmoke,
     [switch]$RunInstallerExternalBackendSmoke,
     [switch]$RunInstallerStartupTimeoutSmoke,
+    [switch]$RunInstallerStabilitySmoke,
+    [int]$InstallerStabilityDurationSec = 15,
+    [int]$InstallerStabilityProbeIntervalSec = 5,
     [switch]$RunInstallerLegacyDataSmoke,
     [switch]$RunInstallerUpgradeSmoke
 )
@@ -181,7 +184,7 @@ try {
         }
     }
 
-    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
@@ -206,6 +209,10 @@ try {
                 }
                 if ($RunInstallerStartupTimeoutSmoke) {
                     $installerSmokeArgs += "-SimulateBackendStartupTimeout"
+                }
+                if ($RunInstallerStabilitySmoke) {
+                    $installerSmokeArgs += @("-StabilityDurationSec", $InstallerStabilityDurationSec.ToString())
+                    $installerSmokeArgs += @("-StabilityProbeIntervalSec", $InstallerStabilityProbeIntervalSec.ToString())
                 }
                 if ($RunInstallerLegacyDataSmoke) {
                     $installerSmokeArgs += @("-LegacyDataDir", $RepoRoot, "-VerifyLegacyDataMigration")

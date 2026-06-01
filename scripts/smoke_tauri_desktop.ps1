@@ -18,7 +18,8 @@ verifies that no managed sidecar is spawned. With -SimulateBackendStartupTimeout
 it forces the first backend worker launch to block before readiness and verifies
 that the supervisor replaces it. With -LegacyDataDir and -VerifyLegacyDataMigration,
 it verifies first-run migration into SCRIBER_DATA_DIR without printing secret
-values.
+values. With -StabilityDurationSec, it keeps the app running for repeated
+health/state probes and verifies that the backend process remains stable.
 
 Build the executable first with:
   cd Frontend
@@ -35,6 +36,8 @@ param(
     [int]$TimeoutSec = 60,
     [int]$BackendHealthTimeoutSec = 20,
     [int]$CleanupTimeoutSec = 20,
+    [int]$StabilityDurationSec = 0,
+    [int]$StabilityProbeIntervalSec = 5,
     [switch]$KeepAppOpen,
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
@@ -189,6 +192,100 @@ function Invoke-BackendShutdown {
         throw "Runtime shutdown endpoint on port $Port did not return ok=true."
     }
     return $response
+}
+
+function Invoke-TimedRestGet {
+    param(
+        [string]$Uri,
+        [hashtable]$Headers = @{}
+    )
+
+    $started = [System.Diagnostics.Stopwatch]::StartNew()
+    $payload = Invoke-RestMethod -Uri $Uri -Headers $Headers -TimeoutSec 5
+    $started.Stop()
+    return [pscustomobject]@{
+        payload = $payload
+        elapsedMs = [Math]::Round($started.Elapsed.TotalMilliseconds, 2)
+    }
+}
+
+function Test-RuntimeStability {
+    param(
+        [System.Diagnostics.Process]$AppProcess,
+        [int]$BackendPid,
+        [int]$Port,
+        [string]$Token,
+        [string]$ExpectedRuntimeMode,
+        [int]$DurationSec,
+        [int]$ProbeIntervalSec
+    )
+
+    if ($DurationSec -le 0) {
+        return $null
+    }
+
+    $headers = @{}
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+
+    $samples = @()
+    $startedAt = Get-Date
+    $deadline = $startedAt.AddSeconds($DurationSec)
+    do {
+        if ($AppProcess.HasExited) {
+            throw "Tauri process exited during stability smoke with code $($AppProcess.ExitCode)."
+        }
+        $backendProcess = Get-Process -Id $BackendPid -ErrorAction SilentlyContinue
+        if (-not $backendProcess) {
+            throw "Backend process $BackendPid exited during stability smoke."
+        }
+
+        $healthProbe = Invoke-TimedRestGet -Uri "http://127.0.0.1:$Port/api/health"
+        $health = $healthProbe.payload
+        if (-not ($health.ok -and $health.runtimeMode -eq $ExpectedRuntimeMode -and $health.apiVersion)) {
+            throw "Stability smoke health probe returned unexpected payload."
+        }
+        if ($health.pid -and [int]$health.pid -ne $BackendPid) {
+            throw "Stability smoke backend pid changed from $BackendPid to $($health.pid)."
+        }
+
+        $stateProbe = Invoke-TimedRestGet -Uri "http://127.0.0.1:$Port/api/state" -Headers $headers
+        $state = $stateProbe.payload
+        if (-not ($state.recordingState -and $state.status)) {
+            throw "Stability smoke state probe returned unexpected payload."
+        }
+
+        $processSnapshot = Get-Process -Id $BackendPid -ErrorAction Stop
+        $samples += [pscustomobject]@{
+            index = $samples.Count + 1
+            elapsedSec = [Math]::Round(((Get-Date) - $startedAt).TotalSeconds, 2)
+            backendPid = $BackendPid
+            backendWorkingSetMb = [Math]::Round($processSnapshot.WorkingSet64 / 1MB, 2)
+            healthMs = $healthProbe.elapsedMs
+            stateMs = $stateProbe.elapsedMs
+            healthReady = [bool]$health.ready
+            recordingState = [string]$state.recordingState
+        }
+
+        if ((Get-Date) -ge $deadline) {
+            break
+        }
+        Start-Sleep -Seconds ([Math]::Max(1, $ProbeIntervalSec))
+    } while ((Get-Date) -lt $deadline)
+
+    $workingSetValues = @($samples | ForEach-Object { [double]$_.backendWorkingSetMb })
+    return [pscustomobject]@{
+        verified = $true
+        durationSec = $DurationSec
+        probeIntervalSec = [Math]::Max(1, $ProbeIntervalSec)
+        sampleCount = $samples.Count
+        backendPid = $BackendPid
+        backendWorkingSetStartMb = if ($workingSetValues.Count) { $workingSetValues[0] } else { $null }
+        backendWorkingSetEndMb = if ($workingSetValues.Count) { $workingSetValues[-1] } else { $null }
+        backendWorkingSetMaxMb = if ($workingSetValues.Count) { ($workingSetValues | Measure-Object -Maximum).Maximum } else { $null }
+        samples = $samples
+    }
 }
 
 function Convert-ToFullPath {
@@ -698,6 +795,14 @@ try {
     if ($portConflict) {
         $portConflictResult = [pscustomobject]$portConflict
     }
+    $stability = Test-RuntimeStability `
+        -AppProcess $app `
+        -BackendPid ([int]$listener.BackendPid) `
+        -Port ([int]$listener.Port) `
+        -Token $SessionToken `
+        -ExpectedRuntimeMode $expectedRuntimeMode `
+        -DurationSec $StabilityDurationSec `
+        -ProbeIntervalSec $StabilityProbeIntervalSec
     $result = [pscustomobject]@{
         ok = $true
         appPid = $app.Id
@@ -715,6 +820,7 @@ try {
         startupTimeout = $startupTimeout
         crashRecovery = $crashRecovery
         controlledShutdown = $controlledShutdown
+        stability = $stability
         cleanupVerified = $false
     }
 } finally {
