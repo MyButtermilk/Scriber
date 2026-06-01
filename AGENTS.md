@@ -183,6 +183,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - On Windows, the managed Python child is spawned with `CREATE_NO_WINDOW`.
 - Managed backend startup has a timeout and will be restarted by `ensure_backend_running` instead of staying in `starting` forever.
 - `scripts/measure_hybrid_baseline.ps1` is the Phase 0 baseline runner. It measures Tauri startup/backend readiness, checks cleanup, pulls available `/api/metrics/hot-path` segments, can opt into live recording samples with `-RecordHotPathSamples`, runs `scripts/measure_upload_export_baseline.py` for synthetic upload/export load, runs `scripts/measure_ws_broadcast_baseline.py` for WebSocket/JSON costs, runs `scripts/measure_history_scroll_baseline.py` for synthetic browser history-scroll behavior, writes JSON to `tmp\hybrid-baseline\`, and leaves the gate incomplete when real recording text-injection timing is missing.
+- `scripts/smoke_frontend_browser.py` is the frontend browser smoke gate. It starts Vite with a synthetic aiohttp backend, drives Chrome/Edge through CDP, visits `/`, `/youtube`, `/file`, `/settings`, and `/transcript/mic-00001`, verifies expected route text, checks history virtualization on list routes, and fails on critical console/page errors.
 - `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable with a random session token, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits. With `-SimulateBackendCrash`, it kills the managed worker, waits for `ensure_backend_running` recovery, and verifies `backend-crash-metadata.jsonl`. With `-LegacyDataDir <old-scriber-dir> -VerifyLegacyDataMigration`, it verifies first-run migration into `SCRIBER_DATA_DIR` without printing secret values.
 - `scripts/smoke_windows_installer.ps1` installs the generated NSIS setup into `tmp\installer-smoke\`, runs the desktop smoke without `SCRIBER_REPO_ROOT`/`SCRIBER_PYTHON` dev fallback, and removes the temporary install/data directories afterward. Pass `-SimulateBackendCrash` to run the installed-package worker-crash recovery gate. Pass `-LegacyDataDir <old-scriber-dir> -VerifyLegacyDataMigration -SimulateUpgrade` to verify legacy runtime-data migration and data preservation across a second installer run.
 - `scripts/build_windows.ps1 -RunInstallerSmoke` builds the NSIS package and then runs the installed-package smoke gate. `-RunInstallerCrashSmoke`, `-RunInstallerLegacyDataSmoke`, and `-RunInstallerUpgradeSmoke` add worker-crash, legacy-data migration, and data-preserving installer-rerun checks.
@@ -217,6 +218,7 @@ npm run dev:client
 npm run dev
 npm run check
 npm run build
+python ../scripts/smoke_frontend_browser.py --output ../tmp/frontend-browser-smoke.json
 npm run tauri:dev
 npm run tauri:build
 npm start
@@ -355,6 +357,7 @@ Current summarization default is `gemini-flash-latest`.
 - Frontend:
   - `cd Frontend && npm run check`
   - `cd Frontend && npm run build`
+  - `python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json`
 
 ## Known Open Engineering Work
 

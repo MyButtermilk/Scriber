@@ -662,6 +662,7 @@ npm run dev:client
 npm run check
 npm run build
 npm start
+python ../scripts/smoke_frontend_browser.py --output ../tmp/frontend-browser-smoke.json
 ```
 
 Do not run `npm run dev:client` and `npm run dev` at the same time on the default port.
@@ -708,6 +709,7 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -SimulateBackendCrash
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -LegacyDataDir path\to\old\Scriber -VerifyLegacyDataMigration -SimulateUpgrade
+python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
 ```
 
 The desktop smoke test starts `Frontend\src-tauri\target\release\scriber-desktop.exe` with a random session token, verifies that Tauri starts a managed backend with `runtimeMode=tauri-supervised`, then hard-stops the app and checks that no newly spawned backend process remains. Pass `-BackendExePath path\to\scriber-backend.exe` to force a specific sidecar. Pass `-SimulateBackendCrash` to kill the managed worker, wait for the Tauri/frontend recovery path to start a replacement, and verify `backend-crash-metadata.jsonl`. Pass `-LegacyDataDir <old-scriber-dir> -VerifyLegacyDataMigration` to verify first-run migration into `SCRIBER_DATA_DIR`; secrets are not printed, only paths, byte counts, and hash-match booleans for `.env`/`settings.json`. The installer smoke runs the same runtime gate against the installed NSIS package and disables the source-checkout Python fallback. Add `-SimulateUpgrade` to reinstall into the same temporary install directory, reuse the same data directory, and verify a data sentinel survives the installer rerun.
@@ -763,6 +765,10 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -Le
 cd Frontend
 npm run check
 npm run build
+```
+
+```bash
+python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
 ```
 
 ---

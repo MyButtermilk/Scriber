@@ -42,6 +42,11 @@ history UI and a synthetic paginated mock backend. Tune it with `-HistoryItems`,
 `-HistoryRoutes`, and `-HistoryViews`, or skip it with
 `-SkipHistoryScrollBenchmark`.
 
+General frontend route health is covered by `scripts/smoke_frontend_browser.py`.
+It starts the Vite app with a synthetic backend and uses Chrome/Edge CDP to
+verify `/`, `/youtube`, `/file`, `/settings`, and a transcript detail route
+without requiring real API keys, microphone hardware, or the Python backend.
+
 Live recording hot-path samples are opt-in because they open the microphone and
 may inject transcribed text into the active app. Run with `-RecordHotPathSamples`
 on a machine with microphone and provider credentials. Speak a short phrase
@@ -68,6 +73,8 @@ measured.
   throughput with synthetic clients via `scripts/measure_ws_broadcast_baseline.py`.
 - large transcript-history browser scrolling, API pagination, and rendered-card
   counts via `scripts/measure_history_scroll_baseline.py`.
+- frontend route smoke coverage, expected-route text, history virtualization
+  markers, and browser console/page errors via `scripts/smoke_frontend_browser.py`.
 
 The runner intentionally reports an incomplete Phase 0 gate until all required
 measurements are present. Missing fields are listed in

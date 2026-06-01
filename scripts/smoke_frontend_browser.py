@@ -1,0 +1,556 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+from aiohttp import WSMsgType, web
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.measure_history_scroll_baseline import (
+    CdpClient,
+    connect_to_browser,
+    find_free_port,
+    resolve_browser_path,
+    start_browser,
+    start_vite,
+    terminate_process as terminate_process_parent,
+    transcript_item,
+    wait_http,
+)
+
+
+ROUTE_EXPECTATIONS: dict[str, list[str]] = {
+    "/": ["Live Transcription", "Recent Recordings"],
+    "/youtube": ["Youtube Transcription", "Recent Videos"],
+    "/file": ["Import File", "Recent Files"],
+    "/settings": ["Settings", "Transcription Settings", "API Configuration"],
+    "/transcript/mic-00001": ["Synthetic Recording 00002", "Summary", "Transcript"],
+}
+
+
+def terminate_process_tree(process: Any) -> None:
+    if process.poll() is not None:
+        return
+    if sys.platform.startswith("win"):
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            terminate_process_parent(process)
+        return
+    terminate_process_parent(process)
+
+
+class FrontendSmokeBackend:
+    def __init__(self, *, port: int, item_count: int) -> None:
+        self.port = port
+        self.item_count = item_count
+        self.runner: web.AppRunner | None = None
+        self.request_log: list[dict[str, Any]] = []
+        self.settings = self._default_settings()
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    async def start(self) -> None:
+        @web.middleware
+        async def cors_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+            if request.method == "OPTIONS":
+                response: web.StreamResponse = web.Response()
+            else:
+                response = await handler(request)
+
+            origin = request.headers.get("Origin")
+            if origin:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Vary"] = "Origin"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Scriber-Token"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            return response
+
+        app = web.Application(middlewares=[cors_middleware])
+        app.router.add_get("/api/health", self.health)
+        app.router.add_get("/api/settings", self.get_settings)
+        app.router.add_put("/api/settings", self.put_settings)
+        app.router.add_get("/api/autostart", self.autostart)
+        app.router.add_post("/api/autostart", self.autostart)
+        app.router.add_get("/api/microphones", self.microphones)
+        app.router.add_post("/api/microphones/refresh", self.microphones)
+        app.router.add_get("/api/onnx/models", self.local_models)
+        app.router.add_get("/api/nemo/models", self.local_models)
+        app.router.add_get("/api/youtube/search", self.youtube_search)
+        app.router.add_get("/api/youtube/video", self.youtube_video)
+        app.router.add_post("/api/youtube/transcribe", self.youtube_transcribe)
+        app.router.add_get("/api/transcripts", self.transcripts)
+        app.router.add_get("/api/transcripts/{transcript_id}", self.transcript_detail)
+        app.router.add_delete("/api/transcripts/{transcript_id}", self.delete_transcript)
+        app.router.add_post("/api/transcripts/{transcript_id}/cancel", self.ok_response)
+        app.router.add_post("/api/transcripts/{transcript_id}/summarize", self.summarize_transcript)
+        app.router.add_get("/ws", self.websocket)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, "127.0.0.1", self.port)
+        await site.start()
+
+    async def close(self) -> None:
+        if self.runner:
+            await self.runner.cleanup()
+            self.runner = None
+
+    async def health(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "ok": True,
+                "ready": True,
+                "apiVersion": "1",
+                "runtimeMode": "frontend-browser-smoke",
+                "workerVersion": "0.1.0",
+            }
+        )
+
+    async def get_settings(self, request: web.Request) -> web.Response:
+        return web.json_response(self.settings)
+
+    async def put_settings(self, request: web.Request) -> web.Response:
+        patch = await request.json()
+        if isinstance(patch, dict):
+            self.settings.update(patch)
+        return web.json_response(self.settings)
+
+    async def autostart(self, request: web.Request) -> web.Response:
+        return web.json_response({"enabled": False, "available": False})
+
+    async def microphones(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "devices": [
+                    {"deviceId": "default", "label": "Default Microphone"},
+                    {"deviceId": "usb-smoke-mic", "label": "USB Smoke Microphone"},
+                ],
+                "favoriteMicRestored": False,
+            }
+        )
+
+    async def local_models(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "available": False,
+                "message": "Local model downloads are disabled in frontend smoke.",
+                "models": [],
+                "currentModel": "",
+                "quantization": "int8",
+            }
+        )
+
+    async def youtube_search(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "items": [
+                    {
+                        "videoId": "video-smoke-1",
+                        "title": "Synthetic YouTube Result",
+                        "channelTitle": "Smoke Channel",
+                        "thumbnailUrl": "",
+                        "duration": "04:20",
+                        "publishedAt": "2026-06-01T12:00:00Z",
+                        "viewCount": 1234,
+                        "likeCount": 56,
+                    }
+                ]
+            }
+        )
+
+    async def youtube_video(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "videoId": "video-smoke-1",
+                "title": "Synthetic YouTube URL Result",
+                "channelTitle": "Smoke Channel",
+                "thumbnailUrl": "",
+                "duration": "04:20",
+                "publishedAt": "2026-06-01T12:00:00Z",
+                "viewCount": 1234,
+                "likeCount": 56,
+            }
+        )
+
+    async def youtube_transcribe(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "success": True,
+                "id": "youtube-queued-smoke",
+                "message": "Synthetic transcription queued.",
+            }
+        )
+
+    async def transcripts(self, request: web.Request) -> web.Response:
+        transcript_type = request.query.get("type", "mic").strip() or "mic"
+        offset = max(0, int(request.query.get("offset", "0") or "0"))
+        limit = max(1, min(100, int(request.query.get("limit", "50") or "50")))
+        query = (request.query.get("q", "") or "").strip().lower()
+
+        indexes: list[int] = list(range(self.item_count))
+        if query:
+            indexes = [
+                index
+                for index in indexes
+                if query in transcript_item(transcript_type, index)["title"].lower()
+            ]
+
+        total = len(indexes)
+        page_indexes = indexes[offset : offset + limit]
+        items = [transcript_item(transcript_type, index) for index in page_indexes]
+        self.request_log.append(
+            {
+                "path": "/api/transcripts",
+                "type": transcript_type,
+                "offset": offset,
+                "limit": limit,
+                "returned": len(items),
+                "total": total,
+            }
+        )
+        return web.json_response(
+            {
+                "items": items,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "hasMore": offset + len(items) < total,
+            }
+        )
+
+    async def transcript_detail(self, request: web.Request) -> web.Response:
+        transcript_id = request.match_info["transcript_id"]
+        kind = transcript_id.split("-", maxsplit=1)[0] if "-" in transcript_id else "mic"
+        index = 1
+        try:
+            index = int(transcript_id.rsplit("-", maxsplit=1)[1])
+        except Exception:
+            pass
+        item = transcript_item(kind, index)
+        item.update(
+            {
+                "content": "Speaker 1: This is a synthetic transcript used by the frontend browser smoke test.",
+                "summary": "Synthetic summary for browser smoke.",
+                "createdAt": "2026-06-01T12:00:00Z",
+                "updatedAt": "2026-06-01T12:05:00Z",
+            }
+        )
+        return web.json_response(item)
+
+    async def delete_transcript(self, request: web.Request) -> web.Response:
+        return web.json_response({"success": True})
+
+    async def summarize_transcript(self, request: web.Request) -> web.Response:
+        return web.json_response({"success": True, "summary": "Synthetic summary for browser smoke."})
+
+    async def ok_response(self, request: web.Request) -> web.Response:
+        return web.json_response({"success": True})
+
+    async def websocket(self, request: web.Request) -> web.StreamResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        await ws.send_json(
+            {
+                "apiVersion": "1",
+                "type": "state",
+                "listening": False,
+                "status": "Stopped",
+                "current": None,
+                "backgroundProcessing": False,
+                "recordingState": "idle",
+                "transcribing": False,
+            }
+        )
+        async for message in ws:
+            if message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
+                break
+        return ws
+
+    @staticmethod
+    def _default_settings() -> dict[str, Any]:
+        return {
+            "hotkey": "ctrl+alt+s",
+            "hotkeyRaw": "ctrl+alt+s",
+            "mode": "toggle",
+            "micDevice": "default",
+            "favoriteMic": "",
+            "language": "auto",
+            "defaultSttService": "soniox",
+            "sonioxMode": "realtime",
+            "customVocab": "",
+            "summarizationPrompt": "",
+            "summarizationModel": "gemini-2.5-flash",
+            "autoSummarize": False,
+            "visualizerBarCount": 45,
+            "micAlwaysOn": False,
+            "onnxModel": "",
+            "nemoModel": "",
+            "apiKeys": {},
+            "fileUploadLimits": {
+                "compressionThresholdBytes": 50 * 1024 * 1024,
+                "compressionThresholdLabel": "50MB",
+                "providerLabel": "Synthetic",
+                "audioMaxLabel": "2GB",
+                "rawAudioIngestMaxLabel": "2GB",
+                "videoMaxLabel": "2GB",
+                "usesDirectProviderLimit": False,
+            },
+        }
+
+
+async def install_page_error_capture(cdp: CdpClient) -> None:
+    source = r"""
+(() => {
+  window.__scriberSmoke = { consoleErrors: [], pageErrors: [], unhandledRejections: [] };
+  const originalError = console.error.bind(console);
+  console.error = (...args) => {
+    window.__scriberSmoke.consoleErrors.push(args.map((arg) => String(arg)).join(" "));
+    originalError(...args);
+  };
+  window.addEventListener("error", (event) => {
+    window.__scriberSmoke.pageErrors.push(String(event.message || event.error || ""));
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    window.__scriberSmoke.unhandledRejections.push(String(event.reason || ""));
+  });
+})();
+"""
+    await cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": source})
+
+
+async def wait_for_route_ready(
+    cdp: CdpClient,
+    *,
+    route: str,
+    expected_text: list[str],
+    timeout_sec: float,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_sec
+    last_state: dict[str, Any] = {}
+    expectation = json.dumps(expected_text)
+    expression = f"""
+(() => {{
+  const expected = {expectation};
+  const text = document.body ? document.body.innerText : "";
+  const smoke = window.__scriberSmoke || {{}};
+  const missing = expected.filter((item) => !text.includes(item));
+  const hasOfflineBanner = text.includes("Backend Not Available");
+  const hasQueryError = /Could not load|Failed to load|Please retry loading/.test(text);
+  const historyRoot = document.querySelector('[data-history-virtualized="true"]');
+  const result = {{
+    ready: document.readyState === "complete" && missing.length === 0 && !hasOfflineBanner && !hasQueryError,
+    route: window.location.pathname,
+    missing,
+    hasOfflineBanner,
+    hasQueryError,
+    bodyText: text.slice(0, 1000),
+    title: document.title,
+    historyVirtualized: !!historyRoot,
+    visibleHistoryCards: document.querySelectorAll('.perf-scroll-item').length,
+    consoleErrors: smoke.consoleErrors || [],
+    pageErrors: smoke.pageErrors || [],
+    unhandledRejections: smoke.unhandledRejections || []
+  }};
+  return result;
+}})()
+"""
+    while time.monotonic() < deadline:
+        state = await cdp.evaluate(expression, timeout=5)
+        last_state = state or {}
+        if last_state.get("ready"):
+            return last_state
+        await asyncio.sleep(0.25)
+    raise RuntimeError(f"Timed out waiting for route {route}. Last state: {last_state}")
+
+
+async def inspect_route(
+    cdp: CdpClient,
+    *,
+    frontend_base_url: str,
+    route: str,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    expected = ROUTE_EXPECTATIONS[route]
+    await cdp.call("Page.navigate", {"url": f"{frontend_base_url}{route}"}, timeout=10)
+    state = await wait_for_route_ready(cdp, route=route, expected_text=expected, timeout_sec=timeout_sec)
+    critical_console_errors = [
+        message
+        for message in state.get("consoleErrors", [])
+        if "WebSocket error" not in message and "ResizeObserver loop" not in message
+    ]
+    ok = not critical_console_errors and not state.get("pageErrors") and not state.get("unhandledRejections")
+    return {
+        "route": route,
+        "ok": ok,
+        "expectedText": expected,
+        "historyVirtualized": bool(state.get("historyVirtualized")),
+        "visibleHistoryCards": int(state.get("visibleHistoryCards") or 0),
+        "consoleErrors": critical_console_errors,
+        "pageErrors": state.get("pageErrors", []),
+        "unhandledRejections": state.get("unhandledRejections", []),
+    }
+
+
+async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
+    backend_port = find_free_port()
+    frontend_port = find_free_port()
+    debug_port = find_free_port()
+    backend = FrontendSmokeBackend(port=backend_port, item_count=args.items)
+    vite = None
+    browser = None
+    cdp: CdpClient | None = None
+
+    await backend.start()
+    with tempfile.TemporaryDirectory(prefix="scriber-frontend-browser-", ignore_cleanup_errors=True) as temp_dir:
+        profile_dir = Path(temp_dir) / "browser-profile"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            vite = start_vite(frontend_port, backend.base_url)
+            wait_http(f"http://127.0.0.1:{frontend_port}/", timeout_sec=args.startup_timeout_sec)
+
+            browser_path = resolve_browser_path(args.browser)
+            browser = start_browser(browser_path, debug_port, profile_dir, headed=args.headed)
+            cdp = await connect_to_browser(debug_port)
+            await install_page_error_capture(cdp)
+
+            frontend_base_url = f"http://127.0.0.1:{frontend_port}"
+            routes = [route for route in args.routes if route in ROUTE_EXPECTATIONS]
+            scenarios = [
+                await inspect_route(
+                    cdp,
+                    frontend_base_url=frontend_base_url,
+                    route=route,
+                    timeout_sec=args.page_timeout_sec,
+                )
+                for route in routes
+            ]
+        finally:
+            if cdp:
+                await cdp.close()
+            if browser:
+                terminate_process_tree(browser)
+            if vite:
+                terminate_process_tree(vite)
+            await backend.close()
+
+    ok = bool(scenarios) and all(item["ok"] for item in scenarios)
+    virtualized_routes = [
+        item["route"]
+        for item in scenarios
+        if item["route"] in {"/", "/youtube", "/file"} and item["historyVirtualized"]
+    ]
+    return {
+        "schemaVersion": 1,
+        "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "ok": ok,
+        "summary": {
+            "routeCount": len(scenarios),
+            "routes": [item["route"] for item in scenarios],
+            "virtualizedHistoryRoutes": virtualized_routes,
+            "criticalConsoleErrorCount": sum(len(item["consoleErrors"]) for item in scenarios),
+            "pageErrorCount": sum(len(item["pageErrors"]) for item in scenarios),
+            "unhandledRejectionCount": sum(len(item["unhandledRejections"]) for item in scenarios),
+        },
+        "scenarios": scenarios,
+    }
+
+
+def parse_routes(value: str) -> list[str]:
+    routes = [part.strip() for part in value.split(",") if part.strip()]
+    return routes or list(ROUTE_EXPECTATIONS)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Smoke test Scriber React routes in a real browser with a synthetic backend."
+    )
+    parser.add_argument("--routes", default=",".join(ROUTE_EXPECTATIONS))
+    parser.add_argument("--items", type=int, default=120)
+    parser.add_argument("--browser", default="")
+    parser.add_argument("--headed", action="store_true")
+    parser.add_argument("--startup-timeout-sec", type=float, default=30.0)
+    parser.add_argument("--page-timeout-sec", type=float, default=20.0)
+    parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--output", default="tmp/frontend-browser-smoke.json")
+    args = parser.parse_args(argv)
+    args.routes = parse_routes(args.routes)
+    args.items = max(1, int(args.items))
+    return args
+
+
+def write_result(result: dict[str, Any], output_path: str) -> None:
+    output = json.dumps(result, indent=2, ensure_ascii=False)
+    if output_path:
+        path = Path(output_path).resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(output + "\n", encoding="utf-8")
+    print(output)
+
+
+def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
+    scenarios = [
+        {
+            "route": route,
+            "ok": True,
+            "expectedText": ROUTE_EXPECTATIONS.get(route, []),
+            "historyVirtualized": route in {"/", "/youtube", "/file"},
+            "visibleHistoryCards": 0,
+            "consoleErrors": [],
+            "pageErrors": [],
+            "unhandledRejections": [],
+            "validateOnly": True,
+        }
+        for route in args.routes
+        if route in ROUTE_EXPECTATIONS
+    ]
+    return {
+        "schemaVersion": 1,
+        "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "ok": bool(scenarios),
+        "summary": {
+            "routeCount": len(scenarios),
+            "routes": [item["route"] for item in scenarios],
+            "virtualizedHistoryRoutes": [
+                item["route"] for item in scenarios if item["historyVirtualized"]
+            ],
+            "criticalConsoleErrorCount": 0,
+            "pageErrorCount": 0,
+            "unhandledRejectionCount": 0,
+            "validateOnly": True,
+        },
+        "scenarios": scenarios,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.validate_only:
+        result = build_validate_result(args)
+    else:
+        result = asyncio.run(run_browser_smoke(args))
+    write_result(result, args.output)
+    return 0 if result.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
