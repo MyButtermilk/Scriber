@@ -34,10 +34,14 @@ param(
     [int]$WsIterations = 2000,
     [int]$WsWarmup = 100,
     [string]$WsClientCounts = "1,5",
+    [int]$HistoryItems = 2000,
+    [string]$HistoryRoutes = "/",
+    [string]$HistoryViews = "list,grid",
     [switch]$Hidden,
     [switch]$SkipUiVisibleWait,
     [switch]$SkipUploadExportBenchmark,
     [switch]$SkipWsBenchmark,
+    [switch]$SkipHistoryScrollBenchmark,
     [switch]$KeepArtifacts,
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
@@ -409,6 +413,53 @@ function Invoke-UploadExportBenchmark {
     return Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
 }
 
+function Invoke-HistoryScrollBenchmark {
+    param(
+        [string]$BaselineOutputPath
+    )
+
+    $scriptPath = Join-Path $RepoRoot "scripts\measure_history_scroll_baseline.py"
+    if (-not (Test-Path $scriptPath)) {
+        throw "Missing history scroll baseline benchmark script: $scriptPath"
+    }
+
+    $outputDir = Split-Path $BaselineOutputPath
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($BaselineOutputPath)
+    $benchmarkOutputPath = Join-Path $outputDir "$baseName-history-scroll.json"
+    Assert-UnderRoot -Root (Join-Path $RepoRoot "tmp") -Path $benchmarkOutputPath -Label "History scroll baseline output"
+
+    $stdoutPath = Join-Path $outputDir "$baseName-history-scroll.out"
+    $stderrPath = Join-Path $outputDir "$baseName-history-scroll.err"
+    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+
+    $process = Start-Process `
+        -FilePath $PythonPath `
+        -ArgumentList @(
+            $scriptPath,
+            "--items", [string]$HistoryItems,
+            "--routes", $HistoryRoutes,
+            "--views", $HistoryViews,
+            "--output", $benchmarkOutputPath
+        ) `
+        -WorkingDirectory $RepoRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath `
+        -Wait `
+        -PassThru
+
+    if ($process.ExitCode -ne 0) {
+        $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
+        $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
+        throw "History scroll baseline benchmark failed with exit code $($process.ExitCode). stdout: $stdout stderr: $stderr"
+    }
+    if (-not (Test-Path $benchmarkOutputPath)) {
+        throw "History scroll baseline benchmark did not write output: $benchmarkOutputPath"
+    }
+
+    return Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
+}
+
 function Invoke-BaselineIteration {
     param(
         [int]$Index
@@ -594,6 +645,9 @@ if ($WsIterations -lt 1) {
 if ($WsWarmup -lt 0) {
     throw "WsWarmup must be >= 0."
 }
+if ($HistoryItems -lt 1) {
+    throw "HistoryItems must be >= 1."
+}
 if (-not $OutputPath) {
     $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
     $OutputPath = Join-Path $RepoRoot "tmp\hybrid-baseline\hybrid-baseline-$stamp.json"
@@ -615,6 +669,11 @@ if (-not $SkipUploadExportBenchmark) {
 $webSocketBenchmark = $null
 if (-not $SkipWsBenchmark) {
     $webSocketBenchmark = Invoke-WebSocketBroadcastBenchmark -BaselineOutputPath $OutputPath
+}
+
+$historyScrollBenchmark = $null
+if (-not $SkipHistoryScrollBenchmark) {
+    $historyScrollBenchmark = Invoke-HistoryScrollBenchmark -BaselineOutputPath $OutputPath
 }
 
 $segmentNames = @(Get-HotPathSegmentNames -Samples $samples)
@@ -654,8 +713,9 @@ $requirements = @(
         -Notes $(if ($SkipWsBenchmark) { "Run without -SkipWsBenchmark to collect WebSocket throughput and serialization baseline." } else { "" })
     New-Requirement `
         -Name "history_scroll_many_transcripts" `
-        -Status "not_automated_yet" `
-        -Evidence "No browser scroll benchmark wired into this baseline script yet."
+        -Status $(if ($SkipHistoryScrollBenchmark) { "skipped" } elseif ($historyScrollBenchmark -and $historyScrollBenchmark.ok) { "measured" } else { "missing" }) `
+        -Evidence "scripts/measure_history_scroll_baseline.py starts the React UI against a synthetic paginated backend and measures virtualized browser scrolling." `
+        -Notes $(if ($SkipHistoryScrollBenchmark) { "Run without -SkipHistoryScrollBenchmark to collect large-history scroll baseline." } else { "" })
 )
 
 $incomplete = @(
@@ -699,6 +759,10 @@ $result = [pscustomobject]@{
         wsIterations = $WsIterations
         wsWarmup = $WsWarmup
         wsClientCounts = $WsClientCounts
+        skipHistoryScrollBenchmark = [bool]$SkipHistoryScrollBenchmark
+        historyItems = $HistoryItems
+        historyRoutes = $HistoryRoutes
+        historyViews = $HistoryViews
     }
     summary = [pscustomobject]@{
         coldStartToUiVisibleMs = New-SampleSummary -Samples $samples -PropertyName "coldStartToUiVisibleMs"
@@ -709,6 +773,7 @@ $result = [pscustomobject]@{
         hotPathSegmentNames = @($segmentNames)
         uploadExportBenchmark = $(if ($uploadExportBenchmark) { $uploadExportBenchmark.summary } else { $null })
         webSocketBenchmark = $(if ($webSocketBenchmark) { $webSocketBenchmark.summary } else { $null })
+        historyScrollBenchmark = $(if ($historyScrollBenchmark) { $historyScrollBenchmark.summary } else { $null })
     }
     phase0Gate = [pscustomobject]@{
         complete = $incomplete.Count -eq 0
@@ -717,6 +782,7 @@ $result = [pscustomobject]@{
     }
     uploadExportBenchmark = $uploadExportBenchmark
     webSocketBenchmark = $webSocketBenchmark
+    historyScrollBenchmark = $historyScrollBenchmark
     samples = $samples
 }
 

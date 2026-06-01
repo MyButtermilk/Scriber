@@ -343,20 +343,21 @@ def list_transcripts(self, *, include_content: bool = False, query: str = "",
 - `GET /api/transcripts?offset=0&limit=50` - Returns paginated results
 - Response includes `items`, `total`, `offset`, `limit`, `hasMore`
 
-**Remaining (Frontend Virtual Scrolling):**
-Use `@tanstack/react-virtual` or native Intersection Observer:
+**Implemented Frontend Virtual Scrolling:**
+The Live Mic, File, and YouTube history views now use `@tanstack/react-virtual`
+with React Query infinite pagination:
 ```typescript
-const TranscriptList = () => {
-  const { data, fetchNextPage } = useInfiniteQuery({
-    queryKey: ['transcripts'],
-    queryFn: ({ pageParam = 0 }) =>
-      fetch(`/api/transcripts?offset=${pageParam}&limit=20`)
-  });
-};
+const transcriptsQuery = useTranscriptHistoryQuery({ type: "mic", q: debouncedSearch });
+
+<VirtualTranscriptHistory
+  items={transcriptsQuery.items}
+  hasMore={transcriptsQuery.hasNextPage}
+  onLoadMore={() => transcriptsQuery.fetchNextPage()}
+/>;
 ```
 
 **Impact:** Handle 10,000+ transcripts without performance degradation
-**Status:** ✅ Backend completed (2026-01-13), Frontend pending
+**Status:** ✅ Backend completed (2026-01-13), ✅ Frontend infinite query + virtualization completed (2026-06-01)
 
 ---
 
@@ -571,7 +572,7 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 - [ ] Generic WebSocket message batching (1.6 follow-up) - evaluate only if measured broadcast cost becomes meaningful with connected clients
 
 ### Pending (Medium Priority)
-- [ ] Frontend Virtual Scrolling (2.2) - Use pagination API with infinite scroll
+- [x] Frontend Virtual Scrolling (2.2) ✅ (2026-06-01) - Uses pagination API with infinite scroll and virtualized history rows
 - [ ] True app-level microphone prewarming manager - current `MIC_ALWAYS_ON` flag does not keep a reusable per-app stream alive
 - [ ] Background upload preprocessing for large files - current upload path still performs blocking file writes/preprocessing in request flow
 
@@ -583,7 +584,7 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 
 ## Metrics to Track
 
-Status 2026-06-01: `scripts/measure_hybrid_baseline.ps1` creates a JSON baseline artifact for the hybrid Tauri/Python runtime. It measures startup/backend readiness, reads available hot-path metric segments, embeds `scripts/measure_upload_export_baseline.py` results for synthetic upload/export load, and embeds `scripts/measure_ws_broadcast_baseline.py` results for WebSocket throughput and JSON serialization. The Phase 0 gate intentionally stays incomplete until large-history scroll benchmarks are automated or attached as separate artifacts, and until real recording hot-path samples exist.
+Status 2026-06-01: `scripts/measure_hybrid_baseline.ps1` creates a JSON baseline artifact for the hybrid Tauri/Python runtime. It measures startup/backend readiness, reads available hot-path metric segments, embeds `scripts/measure_upload_export_baseline.py` results for synthetic upload/export load, embeds `scripts/measure_ws_broadcast_baseline.py` results for WebSocket throughput and JSON serialization, and embeds `scripts/measure_history_scroll_baseline.py` results for synthetic browser history scrolling against paginated transcript history. The Phase 0 gate intentionally stays incomplete until real recording hot-path samples exist.
 
 | Metric | Before | After | Target | Status |
 |--------|--------|-------|--------|--------|

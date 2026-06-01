@@ -47,12 +47,12 @@ Current implementation highlights:
 - Runtime data path support via `SCRIBER_DATA_DIR`: the Tauri-supervised backend writes settings, SQLite data, downloads, and logs to a writable app data directory instead of relying on the repository or install directory.
 - Redacted support bundles for packaged diagnostics: runtime metadata, selected logs, and redacted settings/environment without API keys or session tokens.
 - Backend sidecar path for Tauri: the supervisor can start a packaged `scriber-backend` worker and falls back to the source checkout/virtualenv for development.
-- Hybrid architecture baseline runner for Phase 0 startup/worker, upload/export load, and WebSocket/JSON measurements with explicit incomplete-gate reporting for missing hot-path/browser benchmarks.
+- Hybrid architecture baseline runner for Phase 0 startup/worker, upload/export load, WebSocket/JSON, and synthetic browser history-scroll measurements with explicit incomplete-gate reporting for remaining missing hot-path samples.
 
 Known limits:
 
 - `SCRIBER_MIC_ALWAYS_ON` exists as a setting, but it is not a true app-level always-on/prewarmed microphone stream yet. Per-session streams are closed during cleanup to avoid orphaned PortAudio resources.
-- Frontend transcript-list virtualization/infinite loading is still open.
+- Frontend transcript histories use infinite backend pagination plus scroll-container virtualization, so large local history lists no longer render every card at once.
 - The Tauri shell can supervise a packaged backend worker and produce an NSIS installer, but signing and the updater client are still separate packaging phases.
 - Some CPU-heavy media preprocessing still depends on ffmpeg/provider behavior even though disk writes, cleanup, and export rendering are offloaded.
 
@@ -871,7 +871,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 ## Roadmap / Open Engineering Work
 
 - Real app-level microphone prewarming for `SCRIBER_MIC_ALWAYS_ON`.
-- Frontend transcript-list virtualization or infinite query.
+- Real recording hot-path samples for hotkey-to-recording, first audio frame, and stop-to-injection timings.
 - Full bundled desktop packaging: signing and updater.
 - Broader runtime smoke tests for the Tauri supervisor: backend crash, startup timeout, external backend attach, dynamic port, and app-exit cleanup.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.

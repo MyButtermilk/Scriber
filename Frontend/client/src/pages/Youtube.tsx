@@ -9,7 +9,7 @@ import { useLocation } from "wouter";
 import { useState, useEffect, useMemo, useCallback, memo, useRef } from "react";
 import { apiUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { motion, useReducedMotion } from "framer-motion";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonList } from "@/components/ui/skeleton-card";
@@ -19,6 +19,13 @@ import { useUrlQueryState } from "@/hooks/use-url-query-state";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { friendlyError, responseErrorMessage } from "@/lib/request-errors";
+import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
+import {
+  prependTranscriptHistoryItem,
+  transcriptHistoryQueryKey,
+  type TranscriptHistoryPage,
+  useTranscriptHistoryQuery,
+} from "@/hooks/use-transcript-history-query";
 
 type YouTubeSearchItem = {
   videoId: string;
@@ -291,7 +298,7 @@ export default function Youtube() {
   }, [viewMode]);
 
   const transcriptsQueryKey = useMemo(
-    () => ["/api/transcripts", { q: debouncedHistorySearch, type: "youtube" }] as const,
+    () => transcriptHistoryQueryKey("youtube", debouncedHistorySearch),
     [debouncedHistorySearch],
   );
 
@@ -312,20 +319,8 @@ export default function Youtube() {
     });
   }, [searchResults, sortBy]);
 
-  const transcriptsQuery = useQuery({
-    queryKey: transcriptsQueryKey,
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      if (debouncedHistorySearch) params.set("q", debouncedHistorySearch);
-      params.set("type", "youtube");
-      const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
-      return res.json();
-    },
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
-    placeholderData: (previous) => previous,
-  });
-  const recentVideos: any[] = (transcriptsQuery.data as any)?.items || [];
+  const transcriptsQuery = useTranscriptHistoryQuery<any>({ type: "youtube", q: debouncedHistorySearch });
+  const recentVideos = transcriptsQuery.items;
 
   useTranscriptAutoRefresh({
     queryKey: transcriptsQueryKey,
@@ -419,29 +414,23 @@ export default function Youtube() {
       const rec = await res.json();
       if (rec?.id) {
         if (!debouncedHistorySearch) {
-          queryClient.setQueryData(transcriptsQueryKey, (previous: any) => {
-            const prevItems: any[] = Array.isArray(previous?.items) ? previous.items : [];
-            if (prevItems.some((x: any) => x?.id === rec.id)) {
-              return previous;
-            }
+          queryClient.setQueryData<InfiniteData<TranscriptHistoryPage<any>, number>>(
+            transcriptsQueryKey,
+            (previous) => {
+              const optimistic = {
+                ...rec,
+                type: rec.type || "youtube",
+                title: rec.title || item.title,
+                channel: rec.channel || item.channelTitle || "",
+                thumbnailUrl: rec.thumbnailUrl || item.thumbnailUrl || "",
+                duration: rec.duration || item.duration || "",
+                status: rec.status || "processing",
+                step: rec.step || "Queued",
+              };
 
-            const optimistic = {
-              ...rec,
-              type: rec.type || "youtube",
-              title: rec.title || item.title,
-              channel: rec.channel || item.channelTitle || "",
-              thumbnailUrl: rec.thumbnailUrl || item.thumbnailUrl || "",
-              duration: rec.duration || item.duration || "",
-              status: rec.status || "processing",
-              step: rec.step || "Queued",
-            };
-
-            return {
-              ...(previous || {}),
-              items: [optimistic, ...prevItems],
-              total: typeof previous?.total === "number" ? previous.total + 1 : prevItems.length + 1,
-            };
-          });
+              return prependTranscriptHistoryItem(previous, optimistic);
+            },
+          );
         }
 
         queryClient.invalidateQueries({
@@ -780,10 +769,15 @@ export default function Youtube() {
               <EmptyState type="youtube" />
             )
           ) : (
-            <div className={viewMode === "grid" ? "grid grid-cols-3 gap-4" : "flex flex-col"}>
-              {recentVideos.map((item: any, index: number) => (
+            <VirtualTranscriptHistory
+              items={recentVideos}
+              viewMode={viewMode}
+              getItemKey={(item) => item.id}
+              hasMore={transcriptsQuery.hasNextPage}
+              isLoadingMore={transcriptsQuery.isFetchingNextPage}
+              onLoadMore={() => transcriptsQuery.fetchNextPage()}
+              renderItem={(item: any, index: number) => (
                 <YoutubeVideoCard
-                  key={item.id}
                   item={item}
                   index={index}
                   viewMode={viewMode}
@@ -794,8 +788,8 @@ export default function Youtube() {
                   onNavigate={navigateToTranscript}
                   onHover={preloadTranscript}
                 />
-              ))}
-            </div>
+              )}
+            />
           )}
         </div>
       </div>

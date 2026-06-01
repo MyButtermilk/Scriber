@@ -37,6 +37,11 @@ synthetic benchmark with `-UploadFiles`, `-UploadSizeMb`, `-UploadChunkMb`,
 `-ExportIterations`, `-ExportConcurrency`, and `-ExportParagraphs`, or skip it
 with `-SkipUploadExportBenchmark`.
 
+Large-history browser scrolling is measured by default against the real React
+history UI and a synthetic paginated mock backend. Tune it with `-HistoryItems`,
+`-HistoryRoutes`, and `-HistoryViews`, or skip it with
+`-SkipHistoryScrollBenchmark`.
+
 ## Automated Today
 
 `scripts/measure_hybrid_baseline.ps1` currently measures:
@@ -52,6 +57,8 @@ with `-SkipUploadExportBenchmark`.
   rendering via `scripts/measure_upload_export_baseline.py`;
 - WebSocket JSON serialization, no-client broadcast fast path, and broadcast
   throughput with synthetic clients via `scripts/measure_ws_broadcast_baseline.py`.
+- large transcript-history browser scrolling, API pagination, and rendered-card
+  counts via `scripts/measure_history_scroll_baseline.py`.
 
 The runner intentionally reports an incomplete Phase 0 gate until all required
 measurements are present. Missing fields are listed in
@@ -74,9 +81,11 @@ connected frontend client.
 
 ## Still Open
 
-The following baseline requirements are not automated yet:
+The following baseline requirements still need real samples:
 
-- history scrolling with many transcripts.
+- hotkey to recording state;
+- hotkey to first audio frame;
+- stop to text injection.
 
-Until those are wired into the runner or separate benchmark artifacts, the
-Phase 0 gate must stay incomplete.
+Until those are captured from real recording sessions, the Phase 0 gate must
+stay incomplete.

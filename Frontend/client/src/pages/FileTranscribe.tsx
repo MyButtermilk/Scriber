@@ -19,6 +19,8 @@ import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useUrlQueryState } from "@/hooks/use-url-query-state";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
+import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
+import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 
 const DELETE_GLITCH_DURATION_MS = 1200;
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
@@ -246,7 +248,7 @@ export default function FileTranscribe() {
   });
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const transcriptsQueryKey = useMemo(
-    () => ["/api/transcripts", { q: debouncedSearch, type: "file" }] as const,
+    () => transcriptHistoryQueryKey("file", debouncedSearch),
     [debouncedSearch],
   );
 
@@ -261,20 +263,8 @@ export default function FileTranscribe() {
     window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
   }, [viewMode]);
 
-  const transcriptsQuery = useQuery({
-    queryKey: transcriptsQueryKey,
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      if (debouncedSearch) params.set("q", debouncedSearch);
-      params.set("type", "file");
-      const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
-      return res.json();
-    },
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
-    placeholderData: (previous) => previous,
-  });
-  const recentFromBackend: any[] = (transcriptsQuery.data as any)?.items || [];
+  const transcriptsQuery = useTranscriptHistoryQuery<any>({ type: "file", q: debouncedSearch });
+  const recentFromBackend = transcriptsQuery.items;
   const settingsQuery = useQuery({
     queryKey: ["/api/settings"],
     queryFn: async () => {
@@ -639,17 +629,22 @@ export default function FileTranscribe() {
             description="Please retry loading your file history."
             onRetry={() => transcriptsQuery.refetch()}
           />
-        ) : completedItems.length === 0 ? (
+        ) : completedItems.length === 0 && !transcriptsQuery.hasNextPage && !transcriptsQuery.isFetchingNextPage ? (
           debouncedSearch ? (
             <p className="text-center text-muted-foreground py-8">No files match "{debouncedSearch}"</p>
           ) : (
             <EmptyState type="file" />
           )
         ) : (
-          <div className={viewMode === "grid" ? "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-stretch" : "flex flex-col"}>
-            {completedItems.map((item: any, index: number) => (
+          <VirtualTranscriptHistory
+            items={completedItems}
+            viewMode={viewMode}
+            getItemKey={(item) => item.id}
+            hasMore={transcriptsQuery.hasNextPage}
+            isLoadingMore={transcriptsQuery.isFetchingNextPage}
+            onLoadMore={() => transcriptsQuery.fetchNextPage()}
+            renderItem={(item: any, index: number) => (
               <FileCard
-                key={item.id}
                 item={item}
                 index={index}
                 viewMode={viewMode}
@@ -660,8 +655,8 @@ export default function FileTranscribe() {
                 onNavigate={navigateToTranscript}
                 onHover={preloadTranscript}
               />
-            ))}
-          </div>
+            )}
+          />
         )}
       </div>
     </div>

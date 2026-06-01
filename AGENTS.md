@@ -138,7 +138,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - Frontend routes: LiveMic is eager for first paint; YouTube, File, Settings, TranscriptDetail, and NotFound are lazy-loaded.
 - Intent prefetch exists for route chunks in the layout.
 - Production frontend build uses manual vendor chunks for React, TanStack Query, motion libraries, charts, and remaining vendor code.
-- True transcript-list virtualization/infinite query is still open.
+- Transcript history pages use infinite `/api/transcripts` pagination and shared scroll-container virtualization for large list/grid histories.
 
 ### Uploads, Jobs, and Exports
 
@@ -177,7 +177,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `POST /api/runtime/support-bundle` creates a redacted diagnostic ZIP under `support-bundles\` in `SCRIBER_DATA_DIR`. It includes runtime/state metadata, selected logs, redacted settings/env data, and must not contain API keys or session tokens.
 - On Windows, the managed Python child is spawned with `CREATE_NO_WINDOW`.
 - Managed backend startup has a timeout and will be restarted by `ensure_backend_running` instead of staying in `starting` forever.
-- `scripts/measure_hybrid_baseline.ps1` is the Phase 0 baseline runner. It measures Tauri startup/backend readiness, checks cleanup, pulls available `/api/metrics/hot-path` segments, runs `scripts/measure_upload_export_baseline.py` for synthetic upload/export load, runs `scripts/measure_ws_broadcast_baseline.py` for WebSocket/JSON costs, writes JSON to `tmp\hybrid-baseline\`, and leaves the gate incomplete when required hot-path/browser measurements are missing.
+- `scripts/measure_hybrid_baseline.ps1` is the Phase 0 baseline runner. It measures Tauri startup/backend readiness, checks cleanup, pulls available `/api/metrics/hot-path` segments, runs `scripts/measure_upload_export_baseline.py` for synthetic upload/export load, runs `scripts/measure_ws_broadcast_baseline.py` for WebSocket/JSON costs, runs `scripts/measure_history_scroll_baseline.py` for synthetic browser history-scroll behavior, writes JSON to `tmp\hybrid-baseline\`, and leaves the gate incomplete when required real recording hot-path measurements are missing.
 - `scripts/smoke_tauri_desktop.ps1` is the Windows release smoke test for the hybrid runtime. It starts the Tauri executable with a random session token, verifies the managed `tauri-supervised` backend, hard-stops Tauri, and asserts that the newly spawned backend process exits.
 - `scripts/smoke_windows_installer.ps1` installs the generated NSIS setup into `tmp\installer-smoke\`, runs the desktop smoke without `SCRIBER_REPO_ROOT`/`SCRIBER_PYTHON` dev fallback, and removes the temporary install/data directories afterward.
 - `scripts/build_windows.ps1 -RunInstallerSmoke` builds the NSIS package and then runs the installed-package smoke gate.
@@ -350,7 +350,7 @@ Current summarization default is `gemini-flash-latest`.
 ## Known Open Engineering Work
 
 - Real app-level mic prewarming for `SCRIBER_MIC_ALWAYS_ON`.
-- Frontend transcript-list virtualization or infinite query.
+- Real recording hot-path samples for hotkey-to-recording, first audio frame, and stop-to-injection timings.
 - Full bundled desktop packaging for the Tauri path: signing and updater.
 - Broader Tauri runtime smoke tests for crash, startup-timeout, external-backend attach, dynamic-port, and controlled shutdown scenarios.
 - Remaining CPU-heavy media preprocessing profiling around ffmpeg/provider behavior.

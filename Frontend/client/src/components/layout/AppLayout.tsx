@@ -188,7 +188,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
       <main id="main-content" className="min-h-0 flex-1 flex flex-col pb-3 md:py-3 md:pr-3">
         {/* Content panel - rounded, inset within the sidebar-colored background */}
         <div className="flex-1 overflow-hidden md:bg-card md:rounded-xl md:neu-panel-inset">
-          <div className="h-full overflow-y-auto">
+          <div className="h-full overflow-y-auto" data-app-scroll-container="true">
             <div key={currentKey} className="min-h-full">
               <Router hook={() => [currentKey, setLocation]}>
                 {children}

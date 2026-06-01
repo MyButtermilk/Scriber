@@ -387,7 +387,7 @@ const GlossyMicButton = memo(function GlossyMicButton({
     </div>
   );
 });
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -396,6 +396,8 @@ import { QueryErrorState } from "@/components/ui/query-error-state";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useUrlQueryState } from "@/hooks/use-url-query-state";
 import { formatDurationLikeYoutube } from "@/lib/duration";
+import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
+import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 
 export default function LiveMic() {
   const { toast } = useToast();
@@ -432,7 +434,7 @@ export default function LiveMic() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const audioLevelRef = useRef(0);
   const transcriptsQueryKey = useMemo(
-    () => ["/api/transcripts", { q: debouncedSearch, type: "mic" }] as const,
+    () => transcriptHistoryQueryKey("mic", debouncedSearch),
     [debouncedSearch],
   );
   const { refreshNow: refreshMicHistory } = useTranscriptAutoRefresh({ queryKey: transcriptsQueryKey });
@@ -451,20 +453,8 @@ export default function LiveMic() {
     window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
   }, [viewMode]);
 
-  const transcriptsQuery = useQuery({
-    queryKey: transcriptsQueryKey,
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      if (debouncedSearch) params.set("q", debouncedSearch);
-      params.set("type", "mic");
-      const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
-      return res.json();
-    },
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
-    placeholderData: (previous) => previous,
-  });
-  const transcripts: Transcript[] = (transcriptsQuery.data as any)?.items || [];
+  const transcriptsQuery = useTranscriptHistoryQuery<Transcript>({ type: "mic", q: debouncedSearch });
+  const transcripts = transcriptsQuery.items;
   const activeSessionIdRef = useRef<string | null>(null);
 
   // Mock timer
@@ -899,10 +889,15 @@ export default function LiveMic() {
                 <EmptyState type="mic" />
               )
             ) : (
-              <div className={viewMode === "grid" ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" : "flex flex-col"}>
-                {transcripts.map((item, index) => (
+              <VirtualTranscriptHistory
+                items={transcripts}
+                viewMode={viewMode}
+                getItemKey={(item) => item.id}
+                hasMore={transcriptsQuery.hasNextPage}
+                isLoadingMore={transcriptsQuery.isFetchingNextPage}
+                onLoadMore={() => transcriptsQuery.fetchNextPage()}
+                renderItem={(item, index) => (
                   <TranscriptCard
-                    key={item.id}
                     item={item}
                     index={index}
                     viewMode={viewMode}
@@ -913,8 +908,8 @@ export default function LiveMic() {
                     onNavigate={navigateToTranscript}
                     onHover={preloadTranscript}
                   />
-                ))}
-              </div>
+                )}
+              />
             )
           )}
         </section>
