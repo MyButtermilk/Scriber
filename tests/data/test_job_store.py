@@ -3,6 +3,17 @@ from datetime import datetime, timedelta
 from src.data.job_store import JobStatus, JobStore, JobType
 
 
+def test_job_store_default_uses_runtime_database_path(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("SCRIBER_DATABASE_PATH", raising=False)
+
+    store = JobStore()
+
+    assert store._db_path == data_dir / "transcripts.db"
+    assert (data_dir / "transcripts.db").is_file()
+
+
 def test_job_store_persists_and_transitions(tmp_path):
     store = JobStore(db_path=tmp_path / "jobs.db")
 

@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from loguru import logger
 
+from src.runtime.paths import database_path
+
 
 class JobType(str, Enum):
     YOUTUBE = "youtube"
@@ -81,11 +83,12 @@ class JobStore:
     """Persistence layer for resumable background jobs."""
 
     def __init__(self, db_path: Path | None = None):
-        self._db_path = db_path or (Path(__file__).resolve().parents[2] / "transcripts.db")
+        self._db_path = db_path or database_path()
         self._lock = threading.Lock()
         self.init_schema()
 
     def _connect(self) -> sqlite3.Connection:
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")

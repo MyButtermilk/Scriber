@@ -1,6 +1,17 @@
 from src.data.latency_metrics_store import LatencyMetricsStore
 
 
+def test_latency_metrics_store_default_uses_runtime_database_path(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("SCRIBER_DATABASE_PATH", raising=False)
+
+    store = LatencyMetricsStore()
+
+    assert store._db_path == data_dir / "transcripts.db"
+    assert (data_dir / "transcripts.db").is_file()
+
+
 def test_latency_metrics_store_persists_and_reads_latest(tmp_path):
     store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
     first = store.record(
