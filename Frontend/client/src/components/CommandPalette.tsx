@@ -22,6 +22,7 @@ import {
 import { apiUrl } from "@/lib/backend";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
+import type { SettingsResponse } from "@/lib/api-types";
 
 interface CommandPaletteProps {
   open: boolean;
@@ -34,11 +35,6 @@ interface Transcript {
   content: string;
   createdAt: string;
   type: string;
-}
-
-interface SettingsResponse {
-  hotkey?: string;
-  hotkeyRaw?: string;
 }
 
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
@@ -74,7 +70,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         credentials: "include",
       });
       if (!res.ok) throw new Error("Failed to load settings");
-      return res.json();
+      return (await res.json()) as SettingsResponse;
     },
     staleTime: 60000, // Cache for 1 minute
   });

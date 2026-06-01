@@ -26,6 +26,7 @@ import {
   type TranscriptHistoryPage,
   useTranscriptHistoryQuery,
 } from "@/hooks/use-transcript-history-query";
+import type { TranscriptHistoryItem } from "@/lib/api-types";
 
 type YouTubeSearchItem = {
   videoId: string;
@@ -47,7 +48,7 @@ const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
 
 // Memoized YoutubeVideoCard to prevent unnecessary re-renders
 interface YoutubeVideoCardProps {
-  item: any;
+  item: TranscriptHistoryItem;
   index: number;
   viewMode: "list" | "grid";
   isDeleting: boolean;
@@ -319,7 +320,7 @@ export default function Youtube() {
     });
   }, [searchResults, sortBy]);
 
-  const transcriptsQuery = useTranscriptHistoryQuery<any>({ type: "youtube", q: debouncedHistorySearch });
+  const transcriptsQuery = useTranscriptHistoryQuery<TranscriptHistoryItem>({ type: "youtube", q: debouncedHistorySearch });
   const recentVideos = transcriptsQuery.items;
 
   useTranscriptAutoRefresh({
@@ -411,13 +412,13 @@ export default function Youtube() {
       if (!res.ok) {
         throw new Error(await responseErrorMessage(res));
       }
-      const rec = await res.json();
+      const rec = (await res.json()) as TranscriptHistoryItem;
       if (rec?.id) {
         if (!debouncedHistorySearch) {
-          queryClient.setQueryData<InfiniteData<TranscriptHistoryPage<any>, number>>(
+          queryClient.setQueryData<InfiniteData<TranscriptHistoryPage<TranscriptHistoryItem>, number>>(
             transcriptsQueryKey,
             (previous) => {
-              const optimistic = {
+              const optimistic: TranscriptHistoryItem = {
                 ...rec,
                 type: rec.type || "youtube",
                 title: rec.title || item.title,
@@ -776,7 +777,7 @@ export default function Youtube() {
               hasMore={transcriptsQuery.hasNextPage}
               isLoadingMore={transcriptsQuery.isFetchingNextPage}
               onLoadMore={() => transcriptsQuery.fetchNextPage()}
-              renderItem={(item: any, index: number) => (
+              renderItem={(item, index) => (
                 <YoutubeVideoCard
                   item={item}
                   index={index}

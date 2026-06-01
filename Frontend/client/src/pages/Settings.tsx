@@ -17,6 +17,7 @@ import {
   refreshGlobalHotkey,
   setAutostartEnabled as setDesktopAutostartEnabled,
 } from "@/lib/backend";
+import type { SettingsResponse, SettingsUpdatePayload } from "@/lib/api-types";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
@@ -329,7 +330,7 @@ export default function Settings() {
         if (!settingsRes.ok) throw new Error(await settingsRes.text());
         if (!micsRes.ok) throw new Error(await micsRes.text());
 
-        const settings = await settingsRes.json();
+        const settings = (await settingsRes.json()) as SettingsResponse;
         const mics = await micsRes.json();
         if (cancelled) return;
 
@@ -398,7 +399,7 @@ export default function Settings() {
     }
   }, [transcriptionModel, onnxAvailable, nemoAvailable, loadOnnxModels, loadNemoModels]);
 
-  const updateSettings = async (patch: any) => {
+  const updateSettings = async (patch: SettingsUpdatePayload): Promise<SettingsResponse> => {
     const res = await fetch(apiUrl("/api/settings"), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -409,7 +410,7 @@ export default function Settings() {
       const text = await res.text();
       throw new Error(text || res.statusText);
     }
-    return await res.json();
+    return (await res.json()) as SettingsResponse;
   };
 
   const refreshMicrophones = useCallback(async () => {

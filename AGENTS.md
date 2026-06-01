@@ -134,6 +134,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - WebSocket events are versioned with `apiVersion`. Use builders and validators in `src/core/ws_contracts.py` or explicitly wrap manual payloads with `version_event_payload()`.
 - `tests/contract/test_ws_events.py` is the gate for WebSocket payload compatibility. Add new event types there before broadcasting them.
 - `/api/health` and `/api/runtime` payloads are versioned with `apiVersion` and validated by `src/core/rest_contracts.py`; `tests/contract/test_rest_contracts.py` is the gate for REST runtime/readiness payload compatibility.
+- Frontend REST consumers should prefer shared API types from `Frontend/client/src/lib/api-types.ts`. Settings and transcript-history routes are already typed there; do not add new ad hoc `any` payload boundaries for those endpoints.
 - `audio_level` is throttled around 30fps.
 - `broadcast()` skips JSON serialization when there are no connected WebSocket clients.
 - `_on_audio_level()` avoids scheduling UI broadcast work when there are no WebSocket clients and the native overlay is not consuming waveform updates.
@@ -386,7 +387,7 @@ Current summarization default is `gemini-flash-latest`.
 - Full-duration Tauri runtime stability runs, for example real 30-minute recording/provider sessions with memory-growth review beyond the synthetic transcript string-growth guard.
 - Remaining CPU-heavy media preprocessing profiling around ffmpeg/provider behavior.
 - More hardware regression tests for dock connect/disconnect, USB mic add/remove, and favorite mic fallback.
-- Stronger typed API contract between backend and frontend.
+- Stronger typed API contract between backend and frontend across remaining REST endpoints; Settings and transcript-history consumers already use shared frontend API types.
 - Splitting `web_api.py` into smaller domain modules.
 
 ## Repository Hygiene

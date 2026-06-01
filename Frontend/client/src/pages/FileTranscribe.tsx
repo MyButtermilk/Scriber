@@ -21,6 +21,7 @@ import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
+import type { SettingsResponse, TranscriptHistoryItem } from "@/lib/api-types";
 
 const DELETE_GLITCH_DURATION_MS = 1200;
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
@@ -45,7 +46,7 @@ function inferServerProcessingLabel(file: File, compressionThresholdBytes: numbe
 
 // Memoized FileCard to prevent unnecessary re-renders
 interface FileCardProps {
-  item: any;
+  item: TranscriptHistoryItem;
   index: number;
   viewMode: "list" | "grid";
   isDeleting: boolean;
@@ -263,19 +264,19 @@ export default function FileTranscribe() {
     window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
   }, [viewMode]);
 
-  const transcriptsQuery = useTranscriptHistoryQuery<any>({ type: "file", q: debouncedSearch });
+  const transcriptsQuery = useTranscriptHistoryQuery<TranscriptHistoryItem>({ type: "file", q: debouncedSearch });
   const recentFromBackend = transcriptsQuery.items;
-  const settingsQuery = useQuery({
+  const settingsQuery = useQuery<SettingsResponse>({
     queryKey: ["/api/settings"],
     queryFn: async () => {
       const res = await fetch(apiUrl("/api/settings"), { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load settings");
-      return res.json();
+      return (await res.json()) as SettingsResponse;
     },
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
-  const fileUploadLimits = (settingsQuery.data as any)?.fileUploadLimits;
+  const fileUploadLimits = settingsQuery.data?.fileUploadLimits;
   const compressionThresholdBytes =
     Number(fileUploadLimits?.compressionThresholdBytes) || DEFAULT_COMPRESSION_THRESHOLD_BYTES;
   const uploadHint = useMemo(() => {
@@ -318,7 +319,7 @@ export default function FileTranscribe() {
       const formData = new FormData();
       formData.append("file", file);
 
-      const rec = await new Promise<any>((resolve, reject) => {
+      const rec = await new Promise<TranscriptHistoryItem>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         let switchedToServerPhase = false;
         const serverProcessingLabel = inferServerProcessingLabel(file, compressionThresholdBytes);
@@ -352,15 +353,15 @@ export default function FileTranscribe() {
 
         xhr.onload = () => {
           const responseText = xhr.responseText || "";
-          let parsed: any = {};
+          let parsed: Partial<TranscriptHistoryItem> & { message?: string } = {};
           try {
-            parsed = responseText ? JSON.parse(responseText) : {};
+            parsed = responseText ? JSON.parse(responseText) as Partial<TranscriptHistoryItem> & { message?: string } : {};
           } catch {
             parsed = {};
           }
 
           if (xhr.status >= 200 && xhr.status < 300) {
-            resolve(parsed);
+            resolve(parsed as TranscriptHistoryItem);
             return;
           }
 
@@ -497,8 +498,8 @@ export default function FileTranscribe() {
   });
 
   // Separate processing items from completed
-  const processingItems = recentFromBackend.filter((t: any) => t.status === "processing");
-  const completedItems = recentFromBackend.filter((t: any) => t.status !== "processing");
+  const processingItems = recentFromBackend.filter((t) => t.status === "processing");
+  const completedItems = recentFromBackend.filter((t) => t.status !== "processing");
 
   return (
     <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
@@ -549,7 +550,7 @@ export default function FileTranscribe() {
           <div className="flex items-center justify-between px-1">
             <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Processing Queue</h3>
           </div>
-          {processingItems.map((item: any) => (
+          {processingItems.map((item) => (
             <Card key={item.id} className="neu-recording-row perf-scroll-item p-4 rounded-[20px]">
               <div className="flex items-center gap-4">
                 <div className="p-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-lg">
@@ -643,7 +644,7 @@ export default function FileTranscribe() {
             hasMore={transcriptsQuery.hasNextPage}
             isLoadingMore={transcriptsQuery.isFetchingNextPage}
             onLoadMore={() => transcriptsQuery.fetchNextPage()}
-            renderItem={(item: any, index: number) => (
+            renderItem={(item, index) => (
               <FileCard
                 item={item}
                 index={index}

@@ -386,7 +386,7 @@ flowchart LR
 
 `/api/runtime/support-bundle` creates a diagnostic ZIP in the runtime data directory and returns it as a download. It redacts sensitive config, environment, and log values before writing entries to the bundle.
 
-`/api/health` and `/api/runtime` are versioned REST contracts validated by `src/core/rest_contracts.py`; update `tests/contract/test_rest_contracts.py` before changing those payload shapes.
+`/api/health` and `/api/runtime` are versioned REST contracts validated by `src/core/rest_contracts.py`; update `tests/contract/test_rest_contracts.py` before changing those payload shapes. Frontend REST consumers should use shared API types from `Frontend/client/src/lib/api-types.ts`; Settings and transcript-history routes already use those types instead of ad hoc `any` payloads.
 
 `limit` for hot-path metrics is clamped to `1..500`.
 
@@ -940,7 +940,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 - Full bundled desktop release activation: actual Authenticode signing step/certificate, Tauri updater signing keys, signed update artifacts, and published `latest.json`. The optional Authenticode validation gate is already wired through `scripts\validate_windows_authenticode.ps1`, `scripts\build_windows.ps1`, and the Windows release workflow.
 - Full-duration Tauri runtime stability runs, for example real 30-minute recording/provider sessions with memory-growth review beyond the synthetic transcript string-growth guard.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.
-- Stronger typed API contract between backend and frontend.
+- Stronger typed API contract between backend and frontend across the remaining REST endpoints. Settings and transcript-history consumers already use shared frontend API types.
 - Smaller backend modules by splitting `src/web_api.py` into domains.
 
 ---
