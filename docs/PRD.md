@@ -371,6 +371,8 @@ CREATE INDEX idx_created_at ON transcripts(created_at DESC);
 | GET | `/api/autostart` |
 | POST | `/api/autostart` |
 
+Hinweis: In der Tauri-Desktop-Runtime laeuft Autostart ueber Rust-Commands statt ueber diese Legacy-Web-API-Endpunkte.
+
 ### Lokale Modelle
 
 | Methode | Pfad |
@@ -458,6 +460,7 @@ CREATE INDEX idx_created_at ON transcripts(created_at DESC);
 
 ### Tray-Modus (src.tray)
 - Legacy-Tray nutzt weiterhin Lock-File-Verhalten; die Tauri-Desktop-Shell nutzt einen Windows-Named-Mutex (`Local\ScriberDesktopSingleInstance`) und beendet zweite Desktop-Instanzen vor dem Backend-Start.
+- Tauri-Desktop verwaltet Windows-Autostart direkt ueber `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Scriber`; Legacy-Tray nutzt weiter den Python-Web-API-Pfad.
 - Startet Backend (`python -m src.web_api`) als Subprocess
 - Startet Frontend (Express) als Subprocess
 - System-Tray-Icon mit Kontextmenü: Öffnen, Logs, Restart, Autostart (Windows Registry), Beenden

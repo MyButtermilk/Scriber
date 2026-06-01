@@ -11,7 +11,11 @@ import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
-import { apiUrl } from "@/lib/backend";
+import {
+  apiUrl,
+  getAutostartStatus,
+  setAutostartEnabled as setDesktopAutostartEnabled,
+} from "@/lib/backend";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
@@ -304,10 +308,10 @@ export default function Settings() {
       try {
         setSettingsError("");
         // Load core settings data in parallel.
-        const [settingsRes, micsRes, autostartRes] = await Promise.all([
+        const [settingsRes, micsRes, autostart] = await Promise.all([
           fetch(apiUrl("/api/settings"), { credentials: "include" }),
           fetch(apiUrl("/api/microphones"), { credentials: "include" }),
-          fetch(apiUrl("/api/autostart"), { credentials: "include" }),
+          getAutostartStatus().catch(() => ({ enabled: false, available: false })),
         ]);
 
         if (!settingsRes.ok) throw new Error(await settingsRes.text());
@@ -315,7 +319,6 @@ export default function Settings() {
 
         const settings = await settingsRes.json();
         const mics = await micsRes.json();
-        const autostart = autostartRes.ok ? await autostartRes.json() : { enabled: false, available: false };
         if (cancelled) return;
 
         const keys = settings.apiKeys || {};
@@ -900,17 +903,9 @@ export default function Settings() {
   const handleAutostartChange = async (enabled: boolean) => {
     setAutostartEnabled(enabled);
     try {
-      const res = await fetch(apiUrl("/api/autostart"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-        credentials: "include",
-      });
-
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.message || "Failed to update autostart");
-      }
+      const autostart = await setDesktopAutostartEnabled(enabled);
+      setAutostartEnabled(autostart.enabled);
+      setAutostartAvailable(autostart.available);
 
       toast({
         title: "Saved",

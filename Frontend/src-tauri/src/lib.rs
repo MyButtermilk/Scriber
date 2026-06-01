@@ -12,12 +12,20 @@ use std::{
 };
 use tauri::Manager;
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE,
+};
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::Registry::{
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE,
+    REG_SZ,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
@@ -28,6 +36,8 @@ const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
 const FORCE_MANAGED_BACKEND_ENV: &str = "SCRIBER_FORCE_MANAGED_BACKEND";
 const SESSION_TOKEN_ENV: &str = "SCRIBER_SESSION_TOKEN";
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstance";
+const AUTOSTART_REGISTRY_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const AUTOSTART_REGISTRY_VALUE: &str = "Scriber";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -49,6 +59,14 @@ pub struct BackendStatus {
 pub struct BackendAccess {
     base_url: String,
     session_token: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopAutostartStatus {
+    enabled: bool,
+    available: bool,
+    message: String,
 }
 
 struct BackendState {
@@ -110,6 +128,22 @@ impl Drop for SingleInstanceGuard {
 
 #[cfg(not(windows))]
 pub struct SingleInstanceGuard;
+
+#[cfg(windows)]
+struct RegistryKey {
+    handle: HKEY,
+}
+
+#[cfg(windows)]
+impl Drop for RegistryKey {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.handle.is_null() {
+                let _ = RegCloseKey(self.handle);
+            }
+        }
+    }
+}
 
 pub struct BackendManager {
     state: Mutex<BackendState>,
@@ -279,6 +313,17 @@ fn restart_backend(manager: tauri::State<'_, BackendManager>) -> Result<BackendS
     manager.restart()
 }
 
+#[tauri::command]
+fn get_desktop_autostart() -> DesktopAutostartStatus {
+    desktop_autostart_status()
+}
+
+#[tauri::command]
+fn set_desktop_autostart(enabled: bool) -> Result<DesktopAutostartStatus, String> {
+    set_desktop_autostart_enabled(enabled)?;
+    Ok(desktop_autostart_status())
+}
+
 pub fn run() {
     let single_instance_guard = match acquire_single_instance_guard(SINGLE_INSTANCE_MUTEX_NAME) {
         Ok(guard) => guard,
@@ -303,7 +348,9 @@ pub fn run() {
             get_backend_access,
             backend_status,
             ensure_backend_running,
-            restart_backend
+            restart_backend,
+            get_desktop_autostart,
+            set_desktop_autostart
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Scriber desktop shell");
@@ -455,6 +502,198 @@ fn acquire_single_instance_guard(_name: &str) -> Result<SingleInstanceGuard, Str
 #[cfg(windows)]
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn desktop_autostart_status() -> DesktopAutostartStatus {
+    let expected_command = match env::current_exe() {
+        Ok(exe) => autostart_command_for_exe(&exe),
+        Err(err) => {
+            return DesktopAutostartStatus {
+                enabled: false,
+                available: true,
+                message: format!("Could not resolve current desktop executable: {err}"),
+            };
+        }
+    };
+
+    match read_autostart_value(AUTOSTART_REGISTRY_SUBKEY, AUTOSTART_REGISTRY_VALUE) {
+        Ok(Some(command)) => {
+            let enabled = autostart_commands_match(&command, &expected_command);
+            DesktopAutostartStatus {
+                enabled,
+                available: true,
+                message: if enabled {
+                    "Desktop autostart is enabled".to_string()
+                } else {
+                    "Desktop autostart points to a different Scriber command".to_string()
+                },
+            }
+        }
+        Ok(None) => DesktopAutostartStatus {
+            enabled: false,
+            available: true,
+            message: "Desktop autostart is disabled".to_string(),
+        },
+        Err(err) => DesktopAutostartStatus {
+            enabled: false,
+            available: true,
+            message: err,
+        },
+    }
+}
+
+#[cfg(not(windows))]
+fn desktop_autostart_status() -> DesktopAutostartStatus {
+    DesktopAutostartStatus {
+        enabled: false,
+        available: false,
+        message: "Desktop autostart is only available on Windows".to_string(),
+    }
+}
+
+#[cfg(windows)]
+fn set_desktop_autostart_enabled(enabled: bool) -> Result<(), String> {
+    let key = create_registry_key(AUTOSTART_REGISTRY_SUBKEY, KEY_SET_VALUE)?;
+    let value_name = wide_null(AUTOSTART_REGISTRY_VALUE);
+    unsafe {
+        if enabled {
+            let command =
+                autostart_command_for_exe(&env::current_exe().map_err(|err| {
+                    format!("Could not resolve current desktop executable: {err}")
+                })?);
+            let data = wide_null(&command);
+            let bytes = data.len() * std::mem::size_of::<u16>();
+            let status = RegSetValueExW(
+                key.handle,
+                value_name.as_ptr(),
+                0,
+                REG_SZ,
+                data.as_ptr() as *const u8,
+                bytes as u32,
+            );
+            if status != ERROR_SUCCESS {
+                return Err(format_registry_error("set desktop autostart", status));
+            }
+        } else {
+            let status = RegDeleteValueW(key.handle, value_name.as_ptr());
+            if status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND {
+                return Err(format_registry_error("disable desktop autostart", status));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn set_desktop_autostart_enabled(_enabled: bool) -> Result<(), String> {
+    Err("Desktop autostart is only available on Windows".to_string())
+}
+
+#[cfg(windows)]
+fn read_autostart_value(subkey: &str, value_name: &str) -> Result<Option<String>, String> {
+    let key = match open_registry_key(subkey, KEY_READ | KEY_QUERY_VALUE) {
+        Ok(key) => key,
+        Err(err) => return Err(err),
+    };
+    let value_name = wide_null(value_name);
+    unsafe {
+        let mut value_type = 0;
+        let mut bytes = 0;
+        let status = RegQueryValueExW(
+            key.handle,
+            value_name.as_ptr(),
+            std::ptr::null(),
+            &mut value_type,
+            std::ptr::null_mut(),
+            &mut bytes,
+        );
+        if status == ERROR_FILE_NOT_FOUND {
+            return Ok(None);
+        }
+        if status != ERROR_SUCCESS {
+            return Err(format_registry_error("read desktop autostart", status));
+        }
+        if value_type != REG_SZ {
+            return Ok(Some(String::new()));
+        }
+
+        let mut data = vec![0u16; bytes as usize / std::mem::size_of::<u16>()];
+        let status = RegQueryValueExW(
+            key.handle,
+            value_name.as_ptr(),
+            std::ptr::null(),
+            &mut value_type,
+            data.as_mut_ptr() as *mut u8,
+            &mut bytes,
+        );
+        if status != ERROR_SUCCESS {
+            return Err(format_registry_error("read desktop autostart", status));
+        }
+        while data.last() == Some(&0) {
+            data.pop();
+        }
+        Ok(Some(String::from_utf16_lossy(&data)))
+    }
+}
+
+#[cfg(windows)]
+fn open_registry_key(subkey: &str, access: u32) -> Result<RegistryKey, String> {
+    let subkey = wide_null(subkey);
+    let mut handle: HKEY = std::ptr::null_mut();
+    unsafe {
+        let status = RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, access, &mut handle);
+        if status != ERROR_SUCCESS {
+            return Err(format_registry_error("open desktop autostart key", status));
+        }
+    }
+    Ok(RegistryKey { handle })
+}
+
+#[cfg(windows)]
+fn create_registry_key(subkey: &str, access: u32) -> Result<RegistryKey, String> {
+    let subkey = wide_null(subkey);
+    let mut handle: HKEY = std::ptr::null_mut();
+    unsafe {
+        let status = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            0,
+            std::ptr::null(),
+            REG_OPTION_NON_VOLATILE,
+            access,
+            std::ptr::null(),
+            &mut handle,
+            std::ptr::null_mut(),
+        );
+        if status != ERROR_SUCCESS {
+            return Err(format_registry_error(
+                "create desktop autostart key",
+                status,
+            ));
+        }
+    }
+    Ok(RegistryKey { handle })
+}
+
+fn autostart_command_for_exe(exe: &Path) -> String {
+    format!("\"{}\"", exe.display())
+}
+
+fn autostart_commands_match(configured: &str, expected: &str) -> bool {
+    normalize_autostart_command(configured) == normalize_autostart_command(expected)
+}
+
+fn normalize_autostart_command(command: &str) -> String {
+    command.trim().trim_matches('"').trim().to_ascii_lowercase()
+}
+
+#[cfg(windows)]
+fn format_registry_error(operation: &str, status: u32) -> String {
+    format!(
+        "Could not {operation}: {}",
+        std::io::Error::from_raw_os_error(status as i32)
+    )
 }
 
 struct BackendCommandSpec {
@@ -918,9 +1157,10 @@ fn health_response_ready(response: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_single_instance_guard, backend_executable_names, find_backend_executable_in_dirs,
-        health_response_ready, managed_backend_start_timed_out, resolve_session_token,
-        BACKEND_START_TIMEOUT, SESSION_TOKEN_ENV,
+        acquire_single_instance_guard, autostart_command_for_exe, autostart_commands_match,
+        backend_executable_names, find_backend_executable_in_dirs, health_response_ready,
+        managed_backend_start_timed_out, resolve_session_token, BACKEND_START_TIMEOUT,
+        SESSION_TOKEN_ENV,
     };
     use std::{
         fs,
@@ -1041,6 +1281,32 @@ mod tests {
         assert_eq!(found, Some(first_sidecar));
         let _ = fs::remove_dir_all(first);
         let _ = fs::remove_dir_all(second);
+    }
+
+    #[test]
+    fn autostart_command_quotes_executable_path() {
+        let exe = PathBuf::from(r"C:\Program Files\Scriber\scriber-desktop.exe");
+
+        assert_eq!(
+            autostart_command_for_exe(&exe),
+            r#""C:\Program Files\Scriber\scriber-desktop.exe""#
+        );
+    }
+
+    #[test]
+    fn autostart_command_match_accepts_quoted_and_unquoted_path() {
+        assert!(autostart_commands_match(
+            r#"C:\Program Files\Scriber\scriber-desktop.exe"#,
+            r#""C:\Program Files\Scriber\scriber-desktop.exe""#
+        ));
+    }
+
+    #[test]
+    fn autostart_command_match_rejects_legacy_tray_command() {
+        assert!(!autostart_commands_match(
+            r#""C:\Python313\python.exe" "C:\Scriber\src\tray.py""#,
+            r#""C:\Program Files\Scriber\scriber-desktop.exe""#
+        ));
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

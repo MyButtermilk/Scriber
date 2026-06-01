@@ -52,7 +52,8 @@ Scriber laeuft als signierte, installierte Windows-App (per-user), startet singl
    - Status 2026-06-01: `scripts/build_windows.ps1` erzeugt den NSIS-Build ueber `npm run tauri:build -- --bundles nsis` und laesst Tauri vorher den Sidecar bauen/kopieren.
    - Status 2026-06-01: `scripts/smoke_windows_installer.ps1` installiert das erzeugte Setup temporaer, startet die installierte App ohne Dev-Fallback, verifiziert `tauri-supervised` Sidecar-Start und entfernt Testinstallation/Testdaten wieder.
 2. **Startmenue-Eintrag**, optional **Autostart** via Registry `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
-   - Autostart existiert bereits als Feature in `web_api.py` (`GET/POST /api/autostart`). Integration mit Installer pruefen.
+   - Status 2026-06-01: In Tauri-Desktop-Runtime wird Autostart von Rust-Commands (`get_desktop_autostart`, `set_desktop_autostart`) verwaltet; Browser/Legacy nutzt weiter `web_api.py` (`GET/POST /api/autostart`).
+   - Status 2026-06-01: Tauri schreibt `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Scriber` auf die aktuelle Desktop-Exe und behandelt alte Python-Tray-Kommandos als deaktiviert, damit der Tauri-Pfad nicht versehentlich Legacy-Tray startet.
 3. **Uninstall** ohne Loeschen von Nutzerdaten.
    - Folgende Dateien/Ordner muessen in `[UninstallDelete]` **ausgeschlossen** werden:
      - `transcripts.db` (+ WAL/SHM-Dateien)
@@ -217,6 +218,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Status 2026-06-01: Der Sidecar-Build fuehrt vor PyInstaller einen Runtime-Import-Preflight aus, der unter anderem SciPy, pyloudnorm, Pipecat und `src.web_api` prueft.
    - Status 2026-06-01: Der Tauri-Supervisor erzeugt ein zufaelliges `SCRIBER_SESSION_TOKEN`, uebergibt es an den Python-Worker und stellt es dem React-Frontend ueber `get_backend_access` bereit. Das Backend erzwingt den Token fuer lokale REST-/WebSocket-Zugriffe; `/api/health` bleibt fuer Readiness tokenfrei.
    - Status 2026-06-01: Die Windows-Tauri-Shell erzwingt Single-Instance-Start ueber den Named Mutex `Local\ScriberDesktopSingleInstance`, bevor der Backend-Supervisor einen Worker starten kann.
+   - Status 2026-06-01: Windows-Autostart ist im Tauri-Pfad implementiert; `Frontend/client/src/lib/backend.ts` routet Settings-Autostart-Aufrufe in Desktop-Runtime auf Rust statt auf den Python-Endpoint.
    - Status 2026-06-01: `POST /api/runtime/shutdown` existiert als loopback- und token-geschuetzter Shutdown-Endpunkt fuer kontrolliertes Worker-Beenden.
    - Status 2026-06-01: WebSocket-Events tragen `apiVersion` und werden ueber `src/core/ws_contracts.py` sowie `tests/contract/test_ws_events.py` gegen bekannte Eventtypen validiert. Das React-Frontend nutzt dafuer eine typisierte `ScriberWebSocketMessage`-Union.
    - Status 2026-06-01: Tauri schreibt Shell-Lifecycle-Logs und Backend-Exit-Metadaten unter `SCRIBER_DATA_DIR\logs\`; `POST /api/runtime/support-bundle` erzeugt ein redigiertes Diagnose-ZIP ohne API-Keys oder Session-Tokens.
@@ -386,7 +388,7 @@ Lieferobjekte:
 | `src/runtime/media_tools.py` | Umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp` ueber Env, Sidecar-Tools und System-PATH. |
 | `src/runtime/support_bundle.py` | Umgesetzt: redigiertes Support-ZIP mit Runtime-/State-Metadaten, Logs und redigierter Config/Env. |
 | `src/backend_worker.py` | Umgesetzt: Tauri/PyInstaller Worker-Entry-Point. |
-| `Frontend/src-tauri/src/lib.rs` | Umgesetzt: Rust-Supervisor, Session-Token-Bridge, Worker-Lifecycle, Windows-Named-Mutex fuer Single Instance. |
+| `Frontend/src-tauri/src/lib.rs` | Umgesetzt: Rust-Supervisor, Session-Token-Bridge, Worker-Lifecycle, Windows-Named-Mutex fuer Single Instance, Windows-Autostart via HKCU Run-Key. |
 | `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar inkl. SciPy/pyloudnorm-Startup-Abhaengigkeiten. |
 | `installer/scriber.iss` | Inno Setup Script. |
 | `scripts/check_backend_runtime_imports.py` | Umgesetzt: Preflight fuer kritische Backend-Startup-Imports vor PyInstaller. |

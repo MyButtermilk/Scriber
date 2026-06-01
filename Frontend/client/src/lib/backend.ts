@@ -18,6 +18,12 @@ interface BackendAccess {
   sessionToken: string;
 }
 
+export interface AutostartStatus {
+  enabled: boolean;
+  available: boolean;
+  message?: string;
+}
+
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -89,9 +95,60 @@ export function apiUrl(pathOrUrl: string): string {
   return appendSessionToken(url);
 }
 
+export async function getAutostartStatus(): Promise<AutostartStatus> {
+  if (isTauriRuntime()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<AutostartStatus>("get_desktop_autostart");
+  }
+
+  const res = await fetch(apiUrl("/api/autostart"), { credentials: "include" });
+  if (!res.ok) {
+    throw new Error(await responseMessage(res, "Failed to load autostart status"));
+  }
+  return res.json();
+}
+
+export async function setAutostartEnabled(enabled: boolean): Promise<AutostartStatus> {
+  if (isTauriRuntime()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<AutostartStatus>("set_desktop_autostart", { enabled });
+  }
+
+  const res = await fetch(apiUrl("/api/autostart"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+    credentials: "include",
+  });
+  if (!res.ok) {
+    throw new Error(await responseMessage(res, "Failed to update autostart"));
+  }
+  return res.json();
+}
+
 export function wsUrl(path: string): string {
   const base = backendBaseUrl || window.location.origin;
   const wsBase = base.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
   const url = path.startsWith("/") ? `${wsBase}${path}` : `${wsBase}/${path}`;
   return appendSessionToken(url);
+}
+
+async function responseMessage(res: Response, fallback: string): Promise<string> {
+  const textFallback = res.clone();
+  try {
+    const payload = await res.json();
+    if (payload?.message) {
+      return String(payload.message);
+    }
+  } catch {
+    try {
+      const text = await textFallback.text();
+      if (text.trim()) {
+        return text.trim();
+      }
+    } catch {
+      // Ignore and return fallback.
+    }
+  }
+  return fallback;
 }
