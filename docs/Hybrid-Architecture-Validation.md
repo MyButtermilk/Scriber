@@ -107,3 +107,163 @@ Remaining limits:
   timeout recovery, or long stability gates.
 - As in the desktop smoke, `transcripts.db` was verified by existence and byte
   size while the backend was active, not by full content hash.
+
+## 2026-06-02 - NSIS Managed Recovery + Port Conflict + Stability Smoke
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -OccupyDefaultPort `
+  -SimulateBackendCrash `
+  -SimulateBackendShutdown `
+  -StabilityDurationSec 30 `
+  -StabilityProbeIntervalSec 5 `
+  -MaxBackendWorkingSetGrowthMB 128 `
+  -MaxIdleCpuPercent 2
+```
+
+Result: passed.
+
+Evidence:
+
+- Installer: `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- Default port conflict: verified.
+- Occupied port: `127.0.0.1:8765`.
+- Initial backend port: `51257`.
+- Recovered backend port: `51257`.
+- Worker crash recovery: verified.
+- Killed backend PID: `28436`.
+- Crash replacement backend PID: `35852`.
+- Controlled shutdown recovery: verified.
+- Shutdown backend PID: `35852`.
+- Shutdown replacement backend PID: `35424`.
+- Shutdown endpoint response: `Shutdown requested`.
+- Crash metadata path: `tmp\installer-smoke\data-d2b5c3bc163645d7bc026c22e9975384\logs\backend-crash-metadata.jsonl`.
+- Stability duration: 30 seconds.
+- Stability sample count: 6.
+- Backend working-set start/end/max: 178.89 MB / 178.94 MB / 178.98 MB.
+- Backend working-set peak growth: 0.09 MB against a 128 MB gate.
+- Combined idle CPU average: 0.07% against a 2% gate.
+- Combined idle CPU max: 0.11%.
+- `/api/health` and `/api/state` probes stayed ready/idle.
+- Silent uninstall: verified.
+- Installed app artifacts after uninstall: removed.
+- Runtime data directory after uninstall: preserved.
+
+Goal coverage:
+
+- Phase 2: proves worker supervision recovers both hard worker crashes and
+  token-protected controlled shutdowns in the installed app.
+- Phase 2: proves the installed supervisor selects a non-default loopback port
+  when `127.0.0.1:8765` is occupied.
+- Phase 6: proves crash metadata is written under the runtime data log
+  directory during installed-app recovery.
+- Phase 8: adds a short installed idle stability gate for health/state
+  responsiveness, memory growth, and CPU budget.
+
+Remaining limits:
+
+- This run did not exercise startup-timeout recovery, external-backend attach,
+  Authenticode signing, updater publication, microphone hardware, or long
+  recording stability.
+- The 30-second idle stability gate is a smoke test, not the final 30-minute
+  live-session memory-growth gate from Phase 8.
+
+## 2026-06-02 - NSIS Startup-Timeout Recovery Smoke
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -SimulateBackendStartupTimeout `
+  -StabilityDurationSec 15 `
+  -StabilityProbeIntervalSec 5 `
+  -MaxBackendWorkingSetGrowthMB 128 `
+  -MaxIdleCpuPercent 2
+```
+
+Result: passed.
+
+Evidence:
+
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- Startup-timeout recovery: verified.
+- Timed-out backend PID: `30212`.
+- Replacement backend PID: `52304`.
+- Backend startup timeout threshold: 3000 ms.
+- Startup-timeout marker: `tmp\installer-smoke\data-370f3077a2924b0fb4efcf3fa0f5094b\startup-timeout-once.marker`.
+- Stability duration: 15 seconds.
+- Stability sample count: 3.
+- Backend working-set start/end/max: 179.89 MB / 179.97 MB / 179.97 MB.
+- Backend working-set peak growth: 0.08 MB against a 128 MB gate.
+- Combined idle CPU average: 0.00% against a 2% gate.
+- Combined idle CPU max: 0.01%.
+- `/api/health` and `/api/state` probes stayed ready/idle after replacement.
+- Silent uninstall: verified.
+- Installed app artifacts after uninstall: removed.
+- Runtime data directory after uninstall: preserved.
+
+Goal coverage:
+
+- Phase 2: proves the installed supervisor replaces a worker that starts but
+  never reaches backend readiness in time.
+- Phase 8: adds a short stability check after startup-timeout replacement.
+
+Remaining limits:
+
+- This run did not exercise worker-crash recovery, controlled shutdown recovery,
+  external-backend attach, Authenticode signing, updater publication,
+  microphone hardware, or long recording stability.
+
+## 2026-06-02 - NSIS External Backend Attach Smoke
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -AttachExternalBackend `
+  -StabilityDurationSec 15 `
+  -StabilityProbeIntervalSec 5 `
+  -MaxBackendWorkingSetGrowthMB 128 `
+  -MaxIdleCpuPercent 2
+```
+
+Result: passed.
+
+Evidence:
+
+- Runtime mode: `external-python`.
+- Launch kind: `external-python`.
+- External backend attach: verified.
+- External backend PID: `50500`.
+- External backend port: `127.0.0.1:8765`.
+- Managed backend spawned: false.
+- Stability duration: 15 seconds.
+- Stability sample count: 3.
+- Backend working-set start/end/max: 381.53 MB / 381.54 MB / 381.54 MB.
+- Backend working-set peak growth: 0.01 MB against a 128 MB gate.
+- Combined idle CPU average: 0.29% against a 2% gate.
+- Combined idle CPU max: 0.82%.
+- `/api/health` and `/api/state` probes stayed ready/idle.
+- Silent uninstall: verified.
+- Installed app artifacts after uninstall: removed.
+- Runtime data directory after uninstall: preserved.
+
+Goal coverage:
+
+- Phase 2/3: proves the installed Tauri shell can attach to an already running
+  Python backend on the runtime backend URL path without spawning a duplicate
+  managed sidecar.
+- Phase 8: adds a short stability check for the external-backend runtime mode.
+
+Remaining limits:
+
+- This run did not exercise managed sidecar recovery, Authenticode signing,
+  updater publication, microphone hardware, or long recording stability.
