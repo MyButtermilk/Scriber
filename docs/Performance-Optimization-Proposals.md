@@ -583,6 +583,8 @@ def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
 
 ## Metrics to Track
 
+Status 2026-06-01: `scripts/measure_hybrid_baseline.ps1` creates a JSON baseline artifact for the hybrid Tauri/Python runtime. It measures startup/backend readiness and reads available hot-path metric segments, but intentionally marks the Phase 0 gate incomplete until upload/export load, WebSocket throughput/serialization, and large-history scroll benchmarks are automated or attached as separate artifacts.
+
 | Metric | Before | After | Target | Status |
 |--------|--------|-------|--------|--------|
 | Recording start latency | ~800ms | ~300ms + cached repeated device resolution | <300ms | ✅ Improved |

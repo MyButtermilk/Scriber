@@ -14,6 +14,7 @@ def test_hot_path_tracer_reports_segments_in_order():
     assert report["hotkey_received_to_controller_accepted_ms"] == 50.0
     assert report["controller_accepted_to_first_final_token_ms"] == 120.0
     assert report["first_final_token_to_first_paste_ms"] == 20.0
+    assert report["hotkey_received_to_first_final_token_ms"] == 170.0
     assert report["hotkey_received_to_first_paste_ms"] == 190.0
 
 

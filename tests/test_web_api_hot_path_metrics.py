@@ -23,6 +23,25 @@ async def test_hot_path_report_persisted_only_once(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_hot_path_audio_frame_marker_is_persisted(tmp_path):
+    loop = asyncio.get_running_loop()
+    metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    ctl = ScriberWebController(loop, latency_metrics_store=metrics_store)
+    session_id = "session-audio-frame"
+
+    ctl._session_id = session_id
+    ctl._start_hot_path_tracer(session_id)
+    ctl._on_audio_level(0.5, session_id=session_id)
+    ctl._mark_hot_path(session_id, "first_paste")
+    ctl._emit_hot_path_report_once(session_id)
+
+    rows = metrics_store.latest(limit=10)
+    assert len(rows) == 1
+    assert "hotkey_received_to_first_audio_frame_ms" in rows[0].segments
+    assert "first_audio_frame_to_first_paste_ms" in rows[0].segments
+
+
+@pytest.mark.asyncio
 async def test_hot_path_metrics_summary_exposed(tmp_path):
     loop = asyncio.get_running_loop()
     metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")

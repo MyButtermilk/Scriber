@@ -47,6 +47,7 @@ Current implementation highlights:
 - Runtime data path support via `SCRIBER_DATA_DIR`: the Tauri-supervised backend writes settings, SQLite data, downloads, and logs to a writable app data directory instead of relying on the repository or install directory.
 - Redacted support bundles for packaged diagnostics: runtime metadata, selected logs, and redacted settings/environment without API keys or session tokens.
 - Backend sidecar path for Tauri: the supervisor can start a packaged `scriber-backend` worker and falls back to the source checkout/virtualenv for development.
+- Hybrid architecture baseline runner for Phase 0 startup/worker measurements with explicit incomplete-gate reporting for missing hot-path/load/browser benchmarks.
 
 Known limits:
 
@@ -695,6 +696,14 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1
 
 The desktop smoke test starts `Frontend\src-tauri\target\release\scriber-desktop.exe` with a random session token, verifies that Tauri starts a managed backend with `runtimeMode=tauri-supervised`, then hard-stops the app and checks that no newly spawned backend process remains. Pass `-BackendExePath path\to\scriber-backend.exe` to force a specific sidecar. The installer smoke runs the same runtime gate against the installed NSIS package and disables the source-checkout Python fallback.
 
+For Phase 0 hybrid performance baselines, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 -Iterations 3 -DisableDevFallback
+```
+
+Use `-Hidden` for startup-only/headless runs. The script writes JSON under `tmp\hybrid-baseline\`, measures UI/backend readiness and backend cleanup, and reports which required baseline areas still need samples or dedicated benchmark automation.
+
 ### Tests
 
 ```bash
@@ -773,6 +782,7 @@ Scriber/
 ├── docs/                           # architecture and status docs
 ├── start.bat
 ├── start.sh
+├── scripts/measure_hybrid_baseline.ps1 # hybrid Phase 0 baseline runner
 ├── requirements-base.txt            # standard runtime dependencies
 ├── requirements-local-asr.txt       # optional local ASR stack
 ├── requirements-dev.txt             # pytest/dev tooling

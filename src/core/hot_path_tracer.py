@@ -31,13 +31,10 @@ class HotPathTracer:
         if len(ordered) < 2:
             return result
 
-        for i in range(1, len(ordered)):
-            prev_name, prev_ts = ordered[i - 1]
-            name, ts = ordered[i]
-            result[f"{prev_name}_to_{name}_ms"] = (ts - prev_ts) / 1_000_000
-
-        first_name, first_ts = ordered[0]
-        last_name, last_ts = ordered[-1]
-        result[f"{first_name}_to_{last_name}_ms"] = (last_ts - first_ts) / 1_000_000
+        for i, (source_name, source_ts) in enumerate(ordered[:-1]):
+            for target_name, target_ts in ordered[i + 1 :]:
+                result[f"{source_name}_to_{target_name}_ms"] = (
+                    target_ts - source_ts
+                ) / 1_000_000
         return result
 

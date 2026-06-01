@@ -993,6 +993,7 @@ class ScriberWebController:
         self._recording_state_machine = RecordingStateMachine()
         self._hot_path_tracers: dict[str, HotPathTracer] = {}
         self._hot_path_reports_emitted: set[str] = set()
+        self._hot_path_lock = threading.Lock()
 
         self._current: Optional[TranscriptRecord] = None
         self._current_lock = threading.Lock()
@@ -1450,28 +1451,33 @@ class ScriberWebController:
     def _start_hot_path_tracer(self, session_id: str) -> None:
         tracer = HotPathTracer(session_id)
         tracer.mark("hotkey_received")
-        self._hot_path_tracers[session_id] = tracer
-        self._hot_path_reports_emitted.discard(session_id)
+        with self._hot_path_lock:
+            self._hot_path_tracers[session_id] = tracer
+            self._hot_path_reports_emitted.discard(session_id)
 
     def _mark_hot_path(self, session_id: str | None, marker: str) -> None:
         if not session_id or not marker:
             return
-        tracer = self._hot_path_tracers.get(session_id)
-        if not tracer or tracer.has_mark(marker):
-            return
-        tracer.mark(marker)
+        with self._hot_path_lock:
+            tracer = self._hot_path_tracers.get(session_id)
+            if not tracer or tracer.has_mark(marker):
+                return
+            tracer.mark(marker)
 
     def _emit_hot_path_report_once(self, session_id: str | None) -> None:
         if not session_id:
             return
-        if session_id in self._hot_path_reports_emitted:
-            return
-        tracer = self._hot_path_tracers.get(session_id)
-        if not tracer:
-            return
-        if not tracer.has_mark("hotkey_received") or not tracer.has_mark("first_paste"):
-            return
-        report = tracer.report()
+        with self._hot_path_lock:
+            if session_id in self._hot_path_reports_emitted:
+                return
+            tracer = self._hot_path_tracers.get(session_id)
+            if not tracer:
+                return
+            if not tracer.has_mark("hotkey_received") or not tracer.has_mark("first_paste"):
+                return
+            report = tracer.report()
+            if report:
+                self._hot_path_reports_emitted.add(session_id)
         if report:
             logger.info(f"Hot path timing ({session_id[:8]}): {report}")
             self._emit_workflow_event(
@@ -1491,13 +1497,13 @@ class ScriberWebController:
                 self._latency_metrics_store.record(session_id, report)
             except Exception as exc:  # pragma: no cover - best effort persistence
                 logger.warning(f"Failed to persist hot path timing for {session_id[:8]}: {exc}")
-            self._hot_path_reports_emitted.add(session_id)
 
     def _clear_hot_path_tracer(self, session_id: str | None) -> None:
         if not session_id:
             return
-        self._hot_path_tracers.pop(session_id, None)
-        self._hot_path_reports_emitted.discard(session_id)
+        with self._hot_path_lock:
+            self._hot_path_tracers.pop(session_id, None)
+            self._hot_path_reports_emitted.discard(session_id)
 
     def _get_overlay(self):
         """Get or create the overlay instance and ensure callback is connected."""
@@ -1841,6 +1847,7 @@ class ScriberWebController:
     def _on_audio_level(self, rms: float, *, session_id: str | None = None) -> None:
         if session_id is not None and session_id != self._session_id:
             return
+        self._mark_hot_path(session_id or self._session_id, "first_audio_frame")
         self._update_input_warning(rms, session_id=session_id)
 
         has_ws_clients = self._has_ws_clients()
@@ -2920,6 +2927,7 @@ class ScriberWebController:
                 current = self._current
             session_id = self._session_id
             provider_used = self._active_provider
+            self._mark_hot_path(session_id, "stop_requested")
             self._set_recording_state(RecordingState.FINALIZING, context="stop_listening")
             self._emit_workflow_event(
                 message="Live mic stop requested",
