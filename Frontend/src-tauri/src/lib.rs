@@ -1668,8 +1668,9 @@ mod tests {
         find_backend_executable_in_dirs, health_response_ready, is_shell_menu_item,
         managed_backend_start_timed_out, normalize_global_shortcut, normalize_hotkey_mode,
         parse_loopback_backend_url, resolve_session_token, should_show_window_for_tray_click,
-        split_http_response, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, MENU_ITEM_QUIT,
-        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW, SESSION_TOKEN_ENV,
+        split_http_response, DesktopHotkeyState, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
+        HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_QUIT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        SESSION_TOKEN_ENV,
     };
     use std::{
         fs,
@@ -1677,6 +1678,7 @@ mod tests {
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
     use tauri::tray::{MouseButton, MouseButtonState};
+    use tauri_plugin_global_shortcut::ShortcutState;
 
     #[test]
     fn health_response_ready_requires_scriber_contract() {
@@ -1865,6 +1867,60 @@ mod tests {
         assert_eq!(normalize_hotkey_mode("push_to_talk"), "push_to_talk");
         assert_eq!(normalize_hotkey_mode("toggle"), "toggle");
         assert_eq!(normalize_hotkey_mode("unexpected"), "toggle");
+    }
+
+    #[test]
+    fn desktop_hotkey_toggle_dispatches_backend_toggle_only_on_press() {
+        let state = DesktopHotkeyState::new();
+        state.set_registered(
+            "ctrl+alt+s".to_string(),
+            "toggle".to_string(),
+            "registered".to_string(),
+        );
+        let now = Instant::now();
+
+        assert_eq!(
+            state.action_for_event(ShortcutState::Pressed, now),
+            Some("/api/live-mic/toggle")
+        );
+        assert_eq!(
+            state.action_for_event(
+                ShortcutState::Pressed,
+                now + HOTKEY_DISPATCH_DEBOUNCE - Duration::from_millis(1)
+            ),
+            None
+        );
+        assert_eq!(
+            state.action_for_event(ShortcutState::Released, now + HOTKEY_DISPATCH_DEBOUNCE),
+            None
+        );
+        assert_eq!(
+            state.action_for_event(
+                ShortcutState::Pressed,
+                now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1)
+            ),
+            Some("/api/live-mic/toggle")
+        );
+    }
+
+    #[test]
+    fn desktop_hotkey_push_to_talk_maps_press_and_release_to_backend_endpoints() {
+        let state = DesktopHotkeyState::new();
+        state.set_registered(
+            "ctrl+alt+s".to_string(),
+            "push_to_talk".to_string(),
+            "registered".to_string(),
+        );
+        let now = Instant::now();
+
+        assert_eq!(
+            state.action_for_event(ShortcutState::Pressed, now),
+            Some("/api/live-mic/start")
+        );
+        assert_eq!(
+            state.action_for_event(ShortcutState::Released, now + Duration::from_millis(25)),
+            Some("/api/live-mic/stop")
+        );
     }
 
     #[test]

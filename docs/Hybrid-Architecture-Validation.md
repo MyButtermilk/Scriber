@@ -4,6 +4,48 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Tauri Global Hotkey Endpoint Contract
+
+Commands:
+
+```powershell
+cargo test --manifest-path Frontend\src-tauri\Cargo.toml desktop_hotkey -- --nocapture
+cargo test --manifest-path Frontend\src-tauri\Cargo.toml --lib
+venv\Scripts\python.exe -m pytest tests\test_tauri_security_gates.py tests\test_tauri_stability_smoke_gates.py
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- Added Rust unit coverage for Tauri global hotkey dispatch semantics.
+- Toggle mode dispatches only `POST /api/live-mic/toggle` on shortcut press.
+- Push-to-talk mode dispatches `POST /api/live-mic/start` on press and
+  `POST /api/live-mic/stop` on release.
+- Toggle press events remain debounced at the Tauri shell boundary.
+
+Evidence:
+
+- Targeted Rust hotkey tests: `2 passed`.
+- Full Tauri Rust library tests: `22 passed`.
+- Existing Python Tauri security and stability source gates: `9 passed`.
+
+Goal coverage:
+
+- Phase 4: strengthens the guarantee that the Tauri desktop shell only calls
+  existing Python live-mic API endpoints instead of owning recording state.
+- Phase 1/2: preserves the localhost REST contract and session-token backend
+  boundary used by the Tauri hotkey path.
+- Security rule: keeps Tauri capabilities minimal and does not introduce a
+  shell/opener permission to implement hotkeys.
+
+Remaining limits:
+
+- This is unit/source-gate evidence, not a real OS global shortcut smoke with
+  physical key presses.
+- It does not verify real microphone capture, text injection, or provider
+  latency after the hotkey event.
+
 ## 2026-06-02 - Frozen Frontend Static Serving Boundary
 
 Commands:
