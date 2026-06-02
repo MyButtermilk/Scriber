@@ -2402,3 +2402,45 @@ Remaining limits:
 
 - This run did not exercise managed sidecar recovery, Authenticode signing,
   updater publication, microphone hardware, or long recording stability.
+
+## 2026-06-02 - NSIS Frontend/Backend Startup Smoke
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -VerifyFrontend `
+  -VerifyUninstall `
+  -OutputPath tmp\hybrid-baseline\installer-frontend-smoke-20260602.json
+```
+
+Result: passed.
+
+Evidence:
+
+- Installed package: `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- Backend URL used for the frontend asset check: `http://127.0.0.1:8765/`.
+- Frontend root returned HTTP 200 and contained the React root element.
+- Frontend assets verified: 6 of 6 referenced JS/CSS assets returned HTTP 200
+  and non-empty content.
+- Verified assets included the app entry bundle, React vendor chunk, general
+  vendor chunk, TanStack Query vendor chunk, Motion vendor chunk, and CSS bundle.
+- Silent uninstall: verified.
+- Installed app artifacts after uninstall: removed.
+- Runtime data directory after uninstall: preserved.
+
+Goal coverage:
+
+- Phase 7: proves that the generated NSIS installer can install, start the app,
+  reach the supervised backend, and serve the bundled frontend assets without
+  relying on source-checkout Python/Node dev fallback.
+- Phase 8: adds a repeatable packaged startup gate for the practical
+  "installation runs, backend works, frontend works" user-facing requirement.
+
+Remaining limits:
+
+- This run did not exercise a full browser-rendered Tauri window, Authenticode
+  signing, updater publication, microphone hardware, or long recording
+  stability.

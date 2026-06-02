@@ -30,6 +30,8 @@ With -LiveRecordingDurationSec, it explicitly starts live microphone recording,
 keeps it running while sampling health/state, CPU, and memory, then stops it.
 With -VerifySupportBundle, it downloads the token-protected support bundle and
 verifies that injected dummy secrets are redacted from the ZIP contents.
+With -VerifyFrontend, it fetches the bundled frontend entrypoint and referenced
+JS/CSS assets from the running backend static fallback.
 
 Build the executable first with:
   cd Frontend
@@ -70,6 +72,7 @@ param(
     [switch]$SimulateGlobalHotkey,
     [switch]$WaitForManualGlobalHotkey,
     [switch]$VerifySupportBundle,
+    [switch]$VerifyFrontend,
     [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$GlobalHotkeyDispatchTimeoutSec = 20,
     [int]$BackendStartupTimeoutMs = 3000,
@@ -609,6 +612,83 @@ function Read-ZipEntryText {
         }
     } finally {
         $archive.Dispose()
+    }
+}
+
+function Resolve-FrontendAssetUrl {
+    param(
+        [string]$BaseUrl,
+        [string]$Asset
+    )
+
+    if ($Asset -match "^https?://") {
+        return $Asset
+    }
+    if ($Asset.StartsWith("/")) {
+        return "$BaseUrl$Asset"
+    }
+    return "$BaseUrl/$Asset"
+}
+
+function Test-FrontendHttp {
+    param([int]$Port)
+
+    $baseUrl = "http://127.0.0.1:$Port"
+    $rootUrl = "$baseUrl/"
+    $rootResponse = Invoke-WebRequest -Uri $rootUrl -TimeoutSec 10 -UseBasicParsing
+    if ([int]$rootResponse.StatusCode -ne 200) {
+        throw "Frontend root returned HTTP $($rootResponse.StatusCode)."
+    }
+
+    $html = [string]$rootResponse.Content
+    if (-not $html.Contains('id="root"')) {
+        throw "Frontend root HTML does not contain the React root element."
+    }
+    if (-not ($html -match "<script")) {
+        throw "Frontend root HTML does not reference any JavaScript entrypoint."
+    }
+
+    $assetMatches = [regex]::Matches($html, '(?:src|href)="([^"]+\.(?:js|css)(?:\?[^"]*)?)"')
+    $assets = @()
+    foreach ($match in $assetMatches) {
+        $asset = [string]$match.Groups[1].Value
+        if ($asset -and ($assets -notcontains $asset)) {
+            $assets += $asset
+        }
+    }
+    if ($assets.Count -eq 0) {
+        throw "Frontend root HTML did not expose any JS/CSS assets."
+    }
+
+    $verifiedAssets = @()
+    foreach ($asset in ($assets | Select-Object -First 8)) {
+        $assetUrl = Resolve-FrontendAssetUrl -BaseUrl $baseUrl -Asset $asset
+        $assetResponse = Invoke-WebRequest -Uri $assetUrl -TimeoutSec 10 -UseBasicParsing
+        if ([int]$assetResponse.StatusCode -ne 200) {
+            throw "Frontend asset $asset returned HTTP $($assetResponse.StatusCode)."
+        }
+        $rawLength = [int]$assetResponse.RawContentLength
+        if ($rawLength -le 0) {
+            $rawLength = ([string]$assetResponse.Content).Length
+        }
+        if ($rawLength -le 0) {
+            throw "Frontend asset $asset was empty."
+        }
+        $verifiedAssets += [pscustomobject]@{
+            path = $asset
+            statusCode = [int]$assetResponse.StatusCode
+            bytes = $rawLength
+        }
+    }
+
+    return [pscustomobject]@{
+        verified = $true
+        rootUrl = $rootUrl
+        rootStatusCode = [int]$rootResponse.StatusCode
+        htmlBytes = [int]$html.Length
+        assetCount = [int]$assets.Count
+        verifiedAssetCount = [int]$verifiedAssets.Count
+        assets = $verifiedAssets
     }
 }
 
@@ -1653,6 +1733,10 @@ try {
             metadataPath = $metadataPath
         }
     }
+    $frontend = $null
+    if ($VerifyFrontend) {
+        $frontend = Test-FrontendHttp -Port ([int]$listener.Port)
+    }
     $liveRecording = Test-LiveRecordingStability `
         -AppProcess $app `
         -BackendPid ([int]$listener.BackendPid) `
@@ -1694,6 +1778,7 @@ try {
         externalAttach = $externalAttach
         portConflict = $portConflictResult
         legacyDataMigration = $legacyDataMigration
+        frontend = $frontend
         supportBundle = $supportBundle
         globalHotkey = $globalHotkey
         startupTimeout = $startupTimeout

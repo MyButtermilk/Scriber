@@ -36,6 +36,7 @@ param(
     [switch]$RunInstallerGlobalHotkeySmoke,
     [switch]$RunInstallerManualGlobalHotkeySmoke,
     [switch]$RunInstallerSupportBundleSmoke,
+    [switch]$RunInstallerFrontendSmoke,
     [string]$InstallerGlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$InstallerGlobalHotkeyDispatchTimeoutSec = 20,
     [switch]$RunInstallerStabilitySmoke,
@@ -271,7 +272,7 @@ try {
         }
     }
 
-    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerFrontendSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
@@ -314,6 +315,9 @@ try {
                 }
                 if ($RunInstallerSupportBundleSmoke) {
                     $installerSmokeArgs += "-VerifySupportBundle"
+                }
+                if ($RunInstallerFrontendSmoke) {
+                    $installerSmokeArgs += "-VerifyFrontend"
                 }
                 if ($RunInstallerStabilitySmoke) {
                     $installerSmokeArgs += @("-StabilityDurationSec", $InstallerStabilityDurationSec.ToString())

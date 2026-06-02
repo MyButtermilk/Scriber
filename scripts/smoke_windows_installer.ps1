@@ -33,6 +33,8 @@ from the live microphone path for the configured duration and samples CPU,
 memory, health, and state while recording is active.
 With -VerifySupportBundle, the installed desktop smoke downloads the
 token-protected support bundle and verifies dummy secret redaction.
+With -VerifyFrontend, the installed desktop smoke verifies the frontend
+entrypoint and bundled JS/CSS assets through the running backend.
 #>
 
 param(
@@ -50,6 +52,7 @@ param(
     [switch]$SimulateGlobalHotkey,
     [switch]$WaitForManualGlobalHotkey,
     [switch]$VerifySupportBundle,
+    [switch]$VerifyFrontend,
     [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$GlobalHotkeyDispatchTimeoutSec = 20,
     [int]$StabilityDurationSec = 0,
@@ -415,6 +418,9 @@ function Invoke-InstalledDesktopSmoke {
     if ($VerifySupportBundle) {
         $smokeArgs += "-VerifySupportBundle"
     }
+    if ($VerifyFrontend) {
+        $smokeArgs += "-VerifyFrontend"
+    }
     if ($OccupyDefaultPort) {
         $smokeArgs += "-OccupyDefaultPort"
     }
@@ -530,6 +536,7 @@ try {
             startupTimeout = $secondSmoke.startupTimeout
             globalHotkey = $secondSmoke.globalHotkey
             supportBundle = $secondSmoke.supportBundle
+            frontend = $secondSmoke.frontend
             liveRecording = $secondSmoke.liveRecording
             stability = $secondSmoke.stability
             legacyDataMigration = $secondSmoke.legacyDataMigration
@@ -556,6 +563,7 @@ try {
         startupTimeout = $smoke.startupTimeout
         globalHotkey = $smoke.globalHotkey
         supportBundle = $smoke.supportBundle
+        frontend = $smoke.frontend
         liveRecording = $smoke.liveRecording
         stability = $smoke.stability
         cleanupVerified = $smoke.cleanupVerified

@@ -187,14 +187,24 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "$configSnapshots" in desktop
     assert "[System.IO.File]::WriteAllBytes($snapshot.Path" in desktop
     assert "supportBundle = $supportBundle" in desktop
+    assert "[switch]$VerifyFrontend" in desktop
+    assert "function Test-FrontendHttp" in desktop
+    assert "Frontend root HTML does not contain the React root element" in desktop
+    assert "frontend = $frontend" in desktop
 
     assert "[switch]$VerifySupportBundle" in installer
     assert '"-VerifySupportBundle"' in installer
     assert "supportBundle = $smoke.supportBundle" in installer
+    assert "[switch]$VerifyFrontend" in installer
+    assert '"-VerifyFrontend"' in installer
+    assert "frontend = $smoke.frontend" in installer
 
     assert "[switch]$RunInstallerSupportBundleSmoke" in build
     assert "$RunInstallerSupportBundleSmoke" in build
     assert '"-VerifySupportBundle"' in build
+    assert "[switch]$RunInstallerFrontendSmoke" in build
+    assert "$RunInstallerFrontendSmoke" in build
+    assert '"-VerifyFrontend"' in build
 
 
 def test_desktop_and_installer_smokes_support_live_recording_stability_gate() -> None:
