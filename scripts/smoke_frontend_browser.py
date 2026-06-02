@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,7 @@ class FrontendSmokeBackend:
         self.runner: web.AppRunner | None = None
         self.request_log: list[dict[str, Any]] = []
         self.settings = self._default_settings()
+        self.websockets: set[web.WebSocketResponse] = set()
 
     @property
     def base_url(self) -> str:
@@ -110,6 +112,10 @@ class FrontendSmokeBackend:
         await site.start()
 
     async def close(self) -> None:
+        for ws in tuple(self.websockets):
+            with suppress(Exception):
+                await ws.close()
+        self.websockets.clear()
         if self.runner:
             await self.runner.cleanup()
             self.runner = None
@@ -268,21 +274,27 @@ class FrontendSmokeBackend:
     async def websocket(self, request: web.Request) -> web.StreamResponse:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-        await ws.send_json(
-            {
-                "apiVersion": "1",
-                "type": "state",
-                "listening": False,
-                "status": "Stopped",
-                "current": None,
-                "backgroundProcessing": False,
-                "recordingState": "idle",
-                "transcribing": False,
-            }
-        )
-        async for message in ws:
-            if message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
-                break
+        self.websockets.add(ws)
+        try:
+            await ws.send_json(
+                {
+                    "apiVersion": "1",
+                    "type": "state",
+                    "listening": False,
+                    "status": "Stopped",
+                    "current": None,
+                    "backgroundProcessing": False,
+                    "recordingState": "idle",
+                    "transcribing": False,
+                }
+            )
+            async for message in ws:
+                if message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
+                    break
+        except ConnectionResetError:
+            pass
+        finally:
+            self.websockets.discard(ws)
         return ws
 
     @staticmethod
@@ -342,6 +354,7 @@ async def wait_for_route_ready(
     *,
     route: str,
     expected_text: list[str],
+    expect_history_virtualized: bool,
     timeout_sec: float,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_sec
@@ -357,7 +370,7 @@ async def wait_for_route_ready(
   const hasQueryError = /Could not load|Failed to load|Please retry loading/.test(text);
   const historyRoot = document.querySelector('[data-history-virtualized="true"]');
   const result = {{
-    ready: document.readyState === "complete" && missing.length === 0 && !hasOfflineBanner && !hasQueryError,
+    ready: document.readyState === "complete" && missing.length === 0 && !hasOfflineBanner && !hasQueryError && ({str(expect_history_virtualized).lower()} ? !!historyRoot : true),
     route: window.location.pathname,
     missing,
     hasOfflineBanner,
@@ -391,13 +404,25 @@ async def inspect_route(
 ) -> dict[str, Any]:
     expected = ROUTE_EXPECTATIONS[route]
     await cdp.call("Page.navigate", {"url": f"{frontend_base_url}{route}"}, timeout=10)
-    state = await wait_for_route_ready(cdp, route=route, expected_text=expected, timeout_sec=timeout_sec)
+    expect_history_virtualized = route in {"/", "/youtube", "/file"}
+    state = await wait_for_route_ready(
+        cdp,
+        route=route,
+        expected_text=expected,
+        expect_history_virtualized=expect_history_virtualized,
+        timeout_sec=timeout_sec,
+    )
     critical_console_errors = [
         message
         for message in state.get("consoleErrors", [])
         if "WebSocket error" not in message and "ResizeObserver loop" not in message
     ]
-    ok = not critical_console_errors and not state.get("pageErrors") and not state.get("unhandledRejections")
+    ok = (
+        (not expect_history_virtualized or bool(state.get("historyVirtualized")))
+        and not critical_console_errors
+        and not state.get("pageErrors")
+        and not state.get("unhandledRejections")
+    )
     return {
         "route": route,
         "ok": ok,
@@ -446,12 +471,16 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
             ]
         finally:
             if cdp:
+                with suppress(Exception):
+                    await cdp.call("Page.navigate", {"url": "about:blank"}, timeout=2)
                 await cdp.close()
+                await asyncio.sleep(0.1)
+            await backend.close()
+            await asyncio.sleep(0.1)
             if browser:
                 terminate_process_tree(browser)
             if vite:
                 terminate_process_tree(vite)
-            await backend.close()
 
     ok = bool(scenarios) and all(item["ok"] for item in scenarios)
     virtualized_routes = [

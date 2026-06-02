@@ -4,6 +4,64 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Frontend Typecheck, Build, and Strict Browser Smoke
+
+Commands:
+
+```powershell
+cd Frontend
+npm run check
+npm run build
+
+cd ..
+venv\Scripts\python.exe scripts\smoke_frontend_browser.py `
+  --output tmp\frontend-smoke-20260602-strict.json
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- Hardened `scripts\smoke_frontend_browser.py` cleanup so Windows browser/CDP
+  shutdown no longer prints a Proactor `ConnectionResetError` after a
+  successful smoke run.
+- Made the frontend browser smoke stricter for history-heavy routes:
+  `/`, `/youtube`, and `/file` now wait for the virtualized history root and
+  fail if it is missing.
+
+Evidence:
+
+- TypeScript strict check: `npm run check` passed.
+- Production frontend/server build: `npm run build` passed.
+- Build output included statically split route chunks for
+  `TranscriptDetail`, `FileTranscribe`, `Youtube`, `Settings`, React/vendor,
+  and the app entry.
+- Browser smoke artifact:
+  `tmp\frontend-smoke-20260602-strict.json`.
+- Smoke result: `ok: true`.
+- Routes verified in a real browser via CDP:
+  `/`, `/youtube`, `/file`, `/settings`, `/transcript/mic-00001`.
+- Critical console errors: 0.
+- Page errors: 0.
+- Unhandled rejections: 0.
+- Virtualized history routes: `/`, `/youtube`, `/file`.
+- Visible synthetic history cards: 30 on each virtualized route.
+
+Goal coverage:
+
+- Phase 3: proves the React app still builds as static Tauri-ready assets.
+- Phase 7: adds real-browser frontend coverage across Live Mic, YouTube, File,
+  Settings, and Transcript Detail routes.
+- Phase 7/8: strengthens the frontend smoke so history virtualization is a
+  checked condition instead of an incidental observation.
+
+Remaining limits:
+
+- This is a synthetic-backend frontend smoke; it does not prove real STT
+  provider behavior, microphone hardware, or text injection.
+- It does not replace the full Tauri installed-app smoke, because it runs the
+  web UI in a browser with a synthetic backend.
+
 ## 2026-06-02 - Startup Hot Path + Corrected Baseline Runner
 
 Commands:
