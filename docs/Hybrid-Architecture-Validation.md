@@ -3671,3 +3671,48 @@ Remaining limits:
 - This does not publish a real `latest.json` and does not prove the GitHub
   release URL is live. The script must be run after a signed release artifact
   and signed updater manifest have actually been published.
+
+## 2026-06-02 - Authenticode Evidence Report Output
+
+Commands:
+
+```powershell
+python -m py_compile tests\test_windows_authenticode_gate.py
+
+python -m pytest tests\test_windows_authenticode_gate.py
+```
+
+Result: implemented and covered by focused tests. The current local validation
+uses an unsigned fixture for the negative path; no real signed release artifact
+was available in this run.
+
+Implemented improvements:
+
+- Added `-OutputPath` to `scripts\validate_windows_authenticode.ps1`.
+- On a successful signing validation, the script now writes the same compact
+  JSON payload to stdout and to the requested output file.
+- `scripts\build_windows.ps1 -RequireAuthenticodeSignature` now writes the
+  successful signing report to
+  `Frontend\src-tauri\target\release\release-metadata\authenticode.json`.
+- The GitHub release workflow already collects `release-metadata\*.json`, so a
+  successful signed CI build will archive `authenticode.json` with the release
+  evidence bundle.
+
+Evidence:
+
+- `tests\test_windows_authenticode_gate.py`: `6 passed`.
+- Python compile check: passed.
+- The unsigned-artifact negative test passes `-OutputPath` and verifies no
+  success report is written on signing failure.
+
+Goal coverage:
+
+- Phase 6: turns the Authenticode signing gate into durable file evidence that
+  can be passed directly to `scripts\validate_hybrid_release_readiness.py`.
+- Phase 7: adds focused regression coverage for the new report-output path and
+  build wiring.
+
+Remaining limits:
+
+- This does not sign artifacts. It ensures the post-signing validation result is
+  persisted once a real certificate or cloud-signing provider is available.

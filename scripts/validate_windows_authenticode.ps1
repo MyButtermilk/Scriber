@@ -14,7 +14,9 @@ param(
 
     [string]$ExpectedPublisher = "",
 
-    [switch]$RequireTimestamp
+    [switch]$RequireTimestamp,
+
+    [string]$OutputPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -85,8 +87,20 @@ foreach ($rawPath in $Path) {
     }
 }
 
-[pscustomobject]@{
+$payload = [pscustomobject]@{
     ok = $true
     count = $results.Count
     artifacts = $results
-} | ConvertTo-Json -Depth 5 -Compress
+}
+$json = $payload | ConvertTo-Json -Depth 5 -Compress
+
+if ($OutputPath) {
+    $resolvedOutputPath = [System.IO.Path]::GetFullPath($OutputPath)
+    $outputDirectory = Split-Path -Path $resolvedOutputPath -Parent
+    if ($outputDirectory) {
+        New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+    }
+    Set-Content -LiteralPath $resolvedOutputPath -Value $json -Encoding UTF8
+}
+
+$json

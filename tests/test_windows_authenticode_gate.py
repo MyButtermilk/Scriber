@@ -60,6 +60,7 @@ def test_release_powershell_scripts_parse(script: Path) -> None:
 def test_authenticode_gate_rejects_unsigned_artifact(tmp_path: Path) -> None:
     artifact = tmp_path / "unsigned.exe"
     artifact.write_bytes(b"MZ")
+    report = tmp_path / "authenticode.json"
 
     result = run_powershell(
         "-NoProfile",
@@ -69,10 +70,13 @@ def test_authenticode_gate_rejects_unsigned_artifact(tmp_path: Path) -> None:
         str(AUTHENTICODE_SCRIPT),
         "-Path",
         str(artifact),
+        "-OutputPath",
+        str(report),
     )
 
     assert result.returncode == 1
     assert "Authenticode signature" in result.stderr
+    assert not report.exists()
 
 
 def test_build_script_wires_authenticode_gate() -> None:
@@ -84,7 +88,17 @@ def test_build_script_wires_authenticode_gate() -> None:
     assert '$releaseExe = Join-Path $targetRelease "scriber-desktop.exe"' in build_script
     assert "$authenticodeTargets" in build_script
     assert "scripts\\validate_windows_authenticode.ps1" in build_script
+    assert '$authenticodeReportPath = Join-Path $metadataDir "authenticode.json"' in build_script
+    assert '"-OutputPath", $authenticodeReportPath' in build_script
     assert "Authenticode signature validation" in build_script
+
+
+def test_authenticode_gate_supports_json_output_path() -> None:
+    script = AUTHENTICODE_SCRIPT.read_text(encoding="utf-8")
+
+    assert '[string]$OutputPath = ""' in script
+    assert "Set-Content -LiteralPath $resolvedOutputPath -Value $json -Encoding UTF8" in script
+    assert "$json" in script
 
 
 def test_release_workflow_exposes_authenticode_gate_switches() -> None:

@@ -158,6 +158,7 @@ try {
     $targetRelease = Join-Path $RepoRoot "Frontend\src-tauri\target\release"
     $releaseExe = Join-Path $targetRelease "scriber-desktop.exe"
     $bundleRoot = Join-Path $targetRelease "bundle"
+    $metadataDir = Join-Path $targetRelease "release-metadata"
     $artifacts = @()
     if (Test-Path $bundleRoot) {
         $artifacts = @(
@@ -178,6 +179,8 @@ try {
         if ($authenticodeTargets.Count -eq 0) {
             throw "No Windows release artifacts were found for Authenticode validation."
         }
+        New-Item -ItemType Directory -Force -Path $metadataDir | Out-Null
+        $authenticodeReportPath = Join-Path $metadataDir "authenticode.json"
 
         Invoke-Checked -Label "Authenticode signature validation" -Command {
             $authenticodeArgs = @(
@@ -197,11 +200,11 @@ try {
             if ($RequireAuthenticodeTimestamp) {
                 $authenticodeArgs += "-RequireTimestamp"
             }
+            $authenticodeArgs += @("-OutputPath", $authenticodeReportPath)
             powershell @authenticodeArgs
         }
     }
 
-    $metadataDir = Join-Path $targetRelease "release-metadata"
     if ($artifacts.Count -gt 0) {
         Invoke-Checked -Label "Release metadata" -Command {
             Push-Location $RepoRoot
