@@ -49,7 +49,7 @@ from src.core.ws_contracts import (
 )
 from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
-from src.runtime.paths import data_dir, downloads_dir, logs_dir
+from src.runtime.paths import app_root, data_dir, downloads_dir, is_frozen, logs_dir, repo_root
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
@@ -113,6 +113,7 @@ _WEB_HOST_ENV = "SCRIBER_WEB_HOST"
 _WEB_PORT_ENV = "SCRIBER_WEB_PORT"
 _DISABLE_HOTKEYS_ENV = "SCRIBER_DISABLE_HOTKEYS"
 _SESSION_TOKEN_ENV = "SCRIBER_SESSION_TOKEN"
+_FRONTEND_DIST_DIR_ENV = "SCRIBER_FRONTEND_DIST_DIR"
 _RUST_AUDIO_PROTOTYPE_AVAILABLE = False
 _SESSION_TOKEN_HEADER = "X-Scriber-Token"
 _SESSION_TOKEN_QUERY = "scriberToken"
@@ -291,6 +292,76 @@ def _is_loopback_request(request: web.Request) -> bool:
         mapped = getattr(address, "ipv4_mapped", None)
         return bool(address.is_loopback or (mapped and mapped.is_loopback))
     return False
+
+
+def _request_requires_session_token(request: web.Request) -> bool:
+    path = request.path
+    return path == "/ws" or path.startswith("/api/")
+
+
+def _frontend_dist_candidates() -> list[Path]:
+    candidates: list[Path] = []
+
+    raw = os.getenv(_FRONTEND_DIST_DIR_ENV, "").strip()
+    if raw:
+        candidates.append(Path(raw).expanduser())
+
+    bases: list[Path] = []
+    if is_frozen():
+        import sys
+
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            bases.append(Path(meipass))
+        bases.append(app_root())
+    bases.append(repo_root())
+
+    for base in bases:
+        candidates.extend(
+            [
+                base / "Frontend" / "dist" / "public",
+                base / "frontend" / "dist" / "public",
+                base / "dist" / "public",
+                base / "public",
+            ]
+        )
+
+    resolved: list[Path] = []
+    for candidate in candidates:
+        try:
+            path = candidate.expanduser().resolve()
+        except Exception:
+            continue
+        if path not in resolved:
+            resolved.append(path)
+    return resolved
+
+
+def _frontend_dist_dir() -> Path | None:
+    for candidate in _frontend_dist_candidates():
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None
+
+
+def _frontend_file_for_request(frontend_root: Path, request_path: str) -> Path | None:
+    root = frontend_root.resolve()
+    clean_path = (request_path or "/").lstrip("/")
+    if not clean_path:
+        return root / "index.html"
+
+    candidate = (root / clean_path).resolve()
+    try:
+        if not candidate.is_relative_to(root):
+            return None
+    except ValueError:
+        return None
+
+    if candidate.is_file():
+        return candidate
+    if Path(clean_path).suffix:
+        return None
+    return root / "index.html"
 
 
 def _parse_allowed_origins() -> list[str]:
@@ -3929,7 +4000,7 @@ async def session_token_middleware(request: web.Request, handler):
         return await handler(request)
 
     token = _configured_session_token()
-    if token and not _request_has_valid_session_token(request, token):
+    if token and _request_requires_session_token(request) and not _request_has_valid_session_token(request, token):
         return web.json_response({"message": "Session token required"}, status=401)
 
     return await handler(request)
@@ -4566,6 +4637,19 @@ def create_app(controller: ScriberWebController) -> web.Application:
             logger.exception(f"Export failed: {e}")
             return web.json_response({"message": f"Export failed: {e}"}, status=500)
 
+    async def frontend_static(request: web.Request):
+        if request.path == "/ws" or request.path.startswith("/api/"):
+            return web.Response(status=404)
+
+        frontend_root = _frontend_dist_dir()
+        if frontend_root is None:
+            return web.Response(status=404, text="Frontend assets are not available")
+
+        frontend_file = _frontend_file_for_request(frontend_root, request.path)
+        if frontend_file is None or not frontend_file.is_file():
+            return web.Response(status=404)
+        return web.FileResponse(frontend_file)
+
     app.router.add_get("/api/health", health)
     app.router.add_get("/ws", ws_handler)
 
@@ -4941,6 +5025,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/nemo/models", nemo_list_models)
     app.router.add_post("/api/nemo/download", nemo_download_model)
     app.router.add_delete("/api/nemo/models/{model_id}", nemo_delete_model)
+
+    app.router.add_get("/{tail:.*}", frontend_static)
 
     return app
 

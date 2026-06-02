@@ -144,6 +144,59 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
         await client.close()
 
 
+@pytest.mark.asyncio
+async def test_static_frontend_routes_do_not_bypass_api_session_token(monkeypatch, tmp_path):
+    frontend = tmp_path / "frontend"
+    assets = frontend / "assets"
+    assets.mkdir(parents=True)
+    (frontend / "index.html").write_text("<html><body>Scriber App</body></html>", encoding="utf-8")
+    (assets / "app.js").write_text("console.log('scriber')", encoding="utf-8")
+
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_FRONTEND_DIST_DIR", str(frontend))
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        index = await client.get("/")
+        assert index.status == 200
+        assert "Scriber App" in await index.text()
+
+        spa_route = await client.get("/settings")
+        assert spa_route.status == 200
+        assert "Scriber App" in await spa_route.text()
+
+        asset = await client.get("/assets/app.js")
+        assert asset.status == 200
+        assert "scriber" in await asset.text()
+
+        missing_asset = await client.get("/assets/missing.js")
+        assert missing_asset.status == 404
+
+        api_without_token = await client.get("/api/runtime")
+        assert api_without_token.status == 401
+
+        api_with_token = await client.get("/api/runtime", headers={"X-Scriber-Token": "secret"})
+        assert api_with_token.status == 200
+    finally:
+        await client.close()
+        ctl.shutdown()
+
+
+def test_frontend_file_for_request_blocks_path_traversal(tmp_path):
+    root = tmp_path / "public"
+    root.mkdir()
+    (root / "index.html").write_text("index", encoding="utf-8")
+
+    assert web_api._frontend_file_for_request(root, "/../secret.txt") is None
+    assert web_api._frontend_file_for_request(root, "/nested/route") == root / "index.html"
+
+
 def test_upload_max_bytes_env(monkeypatch):
     monkeypatch.setenv("SCRIBER_UPLOAD_MAX_BYTES", "123")
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)

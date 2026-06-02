@@ -211,8 +211,8 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
 4. Install Scope festlegen: **per-user** (empfohlen, kein UAC).
 5. **Frozen-Mode-Erkennung** einfuehren:
    - Status 2026-06-01: `src/runtime/paths.py` existiert fuer `is_frozen()`, `SCRIBER_DATA_DIR`, `settings.json`, `transcripts.db` und Downloads.
-   - Noch offen: Pfad-Resolution fuer gebuendelte Assets und Frontend-Static-Files (`sys._MEIPASS`/Tauri Resources).
-   - Betrifft weiterhin: `tray.py` (Icon-Lade-Pfad), `web_api.py` (Static-File-Serving).
+   - Status 2026-06-02: `web_api.py` loest Frontend-Static-Files ueber `SCRIBER_FRONTEND_DIST_DIR`, `sys._MEIPASS`, App-Root und Source-Checkout-Kandidaten auf und served sie mit SPA-Fallback, ohne `/api/*` oder `/ws` zu uebernehmen.
+   - Noch offen: weitere gebuendelte Legacy-Desktop-Assets wie `tray.py` Icon-Lade-Pfade.
 
 ### Phase 1 - Produktisierbarer Build
 1. **Tauri Backend-Sidecar bereitstellen**:
@@ -233,8 +233,8 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Status 2026-06-01: Tauri schreibt Shell-Lifecycle-Logs und Backend-Exit-Metadaten unter `SCRIBER_DATA_DIR\logs\`; `POST /api/runtime/support-bundle` erzeugt ein redigiertes Diagnose-ZIP ohne API-Keys oder Session-Tokens.
 2. **Frontend Production Build** in den Backend-Output integrieren:
    - `npm run build` erzeugt `Frontend/dist/public/` mit statischem HTML/JS/CSS.
-   - `build_windows.ps1` kopiert diesen Output in das PyInstaller-Output-Verzeichnis.
-   - `web_api.py` erhaelt einen Static-File-Handler, der im Frozen-Modus `dist/public/` als Root served.
+   - `packaging/scriber-backend.spec` nimmt `Frontend/dist/public/` in den PyInstaller-Sidecar auf, wenn der Build-Output existiert.
+   - Status 2026-06-02: `web_api.py` hat einen Static-File-Handler mit SPA-Fallback fuer nicht-API-Pfade; fehlende Asset-Dateien werden als 404 behandelt und API-/WebSocket-Pfade bleiben token-geschuetzt.
 3. **Tray/Backend Start umbauen**: `start_frontend()` in `tray.py` darf im Frozen-Modus **nicht** `npm run dev:client` starten.
    - Konditional: Wenn `is_frozen()`, dann kein Frontend-Prozess starten; die statischen Dateien werden direkt vom Backend geserved.
    - Falls nicht frozen (Dev-Modus): bestehendes Verhalten beibehalten.
@@ -396,7 +396,7 @@ Lieferobjekte:
 |-------|-------------|
 | `src/version.py` | Umgesetzt: zentrale Versionsnummer (`__version__`) und SemVer-Normalisierung. |
 | `src/updater.py` | Zurueckgestellt fuer den Tauri-Pfad; primaer ist aktuell `tauri-plugin-updater`. Nur wieder aufnehmen, wenn ein eigener Python-Updater bewusst dem Tauri-Updater vorgezogen wird. |
-| `src/runtime/paths.py` | Teilweise umgesetzt: Runtime-Data-Pfade fuer Settings, SQLite und Downloads. Frontend-Asset-Resolution offen. |
+| `src/runtime/paths.py` | Umgesetzt fuer Runtime-Data-Pfade fuer Settings, SQLite und Downloads; Frontend-Asset-Resolution erfolgt in `web_api.py` ueber Runtime-/Frozen-Kandidaten. |
 | `src/runtime/media_tools.py` | Umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp` ueber Env, Sidecar-Tools und System-PATH. |
 | `src/runtime/support_bundle.py` | Umgesetzt: redigiertes Support-ZIP mit Runtime-/State-Metadaten, Logs und redigierter Config/Env. |
 | `src/backend_worker.py` | Umgesetzt: Tauri/PyInstaller Worker-Entry-Point. |
@@ -416,7 +416,7 @@ Lieferobjekte:
 | Datei | Aenderung |
 |-------|-----------|
 | `src/tray.py` | Update-Menue-Eintraege, Launcher-Integration, `start_frontend()` konditional, Version im Tooltip. |
-| `src/web_api.py` | Teilweise umgesetzt: Version/Runtime im Health-Endpoint, Session-Token-Middleware, `/api/runtime/shutdown` und `/api/runtime/support-bundle`. Offen: Update-Endpunkte (`/api/update/*`) und Static-File-Serving fuer Frontend im Frozen-Modus. |
+| `src/web_api.py` | Teilweise umgesetzt: Version/Runtime im Health-Endpoint, Session-Token-Middleware, `/api/runtime/shutdown`, `/api/runtime/support-bundle` und Frontend-Static-File-Serving mit SPA-Fallback. Offen: Update-Endpunkte (`/api/update/*`), falls ein eigener Python-Updater wieder aktiviert wird. |
 | `src/config.py` | Update-Settings (`AUTO_UPDATE`, `UPDATE_CHANNEL`, `UPDATE_CHECK_INTERVAL_HOURS`, `UPDATE_URL`). |
 | `Frontend/client/src/pages/Settings.tsx` | Update-Sektion im Settings-UI. |
 | `README.md` | Install/Update User Guide fuer Endnutzer. |
@@ -448,7 +448,7 @@ Lieferobjekte:
 | 3 | **Lite vs. Full Distribution** | Soll der Standardnutzer nur Lite erhalten und lokale ASR als optionales Offline-Pack? Empfehlung: Ja. | Hoch: groesster Hebel auf Installer-Groesse. |
 | 4 | **FFmpeg-Bundling** | Vollstaendige FFmpeg-Binary vs. schlanke Binary vs. On-Demand-Download. | Mittel: beeinflusst Setup-Groesse und Robustheit. |
 | 5 | **Delta-Updates vs. Full-Installer** | Phase 1: Full-Installer (einfacher). Spaeter Delta nur fuer grosse veraenderliche Komponenten evaluieren. | Mittel: Bandbreiten-Optimierung. |
-| 6 | **Frontend-Serving im Frozen-Modus** | Aktuell: Vite Dev Server. Ziel: aiohttp Static-File-Handler. Pruefe ob Express-Server (`Frontend/server/`) noch benoetigt wird oder ob aiohttp das komplett uebernehmen kann. | Mittel: Architektur-Entscheidung. |
+| 6 | **Express-Server als Legacy-/Dev-Pfad** | Frozen-Serving ist in `web_api.py` umgesetzt. Zu entscheiden bleibt, wann `Frontend/server/` formal deprecated oder entfernt wird. | Mittel: reduziert Doppelbetrieb und Wartung. |
 
 ---
 

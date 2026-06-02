@@ -4,6 +4,55 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Frozen Frontend Static Serving Boundary
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m pytest tests\test_web_api_security.py::test_static_frontend_routes_do_not_bypass_api_session_token tests\test_web_api_security.py::test_frontend_file_for_request_blocks_path_traversal
+venv\Scripts\python.exe -m pytest tests\test_web_api_security.py tests\test_web_api_lifecycle.py
+venv\Scripts\python.exe -m py_compile src\web_api.py tests\test_web_api_security.py
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `src.web_api` can now serve built React assets from
+  `SCRIBER_FRONTEND_DIST_DIR`, PyInstaller `sys._MEIPASS`, app-root, or
+  source-checkout `Frontend/dist/public` candidates.
+- Non-API routes use an SPA fallback to `index.html`.
+- Missing concrete asset paths such as `/assets/missing.js` return 404 instead
+  of incorrectly rendering the SPA shell.
+- `/api/*` and `/ws` are never handled by the static fallback and remain
+  session-token protected when `SCRIBER_SESSION_TOKEN` is configured.
+
+Evidence:
+
+- `tests\test_web_api_security.py::test_static_frontend_routes_do_not_bypass_api_session_token`
+  proves `/`, `/settings`, and `/assets/app.js` are served from a synthetic
+  frontend dist directory while `/api/runtime` still returns 401 without the
+  token and 200 with `X-Scriber-Token`.
+- `tests\test_web_api_security.py::test_frontend_file_for_request_blocks_path_traversal`
+  proves path traversal is rejected before file serving.
+- Full targeted web API regression: `55 passed` for
+  `tests\test_web_api_security.py tests\test_web_api_lifecycle.py`.
+
+Goal coverage:
+
+- Phase 3: moves React production serving closer to a self-contained
+  Tauri/Python runtime and keeps Express as dev/legacy infrastructure.
+- Phase 1/2: preserves the session-token boundary for API and WebSocket routes.
+- Phase 6: supports PyInstaller-bundled frontend assets already included by
+  `packaging/scriber-backend.spec`.
+
+Remaining limits:
+
+- Tauri production primarily loads the frontend through Tauri's bundled
+  `frontendDist`; this backend static fallback is still secondary validation
+  for frozen/browser or legacy paths.
+- This does not decide when the legacy Express server can be removed.
+
 ## 2026-06-02 - Frontend Typecheck, Build, and Strict Browser Smoke
 
 Commands:
