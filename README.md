@@ -29,7 +29,7 @@
 
 Last verified: 2026-06-02
 
-Scriber is a local-first transcription app with a Python backend, a React web UI, a new experimental Tauri desktop shell, and a legacy Tkinter fallback UI. The current primary runtime is Windows with tray integration, global hotkeys, microphone device monitoring, and local SQLite persistence.
+Scriber is a local-first transcription app with a Python backend, a React web UI, a Tauri desktop shell, and legacy Tkinter/Python tray fallback paths. Tauri is the primary desktop runtime; the legacy desktop paths are maintenance-only fallback per `docs/Legacy-Desktop-Fallback-Decision.md`. The current primary platform is Windows with tray integration, global hotkeys, microphone device monitoring, and local SQLite persistence.
 
 Current implementation highlights:
 
@@ -195,7 +195,7 @@ start.bat
 - dependency installation when needed
 - initial `.env` creation if missing
 - tray/web startup when Node and `Frontend/` are available
-- Tkinter fallback when the web UI cannot be started
+- Tkinter fallback when the web UI cannot be started; this path is kept for diagnostics and emergency fallback, not new desktop-shell feature work
 - backend health check at `http://127.0.0.1:8765/api/health`
 - browser open at `http://localhost:5000`
 

@@ -179,9 +179,7 @@ architecture work. It replaces earlier incomplete goal text.
   - End-to-end Textinjektion in ein kontrolliertes Ziel mit persistiertem
     Zieltext, wenn dieser Nachweis fuer Release-Freigabe verlangt wird,
   - ein laengerer Live-Recording-Soak, falls ueber den vom Nutzer akzeptierten
-    5-Minuten-Live-Gate hinaus ein strengeres Release-Kriterium festgelegt wird,
-  - Entscheidung, ob Legacy-Tk/Tray-Pfade weiter als Fallback bleiben oder erst
-    nach zwei stabilen Tauri-Release-Kandidaten entfernt werden.
+    5-Minuten-Live-Gate hinaus ein strengeres Release-Kriterium festgelegt wird.
 
 ## Current Completion Audit
 
@@ -216,6 +214,10 @@ architecture work. It replaces earlier incomplete goal text.
   akzeptierten 5-Minuten-Live-Recording-Gate. Nicht erbracht sind reale
   Authenticode-/Updater-Publication, physische Hardware-Matrix und ein optional
   strengerer 30-Minuten-Live-Soak.
+- Legacy-Tk/Tray ist entschieden: `docs/Legacy-Desktop-Fallback-Decision.md`
+  haelt Tauri als primaeren Desktop-Pfad fest, belaesst Tkinter/Python-Tray aber
+  als maintenance-only Fallback bis mindestens zwei stabile Tauri-Release-
+  Kandidaten plus reale Hardware-/Release-Gates vorliegen.
 
 ## Testplan
 

@@ -373,6 +373,31 @@ Goal coverage:
 - Phase 6/7: revalidates current NSIS install/uninstall behavior, installed
   support-bundle redaction, and sidecar packaging after the Always-On rebuild.
 
+## 2026-06-02 - Legacy Desktop Fallback Decision
+
+Artifact:
+
+- `docs\Legacy-Desktop-Fallback-Decision.md`
+
+Decision:
+
+- Tauri is the primary and release-target desktop runtime.
+- Legacy Tkinter and Python tray paths remain available as maintenance-only
+  fallback until at least two Tauri release candidates pass the installed smoke
+  matrix and manual hardware/release gates.
+- No new user-facing desktop-shell features should be added to legacy Tkinter or
+  Python tray code unless needed to keep fallback startup functional.
+- Tauri-managed runtime keeps ownership of desktop autostart and global hotkey
+  dispatch; recording state remains owned by the Python backend through the
+  existing API.
+
+Goal coverage:
+
+- Phase 4/8: closes the previously open architecture decision about whether
+  `src.main`, `src.ui`, and `src.tray` stay as fallback or are removed now. They
+  stay as maintenance-only fallback; removal is gated on two stable Tauri
+  release candidates plus the remaining physical and release-signing gates.
+
 ## 2026-06-02 - Frontend Scale, YouTube Thumbnail, Tray, and Waveform Fixes
 
 Commands:
