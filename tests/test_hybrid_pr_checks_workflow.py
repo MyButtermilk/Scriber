@@ -31,8 +31,10 @@ def test_hybrid_pr_checks_cover_python_frontend_and_rust_gates() -> None:
     assert "tests\\test_verify_tauri_updater_publication.py" in workflow
     assert "tests\\test_windows_authenticode_gate.py" in workflow
     assert "tests\\perf\\test_frontend_browser_smoke_script.py" in workflow
+    assert "npm ci --no-audit --no-fund" in workflow
     assert "npm run check" in workflow
     assert "npm run build" in workflow
+    assert "Build frontend assets for Tauri tests" in workflow
     assert "cargo test" in workflow
 
 

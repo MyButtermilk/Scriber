@@ -56,12 +56,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
-          cache-dependency-path: Frontend/package-lock.json
 
       - name: Install frontend dependencies
         working-directory: Frontend
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
       - name: Typecheck frontend
         working-directory: Frontend
@@ -78,6 +76,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend dependencies
+        working-directory: Frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build frontend assets for Tauri tests
+        working-directory: Frontend
+        run: npm run build
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable

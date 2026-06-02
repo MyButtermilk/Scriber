@@ -3963,8 +3963,11 @@ Implemented improvements:
 - The Python job installs only dev dependencies plus `aiohttp`, then runs the
   focused hybrid/security/release-readiness tests that do not require real
   signing, media tools, or hardware.
-- The frontend job runs `npm ci`, `npm run check`, and `npm run build`.
-- The Rust job runs `cargo test` under `Frontend\src-tauri`.
+- The frontend job runs `npm ci --no-audit --no-fund`, `npm run check`, and
+  `npm run build`.
+- The Rust job installs frontend dependencies, builds `Frontend\dist\public`,
+  then runs `cargo test` under `Frontend\src-tauri` so Tauri's `frontendDist`
+  contract is valid on a fresh runner.
 - The workflow intentionally does not build the NSIS installer and does not
   require ffmpeg, Authenticode secrets, or updater signing secrets; those remain
   owned by the release workflow and final readiness runner.
