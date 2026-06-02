@@ -3966,8 +3966,10 @@ Implemented improvements:
 - The frontend job runs `npm ci --no-audit --no-fund`, `npm run check`, and
   `npm run build`.
 - The Rust job installs frontend dependencies, builds `Frontend\dist\public`,
-  then runs `cargo test` under `Frontend\src-tauri` so Tauri's `frontendDist`
-  contract is valid on a fresh runner.
+  creates an empty `Frontend\src-tauri\target\release\backend` resource
+  directory, then runs `cargo test` under `Frontend\src-tauri` so Tauri's
+  `frontendDist` and backend resource-path contracts are valid on a fresh
+  runner without building the release sidecar.
 - The workflow intentionally does not build the NSIS installer and does not
   require ffmpeg, Authenticode secrets, or updater signing secrets; those remain
   owned by the release workflow and final readiness runner.

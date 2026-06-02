@@ -35,6 +35,8 @@ def test_hybrid_pr_checks_cover_python_frontend_and_rust_gates() -> None:
     assert "npm run check" in workflow
     assert "npm run build" in workflow
     assert "Build frontend assets for Tauri tests" in workflow
+    assert "Create placeholder backend resource directory for Tauri tests" in workflow
+    assert "target\\release\\backend" in workflow
     assert "cargo test" in workflow
 
 
