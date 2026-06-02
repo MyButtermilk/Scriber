@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from typing import Any
 
@@ -37,6 +38,10 @@ class MicrophonePrewarmManager:
         self._paused_for_active_capture = False
         self._paused_for_device_refresh = False
         self._last_error_log_at = 0.0
+        self._prebuffer_frames: deque[tuple[Any, int, Any, Any]] = deque()
+        self._prebuffer_frame_count = 0
+        self._prebuffer_max_frames = 0
+        self._prebuffer_sample_rate = 0
 
     @property
     def is_active(self) -> bool:
@@ -75,6 +80,8 @@ class MicrophonePrewarmManager:
     def _audio_callback(self, indata, frames, time_info, status) -> None:
         with self._lock:
             active_callback = self._active_capture_callback
+            if active_callback is None:
+                self._append_prebuffer_locked(indata, frames, time_info, status)
         if active_callback is not None:
             try:
                 active_callback(indata, frames, time_info, status)
@@ -83,6 +90,40 @@ class MicrophonePrewarmManager:
                 logger.debug(f"Mic prewarm active callback ignored exception: {exc}")
         if status:
             logger.debug(f"Mic prewarm audio status: {status}")
+
+    def _configure_prebuffer_locked(self, *, sample_rate: int) -> None:
+        prebuffer_ms = max(0, int(getattr(Config, "MIC_PREBUFFER_MS", 400) or 0))
+        self._prebuffer_sample_rate = max(1, int(sample_rate))
+        self._prebuffer_max_frames = int(self._prebuffer_sample_rate * (prebuffer_ms / 1000.0))
+        self._clear_prebuffer_locked()
+
+    def _clear_prebuffer_locked(self) -> None:
+        self._prebuffer_frames.clear()
+        self._prebuffer_frame_count = 0
+
+    def _append_prebuffer_locked(self, indata, frames, time_info, status) -> None:
+        if self._prebuffer_max_frames <= 0:
+            return
+        try:
+            copied = indata.copy() if hasattr(indata, "copy") else bytes(indata)
+        except Exception:
+            return
+        frame_count = max(0, int(frames or 0))
+        if frame_count <= 0:
+            return
+        self._prebuffer_frames.append((copied, frame_count, time_info, status))
+        self._prebuffer_frame_count += frame_count
+        while self._prebuffer_frame_count > self._prebuffer_max_frames and self._prebuffer_frames:
+            _old_data, old_frames, _old_time_info, _old_status = self._prebuffer_frames.popleft()
+            self._prebuffer_frame_count = max(0, self._prebuffer_frame_count - int(old_frames or 0))
+
+    def _drain_prebuffer_locked(self) -> tuple[list[tuple[Any, int, Any, Any]], float]:
+        frames = list(self._prebuffer_frames)
+        frame_count = self._prebuffer_frame_count
+        sample_rate = self._prebuffer_sample_rate or 1
+        self._clear_prebuffer_locked()
+        duration_ms = (frame_count / sample_rate) * 1000.0 if frame_count > 0 else 0.0
+        return frames, duration_ms
 
     def _log_start_error(self, exc: Exception) -> None:
         now = time.monotonic()
@@ -157,6 +198,7 @@ class MicrophonePrewarmManager:
                         "block_size": block_size,
                         "device_index": device_index,
                     }
+                    self._configure_prebuffer_locked(sample_rate=sample_rate)
                     self._claim_stream()
                 logger.info(
                     "Mic prewarm stream active "
@@ -205,8 +247,11 @@ class MicrophonePrewarmManager:
             if int(signature.get("block_size") or 0) != int(block_size):
                 return None
 
+            prebuffer_frames, prebuffer_ms = self._drain_prebuffer_locked()
             self._paused_for_active_capture = True
             self._active_capture_callback = callback
+            signature["prebuffer_frames"] = prebuffer_frames
+            signature["prebuffer_ms"] = round(prebuffer_ms, 3)
             return signature
 
     def detach_active_capture(
@@ -225,6 +270,7 @@ class MicrophonePrewarmManager:
         self._stream = None
         self._stream_signature = {}
         self._active_capture_callback = None
+        self._clear_prebuffer_locked()
         with get_device_guard_lock():
             if stream:
                 try:

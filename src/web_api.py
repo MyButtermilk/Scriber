@@ -1966,6 +1966,7 @@ class ScriberWebController:
                 "favoriteMicConfigured": bool((Config.FAVORITE_MIC or "").strip()),
                 "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
                 "idlePrewarmActive": bool(self._mic_prewarm.is_active),
+                "prebufferMs": int(getattr(Config, "MIC_PREBUFFER_MS", 0) or 0),
             },
             "textInjection": {
                 "method": str(getattr(Config, "INJECT_METHOD", "auto") or "auto"),
@@ -2247,6 +2248,7 @@ class ScriberWebController:
         logger.debug(f"Transcription received: final={is_final}, len={len(text) if text else 0}")
         if is_final and text:
             self._mark_hot_path(session_id or self._session_id, "first_final_token")
+            self._mark_hot_path(session_id or self._session_id, "provider_final_received")
             with self._current_lock:
                 if self._current and (session_id is None or self._current.id == session_id):
                     self._current.append_final_text(text)
@@ -3154,6 +3156,15 @@ class ScriberWebController:
                     meta={"chars": len(_text or "")},
                 )
 
+            def on_injection_marker(marker: str):
+                if session_id != self._session_id:
+                    return
+                if marker in {"clipboard_set", "paste"}:
+                    self._mark_hot_path(session_id, marker)
+
+            def on_last_audio_chunk_sent():
+                self._mark_hot_path(session_id, "last_chunk_sent")
+
             try:
                 live_provider = self._select_available_provider()
             except Exception as exc:
@@ -3199,7 +3210,9 @@ class ScriberWebController:
                 on_audio_level=lambda rms: self._on_audio_level(rms, session_id=session_id),
                 on_transcription=lambda text, is_final: self._on_transcription(text, is_final, session_id=session_id),
                 on_text_injected=on_text_injected,
+                on_injection_marker=on_injection_marker,
                 on_mic_ready=on_mic_ready,
+                on_last_audio_chunk_sent=on_last_audio_chunk_sent,
                 on_error=on_pipeline_error,
                 mic_prewarm_manager=mic_prewarm_manager,
             )

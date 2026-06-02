@@ -23,6 +23,12 @@ STOP_TO_TEXT_SEGMENT = "stop_requested_to_first_paste_ms"
 TEXT_BEFORE_STOP_SEGMENT = "first_paste_to_stop_requested_ms"
 PROVIDER_TRANSCRIPT_SEGMENT = "hotkey_received_to_first_final_token_ms"
 AUDIBLE_AUDIO_SEGMENT = "hotkey_received_to_first_audible_audio_frame_ms"
+STOP_TO_LAST_CHUNK_SEGMENT = "stop_requested_to_last_chunk_sent_ms"
+STOP_TO_PROVIDER_FINAL_SEGMENT = "stop_requested_to_provider_final_received_ms"
+LAST_CHUNK_TO_PROVIDER_FINAL_SEGMENT = "last_chunk_sent_to_provider_final_received_ms"
+PROVIDER_FINAL_TO_CLIPBOARD_SET_SEGMENT = "provider_final_received_to_clipboard_set_ms"
+CLIPBOARD_SET_TO_PASTE_SEGMENT = "clipboard_set_to_paste_ms"
+PASTE_TO_FIRST_PASTE_SEGMENT = "paste_to_first_paste_ms"
 TEXT_TARGET_WINDOW_FLAG = "--_text-target-window"
 
 
@@ -215,6 +221,12 @@ def requirement_values(
     provider_transcript_values: list[float] = []
     audible_audio_samples = 0
     audible_audio_values: list[float] = []
+    stop_to_last_chunk_values: list[float] = []
+    stop_to_provider_final_values: list[float] = []
+    provider_finalize_values: list[float] = []
+    provider_to_clipboard_values: list[float] = []
+    clipboard_to_paste_values: list[float] = []
+    paste_to_callback_values: list[float] = []
     for sample in samples:
         segments = sample.get("segments") or {}
         if AUDIBLE_AUDIO_SEGMENT in segments:
@@ -231,16 +243,49 @@ def requirement_values(
             # In that case the stop-to-text wait is measured as zero, not missing.
             values.append(0.0)
             already_injected_samples += 1
+        if STOP_TO_LAST_CHUNK_SEGMENT in segments:
+            stop_to_last_chunk_values.append(float(segments[STOP_TO_LAST_CHUNK_SEGMENT]))
+        if STOP_TO_PROVIDER_FINAL_SEGMENT in segments:
+            stop_to_provider_final_values.append(float(segments[STOP_TO_PROVIDER_FINAL_SEGMENT]))
+        if LAST_CHUNK_TO_PROVIDER_FINAL_SEGMENT in segments:
+            provider_finalize_values.append(float(segments[LAST_CHUNK_TO_PROVIDER_FINAL_SEGMENT]))
+        if PROVIDER_FINAL_TO_CLIPBOARD_SET_SEGMENT in segments:
+            provider_to_clipboard_values.append(float(segments[PROVIDER_FINAL_TO_CLIPBOARD_SET_SEGMENT]))
+        if CLIPBOARD_SET_TO_PASTE_SEGMENT in segments:
+            clipboard_to_paste_values.append(float(segments[CLIPBOARD_SET_TO_PASTE_SEGMENT]))
+        if PASTE_TO_FIRST_PASTE_SEGMENT in segments:
+            paste_to_callback_values.append(float(segments[PASTE_TO_FIRST_PASTE_SEGMENT]))
 
     return values, {
         "sourceSegments": [STOP_TO_TEXT_SEGMENT, TEXT_BEFORE_STOP_SEGMENT],
-        "diagnosticSegments": [PROVIDER_TRANSCRIPT_SEGMENT, AUDIBLE_AUDIO_SEGMENT],
+        "diagnosticSegments": [
+            PROVIDER_TRANSCRIPT_SEGMENT,
+            AUDIBLE_AUDIO_SEGMENT,
+            STOP_TO_LAST_CHUNK_SEGMENT,
+            STOP_TO_PROVIDER_FINAL_SEGMENT,
+            LAST_CHUNK_TO_PROVIDER_FINAL_SEGMENT,
+            PROVIDER_FINAL_TO_CLIPBOARD_SET_SEGMENT,
+            CLIPBOARD_SET_TO_PASTE_SEGMENT,
+            PASTE_TO_FIRST_PASTE_SEGMENT,
+        ],
         "afterStopInjectionSamples": after_stop_samples,
         "alreadyInjectedBeforeStopSamples": already_injected_samples,
         "audibleAudioSamples": audible_audio_samples,
         "audibleAudioDurations": summarize(audible_audio_values),
         "providerTranscriptSamples": provider_transcript_samples,
         "providerTranscriptDurations": summarize(provider_transcript_values),
+        "lastChunkSentSamples": len(stop_to_last_chunk_values),
+        "lastChunkSentDurations": summarize(stop_to_last_chunk_values),
+        "stopToProviderFinalSamples": len(stop_to_provider_final_values),
+        "stopToProviderFinalDurations": summarize(stop_to_provider_final_values),
+        "providerFinalizeSamples": len(provider_finalize_values),
+        "providerFinalizeDurations": summarize(provider_finalize_values),
+        "providerToClipboardSamples": len(provider_to_clipboard_values),
+        "providerToClipboardDurations": summarize(provider_to_clipboard_values),
+        "clipboardToPasteSamples": len(clipboard_to_paste_values),
+        "clipboardToPasteDurations": summarize(clipboard_to_paste_values),
+        "pasteCallbackSamples": len(paste_to_callback_values),
+        "pasteCallbackDurations": summarize(paste_to_callback_values),
     }
 
 

@@ -113,6 +113,33 @@ async def test_hot_path_marks_non_empty_final_transcript_only(tmp_path):
     rows = metrics_store.latest(limit=10)
     latest = next(row for row in rows if row.session_id == second_id)
     assert "hotkey_received_to_first_final_token_ms" in latest.segments
+    assert "hotkey_received_to_provider_final_received_ms" in latest.segments
+
+
+@pytest.mark.asyncio
+async def test_hot_path_persists_stop_to_injection_breakdown(tmp_path):
+    loop = asyncio.get_running_loop()
+    metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    ctl = ScriberWebController(loop, latency_metrics_store=metrics_store)
+    session_id = "session-stop-breakdown"
+
+    ctl._start_hot_path_tracer(session_id)
+    ctl._mark_hot_path(session_id, "stop_requested")
+    ctl._mark_hot_path(session_id, "last_chunk_sent")
+    ctl._mark_hot_path(session_id, "provider_final_received")
+    ctl._mark_hot_path(session_id, "clipboard_set")
+    ctl._mark_hot_path(session_id, "paste")
+    ctl._mark_hot_path(session_id, "first_paste")
+
+    assert ctl._emit_hot_path_report_once(session_id) is True
+
+    rows = metrics_store.latest(limit=10)
+    latest = next(row for row in rows if row.session_id == session_id)
+    assert "stop_requested_to_last_chunk_sent_ms" in latest.segments
+    assert "last_chunk_sent_to_provider_final_received_ms" in latest.segments
+    assert "provider_final_received_to_clipboard_set_ms" in latest.segments
+    assert "clipboard_set_to_paste_ms" in latest.segments
+    assert "paste_to_first_paste_ms" in latest.segments
 
 
 @pytest.mark.asyncio

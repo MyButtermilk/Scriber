@@ -578,7 +578,8 @@ string during append.
 - [x] **Microphone device resolution cache ✅ (2026-06-01)**
 - [x] **Audio callback channel-rescan/RMS throttle update ✅ (2026-06-01)**
 - [x] **Per-session keep_alive cleanup forced closed ✅ (2026-06-01)** - prevents orphaned Pipecat/PortAudio session streams; idle prewarm is owned separately
-- [x] **App-level idle mic prewarming ✅ (2026-06-02)** - `SCRIBER_MIC_ALWAYS_ON` keeps a discard-only PortAudio stream open while idle, adopts that warm stream for active recording when the stream/device signature still matches, and resumes idle discard mode after stop
+- [x] **App-level idle mic prewarming ✅ (2026-06-02)** - `SCRIBER_MIC_ALWAYS_ON` keeps a PortAudio stream open while idle, adopts that warm stream for active recording when the stream/device signature still matches, prepends the bounded `SCRIBER_MIC_PREBUFFER_MS` raw-audio prebuffer, and resumes idle mode after stop
+- [x] **Stop-to-injection breakdown markers ✅ (2026-06-02)** - hot-path metrics now split stop-to-text wait into `stop_requested`, `last_chunk_sent`, `provider_final_received`, `clipboard_set`, `paste`, and `first_paste` segments
 - [x] **Settings persistence debounce ✅ (2026-06-02)** - live config updates immediately, `.env` writes are batched by `SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC` and flushed on shutdown
 - [x] **Lazy transcript content loading (3.3) ✅ (2026-01-13)** - 80-90% Memory reduction
 - [x] **Long live transcript append buffering guard ✅ (2026-06-02)** - synthetic 30-minute segment-growth check
@@ -593,7 +594,7 @@ string during append.
 
 ### Pending (Medium Priority)
 - [x] Frontend Virtual Scrolling (2.2) ✅ (2026-06-01) - Uses pagination API with infinite scroll and virtualized history rows
-- [ ] Optional rolling speech pre-buffer - evaluate only if real usage still loses first words after idle mic prewarming
+- [x] Rolling speech pre-buffer ✅ (2026-06-02) - bounded idle-stream prebuffer defaults to `SCRIBER_MIC_PREBUFFER_MS=400` and is included only when the warm stream is adopted
 - [ ] Background upload preprocessing for large files - upload writes/exports are off the event loop and `measure_upload_export_baseline.py` now probes `/api/health` and `/api/state` responsiveness under synthetic load, but heavy compression/transcription preprocessing is still request-scoped instead of fully job-detached
 
 ### Future

@@ -714,8 +714,10 @@ class ScriberPipeline:
         on_audio_level=None,
         on_transcription: Optional[Callable[[str, bool], None]] = None,
         on_text_injected: Optional[Callable[[str], None]] = None,
+        on_injection_marker: Optional[Callable[[str], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
         on_mic_ready: Optional[Callable[[], None]] = None,
+        on_last_audio_chunk_sent: Optional[Callable[[], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
         mic_prewarm_manager=None,
     ):
@@ -724,8 +726,10 @@ class ScriberPipeline:
         self.on_audio_level = on_audio_level
         self.on_transcription = on_transcription
         self.on_text_injected = on_text_injected
+        self.on_injection_marker = on_injection_marker
         self.on_progress = on_progress
         self.on_mic_ready = on_mic_ready
+        self.on_last_audio_chunk_sent = on_last_audio_chunk_sent
         self.on_error = on_error
         self.mic_prewarm_manager = mic_prewarm_manager
         self.pipeline = None
@@ -1036,6 +1040,7 @@ class ScriberPipeline:
                     prewarm_manager=self.mic_prewarm_manager,
                     on_audio_level=self.on_audio_level,
                     on_ready=self.on_mic_ready,
+                    on_last_audio_chunk_sent=self.on_last_audio_chunk_sent,
                 )
 
                 inject_immediately = injects_immediately_in_live_mode(self.service_name) and not (
@@ -1044,6 +1049,7 @@ class ScriberPipeline:
                 text_injector = TextInjector(
                     inject_immediately=inject_immediately,
                     on_injected=self.on_text_injected,
+                    on_injection_marker=self.on_injection_marker,
                 )
                 self.text_injector = text_injector
                 transcript_cb = (

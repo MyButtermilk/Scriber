@@ -55,7 +55,7 @@ Current implementation highlights:
 
 Known limits:
 
-- `SCRIBER_MIC_ALWAYS_ON` now enables an app-level idle microphone prewarm stream. The prewarm stream discards audio while idle, can be adopted directly by live recording to avoid reopening PortAudio, and is reused again after recording stops; per-session Pipecat pipeline state is still cleaned up for each session.
+- `SCRIBER_MIC_ALWAYS_ON` now enables an app-level idle microphone prewarm stream with a bounded rolling raw-audio prebuffer. The warm stream can be adopted directly by live recording to avoid reopening PortAudio, prepends the latest `SCRIBER_MIC_PREBUFFER_MS` of callback frames, and is reused again after recording stops; per-session Pipecat pipeline state is still cleaned up for each session.
 - Frontend transcript histories use infinite backend pagination plus scroll-container virtualization, so large local history lists no longer render every card at once.
 - The Tauri shell can supervise a packaged backend worker and produce an NSIS installer, but signing and the updater client are still separate packaging phases.
 - Some CPU-heavy media preprocessing still depends on ffmpeg/provider behavior even though disk writes, cleanup, and export rendering are offloaded.
@@ -275,7 +275,7 @@ Important microphone behavior:
 - Browser/WebView `devicechange` events send a lightweight `/api/microphones/refresh` hint so hotplug changes do not wait for fallback polling while the UI is open.
 - PortAudio refresh is deferred during active recording to avoid native races.
 - Mic selection is cached briefly to avoid repeated device scans on consecutive starts.
-- `SCRIBER_MIC_ALWAYS_ON=1` keeps a discard-only idle mic stream open for prewarming. Live recording first tries to adopt that warm PortAudio stream and falls back to opening a fresh stream only if the device or stream settings no longer match.
+- `SCRIBER_MIC_ALWAYS_ON=1` keeps an idle mic stream open for prewarming and a short rolling raw-audio prebuffer. Live recording first tries to adopt that warm PortAudio stream, prepends the buffered frames, and falls back to opening a fresh stream only if the device or stream settings no longer match.
 
 ### YouTube
 
@@ -565,6 +565,7 @@ SCRIBER_MIC_DEVICE=default
 SCRIBER_FAVORITE_MIC=
 SCRIBER_MIC_ALWAYS_ON=0
 SCRIBER_MIC_BLOCK_SIZE=512
+SCRIBER_MIC_PREBUFFER_MS=400
 SCRIBER_MIC_DEVICE_CACHE_TTL_SEC=10.0
 SCRIBER_MIC_LOW_RMS_THRESHOLD=0.001
 SCRIBER_MIC_LOW_RMS_CLEAR_THRESHOLD=0.0025
@@ -575,7 +576,7 @@ SCRIBER_PASTE_PRE_DELAY_MS=80
 SCRIBER_PASTE_RESTORE_DELAY_MS=1500
 ```
 
-`SCRIBER_MIC_ALWAYS_ON` enables idle mic prewarming. It keeps a discard-only PortAudio stream active while the app is idle, hands that stream to active recording when the signature still matches, pauses it for PortAudio device refreshes, then returns it to idle prewarm mode after recording stops if the setting is still enabled.
+`SCRIBER_MIC_ALWAYS_ON` enables idle mic prewarming. It keeps a PortAudio stream active while the app is idle, maintains the latest `SCRIBER_MIC_PREBUFFER_MS` of raw callback frames, hands that stream plus buffered frames to active recording when the signature still matches, pauses it for PortAudio device refreshes, then returns it to idle prewarm mode after recording stops if the setting is still enabled.
 
 Set `SCRIBER_DISABLE_TEXT_INJECTION=1` for live recording stability or provider diagnostics where transcribed text must not be written into the active desktop app.
 
@@ -955,7 +956,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 ### First words are cut off
 
 - Wait until the overlay/state switches from preparing to recording.
-- `SCRIBER_MIC_ALWAYS_ON` is implemented as app-level idle microphone prewarming; it is not a speech pre-buffer.
+- Enable `SCRIBER_MIC_ALWAYS_ON=1` and keep `SCRIBER_MIC_PREBUFFER_MS` at the default `400` ms or raise it carefully if first-word loss persists.
 - Check `docs/Mic-Performance-Enhancement.md` for current mic latency status.
 
 ### YouTube transcription fails
@@ -980,7 +981,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 
 ## Roadmap / Open Engineering Work
 
-- Optional speech pre-buffering if users still lose first words after idle mic prewarming.
+- Re-run live hot-path samples after changing `SCRIBER_MIC_PREBUFFER_MS`; the metrics now split stop-to-injection into last-audio-chunk, provider-final, clipboard, and paste segments.
 - Real recording text-injection samples from `-RecordHotPathSamples`, either `stop_requested_to_first_paste_ms` for async injection after stop or an already-injected-before-stop realtime sample counted as `0 ms` stop-to-text wait.
 - Full bundled desktop release activation: actual Authenticode signing step/certificate, Tauri updater signing keys, signed update artifacts, and published `latest.json`. The optional Authenticode validation gate is already wired through `scripts\validate_windows_authenticode.ps1`, `scripts\build_windows.ps1`, and the Windows release workflow.
 - Full-duration live recording/provider stability runs with real microphone/STT traffic. A 30-minute installed idle stability gate has passed, but it does not replace live audio/provider evidence.

@@ -125,9 +125,9 @@ The overlay supports updating its `on_stop` callback after creation, so it can b
 | ML cache prewarming | ✅ Done | ~400ms |
 | Background transcript load | ✅ Done | ~100ms |
 | Mic device resolution cache | ✅ Done (2026-06-01) | repeat start-path avoids repeated name/favorite resolution |
-| `MIC_ALWAYS_ON` idle prewarm stream | ✅ Done | app-level discard-only stream |
+| `MIC_ALWAYS_ON` idle prewarm stream | ✅ Done | app-level warm stream with bounded `SCRIBER_MIC_PREBUFFER_MS` raw-audio prebuffer |
 
-**Startup optimizations are complete for current architecture.** The remaining low-latency microphone item is optional rolling speech pre-buffering if real usage still shows first-word loss.
+**Startup optimizations are complete for current architecture.** The remaining low-latency microphone work is measurement: rerun real hot-path samples with `SCRIBER_MIC_ALWAYS_ON=1` and the configured prebuffer window.
 
 ---
 

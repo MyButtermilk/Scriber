@@ -128,6 +128,52 @@ def test_mic_prewarm_can_route_active_capture_without_reopening(monkeypatch):
     manager.stop()
 
 
+def test_mic_prewarm_returns_recent_prebuffer_when_attached(monkeypatch):
+    _install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+    monkeypatch.setattr(Config, "MIC_PREBUFFER_MS", 32, raising=False)
+
+    manager = MicrophonePrewarmManager()
+
+    assert manager.start_if_enabled() is True
+    stream = _FakeInputStream.instances[-1]
+
+    old_data = np.full((512, 1), 1, dtype=np.int16)
+    recent_data = np.full((512, 1), 2, dtype=np.int16)
+    stream.kwargs["callback"](old_data, 512, {"t": 1}, None)
+    stream.kwargs["callback"](recent_data, 512, {"t": 2}, None)
+
+    attached = manager.attach_active_capture(
+        lambda *_args: None,
+        sample_rate=16000,
+        target_channels=1,
+        block_size=stream.kwargs["blocksize"],
+        device="0",
+    )
+
+    assert attached is not None
+    assert attached["prebuffer_ms"] == 32.0
+    assert len(attached["prebuffer_frames"]) == 1
+    buffered_data, buffered_frames, buffered_time_info, buffered_status = attached["prebuffer_frames"][0]
+    assert np.array_equal(buffered_data, recent_data)
+    assert buffered_frames == 512
+    assert buffered_time_info == {"t": 2}
+    assert buffered_status is None
+
+    second = manager.attach_active_capture(
+        lambda *_args: None,
+        sample_rate=16000,
+        target_channels=1,
+        block_size=stream.kwargs["blocksize"],
+        device="0",
+    )
+    assert second is None
+
+    manager.stop()
+
+
 def test_mic_prewarm_rejects_active_capture_signature_mismatch(monkeypatch):
     _install_fake_sounddevice(monkeypatch)
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)

@@ -194,6 +194,7 @@ def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
     _require_bool(microphone, "favoriteMicConfigured", contract)
     _require_bool(microphone, "micAlwaysOn", contract)
     _require_bool(microphone, "idlePrewarmActive", contract)
+    _require_int(microphone, "prebufferMs", contract)
 
     text_injection = _require_dict(payload, "textInjection", contract)
     _require_string(text_injection, "method", contract)

@@ -332,6 +332,7 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert audio["provider"]["configured"]
     assert audio["provider"]["active"] is None
     assert audio["microphone"]["configuredDevice"]
+    assert audio["microphone"]["prebufferMs"] >= 0
     assert audio["textInjection"]["method"]
     assert "onnxruntime" in audio["runtimeImports"]
     assert "pipecat.audio.vad.silero" in audio["runtimeImports"]
@@ -343,6 +344,23 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert health["host"] == runtime["host"]
     assert health["port"] == runtime["port"]
     assert health["startedAt"] == runtime["startedAt"]
+
+
+@pytest.mark.asyncio
+async def test_health_and_runtime_do_not_run_audio_import_diagnostics(monkeypatch):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    def fail_import_diagnostics():
+        raise AssertionError("audio diagnostic imports must stay out of readiness paths")
+
+    monkeypatch.setattr(web_api, "_audio_diagnostic_import_status", fail_import_diagnostics)
+
+    runtime = ctl.get_runtime_info()
+    health = ctl.get_health()
+
+    assert runtime["apiVersion"]
+    assert health["ok"] is True
 
 
 @pytest.mark.asyncio

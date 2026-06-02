@@ -20,7 +20,7 @@
 - WebSocket sendet State + Events auf `'/ws'`; Events sind `state`/`status`/`transcript`/`audio_level`/`input_warning`/`transcribing`/`session_*`/`history_updated`/`error`.
 - Summarization nutzt zentral `gemini-flash-latest` als Default.
 - Update 2026-06-01: `DeviceMonitor` ist recording-aware (PortAudio-Refresh während aktiver Streams wird deferred), Mic-Enumeration nutzt den gemeinsamen Guard-Lock, und die Pipeline invalidiert den Mic-Resolution-Cache bei Device-/Mic-Settings-Änderungen.
-- Update 2026-06-02: `SCRIBER_MIC_ALWAYS_ON` startet jetzt einen App-Level-Idle-Prewarm-Stream. Per-session Pipecat-Pipeline-State wird weiterhin beim Cleanup bereinigt; der Prewarm-Stream verwirft Audio im Idle und kann bei passender Stream-/Device-Signatur von der aktiven Aufnahme übernommen werden.
+- Update 2026-06-02: `SCRIBER_MIC_ALWAYS_ON` startet jetzt einen App-Level-Idle-Prewarm-Stream mit bounded Rolling-Prebuffer (`SCRIBER_MIC_PREBUFFER_MS`, default `400`). Per-session Pipecat-Pipeline-State wird weiterhin beim Cleanup bereinigt; der Prewarm-Stream kann bei passender Stream-/Device-Signatur inklusive gepufferter Frames von der aktiven Aufnahme übernommen werden.
 
 ## Frontend-Verhalten
 - Routen in `Frontend/client/src/App.tsx`: `/`, `/youtube`, `/file`, `/transcript/:id`, `/settings`.

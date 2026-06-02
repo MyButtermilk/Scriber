@@ -54,6 +54,23 @@ def test_paste_text_continues_without_restore_when_clipboard_read_fails():
     mock_kb.press_and_release.assert_called_once_with("ctrl+v")
 
 
+def test_paste_text_emits_clipboard_and_paste_markers():
+    markers: list[str] = []
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector.sys.platform", "win32"),
+        patch("src.injector._windows_clipboard_get_text", return_value=_CLIPBOARD_ACCESS_FAILED),
+        patch("src.injector._windows_clipboard_set_text", return_value=True),
+        patch("src.injector.keyboard") as mock_kb,
+        patch("src.injector.time.sleep", return_value=None),
+    ):
+        mock_kb.press_and_release.return_value = None
+        assert _paste_text("new text", on_marker=markers.append) is True
+
+    assert markers == ["clipboard_set", "paste"]
+    mock_kb.press_and_release.assert_called_once_with("ctrl+v")
+
+
 def test_paste_text_restores_previous_text_when_set_fails():
     with (
         patch("src.injector.HAS_GUI", True),

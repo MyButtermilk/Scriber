@@ -866,10 +866,10 @@ Implemented improvements:
 
 - Added `src\mic_prewarm.py` with `MicrophonePrewarmManager`, an app-level
   idle prewarm owner for `SCRIBER_MIC_ALWAYS_ON`.
-- The manager opens a discard-only PortAudio stream while the app is idle,
-  releases it before live recording opens the per-session Pipecat
-  `MicrophoneInput`, and resumes it after recording stops if the setting is
-  still enabled.
+- The manager opens a PortAudio stream while the app is idle, keeps a bounded
+  rolling raw-audio prebuffer, hands both the warm stream and buffered frames to
+  the per-session Pipecat `MicrophoneInput` when signatures match, and resumes
+  idle mode after recording stops if the setting is still enabled.
 - The manager quiesces during DeviceMonitor PortAudio refreshes so idle
   prewarm does not permanently defer hotplug/default-device updates.
 - Microphone device-name/favorite resolution was moved into
@@ -901,9 +901,9 @@ Goal coverage:
 
 Remaining limits:
 
-- This is idle prewarming, not a rolling speech pre-buffer. If users still lose
-  first words, a separate pre-buffer design remains the next audio-latency
-  follow-up.
+- The prebuffer is bounded raw audio from the idle prewarm stream, not a
+  reusable Pipecat transcription pipeline. Re-run live hot-path samples to
+  quantify first-word behavior with `SCRIBER_MIC_PREBUFFER_MS` evidence.
 
 ## 2026-06-02 - Release Metadata Artifact Integrity Gate
 

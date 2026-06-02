@@ -115,6 +115,34 @@ def test_recording_hot_path_summary_measures_text_injection_after_stop():
     assert stop_requirement["alreadyInjectedBeforeStopSamples"] == 0
 
 
+def test_recording_hot_path_summary_reports_stop_to_injection_breakdown():
+    summary = build_summary(
+        [
+            {
+                "segments": {
+                    "stop_requested_to_first_paste_ms": 1387.0,
+                    "stop_requested_to_last_chunk_sent_ms": 16.0,
+                    "stop_requested_to_provider_final_received_ms": 1320.0,
+                    "last_chunk_sent_to_provider_final_received_ms": 1304.0,
+                    "provider_final_received_to_clipboard_set_ms": 20.0,
+                    "clipboard_set_to_paste_ms": 11.0,
+                    "paste_to_first_paste_ms": 3.0,
+                }
+            }
+        ]
+    )
+
+    stop_requirement = summary["requirements"]["stop_to_text_injection"]
+    assert stop_requirement["status"] == "measured"
+    assert stop_requirement["durations"]["p95Ms"] == 1387.0
+    assert stop_requirement["lastChunkSentDurations"]["p95Ms"] == 16.0
+    assert stop_requirement["stopToProviderFinalDurations"]["p95Ms"] == 1320.0
+    assert stop_requirement["providerFinalizeDurations"]["p95Ms"] == 1304.0
+    assert stop_requirement["providerToClipboardDurations"]["p95Ms"] == 20.0
+    assert stop_requirement["clipboardToPasteDurations"]["p95Ms"] == 11.0
+    assert stop_requirement["pasteCallbackDurations"]["p95Ms"] == 3.0
+
+
 def test_recording_hot_path_summary_reports_text_target_capture():
     summary = build_summary(
         [

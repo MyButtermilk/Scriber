@@ -304,7 +304,12 @@ def _windows_clipboard_set_text(text: str, *, retries: int = 5, delay_secs: floa
     return False
 
 
-def _paste_text(text: str, *, skip_clipboard_restore: bool = False) -> bool:
+def _paste_text(
+    text: str,
+    *,
+    skip_clipboard_restore: bool = False,
+    on_marker: Optional[Callable[[str], None]] = None,
+) -> bool:
     """
     Inject text via clipboard paste (Ctrl+V).
 
@@ -330,6 +335,8 @@ def _paste_text(text: str, *, skip_clipboard_restore: bool = False) -> bool:
         if isinstance(previous_text, str):
             _windows_clipboard_set_text(previous_text)
         return False
+    if on_marker:
+        on_marker("clipboard_set")
 
     try:
         # OPTIMIZED: App-specific pre-delay (0ms for most apps, ~80ms only for Word/Outlook)
@@ -347,6 +354,8 @@ def _paste_text(text: str, *, skip_clipboard_restore: bool = False) -> bool:
                 pyautogui.hotkey("ctrl", "v", interval=0.05)
             else:
                 return False
+        if on_marker:
+            on_marker("paste")
 
         if Config.DEBUG:
             logger.info(
@@ -381,10 +390,12 @@ class TextInjector(FrameProcessor):
         self,
         inject_immediately: bool = False,
         on_injected: Optional[Callable[[str], None]] = None,
+        on_injection_marker: Optional[Callable[[str], None]] = None,
     ):
         super().__init__()
         self.inject_immediately = inject_immediately
         self.on_injected = on_injected
+        self.on_injection_marker = on_injection_marker
         self._buffer = []
         self._last_injected = ""
 
@@ -459,9 +470,13 @@ class TextInjector(FrameProcessor):
         if method not in {"auto", "type", "paste", "sendinput"}:
             method = "auto"
 
+        paste_kwargs = {"skip_clipboard_restore": False}
+        if self.on_injection_marker:
+            paste_kwargs["on_marker"] = self._notify_injection_marker
+
         # Explicit modes are strict. Only "auto" falls back across methods.
         if method == "paste":
-            if not _paste_text(text, skip_clipboard_restore=False):
+            if not _paste_text(text, **paste_kwargs):
                 logger.warning("Clipboard paste injection failed")
             else:
                 self._notify_injected(text)
@@ -477,7 +492,7 @@ class TextInjector(FrameProcessor):
             return
 
         if method == "auto":
-            if _paste_text(text, skip_clipboard_restore=False):
+            if _paste_text(text, **paste_kwargs):
                 self._notify_injected(text)
                 return
             logger.debug("Clipboard paste failed; trying SendInput")
@@ -507,3 +522,11 @@ class TextInjector(FrameProcessor):
             self.on_injected(text)
         except Exception as exc:
             logger.debug(f"TextInjector on_injected callback failed: {exc}")
+
+    def _notify_injection_marker(self, marker: str) -> None:
+        if not self.on_injection_marker:
+            return
+        try:
+            self.on_injection_marker(marker)
+        except Exception as exc:
+            logger.debug(f"TextInjector on_injection_marker callback failed: {exc}")

@@ -47,7 +47,12 @@ async def test_microphone_input_adopts_prewarmed_stream(monkeypatch):
         def attach_active_capture(self, callback, **_kwargs):
             self.callback = callback
             self.attached += 1
-            return {"capture_channels": 1, "device_index": 7}
+            return {
+                "capture_channels": 1,
+                "device_index": 7,
+                "prebuffer_frames": [(np.full((512, 1), 250, dtype=np.int16), 512, {"pre": 1}, None)],
+                "prebuffer_ms": 32.0,
+            }
 
         def pause_for_active_capture(self):
             self.paused += 1
@@ -98,17 +103,54 @@ async def test_microphone_input_adopts_prewarmed_stream(monkeypatch):
     assert mic._using_prewarm_stream is True
     assert ready == [True]
 
-    assert manager.callback is not None
-    data = np.full((512, 1), 1000, dtype=np.int16)
-    manager.callback(data, 512, None, None)
     for _ in range(10):
         if consumed:
             break
         await asyncio.sleep(0)
 
-    assert consumed == [data.tobytes()]
+    assert consumed == [np.full((512, 1), 250, dtype=np.int16).tobytes()]
+
+    assert manager.callback is not None
+    data = np.full((512, 1), 1000, dtype=np.int16)
+    manager.callback(data, 512, None, None)
+    for _ in range(10):
+        if len(consumed) >= 2:
+            break
+        await asyncio.sleep(0)
+
+    assert consumed == [
+        np.full((512, 1), 250, dtype=np.int16).tobytes(),
+        data.tobytes(),
+    ]
 
     await mic.stop(EndFrame())
 
     assert manager.detached == 1
     assert mic._using_prewarm_stream is False
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+@pytest.mark.asyncio
+async def test_microphone_drain_notifies_after_last_audio_chunk(monkeypatch):
+    markers: list[str] = []
+    pushed: list[bytes] = []
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        on_last_audio_chunk_sent=lambda: markers.append("last_chunk_sent"),
+    )
+
+    mic._audio_in_queue = object()
+    mic._running = False
+    mic._queue.put_nowait(b"audio")
+
+    async def fake_push_audio_frame(frame):
+        pushed.append(frame.audio)
+
+    mic.push_audio_frame = fake_push_audio_frame
+
+    await mic._drain_queue()
+
+    assert pushed == [b"audio"]
+    assert markers == ["last_chunk_sent"]

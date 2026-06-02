@@ -104,8 +104,8 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `_enumerate_microphones()` runs under the shared device guard lock. Do not remove this lock; it protects against native `sounddevice`/PortAudio races.
 - `_resolve_mic_device()` in `pipeline.py` caches device-name/favorite-to-index resolution for a short TTL. Default TTL is `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC=10.0`.
 - The mic resolution cache is invalidated when DeviceMonitor sees a device-list change and when `micDevice` or `favoriteMic` settings change.
-- `MIC_ALWAYS_ON` is implemented by `src/mic_prewarm.py` as an app-level idle prewarm stream. It opens a discard-only PortAudio stream while the app is idle; live recording now first tries to adopt that warm stream by routing its callback into `MicrophoneInput`, and only falls back to closing/reopening PortAudio when the stream signature or device no longer matches.
-- Per-session pipeline cleanup still calls `stop(..., close_stream=True)`; do not try to reuse a Pipecat session transport across sessions. The app-level prewarm manager owns only idle warmup, not transcription audio delivery.
+- `MIC_ALWAYS_ON` is implemented by `src/mic_prewarm.py` as an app-level idle prewarm stream with a small rolling prebuffer. It opens a PortAudio stream while the app is idle, keeps the latest `SCRIBER_MIC_PREBUFFER_MS` of raw callback frames, and live recording first tries to adopt that warm stream by routing its callback plus buffered frames into `MicrophoneInput`. It falls back to closing/reopening PortAudio when the stream signature or device no longer matches.
+- Per-session pipeline cleanup still calls `stop(..., close_stream=True)`; do not try to reuse a Pipecat session transport across sessions. The app-level prewarm manager owns only idle warmup and the short prebuffer handoff, not transcription pipeline state.
 - `SCRIBER_AUDIO_ENGINE=rust` is treated as requested-only until a measured Rust audio prototype exists. `/api/runtime.featureFlags.audioEngine` is the effective engine and must remain `python` while `rustAudioAvailable=false`; `requestedAudioEngine` and `rustAudioRequested` expose the opt-in request separately.
 - `MicrophoneInput` still queues raw audio on every PortAudio callback. Only UI/visualizer/input-warning RMS work is throttled to about 60Hz.
 - Multi-channel capture rescans strongest-channel selection every 10 callback frames and reuses the last channel between rescans.
@@ -141,6 +141,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `audio_level` is throttled around 60Hz for smoother waveform rendering.
 - `broadcast()` skips JSON serialization when there are no connected WebSocket clients.
 - `_on_audio_level()` avoids scheduling UI broadcast work when there are no WebSocket clients and the native overlay is not consuming waveform updates.
+- `Frontend/client/src/pages/LiveMic.tsx` renders its small audio visualizer with Canvas/RAF from `audioLevelRef`; do not reintroduce per-frame React state for `audio_level`.
 - Frontend routes: LiveMic is eager for first paint; YouTube, File, Settings, TranscriptDetail, and NotFound are lazy-loaded.
 - Intent prefetch exists for route chunks in the layout.
 - Production frontend build uses manual vendor chunks for React, TanStack Query, motion libraries, charts, and remaining vendor code.
@@ -352,7 +353,7 @@ Important environment variables:
 - AWS STT: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
 - Provider/model behavior: `SCRIBER_DEFAULT_STT`, `SCRIBER_SONIOX_MODE`, `SCRIBER_SONIOX_ASYNC_MODEL`, `SCRIBER_SONIOX_RT_MODEL`, `SCRIBER_MISTRAL_RT_MODEL`, `SCRIBER_MISTRAL_ASYNC_MODEL`, `SCRIBER_OPENAI_STT_MODEL`
 - App behavior: `SCRIBER_HOTKEY`, `SCRIBER_MODE`, `SCRIBER_DISABLE_HOTKEYS`, `SCRIBER_INJECT_METHOD`, `SCRIBER_DISABLE_TEXT_INJECTION`, `SCRIBER_LANGUAGE`, `SCRIBER_DEBUG`, `SCRIBER_CUSTOM_VOCAB`, `SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC`, `SCRIBER_AUDIO_ENGINE`
-- Mic: `SCRIBER_MIC_DEVICE`, `SCRIBER_FAVORITE_MIC`, `SCRIBER_MIC_ALWAYS_ON`, `SCRIBER_MIC_BLOCK_SIZE`, `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC`
+- Mic: `SCRIBER_MIC_DEVICE`, `SCRIBER_FAVORITE_MIC`, `SCRIBER_MIC_ALWAYS_ON`, `SCRIBER_MIC_BLOCK_SIZE`, `SCRIBER_MIC_PREBUFFER_MS`, `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC`
 - Upload/jobs/timeouts: `SCRIBER_UPLOAD_MAX_MB`, `SCRIBER_UPLOAD_MAX_BYTES`, `SCRIBER_JOB_MAX_ATTEMPTS`, `SCRIBER_JOB_RETRY_BASE_SEC`, `SCRIBER_JOB_RETRY_MAX_SEC`, `SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC`
 - Summaries: `SCRIBER_SUMMARIZATION_MODEL`, `SCRIBER_AUTO_SUMMARIZE`, `SCRIBER_SUMMARY_MIN_WORDS`, `SCRIBER_SUMMARY_MAX_WORDS`
 - Local models: `SCRIBER_ONNX_MODEL`, `SCRIBER_ONNX_QUANTIZATION`, `SCRIBER_ONNX_USE_GPU`, `SCRIBER_NEMO_MODEL`
@@ -373,7 +374,7 @@ Current summarization default is `gemini-flash-latest`.
 - Use `loguru` for logging. Avoid `print`.
 - Validate user/config input early. Raise `ValueError` for user-facing config issues where existing patterns do that.
 - Be careful with PortAudio/sounddevice. Any new device enumeration or stream lifecycle code must respect `get_device_guard_lock()`.
-- Do not describe `MIC_ALWAYS_ON` as a speech pre-buffer. It reuses the warm PortAudio stream for active capture when possible, but it does not buffer earlier speech and still depends on the live recording pipeline for transcription.
+- Describe `MIC_ALWAYS_ON` precisely: it reuses the warm PortAudio stream for active capture and prepends only the short raw-audio prebuffer configured by `SCRIBER_MIC_PREBUFFER_MS`. It is still not a reusable Pipecat transcription pipeline and still depends on the live recording pipeline for transcription.
 
 ### TypeScript and React
 
@@ -419,7 +420,7 @@ Current summarization default is `gemini-flash-latest`.
 
 ## Known Open Engineering Work
 
-- Optional speech pre-buffering if first-word loss remains after idle `SCRIBER_MIC_ALWAYS_ON` prewarming.
+- Re-run real hot-path samples with the new stop-to-injection breakdown and `SCRIBER_MIC_PREBUFFER_MS` evidence to quantify provider-finalize vs app injection time.
 - Real recording text-injection samples during `-RecordHotPathSamples`: either `stop_requested_to_first_paste_ms` for async injection after stop or an already-injected-before-stop realtime sample counted as `0 ms` stop-to-text wait.
 - Full bundled desktop release activation: actual Authenticode signing step/certificate, Tauri updater signing keys, signed update artifacts, and published `latest.json`. The Authenticode validation gate is wired, but CI still needs a real signing provider before enabling it.
 - Optional longer live recording/provider soak tests. A 5-minute installed `azure_mai` + Insta360 Link live run passed with `-DisableLiveTextInjection`; a 30-minute installed idle stability gate has also passed.
@@ -441,7 +442,7 @@ Current summarization default is `gemini-flash-latest`.
 ## Documentation Rules
 
 - Update docs when behavior or implementation status changes.
-- Keep `MIC_ALWAYS_ON` docs precise: it keeps an idle prewarm stream open and can hand that stream to active capture, but it is not a reusable Pipecat transcription pipeline and not a rolling speech pre-buffer.
+- Keep `MIC_ALWAYS_ON` docs precise: it keeps an idle prewarm stream open, can hand that stream to active capture, and now prepends a bounded rolling raw-audio prebuffer. It is not a reusable Pipecat transcription pipeline.
 - Keep `README.md` user-facing.
 - Keep `docs/PRD.md` broad and current.
 - Keep performance docs explicit about completed, partial, and pending work.

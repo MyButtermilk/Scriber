@@ -87,6 +87,7 @@ class MicrophoneInput(BaseInputTransport):
         prewarm_manager=None,
         on_audio_level=None,
         on_ready=None,
+        on_last_audio_chunk_sent=None,
     ):
         if not HAS_SOUNDDEVICE:
             raise RuntimeError("Sounddevice is not available, cannot use MicrophoneInput.")
@@ -109,6 +110,7 @@ class MicrophoneInput(BaseInputTransport):
         self.prewarm_manager = prewarm_manager
         self.on_audio_level = on_audio_level
         self.on_ready = on_ready
+        self.on_last_audio_chunk_sent = on_last_audio_chunk_sent
         self.stream = None
         self._using_prewarm_stream = False
         self._prewarm_callback = None
@@ -128,6 +130,7 @@ class MicrophoneInput(BaseInputTransport):
         self._last_audio_level_at = 0.0
         self._audio_level_interval = 1.0 / 60.0
         self._stream_claimed = False
+        self._last_audio_chunk_sent_notified = False
 
     def _claim_active_stream(self) -> None:
         if self._stream_claimed:
@@ -150,6 +153,7 @@ class MicrophoneInput(BaseInputTransport):
         self._active_capture_channel = None
         self._channel_selection_counter = 0
         self._last_audio_level_at = 0.0
+        self._last_audio_chunk_sent_notified = False
         self._create_audio_task()
         self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")
 
@@ -173,9 +177,11 @@ class MicrophoneInput(BaseInputTransport):
                         adopted.get("capture_channels") or self._target_channels
                     )
                     self._using_prewarm_stream = True
+                    self._prepend_prewarm_audio(adopted)
                     logger.info(
                         "Microphone prewarm stream adopted "
-                        f"(device={'default' if adopted.get('device_index') is None else adopted.get('device_index')})"
+                        f"(device={'default' if adopted.get('device_index') is None else adopted.get('device_index')}, "
+                        f"prebuffer={float(adopted.get('prebuffer_ms') or 0.0):.1f} ms)"
                     )
                     if self.on_ready:
                         try:
@@ -422,6 +428,17 @@ class MicrophoneInput(BaseInputTransport):
             # Never raise from PortAudio callback threads.
             logger.debug(f"Audio callback exception ignored: {exc}")
 
+    def _prepend_prewarm_audio(self, adopted: dict) -> None:
+        frames = adopted.get("prebuffer_frames") or []
+        if not frames:
+            return
+        for item in frames:
+            try:
+                indata, frame_count, time_info, status = item
+                self._audio_callback(indata, int(frame_count or 0), time_info, status)
+            except Exception as exc:
+                logger.debug(f"Prewarmed audio prepend skipped frame: {exc}")
+
     async def _drain_queue(self):
         # Ensure audio queue exists (BaseInputTransport creates it in _create_audio_task)
         if not hasattr(self, "_audio_in_queue") or self._audio_in_queue is None:
@@ -447,6 +464,7 @@ class MicrophoneInput(BaseInputTransport):
                     num_channels=self._target_channels,
                 )
                 await self.push_audio_frame(frame)
+            self._notify_last_audio_chunk_sent()
         except asyncio.CancelledError:
             # Clean up audio stream on cancellation
             self._running = False
@@ -460,6 +478,17 @@ class MicrophoneInput(BaseInputTransport):
                     self.stream = None
                 self._release_active_stream()
             raise  # Re-raise to properly complete cancellation
+
+    def _notify_last_audio_chunk_sent(self) -> None:
+        if self._last_audio_chunk_sent_notified:
+            return
+        self._last_audio_chunk_sent_notified = True
+        if not self.on_last_audio_chunk_sent:
+            return
+        try:
+            self.on_last_audio_chunk_sent()
+        except Exception as exc:
+            logger.debug(f"Microphone last-chunk callback failed: {exc}")
 
     async def stop(self, frame: EndFrame, *, close_stream: bool | None = None):
         self._running = False

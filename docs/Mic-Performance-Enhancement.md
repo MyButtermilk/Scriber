@@ -12,10 +12,11 @@
 - ✅ **Mic device resolution cache**: Repeated recording starts reuse the resolved device index for a short TTL and invalidate on mic/favorite setting changes or device-change events
 - ✅ **DeviceMonitor active-stream deferral**: PortAudio cache refreshes are deferred while a stream is active and run once after the stream becomes idle
 - ✅ **Audio callback hot-path reduction**: Raw audio still flows every callback, but visualizer/input-warning RMS work is capped to ~60Hz and multi-channel selection is rescanned every 10 frames
-- ✅ **Solution 2 (Idle Pre-warming)**: `MIC_ALWAYS_ON` now uses `src/mic_prewarm.py` to keep a discard-only app-level PortAudio stream open while idle. Active recording first tries to adopt that warm stream by routing its callback into `MicrophoneInput`; it falls back to closing/reopening PortAudio only when the warmed stream no longer matches the requested device or stream settings.
+- ✅ **Solution 2 (Idle Pre-warming)**: `MIC_ALWAYS_ON` now uses `src/mic_prewarm.py` to keep an app-level PortAudio stream open while idle. Active recording first tries to adopt that warm stream by routing its callback into `MicrophoneInput`; it falls back to closing/reopening PortAudio only when the warmed stream no longer matches the requested device or stream settings.
+- ✅ **Solution 3 (Rolling Pre-buffer)**: the idle prewarm stream keeps a bounded raw-audio ring buffer (`SCRIBER_MIC_PREBUFFER_MS`, default `400`) and prepends those frames when live recording adopts the warm stream.
 
-**Not Implemented:**
-- ❌ **Solution 3 (Pre-buffer)**: Planned for future if needed
+**Not Yet Measured After Latest Change:**
+- Live hot-path samples should be rerun with `SCRIBER_MIC_ALWAYS_ON=1` to quantify first-audio-frame behavior after the rolling prebuffer and to use the new stop-to-injection breakdown markers.
 
 ## Latest Measurement (2026-06-02)
 
@@ -25,7 +26,7 @@ measured:
 
 - Hotkey to microphone ready: `70.933 ms`
 - Hotkey to first audio frame: `99.428 ms`
-- Stop to text injection: `1387.75 ms`
+- Stop to text injection: `1387.75 ms` in the previous run; new markers now split this into `last_chunk_sent`, `provider_final_received`, `clipboard_set`, and `paste` for the next run.
 - Controlled text target persistence: `capturedSamples=1`,
   `maxCapturedChars=39`, `captureElapsedMs=4636.593`
 
@@ -104,11 +105,12 @@ The overlay is shown **immediately** after calling `_pipeline.start()`, but the 
 **Concept**: Keep the microphone in standby mode so it's instantly ready when the hotkey is pressed.
 
 **Current behavior (2026-06-02):**
-1. When `MIC_ALWAYS_ON` is enabled, `MicrophonePrewarmManager` opens a discard-only PortAudio stream while no live recording is active.
+1. When `MIC_ALWAYS_ON` is enabled, `MicrophonePrewarmManager` opens a PortAudio stream while no live recording is active.
 2. When live recording starts, `MicrophoneInput` attempts to attach its audio callback to the warm stream instead of opening a second `sounddevice.InputStream`.
-3. If the warm stream does not match the requested sample rate, channel count, block size, or device index, the manager closes the idle stream and recording uses the existing safe fresh-open fallback.
-4. After stop/error cleanup, the manager returns to idle discard mode if the setting is still enabled.
-5. During DeviceMonitor PortAudio refreshes, the manager quiesces the idle stream so hotplug/default-device changes are not deferred forever.
+3. While idle, the manager keeps the latest `SCRIBER_MIC_PREBUFFER_MS` of raw callback frames. On warm-stream adoption, those frames are pushed through `MicrophoneInput` before active live audio.
+4. If the warm stream does not match the requested sample rate, channel count, block size, or device index, the manager closes the idle stream and recording uses the existing safe fresh-open fallback.
+5. After stop/error cleanup, the manager returns to idle mode if the setting is still enabled.
+6. During DeviceMonitor PortAudio refreshes, the manager quiesces the idle stream so hotplug/default-device changes are not deferred forever.
 
 `ScriberPipeline._cleanup_audio_input()` still calls `stop(..., close_stream=True)` because pipeline instances are per-session. Do not reuse a Pipecat transport across sessions; the app-level prewarm manager owns only idle warmup.
 
@@ -184,7 +186,7 @@ The overlay is shown **immediately** after calling `_pipeline.start()`, but the 
 **Implementation**:
 1. Show overlay immediately in "initializing" state (Solution 4)
 2. Transition to "recording" state when mic signals ready (Solution 1)
-3. Optionally, add a small pre-buffer for the initialization period (partial Solution 3)
+3. Use the existing small pre-buffer for the initialization period (`SCRIBER_MIC_PREBUFFER_MS`, default `400`)
 
 **User Experience**:
 - Press hotkey → See "Preparing..." overlay immediately
@@ -205,8 +207,8 @@ The overlay is shown **immediately** after calling `_pipeline.start()`, but the 
 2. ✅ **Completed**: Solution 1 (Ready signal)
 3. ✅ **Completed**: Solution 5 (Hybrid)
 4. ✅ **Completed**: Solution 2 idle app-level microphone prewarming for `MIC_ALWAYS_ON`
-5. ⏳ **Future**: Solution 3 (Pre-buffer) if users still lose first speech after prewarming
+5. ✅ **Completed**: Solution 3 bounded rolling pre-buffer for the idle prewarm stream
 
 ## Recommendation
 
-The current production path should keep the hybrid ready-signal flow, app-level idle prewarm, and safe per-session stream cleanup. The remaining low-latency audio follow-up is an optional rolling pre-buffer if real usage still shows first-word loss.
+The current production path should keep the hybrid ready-signal flow, app-level idle prewarm, bounded rolling prebuffer, and safe per-session stream cleanup. The remaining low-latency follow-up is measurement: rerun live hot-path samples and use the new stop-to-injection subsegments to separate provider finalize latency from app injection latency.

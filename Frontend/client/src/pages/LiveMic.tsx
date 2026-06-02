@@ -232,19 +232,77 @@ const AudioVisualizer = memo(function AudioVisualizer({
   isRecording,
   audioLevelRef,
 }: AudioVisualizerProps) {
-  const [level, setLevel] = useState(0);
-  const lastFrameRef = useRef(0);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
-    if (!isRecording) {
-      setLevel(0);
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) {
       return;
     }
+
     let rafId = 0;
+    let smoothedLevel = 0;
+    let lastWidth = 0;
+    let lastHeight = 0;
+
+    const style = getComputedStyle(document.documentElement);
+    const primary = `hsl(${style.getPropertyValue("--primary").trim() || "220 60% 50%"})`;
+    const border = `hsl(${style.getPropertyValue("--border").trim() || "220 15% 85%"})`;
+
+    const resizeCanvas = () => {
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(1, Math.floor(rect.width));
+      const height = Math.max(1, Math.floor(rect.height));
+      if (width === lastWidth && height === lastHeight) {
+        return;
+      }
+      lastWidth = width;
+      lastHeight = height;
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    const drawIdle = () => {
+      resizeCanvas();
+      ctx.clearRect(0, 0, lastWidth, lastHeight);
+      ctx.fillStyle = border;
+      const y = Math.round(lastHeight / 2);
+      ctx.fillRect(0, y, lastWidth, 2);
+    };
+
+    if (!isRecording) {
+      drawIdle();
+      return;
+    }
+
     const tick = (time: number) => {
-      if (time - lastFrameRef.current >= 33) {
-        setLevel(audioLevelRef.current);
-        lastFrameRef.current = time;
+      resizeCanvas();
+      const rawLevel = Math.min(1, Math.max(0, audioLevelRef.current * 3));
+      smoothedLevel = smoothedLevel * 0.72 + rawLevel * 0.28;
+
+      ctx.clearRect(0, 0, lastWidth, lastHeight);
+      const barCount = 20;
+      const gap = 4;
+      const barWidth = Math.max(3, Math.floor((lastWidth - gap * (barCount - 1)) / barCount));
+      const totalWidth = barCount * barWidth + (barCount - 1) * gap;
+      const startX = Math.max(0, (lastWidth - totalWidth) / 2);
+      const maxBarHeight = Math.max(8, lastHeight - 8);
+      ctx.fillStyle = primary;
+
+      for (let i = 0; i < barCount; i += 1) {
+        const centerDistance = Math.abs(i - (barCount - 1) / 2) / ((barCount - 1) / 2);
+        const shape = 1 - centerDistance * centerDistance * 0.65;
+        const phase = time * 0.008 + i * 0.7;
+        const motion = 0.78 + Math.sin(phase) * 0.22;
+        const height = Math.max(4, smoothedLevel * maxBarHeight * shape * motion);
+        const x = startX + i * (barWidth + gap);
+        const y = (lastHeight - height) / 2;
+        ctx.beginPath();
+        ctx.roundRect(x, y, barWidth, height, barWidth / 2);
+        ctx.fill();
       }
       rafId = requestAnimationFrame(tick);
     };
@@ -252,24 +310,13 @@ const AudioVisualizer = memo(function AudioVisualizer({
     return () => cancelAnimationFrame(rafId);
   }, [audioLevelRef, isRecording]);
 
-  const intensity = Math.min(1, Math.max(0, level * 3));
-
   return (
-    <div className="h-16 flex items-center justify-center gap-1 w-full max-w-xs overflow-hidden">
-      {isRecording ? (
-        Array.from({ length: 20 }).map((_, i) => (
-          <div
-            key={i}
-            className="w-1.5 bg-primary/80 rounded-full transition-[height] duration-150 ease-out"
-            style={{
-              height: `${10 + intensity * 48 * (0.35 + 0.65 * Math.abs(Math.sin((i + 1) * 0.9))) }px`,
-            }}
-          />
-        ))
-      ) : (
-        <div className="w-full h-0.5 bg-border rounded-full" />
-      )}
-    </div>
+    <canvas
+      ref={canvasRef}
+      className="h-16 w-full max-w-xs"
+      aria-label={isRecording ? "Recording audio level" : "Recording idle"}
+      role="img"
+    />
   );
 });
 
