@@ -4,6 +4,94 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Release Size Report Gate
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m pytest `
+  tests\test_release_size_report.py `
+  tests\test_tauri_stability_smoke_gates.py `
+  -q
+
+$scripts = @(
+  'scripts\build_windows.ps1',
+  'scripts\smoke_windows_installer.ps1'
+)
+foreach ($script in $scripts) {
+  $tokens=$null; $errors=$null
+  $null=[System.Management.Automation.Language.Parser]::ParseFile(
+    (Resolve-Path $script),
+    [ref]$tokens,
+    [ref]$errors
+  )
+  if ($errors.Count) {
+    $errors | ForEach-Object { Write-Error "${script}: $($_.Message)" }
+    exit 1
+  }
+}
+'OK'
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -SkipChecks `
+  -SkipSmoke `
+  -MaxInstallerSizeMB 220
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -MaxInstalledSizeMB 1000 `
+  -OutputPath tmp\hybrid-baseline\installer-size-smoke-20260602.json
+```
+
+Result: passed for the current NSIS installer artifact.
+
+Implemented improvements:
+
+- Added `scripts\create_release_size_report.py`.
+- `scripts\build_windows.ps1` now writes
+  `Frontend\src-tauri\target\release\release-metadata\size-report.json` after
+  release metadata validation and fails when the largest installer artifact
+  exceeds `-MaxInstallerSizeMB` (default `220` MiB).
+- `scripts\smoke_windows_installer.ps1` now measures the temporary installed
+  app directory and can fail with `-MaxInstalledSizeMB <mb>`.
+- The release workflow already copies `release-metadata\*.json`, so the size
+  report is included with CI/release artifacts.
+
+Evidence:
+
+- Focused tests: `15 passed`.
+- PowerShell parser check for build and installer smoke scripts: passed.
+- Size report artifact:
+  `Frontend\src-tauri\target\release\release-metadata\size-report.json`.
+- Installer artifact:
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- Installer size: 206,860,594 bytes / 197.28 MiB.
+- Installer budget: 220 MiB.
+- Installer budget result: passed.
+- Backend resource tree measured for top-file analysis:
+  594,820,351 bytes / 567.26 MiB.
+- Installed package smoke with a generous 1000-MiB gate: passed.
+- Installed app directory size:
+  608,263,965 bytes / 580.09 MiB.
+- Installed package cleanup and silent uninstall: passed.
+- Largest backend-resource files:
+  `tools\ffmpeg\ffmpeg.exe` at 133.58 MiB and
+  `tools\ffmpeg\ffprobe.exe` at 133.43 MiB.
+
+Goal coverage:
+
+- Phase 6: adds a repeatable packaging-size artifact to the Windows release
+  path.
+- Phase 8: turns the Lite setup budget into an automatic hard gate and makes
+  installed-size pressure visible through installer-smoke evidence.
+
+Remaining limits:
+
+- The setup artifact is under budget, but installed app size is currently
+  580.09 MiB and still needs a deliberate reduction pass if the 450-MiB
+  installed Lite-App target is kept.
+- ffmpeg/ffprobe dominate the current backend resource footprint; reducing that
+  likely requires a slimmer media-tools bundle or on-demand media tools.
+
 ## 2026-06-02 - Safe Installed Live Recording 5-Minute Gate
 
 Commands:

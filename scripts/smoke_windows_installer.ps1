@@ -63,6 +63,7 @@ param(
     [int]$LiveRecordingStartTimeoutSec = 60,
     [int]$LiveRecordingStopTimeoutSec = 60,
     [switch]$DisableLiveTextInjection,
+    [double]$MaxInstalledSizeMB = 0,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
     [switch]$SimulateUpgrade,
@@ -217,6 +218,54 @@ function Get-RemainingInstallArtifacts {
         Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue |
             ForEach-Object { Convert-ToRelativePath -Root $Root -Path $_.FullName }
     )
+}
+
+function Get-DirectorySizeReport {
+    param(
+        [string]$Root,
+        [double]$MaxSizeMB = 0,
+        [int]$TopFilesLimit = 20
+    )
+
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw "Directory size report root not found: $Root"
+    }
+
+    $files = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction SilentlyContinue)
+    $totalBytes = [int64]0
+    foreach ($file in $files) {
+        $totalBytes += [int64]$file.Length
+    }
+    $totalMb = [Math]::Round($totalBytes / 1MB, 2)
+    $topFiles = @(
+        $files |
+            Sort-Object Length -Descending |
+            Select-Object -First $TopFilesLimit |
+            ForEach-Object {
+                [pscustomobject]@{
+                    path = Convert-ToRelativePath -Root $Root -Path $_.FullName
+                    sizeBytes = [int64]$_.Length
+                    sizeMb = [Math]::Round(([int64]$_.Length) / 1MB, 2)
+                }
+            }
+    )
+    $withinBudget = $null
+    if ($MaxSizeMB -gt 0) {
+        $withinBudget = ($totalMb -le $MaxSizeMB)
+        if (-not $withinBudget) {
+            throw "Installed app size ${totalMb} MB exceeds budget ${MaxSizeMB} MB."
+        }
+    }
+
+    return [pscustomobject]@{
+        path = $Root
+        fileCount = $files.Count
+        totalBytes = $totalBytes
+        totalMb = $totalMb
+        maxInstalledSizeMb = if ($MaxSizeMB -gt 0) { $MaxSizeMB } else { $null }
+        withinBudget = $withinBudget
+        topFiles = $topFiles
+    }
 }
 
 function Wait-InstallArtifactsRemoved {
@@ -453,6 +502,7 @@ $cleanupCompleted = $false
 try {
     Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer"
     $appExe = Resolve-InstalledAppExe -Root $InstallDir
+    $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
 
     $smoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
 
@@ -462,6 +512,7 @@ try {
 
         Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer upgrade"
         $appExe = Resolve-InstalledAppExe -Root $InstallDir
+        $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
         $secondSmoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
         if (-not (Test-Path -LiteralPath $sentinelPath -PathType Leaf)) {
             throw "Installer upgrade smoke did not preserve existing data sentinel: $sentinelPath"
@@ -482,6 +533,7 @@ try {
             liveRecording = $secondSmoke.liveRecording
             stability = $secondSmoke.stability
             legacyDataMigration = $secondSmoke.legacyDataMigration
+            installSize = $installSize
         }
         $smoke = $secondSmoke
     }
@@ -492,6 +544,7 @@ try {
         installDir = $InstallDir
         appExe = $appExe
         dataDir = $DataDir
+        installSize = $installSize
         runtimeMode = $smoke.runtimeMode
         launchKind = $smoke.launchKind
         externalAttach = $smoke.externalAttach

@@ -54,6 +54,23 @@ def test_installer_and_build_scripts_forward_idle_cpu_gate() -> None:
     assert '"-MaxIdleCpuPercent", $InstallerMaxIdleCpuPercent.ToString' in build
 
 
+def test_release_build_and_installer_smoke_report_size_budgets() -> None:
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+    build = read_script("scripts/build_windows.ps1")
+
+    assert "[double]$MaxInstallerSizeMB = 220" in build
+    assert "[double]$InstallerMaxInstalledSizeMB = 0" in build
+    assert "scripts\\create_release_size_report.py" in build
+    assert "--max-installer-mb" in build
+    assert "size-report.json" in build
+    assert '"-MaxInstalledSizeMB", $InstallerMaxInstalledSizeMB.ToString' in build
+
+    assert "[double]$MaxInstalledSizeMB = 0" in installer
+    assert "function Get-DirectorySizeReport" in installer
+    assert "Installed app size ${totalMb} MB exceeds budget ${MaxSizeMB} MB." in installer
+    assert "installSize = $installSize" in installer
+
+
 def test_installer_uninstall_smoke_is_a_strict_build_gate() -> None:
     installer = read_script("scripts/smoke_windows_installer.ps1")
     build = read_script("scripts/build_windows.ps1")

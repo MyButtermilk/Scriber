@@ -22,6 +22,8 @@ param(
     [switch]$RequireAuthenticodeSignature,
     [string]$ExpectedAuthenticodePublisher = "",
     [switch]$RequireAuthenticodeTimestamp,
+    [double]$MaxInstallerSizeMB = 220,
+    [double]$InstallerMaxInstalledSizeMB = 0,
     [switch]$SkipChecks,
     [switch]$SkipSmoke,
     [switch]$RunInstallerSmoke,
@@ -238,6 +240,31 @@ try {
                 Pop-Location
             }
         }
+
+        Invoke-Checked -Label "Release size report" -Command {
+            Push-Location $RepoRoot
+            try {
+                $sizeReportArgs = @(
+                    "scripts\create_release_size_report.py",
+                    "--output",
+                    (Join-Path $metadataDir "size-report.json"),
+                    "--max-installer-mb",
+                    $MaxInstallerSizeMB.ToString([System.Globalization.CultureInfo]::InvariantCulture),
+                    "--top-root",
+                    $bundleRoot
+                )
+                $backendReleaseDir = Join-Path $targetRelease "backend"
+                if (Test-Path -LiteralPath $backendReleaseDir -PathType Container) {
+                    $sizeReportArgs += @("--top-root", $backendReleaseDir)
+                }
+                foreach ($artifact in $artifacts) {
+                    $sizeReportArgs += @("--artifact", $artifact)
+                }
+                python @sizeReportArgs
+            } finally {
+                Pop-Location
+            }
+        }
     }
 
     if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
@@ -294,6 +321,9 @@ try {
                         $installerSmokeArgs += @("-MaxIdleCpuPercent", $InstallerMaxIdleCpuPercent.ToString([System.Globalization.CultureInfo]::InvariantCulture))
                     }
                 }
+                if ($InstallerMaxInstalledSizeMB -gt 0) {
+                    $installerSmokeArgs += @("-MaxInstalledSizeMB", $InstallerMaxInstalledSizeMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                }
                 if ($RunInstallerLiveRecordingSmoke) {
                     $liveDuration = if ($InstallerLiveRecordingDurationSec -gt 0) { $InstallerLiveRecordingDurationSec } else { 1800 }
                     $installerSmokeArgs += @("-LiveRecordingDurationSec", $liveDuration.ToString())
@@ -333,6 +363,7 @@ try {
         releaseExe = $releaseExe
         artifacts = $artifacts
         metadataDir = $metadataDir
+        sizeReport = Join-Path $metadataDir "size-report.json"
     } | ConvertTo-Json -Compress
 } finally {
     if ($null -ne $tauriConfigOriginal) {
