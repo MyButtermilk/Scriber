@@ -444,6 +444,10 @@ class TextInjector(FrameProcessor):
         
         The ~20-40ms speed difference is negligible compared to reliability.
         """
+        if getattr(Config, "DISABLE_TEXT_INJECTION", False):
+            logger.info("Text injection disabled via SCRIBER_DISABLE_TEXT_INJECTION")
+            return
+
         if not HAS_GUI:
             logger.info(f"[MOCK INJECT] {text}")
             return

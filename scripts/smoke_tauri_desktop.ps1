@@ -57,6 +57,7 @@ param(
     [double]$MaxLiveCpuPercent = 0,
     [int]$LiveRecordingStartTimeoutSec = 60,
     [int]$LiveRecordingStopTimeoutSec = 60,
+    [switch]$DisableLiveTextInjection,
     [switch]$KeepAppOpen,
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
@@ -477,7 +478,8 @@ function Test-LiveRecordingStability {
         [double]$MaxWorkingSetGrowthMB = 0,
         [double]$MaxCpuPercent = 0,
         [int]$StartTimeoutSec = 60,
-        [int]$StopTimeoutSec = 60
+        [int]$StopTimeoutSec = 60,
+        [bool]$TextInjectionDisabled = $false
     )
 
     if ($DurationSec -le 0) {
@@ -531,6 +533,7 @@ function Test-LiveRecordingStability {
             stoppedRecordingState = [string]$stoppedState.recordingState
             stoppedListening = [bool]$stoppedState.listening
             nonRecordingSampleCount = $nonRecordingSamples.Count
+            textInjectionDisabled = $TextInjectionDisabled
             stability = $stability
         }
     } catch {
@@ -1385,6 +1388,7 @@ $oldScriberHotkey = $env:SCRIBER_HOTKEY
 $oldScriberMode = $env:SCRIBER_MODE
 $oldScriberDefaultStt = $env:SCRIBER_DEFAULT_STT
 $oldScriberInjectMethod = $env:SCRIBER_INJECT_METHOD
+$oldDisableTextInjection = $env:SCRIBER_DISABLE_TEXT_INJECTION
 $oldScriberAutoSummarize = $env:SCRIBER_AUTO_SUMMARIZE
 $oldBackendStartTimeout = $env:SCRIBER_BACKEND_START_TIMEOUT_MS
 $oldSimulateStartupTimeout = $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE
@@ -1426,6 +1430,9 @@ if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManual
     $env:SCRIBER_DEFAULT_STT = $globalHotkeySmokeConfig.invalidProvider
     $env:SCRIBER_INJECT_METHOD = "type"
     $env:SCRIBER_AUTO_SUMMARIZE = "0"
+}
+if ($DisableLiveTextInjection) {
+    $env:SCRIBER_DISABLE_TEXT_INJECTION = "1"
 }
 if ($LegacyDataDir) {
     $env:SCRIBER_LEGACY_DATA_DIR = $LegacyDataDir
@@ -1657,7 +1664,8 @@ try {
         -MaxWorkingSetGrowthMB $MaxLiveBackendWorkingSetGrowthMB `
         -MaxCpuPercent $MaxLiveCpuPercent `
         -StartTimeoutSec $LiveRecordingStartTimeoutSec `
-        -StopTimeoutSec $LiveRecordingStopTimeoutSec
+        -StopTimeoutSec $LiveRecordingStopTimeoutSec `
+        -TextInjectionDisabled ([bool]$DisableLiveTextInjection)
     $portConflictResult = $null
     if ($portConflict) {
         $portConflictResult = [pscustomobject]$portConflict
@@ -1751,6 +1759,7 @@ try {
     $env:SCRIBER_MODE = $oldScriberMode
     $env:SCRIBER_DEFAULT_STT = $oldScriberDefaultStt
     $env:SCRIBER_INJECT_METHOD = $oldScriberInjectMethod
+    $env:SCRIBER_DISABLE_TEXT_INJECTION = $oldDisableTextInjection
     $env:SCRIBER_AUTO_SUMMARIZE = $oldScriberAutoSummarize
     $env:SCRIBER_BACKEND_START_TIMEOUT_MS = $oldBackendStartTimeout
     $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE = $oldSimulateStartupTimeout

@@ -168,14 +168,21 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
     assert "Invoke-LiveMicStart" in desktop
     assert "Invoke-LiveMicStop" in desktop
     assert "nonRecordingSampleCount = $nonRecordingSamples.Count" in desktop
+    assert "[switch]$DisableLiveTextInjection" in desktop
+    assert "$env:SCRIBER_DISABLE_TEXT_INJECTION = \"1\"" in desktop
+    assert "textInjectionDisabled = $TextInjectionDisabled" in desktop
     assert "liveRecording = $liveRecording" in desktop
 
     assert "[int]$LiveRecordingDurationSec = 0" in installer
+    assert "[switch]$DisableLiveTextInjection" in installer
     assert '"-LiveRecordingDurationSec", $LiveRecordingDurationSec.ToString()' in installer
+    assert '"-DisableLiveTextInjection"' in installer
     assert "liveRecording = $smoke.liveRecording" in installer
 
     assert "[switch]$RunInstallerLiveRecordingSmoke" in build
+    assert "[switch]$InstallerDisableLiveTextInjection" in build
     assert "[int]$InstallerLiveRecordingDurationSec = 0" in build
     assert "$RunInstallerLiveRecordingSmoke" in build
     assert '"-LiveRecordingDurationSec", $liveDuration.ToString()' in build
+    assert '"-DisableLiveTextInjection"' in build
     assert '"-MaxLiveBackendWorkingSetGrowthMB", $InstallerMaxLiveBackendWorkingSetGrowthMB.ToString' in build

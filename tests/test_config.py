@@ -65,3 +65,12 @@ def test_bootstrap_runtime_env_keeps_process_values(monkeypatch, tmp_path):
     config_module._bootstrap_runtime_env()
 
     assert os.environ["SCRIBER_DATA_DIR"] == "C:\\Process\\Scriber"
+
+
+def test_persist_to_env_file_includes_text_injection_disable(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", True)
+
+    Config.persist_to_env_file(str(target))
+
+    assert "SCRIBER_DISABLE_TEXT_INJECTION=1" in target.read_text(encoding="utf-8")

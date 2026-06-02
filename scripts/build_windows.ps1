@@ -48,6 +48,7 @@ param(
     [double]$InstallerMaxLiveCpuPercent = 0,
     [int]$InstallerLiveRecordingStartTimeoutSec = 60,
     [int]$InstallerLiveRecordingStopTimeoutSec = 60,
+    [switch]$InstallerDisableLiveTextInjection,
     [switch]$RunInstallerLegacyDataSmoke,
     [switch]$RunInstallerUpgradeSmoke,
     [switch]$RunInstallerUninstallSmoke
@@ -299,6 +300,9 @@ try {
                     $installerSmokeArgs += @("-LiveRecordingProbeIntervalSec", $InstallerLiveRecordingProbeIntervalSec.ToString())
                     $installerSmokeArgs += @("-LiveRecordingStartTimeoutSec", $InstallerLiveRecordingStartTimeoutSec.ToString())
                     $installerSmokeArgs += @("-LiveRecordingStopTimeoutSec", $InstallerLiveRecordingStopTimeoutSec.ToString())
+                    if ($InstallerDisableLiveTextInjection) {
+                        $installerSmokeArgs += "-DisableLiveTextInjection"
+                    }
                     if ($InstallerMaxLiveBackendWorkingSetGrowthMB -gt 0) {
                         $installerSmokeArgs += @("-MaxLiveBackendWorkingSetGrowthMB", $InstallerMaxLiveBackendWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
                     }

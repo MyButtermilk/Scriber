@@ -4,6 +4,130 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Safe Installed Live Recording 5-Minute Gate
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m pytest `
+  tests\test_injector_methods.py `
+  tests\test_config.py `
+  tests\test_tauri_stability_smoke_gates.py `
+  -q
+
+$scripts = @(
+  'scripts\smoke_tauri_desktop.ps1',
+  'scripts\smoke_windows_installer.ps1',
+  'scripts\build_windows.ps1'
+)
+foreach ($script in $scripts) {
+  $tokens=$null; $errors=$null
+  $null=[System.Management.Automation.Language.Parser]::ParseFile(
+    (Resolve-Path $script),
+    [ref]$tokens,
+    [ref]$errors
+  )
+  if ($errors.Count) {
+    $errors | ForEach-Object { Write-Error "${script}: $($_.Message)" }
+    exit 1
+  }
+}
+'OK'
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -SkipChecks `
+  -SkipSmoke
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -InstallDir "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\installer-smoke\live-diag-Scriber" `
+  -DataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\installer-smoke\live-diag-data" `
+  -LegacyDataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber" `
+  -VerifyLegacyDataMigration `
+  -LiveRecordingDurationSec 30 `
+  -DisableLiveTextInjection `
+  -LiveRecordingProbeIntervalSec 5 `
+  -MaxLiveBackendWorkingSetGrowthMB 100 `
+  -MaxLiveCpuPercent 10 `
+  -KeepInstalled `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\installer-live-recording-safe-diagnostic-20260602.json"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1 `
+  -RepoRoot "C:\Users\Alexander.Immler\Documents\Github\Scriber" `
+  -ExePath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\installer-smoke\live-diag-Scriber\scriber-desktop.exe" `
+  -DataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\installer-smoke\live-diag-data" `
+  -DisableDevFallback `
+  -LiveRecordingDurationSec 300 `
+  -DisableLiveTextInjection `
+  -LiveRecordingProbeIntervalSec 30 `
+  -MaxLiveBackendWorkingSetGrowthMB 100 `
+  -MaxLiveCpuPercent 10 `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\tauri-live-recording-safe-5m-20260602.json"
+```
+
+Result: passed. The 5-minute live provider/microphone gate is accepted as
+sufficient for this iteration by the user on 2026-06-02; the attempted
+30-minute continuation was stopped at user request and is not claimed as
+evidence.
+
+Implemented improvements:
+
+- `SCRIBER_DISABLE_TEXT_INJECTION=1` now disables all OS text-injection paths
+  in `TextInjector` before clipboard, SendInput, or typing fallback can run.
+- `Config.persist_to_env_file(...)` preserves
+  `SCRIBER_DISABLE_TEXT_INJECTION`, so saving settings does not drop the flag.
+- `scripts\smoke_tauri_desktop.ps1` exposes `-DisableLiveTextInjection` and
+  reports `liveRecording.textInjectionDisabled`.
+- `scripts\smoke_windows_installer.ps1` and `scripts\build_windows.ps1` forward
+  the safe live-recording flag through installed-package release gates.
+- README and AGENTS document the safe diagnostic/live-stability mode.
+
+Evidence:
+
+- Focused tests: `22 passed`.
+- PowerShell parser check for the three release smoke/build scripts: passed.
+- New installer:
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- Installer timestamp: `2026-06-02 09:52:36`.
+- Sidecar executable timestamp: `2026-06-02 09:47:25`.
+- Sidecar runtime-import check during build: `ok: true`.
+- 30-second installed diagnostic artifact:
+  `tmp\hybrid-baseline\installer-live-recording-safe-diagnostic-20260602.json`.
+- 5-minute installed live artifact:
+  `tmp\hybrid-baseline\tauri-live-recording-safe-5m-20260602.json`.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- Provider: `azure_mai`.
+- Microphone: favorite mic resolved to `Mikrofon (4- Insta360 Link)`.
+- Text injection disabled: true.
+- Duration: 300 seconds.
+- Probe interval: 30 seconds.
+- Sample count: 10.
+- Non-recording sample count: 0.
+- Backend working-set start/end/growth:
+  194.71 MB / 208.23 MB / 13.52 MB.
+- Backend working-set growth was below the 100 MB gate.
+- Combined app+backend CPU max/avg:
+  0.90% / 0.55% below the 10% live gate.
+- Cleanup verified: true.
+
+Goal coverage:
+
+- Phase 6/7: verifies the rebuilt installed Tauri sidecar package can run a
+  live microphone/provider recording gate without development fallback.
+- Phase 8: adds a safe live-provider stability run that cannot write
+  transcribed text into the active desktop app.
+- The 5-minute live run replaces the previously open live-provider proof for
+  this iteration by explicit user acceptance.
+
+Remaining limits:
+
+- This is not a 30-minute live-provider soak. Longer live soaks are optional
+  follow-up, not claimed here.
+- Physical USB/Bluetooth/dock/default-mic hardware matrix, physical hotkey
+  dispatch, Authenticode signing, and published signed updater metadata remain
+  separate open items.
+
 ## 2026-06-02 - Installed CSP Package, Legacy Data, Support Bundle, Upgrade, Uninstall
 
 Commands:
@@ -723,6 +847,7 @@ Example installed 30-minute gate:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
   -LiveRecordingDurationSec 1800 `
+  -DisableLiveTextInjection `
   -LiveRecordingProbeIntervalSec 30 `
   -MaxLiveBackendWorkingSetGrowthMB 100 `
   -MaxLiveCpuPercent 10 `

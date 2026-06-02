@@ -62,6 +62,7 @@ param(
     [double]$MaxLiveCpuPercent = 0,
     [int]$LiveRecordingStartTimeoutSec = 60,
     [int]$LiveRecordingStopTimeoutSec = 60,
+    [switch]$DisableLiveTextInjection,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
     [switch]$SimulateUpgrade,
@@ -383,6 +384,9 @@ function Invoke-InstalledDesktopSmoke {
         $smokeArgs += @("-LiveRecordingProbeIntervalSec", $LiveRecordingProbeIntervalSec.ToString())
         $smokeArgs += @("-LiveRecordingStartTimeoutSec", $LiveRecordingStartTimeoutSec.ToString())
         $smokeArgs += @("-LiveRecordingStopTimeoutSec", $LiveRecordingStopTimeoutSec.ToString())
+        if ($DisableLiveTextInjection) {
+            $smokeArgs += "-DisableLiveTextInjection"
+        }
         if ($MaxLiveBackendWorkingSetGrowthMB -gt 0) {
             $smokeArgs += @("-MaxLiveBackendWorkingSetGrowthMB", $MaxLiveBackendWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
         }

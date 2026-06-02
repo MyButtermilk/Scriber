@@ -53,3 +53,20 @@ def test_inject_method_auto_falls_back_to_sendinput(monkeypatch):
     paste_mock.assert_called_once_with("hello ", skip_clipboard_restore=False)
     sendinput_mock.assert_called_once_with("hello ")
     keyboard_mock.write.assert_not_called()
+
+
+def test_disable_text_injection_skips_all_os_input(monkeypatch):
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", True)
+    injector = TextInjector()
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector._paste_text", return_value=True) as paste_mock,
+        patch("src.injector._send_input_text", return_value=True) as sendinput_mock,
+        patch("src.injector.keyboard", new=MagicMock()) as keyboard_mock,
+    ):
+        injector._inject_text("hello ")
+
+    paste_mock.assert_not_called()
+    sendinput_mock.assert_not_called()
+    keyboard_mock.write.assert_not_called()
