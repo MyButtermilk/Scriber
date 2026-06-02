@@ -4,6 +4,85 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Installed CSP Package, Legacy Data, Support Bundle, Upgrade, Uninstall
+
+Commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -SkipChecks `
+  -SkipSmoke
+
+venv\Scripts\python.exe -m pytest tests\test_tauri_stability_smoke_gates.py -q
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -VerifySupportBundle `
+  -LegacyDataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber" `
+  -VerifyLegacyDataMigration `
+  -SimulateUpgrade `
+  -VerifyUninstall `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\installer-csp-support-legacy-upgrade-uninstall-20260602.json"
+```
+
+Result: passed for the installed NSIS package.
+
+Implemented improvements:
+
+- `scripts\smoke_tauri_desktop.ps1` now restores the original runtime `.env`
+  and `settings.json` after the support-bundle redaction check.
+- This allows `-VerifySupportBundle`, `-VerifyLegacyDataMigration`, and
+  `-SimulateUpgrade` to run together against the same installed runtime data
+  directory without contaminating the second migration check with dummy secrets.
+- `tests\test_tauri_stability_smoke_gates.py` now asserts that the
+  support-bundle gate snapshots and restores runtime config files.
+
+Evidence:
+
+- New installer:
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- Installer timestamp: `2026-06-02 09:16:38`.
+- Installer size: 206,880,108 bytes.
+- Sidecar runtime-import check during build: `ok: true`.
+- Focused smoke-gate tests: `10 passed`.
+- Installed smoke artifact:
+  `tmp\hybrid-baseline\installer-csp-support-legacy-upgrade-uninstall-20260602.json`.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- Legacy source:
+  `C:\Users\Alexander.Immler\Documents\Github\Scriber`.
+- Legacy files verified:
+  `.env` hash matched, `settings.json` hash matched,
+  `transcripts.db` copied with 24,276,992 bytes.
+- Upgrade verified: true.
+- Upgrade sentinel preserved: true.
+- Support bundle verified on first and second smoke: true.
+- Support bundle unauthorized status: 401.
+- Support bundle redaction verified: true.
+- Support bundle ZIP entry count: 11.
+- Cleanup verified: true.
+- Strict uninstall verified: true.
+- Installed app artifacts removed: true.
+- Runtime data preservation during uninstall verified before final temp cleanup.
+
+Goal coverage:
+
+- Phase 2/3: verifies the hardened Tauri WebView build inside the real NSIS
+  package, not only a raw release executable.
+- Phase 2/6: verifies the packaged sidecar starts without development fallback
+  and uses the token-protected support-bundle endpoint.
+- Phase 6: verifies first-run migration from the legacy source checkout data
+  and preservation across an installer rerun.
+- Phase 8: keeps the release smoke composable by making the support-bundle
+  redaction test restore runtime config files.
+
+Remaining limits:
+
+- This is an unsigned local build; real Authenticode signing and public updater
+  metadata remain separate release gates.
+- Physical USB/Bluetooth/dock/default-mic hardware matrix and long live
+  provider/hardware runs remain open.
+
 ## 2026-06-02 - Tauri CSP Hardening
 
 Commands:

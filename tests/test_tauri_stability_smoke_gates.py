@@ -145,6 +145,8 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "support-bundle-secret-smoke.log" in desktop
     assert "Support bundle leaked a secret value" in desktop
     assert "redactionVerified = $true" in desktop
+    assert "$configSnapshots" in desktop
+    assert "[System.IO.File]::WriteAllBytes($snapshot.Path" in desktop
     assert "supportBundle = $supportBundle" in desktop
 
     assert "[switch]$VerifySupportBundle" in installer

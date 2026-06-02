@@ -623,92 +623,117 @@ function Test-SupportBundle {
         "support-bundle-bearer-secret"
     )
 
+    $envPath = Join-Path $RuntimeDataDir ".env"
+    $settingsPath = Join-Path $RuntimeDataDir "settings.json"
+    $configSnapshots = @(
+        [pscustomobject]@{
+            Path = $envPath
+            Exists = Test-Path -LiteralPath $envPath -PathType Leaf
+            Bytes = if (Test-Path -LiteralPath $envPath -PathType Leaf) { [System.IO.File]::ReadAllBytes($envPath) } else { $null }
+        },
+        [pscustomobject]@{
+            Path = $settingsPath
+            Exists = Test-Path -LiteralPath $settingsPath -PathType Leaf
+            Bytes = if (Test-Path -LiteralPath $settingsPath -PathType Leaf) { [System.IO.File]::ReadAllBytes($settingsPath) } else { $null }
+        }
+    )
+
     $logsPath = Join-Path $RuntimeDataDir "logs"
     New-Item -ItemType Directory -Force -Path $logsPath | Out-Null
-    Set-Content `
-        -LiteralPath (Join-Path $RuntimeDataDir ".env") `
-        -Value "OPENAI_API_KEY=$($secretValues[0])`nSCRIBER_MODE=toggle" `
-        -Encoding UTF8
-    Set-Content `
-        -LiteralPath (Join-Path $RuntimeDataDir "settings.json") `
-        -Value "{`"language`":`"en`",`"apiKeys`":{`"openaiApiKey`":`"$($secretValues[1])`"}}" `
-        -Encoding UTF8
-    Set-Content `
-        -LiteralPath (Join-Path $logsPath "support-bundle-secret-smoke.log") `
-        -Value "OPENAI_API_KEY=$($secretValues[2]) Authorization: Bearer $($secretValues[3])" `
-        -Encoding UTF8
-
-    $uri = "http://127.0.0.1:$Port/api/runtime/support-bundle"
-    $unauthorizedStatus = $null
     try {
-        Invoke-WebRequest -Method Post -Uri $uri -TimeoutSec 5 | Out-Null
-        throw "Support bundle endpoint allowed an unauthenticated request."
-    } catch {
-        $response = $_.Exception.Response
-        if ($response -and $response.StatusCode) {
-            $unauthorizedStatus = [int]$response.StatusCode
+        Set-Content `
+            -LiteralPath $envPath `
+            -Value "OPENAI_API_KEY=$($secretValues[0])`nSCRIBER_MODE=toggle" `
+            -Encoding UTF8
+        Set-Content `
+            -LiteralPath $settingsPath `
+            -Value "{`"language`":`"en`",`"apiKeys`":{`"openaiApiKey`":`"$($secretValues[1])`"}}" `
+            -Encoding UTF8
+        Set-Content `
+            -LiteralPath (Join-Path $logsPath "support-bundle-secret-smoke.log") `
+            -Value "OPENAI_API_KEY=$($secretValues[2]) Authorization: Bearer $($secretValues[3])" `
+            -Encoding UTF8
+
+        $uri = "http://127.0.0.1:$Port/api/runtime/support-bundle"
+        $unauthorizedStatus = $null
+        try {
+            Invoke-WebRequest -Method Post -Uri $uri -TimeoutSec 5 | Out-Null
+            throw "Support bundle endpoint allowed an unauthenticated request."
+        } catch {
+            $response = $_.Exception.Response
+            if ($response -and $response.StatusCode) {
+                $unauthorizedStatus = [int]$response.StatusCode
+            }
+            if ($unauthorizedStatus -ne 401) {
+                throw "Support bundle endpoint should reject unauthenticated requests with 401, got $unauthorizedStatus."
+            }
         }
-        if ($unauthorizedStatus -ne 401) {
-            throw "Support bundle endpoint should reject unauthenticated requests with 401, got $unauthorizedStatus."
+
+        $downloadDir = Join-Path $RuntimeDataDir "support-bundle-smoke"
+        New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+        $downloadPath = Join-Path $downloadDir "support-bundle.zip"
+        $headers = @{"X-Scriber-Token" = $Token}
+        Invoke-WebRequest -Method Post -Uri $uri -Headers $headers -OutFile $downloadPath -TimeoutSec 20
+        if (-not (Test-Path -LiteralPath $downloadPath -PathType Leaf)) {
+            throw "Support bundle download did not create $downloadPath."
         }
-    }
 
-    $downloadDir = Join-Path $RuntimeDataDir "support-bundle-smoke"
-    New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
-    $downloadPath = Join-Path $downloadDir "support-bundle.zip"
-    $headers = @{"X-Scriber-Token" = $Token}
-    Invoke-WebRequest -Method Post -Uri $uri -Headers $headers -OutFile $downloadPath -TimeoutSec 20
-    if (-not (Test-Path -LiteralPath $downloadPath -PathType Leaf)) {
-        throw "Support bundle download did not create $downloadPath."
-    }
-
-    $downloadItem = Get-Item -LiteralPath $downloadPath
-    if ($downloadItem.Length -le 0) {
-        throw "Support bundle download was empty."
-    }
-
-    $zip = Read-ZipEntryText -Path $downloadPath
-    $entrySet = @($zip.entries)
-    foreach ($required in @("manifest.json", "runtime.json", "state.redacted.json", "environment.redacted.json", "config/env.redacted.txt", "logs/support-bundle-secret-smoke.log")) {
-        if ($entrySet -notcontains $required) {
-            throw "Support bundle is missing required entry: $required"
+        $downloadItem = Get-Item -LiteralPath $downloadPath
+        if ($downloadItem.Length -le 0) {
+            throw "Support bundle download was empty."
         }
-    }
-    $settingsEntry = if ($entrySet -contains "config/settings.redacted.json") {
-        "config/settings.redacted.json"
-    } elseif ($entrySet -contains "config/settings.redacted.txt") {
-        "config/settings.redacted.txt"
-    } else {
-        throw "Support bundle is missing redacted settings entry."
-    }
 
-    $combined = [string]$zip.combinedText
-    foreach ($secret in @($secretValues + @($Token))) {
-        if ($secret -and $combined.Contains($secret)) {
-            throw "Support bundle leaked a secret value."
+        $zip = Read-ZipEntryText -Path $downloadPath
+        $entrySet = @($zip.entries)
+        foreach ($required in @("manifest.json", "runtime.json", "state.redacted.json", "environment.redacted.json", "config/env.redacted.txt", "logs/support-bundle-secret-smoke.log")) {
+            if ($entrySet -notcontains $required) {
+                throw "Support bundle is missing required entry: $required"
+            }
         }
-    }
-    if (-not $combined.Contains("[REDACTED]")) {
-        throw "Support bundle did not contain any redaction marker."
-    }
+        $settingsEntry = if ($entrySet -contains "config/settings.redacted.json") {
+            "config/settings.redacted.json"
+        } elseif ($entrySet -contains "config/settings.redacted.txt") {
+            "config/settings.redacted.txt"
+        } else {
+            throw "Support bundle is missing redacted settings entry."
+        }
 
-    return [pscustomobject]@{
-        verified = $true
-        tokenProtected = $true
-        unauthorizedStatus = $unauthorizedStatus
-        downloadPath = $downloadPath
-        downloadBytes = [int64]$downloadItem.Length
-        entryCount = [int]$entrySet.Count
-        redactionVerified = $true
-        requiredEntries = @(
-            "manifest.json",
-            "runtime.json",
-            "state.redacted.json",
-            "environment.redacted.json",
-            "config/env.redacted.txt",
-            $settingsEntry,
-            "logs/support-bundle-secret-smoke.log"
-        )
+        $combined = [string]$zip.combinedText
+        foreach ($secret in @($secretValues + @($Token))) {
+            if ($secret -and $combined.Contains($secret)) {
+                throw "Support bundle leaked a secret value."
+            }
+        }
+        if (-not $combined.Contains("[REDACTED]")) {
+            throw "Support bundle did not contain any redaction marker."
+        }
+
+        return [pscustomobject]@{
+            verified = $true
+            tokenProtected = $true
+            unauthorizedStatus = $unauthorizedStatus
+            downloadPath = $downloadPath
+            downloadBytes = [int64]$downloadItem.Length
+            entryCount = [int]$entrySet.Count
+            redactionVerified = $true
+            requiredEntries = @(
+                "manifest.json",
+                "runtime.json",
+                "state.redacted.json",
+                "environment.redacted.json",
+                "config/env.redacted.txt",
+                $settingsEntry,
+                "logs/support-bundle-secret-smoke.log"
+            )
+        }
+    } finally {
+        foreach ($snapshot in $configSnapshots) {
+            if ($snapshot.Exists) {
+                [System.IO.File]::WriteAllBytes($snapshot.Path, [byte[]]$snapshot.Bytes)
+            } elseif (Test-Path -LiteralPath $snapshot.Path -PathType Leaf) {
+                Remove-Item -LiteralPath $snapshot.Path -Force
+            }
+        }
     }
 }
 

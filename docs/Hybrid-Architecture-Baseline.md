@@ -112,6 +112,11 @@ is to distinguish provider transcript failure from OS input/focus failure.
   redaction via `scripts/smoke_tauri_desktop.ps1 -VerifySupportBundle`.
 - Tauri WebView CSP restrictions and frontend entrypoint compatibility via
   `tests\test_tauri_security_gates.py`.
+- installed NSIS package coverage for the hardened CSP build, sidecar launch,
+  legacy `.env`/`settings.json`/`transcripts.db` migration, support-bundle
+  redaction, installer rerun data preservation, and strict uninstall via
+  `scripts\smoke_windows_installer.ps1 -VerifySupportBundle
+  -VerifyLegacyDataMigration -SimulateUpgrade -VerifyUninstall`.
 
 The runner intentionally reports an incomplete Phase 0 gate until all required
 measurements are present. Missing fields are listed in
