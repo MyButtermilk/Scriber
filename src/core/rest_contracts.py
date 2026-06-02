@@ -155,6 +155,18 @@ def validate_frontend_ready_payload(payload: dict[str, Any]) -> None:
     _require_optional_string(last_seen, "userAgent", contract)
 
 
+def validate_frontend_ready_request_payload(payload: dict[str, Any]) -> None:
+    contract = "POST /api/runtime/frontend-ready"
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} payload must be a dict")
+
+    _require_api_version(payload, contract)
+    _require_bool(payload, "tauriRuntime", contract)
+    _require_string(payload, "backendBaseUrl", contract)
+    _require_string(payload, "locationOrigin", contract)
+    _require_string(payload, "path", contract, allow_empty=True)
+
+
 def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
     contract = "/api/runtime/audio-diagnostics"
     if not isinstance(payload, dict):

@@ -1,6 +1,35 @@
 export type TranscriptStatus = "completed" | "processing" | "failed" | "recording" | "stopped";
 
+export const REST_API_VERSION = "1";
+
 export type TranscriptType = "mic" | "file" | "youtube";
+
+export interface FrontendReadyRequest {
+  apiVersion: typeof REST_API_VERSION;
+  tauriRuntime: boolean;
+  backendBaseUrl: string;
+  locationOrigin: string;
+  path: string;
+}
+
+export interface FrontendReadyLastSeen {
+  receivedAt: string;
+  receivedAtUptimeSeconds: number;
+  runtimeMode: string;
+  pid: number;
+  tauriRuntime: boolean;
+  backendBaseUrl: string | null;
+  locationOrigin: string | null;
+  path: string | null;
+  origin: string | null;
+  userAgent: string | null;
+}
+
+export interface FrontendReadyResponse {
+  apiVersion: typeof REST_API_VERSION;
+  ready: boolean;
+  lastSeen: FrontendReadyLastSeen | null;
+}
 
 export interface TranscriptHistoryItem {
   id: string;

@@ -9,6 +9,7 @@ from src.core.rest_contracts import (
     RESTContractError,
     validate_audio_diagnostics_payload,
     validate_frontend_ready_payload,
+    validate_frontend_ready_request_payload,
     validate_health_payload,
     validate_runtime_payload,
 )
@@ -162,6 +163,27 @@ def test_frontend_ready_contract_rejects_incompatible_payload() -> None:
     invalid["lastSeen"] = {**valid_ready["lastSeen"], "tauriRuntime": "yes"}
     with pytest.raises(RESTContractError):
         validate_frontend_ready_payload(invalid)
+
+
+def test_frontend_ready_request_contract_rejects_incompatible_payload() -> None:
+    valid = {
+        "apiVersion": REST_API_VERSION,
+        "tauriRuntime": True,
+        "backendBaseUrl": "http://127.0.0.1:8765",
+        "locationOrigin": "http://tauri.localhost",
+        "path": "/",
+    }
+    validate_frontend_ready_request_payload(valid)
+
+    invalid = dict(valid)
+    invalid.pop("apiVersion")
+    with pytest.raises(RESTContractError):
+        validate_frontend_ready_request_payload(invalid)
+
+    invalid = dict(valid)
+    invalid["tauriRuntime"] = "yes"
+    with pytest.raises(RESTContractError):
+        validate_frontend_ready_request_payload(invalid)
 
 
 def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:

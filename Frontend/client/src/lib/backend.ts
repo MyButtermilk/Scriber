@@ -1,3 +1,5 @@
+import { REST_API_VERSION, type FrontendReadyRequest, type FrontendReadyResponse } from "@/lib/api-types";
+
 declare global {
   interface Window {
     __SCRIBER_BACKEND_URL__?: string;
@@ -109,18 +111,21 @@ export async function reportFrontendReady(): Promise<void> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 1500);
   try {
+    const payload: FrontendReadyRequest = {
+      apiVersion: REST_API_VERSION,
+      tauriRuntime: isTauriRuntime(),
+      backendBaseUrl,
+      locationOrigin: window.location.origin,
+      path: `${window.location.pathname}${window.location.hash || ""}`,
+    };
     const res = await fetch(apiUrl("/api/runtime/frontend-ready"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({
-        tauriRuntime: isTauriRuntime(),
-        backendBaseUrl,
-        locationOrigin: window.location.origin,
-        path: `${window.location.pathname}${window.location.hash || ""}`,
-      }),
+      body: JSON.stringify(payload),
     });
-    if (res.ok) {
+    const response = res.ok ? ((await res.json()) as FrontendReadyResponse) : null;
+    if (response?.apiVersion === REST_API_VERSION && response.ready) {
       frontendReadyReportKey = reportKey;
     }
   } finally {

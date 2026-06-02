@@ -32,7 +32,7 @@ from src.core.error_taxonomy import classify_error_message, is_retryable, user_m
 from src.core.hot_path_tracer import HotPathTracer
 from src.core.logging_setup import emit_event, setup_logging
 from src.core.provider_circuit_breaker import ProviderCircuitBreaker
-from src.core.rest_contracts import REST_API_VERSION
+from src.core.rest_contracts import REST_API_VERSION, RESTContractError, validate_frontend_ready_request_payload
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
 from src.core.ws_contracts import (
     audio_level_event,
@@ -4249,6 +4249,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Expected JSON payload"}, status=400)
         if not isinstance(payload, dict):
             return web.json_response({"message": "Expected JSON object"}, status=400)
+        try:
+            validate_frontend_ready_request_payload(payload)
+        except RESTContractError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
         return web.json_response(ctl.record_frontend_ready(payload, request))
 
     async def get_audio_diagnostics(request: web.Request):

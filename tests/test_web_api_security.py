@@ -138,6 +138,7 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
             "/api/runtime/frontend-ready",
             headers={"X-Scriber-Token": "secret", "Origin": "http://tauri.localhost"},
             json={
+                "apiVersion": "1",
                 "tauriRuntime": True,
                 "backendBaseUrl": "http://127.0.0.1:8765",
                 "locationOrigin": "http://tauri.localhost",
@@ -150,6 +151,18 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
         assert frontend_payload["lastSeen"]["tauriRuntime"] is True
         assert frontend_payload["lastSeen"]["backendBaseUrl"] == "http://127.0.0.1:8765"
         assert frontend_payload["lastSeen"]["origin"] == "http://tauri.localhost"
+
+        frontend_ready_invalid = await client.post(
+            "/api/runtime/frontend-ready",
+            headers={"X-Scriber-Token": "secret", "Origin": "http://tauri.localhost"},
+            json={
+                "tauriRuntime": True,
+                "backendBaseUrl": "http://127.0.0.1:8765",
+                "locationOrigin": "http://tauri.localhost",
+                "path": "/",
+            },
+        )
+        assert frontend_ready_invalid.status == 400
 
         frontend_ready_get = await client.get(
             "/api/runtime/frontend-ready?scriberToken=secret",
@@ -257,6 +270,7 @@ async def test_tauri_origin_can_post_frontend_ready(monkeypatch, tmp_path):
             "/api/runtime/frontend-ready?scriberToken=secret",
             headers={"Origin": "http://tauri.localhost"},
             json={
+                "apiVersion": "1",
                 "tauriRuntime": True,
                 "backendBaseUrl": "http://127.0.0.1:8765",
                 "locationOrigin": "http://tauri.localhost",

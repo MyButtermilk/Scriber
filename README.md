@@ -390,7 +390,7 @@ flowchart LR
 
 `/api/runtime/support-bundle` creates a diagnostic ZIP in the runtime data directory and returns it as a download. It redacts sensitive config, environment, and log values before writing entries to the bundle.
 
-`/api/runtime/frontend-ready` is a token-protected diagnostic beacon used by the Tauri/installer smokes. React posts it after a successful backend health check; the payload is non-secret and records only readiness evidence such as Tauri runtime detection, backend base URL, WebView origin, request origin, and timestamp.
+`/api/runtime/frontend-ready` is a token-protected diagnostic beacon used by the Tauri/installer smokes. React posts it after a successful backend health check; both request and response carry `apiVersion: "1"`. The payload is non-secret and records only readiness evidence such as Tauri runtime detection, backend base URL, WebView origin, request origin, and timestamp.
 
 `/api/health`, `/api/runtime`, `/api/runtime/frontend-ready`, and `/api/runtime/audio-diagnostics` are versioned REST contracts validated by `src/core/rest_contracts.py`; update `tests/contract/test_rest_contracts.py` before changing those payload shapes. Frontend REST consumers should use shared API types from `Frontend/client/src/lib/api-types.ts`; Settings and transcript-history routes already use those types instead of ad hoc `any` payloads.
 

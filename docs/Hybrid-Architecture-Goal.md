@@ -190,7 +190,7 @@ architecture work. It replaces earlier incomplete goal text.
   Security-, Supervisor- und installierte Desktop-Smoke-Gates belegt.
 - Phase 5 ist nur fuer den Python-Audio-Pfad umgesetzt. Rust-Audio und ein
   Rust-Device-Watcher bleiben bewusst experimentell bzw. nicht default.
-  - Phase 6 ist fuer Standard-Cloud-Provider-Sidecar, NSIS, ffmpeg/ffprobe,
+- Phase 6 ist fuer Standard-Cloud-Provider-Sidecar, NSIS, ffmpeg/ffprobe,
   yt-dlp, ONNXRuntime/Silero-VAD Startup-Imports, Runtime-Datenmigration,
   Release-Metadaten und optionale Gates umgesetzt. Am 2026-06-02 ist
   `build_windows.ps1 -SkipChecks -SkipSmoke -RunInstallerSmoke

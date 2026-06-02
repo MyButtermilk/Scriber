@@ -4,6 +4,53 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Versioned Frontend-Ready Request Contract
+
+Commands:
+
+```powershell
+python -m pytest `
+  tests/contract/test_rest_contracts.py `
+  tests/test_web_api_security.py
+
+cd Frontend
+npm run check
+npm run build
+cd ..
+
+python -m py_compile src/core/rest_contracts.py src/web_api.py
+git diff --check
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `POST /api/runtime/frontend-ready` now requires `apiVersion: "1"` in the
+  request body instead of accepting an unversioned JSON object.
+- Added `validate_frontend_ready_request_payload()` to the REST contract gate.
+- Added typed frontend request/response shapes in
+  `Frontend/client/src/lib/api-types.ts`.
+- `reportFrontendReady()` now sends a typed/versioned request and only marks
+  the beacon as reported when the backend responds with the expected API
+  version and `ready=true`.
+
+Evidence:
+
+- Focused REST contract/security tests: `41 passed`.
+- Frontend TypeScript check: passed.
+- Frontend production build: passed.
+- Python compile check for touched backend modules: passed.
+- Whitespace diff check: passed.
+
+Goal coverage:
+
+- Phase 1: strengthens the contract-first boundary for the new WebView
+  readiness endpoint and removes the last unversioned frontend-ready request
+  payload.
+- Phase 3/7: keeps the installed WebView startup gate typed on the React side
+  and contract-validated on the backend side.
+
 ## 2026-06-02 - Installed Tauri WebView Backend Ready Gate
 
 Commands:
