@@ -3557,3 +3557,67 @@ Remaining limits:
 
 - This run intentionally did not perform a live recording. It only proves safe
   legacy data wiring and stale-metric isolation.
+
+## 2026-06-02 - Hybrid Release Readiness Aggregator Gate
+
+Commands:
+
+```powershell
+python -m py_compile `
+  scripts\validate_hybrid_release_readiness.py `
+  tests\test_validate_hybrid_release_readiness.py
+
+python -m pytest tests\test_validate_hybrid_release_readiness.py
+
+python scripts\validate_hybrid_release_readiness.py `
+  --hardware-input-dir tmp\hybrid-baseline `
+  --output tmp\hybrid-baseline\hybrid-release-readiness-current-20260602.json
+```
+
+Result: implemented and covered by focused tests. The current local repository
+readiness run intentionally returned `ok=false` because it is an unsigned local
+build without physical microphone artifacts, without a published updater
+manifest report, and without Authenticode validation evidence.
+
+Implemented improvements:
+
+- Added `scripts\validate_hybrid_release_readiness.py` as the final
+  external-evidence aggregator for the hybrid architecture goal.
+- The validator requires a passing physical microphone hardware matrix.
+- The validator requires signed Tauri updater metadata with absolute HTTPS URLs
+  and can also verify local release artifact size/SHA256 against
+  `SHA256SUMS.txt`.
+- The validator requires a publication report for the fetched `latest.json` and
+  compares its `metadataSha256` with the local metadata file when available.
+- The validator requires the JSON output from
+  `scripts\validate_windows_authenticode.ps1` and checks valid signatures,
+  optional expected publisher, and optional timestamp evidence.
+
+Evidence:
+
+- `tests\test_validate_hybrid_release_readiness.py`: `4 passed`.
+- Python compile check: passed.
+- Current incomplete-readiness artifact:
+  `tmp\hybrid-baseline\hybrid-release-readiness-current-20260602.json`.
+- Current incomplete-readiness artifact size: 2,405 bytes.
+- Current incomplete-readiness artifact timestamp: 2026-06-02 19:29:22 +02:00.
+- Current incomplete-readiness failures are the expected remaining external
+  gates: eight physical microphone artifacts missing, local unsigned updater
+  metadata not suitable for release publication, no updater publication report,
+  and no Authenticode validation report.
+
+Goal coverage:
+
+- Phase 6: turns signing/updater publication from optional independent checks
+  into a single final release-readiness verdict.
+- Phase 7: adds a focused regression suite for the final external-evidence
+  validator.
+- Phase 8: prevents the hybrid goal from being marked complete from local build
+  evidence alone when physical hardware, signing, and publication gates remain
+  unproven.
+
+Remaining limits:
+
+- This still does not close the physical hardware matrix, real Authenticode
+  signing, or published signed updater metadata. It makes those requirements a
+  hard final gate once the external evidence exists.
