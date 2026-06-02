@@ -103,7 +103,8 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `_enumerate_microphones()` runs under the shared device guard lock. Do not remove this lock; it protects against native `sounddevice`/PortAudio races.
 - `_resolve_mic_device()` in `pipeline.py` caches device-name/favorite-to-index resolution for a short TTL. Default TTL is `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC=10.0`.
 - The mic resolution cache is invalidated when DeviceMonitor sees a device-list change and when `micDevice` or `favoriteMic` settings change.
-- `MIC_ALWAYS_ON` exists as a setting, but it is not a true app-level persistent prewarm stream. Current per-session pipeline cleanup calls `stop(..., close_stream=True)` to avoid orphaned PortAudio streams. A real always-on mic needs a separate app-level manager.
+- `MIC_ALWAYS_ON` is implemented by `src/mic_prewarm.py` as an app-level idle prewarm stream. It opens a discard-only PortAudio stream while the app is idle, releases it before live recording starts, and resumes it after recording stops if the setting is still enabled.
+- Per-session pipeline cleanup still calls `stop(..., close_stream=True)`; do not try to reuse a Pipecat session transport across sessions. The app-level prewarm manager owns only idle warmup, not transcription audio delivery.
 - `SCRIBER_AUDIO_ENGINE=rust` is treated as requested-only until a measured Rust audio prototype exists. `/api/runtime.featureFlags.audioEngine` is the effective engine and must remain `python` while `rustAudioAvailable=false`; `requestedAudioEngine` and `rustAudioRequested` expose the opt-in request separately.
 - `MicrophoneInput` still queues raw audio on every PortAudio callback. Only UI/visualizer/input-warning RMS work is throttled to about 30fps.
 - Multi-channel capture rescans strongest-channel selection every 10 callback frames and reuses the last channel between rescans.
@@ -352,7 +353,7 @@ Current summarization default is `gemini-flash-latest`.
 - Use `loguru` for logging. Avoid `print`.
 - Validate user/config input early. Raise `ValueError` for user-facing config issues where existing patterns do that.
 - Be careful with PortAudio/sounddevice. Any new device enumeration or stream lifecycle code must respect `get_device_guard_lock()`.
-- Do not make `MIC_ALWAYS_ON` look implemented as true prewarming unless an app-level manager is actually added.
+- Do not describe `MIC_ALWAYS_ON` as a reusable transcription stream or speech pre-buffer; it is an idle discard-only PortAudio prewarm manager.
 
 ### TypeScript and React
 
@@ -398,7 +399,7 @@ Current summarization default is `gemini-flash-latest`.
 
 ## Known Open Engineering Work
 
-- Real app-level mic prewarming for `SCRIBER_MIC_ALWAYS_ON`.
+- Optional speech pre-buffering if first-word loss remains after idle `SCRIBER_MIC_ALWAYS_ON` prewarming.
 - Real recording text-injection samples during `-RecordHotPathSamples`: either `stop_requested_to_first_paste_ms` for async injection after stop or an already-injected-before-stop realtime sample counted as `0 ms` stop-to-text wait.
 - Full bundled desktop release activation: actual Authenticode signing step/certificate, Tauri updater signing keys, signed update artifacts, and published `latest.json`. The Authenticode validation gate is wired, but CI still needs a real signing provider before enabling it.
 - Optional longer live recording/provider soak tests. A 5-minute installed `azure_mai` + Insta360 Link live run passed with `-DisableLiveTextInjection`; a 30-minute installed idle stability gate has also passed.
@@ -420,7 +421,7 @@ Current summarization default is `gemini-flash-latest`.
 ## Documentation Rules
 
 - Update docs when behavior or implementation status changes.
-- Do not leave stale claims like "`MIC_ALWAYS_ON` keeps the microphone open" unless true app-level prewarming exists.
+- Keep `MIC_ALWAYS_ON` docs precise: it keeps an idle discard-only prewarm stream open, not a reusable Pipecat transcription stream and not a rolling speech pre-buffer.
 - Keep `README.md` user-facing.
 - Keep `docs/PRD.md` broad and current.
 - Keep performance docs explicit about completed, partial, and pending work.

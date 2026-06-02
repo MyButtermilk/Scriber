@@ -157,7 +157,7 @@ In der Tauri-Desktop-Runtime registriert Rust den globalen Hotkey und ruft nur d
 - Hotplug-Erkennung via `DeviceMonitor` mit nativen Windows-Endpoint-Events und Polling-Fallback
 - Recording-aware PortAudio-Refresh: Device-Refreshes werden während aktiver Streams zurückgestellt und nach Stop einmalig nachgeholt
 - Kurzlebiger Cache für Mikrofon-Name/Favorit → Device-Index-Auflösung (`SCRIBER_MIC_DEVICE_CACHE_TTL_SEC`)
-- `MIC_ALWAYS_ON` – Einstellung vorhanden; aktuell wird der per-session Stream beim Cleanup bewusst geschlossen. Echtes Always-On/Prewarming benötigt noch einen App-Level-Mikrofonmanager.
+- `MIC_ALWAYS_ON` – aktiviert einen App-Level-Idle-Prewarm-Stream. Der Stream verwirft Audio, wird vor aktiver Aufnahme geschlossen und nach Stop wieder geöffnet; per-session Pipecat-Streams werden weiterhin bewusst geschlossen.
 
 ### 5.2 YouTube-Transkription
 
@@ -306,7 +306,7 @@ In der Tauri-Desktop-Runtime registriert Rust den globalen Hotkey und ruft nur d
 - **Provider-spezifisch:** Soniox-Modus/Modell, Mistral-Modell, OpenAI-Modell
 - **Sprache:** Sprachauswahl
 - **API-Keys:** Gruppierte Eingabe aller Provider-Keys
-- **Mikrofon:** Geräteauswahl + Favorit + Always-On-Setting (echtes Prewarming noch ausstehend)
+- **Mikrofon:** Geräteauswahl + Favorit + Always-On-Idle-Prewarming
 - **Injection:** Methoden-Auswahl (auto/sendinput/paste/type) + Delays
 - **Lokale Modelle:** ONNX-/NeMo-Download/Lösch-Management mit Fortschritt
 - **Zusammenfassung:** Modell, Auto-Summarize Toggle, Custom Prompt (Textarea)
@@ -410,7 +410,7 @@ Hinweis: In der Tauri-Desktop-Runtime laeuft Autostart ueber Rust-Commands statt
 **Mikrofon:**
 - `SCRIBER_MIC_DEVICE` (default | Gerätename)
 - `SCRIBER_FAVORITE_MIC` (Gerätename für Auto-Auswahl)
-- `SCRIBER_MIC_ALWAYS_ON` (0 | 1; derzeit kein echter persistenter Prewarm-Stream)
+- `SCRIBER_MIC_ALWAYS_ON` (0 | 1; idle PortAudio-Prewarm-Stream, kein Speech-Prebuffer)
 - `SCRIBER_MIC_BLOCK_SIZE` (default: 512)
 - `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC` (default: 10.0)
 

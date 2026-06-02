@@ -94,6 +94,41 @@ def test_refresh_deferred_while_stream_active_is_not_rescheduled(monkeypatch):
     ]
 
 
+def test_refresh_quiesces_and_resumes_idle_streams(monkeypatch):
+    monitor = device_monitor.DeviceMonitor()
+    calls: list[str] = []
+
+    monitor.on_portaudio_refresh_quiesce(
+        lambda: calls.append("pause"),
+        lambda: calls.append("resume"),
+    )
+    monkeypatch.setattr(device_monitor, "_refresh_portaudio_cache", lambda: (True, False))
+    monkeypatch.setattr(
+        device_monitor,
+        "_enumerate_microphones",
+        lambda **_kwargs: [{"deviceId": "default", "label": "Default"}],
+    )
+
+    monitor._refresh_devices(trigger="manual", force=True)
+
+    assert calls == ["pause", "resume"]
+
+
+def test_refresh_does_not_resume_idle_stream_when_real_stream_is_active(monkeypatch):
+    monitor = device_monitor.DeviceMonitor()
+    calls: list[str] = []
+
+    monitor.on_portaudio_refresh_quiesce(
+        lambda: calls.append("pause"),
+        lambda: calls.append("resume"),
+    )
+    monkeypatch.setattr(device_monitor, "_refresh_portaudio_cache", lambda: (False, True))
+
+    monitor._refresh_devices(trigger="manual", force=True)
+
+    assert calls == ["pause"]
+
+
 def test_deferred_refresh_waits_for_active_stream_to_stop(monkeypatch):
     monitor = device_monitor.DeviceMonitor()
 

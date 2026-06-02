@@ -274,6 +274,8 @@ class DeviceMonitor:
 
         self._state_lock = threading.Lock()
         self._callbacks: list[Callable[[list[dict[str, str]]], None]] = []
+        self._refresh_quiesce_callbacks: list[Callable[[], None]] = []
+        self._refresh_resume_callbacks: list[Callable[[], None]] = []
         self._devices: list[dict[str, str]] = [{"deviceId": "default", "label": "Default"}]
         self._signature: tuple[tuple[str, str], ...] = tuple()
 
@@ -313,6 +315,17 @@ class DeviceMonitor:
             return
         with self._state_lock:
             self._callbacks.append(callback)
+
+    def on_portaudio_refresh_quiesce(
+        self,
+        pause_callback: Callable[[], None],
+        resume_callback: Callable[[], None],
+    ) -> None:
+        if not callable(pause_callback) or not callable(resume_callback):
+            return
+        with self._state_lock:
+            self._refresh_quiesce_callbacks.append(pause_callback)
+            self._refresh_resume_callbacks.append(resume_callback)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -428,7 +441,26 @@ class DeviceMonitor:
             except Exception as exc:
                 logger.debug(f"[DeviceMonitor] callback warning: {exc}")
 
+    def _quiesce_refresh_streams(self) -> None:
+        with self._state_lock:
+            callbacks = list(self._refresh_quiesce_callbacks)
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception as exc:
+                logger.debug(f"[DeviceMonitor] refresh quiesce callback warning: {exc}")
+
+    def _resume_refresh_streams(self) -> None:
+        with self._state_lock:
+            callbacks = list(self._refresh_resume_callbacks)
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception as exc:
+                logger.debug(f"[DeviceMonitor] refresh resume callback warning: {exc}")
+
     def _refresh_devices(self, *, trigger: str, force: bool) -> None:
+        self._quiesce_refresh_streams()
         _did_refresh, deferred = _refresh_portaudio_cache()
         if deferred:
             # Active live stream: remember the refresh and run it once after the stream closes.
@@ -448,6 +480,7 @@ class DeviceMonitor:
         if changed:
             logger.info(f"[DeviceMonitor] microphone list updated via {trigger}")
             self._notify_callbacks(devices)
+        self._resume_refresh_streams()
 
     def _run(self) -> None:
         self._setup_native_notifications()

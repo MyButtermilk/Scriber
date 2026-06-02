@@ -23,4 +23,4 @@
 - `Frontend`-Port default `5000` via `npm run dev`/`dev:client`.
 - CORS-Host-Liste via `SCRIBER_ALLOWED_ORIGINS`.
 - Startup ist durch Lazy STT Imports, Background-Overlay/ML-Prewarm und Background-Transcript-Metadata-Load optimiert.
-- Wiederholte Live-Mic-Starts profitieren vom Mic-Device-Resolution-Cache; echtes `SCRIBER_MIC_ALWAYS_ON`-Prewarming ist noch nicht implementiert.
+- Wiederholte Live-Mic-Starts profitieren vom Mic-Device-Resolution-Cache und optionalem `SCRIBER_MIC_ALWAYS_ON`-Idle-Prewarming.

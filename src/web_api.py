@@ -51,6 +51,7 @@ from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.runtime.paths import app_root, data_dir, downloads_dir, is_frozen, logs_dir, repo_root
 from src.runtime.media_tools import find_media_tool, require_media_tool
+from src.mic_prewarm import MicrophonePrewarmManager
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
 from src.runtime.support_bundle import create_support_bundle
@@ -1090,6 +1091,8 @@ class ScriberWebController:
         self._is_listening = False
         self._is_stopping = False  # Track if stop is in progress
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
+        self._mic_prewarm = MicrophonePrewarmManager()
+        self._mic_prewarm_task: Optional[asyncio.Task] = None
         self._pending_hotkey_toggle = False
         self._last_hotkey_deferred_log = 0.0
         self._last_ptt_error_log = 0.0
@@ -1185,7 +1188,12 @@ class ScriberWebController:
         self._device_monitor_enabled = not disable_device_monitor
         if not disable_device_monitor:
             self._device_monitor.on_devices_changed(self._on_devices_changed)
+            self._device_monitor.on_portaudio_refresh_quiesce(
+                self._mic_prewarm.quiesce_for_device_refresh,
+                self._mic_prewarm.resume_after_device_refresh,
+            )
             self._device_monitor.start()
+        self._schedule_idle_mic_prewarm()
 
     def _cancel_settings_persist_timer(self) -> None:
         if self._settings_persist_handle is not None:
@@ -1238,6 +1246,50 @@ class ScriberWebController:
         self._settings_persist_pending = False
         Config.persist_to_env_file()
 
+    def _on_mic_prewarm_done(self, task: asyncio.Task) -> None:
+        if self._mic_prewarm_task is task:
+            self._mic_prewarm_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.debug(f"Mic prewarm task warning: {exc}")
+
+    def _schedule_idle_mic_prewarm(self) -> None:
+        if self._loop.is_closed():
+            return
+        if not self._loop.is_running():
+            return
+        if not Config.MIC_ALWAYS_ON and not self._mic_prewarm.is_active:
+            return
+        if self._mic_prewarm_task is not None and not self._mic_prewarm_task.done():
+            return
+
+        def sync_idle_prewarm() -> None:
+            if self._is_listening or self._is_stopping:
+                self._mic_prewarm.pause_for_active_capture()
+                return
+            self._mic_prewarm.resume_after_active_capture()
+
+        self._mic_prewarm_task = self._loop.create_task(
+            asyncio.to_thread(sync_idle_prewarm),
+            name="mic_prewarm_sync",
+        )
+        self._mic_prewarm_task.add_done_callback(self._on_mic_prewarm_done)
+
+    async def _pause_idle_mic_prewarm_for_capture(self) -> None:
+        await asyncio.to_thread(self._mic_prewarm.pause_for_active_capture)
+
+    def _resume_idle_mic_prewarm_after_capture(self) -> None:
+        self._schedule_idle_mic_prewarm()
+
+    async def _sync_idle_mic_prewarm_after_settings(self) -> None:
+        if self._is_listening or self._is_stopping:
+            await asyncio.to_thread(self._mic_prewarm.pause_for_active_capture)
+        else:
+            await asyncio.to_thread(self._mic_prewarm.resume_after_active_capture)
+
     @staticmethod
     def _trace_id_for(value: str | None) -> str | None:
         if not value:
@@ -1280,6 +1332,8 @@ class ScriberWebController:
             payload["restoredDeviceId"] = restored_device_id
             payload["restoredDeviceLabel"] = restored_device_label
         await self.broadcast(payload)
+        if not self._is_listening and not self._is_stopping:
+            await self._sync_idle_mic_prewarm_after_settings()
 
     def _emit_workflow_event(
         self,
@@ -2109,6 +2163,7 @@ class ScriberWebController:
                     self._session_id = None
                 self._set_recording_state(RecordingState.IDLE, context="_on_pipeline_done_cleanup")
                 self._clear_hot_path_tracer(session_id)
+            self._resume_idle_mic_prewarm_after_capture()
         
         async def _broadcast_error(error_msg: str):
             """Broadcast error to frontend."""
@@ -3021,6 +3076,7 @@ class ScriberWebController:
                 on_mic_ready=on_mic_ready,
                 on_error=on_pipeline_error,
             )
+            await self._pause_idle_mic_prewarm_for_capture()
             self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
             self._pipeline_task.add_done_callback(lambda task: self._on_pipeline_done(task, session_id=session_id))
             self._is_listening = True
@@ -3098,8 +3154,10 @@ class ScriberWebController:
                     await asyncio.wait_for(asyncio.shield(pipeline_task), timeout=1.0)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     pass
+            self._resume_idle_mic_prewarm_after_capture()
         except Exception as e:
             logger.error(f"Emergency stop error: {e}")
+            self._resume_idle_mic_prewarm_after_capture()
 
     async def stop_listening(self) -> None:
         # Acquire lock for entire operation - no parallel start/stop allowed
@@ -3260,6 +3318,8 @@ class ScriberWebController:
             self._mark_hot_path(session_id, "session_finished")
             self._emit_hot_path_report_once(session_id, required_marker=None)
             self._clear_hot_path_tracer(session_id)
+            if not retrigger_hotkey_toggle:
+                self._resume_idle_mic_prewarm_after_capture()
         if retrigger_hotkey_toggle:
             logger.info("Applying deferred hotkey event after stop completed.")
             await self.start_listening()
@@ -3411,6 +3471,14 @@ class ScriberWebController:
             except Exception as exc:
                 logger.debug(f"Hotkey cleanup warning: {exc}")
 
+        if self._mic_prewarm_task:
+            self._mic_prewarm_task.cancel()
+            self._mic_prewarm_task = None
+        try:
+            self._mic_prewarm.stop()
+        except Exception as exc:
+            logger.debug(f"Mic prewarm cleanup warning: {exc}")
+
         try:
             self._device_monitor.stop()
         except Exception as exc:
@@ -3548,6 +3616,7 @@ class ScriberWebController:
         validated_service: str | None = None
         validated_soniox_mode: str | None = None
         validated_summarization_model: str | None = None
+        mic_runtime_changed = False
 
         # Validate first to avoid partial updates on invalid payloads.
         if "mode" in payload and isinstance(payload["mode"], str):
@@ -3583,13 +3652,16 @@ class ScriberWebController:
         if "micDevice" in payload and isinstance(payload["micDevice"], str):
             Config.set_mic_device(payload["micDevice"])
             invalidate_mic_device_resolution_cache()
+            mic_runtime_changed = True
 
         if "favoriteMic" in payload and isinstance(payload["favoriteMic"], str):
             Config.set_favorite_mic(payload["favoriteMic"])
             invalidate_mic_device_resolution_cache()
+            mic_runtime_changed = True
 
         if "micAlwaysOn" in payload:
             Config.set_mic_always_on(bool(payload["micAlwaysOn"]))
+            mic_runtime_changed = True
 
         if "debug" in payload:
             Config.set_debug(bool(payload["debug"]))
@@ -3678,6 +3750,9 @@ class ScriberWebController:
 
         if Config.HOTKEY != old_hotkey or Config.MODE != old_mode:
             self.register_hotkeys()
+
+        if mic_runtime_changed:
+            await self._sync_idle_mic_prewarm_after_settings()
 
         await self.broadcast({"type": "settings_updated"})
         return self.get_settings()

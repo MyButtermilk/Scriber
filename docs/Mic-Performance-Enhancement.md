@@ -1,6 +1,6 @@
 # Microphone Performance Enhancement
 
-## Implementation Status (2026-06-01)
+## Implementation Status (2026-06-02)
 
 **Fully Implemented Solutions:**
 - ✅ **Solution 1 (Ready Signal)**: Added `on_ready` callback to `MicrophoneInput` that fires when the stream is actually started
@@ -12,9 +12,7 @@
 - ✅ **Mic device resolution cache**: Repeated recording starts reuse the resolved device index for a short TTL and invalidate on mic/favorite setting changes or device-change events
 - ✅ **DeviceMonitor active-stream deferral**: PortAudio cache refreshes are deferred while a stream is active and run once after the stream becomes idle
 - ✅ **Audio callback hot-path reduction**: Raw audio still flows every callback, but visualizer/input-warning RMS work is capped to ~30fps and multi-channel selection is rescanned every 10 frames
-
-**Configured but not a true prewarm yet:**
-- ⚠️ **Solution 2 (Pre-warming)**: The `MIC_ALWAYS_ON` setting exists, but current per-session pipeline cleanup force-closes streams to avoid orphaned PortAudio resources. A real always-on/prewarmed mic needs an app-level manager that owns one reusable stream across sessions.
+- ✅ **Solution 2 (Idle Pre-warming)**: `MIC_ALWAYS_ON` now uses `src/mic_prewarm.py` to keep a discard-only app-level PortAudio stream open while idle. The manager releases the prewarm stream before active recording and resumes it after recording stops.
 
 **Not Implemented:**
 - ❌ **Solution 3 (Pre-buffer)**: Planned for future if needed
@@ -88,15 +86,13 @@ The overlay is shown **immediately** after calling `_pipeline.start()`, but the 
 
 **Concept**: Keep the microphone in standby mode so it's instantly ready when the hotkey is pressed.
 
-**Implementation target**:
-1. When `MIC_ALWAYS_ON` is enabled, keep the stream open
-2. On hotkey press, immediately start processing the already-flowing audio
-3. Use an app-level microphone manager, not a per-session `ScriberPipeline`, so the stream can be safely reused across sessions
+**Current behavior (2026-06-02):**
+1. When `MIC_ALWAYS_ON` is enabled, `MicrophonePrewarmManager` opens a discard-only PortAudio stream while no live recording is active.
+2. On hotkey/live-start, the manager closes that idle stream before the per-session Pipecat pipeline opens its own `MicrophoneInput`.
+3. After stop/error cleanup, the manager starts the idle stream again if the setting is still enabled.
+4. During DeviceMonitor PortAudio refreshes, the manager quiesces the idle stream so hotplug/default-device changes are not deferred forever.
 
-**Current behavior (2026-06-01):**
-- `MicrophoneInput.stop()` still supports `keep_alive` semantics locally.
-- `ScriberPipeline._cleanup_audio_input()` currently calls `stop(..., close_stream=True)` because pipeline instances are per-session and cannot safely own a reusable always-on stream.
-- This avoids lingering PortAudio streams after stop, but does not deliver true instant mic prewarming yet.
+`ScriberPipeline._cleanup_audio_input()` still calls `stop(..., close_stream=True)` because pipeline instances are per-session. Do not reuse a Pipecat transport across sessions; the app-level prewarm manager owns only idle warmup.
 
 **Pros**:
 - Near-instant response
@@ -190,9 +186,9 @@ The overlay is shown **immediately** after calling `_pipeline.start()`, but the 
 1. ✅ **Completed**: Solution 4 (Visual feedback)
 2. ✅ **Completed**: Solution 1 (Ready signal)
 3. ✅ **Completed**: Solution 5 (Hybrid)
-4. 🔄 **Next meaningful step**: App-level microphone prewarming manager for true `MIC_ALWAYS_ON`
+4. ✅ **Completed**: Solution 2 idle app-level microphone prewarming for `MIC_ALWAYS_ON`
 5. ⏳ **Future**: Solution 3 (Pre-buffer) if users still lose first speech after prewarming
 
 ## Recommendation
 
-The current production path should keep the hybrid ready-signal flow and the safe per-session stream cleanup. The next improvement should be a separate app-level mic manager that explicitly owns privacy/resource tradeoffs for `MIC_ALWAYS_ON`; do not try to reuse per-session pipeline-owned streams for that.
+The current production path should keep the hybrid ready-signal flow, app-level idle prewarm, and safe per-session stream cleanup. The remaining low-latency audio follow-up is an optional rolling pre-buffer if real usage still shows first-word loss.

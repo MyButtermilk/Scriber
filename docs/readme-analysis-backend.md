@@ -43,7 +43,7 @@
 - `POST /api/transcripts/{id}/summarize` nutzt den zentralen Summarization-Default `gemini-flash-latest`.
 - `GET /api/microphones` wird über `DeviceMonitor` bedient, falls verfügbar. Der Monitor nutzt native Windows-Endpoint-Events plus Polling-Fallback, schützt PortAudio-Zugriffe mit einem gemeinsamen Guard-Lock und verschiebt PortAudio-Refreshes während aktiver Streams bis nach dem Stop.
 - Mikrofon-Name/Favorit wird im Live-Startpfad kurzzeitig gecacht (`SCRIBER_MIC_DEVICE_CACHE_TTL_SEC`, default `10.0`) und bei Device-/Settings-Änderungen invalidiert.
-- `SCRIBER_MIC_ALWAYS_ON` ist als Setting vorhanden, aber aktuell kein echter persistenter Prewarm-Stream; per-session Streams werden beim Pipeline-Cleanup bewusst geschlossen.
+- `SCRIBER_MIC_ALWAYS_ON` aktiviert einen App-Level-Idle-Prewarm-Stream; per-session Pipecat-Streams werden beim Pipeline-Cleanup weiterhin bewusst geschlossen.
 - Settings API gibt `apiKeys` inkl.:
   - soniox, mistral, assemblyai, deepgram, openai, azureSpeechKey/Region, gladia, groq, speechmatics, elevenlabs, googleApiKey, googleApplicationCredentials, youtubeApiKey.
 - AWS-Credentials werden in `PUT /api/settings` nicht vollständig geführt; AWS läuft über Standard-Umgebungsvariablen/SDK-Standard.

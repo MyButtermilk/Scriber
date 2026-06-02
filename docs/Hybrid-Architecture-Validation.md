@@ -4,6 +4,71 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - App-Level Idle Mic Prewarm
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m pytest -p no:cacheprovider -p no:langsmith `
+  tests\test_mic_prewarm.py `
+  tests\test_device_monitor.py `
+  tests\test_microphone_device_resolution.py `
+  tests\test_pipeline_stop.py `
+  -q
+
+venv\Scripts\python.exe -m pytest -p no:cacheprovider -p no:langsmith `
+  tests\test_web_api_lifecycle.py `
+  tests\test_web_api_security.py::test_session_token_middleware_and_shutdown_endpoint `
+  -q
+
+venv\Scripts\python.exe -m py_compile `
+  src\audio_devices.py `
+  src\mic_prewarm.py `
+  src\device_monitor.py `
+  src\pipeline.py `
+  src\web_api.py
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- Added `src\mic_prewarm.py` with `MicrophonePrewarmManager`, an app-level
+  idle prewarm owner for `SCRIBER_MIC_ALWAYS_ON`.
+- The manager opens a discard-only PortAudio stream while the app is idle,
+  releases it before live recording opens the per-session Pipecat
+  `MicrophoneInput`, and resumes it after recording stops if the setting is
+  still enabled.
+- The manager quiesces during DeviceMonitor PortAudio refreshes so idle
+  prewarm does not permanently defer hotplug/default-device updates.
+- Microphone device-name/favorite resolution was moved into
+  `src.audio_devices.resolve_input_microphone_device()` so pipeline and
+  prewarm use the same lightweight device-selection policy without importing
+  the heavy Pipecat pipeline during backend startup.
+- Test setup now forces `SCRIBER_MIC_ALWAYS_ON=0` by default, and prewarm tests
+  opt in explicitly, keeping local developer settings from changing test
+  behavior.
+
+Evidence:
+
+- Mic prewarm/device-monitor/device-resolution/pipeline-stop focused tests:
+  `36 passed`.
+- Web API lifecycle/session-token focused tests: `23 passed`.
+- Python compile check for touched runtime modules: passed.
+
+Goal coverage:
+
+- Phase 5: keeps microphone capture in Python, adds an app-level idle prewarm
+  path, and preserves Python/sounddevice fallback semantics.
+- Phase 8: reduces repeated live mic cold-start risk without blocking backend
+  readiness or leaving per-session PortAudio streams orphaned.
+
+Remaining limits:
+
+- This is idle prewarming, not a rolling speech pre-buffer. If users still lose
+  first words, a separate pre-buffer design remains the next audio-latency
+  follow-up.
+
 ## 2026-06-02 - Release Metadata Artifact Integrity Gate
 
 Commands:
@@ -124,8 +189,8 @@ Evidence:
 
 Goal coverage:
 
-- Phase 6: strengthens the standard full Windows sidecar packaging gate for
-  ffmpeg/ffprobe without introducing a Lite/no-media-tools build.
+- Phase 6: strengthens the standard Windows sidecar packaging gate for
+  ffmpeg/ffprobe while preserving bundled media-tool functionality.
 - Phase 7: adds a regression test that keeps the media-tool requirement wired
   into future sidecar build changes.
 
@@ -206,14 +271,14 @@ Goal coverage:
 
 - Phase 6: adds a repeatable packaging-size artifact to the Windows release
   path.
-- Phase 8: turns the Lite setup budget into an automatic hard gate and makes
+- Phase 8: turns the standard setup budget into an automatic hard gate and makes
   installed-size pressure visible through installer-smoke evidence.
 
 Remaining limits:
 
 - The setup artifact is under budget, but installed app size is currently
   580.09 MiB and still needs a deliberate reduction pass if the 450-MiB
-  installed Lite-App target is kept.
+  installed standard-app target is kept.
 - ffmpeg/ffprobe dominate the current backend resource footprint; reducing that
   requires a smaller compatible media-tools bundle or another full-function
   packaging strategy. Removing ffmpeg/ffprobe from the standard Windows build

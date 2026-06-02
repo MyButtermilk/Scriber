@@ -488,11 +488,8 @@ class SonioxAsyncProcessor(FrameProcessor):
 from src.config import Config
 from src.core.provider_capabilities import injects_immediately_in_live_mode
 from src.audio_devices import (
-    get_input_hostapi_priorities,
-    is_input_device_compatible,
-    list_unique_input_microphones,
     normalize_device_name,
-    rank_hostapi,
+    resolve_input_microphone_device,
 )
 from src.injector import TextInjector
 from src.microphone import MicrophoneInput
@@ -620,189 +617,16 @@ def _resolve_mic_device(device_name: str) -> str:
     def remember(resolved: str) -> str:
         _set_cached_mic_resolution(cache_key, resolved)
         return resolved
-
-    def find_device_by_name(name: str) -> str | None:
-        """Find a compatible device index by name, preferring active host APIs."""
-        if not name or name == "default":
-            return None
-        target = name.strip()
-        target_norm = _normalize_device_name(target)
-
-        def _matches(dev_name: str) -> bool:
-            if dev_name == target:
-                return True
-            if target_norm:
-                return _normalize_device_name(dev_name) == target_norm
-            return False
-
-        try:
-            devices = list(sd.query_devices())
-            host_priorities = get_input_hostapi_priorities(
-                sd,
-                devices,
-                sample_rate=sample_rate,
-                channels=requested_channels,
-            )
-            matches: list[tuple[int, int, str, int]] = []
-            for idx, dev in enumerate(devices):
-                max_input_channels = int(dev.get("max_input_channels", 0) or 0)
-                if max_input_channels <= 0:
-                    continue
-                dev_name = str(dev.get("name", ""))
-                if not _matches(dev_name):
-                    continue
-                try:
-                    hostapi_idx = int(dev.get("hostapi", -1))
-                except (TypeError, ValueError):
-                    hostapi_idx = None
-                matches.append((rank_hostapi(hostapi_idx, host_priorities), idx, dev_name, max_input_channels))
-
-            if not matches:
-                return None
-
-            matches.sort(key=lambda item: (item[0], item[1]))
-            for _, idx, dev_name, max_input_channels in matches:
-                compatible_channels = min(requested_channels, max_input_channels)
-                if not is_input_device_compatible(
-                    sd,
-                    device_index=idx,
-                    device_info=devices[idx],
-                    sample_rate=sample_rate,
-                    channels=compatible_channels,
-                ):
-                    logger.info(
-                        "Microphone candidate '{}' (index {}) rejected at {} Hz/{} ch; "
-                        "trying next host variant".format(
-                            dev_name,
-                            idx,
-                            sample_rate,
-                            compatible_channels,
-                        )
-                    )
-                    continue
-
-                if dev_name != target:
-                    logger.info(f"Matched microphone '{target}' to '{dev_name}' (normalized match)")
-                return str(idx)
-
-            logger.warning(
-                f"All matched variants for microphone '{target}' failed compatibility checks; skipping it"
-            )
-            return None
-        except Exception:
-            return None
-
-    def fallback_to_available_device() -> str:
-        """Return a compatible fallback index from curated input microphones."""
-        try:
-            curated = list_unique_input_microphones(
-                sd,
-                sample_rate=sample_rate,
-                channels=requested_channels,
-            )
-        except Exception:
-            curated = []
-
-        if curated:
-            preferred = next((entry for entry in curated if entry.is_default), None)
-            chosen = preferred or curated[0]
-            if chosen.is_default:
-                logger.info(
-                    f"Using system default microphone '{chosen.name}' (device index {chosen.index})"
-                )
-            else:
-                logger.info(
-                    f"Falling back to available microphone '{chosen.name}' (device index {chosen.index})"
-                )
-            return str(chosen.index)
-
-        # Last resort fallback (should rarely happen).
-        try:
-            devices = list(sd.query_devices())
-        except Exception:
-            devices = []
-        if not devices:
-            return "default"
-
-        host_priorities = get_input_hostapi_priorities(
+    return remember(
+        resolve_input_microphone_device(
             sd,
-            devices,
+            device_name=device_name,
+            favorite_name=getattr(Config, "FAVORITE_MIC", "") or "",
             sample_rate=sample_rate,
             channels=requested_channels,
+            logger=logger,
         )
-        candidates: list[tuple[int, int, int, int, str]] = []
-        for idx, dev in enumerate(devices):
-            max_input_channels = int(dev.get("max_input_channels", 0) or 0)
-            if max_input_channels <= 0:
-                continue
-            try:
-                hostapi_idx = int(dev.get("hostapi", -1))
-            except (TypeError, ValueError):
-                hostapi_idx = None
-            default_rank = 1
-            candidates.append(
-                (
-                    default_rank,
-                    rank_hostapi(hostapi_idx, host_priorities),
-                    idx,
-                    max_input_channels,
-                    str(dev.get("name", "")),
-                )
-            )
-
-        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
-        for _, _, idx, max_input_channels, dev_name in candidates:
-            compatible_channels = min(requested_channels, max_input_channels)
-            if not is_input_device_compatible(
-                sd,
-                device_index=idx,
-                device_info=devices[idx],
-                sample_rate=sample_rate,
-                channels=compatible_channels,
-            ):
-                continue
-            logger.info(f"Falling back to available microphone '{dev_name}' (device index {idx})")
-            return str(idx)
-
-        logger.warning("No compatible microphone found; using unresolved system default")
-        return "default"
-    
-    # If a favorite mic is configured and available, always prefer it.
-    # This matches the UI promise: "always use it when available."
-    favorite = Config.FAVORITE_MIC
-    if favorite and favorite != "default":
-        favorite_idx = find_device_by_name(favorite)
-        if favorite_idx:
-            logger.info(f"Using favorite microphone '{favorite}' (device index {favorite_idx})")
-            return remember(favorite_idx)
-
-    # Try selected device unless "default" is explicitly requested.
-    if device_name not in ("default", "", None):
-        # If it's already a numeric index (legacy), validate it exists.
-        try:
-            idx = int(device_name)
-            try:
-                dev_info = sd.query_devices(device=idx)
-            except Exception:
-                dev_info = None
-            if dev_info and is_input_device_compatible(
-                sd,
-                device_index=idx,
-                device_info=dev_info,
-                sample_rate=sample_rate,
-                channels=requested_channels,
-            ):
-                return remember(str(idx))
-            logger.warning(f"Legacy device index {device_name} not valid; selecting fallback microphone")
-        except ValueError:
-            device_idx = find_device_by_name(device_name)
-            if device_idx:
-                logger.info(f"Resolved microphone '{device_name}' to device index {device_idx}")
-                return remember(device_idx)
-            logger.warning(f"Microphone '{device_name}' not available; selecting fallback microphone")
-
-    # Default or unavailable selection: choose first compatible endpoint.
-    return remember(fallback_to_available_device())
+    )
 
 
 class ConnectionErrorHandlerProcessor(FrameProcessor):

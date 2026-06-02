@@ -12,6 +12,11 @@ from src.pipeline import invalidate_mic_device_resolution_cache
 from src.web_api import ScriberWebController
 
 
+@pytest.fixture(autouse=True)
+def _disable_background_device_monitor(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+
+
 def _install_fake_sounddevice(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -262,23 +267,25 @@ def test_resolve_mic_device_uses_cache_for_repeated_resolution(monkeypatch: pyte
 async def test_get_settings_prefers_favorite_for_ui_when_available(monkeypatch: pytest.MonkeyPatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
+    try:
+        monkeypatch.setattr(Config, "MIC_DEVICE", "Built-in Mic, MME", raising=False)
+        monkeypatch.setattr(Config, "FAVORITE_MIC", "Mikrofon (2- Dock Mic), MME", raising=False)
+        monkeypatch.setattr(
+            ctl,
+            "list_microphones",
+            lambda: [
+                {"deviceId": "default", "label": "Default"},
+                {"deviceId": "Built-in Mic, MME", "label": "Built-in Mic"},
+                {"deviceId": "Mikrofon (7- Dock Mic), Windows WASAPI", "label": "Dock Mic"},
+            ],
+        )
 
-    monkeypatch.setattr(Config, "MIC_DEVICE", "Built-in Mic, MME", raising=False)
-    monkeypatch.setattr(Config, "FAVORITE_MIC", "Mikrofon (2- Dock Mic), MME", raising=False)
-    monkeypatch.setattr(
-        ctl,
-        "list_microphones",
-        lambda: [
-            {"deviceId": "default", "label": "Default"},
-            {"deviceId": "Built-in Mic, MME", "label": "Built-in Mic"},
-            {"deviceId": "Mikrofon (7- Dock Mic), Windows WASAPI", "label": "Dock Mic"},
-        ],
-    )
+        settings = ctl.get_settings()
 
-    settings = ctl.get_settings()
-
-    assert settings["micDevice"] == "Mikrofon (7- Dock Mic), Windows WASAPI"
-    assert settings["favoriteMicAvailable"] is True
+        assert settings["micDevice"] == "Mikrofon (7- Dock Mic), Windows WASAPI"
+        assert settings["favoriteMicAvailable"] is True
+    finally:
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio
@@ -287,90 +294,98 @@ async def test_get_settings_falls_back_to_first_available_when_favorite_missing(
 ):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
+    try:
+        monkeypatch.setattr(Config, "MIC_DEVICE", "Mikrofon (7- Dock Mic), Windows WASAPI", raising=False)
+        monkeypatch.setattr(Config, "FAVORITE_MIC", "Mikrofon (7- Dock Mic), Windows WASAPI", raising=False)
+        monkeypatch.setattr(
+            ctl,
+            "list_microphones",
+            lambda: [
+                {"deviceId": "default", "label": "Default"},
+                {"deviceId": "Built-in Mic, MME", "label": "Built-in Mic"},
+            ],
+        )
 
-    monkeypatch.setattr(Config, "MIC_DEVICE", "Mikrofon (7- Dock Mic), Windows WASAPI", raising=False)
-    monkeypatch.setattr(Config, "FAVORITE_MIC", "Mikrofon (7- Dock Mic), Windows WASAPI", raising=False)
-    monkeypatch.setattr(
-        ctl,
-        "list_microphones",
-        lambda: [
-            {"deviceId": "default", "label": "Default"},
-            {"deviceId": "Built-in Mic, MME", "label": "Built-in Mic"},
-        ],
-    )
+        settings = ctl.get_settings()
 
-    settings = ctl.get_settings()
-
-    assert settings["micDevice"] == "Built-in Mic, MME"
-    assert settings["favoriteMicAvailable"] is False
+        assert settings["micDevice"] == "Built-in Mic, MME"
+        assert settings["favoriteMicAvailable"] is False
+    finally:
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_list_microphones_dedupes_hostapi_variants(monkeypatch: pytest.MonkeyPatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
+    try:
+        _install_fake_sounddevice(
+            monkeypatch,
+            devices=[
+                {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+                {"name": "Dock Mic, MME", "max_input_channels": 1, "hostapi": 0},
+            ],
+            hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
+            default_input=0,
+        )
 
-    _install_fake_sounddevice(
-        monkeypatch,
-        devices=[
-            {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
-            {"name": "Dock Mic, MME", "max_input_channels": 1, "hostapi": 0},
-        ],
-        hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
-        default_input=0,
-    )
+        devices = ctl.list_microphones()
+        ids = [d["deviceId"] for d in devices]
 
-    devices = ctl.list_microphones()
-    ids = [d["deviceId"] for d in devices]
-
-    assert "Dock Mic, Windows WASAPI" in ids
-    assert "Dock Mic, MME" not in ids
+        assert "Dock Mic, Windows WASAPI" in ids
+        assert "Dock Mic, MME" not in ids
+    finally:
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_list_microphones_prefers_wasapi_even_if_default_points_to_mme(monkeypatch: pytest.MonkeyPatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
+    try:
+        _install_fake_sounddevice(
+            monkeypatch,
+            devices=[
+                {"name": "Dock Mic, MME", "max_input_channels": 1, "hostapi": 0},
+                {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+            ],
+            hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
+            default_input=0,
+        )
 
-    _install_fake_sounddevice(
-        monkeypatch,
-        devices=[
-            {"name": "Dock Mic, MME", "max_input_channels": 1, "hostapi": 0},
-            {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
-        ],
-        hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
-        default_input=0,
-    )
+        devices = ctl.list_microphones()
+        ids = [d["deviceId"] for d in devices]
 
-    devices = ctl.list_microphones()
-    ids = [d["deviceId"] for d in devices]
-
-    assert "Dock Mic, Windows WASAPI" in ids
-    assert "Dock Mic, MME" not in ids
+        assert "Dock Mic, Windows WASAPI" in ids
+        assert "Dock Mic, MME" not in ids
+    finally:
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_list_microphones_uses_single_hostapi_list(monkeypatch: pytest.MonkeyPatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
+    try:
+        _install_fake_sounddevice(
+            monkeypatch,
+            devices=[
+                {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+                {"name": "Dock Mic, MME", "max_input_channels": 1, "hostapi": 0},
+                {"name": "USB Mic, MME", "max_input_channels": 1, "hostapi": 0},
+            ],
+            hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
+            default_input=0,
+        )
 
-    _install_fake_sounddevice(
-        monkeypatch,
-        devices=[
-            {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
-            {"name": "Dock Mic, MME", "max_input_channels": 1, "hostapi": 0},
-            {"name": "USB Mic, MME", "max_input_channels": 1, "hostapi": 0},
-        ],
-        hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
-        default_input=0,
-    )
+        devices = ctl.list_microphones()
+        ids = [d["deviceId"] for d in devices]
 
-    devices = ctl.list_microphones()
-    ids = [d["deviceId"] for d in devices]
-
-    assert "Dock Mic, Windows WASAPI" in ids
-    assert "Dock Mic, MME" not in ids
-    assert "USB Mic, MME" not in ids
+        assert "Dock Mic, Windows WASAPI" in ids
+        assert "Dock Mic, MME" not in ids
+        assert "USB Mic, MME" not in ids
+    finally:
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio
@@ -379,66 +394,72 @@ async def test_list_microphones_prefers_directsound_over_mme_when_wasapi_unusabl
 ):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
+    try:
+        _install_fake_sounddevice(
+            monkeypatch,
+            devices=[
+                {"name": "Mic Device, MME", "max_input_channels": 1, "hostapi": 0},
+                {"name": "Mic Device, Windows DirectSound", "max_input_channels": 1, "hostapi": 1},
+                {"name": "Mic Device, Windows WASAPI", "max_input_channels": 1, "hostapi": 2},
+            ],
+            hostapis=[{"name": "MME"}, {"name": "Windows DirectSound"}, {"name": "Windows WASAPI"}],
+            default_input=0,
+            invalid_check_indices={2},
+        )
 
-    _install_fake_sounddevice(
-        monkeypatch,
-        devices=[
-            {"name": "Mic Device, MME", "max_input_channels": 1, "hostapi": 0},
-            {"name": "Mic Device, Windows DirectSound", "max_input_channels": 1, "hostapi": 1},
-            {"name": "Mic Device, Windows WASAPI", "max_input_channels": 1, "hostapi": 2},
-        ],
-        hostapis=[{"name": "MME"}, {"name": "Windows DirectSound"}, {"name": "Windows WASAPI"}],
-        default_input=0,
-        invalid_check_indices={2},
-    )
+        devices = ctl.list_microphones()
+        ids = [d["deviceId"] for d in devices]
 
-    devices = ctl.list_microphones()
-    ids = [d["deviceId"] for d in devices]
-
-    assert "Mic Device, Windows DirectSound" in ids
-    assert "Mic Device, MME" not in ids
+        assert "Mic Device, Windows DirectSound" in ids
+        assert "Mic Device, MME" not in ids
+    finally:
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_list_microphones_falls_back_when_only_mme_has_inputs(monkeypatch: pytest.MonkeyPatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
+    try:
+        _install_fake_sounddevice(
+            monkeypatch,
+            devices=[
+                {"name": "Input ()", "max_input_channels": 1, "hostapi": 1},
+                {"name": "Dock Mic, MME", "max_input_channels": 1, "hostapi": 0},
+            ],
+            hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
+            default_input=0,
+        )
 
-    _install_fake_sounddevice(
-        monkeypatch,
-        devices=[
-            {"name": "Input ()", "max_input_channels": 1, "hostapi": 1},
-            {"name": "Dock Mic, MME", "max_input_channels": 1, "hostapi": 0},
-        ],
-        hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
-        default_input=0,
-    )
+        devices = ctl.list_microphones()
+        ids = [d["deviceId"] for d in devices]
 
-    devices = ctl.list_microphones()
-    ids = [d["deviceId"] for d in devices]
-
-    assert "Input ()" not in ids
-    assert "Dock Mic, MME" in ids
+        assert "Input ()" not in ids
+        assert "Dock Mic, MME" in ids
+    finally:
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_list_microphones_skips_unavailable_endpoints(monkeypatch: pytest.MonkeyPatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
+    try:
+        _install_fake_sounddevice(
+            monkeypatch,
+            devices=[
+                {"name": "Microphone Array (Realtek) , MME", "max_input_channels": 1, "hostapi": 0},
+                {"name": "Mikrofon (5- Insta360 Link), Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+            ],
+            hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
+            default_input=0,
+            invalid_check_indices={1},
+        )
 
-    _install_fake_sounddevice(
-        monkeypatch,
-        devices=[
-            {"name": "Microphone Array (Realtek) , MME", "max_input_channels": 1, "hostapi": 0},
-            {"name": "Mikrofon (5- Insta360 Link), Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
-        ],
-        hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
-        default_input=0,
-        invalid_check_indices={1},
-    )
+        devices = ctl.list_microphones()
+        ids = [d["deviceId"] for d in devices]
 
-    devices = ctl.list_microphones()
-    ids = [d["deviceId"] for d in devices]
-
-    assert "Microphone Array (Realtek) , MME" in ids
-    assert "Mikrofon (5- Insta360 Link), Windows WASAPI" not in ids
+        assert "Microphone Array (Realtek) , MME" in ids
+        assert "Mikrofon (5- Insta360 Link), Windows WASAPI" not in ids
+    finally:
+        ctl.shutdown()

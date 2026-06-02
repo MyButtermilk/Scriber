@@ -142,16 +142,17 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
 
 ## Installationsgroesse klein halten (konkrete Strategie)
 
-### A) Produkt-Schnitt: `Lite` als Default, `Full/Offline` optional
-1. **Default-Installer = Lite**:
-   - Cloud-STT + Web-Features enthalten.
+### A) Produkt-Schnitt: Standard-Build mit Media-Tools, lokale ASR optional
+1. **Default-Installer = voller Standard-Build fuer Cloud-/Online-Workflows**:
+   - Cloud-STT, YouTube, Datei-Transkription, Export und Web-Features enthalten.
+   - `ffmpeg` und `ffprobe` bleiben im Standard-Windows-Build gebuendelt, weil sie fuer YouTube-, Video- und Datei-Workflows zum Kernumfang gehoeren.
    - Schwere lokale ASR-Stacks (`torch`, `nemo_toolkit`, grosse ONNX/Nemo-Modelle) **nicht** im Standard-Installer.
-2. **Optionaler Zusatzkanal = Full/Offline Pack**:
-   - Separate Artefakte wie `Scriber-Offline-Pack-x64.zip` oder eigener Full-Installer.
+2. **Optionaler Zusatzkanal = Offline-ASR-Pack**:
+   - Separate Artefakte wie `Scriber-Offline-Pack-x64.zip` oder eigener Offline-Provider-Installer.
    - Download nur bei Bedarf aus Settings ("Offline-Spracherkennung installieren").
 3. **Vorteil**:
-   - Kleiner Erst-Download fuer die Mehrheit.
-   - Power-User bekommen weiterhin lokale/offline Features.
+   - Der Standard-Installer bleibt funktional komplett fuer den geplanten Online-/Media-Funktionsumfang.
+   - Groessenoptimierung darf ueber schlankere kompatible Media-Binaries oder Dependency-Cleanup erfolgen, aber nicht durch Entfernen von `ffmpeg`/`ffprobe`.
 
 ### B) Python-Dependencies in Build-Profile aufteilen
 1. Status 2026-06-01: `requirements.txt` ist ein Aggregator aus:
@@ -174,8 +175,9 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
 
 ### D) Medien- und Modell-Binaries entkoppeln
 1. **FFmpeg-Strategie**:
-   - Entweder schlanke mitgelieferte Binary (nur benoetigte Codecs),
-   - oder "on-demand Download" beim ersten Datei/YouTube-Transkript.
+   - `ffmpeg` und `ffprobe` bleiben im Standard-Build enthalten.
+   - Erlaubte Groessenoptimierung: kleinere kompatible Media-Tools-Binaries mit allen benoetigten Datei-/Video-/YouTube-Funktionen.
+   - Nicht erlaubt als Standardpfad: Build ohne Media-Tools oder reiner On-demand-Download vor dem ersten Datei-/YouTube-Workflow.
 2. **Modelle nie in den Core-Installer einbetten**:
    - Download in `%LocalAppData%\\Scriber\\models\\` nach Nutzerentscheidung.
 3. Modelle versioniert halten, damit sie getrennt vom App-Update aktualisiert werden koennen.
@@ -189,7 +191,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - `Standard Setup <= 220 MB`,
    - `installierte Standard-App <= 450 MB` als Zielwert nach Groessenoptimierung.
 3. Jede Release-PR enthaelt den Groessenvergleich zur Vorversion.
-   - Status 2026-06-02: `scripts/create_release_size_report.py` erzeugt `size-report.json` mit Artefaktgroessen, Top-Dateien und optionaler installierter App-Groesse. `scripts/build_windows.ps1` ruft den Report nach `latest.json`/`SHA256SUMS.txt` auf und failt standardmaessig, wenn das groesste Installer-Artefakt ueber `-MaxInstallerSizeMB 220` liegt. `scripts/smoke_windows_installer.ps1 -MaxInstalledSizeMB <MB>` misst den temporaeren Installationsordner und kann die installierte Groesse als hartes Gate pruefen. Der GitHub-Workflow kopiert `release-metadata\*.json`, sodass `size-report.json` als Release-Artefakt verfuegbar ist. Der aktuelle lokale NSIS-Setup liegt mit 197.27 MiB unter dem 220-MiB-Gate; die temporaer installierte App lag im letzten Full-Smoke bei 580.09 MiB und damit noch ueber dem 450-MiB-Ziel. Der gebuendelte Backend-Resource-Ordner ist 567.26 MiB und wird vor allem durch vollstaendige `ffmpeg.exe`/`ffprobe.exe` dominiert. Dieses Ziel darf nicht durch Entfernen von ffmpeg/ffprobe aus dem Standard-Windows-Build erreicht werden; sinnvolle Folgearbeit ist ein kleineres kompatibles Media-Tools-Bundle, nicht eine Lite-Variante ohne Media-Tools.
+   - Status 2026-06-02: `scripts/create_release_size_report.py` erzeugt `size-report.json` mit Artefaktgroessen, Top-Dateien und optionaler installierter App-Groesse. `scripts/build_windows.ps1` ruft den Report nach `latest.json`/`SHA256SUMS.txt` auf und failt standardmaessig, wenn das groesste Installer-Artefakt ueber `-MaxInstallerSizeMB 220` liegt. `scripts/smoke_windows_installer.ps1 -MaxInstalledSizeMB <MB>` misst den temporaeren Installationsordner und kann die installierte Groesse als hartes Gate pruefen. Der GitHub-Workflow kopiert `release-metadata\*.json`, sodass `size-report.json` als Release-Artefakt verfuegbar ist. Der aktuelle lokale NSIS-Setup liegt mit 197.27 MiB unter dem 220-MiB-Gate; die temporaer installierte App lag im letzten Full-Smoke bei 580.09 MiB und damit noch ueber dem 450-MiB-Ziel. Der gebuendelte Backend-Resource-Ordner ist 567.26 MiB und wird vor allem durch vollstaendige `ffmpeg.exe`/`ffprobe.exe` dominiert. Dieses Ziel darf nicht durch Entfernen von ffmpeg/ffprobe aus dem Standard-Windows-Build erreicht werden; sinnvolle Folgearbeit ist ein kleineres kompatibles Media-Tools-Bundle.
 
 ### F) Update-Bandbreite minimieren (ab Phase 2)
 1. Zunaechst Full-Installer beibehalten (einfacher und robust).
@@ -220,7 +222,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Status 2026-06-01: `src/backend_worker.py` existiert als eigenstaendiger Worker-Entry-Point.
    - Status 2026-06-01: `packaging/scriber-backend.spec` und `scripts/build_tauri_backend_sidecar.ps1` bauen einen PyInstaller-`onedir`-Sidecar.
    - Status 2026-06-01: Der Rust-Supervisor bevorzugt `SCRIBER_BACKEND_EXE` nur fuer erlaubte `scriber-backend`-Dateinamen bzw. `backend\scriber-backend.exe` neben der Tauri-Exe und faellt im Dev-Modus auf `python -m src.web_api` zurueck.
-   - Status 2026-06-01: Der Standard-Sidecar ist ein Cloud-Provider/Lite-Build und schliesst schwere lokale ASR-Stacks (`torch`, NeMo, ONNX-ASR) aus.
+   - Status 2026-06-02: Der Standard-Sidecar ist ein Cloud-Provider-Build mit gebuendeltem `ffmpeg`/`ffprobe` und schliesst nur schwere lokale ASR-Stacks (`torch`, NeMo, ONNX-ASR) aus.
    - Status 2026-06-01: Tauri bundelt `target/release/backend/` als Resource `backend/`, sodass installierte NSIS-Builds denselben Sidecar-Pfad nutzen.
    - Status 2026-06-01: Der Sidecar-Build fuehrt vor PyInstaller einen Runtime-Import-Preflight aus und prueft danach den gefrorenen Sidecar mit `--runtime-import-check`; beides deckt unter anderem SciPy, pyloudnorm, Pipecat und `src.web_api` ab.
    - Status 2026-06-01: Die Default-Capability ist auf App-Version, Prozess-Relaunch und Updater-Check/Download-Install beschraenkt; Tauri-Shell- und Opener-Plugin sind nicht registriert. `tests/test_tauri_security_gates.py` prueft diese Grenze.
@@ -438,7 +440,7 @@ Lieferobjekte:
 6. Downgrade-Versuch wird blockiert (mit klarer Fehlermeldung).
 7. App startet nach dem Update mit dem korrekten neuen Versionslabel.
 8. Update waehrend aktiver Aufnahme wird nicht ausgefuehrt, sondern auf Leerlauf verschoben.
-9. Lite-Installer bleibt unter dem definierten Groessenbudget (Startwert: `<= 220 MB`) und wird pro Release automatisch geprueft.
+9. Standard-Installer mit gebuendeltem `ffmpeg`/`ffprobe` bleibt unter dem definierten Groessenbudget (Startwert: `<= 220 MB`) und wird pro Release automatisch geprueft.
 
 ---
 
@@ -448,8 +450,8 @@ Lieferobjekte:
 |---|-------|-------------------|--------|
 | 1 | **EV vs. OV Zertifikat** | EV kann den Erstvertrauen-Eindruck verbessern, ist aber teurer und organisatorisch aufwendiger. OV ist guenstiger; SmartScreen-Reputation bleibt in beiden Faellen reputationsbasiert. | Hoch: bestimmt First-Install-Experience. |
 | 2 | **Cloud-Signing vs. Hardware-Token/HSM** | Public-Trust Code-Signing verlangt hardwaregeschuetzte Schluessel. Empfehlung: Cloud-Signing (z. B. Microsoft Trusted Signing) fuer CI/CD statt lokalem Token-Handling. | Mittel: beeinflusst CI/CD-Setup. |
-| 3 | **Lite vs. Full Distribution** | Soll der Standardnutzer nur Lite erhalten und lokale ASR als optionales Offline-Pack? Empfehlung: Ja. | Hoch: groesster Hebel auf Installer-Groesse. |
-| 4 | **FFmpeg-Bundling** | Vollstaendige FFmpeg-Binary vs. schlanke Binary vs. On-Demand-Download. | Mittel: beeinflusst Setup-Groesse und Robustheit. |
+| 3 | **Standard vs. Offline-ASR Distribution** | Entscheidung: Standard-Build bleibt mit Media-Tools voll funktionsfaehig; lokale ASR bleibt optionales Zusatzpaket. Es gibt keinen Standard-Build ohne `ffmpeg`/`ffprobe`. | Hoch: bestimmt Funktionsumfang und Setup-Groesse. |
+| 4 | **FFmpeg-Bundling** | Entscheidung: `ffmpeg`/`ffprobe` bleiben gebuendelt. Offen ist nur, ob kleinere kompatible Binaries die aktuelle Vollversion ersetzen koennen. | Mittel: beeinflusst Setup-Groesse und Robustheit. |
 | 5 | **Delta-Updates vs. Full-Installer** | Phase 1: Full-Installer (einfacher). Spaeter Delta nur fuer grosse veraenderliche Komponenten evaluieren. | Mittel: Bandbreiten-Optimierung. |
 | 6 | **Express-Server als Legacy-/Dev-Pfad** | Frozen-Serving ist in `web_api.py` umgesetzt. Zu entscheiden bleibt, wann `Frontend/server/` formal deprecated oder entfernt wird. | Mittel: reduziert Doppelbetrieb und Wartung. |
 

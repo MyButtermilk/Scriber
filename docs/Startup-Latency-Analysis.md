@@ -64,7 +64,7 @@ The overlay was initialized eagerly at web_api startup.
 **Current Status:**
 The overlay is prewarmed by the background cache task after startup, so it no longer blocks initial API availability while still being ready before the first typical hotkey use.
 
-**Remaining Note:** This is overlay prewarming, not microphone stream prewarming.
+**Remaining Note:** Overlay/model prewarming is separate from the optional `SCRIBER_MIC_ALWAYS_ON` idle microphone prewarm stream, which is owned by `src/mic_prewarm.py` and does not block backend readiness.
 
 ---
 
@@ -125,9 +125,9 @@ The overlay supports updating its `on_stop` callback after creation, so it can b
 | ML cache prewarming | ✅ Done | ~400ms |
 | Background transcript load | ✅ Done | ~100ms |
 | Mic device resolution cache | ✅ Done (2026-06-01) | repeat start-path avoids repeated name/favorite resolution |
-| True `MIC_ALWAYS_ON` prewarmed stream | ⏳ Pending | requires app-level mic manager |
+| `MIC_ALWAYS_ON` idle prewarm stream | ✅ Done | app-level discard-only stream |
 
-**Startup optimizations are complete for current architecture.** The remaining low-latency microphone item is a separate always-on/prewarmed stream design, not a startup task.
+**Startup optimizations are complete for current architecture.** The remaining low-latency microphone item is optional rolling speech pre-buffering if real usage still shows first-word loss.
 
 ---
 

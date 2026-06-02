@@ -9,3 +9,4 @@ if PROJECT_ROOT not in sys.path:
 # Make tests deterministic: avoid relying on the current foreground app/window title.
 os.environ.setdefault("SCRIBER_INJECT_METHOD", "type")
 os.environ.setdefault("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+os.environ["SCRIBER_MIC_ALWAYS_ON"] = "0"
