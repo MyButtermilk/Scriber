@@ -827,7 +827,12 @@ function Invoke-RecordingHotPathBenchmark {
 
     $benchmark = Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
     if (-not $benchmark.ok) {
-        throw "Recording hot-path baseline benchmark wrote ok=false: $benchmarkOutputPath"
+        if (-not $benchmark.error) {
+            $benchmark | Add-Member `
+                -NotePropertyName error `
+                -NotePropertyValue "Recording hot-path benchmark wrote ok=false; see sample errors and requirement statuses." `
+                -Force
+        }
     }
     return Add-ArtifactPath -Benchmark $benchmark -Path $benchmarkOutputPath
 }

@@ -2444,3 +2444,131 @@ Remaining limits:
 - This run did not exercise a full browser-rendered Tauri window, Authenticode
   signing, updater publication, microphone hardware, or long recording
   stability.
+
+## 2026-06-02 - Full Hybrid Baseline Performance Budget Gate
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 3 `
+  -DisableDevFallback `
+  -FailOnPerformanceBudget `
+  -OutputPath tmp\hybrid-baseline\hybrid-baseline-full-20260602.json
+```
+
+Result: passed.
+
+Evidence:
+
+- Runtime path: Tauri release executable with packaged sidecar.
+- Iterations: 3.
+- Runtime mode: `tauri-supervised`.
+- UI visible P95: 1442.93 ms against the 3000 ms budget.
+- Backend ready P95: 2697.19 ms against the 5000 ms budget.
+- Cleanup P95: 464.89 ms; no managed backend PIDs remained after cleanup.
+- Upload benchmark: 4 x 4 MiB synthetic uploads, ok.
+- Export benchmark: 2 PDF and 2 DOCX exports at concurrency 2, ok.
+- `/api/health` responsiveness under upload/export load: P95 14.3413 ms.
+- `/api/state` responsiveness under upload/export load: P95 13.614 ms.
+- WebSocket JSON serialization: P95 0.0022 ms.
+- WebSocket no-client broadcast: P95 0.0002 ms with zero send calls.
+- WebSocket broadcast with 1 client: P95 0.0138 ms.
+- WebSocket broadcast with 5 clients: P95 0.0238 ms.
+- History-scroll benchmark: 2000 items, list and grid, virtualized true,
+  max visible cards 54, max frame gap 116.7 ms.
+- Performance budget: complete.
+- Phase 0 gate: still incomplete because live recording hot-path samples were
+  not requested in this full synthetic run.
+
+Goal coverage:
+
+- Phase 0: provides comparable full baseline evidence for startup,
+  backend-ready timing, upload/export load, WebSocket/JSON cost, and large
+  history scrolling without source-checkout dev fallback.
+- Phase 8: proves the current Tauri release build meets the UI-visible and
+  backend-ready P95 budgets on this reference run.
+
+Remaining limits:
+
+- The run did not collect live recording hot-path samples, microphone hardware
+  matrix evidence, Authenticode signing, updater publication, or long recording
+  stability.
+
+## 2026-06-02 - Recording Hot-Path Missing-Evidence Handling
+
+Commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 1 `
+  -DisableDevFallback `
+  -RecordHotPathSamples `
+  -RecordingHotPathIterations 1 `
+  -RecordingHotPathSeconds 15 `
+  -RecordingHotPathTimeoutSec 90 `
+  -RecordingHotPathSpeechPrompt "Scriber baseline recording test. Please transcribe this short sentence." `
+  -RecordingHotPathTextTargetFile tmp\hybrid-baseline\recording-hot-path-target-20260602.txt `
+  -SkipUploadExportBenchmark `
+  -SkipWsBenchmark `
+  -SkipHistoryScrollBenchmark `
+  -OutputPath tmp\hybrid-baseline\hybrid-baseline-recording-20260602.json
+```
+
+This first run failed before the parent baseline JSON was written because the
+child recording benchmark wrote `ok=false`. The child artifact
+`tmp\hybrid-baseline\hybrid-baseline-recording-20260602-recording-hot-path-1.json`
+showed:
+
+- Backend health existed briefly with runtime mode `tauri-supervised`.
+- The live mic state returned to `status: Error`.
+- No hot-path segments were emitted.
+- `hotkey_to_recording_state`: missing.
+- `hotkey_to_first_audio_frame`: missing.
+- `stop_to_text_injection`: `missing_audible_audio`.
+
+The runner was changed so recording-hot-path `ok=false` is retained as evidence
+instead of aborting the parent baseline. The validation command after the change
+was:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 1 `
+  -Hidden `
+  -DisableDevFallback `
+  -RecordHotPathSamples `
+  -RecordingHotPathIterations 1 `
+  -RecordingHotPathSeconds 10 `
+  -RecordingHotPathTimeoutSec 60 `
+  -RecordingHotPathSpeechPrompt "Scriber baseline recording test. Please transcribe this short sentence." `
+  -RecordingHotPathTextTargetFile tmp\hybrid-baseline\recording-hot-path-target-20260602-hidden.txt `
+  -SkipUploadExportBenchmark `
+  -SkipWsBenchmark `
+  -SkipHistoryScrollBenchmark `
+  -OutputPath tmp\hybrid-baseline\hybrid-baseline-recording-hidden-20260602.json
+```
+
+Result: passed as an incomplete-evidence baseline.
+
+Evidence:
+
+- Backend ready P95: 2040.24 ms.
+- Cleanup verified: true.
+- Child recording benchmark `ok`: false.
+- Parent baseline JSON was written.
+- Recording statuses:
+  - `hotkey_to_recording_state`: missing.
+  - `hotkey_to_first_audio_frame`: missing.
+  - `stop_to_text_injection`: `missing_audible_audio`.
+
+Goal coverage:
+
+- Phase 0: missing recording hot-path evidence is now preserved in the baseline
+  artifact instead of being lost to a thrown parent process.
+- Phase 7: adds regression coverage that expected live-environment failure
+  states stay reportable.
+
+Remaining limits:
+
+- This does not close the live recording gate. A successful run still needs a
+  microphone/provider/text-injection path that emits the hot-path segments.

@@ -64,6 +64,12 @@ stop; realtime providers may already have injected text before stop, which is
 detected via `first_paste_to_stop_requested_ms` and counted as `0 ms`
 stop-to-text wait.
 
+Recording-hot-path child runs are allowed to write `ok=false` when the live
+environment cannot produce audio, provider transcript text, or text injection.
+The parent baseline still writes its JSON artifact and records the child
+requirement statuses under `recordingHotPathBenchmarks`, so missing live
+evidence is visible without losing startup/backend/cleanup measurements.
+
 When `-OutputPath` is set, each recording-hot-path child artifact is written as
 `<baseline-name>-recording-hot-path-N.json` next to the main baseline artifact.
 This keeps live recording evidence available after the temporary runtime data

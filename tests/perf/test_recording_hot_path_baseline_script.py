@@ -199,3 +199,17 @@ def test_hybrid_baseline_recording_samples_do_not_fall_back_to_old_metric_rows()
         'if ($segmentNames -contains $SegmentName)', 1
     )[0]
     assert 'return "missing_samples"' in recording_branch
+
+
+def test_hybrid_baseline_keeps_recording_hot_path_ok_false_as_evidence():
+    repo_root = Path(__file__).resolve().parents[2]
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    recording_function = script.split("function Invoke-RecordingHotPathBenchmark", 1)[1].split(
+        "function Invoke-BaselineIteration", 1
+    )[0]
+    assert 'throw "Recording hot-path baseline benchmark wrote ok=false' not in recording_function
+    assert "Recording hot-path benchmark wrote ok=false; see sample errors" in recording_function
+    assert "return Add-ArtifactPath -Benchmark $benchmark -Path $benchmarkOutputPath" in recording_function
