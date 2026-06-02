@@ -18,8 +18,14 @@ import {
   setAutostartEnabled as setDesktopAutostartEnabled,
 } from "@/lib/backend";
 import type {
+  ApiMessageResponse,
+  LocalModelActionResponse,
   MicrophoneDevice,
   MicrophonesResponse,
+  NemoModelInfo,
+  NemoModelsResponse,
+  OnnxModelInfo,
+  OnnxModelsResponse,
   SettingsResponse,
   SettingsUpdatePayload,
 } from "@/lib/api-types";
@@ -35,34 +41,6 @@ import {
   type DesktopUpdateProgress,
   type DesktopUpdateStatus,
 } from "@/lib/desktop-updates";
-
-type OnnxModelInfo = {
-  id: string;
-  name: string;
-  description: string;
-  languages: string[];
-  sizeMb: number;
-  sizeMbByQuantization?: Record<string, number>;
-  supportedQuantizations?: string[];
-  supportsTimestamps?: boolean;
-  downloaded?: boolean;
-  status?: "ready" | "not_downloaded" | "downloading" | "error";
-  progress?: number;
-  message?: string;
-};
-
-type NemoModelInfo = {
-  id: string;
-  name: string;
-  description: string;
-  languages: string[];
-  sizeMb: number;
-  supportsTimestamps?: boolean;
-  downloaded?: boolean;
-  status?: "ready" | "not_downloaded" | "downloading" | "error";
-  progress?: number;
-  message?: string;
-};
 
 const LANGUAGE_OPTIONS = [
   { value: "auto", label: "Auto-detect" },
@@ -265,11 +243,11 @@ export default function Settings() {
       if (!res.ok) {
         throw new Error(await res.text());
       }
-      const data = await res.json();
+      const data = (await res.json()) as OnnxModelsResponse;
       const available = data.available !== false;
       setOnnxAvailable(available);
       setOnnxMessage(data.message || "");
-      const models = (data.models || []) as OnnxModelInfo[];
+      const models = data.models || [];
       setOnnxModels(models);
 
       const current = data.currentModel || "";
@@ -288,11 +266,11 @@ export default function Settings() {
       if (!res.ok) {
         throw new Error(await res.text());
       }
-      const data = await res.json();
+      const data = (await res.json()) as NemoModelsResponse;
       const available = data.available !== false;
       setNemoAvailable(available);
       setNemoMessage(data.message || "");
-      const models = (data.models || []) as NemoModelInfo[];
+      const models = data.models || [];
       setNemoModels(models);
 
       const current = data.currentModel || "";
@@ -658,7 +636,7 @@ export default function Settings() {
         body: JSON.stringify({ modelId, quantization: onnxQuantization }),
         credentials: "include",
       });
-      const data = await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as LocalModelActionResponse;
       if (!res.ok || data?.success === false) {
         throw new Error(data?.message || "Download failed");
       }
@@ -688,7 +666,7 @@ export default function Settings() {
           credentials: "include",
         }
       );
-      const data = await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as LocalModelActionResponse;
       if (!res.ok || data?.success === false) {
         throw new Error(data?.message || "Delete failed");
       }
@@ -741,7 +719,7 @@ export default function Settings() {
         body: JSON.stringify({ modelId }),
         credentials: "include",
       });
-      const data = await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as LocalModelActionResponse;
       if (!res.ok || data?.success === false) {
         throw new Error(data?.message || "Download failed");
       }
@@ -771,7 +749,7 @@ export default function Settings() {
           credentials: "include",
         }
       );
-      const data = await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as LocalModelActionResponse;
       if (!res.ok || data?.success === false) {
         throw new Error(data?.message || "Delete failed");
       }

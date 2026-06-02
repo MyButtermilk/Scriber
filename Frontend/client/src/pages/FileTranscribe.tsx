@@ -21,7 +21,14 @@ import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
-import type { SettingsResponse, TranscriptHistoryItem } from "@/lib/api-types";
+import type {
+  ApiMessageResponse,
+  FileTranscribeResponse,
+  SettingsResponse,
+  TranscriptDeleteResponse,
+  TranscriptDetailResponse,
+  TranscriptHistoryItem,
+} from "@/lib/api-types";
 
 const DELETE_GLITCH_DURATION_MS = 1200;
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
@@ -319,7 +326,7 @@ export default function FileTranscribe() {
       const formData = new FormData();
       formData.append("file", file);
 
-      const rec = await new Promise<TranscriptHistoryItem>((resolve, reject) => {
+      const rec = await new Promise<FileTranscribeResponse>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         let switchedToServerPhase = false;
         const serverProcessingLabel = inferServerProcessingLabel(file, compressionThresholdBytes);
@@ -353,15 +360,15 @@ export default function FileTranscribe() {
 
         xhr.onload = () => {
           const responseText = xhr.responseText || "";
-          let parsed: Partial<TranscriptHistoryItem> & { message?: string } = {};
+          let parsed: Partial<FileTranscribeResponse> & ApiMessageResponse = {};
           try {
-            parsed = responseText ? JSON.parse(responseText) as Partial<TranscriptHistoryItem> & { message?: string } : {};
+            parsed = responseText ? JSON.parse(responseText) as Partial<FileTranscribeResponse> & ApiMessageResponse : {};
           } catch {
             parsed = {};
           }
 
           if (xhr.status >= 200 && xhr.status < 300) {
-            resolve(parsed as TranscriptHistoryItem);
+            resolve(parsed as FileTranscribeResponse);
             return;
           }
 
@@ -410,8 +417,12 @@ export default function FileTranscribe() {
         credentials: "include",
       });
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
+        const errData = (await res.json().catch(() => ({}))) as ApiMessageResponse;
         throw new Error(errData.message || res.statusText);
+      }
+      const deleted = (await res.json().catch(() => ({ success: true }))) as TranscriptDeleteResponse;
+      if (deleted.success === false) {
+        throw new Error(deleted.message || "Delete failed");
       }
       toast({
         title: "Deleted",
@@ -448,7 +459,7 @@ export default function FileTranscribe() {
       if (!res.ok) {
         throw new Error(res.statusText);
       }
-      const data = await res.json();
+      const data = (await res.json()) as TranscriptDetailResponse;
       const content = data?.content || "";
       if (!content) {
         throw new Error("No transcript content available");

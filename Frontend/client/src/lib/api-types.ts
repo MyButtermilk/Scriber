@@ -85,6 +85,10 @@ export interface RuntimeLogsResponse {
   truncated: boolean;
 }
 
+export interface ApiMessageResponse {
+  message?: string;
+}
+
 export interface TranscriptHistoryItem {
   id: string;
   title: string;
@@ -107,6 +111,14 @@ export interface TranscriptHistoryItem {
 
 export type TranscriptDetailResponse = TranscriptHistoryItem;
 
+export type FileTranscribeResponse = TranscriptHistoryItem;
+
+export interface TranscriptDeleteResponse {
+  success: boolean;
+  id?: string;
+  message?: string;
+}
+
 export interface YouTubeSearchItem {
   videoId: string;
   url: string;
@@ -128,6 +140,49 @@ export interface YouTubeSearchResponse {
   totalResults: number;
   resultsPerPage: number;
   items: YouTubeSearchItem[];
+}
+
+export type LocalModelStatus = "ready" | "not_downloaded" | "downloading" | "error";
+
+export interface LocalModelInfo {
+  id: string;
+  name: string;
+  description: string;
+  languages: string[];
+  sizeMb: number;
+  supportsTimestamps?: boolean;
+  downloaded?: boolean;
+  status?: LocalModelStatus;
+  progress?: number;
+  message?: string;
+}
+
+export interface OnnxModelInfo extends LocalModelInfo {
+  sizeMbByQuantization?: Record<string, number>;
+  supportedQuantizations?: string[];
+}
+
+export type NemoModelInfo = LocalModelInfo;
+
+export interface OnnxModelsResponse {
+  available: boolean;
+  message?: string;
+  models: OnnxModelInfo[];
+  currentModel?: string;
+  quantization?: string;
+}
+
+export interface NemoModelsResponse {
+  available: boolean;
+  message?: string;
+  models: NemoModelInfo[];
+  currentModel?: string;
+}
+
+export interface LocalModelActionResponse {
+  success?: boolean;
+  message?: string;
+  modelId?: string;
 }
 
 export interface FileUploadLimits {
