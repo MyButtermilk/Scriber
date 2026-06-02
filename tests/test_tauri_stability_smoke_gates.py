@@ -133,6 +133,29 @@ def test_installer_and_build_scripts_forward_global_hotkey_smoke() -> None:
     assert '"-GlobalHotkeySmokeHotkey", $InstallerGlobalHotkeySmokeHotkey' in build
 
 
+def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
+    desktop = read_script("scripts/smoke_tauri_desktop.ps1")
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+    build = read_script("scripts/build_windows.ps1")
+
+    assert "[switch]$VerifySupportBundle" in desktop
+    assert "function Test-SupportBundle" in desktop
+    assert "/api/runtime/support-bundle" in desktop
+    assert "Support bundle endpoint allowed an unauthenticated request" in desktop
+    assert "support-bundle-secret-smoke.log" in desktop
+    assert "Support bundle leaked a secret value" in desktop
+    assert "redactionVerified = $true" in desktop
+    assert "supportBundle = $supportBundle" in desktop
+
+    assert "[switch]$VerifySupportBundle" in installer
+    assert '"-VerifySupportBundle"' in installer
+    assert "supportBundle = $smoke.supportBundle" in installer
+
+    assert "[switch]$RunInstallerSupportBundleSmoke" in build
+    assert "$RunInstallerSupportBundleSmoke" in build
+    assert '"-VerifySupportBundle"' in build
+
+
 def test_desktop_and_installer_smokes_support_live_recording_stability_gate() -> None:
     desktop = read_script("scripts/smoke_tauri_desktop.ps1")
     installer = read_script("scripts/smoke_windows_installer.ps1")

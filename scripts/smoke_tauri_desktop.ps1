@@ -28,6 +28,8 @@ for the Tauri app plus backend exceeds the configured threshold. With
 that the Tauri global shortcut dispatch reaches the existing backend endpoints.
 With -LiveRecordingDurationSec, it explicitly starts live microphone recording,
 keeps it running while sampling health/state, CPU, and memory, then stops it.
+With -VerifySupportBundle, it downloads the token-protected support bundle and
+verifies that injected dummy secrets are redacted from the ZIP contents.
 
 Build the executable first with:
   cd Frontend
@@ -66,6 +68,7 @@ param(
     [switch]$VerifyGlobalHotkeyRegistration,
     [switch]$SimulateGlobalHotkey,
     [switch]$WaitForManualGlobalHotkey,
+    [switch]$VerifySupportBundle,
     [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$GlobalHotkeyDispatchTimeoutSec = 20,
     [int]$BackendStartupTimeoutMs = 3000,
@@ -575,6 +578,138 @@ function Write-SmokeJson {
         Set-Content -LiteralPath $outputFull -Value $json -Encoding UTF8
     }
     return $json
+}
+
+function Read-ZipEntryText {
+    param([string]$Path)
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+    try {
+        $entries = @()
+        $combined = New-Object System.Text.StringBuilder
+        foreach ($entry in $archive.Entries) {
+            $entries += $entry.FullName
+            if ($entry.Length -le 0 -or $entry.Length -gt 2000000) {
+                continue
+            }
+            $reader = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8, $true)
+            try {
+                [void]$combined.AppendLine($reader.ReadToEnd())
+            } finally {
+                $reader.Dispose()
+            }
+        }
+        return [pscustomobject]@{
+            entries = $entries
+            combinedText = $combined.ToString()
+        }
+    } finally {
+        $archive.Dispose()
+    }
+}
+
+function Test-SupportBundle {
+    param(
+        [int]$Port,
+        [string]$Token,
+        [string]$RuntimeDataDir
+    )
+
+    $secretValues = @(
+        "support-bundle-env-secret",
+        "support-bundle-settings-secret",
+        "support-bundle-log-secret",
+        "support-bundle-bearer-secret"
+    )
+
+    $logsPath = Join-Path $RuntimeDataDir "logs"
+    New-Item -ItemType Directory -Force -Path $logsPath | Out-Null
+    Set-Content `
+        -LiteralPath (Join-Path $RuntimeDataDir ".env") `
+        -Value "OPENAI_API_KEY=$($secretValues[0])`nSCRIBER_MODE=toggle" `
+        -Encoding UTF8
+    Set-Content `
+        -LiteralPath (Join-Path $RuntimeDataDir "settings.json") `
+        -Value "{`"language`":`"en`",`"apiKeys`":{`"openaiApiKey`":`"$($secretValues[1])`"}}" `
+        -Encoding UTF8
+    Set-Content `
+        -LiteralPath (Join-Path $logsPath "support-bundle-secret-smoke.log") `
+        -Value "OPENAI_API_KEY=$($secretValues[2]) Authorization: Bearer $($secretValues[3])" `
+        -Encoding UTF8
+
+    $uri = "http://127.0.0.1:$Port/api/runtime/support-bundle"
+    $unauthorizedStatus = $null
+    try {
+        Invoke-WebRequest -Method Post -Uri $uri -TimeoutSec 5 | Out-Null
+        throw "Support bundle endpoint allowed an unauthenticated request."
+    } catch {
+        $response = $_.Exception.Response
+        if ($response -and $response.StatusCode) {
+            $unauthorizedStatus = [int]$response.StatusCode
+        }
+        if ($unauthorizedStatus -ne 401) {
+            throw "Support bundle endpoint should reject unauthenticated requests with 401, got $unauthorizedStatus."
+        }
+    }
+
+    $downloadDir = Join-Path $RuntimeDataDir "support-bundle-smoke"
+    New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+    $downloadPath = Join-Path $downloadDir "support-bundle.zip"
+    $headers = @{"X-Scriber-Token" = $Token}
+    Invoke-WebRequest -Method Post -Uri $uri -Headers $headers -OutFile $downloadPath -TimeoutSec 20
+    if (-not (Test-Path -LiteralPath $downloadPath -PathType Leaf)) {
+        throw "Support bundle download did not create $downloadPath."
+    }
+
+    $downloadItem = Get-Item -LiteralPath $downloadPath
+    if ($downloadItem.Length -le 0) {
+        throw "Support bundle download was empty."
+    }
+
+    $zip = Read-ZipEntryText -Path $downloadPath
+    $entrySet = @($zip.entries)
+    foreach ($required in @("manifest.json", "runtime.json", "state.redacted.json", "environment.redacted.json", "config/env.redacted.txt", "logs/support-bundle-secret-smoke.log")) {
+        if ($entrySet -notcontains $required) {
+            throw "Support bundle is missing required entry: $required"
+        }
+    }
+    $settingsEntry = if ($entrySet -contains "config/settings.redacted.json") {
+        "config/settings.redacted.json"
+    } elseif ($entrySet -contains "config/settings.redacted.txt") {
+        "config/settings.redacted.txt"
+    } else {
+        throw "Support bundle is missing redacted settings entry."
+    }
+
+    $combined = [string]$zip.combinedText
+    foreach ($secret in @($secretValues + @($Token))) {
+        if ($secret -and $combined.Contains($secret)) {
+            throw "Support bundle leaked a secret value."
+        }
+    }
+    if (-not $combined.Contains("[REDACTED]")) {
+        throw "Support bundle did not contain any redaction marker."
+    }
+
+    return [pscustomobject]@{
+        verified = $true
+        tokenProtected = $true
+        unauthorizedStatus = $unauthorizedStatus
+        downloadPath = $downloadPath
+        downloadBytes = [int64]$downloadItem.Length
+        entryCount = [int]$entrySet.Count
+        redactionVerified = $true
+        requiredEntries = @(
+            "manifest.json",
+            "runtime.json",
+            "state.redacted.json",
+            "environment.redacted.json",
+            "config/env.redacted.txt",
+            $settingsEntry,
+            "logs/support-bundle-secret-smoke.log"
+        )
+    }
 }
 
 function Initialize-WindowsKeyboardInput {
@@ -1378,6 +1513,13 @@ try {
     if ($VerifyLegacyDataMigration) {
         $legacyDataMigration = Test-LegacyDataMigration -SourceDir $LegacyDataDir -TargetDir $DataDir
     }
+    $supportBundle = $null
+    if ($VerifySupportBundle) {
+        $supportBundle = Test-SupportBundle `
+            -Port ([int]$listener.Port) `
+            -Token $SessionToken `
+            -RuntimeDataDir $DataDir
+    }
     $globalHotkey = $null
     if ($SimulateGlobalHotkey) {
         $globalHotkey = Test-GlobalHotkeyDispatch `
@@ -1519,6 +1661,7 @@ try {
         externalAttach = $externalAttach
         portConflict = $portConflictResult
         legacyDataMigration = $legacyDataMigration
+        supportBundle = $supportBundle
         globalHotkey = $globalHotkey
         startupTimeout = $startupTimeout
         crashRecovery = $crashRecovery

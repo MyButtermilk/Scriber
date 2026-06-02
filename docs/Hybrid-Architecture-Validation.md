@@ -4,6 +4,95 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Runtime Support Bundle Gate
+
+Commands:
+
+```powershell
+$scripts = @(
+  'scripts\smoke_tauri_desktop.ps1',
+  'scripts\smoke_windows_installer.ps1',
+  'scripts\build_windows.ps1'
+)
+foreach ($script in $scripts) {
+  $tokens=$null; $errors=$null
+  $null=[System.Management.Automation.Language.Parser]::ParseFile(
+    (Resolve-Path $script),
+    [ref]$tokens,
+    [ref]$errors
+  )
+  if ($errors.Count) {
+    $errors | ForEach-Object { Write-Error "${script}: $($_.Message)" }
+    exit 1
+  }
+}
+'OK'
+
+venv\Scripts\python.exe -m pytest `
+  tests\test_tauri_stability_smoke_gates.py `
+  tests\runtime\test_support_bundle.py `
+  tests\test_web_api_security.py::test_session_token_middleware_and_shutdown_endpoint
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1 `
+  -ExePath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\scriber-desktop.exe" `
+  -DataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\tauri-smoke-data\support-bundle-20260602-pass" `
+  -DisableDevFallback `
+  -VerifySupportBundle `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\tauri-support-bundle-20260602.json"
+```
+
+Result: passed for the Tauri-supervised sidecar runtime.
+
+Implemented improvements:
+
+- `scripts\smoke_tauri_desktop.ps1` now supports `-VerifySupportBundle`.
+- The gate writes dummy secrets into runtime `.env`, `settings.json`, and a log
+  file, calls the real `POST /api/runtime/support-bundle` endpoint, and
+  inspects the returned ZIP.
+- The gate verifies that unauthenticated support-bundle requests return 401
+  when `SCRIBER_SESSION_TOKEN` is configured.
+- The gate verifies required ZIP entries, non-empty download bytes, redaction
+  markers, and absence of the dummy secrets plus the real session token.
+- `scripts\smoke_windows_installer.ps1` forwards `-VerifySupportBundle`.
+- `scripts\build_windows.ps1` now exposes `-RunInstallerSupportBundleSmoke` as
+  a release build gate.
+
+Evidence:
+
+- PowerShell parser check for all three scripts: passed.
+- Focused tests: `13 passed`.
+- Runtime artifact:
+  `tmp\hybrid-baseline\tauri-support-bundle-20260602.json`.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- Cleanup verified: true.
+- Support bundle verified: true.
+- Token protection verified: true.
+- Unauthorized status: 401.
+- Redaction verified: true.
+- Download size: 6,598 bytes.
+- ZIP entry count: 11.
+- Required entries included:
+  `manifest.json`, `runtime.json`, `state.redacted.json`,
+  `environment.redacted.json`, `config/env.redacted.txt`,
+  `config/settings.redacted.txt`, and
+  `logs/support-bundle-secret-smoke.log`.
+
+Goal coverage:
+
+- Phase 2: adds runtime evidence for Python worker log/support diagnostics
+  under the Tauri-supervised sidecar path.
+- Phase 2/6: verifies the support bundle is token-protected and suitable for
+  installed-app smoke forwarding.
+- Phase 8: turns secret redaction into a release-gateable runtime check instead
+  of relying only on unit tests.
+
+Remaining limits:
+
+- This verifies a local unsigned runtime. It does not replace real
+  Authenticode signing, updater publication, or human review of a production
+  support bundle from an affected user machine.
+
 ## 2026-06-02 - Text Injection Target Smoke + Clipboard Fallback
 
 Commands:

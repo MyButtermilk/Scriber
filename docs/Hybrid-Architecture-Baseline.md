@@ -108,6 +108,8 @@ is to distinguish provider transcript failure from OS input/focus failure.
   markers, and browser console/page errors via `scripts/smoke_frontend_browser.py`.
 - standalone text-injection callback, foreground target focus, and target text
   capture via `scripts/smoke_text_injection_target.py`.
+- token-protected support-bundle download, ZIP entry checks, and dummy-secret
+  redaction via `scripts/smoke_tauri_desktop.ps1 -VerifySupportBundle`.
 
 The runner intentionally reports an incomplete Phase 0 gate until all required
 measurements are present. Missing fields are listed in

@@ -31,6 +31,8 @@ physical OS hotkey press and verifies the dispatch against the installed app.
 With -LiveRecordingDurationSec, the installed desktop smoke explicitly records
 from the live microphone path for the configured duration and samples CPU,
 memory, health, and state while recording is active.
+With -VerifySupportBundle, the installed desktop smoke downloads the
+token-protected support bundle and verifies dummy secret redaction.
 #>
 
 param(
@@ -47,6 +49,7 @@ param(
     [switch]$VerifyGlobalHotkeyRegistration,
     [switch]$SimulateGlobalHotkey,
     [switch]$WaitForManualGlobalHotkey,
+    [switch]$VerifySupportBundle,
     [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$GlobalHotkeyDispatchTimeoutSec = 20,
     [int]$StabilityDurationSec = 0,
@@ -359,6 +362,9 @@ function Invoke-InstalledDesktopSmoke {
         $smokeArgs += @("-GlobalHotkeySmokeHotkey", $GlobalHotkeySmokeHotkey)
         $smokeArgs += @("-GlobalHotkeyDispatchTimeoutSec", $GlobalHotkeyDispatchTimeoutSec.ToString())
     }
+    if ($VerifySupportBundle) {
+        $smokeArgs += "-VerifySupportBundle"
+    }
     if ($OccupyDefaultPort) {
         $smokeArgs += "-OccupyDefaultPort"
     }
@@ -468,6 +474,7 @@ try {
             controlledShutdown = $secondSmoke.controlledShutdown
             startupTimeout = $secondSmoke.startupTimeout
             globalHotkey = $secondSmoke.globalHotkey
+            supportBundle = $secondSmoke.supportBundle
             liveRecording = $secondSmoke.liveRecording
             stability = $secondSmoke.stability
             legacyDataMigration = $secondSmoke.legacyDataMigration
@@ -491,6 +498,7 @@ try {
         controlledShutdown = $smoke.controlledShutdown
         startupTimeout = $smoke.startupTimeout
         globalHotkey = $smoke.globalHotkey
+        supportBundle = $smoke.supportBundle
         liveRecording = $smoke.liveRecording
         stability = $smoke.stability
         cleanupVerified = $smoke.cleanupVerified
