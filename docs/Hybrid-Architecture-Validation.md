@@ -3942,3 +3942,48 @@ Remaining limits:
 - This does not close the external release gates. Physical microphone matrix,
   real Authenticode signing, and published signed updater evidence remain
   separate final-readiness requirements.
+
+## 2026-06-02 - Fast Hybrid PR Checks Workflow
+
+Commands:
+
+```powershell
+python -m pytest tests\test_hybrid_pr_checks_workflow.py
+```
+
+Result: implemented and covered by a focused workflow-structure regression
+test.
+
+Implemented improvements:
+
+- Added `.github\workflows\hybrid-pr-checks.yml` as a fast Windows PR gate for
+  the hybrid branch.
+- The workflow runs on pull requests targeting `main`, pushes to
+  `codex/hybrid-tauri-performance`, and manual dispatch.
+- The Python job installs only dev dependencies plus `aiohttp`, then runs the
+  focused hybrid/security/release-readiness tests that do not require real
+  signing, media tools, or hardware.
+- The frontend job runs `npm ci`, `npm run check`, and `npm run build`.
+- The Rust job runs `cargo test` under `Frontend\src-tauri`.
+- The workflow intentionally does not build the NSIS installer and does not
+  require ffmpeg, Authenticode secrets, or updater signing secrets; those remain
+  owned by the release workflow and final readiness runner.
+
+Evidence:
+
+- `tests\test_hybrid_pr_checks_workflow.py`: validates PR/manual triggers,
+  read-only permissions, Python/frontend/Rust job coverage, and that the fast
+  PR gate does not call installer/release-build steps.
+
+Goal coverage:
+
+- Phase 7: moves key hybrid regression coverage from local-only evidence into
+  GitHub PR status checks.
+- Phase 8: reduces the chance that PR updates silently bypass frontend,
+  Tauri/Rust, or final-readiness tooling gates before review.
+
+Remaining limits:
+
+- This does not replace the full Windows release workflow, installed-package
+  smokes, or external hardware/signing/updater evidence. It is a fast PR gate,
+  not final release-readiness proof.
