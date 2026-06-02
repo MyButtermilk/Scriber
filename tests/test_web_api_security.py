@@ -22,7 +22,11 @@ def test_origin_allowed_defaults(monkeypatch):
     assert web_api._origin_allowed("http://localhost:3000")
     assert web_api._origin_allowed("http://127.0.0.1:1234")
     assert web_api._origin_allowed("http://[::1]:5173")
+    assert web_api._origin_allowed("http://tauri.localhost")
+    assert web_api._origin_allowed("https://tauri.localhost")
+    assert web_api._origin_allowed("tauri://localhost")
     assert not web_api._origin_allowed("https://evil.example")
+    assert not web_api._origin_allowed("http://evil.localhost")
     assert not web_api._origin_allowed("null")
 
 
@@ -183,6 +187,27 @@ async def test_static_frontend_routes_do_not_bypass_api_session_token(monkeypatc
 
         api_with_token = await client.get("/api/runtime", headers={"X-Scriber-Token": "secret"})
         assert api_with_token.status == 200
+    finally:
+        await client.close()
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tauri_origin_can_fetch_health(monkeypatch, tmp_path):
+    monkeypatch.delenv("SCRIBER_ALLOWED_ORIGINS", raising=False)
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.get("/api/health", headers={"Origin": "http://tauri.localhost"})
+        assert response.status == 200
+        assert response.headers["Access-Control-Allow-Origin"] == "http://tauri.localhost"
+        assert response.headers["Access-Control-Allow-Credentials"] == "true"
     finally:
         await client.close()
         ctl.shutdown()

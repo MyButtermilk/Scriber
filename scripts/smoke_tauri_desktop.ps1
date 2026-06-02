@@ -31,7 +31,8 @@ keeps it running while sampling health/state, CPU, and memory, then stops it.
 With -VerifySupportBundle, it downloads the token-protected support bundle and
 verifies that injected dummy secrets are redacted from the ZIP contents.
 With -VerifyFrontend, it fetches the bundled frontend entrypoint and referenced
-JS/CSS assets from the running backend static fallback.
+JS/CSS assets from the running backend static fallback and verifies that Tauri
+production origins can call /api/health and tokenized /api/runtime.
 
 Build the executable first with:
   cd Frontend
@@ -631,7 +632,10 @@ function Resolve-FrontendAssetUrl {
 }
 
 function Test-FrontendHttp {
-    param([int]$Port)
+    param(
+        [int]$Port,
+        [string]$Token = ""
+    )
 
     $baseUrl = "http://127.0.0.1:$Port"
     $rootUrl = "$baseUrl/"
@@ -681,6 +685,31 @@ function Test-FrontendHttp {
         }
     }
 
+    $tauriOrigin = "http://tauri.localhost"
+    $originHeaders = @{ Origin = $tauriOrigin }
+    $healthResponse = Invoke-WebRequest -Uri "$baseUrl/api/health" -Headers $originHeaders -TimeoutSec 10 -UseBasicParsing
+    if ([int]$healthResponse.StatusCode -ne 200) {
+        throw "Frontend CORS health probe returned HTTP $($healthResponse.StatusCode)."
+    }
+    $healthAllowedOrigin = [string]$healthResponse.Headers["Access-Control-Allow-Origin"]
+    if ($healthAllowedOrigin -ne $tauriOrigin) {
+        throw "Frontend CORS health probe returned Access-Control-Allow-Origin '$healthAllowedOrigin' instead of '$tauriOrigin'."
+    }
+
+    $runtimeCorsVerified = $false
+    if ($Token) {
+        $encodedToken = [uri]::EscapeDataString($Token)
+        $runtimeResponse = Invoke-WebRequest -Uri "$baseUrl/api/runtime?scriberToken=$encodedToken" -Headers $originHeaders -TimeoutSec 10 -UseBasicParsing
+        if ([int]$runtimeResponse.StatusCode -ne 200) {
+            throw "Frontend CORS runtime probe returned HTTP $($runtimeResponse.StatusCode)."
+        }
+        $runtimeAllowedOrigin = [string]$runtimeResponse.Headers["Access-Control-Allow-Origin"]
+        if ($runtimeAllowedOrigin -ne $tauriOrigin) {
+            throw "Frontend CORS runtime probe returned Access-Control-Allow-Origin '$runtimeAllowedOrigin' instead of '$tauriOrigin'."
+        }
+        $runtimeCorsVerified = $true
+    }
+
     return [pscustomobject]@{
         verified = $true
         rootUrl = $rootUrl
@@ -688,6 +717,8 @@ function Test-FrontendHttp {
         htmlBytes = [int]$html.Length
         assetCount = [int]$assets.Count
         verifiedAssetCount = [int]$verifiedAssets.Count
+        tauriOriginCors = $true
+        runtimeCorsVerified = $runtimeCorsVerified
         assets = $verifiedAssets
     }
 }
@@ -1735,7 +1766,7 @@ try {
     }
     $frontend = $null
     if ($VerifyFrontend) {
-        $frontend = Test-FrontendHttp -Port ([int]$listener.Port)
+        $frontend = Test-FrontendHttp -Port ([int]$listener.Port) -Token $SessionToken
     }
     $liveRecording = Test-LiveRecordingStability `
         -AppProcess $app `

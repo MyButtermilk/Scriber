@@ -75,6 +75,8 @@ def test_tauri_csp_restricts_webview_to_local_backend_and_assets() -> None:
     assert "data:" in directives["font-src"]
     assert "data:" in directives["media-src"]
     assert "blob:" in directives["media-src"]
+    assert "ipc:" in directives["connect-src"]
+    assert "http://ipc.localhost" in directives["connect-src"]
     assert "http://127.0.0.1:*" in directives["connect-src"]
     assert "ws://127.0.0.1:*" in directives["connect-src"]
     assert "http://localhost:*" in directives["connect-src"]

@@ -74,6 +74,7 @@ architecture work. It replaces earlier incomplete goal text.
   - danach `VITE_BACKEND_URL`,
   - danach Default `http://127.0.0.1:8765`.
 - CORS für Browser-Dev und Tauri-Webview sauber trennen.
+- Default-CORS muss Tauri-Produktions-Origins (`tauri.localhost` und `tauri://localhost`) akzeptieren; Tauri-CSP muss den IPC-Connect-Kanal erlauben.
 - Gate: Browser-Dev und Tauri-Prod funktionieren parallel.
 
 ## Phase 4: Desktop-Funktionen migrieren
@@ -127,7 +128,8 @@ architecture work. It replaces earlier incomplete goal text.
     synthetischen Backend-Server.
   - `scripts/smoke_tauri_desktop.ps1 -VerifyFrontend` und
     `scripts/smoke_windows_installer.ps1 -VerifyFrontend` fuer installierte
-    Frontend-Assets ueber den laufenden Backend-Static-Fallback.
+    Frontend-Assets ueber den laufenden Backend-Static-Fallback plus
+    Tauri-Origin-CORS auf `/api/health` und tokenisiertem `/api/runtime`.
 - Installer/Desktop:
   - NSIS-Install, Sidecar-Start, Backend-Health, Frontend-Assets,
     Worker-Crash-Recovery, kontrollierter Worker-Shutdown,
@@ -188,9 +190,11 @@ architecture work. It replaces earlier incomplete goal text.
   yt-dlp, ONNXRuntime/Silero-VAD Startup-Imports, Runtime-Datenmigration,
   Release-Metadaten und optionale Gates umgesetzt. Am 2026-06-02 ist
   `build_windows.ps1 -SkipChecks -SkipSmoke -RunInstallerSmoke
-  -RunInstallerFrontendSmoke` mit 205.75 MiB Setup-Artefakt unter dem 220 MiB
-  Gate durchgelaufen. Echte Signierung und reale Updater-Veroeffentlichung
-  sind externe Release-Schritte und noch nicht bewiesen.
+  -RunInstallerFrontendSmoke` mit Tauri-Origin-CORS fuer `/api/health` und
+  tokenisiertes `/api/runtime` sowie 205.72 MiB Setup-Artefakt unter dem
+  220 MiB Gate durchgelaufen. Echte Signierung und reale
+  Updater-Veroeffentlichung sind externe Release-Schritte und noch nicht
+  bewiesen.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen.
 - Phase 8 hat mehrere synthetische und kurze installierte Stability-Gates, aber

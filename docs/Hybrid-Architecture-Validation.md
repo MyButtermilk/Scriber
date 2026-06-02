@@ -126,11 +126,12 @@ Evidence:
   `127.0.0.1:8765`, frontend root HTTP `200`, all `6` referenced JS/CSS assets
   fetched successfully, cleanup verified.
 - Fresh NSIS installer build and installed package smoke:
-  `Scriber_0.1.0_x64-setup.exe` was `205.75` MiB, under the default `220` MiB
+  `Scriber_0.1.0_x64-setup.exe` was `205.72` MiB, under the default `220` MiB
   installer gate; installed package started the sidecar backend, served the
-  bundled frontend root and all `6` referenced JS/CSS assets, and the silent
-  uninstaller removed install artifacts while preserving the runtime data
-  sentinel.
+  bundled frontend root and all `6` referenced JS/CSS assets, verified
+  Tauri-origin CORS for `/api/health` and tokenized `/api/runtime`, and the
+  silent uninstaller removed install artifacts while preserving the runtime
+  data sentinel.
 
 Goal coverage:
 

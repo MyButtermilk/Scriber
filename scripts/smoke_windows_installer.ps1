@@ -34,7 +34,8 @@ memory, health, and state while recording is active.
 With -VerifySupportBundle, the installed desktop smoke downloads the
 token-protected support bundle and verifies dummy secret redaction.
 With -VerifyFrontend, the installed desktop smoke verifies the frontend
-entrypoint and bundled JS/CSS assets through the running backend.
+entrypoint and bundled JS/CSS assets through the running backend and verifies
+that Tauri production origins can call /api/health and tokenized /api/runtime.
 #>
 
 param(

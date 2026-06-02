@@ -190,6 +190,9 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "[switch]$VerifyFrontend" in desktop
     assert "function Test-FrontendHttp" in desktop
     assert "Frontend root HTML does not contain the React root element" in desktop
+    assert "http://tauri.localhost" in desktop
+    assert "tauriOriginCors = $true" in desktop
+    assert "runtimeCorsVerified" in desktop
     assert "frontend = $frontend" in desktop
 
     assert "[switch]$VerifySupportBundle" in installer

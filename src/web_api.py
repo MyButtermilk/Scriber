@@ -116,6 +116,8 @@ _WEB_PORT_ENV = "SCRIBER_WEB_PORT"
 _DISABLE_HOTKEYS_ENV = "SCRIBER_DISABLE_HOTKEYS"
 _SESSION_TOKEN_ENV = "SCRIBER_SESSION_TOKEN"
 _FRONTEND_DIST_DIR_ENV = "SCRIBER_FRONTEND_DIST_DIR"
+_DEFAULT_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "tauri.localhost"}
+_DEFAULT_ALLOWED_CUSTOM_ORIGINS = {"tauri://localhost"}
 _RUST_AUDIO_PROTOTYPE_AVAILABLE = False
 _AUDIO_DIAGNOSTIC_IMPORTS = (
     "scipy",
@@ -417,13 +419,15 @@ def _origin_allowed(origin: str) -> bool:
         return True
     if allowed:
         return origin in allowed
+    if origin.rstrip("/") in _DEFAULT_ALLOWED_CUSTOM_ORIGINS:
+        return True
     parsed = urlparse(origin)
     if parsed.scheme not in {"http", "https"}:
         return False
     host = parsed.hostname
     if not host:
         return False
-    return host in {"localhost", "127.0.0.1", "::1"}
+    return host in _DEFAULT_ALLOWED_HOSTS
 
 
 def _validate_mode(raw_mode: str) -> str:

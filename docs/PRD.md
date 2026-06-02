@@ -396,7 +396,7 @@ Hinweis: In der Tauri-Desktop-Runtime laeuft Autostart ueber Rust-Commands statt
 **Basis:**
 - `SCRIBER_WEB_HOST` (default: 127.0.0.1)
 - `SCRIBER_WEB_PORT` (default: 8765)
-- `SCRIBER_ALLOWED_ORIGINS` (default: localhost,127.0.0.1,::1; unterstützt Wildcard `*`)
+- `SCRIBER_ALLOWED_ORIGINS` (default: localhost,127.0.0.1,::1, Tauri desktop origins; unterstützt Wildcard `*`)
 
 **Audio/Verhalten:**
 - `SCRIBER_HOTKEY` (default: ctrl+alt+s)
