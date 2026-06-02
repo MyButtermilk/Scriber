@@ -4,6 +4,60 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Live Mic Hot-Path Partial Hardware Sample
+
+Command:
+
+```powershell
+$env:SCRIBER_LEGACY_DATA_DIR = 'C:\Users\Alexander.Immler\Documents\Github\Scriber'
+$env:SCRIBER_AUTO_MIGRATE_LEGACY_DATA = '1'
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 1 `
+  -DisableDevFallback `
+  -RecordHotPathSamples `
+  -RecordingHotPathIterations 1 `
+  -RecordingHotPathSeconds 2 `
+  -RecordingHotPathTimeoutSec 90 `
+  -SkipUploadExportBenchmark `
+  -SkipWsBenchmark `
+  -SkipHistoryScrollBenchmark `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\hybrid-baseline-20260602-recording-hotpath.json"
+```
+
+Result: passed as a partial Phase 0 hot-path sample.
+
+Evidence:
+
+- Artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-20260602-recording-hotpath.json`.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- UI visible: 1,541.78 ms.
+- Backend ready: 3,113.52 ms.
+- `hotkey_received_to_mic_ready_ms`: 860.163 ms.
+- `hotkey_received_to_first_audio_frame_ms`: 1,153.683 ms.
+- Performance budget remained green for this run:
+  UI p95 <= 3,000 ms and backend-ready p95 <= 5,000 ms.
+
+Goal coverage:
+
+- Phase 0: replaces the previous missing live-recording startup evidence for
+  hotkey-to-recording-state and hotkey-to-first-audio-frame with a real
+  Tauri-managed sidecar sample using the local microphone stack.
+- Phase 2: confirms the measurement ran with `DisableDevFallback` and the
+  packaged sidecar rather than the source Python module.
+- Phase 6: confirms the sample could use temporary runtime data populated from
+  the legacy Scriber data directory.
+
+Remaining limits:
+
+- `stop_to_text_injection` is still not complete. The sample reported
+  `missing_text_injection` because no text was injected during the 2-second
+  recording.
+- This was a single short sample, not a statistically meaningful latency run.
+- Upload/export, WebSocket, and history benchmarks were intentionally skipped
+  in this run because earlier full-baseline artifacts already cover them.
+
 ## 2026-06-02 - Tauri Global Hotkey Endpoint Contract
 
 Commands:
