@@ -4,6 +4,65 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Strict Recording Text Target Persistence Gate
+
+Commands:
+
+```powershell
+python -m py_compile `
+  scripts\measure_recording_hot_path_baseline.py `
+  tests\perf\test_recording_hot_path_baseline_script.py
+
+powershell -NoProfile -Command `
+  '$tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts\measure_hybrid_baseline.ps1"), [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count -gt 0) { $errors | Format-List *; exit 1 }'
+
+python -m pytest `
+  tests/perf/test_recording_hot_path_baseline_script.py `
+  tests/perf/test_text_injection_smoke_script.py
+
+python scripts\measure_recording_hot_path_baseline.py `
+  --validate-only `
+  --require-text-target `
+  --text-target-file tmp\hybrid-baseline\strict-text-target-validate.txt `
+  --output tmp\hybrid-baseline\recording-hotpath-strict-text-target-validate-20260602.json
+
+git diff --check
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\measure_recording_hot_path_baseline.py` now waits briefly after a
+  live recording metric appears to verify whether the controlled target file
+  contains non-empty text.
+- Recording child artifacts now include `summary.textTarget` with configured
+  target samples, captured sample count, captured character counts, max
+  captured chars, and capture elapsed durations.
+- `--require-text-target` adds a `text_target_persistence` requirement. It
+  reports `missing_target_window` when no target is configured and
+  `missing_target_text` when the target exists but captured zero characters.
+- `scripts\measure_hybrid_baseline.ps1` forwards
+  `-RecordingHotPathTextTargetTimeoutSec` and
+  `-RequireRecordingHotPathTextTarget`, adds the strict requirement to the Phase
+  0 gate, and validates that strict mode has a target file.
+
+Evidence:
+
+- Focused perf-gate tests: `21 passed`.
+- Validate-only strict target artifact: passed with
+  `text_target_persistence.status=measured`.
+- PowerShell parser check: passed.
+- Python compile check: passed.
+- Whitespace diff check: passed.
+
+Limitations:
+
+- This adds a stricter, repeatable gate. It does not by itself prove a real
+  spoken live recording injected text into the target; that still requires a
+  live run with `-RecordHotPathSamples -RecordingHotPathTextTargetFile ...`
+  plus `-RequireRecordingHotPathTextTarget`.
+
 ## 2026-06-02 - Always-On Mic Stream Reuse For Faster Preparing
 
 Commands:

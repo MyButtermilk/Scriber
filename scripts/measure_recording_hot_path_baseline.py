@@ -153,6 +153,26 @@ def read_text_target_length(info: dict[str, Any] | None) -> int:
     return len(path.read_text(encoding="utf-8", errors="replace"))
 
 
+def wait_for_text_target_capture(
+    info: dict[str, Any] | None,
+    *,
+    started_at: float,
+    timeout_sec: float,
+    poll_sec: float = 0.2,
+) -> tuple[int, float | None]:
+    if not info or not info.get("path"):
+        return 0, None
+    deadline = time.monotonic() + max(0.0, timeout_sec)
+    captured = 0
+    while True:
+        captured = read_text_target_length(info)
+        if captured > 0:
+            return captured, round((time.monotonic() - started_at) * 1000, 3)
+        if time.monotonic() >= deadline:
+            return captured, None
+        time.sleep(max(0.01, poll_sec))
+
+
 def start_speech_prompt(args: argparse.Namespace) -> tuple[dict[str, Any] | None, subprocess.Popen | None]:
     text = (args.speech_prompt_text or "").strip()
     if not text:
@@ -221,6 +241,31 @@ def requirement_values(
         "audibleAudioDurations": summarize(audible_audio_values),
         "providerTranscriptSamples": provider_transcript_samples,
         "providerTranscriptDurations": summarize(provider_transcript_values),
+    }
+
+
+def text_target_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    target_samples = [
+        sample.get("textTarget") or {}
+        for sample in samples
+        if sample.get("textTarget") is not None
+    ]
+    captured_chars = [
+        int(target.get("capturedChars") or 0)
+        for target in target_samples
+        if int(target.get("capturedChars") or 0) > 0
+    ]
+    capture_elapsed_values = [
+        float(target.get("captureElapsedMs"))
+        for target in target_samples
+        if target.get("captureElapsedMs") is not None
+    ]
+    return {
+        "configuredSamples": len(target_samples),
+        "capturedSamples": len(captured_chars),
+        "capturedChars": captured_chars,
+        "maxCapturedChars": max(captured_chars) if captured_chars else 0,
+        "captureElapsedDurations": summarize(capture_elapsed_values),
     }
 
 
@@ -356,7 +401,14 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
         sample["segments"] = segments
         sample["totalMs"] = metric.get("totalMs", 0.0)
         if "textTarget" in sample:
-            sample["textTarget"]["capturedChars"] = read_text_target_length(sample["textTarget"])
+            captured_chars, capture_elapsed_ms = wait_for_text_target_capture(
+                sample["textTarget"],
+                started_at=record_started_at,
+                timeout_sec=args.text_target_timeout_sec,
+            )
+            sample["textTarget"]["capturedChars"] = captured_chars
+            sample["textTarget"]["captureElapsedMs"] = capture_elapsed_ms
+            sample["textTarget"]["captured"] = captured_chars > 0
         sample["ok"] = any(name in segments for name in SEGMENTS_BY_REQUIREMENT.values())
     except Exception as exc:
         sample["error"] = str(exc)
@@ -375,7 +427,7 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
     return sample
 
 
-def build_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
+def build_summary(samples: list[dict[str, Any]], *, require_text_target: bool = False) -> dict[str, Any]:
     requirements: dict[str, Any] = {}
     for requirement, segment_name in SEGMENTS_BY_REQUIREMENT.items():
         values, details = requirement_values(samples, requirement, segment_name)
@@ -394,9 +446,24 @@ def build_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "durations": summarize(values),
         }
 
+    target_summary = text_target_summary(samples)
+    if require_text_target:
+        target_status = "measured"
+        if target_summary["configuredSamples"] <= 0:
+            target_status = "missing_target_window"
+        elif target_summary["capturedSamples"] <= 0:
+            target_status = "missing_target_text"
+        requirements["text_target_persistence"] = {
+            "status": target_status,
+            "segment": "textTarget.capturedChars",
+            **target_summary,
+            "durations": target_summary["captureElapsedDurations"],
+        }
+
     return {
         "iterations": len(samples),
         "successfulSamples": sum(1 for sample in samples if sample.get("ok")),
+        "textTarget": target_summary,
         "requirements": requirements,
         "complete": all(item["status"] == "measured" for item in requirements.values()),
     }
@@ -413,7 +480,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "error": f"{type(exc).__name__}: {exc}",
         }
     samples = [run_one_iteration(client, args, index) for index in range(1, args.iterations + 1)]
-    summary = build_summary(samples)
+    summary = build_summary(samples, require_text_target=args.require_text_target)
     return {
         "schemaVersion": 1,
         "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -446,6 +513,15 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
         },
         "validateOnly": True,
     }
+    if args.text_target_file or args.require_text_target:
+        sample["textTarget"] = {
+            "path": args.text_target_file or "validate-target.txt",
+            "pid": 0,
+            "title": args.text_target_title,
+            "capturedChars": len("Scriber validation prompt"),
+            "captureElapsedMs": 35.0,
+            "captured": True,
+        }
     return {
         "schemaVersion": 1,
         "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -485,7 +561,7 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             },
         },
         "ok": True,
-        "summary": build_summary([sample]),
+        "summary": build_summary([sample], require_text_target=args.require_text_target),
         "samples": [sample],
     }
 
@@ -503,6 +579,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--text-target-file", default="")
     parser.add_argument("--text-target-title", default="Scriber Hot Path Text Target")
     parser.add_argument("--text-target-settle-sec", type=float, default=1.0)
+    parser.add_argument("--text-target-timeout-sec", type=float, default=5.0)
+    parser.add_argument("--require-text-target", action="store_true")
     parser.add_argument("--speech-prompt-text", default="")
     parser.add_argument("--speech-prompt-delay-sec", type=float, default=0.5)
     parser.add_argument("--validate-only", action="store_true")
@@ -511,6 +589,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.iterations = max(1, int(args.iterations))
     args.record_seconds = max(0.1, float(args.record_seconds))
     args.text_target_settle_sec = max(0.1, float(args.text_target_settle_sec))
+    args.text_target_timeout_sec = max(0.0, float(args.text_target_timeout_sec))
     args.speech_prompt_delay_sec = max(0.0, float(args.speech_prompt_delay_sec))
     return args
 

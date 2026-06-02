@@ -123,6 +123,10 @@ is to distinguish provider transcript failure from OS input/focus failure.
 - optional live recording hot-path samples via
   `scripts/measure_recording_hot_path_baseline.py` when
   `-RecordHotPathSamples` is passed;
+- optional controlled text-target persistence evidence via
+  `-RecordingHotPathTextTargetFile <path>`; add
+  `-RequireRecordingHotPathTextTarget` when the Phase 0 gate must fail unless
+  that target contains non-empty injected text;
 - audio runtime readiness for recording samples via
   `/api/runtime/audio-diagnostics`, including ONNXRuntime/Silero VAD
   importability and non-secret provider/microphone/text-injection settings;

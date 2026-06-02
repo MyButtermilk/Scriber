@@ -46,6 +46,8 @@ param(
     [string]$RecordingHotPathSpeechPrompt = "",
     [double]$RecordingHotPathSpeechDelaySec = 0.5,
     [double]$RecordingHotPathTextTargetSettleSec = 1.0,
+    [double]$RecordingHotPathTextTargetTimeoutSec = 5.0,
+    [switch]$RequireRecordingHotPathTextTarget,
     [switch]$Hidden,
     [switch]$SkipUiVisibleWait,
     [switch]$SkipUploadExportBenchmark,
@@ -783,8 +785,12 @@ function Invoke-RecordingHotPathBenchmark {
     if ($RecordingHotPathTextTargetFile) {
         $recordingArgs += @(
             "--text-target-file", $RecordingHotPathTextTargetFile,
-            "--text-target-settle-sec", [string]$RecordingHotPathTextTargetSettleSec
+            "--text-target-settle-sec", [string]$RecordingHotPathTextTargetSettleSec,
+            "--text-target-timeout-sec", [string]$RecordingHotPathTextTargetTimeoutSec
         )
+    }
+    if ($RequireRecordingHotPathTextTarget) {
+        $recordingArgs += @("--require-text-target")
     }
     if ($RecordingHotPathSpeechPrompt) {
         $recordingArgs += @(
@@ -1064,6 +1070,12 @@ if ($RecordingHotPathSpeechDelaySec -lt 0) {
 if ($RecordingHotPathTextTargetSettleSec -le 0) {
     throw "RecordingHotPathTextTargetSettleSec must be > 0."
 }
+if ($RecordingHotPathTextTargetTimeoutSec -lt 0) {
+    throw "RecordingHotPathTextTargetTimeoutSec must be >= 0."
+}
+if ($RequireRecordingHotPathTextTarget -and -not $RecordingHotPathTextTargetFile) {
+    throw "RequireRecordingHotPathTextTarget requires RecordingHotPathTextTargetFile."
+}
 if ($MaxUiVisibleP95Ms -le 0) {
     throw "MaxUiVisibleP95Ms must be > 0."
 }
@@ -1165,6 +1177,13 @@ $requirements = @(
         -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "stop_to_text_injection") `
         -Evidence "/api/metrics/hot-path segment stop_requested_to_first_paste_ms" `
         -Notes $(Get-RecordingHotPathRequirementNotes)
+    if ($RequireRecordingHotPathTextTarget) {
+        New-Requirement `
+            -Name "text_target_persistence" `
+            -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "text_target_persistence") `
+            -Evidence "Recording hot-path controlled target file textTarget.capturedChars" `
+            -Notes $(Get-RecordingHotPathRequirementNotes)
+    }
     New-Requirement `
         -Name "upload_export_under_load" `
         -Status $(if ($SkipUploadExportBenchmark) { "skipped" } elseif ($uploadExportBenchmark -and $uploadExportBenchmark.ok) { "measured" } else { "missing" }) `
@@ -1250,6 +1269,8 @@ $result = [pscustomobject]@{
         recordingHotPathSpeechPromptChars = $RecordingHotPathSpeechPrompt.Length
         recordingHotPathSpeechDelaySec = $RecordingHotPathSpeechDelaySec
         recordingHotPathTextTargetSettleSec = $RecordingHotPathTextTargetSettleSec
+        recordingHotPathTextTargetTimeoutSec = $RecordingHotPathTextTargetTimeoutSec
+        requireRecordingHotPathTextTarget = [bool]$RequireRecordingHotPathTextTarget
         failOnPerformanceBudget = [bool]$FailOnPerformanceBudget
         maxUiVisibleP95Ms = $MaxUiVisibleP95Ms
         maxBackendReadyP95Ms = $MaxBackendReadyP95Ms

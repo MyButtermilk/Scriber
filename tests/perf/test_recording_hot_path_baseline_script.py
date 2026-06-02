@@ -49,6 +49,36 @@ def test_recording_hot_path_baseline_script_validate_only_writes_artifact(tmp_pa
     assert stop_requirement["alreadyInjectedBeforeStopSamples"] == 1
 
 
+def test_recording_hot_path_baseline_validate_only_can_require_text_target(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[2]
+    output_path = tmp_path / "recording-hot-path-baseline-strict-target.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/measure_recording_hot_path_baseline.py",
+            "--validate-only",
+            "--require-text-target",
+            "--text-target-file",
+            str(tmp_path / "target.txt"),
+            "--output",
+            str(output_path),
+        ],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    target_requirement = payload["summary"]["requirements"]["text_target_persistence"]
+    assert payload["ok"] is True
+    assert payload["summary"]["complete"] is True
+    assert target_requirement["status"] == "measured"
+    assert target_requirement["capturedSamples"] == 1
+
+
 def test_recording_hot_path_text_target_path_is_unique_per_iteration(tmp_path: Path):
     target = tmp_path / "capture.txt"
 
@@ -83,6 +113,82 @@ def test_recording_hot_path_summary_measures_text_injection_after_stop():
     assert stop_requirement["durations"]["p95Ms"] == 82.5
     assert stop_requirement["afterStopInjectionSamples"] == 1
     assert stop_requirement["alreadyInjectedBeforeStopSamples"] == 0
+
+
+def test_recording_hot_path_summary_reports_text_target_capture():
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_first_paste_ms": 82.5,
+                },
+                "textTarget": {
+                    "capturedChars": 27,
+                    "captureElapsedMs": 310.0,
+                },
+            }
+        ]
+    )
+
+    assert summary["textTarget"]["configuredSamples"] == 1
+    assert summary["textTarget"]["capturedSamples"] == 1
+    assert summary["textTarget"]["maxCapturedChars"] == 27
+    assert summary["textTarget"]["captureElapsedDurations"]["p95Ms"] == 310.0
+    assert "text_target_persistence" not in summary["requirements"]
+
+
+def test_recording_hot_path_summary_strict_text_target_requires_persisted_text():
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_first_paste_ms": 82.5,
+                },
+                "textTarget": {
+                    "capturedChars": 0,
+                    "captureElapsedMs": None,
+                },
+            }
+        ],
+        require_text_target=True,
+    )
+
+    target_requirement = summary["requirements"]["text_target_persistence"]
+    assert summary["complete"] is False
+    assert target_requirement["status"] == "missing_target_text"
+    assert target_requirement["configuredSamples"] == 1
+    assert target_requirement["capturedSamples"] == 0
+
+
+def test_recording_hot_path_summary_strict_text_target_passes_when_text_is_persisted():
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_first_paste_ms": 82.5,
+                },
+                "textTarget": {
+                    "capturedChars": 27,
+                    "captureElapsedMs": 310.0,
+                },
+            }
+        ],
+        require_text_target=True,
+    )
+
+    target_requirement = summary["requirements"]["text_target_persistence"]
+    assert summary["complete"] is True
+    assert target_requirement["status"] == "measured"
+    assert target_requirement["durations"]["p95Ms"] == 310.0
 
 
 def test_recording_hot_path_summary_treats_text_before_stop_as_zero_wait():
@@ -178,6 +284,9 @@ def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
         repo_root / "scripts" / "measure_recording_hot_path_baseline.py"
     ).read_text(encoding="utf-8")
     assert "--text-target-file" in script
+    assert "--text-target-timeout-sec" in script
+    assert "--require-text-target" in script
+    assert "RequireRecordingHotPathTextTarget requires RecordingHotPathTextTargetFile" in script
     assert "--speech-prompt-text" in script
     assert "Convert-ToProcessArgument" in script
     assert "[string]$LegacyDataDir" in script
