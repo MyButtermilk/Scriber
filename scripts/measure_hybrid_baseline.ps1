@@ -750,7 +750,7 @@ function Invoke-RecordingHotPathBenchmark {
     param(
         [int]$Port,
         [string]$Token,
-        [string]$DataDir,
+        [string]$BaselineOutputPath,
         [int]$Iteration
     )
 
@@ -759,11 +759,13 @@ function Invoke-RecordingHotPathBenchmark {
         throw "Missing recording hot-path baseline benchmark script: $scriptPath"
     }
 
-    $benchmarkOutputPath = Join-Path $DataDir "recording-hot-path-$Iteration.json"
+    $outputDir = Split-Path $BaselineOutputPath
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($BaselineOutputPath)
+    $benchmarkOutputPath = Join-Path $outputDir "$baseName-recording-hot-path-$Iteration.json"
     Assert-UnderRoot -Root (Join-Path $RepoRoot "tmp") -Path $benchmarkOutputPath -Label "Recording hot-path baseline output"
 
-    $stdoutPath = Join-Path $DataDir "recording-hot-path-$Iteration.out"
-    $stderrPath = Join-Path $DataDir "recording-hot-path-$Iteration.err"
+    $stdoutPath = Join-Path $outputDir "$baseName-recording-hot-path-$Iteration.out"
+    $stderrPath = Join-Path $outputDir "$baseName-recording-hot-path-$Iteration.err"
     Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
 
     $recordingArgs = @(
@@ -832,7 +834,8 @@ function Invoke-RecordingHotPathBenchmark {
 
 function Invoke-BaselineIteration {
     param(
-        [int]$Index
+        [int]$Index,
+        [string]$BaselineOutputPath
     )
 
     $dataDir = Join-Path $RepoRoot ("tmp\hybrid-baseline-data\" + [System.Guid]::NewGuid().ToString("N"))
@@ -905,7 +908,7 @@ function Invoke-BaselineIteration {
             $recordingHotPathBenchmark = Invoke-RecordingHotPathBenchmark `
                 -Port $startupSignals.backendPort `
                 -Token $sessionToken `
-                -DataDir $dataDir `
+                -BaselineOutputPath $BaselineOutputPath `
                 -Iteration $Index
         }
 
@@ -1058,7 +1061,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path $OutputPath) | Out-Null
 
 $samples = @()
 for ($i = 1; $i -le $Iterations; $i++) {
-    $samples += Invoke-BaselineIteration -Index $i
+    $samples += Invoke-BaselineIteration -Index $i -BaselineOutputPath $OutputPath
 }
 
 $uploadExportBenchmark = $null

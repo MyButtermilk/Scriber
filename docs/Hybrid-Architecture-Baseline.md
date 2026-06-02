@@ -64,6 +64,11 @@ stop; realtime providers may already have injected text before stop, which is
 detected via `first_paste_to_stop_requested_ms` and counted as `0 ms`
 stop-to-text wait.
 
+When `-OutputPath` is set, each recording-hot-path child artifact is written as
+`<baseline-name>-recording-hot-path-N.json` next to the main baseline artifact.
+This keeps live recording evidence available after the temporary runtime data
+directory is cleaned up.
+
 ## Automated Today
 
 `scripts/measure_hybrid_baseline.ps1` currently measures:

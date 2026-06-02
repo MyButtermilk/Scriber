@@ -119,6 +119,19 @@ def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
     assert "Convert-ToProcessArgument" in script
 
 
+def test_hybrid_baseline_recording_artifact_is_persistent_sibling():
+    repo_root = Path(__file__).resolve().parents[2]
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "[string]$BaselineOutputPath" in script
+    assert '$baseName = [System.IO.Path]::GetFileNameWithoutExtension($BaselineOutputPath)' in script
+    assert '$baseName-recording-hot-path-$Iteration.json' in script
+    assert "-BaselineOutputPath $OutputPath" in script
+    assert "-BaselineOutputPath $BaselineOutputPath" in script
+
+
 def test_hybrid_baseline_recording_samples_do_not_fall_back_to_old_metric_rows():
     repo_root = Path(__file__).resolve().parents[2]
     script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(

@@ -4,6 +4,128 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Live Hotpath Artifact Persistence + Loopback Attempts
+
+Commands:
+
+```powershell
+$tokens=$null; $errors=$null
+$null=[System.Management.Automation.Language.Parser]::ParseFile(
+  (Resolve-Path scripts\measure_hybrid_baseline.ps1),
+  [ref]$tokens,
+  [ref]$errors
+)
+if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+'OK'
+
+venv\Scripts\python.exe -m pytest tests\perf\test_recording_hot_path_baseline_script.py
+
+# Before each live command, .env was loaded into the process environment only;
+# secret values were not printed and .env was not modified.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 1 `
+  -DisableDevFallback `
+  -SkipUploadExportBenchmark `
+  -SkipWsBenchmark `
+  -SkipHistoryScrollBenchmark `
+  -RecordHotPathSamples `
+  -RecordingHotPathIterations 1 `
+  -RecordingHotPathSeconds 8 `
+  -RecordingHotPathTimeoutSec 90 `
+  -RecordingHotPathTextTargetFile "tmp\hybrid-baseline\live-hotpath-text-target-persistent-20260602.txt" `
+  -RecordingHotPathTextTargetSettleSec 1.5 `
+  -RecordingHotPathSpeechPrompt "Dies ist ein kurzer Scriber Test fuer die Hybrid Architektur Messung." `
+  -RecordingHotPathSpeechDelaySec 1.0 `
+  -OutputPath "tmp\hybrid-baseline\hybrid-baseline-live-hotpath-persistent-20260602.json"
+
+# Second attempt additionally set process-local:
+# $env:SCRIBER_MIC_DEVICE = 'Stereomix (Realtek HD Audio Stereo input)'
+# $env:SCRIBER_FAVORITE_MIC = ''
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 1 `
+  -DisableDevFallback `
+  -SkipUploadExportBenchmark `
+  -SkipWsBenchmark `
+  -SkipHistoryScrollBenchmark `
+  -RecordHotPathSamples `
+  -RecordingHotPathIterations 1 `
+  -RecordingHotPathSeconds 12 `
+  -RecordingHotPathTimeoutSec 120 `
+  -RecordingHotPathTextTargetFile "tmp\hybrid-baseline\live-hotpath-text-target-stereomix-20260602.txt" `
+  -RecordingHotPathTextTargetSettleSec 1.5 `
+  -RecordingHotPathSpeechPrompt "Hallo Scriber. Dies ist ein Test der Transkription fuer die Hybrid Architektur Messung. Bitte schreibe diesen kurzen Satz." `
+  -RecordingHotPathSpeechDelaySec 1.0 `
+  -OutputPath "tmp\hybrid-baseline\hybrid-baseline-live-hotpath-stereomix-20260602.json"
+```
+
+Result: recording hotpath artifact persistence fixed and verified. Two short
+real live-mic hotpath attempts measured recording startup and first audio frame
+through the Tauri-supervised sidecar. Stop-to-text-injection remains open
+because neither attempt produced transcribed text in the target window.
+
+Implemented improvements:
+
+- `scripts\measure_hybrid_baseline.ps1` now writes each recording-hotpath child
+  artifact next to the main baseline JSON as
+  `<baseline-name>-recording-hot-path-N.json`.
+- The old path placed `recording-hot-path-N.json` inside the temporary runtime
+  data directory, which was removed during cleanup while the main artifact still
+  referenced it.
+- `tests\perf\test_recording_hot_path_baseline_script.py` now asserts that the
+  recording artifact is a persistent sibling of the main baseline output.
+
+Persistent artifact evidence:
+
+- Main default-mic artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-live-hotpath-persistent-20260602.json`.
+- Recording child artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-live-hotpath-persistent-20260602-recording-hot-path-1.json`.
+- Child artifact size: 3,193 bytes.
+- Child artifact timestamp: 2026-06-02 05:02:32 +02:00.
+- Default/favorite mic run:
+  - Runtime mode: `tauri-supervised`.
+  - Launch kind: `sidecar`.
+  - UI visible: 1,679.75 ms.
+  - Backend ready: 2,639.06 ms.
+  - Hotkey/API start to mic ready: 340.447 ms.
+  - Hotkey/API start to first audio frame: 607.519 ms.
+  - Text target captured chars: 0.
+  - Stop-to-text-injection status: `missing_text_injection`.
+- Stereomix loopback artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-live-hotpath-stereomix-20260602.json`.
+- Stereomix recording child artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-live-hotpath-stereomix-20260602-recording-hot-path-1.json`.
+- Stereomix run:
+  - Runtime mode: `tauri-supervised`.
+  - Launch kind: `sidecar`.
+  - UI visible: 2,030.19 ms.
+  - Backend ready: 2,500.45 ms.
+  - Hotkey/API start to mic ready: 3,450.247 ms.
+  - Hotkey/API start to first audio frame: 3,459.799 ms.
+  - Stop-to-text-injection status: `missing_text_injection`.
+
+Regression evidence:
+
+- PowerShell parser check for `scripts\measure_hybrid_baseline.ps1`: passed.
+- `tests\perf\test_recording_hot_path_baseline_script.py`: `8 passed`.
+
+Goal coverage:
+
+- Phase 0: adds real short live-mic measurements for hotkey/API-start to
+  recording readiness and first audio frame in the Tauri sidecar runtime.
+- Phase 0/7: makes recording-hotpath child artifacts audit-stable instead of
+  pointing at deleted temporary data directories.
+- Phase 8: confirms the startup performance budget still passes during these
+  short live-hotpath runs.
+
+Remaining limits:
+
+- Phase 0 is still incomplete for stop-to-text-injection because no provider
+  transcript was injected into the target window in either attempt.
+- This is not the 30-minute live microphone/STT provider stability pass.
+- Physical global-hotkey dispatch, USB/Bluetooth/dock/default-mic hardware
+  matrix, real signing, and updater publication remain open.
+
 ## 2026-06-02 - Manual Microphone Hardware Matrix Gate
 
 Commands:
