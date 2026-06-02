@@ -1,6 +1,6 @@
 # Scriber Hybrid-Architektur Goal
 
-Last updated: 2026-06-01
+Last updated: 2026-06-02
 
 This document is the authoritative Codex goal for the Scriber hybrid
 architecture work. It replaces earlier incomplete goal text.
@@ -113,7 +113,37 @@ architecture work. It replaces earlier incomplete goal text.
 - Code Signing und später Updater mit Signatur/Rollback-Konzept einplanen.
 - Gate: Frische Installation, Upgrade, Deinstallation und Worker-Crash sind getestet.
 
-## Phase 7: Härtung und Cleanup
+## Phase 7: Testing und Validierung
+
+- Backend:
+  - Focused und breite `pytest`-Suiten fuer Contracts, Lifecycle, Security,
+    DeviceMonitor, Mic-Prewarm, Upload/Export, Jobs, Provider-Routing und
+    Performance-Hot-Path-Gates.
+  - Sidecar-Startup-Import-Preflight vor PyInstaller und als gefrorener
+    `scriber-backend --runtime-import-check`.
+- Frontend:
+  - `npm run check` und `npm run build` fuer TypeScript/Vite.
+  - `scripts/smoke_frontend_browser.py` fuer echte Browser-Routen gegen einen
+    synthetischen Backend-Server.
+  - `scripts/smoke_tauri_desktop.ps1 -VerifyFrontend` und
+    `scripts/smoke_windows_installer.ps1 -VerifyFrontend` fuer installierte
+    Frontend-Assets ueber den laufenden Backend-Static-Fallback.
+- Installer/Desktop:
+  - NSIS-Install, Sidecar-Start, Backend-Health, Frontend-Assets,
+    Worker-Crash-Recovery, kontrollierter Worker-Shutdown,
+    Startup-Timeout-Recovery, Default-Port-Konflikt, External-Backend-Attach,
+    Legacy-Datenmigration, Upgrade-Datenerhalt, Support-Bundle-Redaktion,
+    Hotkey-Registrierung, Stability-Proben und stille Deinstallation.
+- Manuelle Windows-Hardware:
+  - USB-Mic, Bluetooth-Mic, Dock an/ab, Windows-Default-Mic-Wechsel und
+    Favorite-Mic-Fallback bleiben manuelle Gates mit
+    `scripts/smoke_microphone_hardware_matrix.py`.
+- Gate:
+  - Eine Aenderung gilt nur als abgeschlossen, wenn sie mit einem passenden
+    automatisierten oder dokumentierten manuellen Gate in
+    `docs/Hybrid-Architecture-Validation.md` belegt ist.
+
+## Phase 8: Härtung und Cleanup
 
 - Performance-Ziele:
   - UI P95 unter 3s sichtbar auf Referenzgerät.
@@ -123,6 +153,44 @@ architecture work. It replaces earlier incomplete goal text.
   - Große Uploads/Exports blockieren `/api/health` und `/api/state` nicht.
 - Legacy-Entrypoints erst entfernen, wenn Tauri Parität hat.
 - README, AGENTS.md und Performance-Doku auf Tauri-first aktualisieren.
+- Aktueller Stand:
+  - Tauri-first Runtime, Sidecar-Packaging, NSIS-Installer, session-token
+    geschuetzte Worker-API, Support-Bundle, Hotkey, Autostart, Single Instance,
+    ffmpeg/ffprobe-Bundling, yt-dlp-Bundling, Updater-Plugin-Wiring,
+    Authenticode-/Updater-Metadaten-Gates und installierte Smoke-Gates sind
+    umgesetzt.
+  - Python-Audio bleibt Default. `SCRIBER_AUDIO_ENGINE=rust` ist weiterhin nur
+    ein requested Feature Flag, solange kein gemessener Rust-Audio-Prototyp
+    existiert.
+  - Idle-Mic-Prewarm existiert als Python/sounddevice App-Level-Manager und
+    darf Backend-Readiness nicht blockieren.
+- Nicht als abgeschlossen zaehlen, bis starke Evidence vorliegt:
+  - echte Stop-to-Text-Injection-Messung aus einer gesprochenen Aufnahme,
+  - reale Mic-Hardware-Matrix fuer USB/Bluetooth/Dock/Default-Wechsel,
+  - reale Authenticode-Signatur mit erwartetem Publisher und optionalem
+    Timestamp,
+  - veroeffentlichtes signiertes Tauri-Updater-Manifest mit echten Signing Keys,
+  - laengere Live-Recording-Stability nach vereinbartem Zeitbudget,
+  - Entscheidung, ob Legacy-Tk/Tray-Pfade weiter als Fallback bleiben oder erst
+    nach zwei stabilen Tauri-Release-Kandidaten entfernt werden.
+
+## Current Completion Audit
+
+- Phase 0 ist noch nicht vollstaendig, weil die Baseline absichtlich
+  `stop_to_text_injection` offen laesst, bis eine echte Aufnahme mit
+  erfolgreicher Textinjektion gemessen wurde.
+- Phase 1 bis 4 sind funktional weitgehend umgesetzt und durch Contract-,
+  Security-, Supervisor- und installierte Desktop-Smoke-Gates belegt.
+- Phase 5 ist nur fuer den Python-Audio-Pfad umgesetzt. Rust-Audio und ein
+  Rust-Device-Watcher bleiben bewusst experimentell bzw. nicht default.
+- Phase 6 ist fuer Standard-Cloud-Provider-Sidecar, NSIS, ffmpeg/ffprobe,
+  yt-dlp, Runtime-Datenmigration, Release-Metadaten und optionale Gates
+  umgesetzt. Echte Signierung und reale Updater-Veroeffentlichung sind externe
+  Release-Schritte und noch nicht bewiesen.
+- Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
+  Hardware-Matrix bleibt offen.
+- Phase 8 hat mehrere synthetische und kurze installierte Stability-Gates, aber
+  die vollstaendige Langzeit-/Live-Recording-Evidence ist noch nicht erbracht.
 
 ## Testplan
 
