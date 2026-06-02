@@ -221,6 +221,52 @@ Goal coverage:
   stream adoption reduces `Preparing` from the earlier `176-632 ms` mic-ready
   range to about `71 ms` for this sample and first audio frame to about `99 ms`.
 
+## 2026-06-02 - Current Installer Release Metadata Integrity
+
+Commands:
+
+```powershell
+python scripts\validate_tauri_updater_metadata.py `
+  --metadata Frontend\src-tauri\target\release\release-metadata\latest.json `
+  --artifact-dir Frontend\src-tauri\target\release\bundle `
+  --sha256sums Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt `
+  --allow-local-urls
+
+python scripts\create_release_metadata.py `
+  --artifact Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe `
+  --output-dir tmp\release-metadata-https-smoke `
+  --base-url https://github.com/MyButtermilk/Scriber/releases/download/v0.1.0
+
+python scripts\validate_tauri_updater_metadata.py `
+  --metadata tmp\release-metadata-https-smoke\latest.json `
+  --artifact-dir Frontend\src-tauri\target\release\bundle `
+  --sha256sums tmp\release-metadata-https-smoke\SHA256SUMS.txt
+```
+
+Result: passed.
+
+Evidence:
+
+- Current local release metadata artifact:
+  `Frontend\src-tauri\target\release\release-metadata\latest.json`.
+- Current checksum manifest:
+  `Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt`.
+- Current installer artifact:
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- Local unsigned metadata validation passed with `allowLocalUrls=true` and
+  `localArtifactsVerified=1`, proving the generated metadata matches the
+  current installer size and SHA256 manifest.
+- Temporary HTTPS metadata generation and validation passed with
+  `allowLocalUrls=false` and `localArtifactsVerified=1`, proving the generator
+  can emit Tauri-updater-compatible absolute HTTPS URLs when a release base URL
+  is supplied.
+
+Limitations:
+
+- This does not prove a published updater endpoint exists.
+- This does not prove Tauri updater signatures because no real signing key was
+  provided for this local build.
+
 ## 2026-06-02 - Frontend Scale, YouTube Thumbnail, Tray, and Waveform Fixes
 
 Commands:
