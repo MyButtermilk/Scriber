@@ -161,6 +161,66 @@ Artifact:
 
 - `tmp\hybrid-baseline\installer-alwayson-frontend-smoke-20260602.json`
 
+## 2026-06-02 - Always-On Stream Reuse Live Hot-Path Measurement
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 1 `
+  -DisableDevFallback `
+  -Hidden `
+  -SkipUiVisibleWait `
+  -SkipUploadExportBenchmark `
+  -SkipWsBenchmark `
+  -SkipHistoryScrollBenchmark `
+  -RecordHotPathSamples `
+  -RecordingHotPathIterations 1 `
+  -RecordingHotPathSeconds 3 `
+  -RecordingHotPathTimeoutSec 90 `
+  -RecordingHotPathTextTargetFile "tmp\hybrid-baseline\alwayson-hotpath-target-20260602.txt" `
+  -RecordingHotPathTextTargetTimeoutSec 8 `
+  -RecordingHotPathSpeechPrompt "Scriber hot path validation prompt. This is a short recording test." `
+  -RecordingHotPathSpeechDelaySec 0.5 `
+  -LegacyDataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber" `
+  -OutputPath "tmp\hybrid-baseline\hybrid-baseline-alwayson-hotpath-20260602.json"
+```
+
+Result: passed.
+
+Evidence:
+
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- `SCRIBER_MIC_ALWAYS_ON=1` was supplied through migrated legacy `.env`.
+- Backend listener: `2728.52 ms`.
+- Backend ready: `2825.19 ms`.
+- Recording hot-path summary: `complete=true`.
+- Hotkey to mic ready: `70.933 ms`.
+- Hotkey to first audio frame: `99.428 ms`.
+- Hotkey to first audible audio frame: `1507.902 ms`.
+- Hotkey to first final provider token: `4262.776 ms`.
+- Stop to text injection: `1387.75 ms`.
+- Controlled text target captured persisted text: `capturedSamples=1`,
+  `maxCapturedChars=39`, `captureElapsedMs=4636.593`.
+- Cleanup verified: managed backend exited with the Tauri app.
+
+Artifacts:
+
+- `tmp\hybrid-baseline\hybrid-baseline-alwayson-hotpath-20260602.json`
+- `tmp\hybrid-baseline\hybrid-baseline-alwayson-hotpath-20260602-recording-hot-path-1.json`
+- `tmp\hybrid-baseline\alwayson-hotpath-target-20260602.txt`
+
+Goal coverage:
+
+- Phase 0: replaces the previous weak stop-to-text/live-target evidence with a
+  real Tauri-managed sidecar run that persisted non-empty injected text in the
+  controlled target window.
+- Phase 8: provides the first measured post-change evidence that always-on
+  stream adoption reduces `Preparing` from the earlier `176-632 ms` mic-ready
+  range to about `71 ms` for this sample and first audio frame to about `99 ms`.
+
 ## 2026-06-02 - Frontend Scale, YouTube Thumbnail, Tray, and Waveform Fixes
 
 Commands:

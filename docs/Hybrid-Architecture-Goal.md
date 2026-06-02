@@ -187,13 +187,13 @@ architecture work. It replaces earlier incomplete goal text.
 
 - Phase 0 ist fuer Startup, Backend-Readiness, Upload/Export-Last,
   WebSocket/JSON-Kosten, History-Scroll und Live-Hotpath inzwischen belegt.
-  Am 2026-06-02 wurde in einem Tauri-managed Sidecar-Lauf
-  `hotkey_received_to_mic_ready_ms=363.664`,
-  `hotkey_received_to_first_audio_frame_ms=604.303` und
-  `stop_requested_to_first_paste_ms=2397.109` gemessen. Der dedizierte
-  Text-Target-Nachweis bleibt jedoch schwach, weil die Zieltextdatei in dieser
-  erfolgreichen Latenzprobe `capturedChars=0` berichtete; die Messung beweist
-  Backend-/Injector-Timing, aber nicht persistierten Zieltext im Testfenster.
+  Am 2026-06-02 wurde nach der Always-On-Stream-Reuse-Aenderung in einem
+  Tauri-managed Sidecar-Lauf mit migrierter Legacy-Konfiguration
+  `hotkey_received_to_mic_ready_ms=70.933`,
+  `hotkey_received_to_first_audio_frame_ms=99.428` und
+  `stop_requested_to_first_paste_ms=1387.75` gemessen. Der kontrollierte
+  Text-Target-Nachweis ist nun ebenfalls erbracht:
+  `capturedSamples=1`, `maxCapturedChars=39`, `captureElapsedMs=4636.593`.
 - Phase 1 bis 4 sind funktional weitgehend umgesetzt und durch Contract-,
   Security-, Supervisor- und installierte Desktop-Smoke-Gates belegt.
 - Phase 5 ist nur fuer den Python-Audio-Pfad umgesetzt. Rust-Audio und ein

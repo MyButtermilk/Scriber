@@ -17,6 +17,23 @@
 **Not Implemented:**
 - ❌ **Solution 3 (Pre-buffer)**: Planned for future if needed
 
+## Latest Measurement (2026-06-02)
+
+After the always-on stream adoption change, an isolated Tauri-managed sidecar
+hot-path run with migrated legacy configuration and `SCRIBER_MIC_ALWAYS_ON=1`
+measured:
+
+- Hotkey to microphone ready: `70.933 ms`
+- Hotkey to first audio frame: `99.428 ms`
+- Stop to text injection: `1387.75 ms`
+- Controlled text target persistence: `capturedSamples=1`,
+  `maxCapturedChars=39`, `captureElapsedMs=4636.593`
+
+Artifacts:
+
+- `tmp\hybrid-baseline\hybrid-baseline-alwayson-hotpath-20260602.json`
+- `tmp\hybrid-baseline\hybrid-baseline-alwayson-hotpath-20260602-recording-hot-path-1.json`
+
 ---
 
 ## Problem Description
