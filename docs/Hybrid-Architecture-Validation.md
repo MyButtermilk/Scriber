@@ -4,6 +4,72 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Rebuilt NSIS Installer With Installed Hotkey Gate
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -SkipChecks `
+  -SkipSmoke `
+  -RunInstallerGlobalHotkeyRegistrationSmoke `
+  -InstallerGlobalHotkeySmokeHotkey "ctrl+alt+shift+f12" `
+  -InstallerGlobalHotkeyDispatchTimeoutSec 30
+```
+
+Result: passed for a freshly rebuilt NSIS installer with the Tauri-managed
+sidecar and installed-app global-hotkey registration gate.
+
+Evidence:
+
+- Installer:
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- Installer size: 206,872,336 bytes.
+- Installer timestamp: 2026-06-02 03:52:22 +02:00.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- Installed app:
+  `tmp\installer-smoke\Scriber\scriber-desktop.exe`.
+- Installed data dir:
+  `tmp\installer-smoke\data-0f22647e8d114748862b317d7dd889a0`.
+- Sidecar runtime import preflight: `ok: true`, `missing: []`.
+- Frozen backend runtime import check: passed before bundling.
+- Bundled media tools copied: `ffmpeg.exe`, `ffprobe.exe`.
+- Release metadata validation: `ok: true`, platform `windows-x86_64`,
+  signatures not required for this local unsigned build.
+- Global hotkey verified: true.
+- Global hotkey registered: `ctrl+alt+shift+f12`.
+- Hotkey mode: `toggle`.
+- Shell log:
+  `tmp\installer-smoke\data-0f22647e8d114748862b317d7dd889a0\logs\tauri-shell.log`.
+- Dispatch verified: false.
+- Cleanup verified: true.
+- Silent uninstall attempted: true.
+- Silent uninstall verified: true.
+- Install artifacts removed: true.
+- Runtime data sentinel preserved: true.
+
+Goal coverage:
+
+- Phase 2: confirms the current rebuilt installer launches the packaged Python
+  sidecar without source-checkout Python fallback.
+- Phase 4: verifies installed Tauri global-hotkey registration after the
+  backend-ready retry fix.
+- Phase 6: confirms the regenerated NSIS package, release metadata, installed
+  app smoke, cleanup, and uninstall path still pass.
+- Phase 7/8: makes the installed hotkey registration check available as a
+  repeatable build gate through `scripts\build_windows.ps1`.
+
+Remaining limits:
+
+- This proves installed hotkey registration, not physical OS-key dispatch.
+- The stricter dispatch gate remains available through
+  `-RunInstallerGlobalHotkeySmoke`, but this desktop session has not produced a
+  valid synthetic-dispatch proof.
+- This was a local unsigned build. Real release closure still requires
+  Authenticode signing, Tauri updater signing keys, and a published signed
+  updater manifest.
+
 ## 2026-06-02 - Tauri Global Hotkey Registration Retry + Runtime Gate
 
 Commands:
