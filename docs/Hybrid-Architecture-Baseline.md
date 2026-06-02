@@ -64,6 +64,18 @@ stop; realtime providers may already have injected text before stop, which is
 detected via `first_paste_to_stop_requested_ms` and counted as `0 ms`
 stop-to-text wait.
 
+Use `-LegacyDataDir path\to\old\Scriber` when the temporary baseline data
+directory needs existing `.env`, `settings.json`, `transcripts.db`, downloads,
+or models. The runner passes the path through `SCRIBER_LEGACY_DATA_DIR` only for
+the managed Tauri worker start and restores the previous environment afterward;
+baseline JSON records the path, not secret values.
+
+When legacy databases contain old hot-path rows, those rows may still appear in
+the `hotPathSegmentNames` summary for diagnostics. They do not satisfy the live
+recording Phase 0 requirements unless `-RecordHotPathSamples` was used and the
+recording child benchmark reports measured requirement statuses for the current
+run.
+
 Recording-hot-path child runs are allowed to write `ok=false` when the live
 environment cannot produce audio, provider transcript text, or text injection.
 The parent baseline still writes its JSON artifact and records the child

@@ -2572,3 +2572,48 @@ Remaining limits:
 
 - This does not close the live recording gate. A successful run still needs a
   microphone/provider/text-injection path that emits the hot-path segments.
+
+## 2026-06-02 - Baseline Legacy DataDir Hot-Path Guard
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 1 `
+  -Hidden `
+  -DisableDevFallback `
+  -LegacyDataDir . `
+  -SkipUploadExportBenchmark `
+  -SkipWsBenchmark `
+  -SkipHistoryScrollBenchmark `
+  -OutputPath tmp\hybrid-baseline\hybrid-baseline-legacydata-smoke-20260602-afterfix.json
+```
+
+Result: passed.
+
+Evidence:
+
+- `options.legacyDataDir` resolved to the repository path.
+- Runtime mode: `tauri-supervised`.
+- Backend ready P95: 2065.11 ms.
+- Backend cleanup verified: true.
+- Legacy hot-path segment names from the migrated DB remained visible for
+  diagnostics.
+- Phase 0 recording requirements stayed `not_requested` because
+  `-RecordHotPathSamples` was not used:
+  - `hotkey_to_recording_state`: `not_requested`.
+  - `hotkey_to_first_audio_frame`: `not_requested`.
+  - `stop_to_text_injection`: `not_requested`.
+
+Goal coverage:
+
+- Phase 0: allows baseline runs to use existing `.env`/settings/database via
+  `SCRIBER_LEGACY_DATA_DIR` while preventing old persisted hot-path rows from
+  being counted as current recording evidence.
+- Phase 7: adds regression coverage that baseline recording gates depend on the
+  explicit recording child benchmark, not stale database state.
+
+Remaining limits:
+
+- This run intentionally did not perform a live recording. It only proves safe
+  legacy data wiring and stale-metric isolation.

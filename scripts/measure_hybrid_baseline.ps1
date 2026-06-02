@@ -20,6 +20,7 @@ param(
     [string]$ExePath = "",
     [string]$PythonPath = "",
     [string]$BackendExePath = "",
+    [string]$LegacyDataDir = "",
     [string]$OutputPath = "",
     [int]$Iterations = 3,
     [int]$TimeoutSec = 60,
@@ -855,6 +856,7 @@ function Invoke-BaselineIteration {
     $oldPython = $env:SCRIBER_PYTHON
     $oldBackendExe = $env:SCRIBER_BACKEND_EXE
     $oldDataDir = $env:SCRIBER_DATA_DIR
+    $oldLegacyDataDir = $env:SCRIBER_LEGACY_DATA_DIR
     $oldForceManaged = $env:SCRIBER_FORCE_MANAGED_BACKEND
     $oldSessionToken = $env:SCRIBER_SESSION_TOKEN
     $oldHotkeys = $env:SCRIBER_DISABLE_HOTKEYS
@@ -868,6 +870,11 @@ function Invoke-BaselineIteration {
         $env:SCRIBER_PYTHON = $PythonPath
     }
     $env:SCRIBER_DATA_DIR = $dataDir
+    if ($LegacyDataDir) {
+        $env:SCRIBER_LEGACY_DATA_DIR = $LegacyDataDir
+    } else {
+        $env:SCRIBER_LEGACY_DATA_DIR = $oldLegacyDataDir
+    }
     $env:SCRIBER_FORCE_MANAGED_BACKEND = "1"
     $env:SCRIBER_SESSION_TOKEN = $sessionToken
     if ($BackendExePath) {
@@ -975,6 +982,7 @@ function Invoke-BaselineIteration {
         $env:SCRIBER_PYTHON = $oldPython
         $env:SCRIBER_BACKEND_EXE = $oldBackendExe
         $env:SCRIBER_DATA_DIR = $oldDataDir
+        $env:SCRIBER_LEGACY_DATA_DIR = $oldLegacyDataDir
         $env:SCRIBER_FORCE_MANAGED_BACKEND = $oldForceManaged
         $env:SCRIBER_SESSION_TOKEN = $oldSessionToken
         $env:SCRIBER_DISABLE_HOTKEYS = $oldHotkeys
@@ -1004,6 +1012,12 @@ if ($BackendExePath) {
         throw "Missing backend sidecar executable: $BackendExePath"
     }
     $BackendExePath = (Resolve-Path $BackendExePath).Path
+}
+if ($LegacyDataDir) {
+    if (-not (Test-Path -LiteralPath $LegacyDataDir -PathType Container)) {
+        throw "Missing LegacyDataDir: $LegacyDataDir"
+    }
+    $LegacyDataDir = (Resolve-Path $LegacyDataDir).Path
 }
 if ($Iterations -lt 1) {
     throw "Iterations must be >= 1."
@@ -1085,7 +1099,6 @@ if (-not $SkipHistoryScrollBenchmark) {
 }
 
 $segmentNames = @(Get-HotPathSegmentNames -Samples $samples)
-$hasHotPathSamples = @($samples | Where-Object { $_.hotPathMetrics -and $_.hotPathMetrics.summary -and [int]$_.hotPathMetrics.summary.count -gt 0 }).Count -gt 0
 $recordingHotPathBenchmarks = @(
     $samples |
         ForEach-Object { $_.recordingHotPathBenchmark } |
@@ -1094,8 +1107,7 @@ $recordingHotPathBenchmarks = @(
 
 function Get-RecordingHotPathRequirementStatus {
     param(
-        [string]$RequirementName,
-        [string]$SegmentName
+        [string]$RequirementName
     )
 
     $statuses = @()
@@ -1118,16 +1130,7 @@ function Get-RecordingHotPathRequirementStatus {
         }
         return "missing_samples"
     }
-    if ($segmentNames -contains $SegmentName) {
-        return "measured"
-    }
-    if ($hasHotPathSamples) {
-        return "partial"
-    }
-    if (-not $RecordHotPathSamples) {
-        return "not_requested"
-    }
-    return "missing_samples"
+    return "not_requested"
 }
 
 function Get-RecordingHotPathRequirementNotes {
@@ -1149,17 +1152,17 @@ $requirements = @(
         -Evidence "Tauri process start to /api/health ready"
     New-Requirement `
         -Name "hotkey_to_recording_state" `
-        -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "hotkey_to_recording_state" -SegmentName "hotkey_received_to_mic_ready_ms") `
+        -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "hotkey_to_recording_state") `
         -Evidence "/api/metrics/hot-path segment hotkey_received_to_mic_ready_ms" `
         -Notes $(Get-RecordingHotPathRequirementNotes)
     New-Requirement `
         -Name "hotkey_to_first_audio_frame" `
-        -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "hotkey_to_first_audio_frame" -SegmentName "hotkey_received_to_first_audio_frame_ms") `
+        -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "hotkey_to_first_audio_frame") `
         -Evidence "/api/metrics/hot-path segment hotkey_received_to_first_audio_frame_ms" `
         -Notes $(Get-RecordingHotPathRequirementNotes)
     New-Requirement `
         -Name "stop_to_text_injection" `
-        -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "stop_to_text_injection" -SegmentName "stop_requested_to_first_paste_ms") `
+        -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "stop_to_text_injection") `
         -Evidence "/api/metrics/hot-path segment stop_requested_to_first_paste_ms" `
         -Notes $(Get-RecordingHotPathRequirementNotes)
     New-Requirement `
@@ -1221,6 +1224,7 @@ $result = [pscustomobject]@{
         hidden = [bool]$Hidden
         skipUiVisibleWait = [bool]$SkipUiVisibleWait
         disableDevFallback = [bool]$DisableDevFallback
+        legacyDataDir = $LegacyDataDir
         enableHotkeys = [bool]$EnableHotkeys
         enableDeviceMonitor = [bool]$EnableDeviceMonitor
         skipUploadExportBenchmark = [bool]$SkipUploadExportBenchmark

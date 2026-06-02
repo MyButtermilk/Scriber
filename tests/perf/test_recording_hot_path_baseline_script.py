@@ -174,6 +174,9 @@ def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
     assert "--text-target-file" in script
     assert "--speech-prompt-text" in script
     assert "Convert-ToProcessArgument" in script
+    assert "[string]$LegacyDataDir" in script
+    assert "SCRIBER_LEGACY_DATA_DIR" in script
+    assert "legacyDataDir = $LegacyDataDir" in script
 
 
 def test_hybrid_baseline_recording_artifact_is_persistent_sibling():
@@ -195,10 +198,13 @@ def test_hybrid_baseline_recording_samples_do_not_fall_back_to_old_metric_rows()
         encoding="utf-8"
     )
 
-    recording_branch = script.split('if ($RecordHotPathSamples) {', 1)[1].split(
-        'if ($segmentNames -contains $SegmentName)', 1
+    status_function = script.split("function Get-RecordingHotPathRequirementStatus", 1)[1].split(
+        "function Get-RecordingHotPathRequirementNotes", 1
     )[0]
-    assert 'return "missing_samples"' in recording_branch
+    assert 'return "not_requested"' in status_function
+    assert 'return "missing_samples"' in status_function
+    assert "$segmentNames -contains" not in status_function
+    assert "$hasHotPathSamples" not in status_function
 
 
 def test_hybrid_baseline_keeps_recording_hot_path_ok_false_as_evidence():
@@ -213,3 +219,17 @@ def test_hybrid_baseline_keeps_recording_hot_path_ok_false_as_evidence():
     assert 'throw "Recording hot-path baseline benchmark wrote ok=false' not in recording_function
     assert "Recording hot-path benchmark wrote ok=false; see sample errors" in recording_function
     assert "return Add-ArtifactPath -Benchmark $benchmark -Path $benchmarkOutputPath" in recording_function
+
+
+def test_hybrid_baseline_restores_legacy_data_environment():
+    repo_root = Path(__file__).resolve().parents[2]
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    baseline_function = script.split("function Invoke-BaselineIteration", 1)[1].split(
+        "$RepoRoot = (Resolve-Path $RepoRoot).Path", 1
+    )[0]
+    assert "$oldLegacyDataDir = $env:SCRIBER_LEGACY_DATA_DIR" in baseline_function
+    assert "$env:SCRIBER_LEGACY_DATA_DIR = $LegacyDataDir" in baseline_function
+    assert "$env:SCRIBER_LEGACY_DATA_DIR = $oldLegacyDataDir" in baseline_function
