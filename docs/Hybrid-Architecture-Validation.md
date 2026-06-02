@@ -3768,3 +3768,58 @@ Remaining limits:
 - This still does not prove a real tag release has published a signed
   `latest.json`; it makes the CI workflow produce that proof automatically when
   the external signing/release configuration is present.
+
+## 2026-06-02 - Guided Physical Microphone Matrix Runner
+
+Commands:
+
+```powershell
+python -m py_compile `
+  tests\test_microphone_hardware_matrix_runner.py `
+  tests\test_microphone_hardware_matrix_smoke.py `
+  tests\test_validate_microphone_hardware_matrix.py
+
+python -m pytest `
+  tests\test_microphone_hardware_matrix_runner.py `
+  tests\test_microphone_hardware_matrix_smoke.py `
+  tests\test_validate_microphone_hardware_matrix.py
+```
+
+Result: implemented and covered by focused tests. The local validation did not
+perform physical hardware actions; it verified the guided runner, plan output,
+redaction, label enforcement, and validator wiring.
+
+Implemented improvements:
+
+- Added `scripts\run_microphone_hardware_matrix.ps1` as the guided Windows
+  runner for the full physical microphone matrix.
+- The runner supports `-PlanOnly` to write a redacted operator plan without
+  contacting the backend.
+- The real runner requires label substrings for USB, dock, Bluetooth, and
+  favorite microphones before it touches the backend, then runs all eight
+  physical scenario smokes with standardized artifact names.
+- The runner calls `scripts\validate_microphone_hardware_matrix.py` at the end
+  unless `-SkipValidation` is passed.
+
+Evidence:
+
+- `tests\test_microphone_hardware_matrix_runner.py`,
+  `tests\test_microphone_hardware_matrix_smoke.py`, and
+  `tests\test_validate_microphone_hardware_matrix.py`: `13 passed`.
+- Python compile check: passed.
+- Plan-only test verifies the session token is redacted as `<session token>`.
+- Missing-label test verifies the runner fails before backend access.
+
+Goal coverage:
+
+- Phase 7: reduces the remaining physical hardware gate from eight separate
+  ad-hoc commands to a single guided operator flow with standardized artifact
+  names and final validation.
+- Phase 8: makes the remaining physical matrix evidence easier to collect and
+  harder to mistake for plan-only or placeholder-label artifacts.
+
+Remaining limits:
+
+- This still does not close the physical hardware matrix. The runner must be
+  executed on a Windows machine with the required USB/Bluetooth/dock/favorite
+  microphone conditions and its artifacts must pass the matrix validator.

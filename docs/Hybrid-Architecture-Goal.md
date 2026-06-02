@@ -143,7 +143,9 @@ architecture work. It replaces earlier incomplete goal text.
 - Manuelle Windows-Hardware:
   - USB-Mic, Bluetooth-Mic, Dock an/ab, Windows-Default-Mic-Wechsel und
     Favorite-Mic-Fallback bleiben manuelle Gates mit
-    `scripts/smoke_microphone_hardware_matrix.py`.
+    `scripts/smoke_microphone_hardware_matrix.py`,
+    `scripts/run_microphone_hardware_matrix.ps1` und
+    `scripts/validate_microphone_hardware_matrix.py`.
 - Gate:
   - Eine Aenderung gilt nur als abgeschlossen, wenn sie mit einem passenden
     automatisierten oder dokumentierten manuellen Gate in
@@ -212,7 +214,10 @@ architecture work. It replaces earlier incomplete goal text.
   Release-Workflow fuehrt diesen Published-Check nach der GitHub-Release-
   Veroeffentlichung aus, sobald Updater-Signing konfiguriert ist.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
-  Hardware-Matrix bleibt offen.
+  Hardware-Matrix bleibt offen. Einzel-Smoke, gefuehrter Windows-Runner und
+  Aggregat-Validator fuer diese Matrix sind vorhanden; die physischen USB-,
+  Bluetooth-, Dock-, Default-Mic- und Favorite-Fallback-Laeufe selbst sind noch
+  nicht erbracht.
 - Phase 8 hat synthetische Guards, eine 30-Minuten-Idle-Stability, mehrere
   installierte Stability-Smokes und einen vom Nutzer fuer diese Iteration
   akzeptierten 5-Minuten-Live-Recording-Gate. Nicht erbracht sind reale
