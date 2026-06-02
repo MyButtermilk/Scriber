@@ -38,6 +38,9 @@ def test_recording_hot_path_baseline_script_validate_only_writes_artifact(tmp_pa
 
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["ok"] is True
+    assert payload["audioDiagnostics"]["provider"]["configured"] == "validate"
+    assert payload["audioDiagnostics"]["runtimeImports"]["onnxruntime"]["importable"] is True
+    assert payload["audioDiagnostics"]["runtimeImports"]["pipecat.audio.vad.silero"]["importable"] is True
     assert payload["summary"]["requirements"]["hotkey_to_recording_state"]["status"] == "measured"
     assert payload["summary"]["requirements"]["hotkey_to_first_audio_frame"]["status"] == "measured"
     stop_requirement = payload["summary"]["requirements"]["stop_to_text_injection"]
@@ -171,6 +174,9 @@ def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
     assert "stop_to_text_injection" in script
     assert "RecordingHotPathTextTargetFile" in script
     assert "RecordingHotPathSpeechPrompt" in script
+    assert "/api/runtime/audio-diagnostics" in (
+        repo_root / "scripts" / "measure_recording_hot_path_baseline.py"
+    ).read_text(encoding="utf-8")
     assert "--text-target-file" in script
     assert "--speech-prompt-text" in script
     assert "Convert-ToProcessArgument" in script

@@ -1,5 +1,6 @@
 import asyncio
 import hmac
+import importlib
 import ipaddress
 import json
 import os
@@ -116,6 +117,17 @@ _DISABLE_HOTKEYS_ENV = "SCRIBER_DISABLE_HOTKEYS"
 _SESSION_TOKEN_ENV = "SCRIBER_SESSION_TOKEN"
 _FRONTEND_DIST_DIR_ENV = "SCRIBER_FRONTEND_DIST_DIR"
 _RUST_AUDIO_PROTOTYPE_AVAILABLE = False
+_AUDIO_DIAGNOSTIC_IMPORTS = (
+    "scipy",
+    "pyloudnorm",
+    "onnxruntime",
+    "pipecat.frames.frames",
+    "pipecat.audio.vad.vad_analyzer",
+    "pipecat.audio.vad.silero",
+    "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
+    "pipecat.processors.user_idle_processor",
+)
+_AUDIO_DIAGNOSTIC_IMPORT_CACHE: dict[str, dict[str, Any]] | None = None
 _SESSION_TOKEN_HEADER = "X-Scriber-Token"
 _SESSION_TOKEN_QUERY = "scriberToken"
 
@@ -278,6 +290,25 @@ def _audio_engine_feature_flags() -> dict[str, Any]:
         "rustAudioRequested": rust_requested,
         "rustAudioAvailable": rust_available,
     }
+
+
+def _audio_diagnostic_import_status() -> dict[str, dict[str, Any]]:
+    global _AUDIO_DIAGNOSTIC_IMPORT_CACHE
+    if _AUDIO_DIAGNOSTIC_IMPORT_CACHE is not None:
+        return {name: dict(status) for name, status in _AUDIO_DIAGNOSTIC_IMPORT_CACHE.items()}
+
+    statuses: dict[str, dict[str, Any]] = {}
+    for module_name in _AUDIO_DIAGNOSTIC_IMPORTS:
+        try:
+            importlib.import_module(module_name)
+            statuses[module_name] = {"importable": True, "error": None}
+        except Exception as exc:
+            statuses[module_name] = {
+                "importable": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+    _AUDIO_DIAGNOSTIC_IMPORT_CACHE = statuses
+    return {name: dict(status) for name, status in statuses.items()}
 
 
 def _is_loopback_request(request: web.Request) -> bool:
@@ -1889,6 +1920,34 @@ class ScriberWebController:
                 "transcriptsLoaded": bool(self._transcripts_loaded),
                 "deviceMonitor": "running" if self._device_monitor_enabled else "disabled",
             },
+        }
+
+    def get_audio_diagnostics(self) -> dict[str, Any]:
+        return {
+            "apiVersion": _API_VERSION,
+            "runtimeMode": os.getenv(_RUNTIME_MODE_ENV, "python-web"),
+            "pid": os.getpid(),
+            "recordingState": self._recording_state_machine.state.value,
+            "featureFlags": _audio_engine_feature_flags(),
+            "provider": {
+                "configured": str(Config.DEFAULT_STT_SERVICE or ""),
+                "active": self._active_provider,
+                "sonioxMode": str(Config.SONIOX_MODE or ""),
+            },
+            "microphone": {
+                "configuredDevice": str(Config.MIC_DEVICE or "default"),
+                "favoriteMic": str(Config.FAVORITE_MIC or ""),
+                "favoriteMicConfigured": bool((Config.FAVORITE_MIC or "").strip()),
+                "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
+                "idlePrewarmActive": bool(self._mic_prewarm.is_active),
+            },
+            "textInjection": {
+                "method": str(getattr(Config, "INJECT_METHOD", "auto") or "auto"),
+                "disabled": bool(getattr(Config, "DISABLE_TEXT_INJECTION", False)),
+                "pastePreDelayMs": getattr(Config, "PASTE_PRE_DELAY_MS", None),
+                "pasteRestoreDelayMs": getattr(Config, "PASTE_RESTORE_DELAY_MS", None),
+            },
+            "runtimeImports": _audio_diagnostic_import_status(),
         }
 
     def get_health(self) -> dict[str, Any]:
@@ -4132,6 +4191,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
         ctl: ScriberWebController = request.app["controller"]
         return web.json_response(ctl.get_runtime_info())
 
+    async def get_audio_diagnostics(request: web.Request):
+        ctl: ScriberWebController = request.app["controller"]
+        return web.json_response(ctl.get_audio_diagnostics())
+
     async def shutdown_runtime(request: web.Request):
         if not _is_loopback_request(request):
             return web.json_response({"message": "Runtime shutdown is only available on loopback"}, status=403)
@@ -4733,6 +4796,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     app.router.add_get("/api/state", get_state)
     app.router.add_get("/api/runtime", get_runtime)
+    app.router.add_get("/api/runtime/audio-diagnostics", get_audio_diagnostics)
     app.router.add_post("/api/runtime/shutdown", shutdown_runtime)
     app.router.add_post("/api/runtime/support-bundle", create_runtime_support_bundle)
     app.router.add_get("/api/metrics/hot-path", get_hot_path_metrics)

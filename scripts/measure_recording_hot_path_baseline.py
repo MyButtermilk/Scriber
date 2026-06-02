@@ -405,6 +405,13 @@ def build_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
 def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     client = BackendClient(args.base_url, token=args.token, timeout_sec=args.http_timeout_sec)
     health = client.get("/api/health")
+    try:
+        audio_diagnostics: dict[str, Any] = client.get("/api/runtime/audio-diagnostics")
+    except Exception as exc:
+        audio_diagnostics = {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     samples = [run_one_iteration(client, args, index) for index in range(1, args.iterations + 1)]
     summary = build_summary(samples)
     return {
@@ -416,6 +423,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "runtimeMode": health.get("runtimeMode"),
             "pid": health.get("pid"),
         },
+        "audioDiagnostics": audio_diagnostics,
         "ok": summary["successfulSamples"] > 0,
         "summary": summary,
         "samples": samples,
@@ -443,6 +451,39 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
         "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "baseUrl": args.base_url,
         "health": {"apiVersion": "validate", "runtimeMode": "validate", "pid": 0},
+        "audioDiagnostics": {
+            "apiVersion": "validate",
+            "runtimeMode": "validate",
+            "pid": 0,
+            "featureFlags": {
+                "audioEngine": "python",
+                "requestedAudioEngine": "python",
+                "rustAudioRequested": False,
+                "rustAudioAvailable": False,
+            },
+            "provider": {
+                "configured": "validate",
+                "active": None,
+                "sonioxMode": "realtime",
+            },
+            "microphone": {
+                "configuredDevice": "default",
+                "favoriteMic": "",
+                "favoriteMicConfigured": False,
+                "micAlwaysOn": False,
+                "idlePrewarmActive": False,
+            },
+            "textInjection": {
+                "method": "auto",
+                "disabled": False,
+                "pastePreDelayMs": 80,
+                "pasteRestoreDelayMs": 1500,
+            },
+            "runtimeImports": {
+                "onnxruntime": {"importable": True, "error": None},
+                "pipecat.audio.vad.silero": {"importable": True, "error": None},
+            },
+        },
         "ok": True,
         "summary": build_summary([sample]),
         "samples": [sample],

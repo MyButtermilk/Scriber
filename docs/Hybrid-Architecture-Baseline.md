@@ -82,6 +82,14 @@ The parent baseline still writes its JSON artifact and records the child
 requirement statuses under `recordingHotPathBenchmarks`, so missing live
 evidence is visible without losing startup/backend/cleanup measurements.
 
+Recording child artifacts also include `audioDiagnostics` from the token-
+protected `GET /api/runtime/audio-diagnostics` endpoint. That snapshot records
+the effective/requested audio engine, configured and active live provider,
+selected microphone settings, text-injection settings, and importability for
+runtime modules such as ONNXRuntime and Pipecat Silero VAD. Use it to separate
+runtime-readiness failures from missing audible audio, missing provider text,
+and missing text injection.
+
 When `-OutputPath` is set, each recording-hot-path child artifact is written as
 `<baseline-name>-recording-hot-path-N.json` next to the main baseline artifact.
 This keeps live recording evidence available after the temporary runtime data
@@ -115,6 +123,9 @@ is to distinguish provider transcript failure from OS input/focus failure.
 - optional live recording hot-path samples via
   `scripts/measure_recording_hot_path_baseline.py` when
   `-RecordHotPathSamples` is passed;
+- audio runtime readiness for recording samples via
+  `/api/runtime/audio-diagnostics`, including ONNXRuntime/Silero VAD
+  importability and non-secret provider/microphone/text-injection settings;
 - concurrent synthetic upload stream writes, parallel PDF/DOCX export
   rendering, and `/api/health` plus `/api/state` responsiveness during that
   load via `scripts/measure_upload_export_baseline.py`;

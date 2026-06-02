@@ -4,6 +4,64 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Recording Hot-Path Audio Diagnostics Evidence
+
+Commands:
+
+```powershell
+python -m pytest -p no:cacheprovider -p no:langsmith `
+  tests\contract\test_rest_contracts.py `
+  tests\test_web_api_lifecycle.py::test_runtime_and_health_contract_include_sidecar_fields `
+  tests\perf\test_recording_hot_path_baseline_script.py `
+  -q
+
+python -m py_compile `
+  src\core\rest_contracts.py `
+  src\web_api.py `
+  scripts\measure_recording_hot_path_baseline.py
+
+python scripts\measure_recording_hot_path_baseline.py `
+  --validate-only `
+  --output tmp\hybrid-baseline\recording-hot-path-validate-audio-diagnostics-20260602.json
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- Added token-protected `GET /api/runtime/audio-diagnostics`.
+- The endpoint reports non-secret live-recording readiness data:
+  effective/requested audio engine flags, configured and active provider,
+  microphone selection, idle prewarm state, text-injection method/disable flag,
+  paste timing settings, and importability for SciPy, pyloudnorm, ONNXRuntime,
+  Pipecat frames, Pipecat VAD, Silero VAD, SmartTurn, and UserIdleProcessor.
+- `scripts\measure_recording_hot_path_baseline.py` now writes that
+  `audioDiagnostics` snapshot into each benchmark artifact before driving the
+  live-mic start/stop sample.
+- Added REST-contract validation for the new diagnostic payload and regression
+  coverage that keeps the benchmark artifact format wired.
+
+Evidence:
+
+- Focused tests: `18 passed`.
+- Python compile check for touched backend/script modules: passed.
+- Validate-only recording-hot-path artifact contained `audioDiagnostics` with
+  provider, microphone, text-injection, and runtime import entries for
+  `onnxruntime` and `pipecat.audio.vad.silero`.
+
+Goal coverage:
+
+- Phase 0 and Phase 7: improves the evidentiary quality of the remaining
+  live-recording stop-to-text gate. A failed recording run can now distinguish
+  runtime dependency readiness from missing audible audio, provider transcript,
+  or injection.
+
+Remaining limits:
+
+- This is diagnostic instrumentation, not proof of the real spoken
+  stop-to-text-injection requirement. That gate still needs a live sample with
+  audible microphone input, provider transcript text, and successful injection.
+
 ## 2026-06-02 - Installed Sidecar Runtime Imports and Frontend Startup
 
 Commands:

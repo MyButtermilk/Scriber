@@ -7,6 +7,7 @@ import pytest
 from src.core.rest_contracts import (
     REST_API_VERSION,
     RESTContractError,
+    validate_audio_diagnostics_payload,
     validate_health_payload,
     validate_runtime_payload,
 )
@@ -20,16 +21,21 @@ def test_runtime_and_health_payloads_match_contract(monkeypatch, tmp_path) -> No
         ctl = ScriberWebController(loop)
         runtime = ctl.get_runtime_info()
         health = ctl.get_health()
+        audio_diagnostics = ctl.get_audio_diagnostics()
     finally:
         loop.close()
 
     validate_runtime_payload(runtime)
     validate_health_payload(health)
+    validate_audio_diagnostics_payload(audio_diagnostics)
     assert runtime["apiVersion"] == REST_API_VERSION
     assert health["apiVersion"] == REST_API_VERSION
+    assert audio_diagnostics["apiVersion"] == REST_API_VERSION
     assert health["workerVersion"] == runtime["workerVersion"]
     assert health["runtimeMode"] == runtime["runtimeMode"]
     assert health["pid"] == runtime["pid"]
+    assert audio_diagnostics["runtimeMode"] == runtime["runtimeMode"]
+    assert audio_diagnostics["pid"] == runtime["pid"]
 
 
 def test_runtime_contract_rejects_incompatible_payload() -> None:
@@ -115,3 +121,57 @@ def test_health_contract_rejects_incompatible_payload() -> None:
     invalid["uptimeSeconds"] = -1
     with pytest.raises(RESTContractError):
         validate_health_payload(invalid)
+
+
+def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
+    valid = {
+        "apiVersion": REST_API_VERSION,
+        "runtimeMode": "tauri-supervised",
+        "pid": 123,
+        "recordingState": "idle",
+        "featureFlags": {
+            "audioEngine": "python",
+            "requestedAudioEngine": "python",
+            "rustAudioRequested": False,
+            "rustAudioAvailable": False,
+        },
+        "provider": {
+            "configured": "azure_mai",
+            "active": None,
+            "sonioxMode": "realtime",
+        },
+        "microphone": {
+            "configuredDevice": "default",
+            "favoriteMic": "",
+            "favoriteMicConfigured": False,
+            "micAlwaysOn": False,
+            "idlePrewarmActive": False,
+        },
+        "textInjection": {
+            "method": "auto",
+            "disabled": False,
+            "pastePreDelayMs": 80,
+            "pasteRestoreDelayMs": 1500,
+        },
+        "runtimeImports": {
+            "onnxruntime": {
+                "importable": True,
+                "error": None,
+            },
+            "pipecat.audio.vad.silero": {
+                "importable": False,
+                "error": "ModuleNotFoundError: example",
+            },
+        },
+    }
+    validate_audio_diagnostics_payload(valid)
+
+    invalid = dict(valid)
+    invalid["runtimeImports"] = {}
+    with pytest.raises(RESTContractError):
+        validate_audio_diagnostics_payload(invalid)
+
+    invalid = dict(valid)
+    invalid["textInjection"] = {**valid["textInjection"], "disabled": "no"}
+    with pytest.raises(RESTContractError):
+        validate_audio_diagnostics_payload(invalid)

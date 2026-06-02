@@ -317,6 +317,19 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert runtime["featureFlags"]["rustAudioAvailable"] is False
     assert runtime["featureFlags"]["sessionTokenRequired"] is False
     assert runtime["startup"]["deviceMonitor"] == "disabled"
+
+    audio = ctl.get_audio_diagnostics()
+    assert audio["apiVersion"] == runtime["apiVersion"]
+    assert audio["runtimeMode"] == runtime["runtimeMode"]
+    assert audio["pid"] == runtime["pid"]
+    assert audio["featureFlags"]["audioEngine"] == runtime["featureFlags"]["audioEngine"]
+    assert audio["provider"]["configured"]
+    assert audio["provider"]["active"] is None
+    assert audio["microphone"]["configuredDevice"]
+    assert audio["textInjection"]["method"]
+    assert "onnxruntime" in audio["runtimeImports"]
+    assert "pipecat.audio.vad.silero" in audio["runtimeImports"]
+
     assert health["ok"] is True
     assert health["ready"] is True
     assert health["version"] == runtime["version"]
