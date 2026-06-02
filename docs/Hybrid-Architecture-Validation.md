@@ -4,6 +4,77 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Tauri CSP Hardening
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m pytest tests\test_tauri_security_gates.py
+
+cd Frontend
+npm run check
+npm run build
+npm run tauri:build -- --no-bundle
+
+cd ..
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1 `
+  -ExePath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\scriber-desktop.exe" `
+  -DataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\tauri-smoke-data\csp-hardened-20260602" `
+  -DisableDevFallback `
+  -StabilityDurationSec 3 `
+  -StabilityProbeIntervalSec 1 `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\tauri-csp-hardened-20260602.json"
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `Frontend\src-tauri\tauri.conf.json` now defines a restrictive WebView CSP
+  instead of `csp: null`.
+- The CSP keeps scripts local, disallows `unsafe-eval`, blocks object/embed
+  content, blocks form submission and framing, and restricts network access to
+  the app plus loopback HTTP/WebSocket backend URLs.
+- External Google Fonts links were removed from `Frontend\client\index.html`.
+- Font tokens in `Frontend\client\src\index.css` now use system font stacks, so
+  the desktop app no longer depends on external font CSS.
+- `tests\test_tauri_security_gates.py` now asserts the CSP directives and
+  checks that the frontend entrypoint stays compatible with that CSP.
+
+Evidence:
+
+- Tauri security gates: `6 passed`.
+- TypeScript strict check: passed.
+- Production frontend/server build: passed.
+- Tauri build without bundling: passed.
+- Built executable:
+  `Frontend\src-tauri\target\release\scriber-desktop.exe`.
+- Runtime smoke artifact:
+  `tmp\hybrid-baseline\tauri-csp-hardened-20260602.json`.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- Stability verified: true.
+- Samples: 3.
+- Backend working-set peak growth: 0.06 MB.
+- Combined CPU max/avg: 0% / 0%.
+- Cleanup verified: true.
+
+Goal coverage:
+
+- Architecture boundary: strengthens the Tauri security surface while keeping
+  REST/WebSocket over localhost.
+- Phase 2/3: keeps the Tauri WebView constrained to local assets and the
+  runtime backend URL model.
+- Phase 8: hardens the desktop shell and removes an external runtime
+  dependency from the packaged UI.
+
+Remaining limits:
+
+- This is CSP/build/startup evidence, not a full installed NSIS smoke with the
+  newly built executable.
+- Signing/updater publication, physical hardware matrix, and long live
+  provider runs remain separate open items.
+
 ## 2026-06-02 - Runtime Support Bundle Gate
 
 Commands:

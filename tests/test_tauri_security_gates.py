@@ -14,6 +14,16 @@ def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def parse_csp(csp: str) -> dict[str, list[str]]:
+    directives: dict[str, list[str]] = {}
+    for raw_directive in csp.split(";"):
+        parts = raw_directive.strip().split()
+        if not parts:
+            continue
+        directives[parts[0]] = parts[1:]
+    return directives
+
+
 def test_tauri_default_capability_is_minimal() -> None:
     capability = read_json(TAURI_DIR / "capabilities" / "default.json")
 
@@ -38,6 +48,50 @@ def test_tauri_default_capability_is_minimal() -> None:
     }
     assert not denied_permissions.intersection(capability["permissions"])
     assert all(not permission.startswith("shell:") for permission in capability["permissions"])
+
+
+def test_tauri_csp_restricts_webview_to_local_backend_and_assets() -> None:
+    config = read_json(TAURI_DIR / "tauri.conf.json")
+    csp = config["app"]["security"]["csp"]
+
+    assert isinstance(csp, str)
+    assert csp.strip()
+    assert " *" not in csp
+    assert "'unsafe-eval'" not in csp
+    assert "https:" not in csp
+    assert "http://*" not in csp
+    assert "ws://*" not in csp
+
+    directives = parse_csp(csp)
+    assert directives["default-src"] == ["'self'"]
+    assert directives["script-src"] == ["'self'"]
+    assert directives["object-src"] == ["'none'"]
+    assert directives["base-uri"] == ["'none'"]
+    assert directives["form-action"] == ["'none'"]
+    assert directives["frame-ancestors"] == ["'none'"]
+    assert "'unsafe-inline'" in directives["style-src"]
+    assert "data:" in directives["img-src"]
+    assert "blob:" in directives["img-src"]
+    assert "data:" in directives["font-src"]
+    assert "data:" in directives["media-src"]
+    assert "blob:" in directives["media-src"]
+    assert "http://127.0.0.1:*" in directives["connect-src"]
+    assert "ws://127.0.0.1:*" in directives["connect-src"]
+    assert "http://localhost:*" in directives["connect-src"]
+    assert "ws://localhost:*" in directives["connect-src"]
+
+
+def test_frontend_entrypoint_is_compatible_with_tauri_csp() -> None:
+    index_html = (REPO_ROOT / "Frontend" / "client" / "index.html").read_text(encoding="utf-8")
+    css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
+
+    assert "fonts.googleapis.com" not in index_html
+    assert "fonts.gstatic.com" not in index_html
+    assert "<script type=\"module\" src=\"/src/main.tsx\"></script>" in index_html
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", index_html)
+    assert "ui-sans-serif" in css
+    assert "--font-sans:" in css
+    assert "--font-heading:" in css
 
 
 def test_tauri_does_not_expose_general_shell_or_opener_plugins() -> None:
