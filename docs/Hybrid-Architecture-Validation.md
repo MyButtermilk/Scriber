@@ -3621,3 +3621,53 @@ Remaining limits:
 - This still does not close the physical hardware matrix, real Authenticode
   signing, or published signed updater metadata. It makes those requirements a
   hard final gate once the external evidence exists.
+
+## 2026-06-02 - Tauri Updater Publication Report Generator
+
+Commands:
+
+```powershell
+python -m py_compile `
+  scripts\verify_tauri_updater_publication.py `
+  tests\test_verify_tauri_updater_publication.py
+
+python -m pytest tests\test_verify_tauri_updater_publication.py
+```
+
+Result: implemented and covered by focused tests. No live HTTPS publication
+check was run in this local validation entry because the release publication
+itself is still an external gate.
+
+Implemented improvements:
+
+- Added `scripts\verify_tauri_updater_publication.py` as the standard way to
+  generate the updater publication evidence consumed by
+  `scripts\validate_hybrid_release_readiness.py`.
+- The script fetches the configured `latest.json` URL with an explicit JSON
+  request, requires absolute HTTPS, validates the downloaded metadata with
+  signature-required Tauri updater rules, and compares the downloaded SHA256
+  with the local release metadata.
+- The generated report includes `ok`, `url`, `statusCode`,
+  `requireSignatures`, `metadataSha256`, `localMetadataSha256`,
+  `metadataMatchesLocal`, byte count, and failures. These fields are compatible
+  with the final hybrid release-readiness aggregator.
+
+Evidence:
+
+- `tests\test_verify_tauri_updater_publication.py`: `6 passed`.
+- Python compile check: passed.
+
+Goal coverage:
+
+- Phase 6: adds a reproducible evidence producer for the published signed
+  updater manifest requirement instead of relying on an ad-hoc browser/manual
+  download.
+- Phase 7: adds focused coverage for signed metadata acceptance, non-HTTPS URL
+  rejection, unsigned metadata rejection, local SHA mismatch rejection, and
+  fetcher integration.
+
+Remaining limits:
+
+- This does not publish a real `latest.json` and does not prove the GitHub
+  release URL is live. The script must be run after a signed release artifact
+  and signed updater manifest have actually been published.
