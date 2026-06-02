@@ -199,6 +199,8 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "webViewReady = [bool]$frontendReady.ready" in desktop
     assert "webViewBackendBaseUrl" in desktop
     assert "webViewLocationOrigin" in desktop
+    assert "Access-Control-Request-Private-Network" in desktop
+    assert "privateNetworkPreflight = $true" in desktop
     assert "frontend = $frontend" in desktop
 
     assert "[switch]$VerifySupportBundle" in installer

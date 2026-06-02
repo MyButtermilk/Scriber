@@ -1,11 +1,12 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { wsUrl } from "@/lib/backend";
+import { isScriberWebSocketMessage, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 
 export interface UseWebSocketOptions {
     /** WebSocket endpoint path, e.g. "/ws" */
     path: string;
     /** Callback for incoming messages */
-    onMessage?: (data: any) => void;
+    onMessage?: (data: ScriberWebSocketMessage) => void;
     /** Callback when connection opens */
     onOpen?: () => void;
     /** Callback when connection closes */
@@ -26,7 +27,7 @@ interface UseWebSocketReturn {
     /** Number of reconnection attempts */
     reconnectCount: number;
     /** Manually send a message */
-    send: (data: any) => void;
+    send: (data: unknown) => void;
     /** Manually reconnect */
     reconnect: () => void;
     /** Close connection without auto-reconnect */
@@ -97,7 +98,10 @@ export function useWebSocket({
 
             ws.onmessage = (event) => {
                 try {
-                    const data = JSON.parse(event.data);
+                    const data = JSON.parse(event.data) as unknown;
+                    if (!isScriberWebSocketMessage(data)) {
+                        return;
+                    }
                     onMessageRef.current?.(data);
                 } catch {
                     // Ignore parse errors
@@ -134,9 +138,12 @@ export function useWebSocket({
         }
     }, [path, reconnectDelay, maxReconnectAttempts]);
 
-    const send = useCallback((data: any) => {
+    const send = useCallback((data: unknown) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(typeof data === "string" ? data : JSON.stringify(data));
+            const message = typeof data === "string" ? data : JSON.stringify(data);
+            if (typeof message === "string") {
+                wsRef.current.send(message);
+            }
         }
     }, []);
 

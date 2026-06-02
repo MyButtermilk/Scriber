@@ -77,7 +77,7 @@ export type ScriberWebSocketMessage =
 
 type MessageHandler = (data: ScriberWebSocketMessage) => void;
 
-function isScriberWebSocketMessage(data: unknown): data is ScriberWebSocketMessage {
+export function isScriberWebSocketMessage(data: unknown): data is ScriberWebSocketMessage {
     if (!data || typeof data !== "object") {
         return false;
     }

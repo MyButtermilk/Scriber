@@ -1,5 +1,11 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
-import { apiUrl, isTauriRuntime, reportFrontendReady, setBackendBaseUrl } from "@/lib/backend";
+import {
+    apiUrl,
+    isTauriRuntime,
+    loadBackendBaseUrlFromTauri,
+    reportFrontendReady,
+    setBackendBaseUrl,
+} from "@/lib/backend";
 
 interface BackendStatus {
     isOnline: boolean;
@@ -35,16 +41,29 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
         setIsChecking(true);
         try {
             if (isTauriRuntime()) {
-                const { invoke } = await import("@tauri-apps/api/core");
-                const status = await invoke<TauriBackendStatus>("ensure_backend_running");
-                if (status.baseUrl) {
-                    setBackendBaseUrl(status.baseUrl);
-                }
-                if (!status.ready) {
-                    setIsOnline(false);
-                    setError(status.message || (status.running ? "Backend is starting" : "Backend is not running"));
+                await loadBackendBaseUrlFromTauri();
+                try {
+                    const { invoke } = await import("@tauri-apps/api/core");
+                    const status = await invoke<TauriBackendStatus>("ensure_backend_running");
+                    if (status.baseUrl) {
+                        setBackendBaseUrl(status.baseUrl);
+                    }
+                    if (!status.ready) {
+                        setIsOnline(false);
+                        setError(status.message || (status.running ? "Backend is starting" : "Backend is not running"));
+                        setLastChecked(new Date());
+                        return false;
+                    }
+
+                    setIsOnline(true);
+                    setError(null);
                     setLastChecked(new Date());
-                    return false;
+                    void reportFrontendReady().catch((readyError) => {
+                        console.debug("Frontend readiness beacon failed.", readyError);
+                    });
+                    return true;
+                } catch (tauriError) {
+                    console.debug("Tauri backend supervisor check failed; falling back to HTTP health probe.", tauriError);
                 }
             }
 

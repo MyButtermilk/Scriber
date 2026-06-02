@@ -4,6 +4,105 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Installed WebView Backend Availability Fix
+
+Commands:
+
+```powershell
+python -m pytest `
+  tests/test_frontend_type_gates.py `
+  tests/test_web_api_security.py `
+  tests/test_tauri_stability_smoke_gates.py
+
+cd Frontend
+npm run check
+npm run build
+cd ..
+
+python -m py_compile src/web_api.py
+git diff --check
+
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\build_windows.ps1 `
+  -SkipChecks `
+  -SkipSmoke `
+  -RunInstallerFrontendSmoke
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- In Tauri runtime, `BackendStatusProvider` now treats the Rust supervisor's
+  `ensure_backend_running` readiness as the primary online signal instead of
+  requiring an additional browser-side `/api/health` fetch before clearing the
+  offline overlay.
+- If the Tauri IPC supervisor check fails, the hook logs a debug diagnostic and
+  falls back to the direct HTTP health probe instead of failing the whole check.
+- The hook refreshes backend access through `loadBackendBaseUrlFromTauri()` on
+  health checks, so a missed initial backend URL/token lookup can recover.
+- Backend CORS now returns `Access-Control-Allow-Private-Network: true` for
+  allowed origins that request the Chromium/WebView private-network preflight.
+- The installed package frontend smoke now verifies the private-network
+  preflight in addition to the real Tauri WebView `frontend-ready` beacon.
+
+Evidence:
+
+- Focused Python gates: `50 passed`.
+- Frontend TypeScript check: passed.
+- Frontend production build: passed.
+- Python compile check for `src/web_api.py`: passed.
+- Whitespace diff check: passed.
+- Installed NSIS package smoke: passed with `webViewReady=true`,
+  `privateNetworkPreflight=true`,
+  `webViewBackendBaseUrl=http://127.0.0.1:8765`, and
+  `webViewLocationOrigin=http://tauri.localhost`.
+- Built installer:
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+
+Goal coverage:
+
+- Phase 3/4: closes the installed Tauri shell failure mode where backend,
+  tray, and hotkey could work while the React WebView stayed behind
+  `Backend Not Available`.
+- Phase 7: expands the installed frontend smoke so future installers validate
+  the WebView-to-backend readiness path, CORS origin, and Chromium
+  private-network preflight.
+
+## 2026-06-02 - Typed Legacy WebSocket Hook Gate
+
+Commands:
+
+```powershell
+python -m pytest tests/test_frontend_type_gates.py
+
+cd Frontend
+npm run check
+npm run build
+cd ..
+
+git diff --check
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- Exported the shared `isScriberWebSocketMessage()` guard from
+  `Frontend/client/src/contexts/WebSocketContext.tsx`.
+- Updated the legacy `useWebSocket` hook to use `ScriberWebSocketMessage`,
+  parse incoming JSON as `unknown`, guard it through the shared WebSocket
+  contract, and send `unknown` payloads instead of `any`.
+- Added a static regression test so this hook cannot silently reintroduce the
+  untyped `data: any` boundary.
+
+Goal coverage:
+
+- Phase 1: improves the frontend typed API/WebSocket boundary and removes an
+  old `any` message path from code compiled by the React client.
+- Phase 7: adds a focused guard for the legacy hook while the shared
+  `WebSocketProvider` remains the primary runtime path.
+
 ## 2026-06-02 - Versioned Frontend-Ready Request Contract
 
 Commands:

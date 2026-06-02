@@ -118,6 +118,8 @@ _SESSION_TOKEN_ENV = "SCRIBER_SESSION_TOKEN"
 _FRONTEND_DIST_DIR_ENV = "SCRIBER_FRONTEND_DIST_DIR"
 _DEFAULT_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "tauri.localhost"}
 _DEFAULT_ALLOWED_CUSTOM_ORIGINS = {"tauri://localhost"}
+_PRIVATE_NETWORK_ACCESS_REQUEST_HEADER = "Access-Control-Request-Private-Network"
+_PRIVATE_NETWORK_ACCESS_ALLOW_HEADER = "Access-Control-Allow-Private-Network"
 _RUST_AUDIO_PROTOTYPE_AVAILABLE = False
 _AUDIO_DIAGNOSTIC_IMPORTS = (
     "scipy",
@@ -4170,6 +4172,8 @@ async def cors_middleware(request: web.Request, handler):
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Vary"] = "Origin"
         resp.headers["Access-Control-Allow-Credentials"] = "true"
+        if request.headers.get(_PRIVATE_NETWORK_ACCESS_REQUEST_HEADER, "").lower() == "true":
+            resp.headers[_PRIVATE_NETWORK_ACCESS_ALLOW_HEADER] = "true"
     else:
         resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"

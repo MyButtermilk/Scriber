@@ -244,6 +244,18 @@ async def test_tauri_origin_can_fetch_health(monkeypatch, tmp_path):
     client = TestClient(server)
     await client.start_server()
     try:
+        preflight = await client.options(
+            "/api/health",
+            headers={
+                "Origin": "http://tauri.localhost",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Private-Network": "true",
+            },
+        )
+        assert preflight.status == 204
+        assert preflight.headers["Access-Control-Allow-Origin"] == "http://tauri.localhost"
+        assert preflight.headers["Access-Control-Allow-Private-Network"] == "true"
+
         response = await client.get("/api/health", headers={"Origin": "http://tauri.localhost"})
         assert response.status == 200
         assert response.headers["Access-Control-Allow-Origin"] == "http://tauri.localhost"

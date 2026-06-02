@@ -716,6 +716,20 @@ function Test-FrontendHttp {
 
     $tauriOrigin = "http://tauri.localhost"
     $originHeaders = @{ Origin = $tauriOrigin }
+    $preflightHeaders = @{
+        Origin = $tauriOrigin
+        "Access-Control-Request-Method" = "GET"
+        "Access-Control-Request-Private-Network" = "true"
+    }
+    $preflightResponse = Invoke-WebRequest -Method Options -Uri "$baseUrl/api/health" -Headers $preflightHeaders -TimeoutSec 10 -UseBasicParsing
+    if ([int]$preflightResponse.StatusCode -ne 204) {
+        throw "Frontend CORS private-network preflight returned HTTP $($preflightResponse.StatusCode)."
+    }
+    $privateNetworkAllowed = [string]$preflightResponse.Headers["Access-Control-Allow-Private-Network"]
+    if ($privateNetworkAllowed -ne "true") {
+        throw "Frontend CORS private-network preflight did not allow private network access."
+    }
+
     $healthResponse = Invoke-WebRequest -Uri "$baseUrl/api/health" -Headers $originHeaders -TimeoutSec 10 -UseBasicParsing
     if ([int]$healthResponse.StatusCode -ne 200) {
         throw "Frontend CORS health probe returned HTTP $($healthResponse.StatusCode)."
@@ -756,6 +770,7 @@ function Test-FrontendHttp {
         assetCount = [int]$assets.Count
         verifiedAssetCount = [int]$verifiedAssets.Count
         tauriOriginCors = $true
+        privateNetworkPreflight = $true
         runtimeCorsVerified = $runtimeCorsVerified
         webViewReady = [bool]$frontendReady.ready
         webViewReadyAt = [string]$lastSeen.receivedAt
