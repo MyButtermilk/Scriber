@@ -16,6 +16,7 @@ import LiveMic from "@/pages/LiveMic";
 const Youtube = lazy(() => import("@/pages/Youtube"));
 const FileTranscribe = lazy(() => import("@/pages/FileTranscribe"));
 const Settings = lazy(() => import("@/pages/Settings"));
+const DebugConsole = lazy(() => import("@/pages/DebugConsole"));
 
 // Lazy load only rarely accessed pages for slightly smaller initial bundle
 const TranscriptDetail = lazy(() => import("@/pages/TranscriptDetail"));
@@ -39,6 +40,7 @@ function TabRoutes() {
           <Route path="/" component={LiveMic} />
           <Route path="/youtube" component={Youtube} />
           <Route path="/file" component={FileTranscribe} />
+          <Route path="/debug" component={DebugConsole} />
           <Route path="/settings" component={Settings} />
           <Route component={NotFound} />
         </Switch>

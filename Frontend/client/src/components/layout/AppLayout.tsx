@@ -1,5 +1,5 @@
 import { Link, useLocation, Router } from "wouter";
-import { Mic, Settings, Youtube, FolderOpen, Menu, Search } from "lucide-react";
+import { Mic, Settings, Youtube, FolderOpen, Menu, Search, Terminal } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SidebarSearch } from "@/components/ui/sidebar-search";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -59,6 +59,10 @@ export function AppLayout({ children, path }: AppLayoutProps) {
     }
     if (href === "/settings") {
       void import("@/pages/Settings");
+      return;
+    }
+    if (href === "/debug") {
+      void import("@/pages/DebugConsole");
     }
   }, []);
 
@@ -71,6 +75,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
     { href: "/", icon: Mic, label: "Live Mic" },
     { href: "/youtube", icon: Youtube, label: "YouTube" },
     { href: "/file", icon: FolderOpen, label: "File" },
+    { href: "/debug", icon: Terminal, label: "Debug" },
     { href: "/settings", icon: Settings, label: "Settings" },
   ];
 

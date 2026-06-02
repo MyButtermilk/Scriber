@@ -227,6 +227,25 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
         assert support.status == 200
         assert (await support.read()).startswith(b"PK")
 
+        logs_unauthorized = await client.get("/api/runtime/logs")
+        assert logs_unauthorized.status == 401
+
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "zz-test-debug.log").write_text(
+            "... 12:34:56.789 ERROR [web_api    ] [------] [web_api        ] "
+            "failed with OPENAI_API_KEY=secret-value\n",
+            encoding="utf-8",
+        )
+        logs = await client.get("/api/runtime/logs?limit=10", headers={"X-Scriber-Token": "secret"})
+        assert logs.status == 200
+        logs_payload = await logs.json()
+        assert logs_payload["apiVersion"] == "1"
+        test_entry = next(item for item in logs_payload["items"] if item["source"] == "zz-test-debug.log")
+        assert test_entry["level"] == "ERROR"
+        assert "secret-value" not in test_entry["message"]
+        assert "[REDACTED]" in test_entry["message"]
+
         shutdown_unauthorized = await client.post("/api/runtime/shutdown")
         assert shutdown_unauthorized.status == 401
 

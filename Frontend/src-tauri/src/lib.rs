@@ -55,6 +55,7 @@ const TAURI_GLOBAL_HOTKEY_ENV: &str = "SCRIBER_TAURI_GLOBAL_HOTKEY";
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstance";
 const AUTOSTART_REGISTRY_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const AUTOSTART_REGISTRY_VALUE: &str = "Scriber";
+const AUTOSTART_DEFAULT_MARKER_FILE: &str = "desktop-autostart-default-applied";
 const HOTKEY_DISPATCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_ID: &str = "scriber-tray";
@@ -506,6 +507,7 @@ pub fn run() {
         .manage(backend_manager)
         .setup(|app| {
             configure_desktop_shell(app)?;
+            apply_default_desktop_autostart(app.handle());
             let manager = app.state::<BackendManager>();
             manager.set_resource_dir(app.path().resource_dir().ok());
             let setup_backend_status = manager.ensure_started();
@@ -540,6 +542,45 @@ pub fn run() {
 fn configure_desktop_shell<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     install_tray(app)?;
     Ok(())
+}
+
+fn apply_default_desktop_autostart<R: Runtime>(app: &AppHandle<R>) {
+    if cfg!(debug_assertions) {
+        write_shell_log("desktop autostart first-run default skipped in debug build");
+        return;
+    }
+
+    match default_autostart_marker_path(app) {
+        Some(marker_path) => {
+            if marker_path.exists() {
+                return;
+            }
+            match set_desktop_autostart_enabled(true) {
+                Ok(()) => {
+                    if let Some(parent) = marker_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(&marker_path, b"applied\n");
+                    write_shell_log("desktop autostart enabled by first-run default");
+                }
+                Err(err) => {
+                    write_shell_log(&format!(
+                        "desktop autostart first-run default skipped: {err}"
+                    ));
+                }
+            }
+        }
+        None => write_shell_log(
+            "desktop autostart first-run default skipped: app data directory unavailable",
+        ),
+    }
+}
+
+fn default_autostart_marker_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join(AUTOSTART_DEFAULT_MARKER_FILE))
 }
 
 fn install_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {

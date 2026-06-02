@@ -31,6 +31,24 @@ export interface FrontendReadyResponse {
   lastSeen: FrontendReadyLastSeen | null;
 }
 
+export interface RuntimeLogEntry {
+  source: string;
+  line: number;
+  level: "TRACE" | "DEBUG" | "INFO" | "SUCCESS" | "WARNING" | "ERROR" | "CRITICAL" | string;
+  message: string;
+  timestamp?: string | null;
+  timestampMs?: number | null;
+  component?: string | null;
+}
+
+export interface RuntimeLogsResponse {
+  apiVersion: typeof REST_API_VERSION;
+  items: RuntimeLogEntry[];
+  sources: string[];
+  limit: number;
+  truncated: boolean;
+}
+
 export interface TranscriptHistoryItem {
   id: string;
   title: string;

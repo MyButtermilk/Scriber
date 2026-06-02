@@ -34,6 +34,7 @@ ROUTE_EXPECTATIONS: dict[str, list[str]] = {
     "/": ["Live Transcription", "Recent Recordings"],
     "/youtube": ["Youtube Transcription", "Recent Videos"],
     "/file": ["Import File", "Recent Files"],
+    "/debug": ["Debug Console", "ui-debug-sample.log", "Debug console sample error"],
     "/settings": ["Settings", "Transcription Settings", "API Configuration"],
     "/transcript/mic-00001": ["Synthetic Recording 00002", "Summary", "Transcript"],
 }
@@ -100,6 +101,7 @@ class FrontendSmokeBackend:
         app.router.add_get("/api/youtube/search", self.youtube_search)
         app.router.add_get("/api/youtube/video", self.youtube_video)
         app.router.add_post("/api/youtube/transcribe", self.youtube_transcribe)
+        app.router.add_get("/api/runtime/logs", self.runtime_logs)
         app.router.add_get("/api/transcripts", self.transcripts)
         app.router.add_get("/api/transcripts/{transcript_id}", self.transcript_detail)
         app.router.add_delete("/api/transcripts/{transcript_id}", self.delete_transcript)
@@ -203,6 +205,45 @@ class FrontendSmokeBackend:
                 "success": True,
                 "id": "youtube-queued-smoke",
                 "message": "Synthetic transcription queued.",
+            }
+        )
+
+    async def runtime_logs(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "apiVersion": "1",
+                "items": [
+                    {
+                        "source": "ui-debug-sample.log",
+                        "line": 1,
+                        "level": "INFO",
+                        "message": "Debug console sample info",
+                        "timestamp": "12:01:00.100",
+                        "timestampMs": None,
+                        "component": "web_api",
+                    },
+                    {
+                        "source": "ui-debug-sample.log",
+                        "line": 2,
+                        "level": "WARNING",
+                        "message": "Debug console sample warning",
+                        "timestamp": "12:01:01.200",
+                        "timestampMs": None,
+                        "component": "web_api",
+                    },
+                    {
+                        "source": "ui-debug-sample.log",
+                        "line": 3,
+                        "level": "ERROR",
+                        "message": "Debug console sample error OPENAI_API_KEY=[REDACTED]",
+                        "timestamp": "12:01:02.300",
+                        "timestampMs": None,
+                        "component": "web_api",
+                    },
+                ],
+                "sources": ["ui-debug-sample.log"],
+                "limit": 900,
+                "truncated": False,
             }
         )
 

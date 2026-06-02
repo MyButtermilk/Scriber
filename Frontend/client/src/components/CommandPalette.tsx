@@ -18,6 +18,7 @@ import {
   Youtube,
   FolderOpen,
   Home,
+  Terminal,
 } from "lucide-react";
 import { apiUrl } from "@/lib/backend";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
@@ -194,6 +195,10 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           <CommandItem onSelect={() => navigate("/file")}>
             <FolderOpen className="mr-2 h-4 w-4" />
             <span>Datei-Upload</span>
+          </CommandItem>
+          <CommandItem onSelect={() => navigate("/debug")}>
+            <Terminal className="mr-2 h-4 w-4" />
+            <span>Debug Console</span>
           </CommandItem>
           <CommandItem onSelect={() => navigate("/settings")}>
             <Settings className="mr-2 h-4 w-4" />

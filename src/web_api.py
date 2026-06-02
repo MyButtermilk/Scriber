@@ -55,6 +55,7 @@ from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.mic_prewarm import MicrophonePrewarmManager
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
+from src.runtime.debug_logs import collect_debug_logs
 from src.runtime.support_bundle import create_support_bundle
 from src.version import app_version
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
@@ -4283,6 +4284,18 @@ def create_app(controller: ScriberWebController) -> web.Application:
         ctl: ScriberWebController = request.app["controller"]
         return web.json_response(ctl.get_audio_diagnostics())
 
+    async def get_runtime_logs(request: web.Request):
+        try:
+            limit = int(request.query.get("limit", "500"))
+        except ValueError:
+            limit = 500
+        try:
+            payload = await asyncio.to_thread(collect_debug_logs, limit=limit)
+        except Exception:
+            logger.exception("Failed to collect runtime logs")
+            return web.json_response({"message": "Failed to collect runtime logs"}, status=500)
+        return web.json_response(payload)
+
     async def shutdown_runtime(request: web.Request):
         if not _is_loopback_request(request):
             return web.json_response({"message": "Runtime shutdown is only available on loopback"}, status=403)
@@ -4918,6 +4931,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/runtime/frontend-ready", get_frontend_ready)
     app.router.add_post("/api/runtime/frontend-ready", post_frontend_ready)
     app.router.add_get("/api/runtime/audio-diagnostics", get_audio_diagnostics)
+    app.router.add_get("/api/runtime/logs", get_runtime_logs)
     app.router.add_post("/api/runtime/shutdown", shutdown_runtime)
     app.router.add_post("/api/runtime/support-bundle", create_runtime_support_bundle)
     app.router.add_get("/api/metrics/hot-path", get_hot_path_metrics)
