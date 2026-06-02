@@ -26,6 +26,8 @@ normalized average idle CPU for the Tauri app plus backend exceeds the
 configured threshold. With -VerifyUninstall, the silent uninstaller becomes a
 strict release gate: it must remove installed app artifacts while preserving
 runtime data before the script removes temporary smoke-test directories.
+With -WaitForManualGlobalHotkey, the installed desktop smoke waits for a
+physical OS hotkey press and verifies the dispatch against the installed app.
 #>
 
 param(
@@ -41,6 +43,7 @@ param(
     [switch]$SimulateBackendStartupTimeout,
     [switch]$VerifyGlobalHotkeyRegistration,
     [switch]$SimulateGlobalHotkey,
+    [switch]$WaitForManualGlobalHotkey,
     [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$GlobalHotkeyDispatchTimeoutSec = 20,
     [int]$StabilityDurationSec = 0,
@@ -339,6 +342,11 @@ function Invoke-InstalledDesktopSmoke {
     }
     if ($SimulateGlobalHotkey) {
         $smokeArgs += "-SimulateGlobalHotkey"
+        $smokeArgs += @("-GlobalHotkeySmokeHotkey", $GlobalHotkeySmokeHotkey)
+        $smokeArgs += @("-GlobalHotkeyDispatchTimeoutSec", $GlobalHotkeyDispatchTimeoutSec.ToString())
+    }
+    if ($WaitForManualGlobalHotkey) {
+        $smokeArgs += "-WaitForManualGlobalHotkey"
         $smokeArgs += @("-GlobalHotkeySmokeHotkey", $GlobalHotkeySmokeHotkey)
         $smokeArgs += @("-GlobalHotkeyDispatchTimeoutSec", $GlobalHotkeyDispatchTimeoutSec.ToString())
     }

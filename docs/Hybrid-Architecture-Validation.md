@@ -4,6 +4,58 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Manual Physical Hotkey Smoke Gate
+
+Commands:
+
+```powershell
+$scripts = @('scripts\smoke_tauri_desktop.ps1','scripts\smoke_windows_installer.ps1','scripts\build_windows.ps1')
+foreach ($script in $scripts) {
+  $tokens=$null; $errors=$null
+  $null=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors)
+  if ($errors.Count) { $errors | ForEach-Object { Write-Error "${script}: $($_.Message)" }; exit 1 }
+}
+'OK'
+
+venv\Scripts\python.exe -m pytest tests\test_tauri_stability_smoke_gates.py
+```
+
+Result: implemented and covered by smoke-script regression tests. Not executed
+as a physical-dispatch proof in this Codex desktop session because it requires
+a real Windows keypress while the smoke is waiting.
+
+Implemented improvements:
+
+- `scripts\smoke_tauri_desktop.ps1` now supports
+  `-WaitForManualGlobalHotkey`. It configures the temporary runtime data dir,
+  verifies Tauri registered the configured shortcut, prompts the operator to
+  press the shortcut, and waits for backend state or mic transcript changes.
+- Successful manual dispatch evidence is serialized with
+  `globalHotkey.dispatchVerified: true` and
+  `globalHotkey.dispatchMethod: manual`.
+- `scripts\smoke_windows_installer.ps1` forwards
+  `-WaitForManualGlobalHotkey` to the installed-app smoke.
+- `scripts\build_windows.ps1` exposes
+  `-RunInstallerManualGlobalHotkeySmoke` for an interactive installed-package
+  release gate.
+
+Goal coverage:
+
+- Phase 4: adds a real physical-dispatch verification path for the Tauri-owned
+  global hotkey without adding duplicate recording state in Rust.
+- Phase 6/7: makes the same manual dispatch check available against the
+  installed NSIS package.
+- Phase 8: converts the last hotkey gap from an ad-hoc manual note into a
+  repeatable smoke gate with JSON evidence.
+
+Remaining limits:
+
+- The gate exists and is tested, but no physical-dispatch pass is claimed until
+  `-WaitForManualGlobalHotkey` is run and the operator presses the configured
+  shortcut before timeout.
+- Signing/updater publication and real long-duration provider/hardware runs
+  remain separate open items.
+
 ## 2026-06-02 - Rebuilt NSIS Installer With Installed Hotkey Gate
 
 Command:

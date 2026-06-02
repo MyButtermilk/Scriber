@@ -91,10 +91,14 @@ def test_desktop_smoke_can_verify_os_global_hotkey_dispatch() -> None:
 
     assert "[switch]$VerifyGlobalHotkeyRegistration" in desktop
     assert "[switch]$SimulateGlobalHotkey" in desktop
+    assert "[switch]$WaitForManualGlobalHotkey" in desktop
     assert '[string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12"' in desktop
     assert "function Test-GlobalHotkeyRegistration" in desktop
     assert "function Invoke-GlobalHotkeyChord" in desktop
     assert "function Test-GlobalHotkeyDispatch" in desktop
+    assert '[ValidateSet("synthetic", "manual")]' in desktop
+    assert 'Write-Warning "Manual global hotkey smoke: press' in desktop
+    assert 'dispatchMethod = $DispatchMethod' in desktop
     assert "Global hotkey registered: $Hotkey (toggle)" in desktop
     assert "SCRIBER_DEFAULT_STT=$invalidProvider" in desktop
     assert "Assert-UnderRoot -Root (Join-Path $Root \"tmp\") -Path $RuntimeDataDir -Label \"Global hotkey smoke DataDir\"" in desktop
@@ -110,15 +114,20 @@ def test_installer_and_build_scripts_forward_global_hotkey_smoke() -> None:
 
     assert "[switch]$VerifyGlobalHotkeyRegistration" in installer
     assert "[switch]$SimulateGlobalHotkey" in installer
+    assert "[switch]$WaitForManualGlobalHotkey" in installer
     assert '"-VerifyGlobalHotkeyRegistration"' in installer
+    assert '"-WaitForManualGlobalHotkey"' in installer
     assert '"-GlobalHotkeySmokeHotkey", $GlobalHotkeySmokeHotkey' in installer
     assert '"-GlobalHotkeyDispatchTimeoutSec", $GlobalHotkeyDispatchTimeoutSec.ToString()' in installer
     assert "globalHotkey = $smoke.globalHotkey" in installer
 
     assert "[switch]$RunInstallerGlobalHotkeyRegistrationSmoke" in build
     assert "[switch]$RunInstallerGlobalHotkeySmoke" in build
+    assert "[switch]$RunInstallerManualGlobalHotkeySmoke" in build
     assert "[string]$InstallerGlobalHotkeySmokeHotkey" in build
     assert "$RunInstallerGlobalHotkeyRegistrationSmoke" in build
     assert "$RunInstallerGlobalHotkeySmoke" in build
+    assert "$RunInstallerManualGlobalHotkeySmoke" in build
     assert '"-VerifyGlobalHotkeyRegistration"' in build
+    assert '"-WaitForManualGlobalHotkey"' in build
     assert '"-GlobalHotkeySmokeHotkey", $InstallerGlobalHotkeySmokeHotkey' in build

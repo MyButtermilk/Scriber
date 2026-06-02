@@ -23,7 +23,9 @@ health/state probes and verifies that the backend process remains stable.
 With -MaxBackendWorkingSetGrowthMB, the stability smoke also fails when backend
 working-set peak growth exceeds the configured threshold. With
 -MaxIdleCpuPercent, the stability smoke fails when normalized average idle CPU
-for the Tauri app plus backend exceeds the configured threshold.
+for the Tauri app plus backend exceeds the configured threshold. With
+-WaitForManualGlobalHotkey, it waits for a physical OS hotkey press and verifies
+that the Tauri global shortcut dispatch reaches the existing backend endpoints.
 
 Build the executable first with:
   cd Frontend
@@ -55,6 +57,7 @@ param(
     [switch]$SimulateBackendStartupTimeout,
     [switch]$VerifyGlobalHotkeyRegistration,
     [switch]$SimulateGlobalHotkey,
+    [switch]$WaitForManualGlobalHotkey,
     [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$GlobalHotkeyDispatchTimeoutSec = 20,
     [int]$BackendStartupTimeoutMs = 3000,
@@ -675,7 +678,9 @@ function Test-GlobalHotkeyDispatch {
         [string]$RuntimeDataDir,
         [string]$Hotkey,
         [string]$InvalidProvider,
-        [int]$DeadlineSec
+        [int]$DeadlineSec,
+        [ValidateSet("synthetic", "manual")]
+        [string]$DispatchMethod = "synthetic"
     )
 
     $headers = @{}
@@ -691,7 +696,11 @@ function Test-GlobalHotkeyDispatch {
 
     $initialStateProbe = Invoke-TimedRestGet -Uri "http://127.0.0.1:$Port/api/state" -Headers $headers
     $initialTranscripts = Get-MicTranscriptSummary -Port $Port -Headers $headers
-    Invoke-GlobalHotkeyChord -Hotkey $Hotkey
+    if ($DispatchMethod -eq "manual") {
+        Write-Warning "Manual global hotkey smoke: press '$Hotkey' within ${DeadlineSec}s."
+    } else {
+        Invoke-GlobalHotkeyChord -Hotkey $Hotkey
+    }
 
     $observedStates = @()
     $finalState = $null
@@ -752,6 +761,7 @@ function Test-GlobalHotkeyDispatch {
         shellLogPath = $registration.shellLogPath
         registrationObserved = $true
         dispatchVerified = $true
+        dispatchMethod = $DispatchMethod
         initialState = [pscustomobject]@{
             status = [string]$initialStateProbe.payload.status
             recordingState = [string]$initialStateProbe.payload.recordingState
@@ -1025,8 +1035,11 @@ if ($AttachExternalBackend -and $KeepAppOpen) {
 if ($SimulateBackendStartupTimeout -and ($SimulateBackendCrash -or $SimulateBackendShutdown)) {
     throw "-SimulateBackendStartupTimeout cannot be combined with -SimulateBackendCrash or -SimulateBackendShutdown."
 }
-if ($SimulateGlobalHotkey -and ($SimulateBackendCrash -or $SimulateBackendShutdown -or $SimulateBackendStartupTimeout)) {
-    throw "-SimulateGlobalHotkey cannot be combined with -SimulateBackendCrash, -SimulateBackendShutdown, or -SimulateBackendStartupTimeout."
+if (($SimulateGlobalHotkey -or $WaitForManualGlobalHotkey) -and ($SimulateBackendCrash -or $SimulateBackendShutdown -or $SimulateBackendStartupTimeout)) {
+    throw "-SimulateGlobalHotkey and -WaitForManualGlobalHotkey cannot be combined with -SimulateBackendCrash, -SimulateBackendShutdown, or -SimulateBackendStartupTimeout."
+}
+if ($SimulateGlobalHotkey -and $WaitForManualGlobalHotkey) {
+    throw "-SimulateGlobalHotkey cannot be combined with -WaitForManualGlobalHotkey."
 }
 if (-not $DataDir) {
     $DataDir = Join-Path $RepoRoot ("tmp\tauri-smoke-data\" + [System.Guid]::NewGuid().ToString("N"))
@@ -1034,7 +1047,7 @@ if (-not $DataDir) {
 $DataDir = Convert-ToFullPath -Path $DataDir
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $globalHotkeySmokeConfig = $null
-if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey) {
+if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey) {
     $globalHotkeySmokeConfig = Initialize-GlobalHotkeySmokeData -RuntimeDataDir $DataDir -Hotkey $GlobalHotkeySmokeHotkey -Root $RepoRoot
 }
 if (-not $SessionToken) {
@@ -1094,7 +1107,7 @@ if (-not $EnableHotkeys) {
 if (-not $EnableDeviceMonitor) {
     $env:SCRIBER_DISABLE_DEVICE_MONITOR = "1"
 }
-if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey) {
+if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey) {
     $env:SCRIBER_TAURI_GLOBAL_HOTKEY = "1"
     $env:SCRIBER_HOTKEY = $globalHotkeySmokeConfig.hotkey
     $env:SCRIBER_MODE = "toggle"
@@ -1221,7 +1234,17 @@ try {
             -RuntimeDataDir $DataDir `
             -Hotkey $globalHotkeySmokeConfig.hotkey `
             -InvalidProvider $globalHotkeySmokeConfig.invalidProvider `
-            -DeadlineSec $GlobalHotkeyDispatchTimeoutSec
+            -DeadlineSec $GlobalHotkeyDispatchTimeoutSec `
+            -DispatchMethod "synthetic"
+    } elseif ($WaitForManualGlobalHotkey) {
+        $globalHotkey = Test-GlobalHotkeyDispatch `
+            -Port ([int]$listener.Port) `
+            -Token $SessionToken `
+            -RuntimeDataDir $DataDir `
+            -Hotkey $globalHotkeySmokeConfig.hotkey `
+            -InvalidProvider $globalHotkeySmokeConfig.invalidProvider `
+            -DeadlineSec $GlobalHotkeyDispatchTimeoutSec `
+            -DispatchMethod "manual"
     } elseif ($VerifyGlobalHotkeyRegistration) {
         $globalHotkey = Test-GlobalHotkeyRegistration `
             -RuntimeDataDir $DataDir `
