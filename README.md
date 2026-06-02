@@ -393,7 +393,7 @@ flowchart LR
 
 `/api/runtime/frontend-ready` is a token-protected diagnostic beacon used by the Tauri/installer smokes. React posts it after a successful backend health check; both request and response carry `apiVersion: "1"`. The payload is non-secret and records only readiness evidence such as Tauri runtime detection, backend base URL, WebView origin, request origin, and timestamp.
 
-`/api/health`, `/api/runtime`, `/api/runtime/frontend-ready`, and `/api/runtime/audio-diagnostics` are versioned REST contracts validated by `src/core/rest_contracts.py`; update `tests/contract/test_rest_contracts.py` before changing those payload shapes. Frontend REST consumers should use shared API types from `Frontend/client/src/lib/api-types.ts`; Settings, transcript-history, runtime health, autostart, and microphone-list/refresh routes already use those types instead of ad hoc `any` payloads.
+`/api/health`, `/api/runtime`, `/api/runtime/frontend-ready`, and `/api/runtime/audio-diagnostics` are versioned REST contracts validated by `src/core/rest_contracts.py`; update `tests/contract/test_rest_contracts.py` before changing those payload shapes. Frontend REST consumers should use shared API types from `Frontend/client/src/lib/api-types.ts`; Settings, transcript-history, transcript-detail, YouTube lookup/transcribe, runtime health, autostart, and microphone-list/refresh routes already use those types instead of ad hoc `any` payloads.
 
 `limit` for hot-path metrics is clamped to `1..500`.
 
@@ -985,7 +985,7 @@ The DeviceMonitor should pick up hotplug changes. During active recording, PortA
 - Full bundled desktop release activation: actual Authenticode signing step/certificate, Tauri updater signing keys, signed update artifacts, and published `latest.json`. The optional Authenticode validation gate is already wired through `scripts\validate_windows_authenticode.ps1`, `scripts\build_windows.ps1`, and the Windows release workflow.
 - Full-duration live recording/provider stability runs with real microphone/STT traffic. A 30-minute installed idle stability gate has passed, but it does not replace live audio/provider evidence.
 - More hardware regression tests for dock/USB mic add/remove and favorite fallback.
-- Stronger typed API contract between backend and frontend across the remaining REST endpoints. Settings, transcript-history, runtime health, autostart, and microphone-list/refresh consumers already use shared frontend API types.
+- Stronger typed API contract between backend and frontend across the remaining REST endpoints. Settings, transcript-history, transcript-detail, YouTube lookup/transcribe, runtime health, autostart, and microphone-list/refresh consumers already use shared frontend API types.
 - Smaller backend modules by splitting `src/web_api.py` into domains.
 
 ---

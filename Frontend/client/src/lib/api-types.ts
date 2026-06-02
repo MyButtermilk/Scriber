@@ -105,6 +105,31 @@ export interface TranscriptHistoryItem {
   content?: string;
 }
 
+export type TranscriptDetailResponse = TranscriptHistoryItem;
+
+export interface YouTubeSearchItem {
+  videoId: string;
+  url: string;
+  title: string;
+  description: string;
+  channelTitle: string;
+  publishedAt: string;
+  thumbnailUrl: string;
+  duration: string;
+  durationSeconds: number;
+  viewCount?: number;
+  likeCount?: number;
+}
+
+export interface YouTubeSearchResponse {
+  query: string;
+  nextPageToken: string;
+  prevPageToken: string;
+  totalResults: number;
+  resultsPerPage: number;
+  items: YouTubeSearchItem[];
+}
+
 export interface FileUploadLimits {
   provider: string;
   providerLabel: string;

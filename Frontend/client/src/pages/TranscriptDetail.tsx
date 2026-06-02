@@ -19,6 +19,7 @@ import ReactMarkdown from "react-markdown";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { extractFailureMessage, friendlyError, friendlyRequestMessage, responseErrorMessage } from "@/lib/request-errors";
+import type { SettingsResponse, TranscriptDetailResponse, TranscriptHistoryItem } from "@/lib/api-types";
 
 function normalizeSummaryMarkdown(text: string): string {
   return (text || "")
@@ -328,7 +329,7 @@ export default function TranscriptDetail() {
   });
 
   // Fetch settings to check if auto-summarize is enabled
-  const settingsQuery = useQuery({
+  const settingsQuery = useQuery<SettingsResponse>({
     queryKey: ["/api/settings"],
     queryFn: async () => {
       const res = await fetch(apiUrl("/api/settings"), {
@@ -336,14 +337,14 @@ export default function TranscriptDetail() {
         cache: "no-store",
       });
       if (!res.ok) return {};
-      return res.json();
+      return (await res.json()) as SettingsResponse;
     },
   });
-  const transcriptQuery = useQuery({
+  const transcriptQuery = useQuery<TranscriptDetailResponse>({
     queryKey: ["/api/transcripts", id],
     enabled: !!id,
-    refetchInterval: (query: any) => {
-      const data = query?.state?.data as any;
+    refetchInterval: (query) => {
+      const data = query.state.data;
       const status = data?.status;
       const step = String(data?.step || "").toLowerCase();
       const summary = String(data?.summary || "").trim();
@@ -376,10 +377,12 @@ export default function TranscriptDetail() {
       return false;
     },
   });
-  const transcript: any = transcriptQuery.data || {
+  const transcript: TranscriptDetailResponse = transcriptQuery.data || {
+    id: id || "",
     title: "Transcript",
     date: "",
     duration: "",
+    status: "completed",
     content: "",
     type: "mic",
   };
@@ -446,7 +449,7 @@ export default function TranscriptDetail() {
         throw new Error(await responseErrorMessage(res));
       }
 
-      const rec = await res.json();
+      const rec = (await res.json()) as TranscriptHistoryItem;
       if (!rec?.id) {
         throw new Error("Retry started, but no transcript ID was returned.");
       }

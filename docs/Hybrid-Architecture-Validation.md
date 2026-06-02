@@ -4051,5 +4051,53 @@ Goal coverage:
 Remaining limits:
 
 - This does not complete typed coverage for every remaining REST endpoint.
-  YouTube/file/transcript-detail action routes still have some local response
-  casts and should be handled in follow-up slices.
+  File upload/progress and local-model Settings action routes still have some
+  local response parsing and should be handled in follow-up slices.
+
+## 2026-06-02 - Typed YouTube and Transcript Detail Frontend Contracts
+
+Commands:
+
+```powershell
+python -m pytest tests\test_frontend_type_gates.py
+
+cd Frontend
+npm run check
+```
+
+Result: implemented and covered by focused frontend type-boundary regression
+tests plus TypeScript checking.
+
+Implemented improvements:
+
+- Added shared frontend API types for YouTube search/video lookup responses and
+  transcript-detail records in `Frontend\client\src\lib\api-types.ts`.
+- `Youtube.tsx` now consumes `YouTubeSearchItem`,
+  `YouTubeSearchResponse`, `TranscriptHistoryItem`, and
+  `TranscriptDetailResponse` from the shared API type module instead of a
+  local YouTube item type and untyped JSON parsing.
+- `TranscriptDetail.tsx` now uses typed `SettingsResponse` and
+  `TranscriptDetailResponse` queries, typed retry-transcribe responses, and an
+  inferred React Query refetch callback instead of `query: any` and
+  `const transcript: any`.
+
+Evidence:
+
+- `tests\test_frontend_type_gates.py`: validates the shared YouTube and
+  transcript-detail response types, checks that `Youtube.tsx` does not restore
+  the old local YouTube item type, and checks that `TranscriptDetail.tsx` keeps
+  typed query/data boundaries.
+- `npm run check`: passed.
+
+Goal coverage:
+
+- Phase 1: tightens REST contracts for the YouTube and transcript-detail flows
+  that are core to the Tauri/WebView UI.
+- Phase 7: adds regression coverage for these additional frontend API contract
+  boundaries.
+
+Remaining limits:
+
+- This still does not complete typed coverage for every remaining REST
+  endpoint. File upload/progress and local-model Settings action routes remain
+  follow-up slices.

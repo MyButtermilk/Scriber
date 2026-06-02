@@ -26,21 +26,12 @@ import {
   type TranscriptHistoryPage,
   useTranscriptHistoryQuery,
 } from "@/hooks/use-transcript-history-query";
-import type { TranscriptHistoryItem } from "@/lib/api-types";
-
-type YouTubeSearchItem = {
-  videoId: string;
-  url: string;
-  title: string;
-  description: string;
-  channelTitle: string;
-  publishedAt: string;
-  thumbnailUrl: string;
-  duration: string;
-  durationSeconds: number;
-  viewCount?: number;
-  likeCount?: number;
-};
+import type {
+  TranscriptDetailResponse,
+  TranscriptHistoryItem,
+  YouTubeSearchItem,
+  YouTubeSearchResponse,
+} from "@/lib/api-types";
 
 type SortOption = "date" | "likes" | "views";
 const DELETE_GLITCH_DURATION_MS = 1200;
@@ -440,9 +431,9 @@ export default function Youtube() {
         if (!res.ok) {
           throw new Error(await responseErrorMessage(res));
         }
-        const video = await res.json();
-        if (video && video.videoId) {
-          setSearchResults([video as YouTubeSearchItem]);
+        const video = (await res.json()) as YouTubeSearchItem;
+        if (video.videoId) {
+          setSearchResults([video]);
         } else {
           setSearchError("Video not found.");
         }
@@ -453,8 +444,8 @@ export default function Youtube() {
         if (!res.ok) {
           throw new Error(await responseErrorMessage(res));
         }
-        const payload = await res.json();
-        const items = (payload?.items || []) as YouTubeSearchItem[];
+        const payload = (await res.json()) as YouTubeSearchResponse;
+        const items = payload.items || [];
         setSearchResults(items);
         if (!items.length) setSearchError("No results found.");
       }
@@ -590,7 +581,7 @@ export default function Youtube() {
       if (!res.ok) {
         throw new Error(res.statusText);
       }
-      const data = await res.json();
+      const data = (await res.json()) as TranscriptDetailResponse;
       const content = data?.content || "";
       if (!content) {
         throw new Error("No transcript content available");

@@ -70,7 +70,19 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Youtube.tsx").read_text(
         encoding="utf-8"
     )
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(
+        encoding="utf-8"
+    )
 
+    assert "export interface YouTubeSearchItem" in api_types
+    assert "export interface YouTubeSearchResponse" in api_types
+    assert "TranscriptDetailResponse," in source
+    assert "YouTubeSearchItem," in source
+    assert "YouTubeSearchResponse," in source
+    assert "(await res.json()) as YouTubeSearchItem" in source
+    assert "(await res.json()) as YouTubeSearchResponse" in source
+    assert "(await res.json()) as TranscriptDetailResponse" in source
+    assert "type YouTubeSearchItem = {" not in source
     assert "/api/youtube/thumbnail?url=" in source
     assert "encodeURIComponent(value)" in source
     assert "fetch(src, { credentials: \"include\" })" in source
@@ -78,6 +90,29 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert "function isCompletedStep" in source
     assert "function isVisiblyProcessing" in source
     assert "const isProcessing = isVisiblyProcessing(item);" in source
+
+
+def test_transcript_detail_uses_typed_rest_queries() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
+        encoding="utf-8"
+    )
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "export type TranscriptDetailResponse = TranscriptHistoryItem" in api_types
+    assert "import type {" in source
+    assert "SettingsResponse," in source
+    assert "TranscriptDetailResponse," in source
+    assert "TranscriptHistoryItem" in source
+    assert "useQuery<SettingsResponse>" in source
+    assert "useQuery<TranscriptDetailResponse>" in source
+    assert "const data = query.state.data;" in source
+    assert "const transcript: TranscriptDetailResponse" in source
+    assert "(await rec.json()) as TranscriptHistoryItem" not in source
+    assert "(await res.json()) as TranscriptHistoryItem" in source
+    assert "query: any" not in source
+    assert "const transcript: any" not in source
 
 
 def test_recording_popup_uses_canvas_waveform_without_react_frame_state() -> None:

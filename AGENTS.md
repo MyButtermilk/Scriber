@@ -137,7 +137,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - WebSocket events are versioned with `apiVersion`. Use builders and validators in `src/core/ws_contracts.py` or explicitly wrap manual payloads with `version_event_payload()`.
 - `tests/contract/test_ws_events.py` is the gate for WebSocket payload compatibility. Add new event types there before broadcasting them.
 - `/api/health` and `/api/runtime` payloads are versioned with `apiVersion` and validated by `src/core/rest_contracts.py`; `tests/contract/test_rest_contracts.py` is the gate for REST runtime/readiness payload compatibility.
-- Frontend REST consumers should prefer shared API types from `Frontend/client/src/lib/api-types.ts`. Settings, transcript-history, runtime health, autostart, and microphone-list/refresh routes are already typed there; do not add new ad hoc `any` payload boundaries for those endpoints.
+- Frontend REST consumers should prefer shared API types from `Frontend/client/src/lib/api-types.ts`. Settings, transcript-history, transcript-detail, YouTube lookup/transcribe, runtime health, autostart, and microphone-list/refresh routes are already typed there; do not add new ad hoc `any` payload boundaries for those endpoints.
 - `audio_level` is throttled around 60Hz for smoother waveform rendering.
 - `broadcast()` skips JSON serialization when there are no connected WebSocket clients.
 - `_on_audio_level()` avoids scheduling UI broadcast work when there are no WebSocket clients and the native overlay is not consuming waveform updates.
@@ -426,7 +426,7 @@ Current summarization default is `gemini-flash-latest`.
 - Remaining CPU-heavy media preprocessing profiling around ffmpeg/provider behavior.
 - Installed app size reduction must preserve bundled media-tool functionality. The setup artifact is under the 220 MiB gate, but the current bundled backend resource tree is still dominated by full ffmpeg/ffprobe binaries; do not solve this by removing ffmpeg/ffprobe from the standard Windows build.
 - More hardware regression tests for dock connect/disconnect, USB mic add/remove, and favorite mic fallback.
-- Stronger typed API contract between backend and frontend across remaining REST endpoints; Settings, transcript-history, runtime health, autostart, and microphone-list/refresh consumers already use shared frontend API types.
+- Stronger typed API contract between backend and frontend across remaining REST endpoints; Settings, transcript-history, transcript-detail, YouTube lookup/transcribe, runtime health, autostart, and microphone-list/refresh consumers already use shared frontend API types.
 - Splitting `web_api.py` into smaller domain modules.
 
 ## Repository Hygiene
