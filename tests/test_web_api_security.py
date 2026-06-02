@@ -73,6 +73,41 @@ class _FakeRequest:
         self.transport = _FakeTransport(peername)
 
 
+class _FakeThumbnailContent:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    async def read(self, _limit: int) -> bytes:
+        return self._body
+
+
+class _FakeThumbnailResponse:
+    def __init__(self, *, status: int = 200, content_type: str = "image/jpeg", body: bytes = b"jpg"):
+        self.status = status
+        self.headers = {"Content-Type": content_type}
+        self.content = _FakeThumbnailContent(body)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeThumbnailSession:
+    def __init__(self, response: _FakeThumbnailResponse):
+        self.response = response
+        self.urls: list[str] = []
+        self.closed = False
+
+    def get(self, url: str, *, timeout=None):
+        self.urls.append(url)
+        return self.response
+
+    async def close(self):
+        self.closed = True
+
+
 def test_session_token_accepts_header_authorization_and_query():
     assert web_api._request_has_valid_session_token(
         _FakeRequest(headers={"X-Scriber-Token": "secret"}),
@@ -277,6 +312,72 @@ async def test_tauri_origin_can_fetch_health(monkeypatch, tmp_path):
     finally:
         await client.close()
         ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_youtube_thumbnail_proxy_serves_allowed_image(monkeypatch, tmp_path):
+    monkeypatch.delenv("SCRIBER_ALLOWED_ORIGINS", raising=False)
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    fake_session = _FakeThumbnailSession(
+        _FakeThumbnailResponse(content_type="image/jpeg; charset=binary", body=b"\xff\xd8\xff")
+    )
+    monkeypatch.setattr(web_api, "ClientSession", lambda *, timeout: fake_session)
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.get(
+            "/api/youtube/thumbnail",
+            params={"url": "https://i.ytimg.com/vi/abc123/hqdefault.jpg"},
+            headers={"Origin": "http://tauri.localhost"},
+        )
+
+        assert response.status == 200
+        assert response.headers["Access-Control-Allow-Origin"] == "http://tauri.localhost"
+        assert response.headers["Cache-Control"] == "public, max-age=86400"
+        assert response.headers["Content-Type"].startswith("image/jpeg")
+        assert await response.read() == b"\xff\xd8\xff"
+        assert fake_session.urls == ["https://i.ytimg.com/vi/abc123/hqdefault.jpg"]
+    finally:
+        await client.close()
+        ctl.shutdown()
+        assert fake_session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_youtube_thumbnail_proxy_rejects_unsafe_or_non_image(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    fake_session = _FakeThumbnailSession(_FakeThumbnailResponse(content_type="text/html", body=b"<html>"))
+    monkeypatch.setattr(web_api, "ClientSession", lambda *, timeout: fake_session)
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        unsafe = await client.get(
+            "/api/youtube/thumbnail",
+            params={"url": "https://evil.example/vi/abc123/hqdefault.jpg"},
+        )
+        assert unsafe.status == 400
+        assert fake_session.urls == []
+
+        non_image = await client.get(
+            "/api/youtube/thumbnail",
+            params={"url": "https://img.youtube.com/vi/abc123/mqdefault.jpg"},
+        )
+        assert non_image.status == 415
+        assert fake_session.urls == ["https://img.youtube.com/vi/abc123/mqdefault.jpg"]
+    finally:
+        await client.close()
+        ctl.shutdown()
+        assert fake_session.closed is True
 
 
 @pytest.mark.asyncio

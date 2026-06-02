@@ -57,6 +57,8 @@ Evidence:
 
 - Focused Python gates: `73 passed`.
 - Re-run thumbnail/frontend security gates: `40 passed`.
+- Re-run thumbnail proxy endpoint/frontend gates after adding full route
+  coverage: `42 passed`.
 - Frontend TypeScript check: passed.
 - Frontend production build: passed.
 - Tauri Rust unit tests: `25 passed`.
