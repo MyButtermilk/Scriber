@@ -156,7 +156,8 @@ architecture work. It replaces earlier incomplete goal text.
 - Aktueller Stand:
   - Tauri-first Runtime, Sidecar-Packaging, NSIS-Installer, session-token
     geschuetzte Worker-API, Support-Bundle, Hotkey, Autostart, Single Instance,
-    ffmpeg/ffprobe-Bundling, yt-dlp-Bundling, Updater-Plugin-Wiring,
+    ffmpeg/ffprobe-Bundling, yt-dlp-Bundling, ONNXRuntime/Silero-VAD
+    Runtime-Import-Gates, Updater-Plugin-Wiring,
     Authenticode-/Updater-Metadaten-Gates und installierte Smoke-Gates sind
     umgesetzt.
   - Python-Audio bleibt Default. `SCRIBER_AUDIO_ENGINE=rust` ist weiterhin nur
@@ -184,9 +185,12 @@ architecture work. It replaces earlier incomplete goal text.
 - Phase 5 ist nur fuer den Python-Audio-Pfad umgesetzt. Rust-Audio und ein
   Rust-Device-Watcher bleiben bewusst experimentell bzw. nicht default.
 - Phase 6 ist fuer Standard-Cloud-Provider-Sidecar, NSIS, ffmpeg/ffprobe,
-  yt-dlp, Runtime-Datenmigration, Release-Metadaten und optionale Gates
-  umgesetzt. Echte Signierung und reale Updater-Veroeffentlichung sind externe
-  Release-Schritte und noch nicht bewiesen.
+  yt-dlp, ONNXRuntime/Silero-VAD Startup-Imports, Runtime-Datenmigration,
+  Release-Metadaten und optionale Gates umgesetzt. Am 2026-06-02 ist
+  `build_windows.ps1 -SkipChecks -SkipSmoke -RunInstallerSmoke
+  -RunInstallerFrontendSmoke` mit 205.75 MiB Setup-Artefakt unter dem 220 MiB
+  Gate durchgelaufen. Echte Signierung und reale Updater-Veroeffentlichung
+  sind externe Release-Schritte und noch nicht bewiesen.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen.
 - Phase 8 hat mehrere synthetische und kurze installierte Stability-Gates, aber

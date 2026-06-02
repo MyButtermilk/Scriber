@@ -14,8 +14,10 @@ REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("scipy", "Pipecat loudness/VAD dependency"),
     ("scipy.signal", "pyloudnorm filter dependency"),
     ("pyloudnorm", "Pipecat audio utility dependency"),
+    ("onnxruntime", "Silero VAD native runtime dependency"),
     ("pipecat.frames.frames", "Pipecat startup dependency"),
     ("pipecat.audio.vad.vad_analyzer", "Pipecat VAD startup dependency"),
+    ("pipecat.audio.vad.silero", "Silero VAD startup dependency"),
     ("src.web_api", "backend API entry point"),
 )
 

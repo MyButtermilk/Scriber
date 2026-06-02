@@ -3,7 +3,7 @@
 from pathlib import Path
 import os
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 repo_root = Path(os.environ.get("SCRIBER_REPO_ROOT", Path.cwd())).resolve()
 
@@ -19,6 +19,8 @@ hiddenimports = [
     "pyloudnorm",
     "scipy",
     "scipy.signal",
+    "onnxruntime",
+    "pipecat.audio.vad.silero",
     "yt_dlp",
     "pipecat.services.google.stt",
     "pipecat.services.assemblyai.stt",
@@ -45,6 +47,13 @@ for package in (
     except Exception:
         pass
 
+binaries = []
+for package in ("onnxruntime",):
+    try:
+        binaries += collect_dynamic_libs(package)
+    except Exception:
+        pass
+
 datas = []
 assets_dir = repo_root / "src" / "assets"
 if assets_dir.exists():
@@ -54,7 +63,7 @@ frontend_dist = repo_root / "Frontend" / "dist" / "public"
 if frontend_dist.exists():
     datas.append((str(frontend_dist), "Frontend/dist/public"))
 
-for package in ("pipecat", "google", "yt_dlp"):
+for package in ("pipecat", "google", "yt_dlp", "onnxruntime"):
     try:
         datas += collect_data_files(package)
     except Exception:
@@ -63,7 +72,7 @@ for package in ("pipecat", "google", "yt_dlp"):
 a = Analysis(
     [str(repo_root / "src" / "backend_worker.py")],
     pathex=[str(repo_root)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -87,7 +96,12 @@ a = Analysis(
         "fsspec",
         "nltk",
         "sqlalchemy",
-        "onnxruntime",
+        "onnx",
+        "numba",
+        "llvmlite",
+        "onnxruntime.quantization",
+        "onnxruntime.tools",
+        "onnxruntime.transformers",
         "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
         "nemo",
         "nemo_toolkit",

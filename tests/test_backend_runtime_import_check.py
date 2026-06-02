@@ -20,21 +20,24 @@ def test_backend_worker_startup_timeout_simulation_is_once(monkeypatch, tmp_path
     assert backend_worker.should_simulate_startup_timeout_once() is False
 
 
-def test_backend_runtime_import_check_covers_scipy_startup_dependency():
+def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     required_modules = {module for module, _reason in REQUIRED_IMPORTS}
 
     assert "scipy" in required_modules
     assert "scipy.signal" in required_modules
     assert "pyloudnorm" in required_modules
+    assert "onnxruntime" in required_modules
+    assert "pipecat.audio.vad.silero" in required_modules
     assert "src.web_api" in required_modules
 
 
-def test_standard_requirements_include_scipy():
+def test_standard_requirements_include_audio_runtime_dependencies():
     requirements = (
         Path(__file__).resolve().parents[1] / "requirements-base.txt"
     ).read_text(encoding="utf-8").splitlines()
 
     assert "scipy" in requirements
+    assert "onnxruntime" in requirements
 
 
 def test_backend_worker_import_does_not_eagerly_import_web_api():
@@ -82,6 +85,31 @@ def test_sidecar_build_runs_frozen_runtime_import_check():
     assert "Invoke-FrozenBackendRuntimeImportCheck" in build_script
     assert "--runtime-import-check" in build_script
     assert "scripts.check_backend_runtime_imports" in spec
+
+
+def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
+    repo_root = Path(__file__).resolve().parents[1]
+    build_script = (
+        repo_root / "scripts" / "build_tauri_backend_sidecar.ps1"
+    ).read_text(encoding="utf-8")
+    spec = (repo_root / "packaging" / "scriber-backend.spec").read_text(
+        encoding="utf-8"
+    )
+
+    assert "collect_dynamic_libs" in spec
+    assert '"onnxruntime"' in spec
+    assert '"pipecat.audio.vad.silero"' in spec
+    collect_submodules_packages = spec.split("for package in (", 1)[1].split(
+        "):\n    try:\n        hiddenimports += collect_submodules(package)",
+        1,
+    )[0]
+    assert '"onnxruntime"' not in collect_submodules_packages
+    assert '"onnxruntime",' not in spec.split("excludes=[", 1)[1]
+    assert '"onnx",' in spec
+    assert '"numba",' in spec
+    assert '"llvmlite",' in spec
+    assert "_internal\\onnxruntime" in build_script
+    assert "_internal\\onnxruntime\\capi" in build_script
 
 
 def test_backend_runtime_import_check_reports_missing_modules():

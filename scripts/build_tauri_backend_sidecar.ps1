@@ -104,7 +104,9 @@ function Invoke-FrozenBackendRuntimeImportCheck {
 
     $requiredPaths = @(
         "_internal\scipy",
-        "_internal\scipy.libs"
+        "_internal\scipy.libs",
+        "_internal\onnxruntime",
+        "_internal\onnxruntime\capi"
     )
     $missingPaths = @()
     foreach ($relativePath in $requiredPaths) {

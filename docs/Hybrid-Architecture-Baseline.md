@@ -135,6 +135,10 @@ is to distinguish provider transcript failure from OS input/focus failure.
   redaction, installer rerun data preservation, and strict uninstall via
   `scripts\smoke_windows_installer.ps1 -VerifySupportBundle
   -VerifyLegacyDataMigration -SimulateUpgrade -VerifyUninstall`.
+- fresh NSIS build/install/start coverage for backend plus bundled frontend
+  assets via `scripts\build_windows.ps1 -RunInstallerSmoke
+  -RunInstallerFrontendSmoke`; the 2026-06-02 run also exercised the frozen
+  ONNXRuntime/Silero VAD sidecar import gate.
 
 The runner intentionally reports an incomplete Phase 0 gate until all required
 measurements are present. Missing fields are listed in

@@ -4,6 +4,91 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Installed Sidecar Runtime Imports and Frontend Startup
+
+Commands:
+
+```powershell
+python -m pytest -p no:cacheprovider -p no:langsmith `
+  tests\test_backend_runtime_import_check.py `
+  -q
+
+python scripts\check_backend_runtime_imports.py
+
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\build_tauri_backend_sidecar.ps1 `
+  -SkipFrontendBuild `
+  -InstallPyInstaller `
+  -BundleMediaTools `
+  -CopyToTauriRelease
+
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\smoke_tauri_desktop.ps1 `
+  -DisableDevFallback `
+  -VerifyFrontend `
+  -OutputPath tmp\tauri-desktop-frontend-smoke-20260602.json
+
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\build_windows.ps1 `
+  -SkipChecks `
+  -SkipSmoke `
+  -RunInstallerSmoke `
+  -RunInstallerFrontendSmoke
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- Added explicit `onnxruntime` to `requirements-base.txt` for the standard
+  cloud-provider runtime because Pipecat Silero VAD depends on the ONNXRuntime
+  native runtime.
+- Extended `scripts\check_backend_runtime_imports.py` so both the source
+  preflight and frozen sidecar `--runtime-import-check` cover ONNXRuntime and
+  `pipecat.audio.vad.silero`, not just SciPy/pyloudnorm/Pipecat frames.
+- Updated `packaging\scriber-backend.spec` to bundle ONNXRuntime native
+  libraries and data for Silero VAD while excluding heavy local ASR/tooling
+  modules (`onnx`, `numba`, `llvmlite`, `torch`, NeMo, ONNX-ASR).
+- Extended the sidecar frozen dependency path check to require
+  `_internal\onnxruntime` and `_internal\onnxruntime\capi`.
+
+Evidence:
+
+- Focused backend runtime import tests: `8 passed`.
+- Source runtime import check: `{"ok":true,"missing":[]}`.
+- Frozen sidecar runtime import check:
+  `build\tauri-sidecar\frozen-runtime-import-check.out` contained
+  `{"ok":true,"missing":[]}`.
+- Optimized sidecar output after ONNXRuntime bundling:
+  `Frontend\src-tauri\target\release\backend` was `601.62` MiB and did not
+  contain top-level `onnx`, `numba`, `llvmlite`, `torch`, `pandas`, or
+  `pyarrow` directories.
+- Tauri desktop frontend smoke:
+  `runtimeMode=tauri-supervised`, `launchKind=sidecar`, backend ready on
+  `127.0.0.1:8765`, frontend root HTTP `200`, all `6` referenced JS/CSS assets
+  fetched successfully, cleanup verified.
+- Fresh NSIS installer build and installed package smoke:
+  `Scriber_0.1.0_x64-setup.exe` was `205.75` MiB, under the default `220` MiB
+  installer gate; installed package started the sidecar backend, served the
+  bundled frontend root and all `6` referenced JS/CSS assets, and the silent
+  uninstaller removed install artifacts while preserving the runtime data
+  sentinel.
+
+Goal coverage:
+
+- Phase 6: standard Windows installer now bundles the runtime dependency that
+  was missing in the packaged backend startup path.
+- Phase 7: build and installed-package smoke gates now fail early if SciPy,
+  pyloudnorm, ONNXRuntime, Silero VAD, Pipecat frames, or `src.web_api` are not
+  importable from the packaged sidecar.
+
+Remaining limits:
+
+- This closes the observed packaged-backend startup/import failure. It does not
+  count as the real spoken stop-to-text-injection Phase 0 sample; that still
+  requires audible microphone input, provider transcript text, and successful
+  text injection evidence in the same run.
+
 ## 2026-06-02 - App-Level Idle Mic Prewarm
 
 Commands:
