@@ -3590,17 +3590,23 @@ Implemented improvements:
   external-evidence aggregator for the hybrid architecture goal.
 - The validator requires a passing physical microphone hardware matrix.
 - The validator requires signed Tauri updater metadata with absolute HTTPS URLs
-  and can also verify local release artifact size/SHA256 against
-  `SHA256SUMS.txt`.
+  and at least one named release artifact; it can also verify local release
+  artifact size/SHA256 against `SHA256SUMS.txt`.
 - The validator requires a publication report for the fetched `latest.json` and
   compares its `metadataSha256` with the local metadata file when available.
 - The validator requires the JSON output from
   `scripts\validate_windows_authenticode.ps1` and checks valid signatures,
   optional expected publisher, and optional timestamp evidence.
+- The Authenticode report must include the release artifact names listed in
+  signed `latest.json`; a valid signature report for an unrelated executable is
+  not enough to pass final readiness.
 
 Evidence:
 
-- `tests\test_validate_hybrid_release_readiness.py`: `4 passed`.
+- `tests\test_validate_hybrid_release_readiness.py`: covers complete evidence,
+  missing external reports, unsigned updater metadata, wrong Authenticode
+  artifact linkage, missing `latest.json` artifact names, and CLI summary
+  output.
 - Python compile check: passed.
 - Current incomplete-readiness artifact:
   `tmp\hybrid-baseline\hybrid-release-readiness-current-20260602.json`.

@@ -120,6 +120,10 @@ def write_signed_release_fixture(tmp_path: Path, *, signature: str = "signed-upd
 
 
 def write_authenticode_report(path: Path) -> None:
+    write_authenticode_report_for(path, artifact_path="Scriber_0.1.0_x64-setup.exe")
+
+
+def write_authenticode_report_for(path: Path, *, artifact_path: str) -> None:
     path.write_text(
         json.dumps(
             {
@@ -127,7 +131,7 @@ def write_authenticode_report(path: Path) -> None:
                 "count": 1,
                 "artifacts": [
                     {
-                        "path": "Scriber_0.1.0_x64-setup.exe",
+                        "path": artifact_path,
                         "status": "Valid",
                         "signerSubject": "CN=Scriber Release Publisher",
                         "timestampSubject": "CN=Timestamp Authority",
@@ -226,6 +230,47 @@ def test_validate_release_readiness_rejects_unsigned_updater_metadata(tmp_path: 
     assert result["ok"] is False
     updater_check = next(check for check in result["checks"] if check["name"] == "signedTauriUpdaterMetadata")
     assert any("signature is required" in failure for failure in updater_check["failures"])
+
+
+def test_validate_release_readiness_rejects_authenticode_report_for_wrong_artifact(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    write_authenticode_report_for(authenticode_report, artifact_path="unrelated-signed-tool.exe")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+    )
+
+    assert result["ok"] is False
+    authenticode_check = next(check for check in result["checks"] if check["name"] == "authenticodeSignatures")
+    assert authenticode_check["details"]["expectedArtifactNames"] == ["Scriber_0.1.0_x64-setup.exe"]
+    assert any("Scriber_0.1.0_x64-setup.exe" in failure for failure in authenticode_check["failures"])
+
+
+def test_validate_release_readiness_requires_latest_json_artifact_names(tmp_path: Path) -> None:
+    hardware_dir, metadata, _artifact_dir, _sums, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    data = json.loads(metadata.read_text(encoding="utf-8"))
+    data["artifacts"] = []
+    metadata.write_text(json.dumps(data), encoding="utf-8")
+    write_publication_report(publication_report, metadata)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+    )
+
+    assert result["ok"] is False
+    updater_check = next(check for check in result["checks"] if check["name"] == "signedTauriUpdaterMetadata")
+    authenticode_check = next(check for check in result["checks"] if check["name"] == "authenticodeSignatures")
+    assert any("artifacts must list at least one release artifact" in failure for failure in updater_check["failures"])
+    assert authenticode_check["details"]["expectedArtifactNames"] == []
+    assert any("Authenticode linkage" in failure for failure in authenticode_check["failures"])
 
 
 def test_validate_release_readiness_cli_writes_summary(tmp_path: Path) -> None:

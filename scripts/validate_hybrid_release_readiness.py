@@ -48,6 +48,7 @@ def validate_release_readiness(
     require_authenticode_timestamp: bool = False,
     platform: str = "windows-x86_64",
 ) -> dict[str, Any]:
+    expected_signed_artifact_names = read_updater_artifact_names(updater_metadata)
     checks = [
         validate_physical_microphone_matrix(hardware_input_dir),
         validate_signed_updater_metadata(
@@ -61,6 +62,7 @@ def validate_release_readiness(
             authenticode_report,
             expected_publisher=expected_authenticode_publisher,
             require_timestamp=require_authenticode_timestamp,
+            expected_artifact_names=expected_signed_artifact_names,
         ),
     ]
     return {
@@ -114,6 +116,8 @@ def validate_signed_updater_metadata(
         validate_metadata(data, platform=platform, require_signatures=True, allow_local_urls=False)
         artifacts = data.get("artifacts", [])
         details["artifactCount"] = len(artifacts) if isinstance(artifacts, list) else 0
+        if not isinstance(artifacts, list) or not artifacts:
+            raise ValueError("latest.json artifacts must list at least one release artifact for final readiness")
         if artifact_dir:
             if not artifact_dir.is_dir():
                 raise FileNotFoundError(f"release artifact directory was not found: {artifact_dir}")
@@ -182,12 +186,15 @@ def validate_authenticode_report(
     *,
     expected_publisher: str,
     require_timestamp: bool,
+    expected_artifact_names: list[str] | None = None,
 ) -> ReadinessCheck:
+    expected_artifact_names = expected_artifact_names or []
     failures: list[str] = []
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
         "expectedPublisher": expected_publisher,
         "requireTimestamp": require_timestamp,
+        "expectedArtifactNames": expected_artifact_names,
     }
     if report_path is None:
         failures.append("Authenticode validation report is required")
@@ -206,11 +213,20 @@ def validate_authenticode_report(
         failures.append("Authenticode report ok must be true")
     if isinstance(report.get("count"), int) and report["count"] != len(artifacts):
         failures.append("Authenticode report count must match artifacts length")
+    if not expected_artifact_names:
+        failures.append("latest.json must list at least one release artifact name for Authenticode linkage")
 
+    reported_artifact_names: set[str] = set()
     for index, artifact in enumerate(artifacts):
         if not isinstance(artifact, dict):
             failures.append(f"Authenticode artifacts[{index}] must be an object")
             continue
+        artifact_path = str(artifact.get("path") or "")
+        artifact_name = Path(artifact_path).name
+        if not artifact_name:
+            failures.append(f"Authenticode artifacts[{index}].path is required")
+        else:
+            reported_artifact_names.add(artifact_name.casefold())
         status = artifact.get("status")
         if status != "Valid":
             failures.append(f"Authenticode artifacts[{index}].status must be Valid")
@@ -220,6 +236,16 @@ def validate_authenticode_report(
         timestamp_subject = str(artifact.get("timestampSubject") or "")
         if require_timestamp and not timestamp_subject:
             failures.append(f"Authenticode artifacts[{index}].timestampSubject is required")
+
+    missing_expected = [
+        name
+        for name in expected_artifact_names
+        if name.casefold() not in reported_artifact_names
+    ]
+    if missing_expected:
+        failures.append(
+            "Authenticode report is missing release artifact(s): " + ", ".join(missing_expected)
+        )
 
     return ReadinessCheck("authenticodeSignatures", not failures, failures, details)
 
@@ -241,6 +267,26 @@ def read_json_object(path: Path, failures: list[str], label: str) -> dict[str, A
 def is_https_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme == "https" and bool(parsed.netloc)
+
+
+def read_updater_artifact_names(metadata_path: Path) -> list[str]:
+    try:
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    artifacts = data.get("artifacts")
+    if not isinstance(artifacts, list):
+        return []
+    names: list[str] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        name = artifact.get("name")
+        if isinstance(name, str) and name.strip() and Path(name).name == name:
+            names.append(name.strip())
+    return names
 
 
 def parse_optional_path(raw: str) -> Path | None:
