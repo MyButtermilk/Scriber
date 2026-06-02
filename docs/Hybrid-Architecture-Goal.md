@@ -172,20 +172,28 @@ architecture work. It replaces earlier incomplete goal text.
   - Idle-Mic-Prewarm existiert als Python/sounddevice App-Level-Manager und
     darf Backend-Readiness nicht blockieren.
 - Nicht als abgeschlossen zaehlen, bis starke Evidence vorliegt:
-  - echte Stop-to-Text-Injection-Messung aus einer gesprochenen Aufnahme,
   - reale Mic-Hardware-Matrix fuer USB/Bluetooth/Dock/Default-Wechsel,
   - reale Authenticode-Signatur mit erwartetem Publisher und optionalem
     Timestamp,
   - veroeffentlichtes signiertes Tauri-Updater-Manifest mit echten Signing Keys,
-  - laengere Live-Recording-Stability nach vereinbartem Zeitbudget,
+  - End-to-end Textinjektion in ein kontrolliertes Ziel mit persistiertem
+    Zieltext, wenn dieser Nachweis fuer Release-Freigabe verlangt wird,
+  - ein laengerer Live-Recording-Soak, falls ueber den vom Nutzer akzeptierten
+    5-Minuten-Live-Gate hinaus ein strengeres Release-Kriterium festgelegt wird,
   - Entscheidung, ob Legacy-Tk/Tray-Pfade weiter als Fallback bleiben oder erst
     nach zwei stabilen Tauri-Release-Kandidaten entfernt werden.
 
 ## Current Completion Audit
 
-- Phase 0 ist noch nicht vollstaendig, weil die Baseline absichtlich
-  `stop_to_text_injection` offen laesst, bis eine echte Aufnahme mit
-  erfolgreicher Textinjektion gemessen wurde.
+- Phase 0 ist fuer Startup, Backend-Readiness, Upload/Export-Last,
+  WebSocket/JSON-Kosten, History-Scroll und Live-Hotpath inzwischen belegt.
+  Am 2026-06-02 wurde in einem Tauri-managed Sidecar-Lauf
+  `hotkey_received_to_mic_ready_ms=363.664`,
+  `hotkey_received_to_first_audio_frame_ms=604.303` und
+  `stop_requested_to_first_paste_ms=2397.109` gemessen. Der dedizierte
+  Text-Target-Nachweis bleibt jedoch schwach, weil die Zieltextdatei in dieser
+  erfolgreichen Latenzprobe `capturedChars=0` berichtete; die Messung beweist
+  Backend-/Injector-Timing, aber nicht persistierten Zieltext im Testfenster.
 - Phase 1 bis 4 sind funktional weitgehend umgesetzt und durch Contract-,
   Security-, Supervisor- und installierte Desktop-Smoke-Gates belegt.
 - Phase 5 ist nur fuer den Python-Audio-Pfad umgesetzt. Rust-Audio und ein
@@ -202,8 +210,11 @@ architecture work. It replaces earlier incomplete goal text.
   bewiesen.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen.
-- Phase 8 hat mehrere synthetische und kurze installierte Stability-Gates, aber
-  die vollstaendige Langzeit-/Live-Recording-Evidence ist noch nicht erbracht.
+- Phase 8 hat synthetische Guards, eine 30-Minuten-Idle-Stability, mehrere
+  installierte Stability-Smokes und einen vom Nutzer fuer diese Iteration
+  akzeptierten 5-Minuten-Live-Recording-Gate. Nicht erbracht sind reale
+  Authenticode-/Updater-Publication, physische Hardware-Matrix und ein optional
+  strengerer 30-Minuten-Live-Soak.
 
 ## Testplan
 
