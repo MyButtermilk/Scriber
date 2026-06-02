@@ -46,6 +46,7 @@ architecture work. It replaces earlier incomplete goal text.
 - Neue/erweiterte Endpunkte:
   - `GET /api/health`: readiness, apiVersion, workerVersion, pid, active session.
   - `GET /api/runtime`: capabilities, feature flags, runtime mode, dataDir.
+  - `GET/POST /api/runtime/frontend-ready`: token-geschuetzter WebView-Ready-Beacon fuer installierte Frontend-Start-Evidence.
   - `POST /api/runtime/shutdown`: nur lokal und token-geschützt.
 - Tauri startet Worker mit zufälligem Session-Token; UI sendet Token bei lokalen Requests.
 - Frontend-API-Typen strikt halten, keine neuen `any`-Grenzen.
@@ -75,6 +76,7 @@ architecture work. It replaces earlier incomplete goal text.
   - danach Default `http://127.0.0.1:8765`.
 - CORS für Browser-Dev und Tauri-Webview sauber trennen.
 - Default-CORS muss Tauri-Produktions-Origins (`tauri.localhost` und `tauri://localhost`) akzeptieren; Tauri-CSP muss den IPC-Connect-Kanal erlauben.
+- Installed-Smokes muessen nicht nur Backend/Static-Assets, sondern auch die echte Tauri-WebView pruefen: React muss `get_backend_access` nutzen, den Runtime-Backend-URL setzen und `/api/runtime/frontend-ready` mit Session-Token erreichen.
 - Gate: Browser-Dev und Tauri-Prod funktionieren parallel.
 
 ## Phase 4: Desktop-Funktionen migrieren
@@ -129,7 +131,9 @@ architecture work. It replaces earlier incomplete goal text.
   - `scripts/smoke_tauri_desktop.ps1 -VerifyFrontend` und
     `scripts/smoke_windows_installer.ps1 -VerifyFrontend` fuer installierte
     Frontend-Assets ueber den laufenden Backend-Static-Fallback plus
-    Tauri-Origin-CORS auf `/api/health` und tokenisiertem `/api/runtime`.
+    Tauri-Origin-CORS auf `/api/health` und tokenisiertem `/api/runtime`
+    sowie den echten Tauri-WebView-Ready-Beacon auf
+    `/api/runtime/frontend-ready`.
 - Installer/Desktop:
   - NSIS-Install, Sidecar-Start, Backend-Health, Frontend-Assets,
     Worker-Crash-Recovery, kontrollierter Worker-Shutdown,
@@ -186,13 +190,14 @@ architecture work. It replaces earlier incomplete goal text.
   Security-, Supervisor- und installierte Desktop-Smoke-Gates belegt.
 - Phase 5 ist nur fuer den Python-Audio-Pfad umgesetzt. Rust-Audio und ein
   Rust-Device-Watcher bleiben bewusst experimentell bzw. nicht default.
-- Phase 6 ist fuer Standard-Cloud-Provider-Sidecar, NSIS, ffmpeg/ffprobe,
+  - Phase 6 ist fuer Standard-Cloud-Provider-Sidecar, NSIS, ffmpeg/ffprobe,
   yt-dlp, ONNXRuntime/Silero-VAD Startup-Imports, Runtime-Datenmigration,
   Release-Metadaten und optionale Gates umgesetzt. Am 2026-06-02 ist
   `build_windows.ps1 -SkipChecks -SkipSmoke -RunInstallerSmoke
-  -RunInstallerFrontendSmoke` mit Tauri-Origin-CORS fuer `/api/health` und
-  tokenisiertes `/api/runtime` sowie 205.72 MiB Setup-Artefakt unter dem
-  220 MiB Gate durchgelaufen. Echte Signierung und reale
+  -RunInstallerFrontendSmoke` mit Tauri-Origin-CORS fuer `/api/health`,
+  tokenisiertem `/api/runtime`, echtem Tauri-WebView-Beacon ueber
+  `/api/runtime/frontend-ready`, Cleanup, Uninstall und 205.75 MiB
+  Setup-Artefakt unter dem 220 MiB Gate durchgelaufen. Echte Signierung und reale
   Updater-Veroeffentlichung sind externe Release-Schritte und noch nicht
   bewiesen.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle

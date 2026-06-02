@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
-import { apiUrl, isTauriRuntime, setBackendBaseUrl } from "@/lib/backend";
+import { apiUrl, isTauriRuntime, reportFrontendReady, setBackendBaseUrl } from "@/lib/backend";
 
 interface BackendStatus {
     isOnline: boolean;
@@ -57,6 +57,13 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
             clearTimeout(timeoutId);
 
             const online = res.ok;
+            if (online) {
+                try {
+                    await reportFrontendReady();
+                } catch (readyError) {
+                    console.debug("Frontend readiness beacon failed.", readyError);
+                }
+            }
             setIsOnline(online);
             setError(online ? null : `Server returned ${res.status}`);
             setLastChecked(new Date());

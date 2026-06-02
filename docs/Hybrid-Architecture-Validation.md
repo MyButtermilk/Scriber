@@ -4,6 +4,82 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Installed Tauri WebView Backend Ready Gate
+
+Commands:
+
+```powershell
+python -m pytest `
+  tests/contract/test_rest_contracts.py `
+  tests/test_web_api_security.py `
+  tests/test_tauri_stability_smoke_gates.py
+
+cd Frontend
+npm run check
+npm run build
+cd ..
+
+python -m py_compile src/core/rest_contracts.py src/web_api.py
+
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -SkipChecks `
+  -SkipSmoke `
+  -RunInstallerSmoke `
+  -RunInstallerFrontendSmoke
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- Added token-protected `GET/POST /api/runtime/frontend-ready`.
+- React now posts the readiness beacon after a successful backend health check.
+  The payload is non-secret and records Tauri runtime detection, runtime
+  backend URL, WebView origin, request origin, and timestamp.
+- `scripts\smoke_tauri_desktop.ps1 -VerifyFrontend` now waits for that beacon
+  and verifies the reported backend URL plus `http://tauri.localhost` origin.
+- The installer frontend smoke now proves the actual Tauri WebView can resolve
+  the runtime backend URL and reach the token-protected backend API, not only
+  that static assets and CORS are reachable from a PowerShell HTTP client.
+
+Evidence:
+
+- Focused contract/security/smoke-gate tests: `53 passed`.
+- Frontend TypeScript check: passed.
+- Frontend production build: passed.
+- Python compile check for touched backend contract/API modules: passed.
+- PowerShell parser checks for desktop and installer smoke scripts: passed.
+- Fresh NSIS build artifact:
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- Installer size: `205.75` MiB, under the default `220` MiB gate.
+- Installed frontend smoke:
+  - root URL `http://127.0.0.1:8765/`, HTTP `200`;
+  - `6` of `6` referenced JS/CSS assets verified;
+  - Tauri-origin CORS verified for `/api/health`;
+  - tokenized `/api/runtime` CORS verified;
+  - `webViewReady=true`;
+  - `webViewTauriRuntime=true`;
+  - `webViewBackendBaseUrl=http://127.0.0.1:8765`;
+  - `webViewLocationOrigin=http://tauri.localhost`;
+  - smoke cleanup verified;
+  - silent uninstall verified with runtime data preserved.
+
+Goal coverage:
+
+- Phase 1: adds a versioned REST contract for frontend WebView readiness.
+- Phase 3: closes the practical Tauri production frontend gap that previously
+  could show "Backend Not Available" even while the backend/hotkey path worked.
+- Phase 7: strengthens installed-package smoke evidence from static asset/CORS
+  checks to a real WebView-to-backend token path.
+- Phase 8: keeps the Windows installer frontend startup gate repeatable.
+
+Remaining limits:
+
+- This does not close Authenticode signing, real updater publication,
+  microphone hardware matrix, or long live-recording stability gates.
+- Installed app size is still dominated by bundled ffmpeg/ffprobe and remains a
+  separate packaging-size optimization target.
+
 ## 2026-06-02 - Recording Hot-Path Audio Diagnostics Evidence
 
 Commands:

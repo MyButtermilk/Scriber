@@ -131,6 +131,33 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
         payload = await authorized.json()
         assert payload["featureFlags"]["sessionTokenRequired"] is True
 
+        frontend_ready_unauthorized = await client.get("/api/runtime/frontend-ready")
+        assert frontend_ready_unauthorized.status == 401
+
+        frontend_ready = await client.post(
+            "/api/runtime/frontend-ready",
+            headers={"X-Scriber-Token": "secret", "Origin": "http://tauri.localhost"},
+            json={
+                "tauriRuntime": True,
+                "backendBaseUrl": "http://127.0.0.1:8765",
+                "locationOrigin": "http://tauri.localhost",
+                "path": "/",
+            },
+        )
+        assert frontend_ready.status == 200
+        frontend_payload = await frontend_ready.json()
+        assert frontend_payload["ready"] is True
+        assert frontend_payload["lastSeen"]["tauriRuntime"] is True
+        assert frontend_payload["lastSeen"]["backendBaseUrl"] == "http://127.0.0.1:8765"
+        assert frontend_payload["lastSeen"]["origin"] == "http://tauri.localhost"
+
+        frontend_ready_get = await client.get(
+            "/api/runtime/frontend-ready?scriberToken=secret",
+            headers={"Origin": "http://tauri.localhost"},
+        )
+        assert frontend_ready_get.status == 200
+        assert (await frontend_ready_get.json())["lastSeen"]["locationOrigin"] == "http://tauri.localhost"
+
         support_unauthorized = await client.post("/api/runtime/support-bundle")
         assert support_unauthorized.status == 401
 
@@ -208,6 +235,39 @@ async def test_tauri_origin_can_fetch_health(monkeypatch, tmp_path):
         assert response.status == 200
         assert response.headers["Access-Control-Allow-Origin"] == "http://tauri.localhost"
         assert response.headers["Access-Control-Allow-Credentials"] == "true"
+    finally:
+        await client.close()
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tauri_origin_can_post_frontend_ready(monkeypatch, tmp_path):
+    monkeypatch.delenv("SCRIBER_ALLOWED_ORIGINS", raising=False)
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/api/runtime/frontend-ready?scriberToken=secret",
+            headers={"Origin": "http://tauri.localhost"},
+            json={
+                "tauriRuntime": True,
+                "backendBaseUrl": "http://127.0.0.1:8765",
+                "locationOrigin": "http://tauri.localhost",
+                "path": "/",
+            },
+        )
+        assert response.status == 200
+        assert response.headers["Access-Control-Allow-Origin"] == "http://tauri.localhost"
+        payload = await response.json()
+        assert payload["ready"] is True
+        assert payload["lastSeen"]["tauriRuntime"] is True
     finally:
         await client.close()
         ctl.shutdown()

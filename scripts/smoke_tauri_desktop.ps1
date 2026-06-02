@@ -31,8 +31,9 @@ keeps it running while sampling health/state, CPU, and memory, then stops it.
 With -VerifySupportBundle, it downloads the token-protected support bundle and
 verifies that injected dummy secrets are redacted from the ZIP contents.
 With -VerifyFrontend, it fetches the bundled frontend entrypoint and referenced
-JS/CSS assets from the running backend static fallback and verifies that Tauri
-production origins can call /api/health and tokenized /api/runtime.
+JS/CSS assets from the running backend static fallback, verifies that Tauri
+production origins can call /api/health and tokenized /api/runtime, and waits
+until the actual Tauri WebView reports a tokenized frontend-ready beacon.
 
 Build the executable first with:
   cd Frontend
@@ -631,6 +632,34 @@ function Resolve-FrontendAssetUrl {
     return "$BaseUrl/$Asset"
 }
 
+function Wait-FrontendReady {
+    param(
+        [int]$Port,
+        [string]$Token,
+        [int]$DeadlineSec = 25
+    )
+
+    if (-not $Token) {
+        throw "Frontend WebView readiness probe requires a session token."
+    }
+
+    $headers = @{ "X-Scriber-Token" = $Token }
+    $deadline = (Get-Date).AddSeconds($DeadlineSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $status = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/runtime/frontend-ready" -Headers $headers -TimeoutSec 2
+            if ($status.ready -and $status.lastSeen -and $status.lastSeen.tauriRuntime) {
+                return $status
+            }
+        } catch {
+            # Backend may still be waiting for the first WebView request.
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    throw "Tauri WebView did not report frontend-ready within ${DeadlineSec}s."
+}
+
 function Test-FrontendHttp {
     param(
         [int]$Port,
@@ -710,6 +739,15 @@ function Test-FrontendHttp {
         $runtimeCorsVerified = $true
     }
 
+    $frontendReady = Wait-FrontendReady -Port $Port -Token $Token
+    $lastSeen = $frontendReady.lastSeen
+    if ([string]$lastSeen.backendBaseUrl -ne $baseUrl) {
+        throw "Tauri WebView reported backendBaseUrl '$($lastSeen.backendBaseUrl)' instead of '$baseUrl'."
+    }
+    if ([string]$lastSeen.locationOrigin -ne $tauriOrigin) {
+        throw "Tauri WebView reported locationOrigin '$($lastSeen.locationOrigin)' instead of '$tauriOrigin'."
+    }
+
     return [pscustomobject]@{
         verified = $true
         rootUrl = $rootUrl
@@ -719,6 +757,11 @@ function Test-FrontendHttp {
         verifiedAssetCount = [int]$verifiedAssets.Count
         tauriOriginCors = $true
         runtimeCorsVerified = $runtimeCorsVerified
+        webViewReady = [bool]$frontendReady.ready
+        webViewReadyAt = [string]$lastSeen.receivedAt
+        webViewTauriRuntime = [bool]$lastSeen.tauriRuntime
+        webViewBackendBaseUrl = [string]$lastSeen.backendBaseUrl
+        webViewLocationOrigin = [string]$lastSeen.locationOrigin
         assets = $verifiedAssets
     }
 }

@@ -130,6 +130,31 @@ def validate_health_payload(payload: dict[str, Any]) -> None:
     _require_string(payload, "runtimeMode", contract)
 
 
+def validate_frontend_ready_payload(payload: dict[str, Any]) -> None:
+    contract = "/api/runtime/frontend-ready"
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} payload must be a dict")
+
+    _require_api_version(payload, contract)
+    _require_bool(payload, "ready", contract)
+    last_seen = payload.get("lastSeen")
+    if last_seen is None:
+        return
+    if not isinstance(last_seen, dict):
+        raise RESTContractError(f"{contract} requires object-or-null 'lastSeen'")
+
+    _require_string(last_seen, "receivedAt", contract)
+    _require_number(last_seen, "receivedAtUptimeSeconds", contract)
+    _require_string(last_seen, "runtimeMode", contract)
+    _require_int(last_seen, "pid", contract)
+    _require_bool(last_seen, "tauriRuntime", contract)
+    _require_optional_string(last_seen, "backendBaseUrl", contract)
+    _require_optional_string(last_seen, "locationOrigin", contract)
+    _require_optional_string(last_seen, "path", contract)
+    _require_optional_string(last_seen, "origin", contract)
+    _require_optional_string(last_seen, "userAgent", contract)
+
+
 def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
     contract = "/api/runtime/audio-diagnostics"
     if not isinstance(payload, dict):

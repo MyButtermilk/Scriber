@@ -189,16 +189,23 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "supportBundle = $supportBundle" in desktop
     assert "[switch]$VerifyFrontend" in desktop
     assert "function Test-FrontendHttp" in desktop
+    assert "function Wait-FrontendReady" in desktop
     assert "Frontend root HTML does not contain the React root element" in desktop
     assert "http://tauri.localhost" in desktop
+    assert "/api/runtime/frontend-ready" in desktop
+    assert "Tauri WebView did not report frontend-ready" in desktop
     assert "tauriOriginCors = $true" in desktop
     assert "runtimeCorsVerified" in desktop
+    assert "webViewReady = [bool]$frontendReady.ready" in desktop
+    assert "webViewBackendBaseUrl" in desktop
+    assert "webViewLocationOrigin" in desktop
     assert "frontend = $frontend" in desktop
 
     assert "[switch]$VerifySupportBundle" in installer
     assert '"-VerifySupportBundle"' in installer
     assert "supportBundle = $smoke.supportBundle" in installer
     assert "[switch]$VerifyFrontend" in installer
+    assert "frontend-ready beacon" in installer
     assert '"-VerifyFrontend"' in installer
     assert "frontend = $smoke.frontend" in installer
 

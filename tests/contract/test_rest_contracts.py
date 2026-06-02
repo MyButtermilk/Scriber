@@ -8,6 +8,7 @@ from src.core.rest_contracts import (
     REST_API_VERSION,
     RESTContractError,
     validate_audio_diagnostics_payload,
+    validate_frontend_ready_payload,
     validate_health_payload,
     validate_runtime_payload,
 )
@@ -21,15 +22,18 @@ def test_runtime_and_health_payloads_match_contract(monkeypatch, tmp_path) -> No
         ctl = ScriberWebController(loop)
         runtime = ctl.get_runtime_info()
         health = ctl.get_health()
+        frontend_ready = ctl.get_frontend_ready()
         audio_diagnostics = ctl.get_audio_diagnostics()
     finally:
         loop.close()
 
     validate_runtime_payload(runtime)
     validate_health_payload(health)
+    validate_frontend_ready_payload(frontend_ready)
     validate_audio_diagnostics_payload(audio_diagnostics)
     assert runtime["apiVersion"] == REST_API_VERSION
     assert health["apiVersion"] == REST_API_VERSION
+    assert frontend_ready["apiVersion"] == REST_API_VERSION
     assert audio_diagnostics["apiVersion"] == REST_API_VERSION
     assert health["workerVersion"] == runtime["workerVersion"]
     assert health["runtimeMode"] == runtime["runtimeMode"]
@@ -121,6 +125,43 @@ def test_health_contract_rejects_incompatible_payload() -> None:
     invalid["uptimeSeconds"] = -1
     with pytest.raises(RESTContractError):
         validate_health_payload(invalid)
+
+
+def test_frontend_ready_contract_rejects_incompatible_payload() -> None:
+    valid_empty = {
+        "apiVersion": REST_API_VERSION,
+        "ready": False,
+        "lastSeen": None,
+    }
+    validate_frontend_ready_payload(valid_empty)
+
+    valid_ready = {
+        "apiVersion": REST_API_VERSION,
+        "ready": True,
+        "lastSeen": {
+            "receivedAt": "2026-06-02T00:00:00Z",
+            "receivedAtUptimeSeconds": 1.0,
+            "runtimeMode": "tauri-supervised",
+            "pid": 123,
+            "tauriRuntime": True,
+            "backendBaseUrl": "http://127.0.0.1:8765",
+            "locationOrigin": "http://tauri.localhost",
+            "path": "/",
+            "origin": "http://tauri.localhost",
+            "userAgent": "Scriber smoke",
+        },
+    }
+    validate_frontend_ready_payload(valid_ready)
+
+    invalid = dict(valid_ready)
+    invalid["apiVersion"] = "0"
+    with pytest.raises(RESTContractError):
+        validate_frontend_ready_payload(invalid)
+
+    invalid = dict(valid_ready)
+    invalid["lastSeen"] = {**valid_ready["lastSeen"], "tauriRuntime": "yes"}
+    with pytest.raises(RESTContractError):
+        validate_frontend_ready_payload(invalid)
 
 
 def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:

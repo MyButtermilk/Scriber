@@ -66,6 +66,7 @@ React UI (Frontend/client, :5000) ◄──REST+WS──► Backend
 - **YouTube:** `POST /api/youtube/transcribe` → yt-dlp Download → Pipeline → Retry/Resume
 - **Datei:** `POST /api/file/transcribe` (multipart) → optional ffmpeg-Extraktion → Pipeline
 - **Kommunikation:** REST für Steuerung, WebSocket `/ws` für Status-/Live-Daten
+- **Tauri Desktop:** Rust liefert React die Runtime-Backend-URL und den Session-Token ueber `get_backend_access`; React meldet erfolgreiche WebView-Backend-Bereitschaft ueber `/api/runtime/frontend-ready`.
 
 ---
 
@@ -592,8 +593,8 @@ Scriber/
 
 - **Single-Instance:** Tauri-Desktop verhindert parallele Windows-Instanzen via Named Mutex; Legacy-Tray nutzt Lock-File-Verhalten.
 - **Keine doppelte Recording-Logik:** Tauri-Hotkey dispatcht nur an Python-Live-Mic-Endpunkte; Aufnahmezustand bleibt im Backend.
-- **CORS:** Konfigurierbar, Default localhost-only
-- **Security:** API-Keys in .env (nicht im Code), Datei-Upload mit Sanitisierung und Whitelist
+- **CORS:** Konfigurierbar, Default erlaubt localhost/loopback plus Tauri-Produktions-Origins (`tauri.localhost`, `tauri://localhost`)
+- **Security:** API-Keys in .env (nicht im Code), Datei-Upload mit Sanitisierung und Whitelist, Tauri-managed REST/WebSocket-Zugriffe token-geschuetzt
 - **Resilience:** Circuit Breaker, Retry mit Backoff, Job-Resume nach Restart
 - **Observability:** Strukturierte Logs (loguru), Hot-Path-Metriken, Health-Endpoint
 - **Responsiveness:** Echtzeit-WebSocket-Events, optimistic UI Updates, Lazy Loading

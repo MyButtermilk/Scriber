@@ -12,6 +12,7 @@ const defaultBase = "http://127.0.0.1:8765";
 export let backendBaseUrl = (runtimeBase || configuredBase || defaultBase).replace(/\/+$/, "");
 export let backendSessionToken =
   (typeof window !== "undefined" ? window.__SCRIBER_SESSION_TOKEN__?.trim() : "") || "";
+let frontendReadyReportKey = "";
 
 interface BackendAccess {
   baseUrl: string;
@@ -93,6 +94,38 @@ export function apiUrl(pathOrUrl: string): string {
     ? `${backendBaseUrl}${pathOrUrl}`
     : `${backendBaseUrl}/${pathOrUrl}`;
   return appendSessionToken(url);
+}
+
+export async function reportFrontendReady(): Promise<void> {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const reportKey = `${backendBaseUrl}|${backendSessionToken ? "token" : "no-token"}|${isTauriRuntime() ? "tauri" : "browser"}`;
+  if (frontendReadyReportKey === reportKey) {
+    return;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 1500);
+  try {
+    const res = await fetch(apiUrl("/api/runtime/frontend-ready"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        tauriRuntime: isTauriRuntime(),
+        backendBaseUrl,
+        locationOrigin: window.location.origin,
+        path: `${window.location.pathname}${window.location.hash || ""}`,
+      }),
+    });
+    if (res.ok) {
+      frontendReadyReportKey = reportKey;
+    }
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export async function getAutostartStatus(): Promise<AutostartStatus> {

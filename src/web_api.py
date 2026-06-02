@@ -1153,6 +1153,8 @@ class ScriberWebController:
         self._hot_path_tracers: dict[str, HotPathTracer] = {}
         self._hot_path_reports_emitted: set[str] = set()
         self._hot_path_lock = threading.Lock()
+        self._frontend_ready: dict[str, Any] | None = None
+        self._frontend_ready_lock = threading.Lock()
 
         self._current: Optional[TranscriptRecord] = None
         self._current_lock = threading.Lock()
@@ -1970,6 +1972,46 @@ class ScriberWebController:
             "activeSession": runtime["activeSession"],
             "recordingState": runtime["recordingState"],
             "runtimeMode": runtime["runtimeMode"],
+        }
+
+    def record_frontend_ready(self, payload: dict[str, Any], request: web.Request) -> dict[str, Any]:
+        def _string_or_none(value: Any, *, max_len: int = 512) -> str | None:
+            if not isinstance(value, str):
+                return None
+            value = value.strip()
+            if not value:
+                return None
+            return value[:max_len]
+
+        received_at = (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        entry = {
+            "receivedAt": received_at,
+            "receivedAtUptimeSeconds": max(0.0, time.monotonic() - self._started_at_monotonic),
+            "runtimeMode": os.getenv(_RUNTIME_MODE_ENV, "python-web"),
+            "pid": os.getpid(),
+            "tauriRuntime": bool(payload.get("tauriRuntime")),
+            "backendBaseUrl": _string_or_none(payload.get("backendBaseUrl")),
+            "locationOrigin": _string_or_none(payload.get("locationOrigin")),
+            "path": _string_or_none(payload.get("path"), max_len=256),
+            "origin": _string_or_none(request.headers.get("Origin")),
+            "userAgent": _string_or_none(request.headers.get("User-Agent"), max_len=256),
+        }
+        with self._frontend_ready_lock:
+            self._frontend_ready = entry
+        return self.get_frontend_ready()
+
+    def get_frontend_ready(self) -> dict[str, Any]:
+        with self._frontend_ready_lock:
+            last_seen = dict(self._frontend_ready) if self._frontend_ready else None
+        return {
+            "apiVersion": _API_VERSION,
+            "ready": last_seen is not None,
+            "lastSeen": last_seen,
         }
 
     def get_hot_path_metrics(self, *, limit: int = 50) -> dict[str, Any]:
@@ -4195,6 +4237,20 @@ def create_app(controller: ScriberWebController) -> web.Application:
         ctl: ScriberWebController = request.app["controller"]
         return web.json_response(ctl.get_runtime_info())
 
+    async def get_frontend_ready(request: web.Request):
+        ctl: ScriberWebController = request.app["controller"]
+        return web.json_response(ctl.get_frontend_ready())
+
+    async def post_frontend_ready(request: web.Request):
+        ctl: ScriberWebController = request.app["controller"]
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"message": "Expected JSON payload"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"message": "Expected JSON object"}, status=400)
+        return web.json_response(ctl.record_frontend_ready(payload, request))
+
     async def get_audio_diagnostics(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
         return web.json_response(ctl.get_audio_diagnostics())
@@ -4800,6 +4856,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     app.router.add_get("/api/state", get_state)
     app.router.add_get("/api/runtime", get_runtime)
+    app.router.add_get("/api/runtime/frontend-ready", get_frontend_ready)
+    app.router.add_post("/api/runtime/frontend-ready", post_frontend_ready)
     app.router.add_get("/api/runtime/audio-diagnostics", get_audio_diagnostics)
     app.router.add_post("/api/runtime/shutdown", shutdown_runtime)
     app.router.add_post("/api/runtime/support-bundle", create_runtime_support_bundle)

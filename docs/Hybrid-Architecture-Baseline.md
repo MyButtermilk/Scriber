@@ -141,6 +141,11 @@ is to distinguish provider transcript failure from OS input/focus failure.
   redaction via `scripts/smoke_tauri_desktop.ps1 -VerifySupportBundle`.
 - Tauri WebView CSP restrictions and frontend entrypoint compatibility via
   `tests\test_tauri_security_gates.py`.
+- Installed Tauri WebView backend access via the token-protected
+  `/api/runtime/frontend-ready` beacon. `scripts\smoke_tauri_desktop.ps1
+  -VerifyFrontend` waits for this beacon so the gate proves the actual React
+  WebView loaded, resolved the runtime backend URL, and reached the backend
+  with the session token.
 - installed NSIS package coverage for the hardened CSP build, sidecar launch,
   legacy `.env`/`settings.json`/`transcripts.db` migration, support-bundle
   redaction, installer rerun data preservation, and strict uninstall via
@@ -149,9 +154,9 @@ is to distinguish provider transcript failure from OS input/focus failure.
 - fresh NSIS build/install/start coverage for backend plus bundled frontend
   assets via `scripts\build_windows.ps1 -RunInstallerSmoke
   -RunInstallerFrontendSmoke`; the frontend smoke now also verifies
-  Tauri-origin CORS for `/api/health` and tokenized `/api/runtime`. The
-  2026-06-02 run also exercised the frozen ONNXRuntime/Silero VAD sidecar
-  import gate.
+  Tauri-origin CORS for `/api/health`, tokenized `/api/runtime`, and the
+  tokenized `/api/runtime/frontend-ready` WebView beacon. The 2026-06-02 run
+  also exercised the frozen ONNXRuntime/Silero VAD sidecar import gate.
 
 The runner intentionally reports an incomplete Phase 0 gate until all required
 measurements are present. Missing fields are listed in
