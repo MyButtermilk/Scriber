@@ -175,6 +175,7 @@ export default function Settings() {
   const [azureRegion, setAzureRegion] = useState("");
   const [azureMaiKey, setAzureMaiKey] = useState("");
   const [azureMaiRegion, setAzureMaiRegion] = useState("northeurope");
+  const [azureMaiModel, setAzureMaiModel] = useState("mai-transcribe-1.5");
   const [gladiaKey, setGladiaKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
   const [awsKey, setAwsKey] = useState("");
@@ -349,6 +350,7 @@ export default function Settings() {
         setAzureRegion(keys.azureSpeechRegion || "");
         setAzureMaiKey(keys.azureMaiSpeechKey || "");
         setAzureMaiRegion(keys.azureMaiRegion || "northeurope");
+        setAzureMaiModel(keys.azureMaiModel || "mai-transcribe-1.5");
         setGladiaKey(keys.gladia || "");
         setGroqKey(keys.groq || "");
 
@@ -437,6 +439,7 @@ export default function Settings() {
         apiKeys.azureSpeechRegion = azureRegion;
         apiKeys.azureMaiSpeechKey = azureMaiKey;
         apiKeys.azureMaiRegion = azureMaiRegion || "northeurope";
+        apiKeys.azureMaiModel = azureMaiModel || "mai-transcribe-1.5";
       }
       if (provider === "Gladia") apiKeys.gladia = gladiaKey;
       if (provider === "Groq") apiKeys.groq = groqKey;
@@ -2364,7 +2367,7 @@ export default function Settings() {
                       {savedKeys['Azure'] ? "Saved" : "Save"}
                     </Button>
                   </div>
-                  <p className="text-xs text-muted-foreground">Must belong to a region that supports mai-transcribe-1.</p>
+                  <p className="text-xs text-muted-foreground">Must belong to a region that supports the configured MAI Transcribe model.</p>
                 </div>
 
                 <div className="space-y-2 pt-2">
@@ -2375,7 +2378,20 @@ export default function Settings() {
                     placeholder="northeurope"
                     className="font-mono text-sm"
                   />
-                  <p className="text-xs text-muted-foreground">Nearest supported Europe region for mai-transcribe-1 is northeurope.</p>
+                  <p className="text-xs text-muted-foreground">Nearest supported Europe region is usually northeurope.</p>
+                </div>
+
+                <div className="space-y-2 pt-2">
+                  <Label>Azure MAI Model</Label>
+                  <Input
+                    value={azureMaiModel}
+                    onChange={(e) => setAzureMaiModel(e.target.value)}
+                    placeholder="mai-transcribe-1.5"
+                    className="font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Default is mai-transcribe-1.5; set mai-transcribe-1 if your Azure region has not enabled 1.5 yet.
+                  </p>
                 </div>
 
                 <div className="space-y-2 pt-2">

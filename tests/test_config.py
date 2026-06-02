@@ -74,3 +74,12 @@ def test_persist_to_env_file_includes_text_injection_disable(monkeypatch, tmp_pa
     Config.persist_to_env_file(str(target))
 
     assert "SCRIBER_DISABLE_TEXT_INJECTION=1" in target.read_text(encoding="utf-8")
+
+
+def test_persist_to_env_file_includes_azure_mai_model(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "AZURE_MAI_MODEL", "mai-transcribe-1.5")
+
+    Config.persist_to_env_file(str(target))
+
+    assert "SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1.5" in target.read_text(encoding="utf-8")

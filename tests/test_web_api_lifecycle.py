@@ -201,6 +201,23 @@ async def test_update_settings_flushes_pending_persist_on_shutdown(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_settings_round_trips_azure_mai_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    monkeypatch.setattr(web_api.Config, "AZURE_MAI_MODEL", "mai-transcribe-1.5", raising=False)
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    settings = await ctl.update_settings({"apiKeys": {"azureMaiModel": "mai-transcribe-1"}})
+
+    assert web_api.Config.AZURE_MAI_MODEL == "mai-transcribe-1"
+    assert settings["apiKeys"]["azureMaiModel"] == "mai-transcribe-1"
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_controller_starts_idle_mic_prewarm_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")

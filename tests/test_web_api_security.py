@@ -484,8 +484,8 @@ def test_audio_upload_max_bytes_defaults_to_smallest_limit(monkeypatch):
 def test_audio_upload_max_bytes_defaults_to_azure_mai_limit(monkeypatch):
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
-    assert web_api._get_audio_upload_max_bytes("azure_mai") == 70 * 1024 * 1024
-    assert web_api._get_audio_upload_limit_label("azure_mai") == "70MB"
+    assert web_api._get_audio_upload_max_bytes("azure_mai") == 300 * 1024 * 1024
+    assert web_api._get_audio_upload_limit_label("azure_mai") == "300MB"
 
 
 def test_audio_upload_max_bytes_uses_generic_default_for_other_providers(monkeypatch):

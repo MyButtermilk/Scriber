@@ -117,6 +117,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - Provider routing and circuit breaker logic exist in `src/runtime/` and `src/core/`.
 - Soniox supports realtime and async modes.
 - Mistral supports realtime and async modes.
+- Azure MAI Transcribe defaults to `mai-transcribe-1.5`; keep `SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1` available as a resource/region fallback. With 1.5, `SCRIBER_CUSTOM_VOCAB` is sent as `phraseList`.
 - AssemblyAI Universal-3-Pro async, Azure MAI, Smallest, OpenAI, Deepgram, Gladia, Groq, Speechmatics, ElevenLabs, Google, AWS, ONNX, and NeMo paths exist, but verify exact behavior in code before changing provider contracts.
 - OpenAI segmented STT requires VAD. Keep mic input mono for provider compatibility where possible.
 - Adding a provider usually touches `Config.SERVICE_API_KEY_MAP`, `Config.SERVICE_LABELS`, provider capabilities/routing, settings API/UI, and `_create_stt_service()`.
@@ -351,7 +352,7 @@ Important environment variables:
 - Media tools: `SCRIBER_MEDIA_TOOLS_DIR`, `SCRIBER_FFMPEG_PATH`, `SCRIBER_FFPROBE_PATH`, `SCRIBER_YT_DLP_PATH`
 - STT provider keys: `SONIOX_API_KEY`, `MISTRAL_API_KEY`, `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `GLADIA_API_KEY`, `GROQ_API_KEY`, `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, `GOOGLE_API_KEY`, `YOUTUBE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`
 - AWS STT: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
-- Provider/model behavior: `SCRIBER_DEFAULT_STT`, `SCRIBER_SONIOX_MODE`, `SCRIBER_SONIOX_ASYNC_MODEL`, `SCRIBER_SONIOX_RT_MODEL`, `SCRIBER_MISTRAL_RT_MODEL`, `SCRIBER_MISTRAL_ASYNC_MODEL`, `SCRIBER_OPENAI_STT_MODEL`
+- Provider/model behavior: `SCRIBER_DEFAULT_STT`, `SCRIBER_SONIOX_MODE`, `SCRIBER_SONIOX_ASYNC_MODEL`, `SCRIBER_SONIOX_RT_MODEL`, `SCRIBER_MISTRAL_RT_MODEL`, `SCRIBER_MISTRAL_ASYNC_MODEL`, `SCRIBER_OPENAI_STT_MODEL`, `SCRIBER_AZURE_MAI_MODEL`
 - App behavior: `SCRIBER_HOTKEY`, `SCRIBER_MODE`, `SCRIBER_DISABLE_HOTKEYS`, `SCRIBER_INJECT_METHOD`, `SCRIBER_DISABLE_TEXT_INJECTION`, `SCRIBER_LANGUAGE`, `SCRIBER_DEBUG`, `SCRIBER_CUSTOM_VOCAB`, `SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC`, `SCRIBER_AUDIO_ENGINE`
 - Mic: `SCRIBER_MIC_DEVICE`, `SCRIBER_FAVORITE_MIC`, `SCRIBER_MIC_ALWAYS_ON`, `SCRIBER_MIC_BLOCK_SIZE`, `SCRIBER_MIC_PREBUFFER_MS`, `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC`
 - Upload/jobs/timeouts: `SCRIBER_UPLOAD_MAX_MB`, `SCRIBER_UPLOAD_MAX_BYTES`, `SCRIBER_JOB_MAX_ATTEMPTS`, `SCRIBER_JOB_RETRY_BASE_SEC`, `SCRIBER_JOB_RETRY_MAX_SEC`, `SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC`, `SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC`

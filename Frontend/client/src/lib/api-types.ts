@@ -210,6 +210,7 @@ export interface SettingsApiKeys {
   azureSpeechRegion?: string;
   azureMaiSpeechKey?: string;
   azureMaiRegion?: string;
+  azureMaiModel?: string;
   gladia?: string;
   groq?: string;
   speechmatics?: string;

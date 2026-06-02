@@ -556,7 +556,15 @@ SCRIBER_MISTRAL_RT_MODEL=voxtral-mini-transcribe-realtime-2602
 SCRIBER_MISTRAL_ASYNC_MODEL=voxtral-mini-2602
 SCRIBER_OPENAI_STT_MODEL=gpt-4o-mini-transcribe-2025-12-15
 SCRIBER_AZURE_MAI_REGION=northeurope
+SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1.5
 ```
+
+`SCRIBER_AZURE_MAI_MODEL` defaults to Microsoft's current `mai-transcribe-1.5`
+model. Set it back to `mai-transcribe-1` only if your Azure Speech resource or
+region has not enabled 1.5 yet. For Azure MAI 1.5, comma-separated terms from
+`SCRIBER_CUSTOM_VOCAB` are sent as the MAI `phraseList` entity-biasing hint.
+The Azure MAI file-upload limit follows the Microsoft-documented 300 MB audio
+limit for WAV, MP3, and FLAC inputs.
 
 ### Microphone and Injection
 

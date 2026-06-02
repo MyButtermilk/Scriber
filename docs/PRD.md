@@ -220,7 +220,8 @@ In der Tauri-Desktop-Runtime registriert Rust den globalen Hotkey und ruft nur d
 - `ProviderRouter` – Zuordnung und Auswahl des aktiven Providers
 - `CircuitBreaker` – Automatische Abschaltung bei wiederholten Fehlern
 - `RetryScheduler` – Exponential Backoff bei temporären Fehlern
-- Benutzerdefiniertes Vokabular (`SCRIBER_CUSTOM_VOCAB`)
+- Benutzerdefiniertes Vokabular (`SCRIBER_CUSTOM_VOCAB`), bei Azure MAI 1.5 als `phraseList`
+- Azure MAI nutzt standardmäßig `mai-transcribe-1.5`; `mai-transcribe-1` bleibt als expliziter Fallback konfigurierbar.
 
 ### 5.5 Zusammenfassung (Summarization)
 
@@ -404,6 +405,7 @@ Hinweis: In der Tauri-Desktop-Runtime laeuft Autostart ueber Rust-Commands statt
 - `SCRIBER_MODE` (toggle | push_to_talk)
 - `SCRIBER_DEFAULT_STT` (provider name)
 - `SCRIBER_SONIOX_MODE` (realtime | async)
+- `SCRIBER_AZURE_MAI_MODEL` (default: `mai-transcribe-1.5`)
 - `SCRIBER_LANGUAGE` (ISO-Code oder "auto")
 - `SCRIBER_DEBUG` (0 | 1)
 - `SCRIBER_CUSTOM_VOCAB` (Komma-getrennte Wörter)

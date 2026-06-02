@@ -182,8 +182,8 @@ _PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, dict[str, Any]] = {
     # Smallest AI Pulse pre-recorded REST API documents a 25 MB max file size.
     "smallest": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
     "smallest_async": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
-    # MAI Transcribe LLM Speech API documents a 70 MB limit for this model.
-    "azure_mai": {"max_bytes": 70 * 1024 * 1024, "label": "70MB"},
+    # MAI Transcribe LLM Speech API documents a 300 MB audio-file limit.
+    "azure_mai": {"max_bytes": 300 * 1024 * 1024, "label": "300MB"},
     # AssemblyAI local uploads go through /v2/upload, documented at 2.2GB.
     "assemblyai": {"max_bytes": 2_200_000_000, "label": "2.2GB"},
 }
@@ -3740,6 +3740,7 @@ class ScriberWebController:
                 "azureSpeechRegion": Config.AZURE_SPEECH_REGION or "",
                 "azureMaiSpeechKey": getattr(Config, "AZURE_MAI_SPEECH_KEY", "") or "",
                 "azureMaiRegion": getattr(Config, "AZURE_MAI_REGION", "") or "northeurope",
+                "azureMaiModel": getattr(Config, "AZURE_MAI_MODEL", "") or "mai-transcribe-1.5",
                 "gladia": Config.GLADIA_API_KEY or "",
                 "groq": Config.GROQ_API_KEY or "",
                 "speechmatics": Config.SPEECHMATICS_API_KEY or "",
@@ -3874,6 +3875,9 @@ class ScriberWebController:
             if "azureMaiRegion" in api_keys and isinstance(api_keys["azureMaiRegion"], str):
                 Config.AZURE_MAI_REGION = api_keys["azureMaiRegion"].strip() or "northeurope"
                 os.environ["SCRIBER_AZURE_MAI_REGION"] = Config.AZURE_MAI_REGION
+            if "azureMaiModel" in api_keys and isinstance(api_keys["azureMaiModel"], str):
+                Config.AZURE_MAI_MODEL = api_keys["azureMaiModel"].strip() or "mai-transcribe-1.5"
+                os.environ["SCRIBER_AZURE_MAI_MODEL"] = Config.AZURE_MAI_MODEL
 
             if "googleApiKey" in api_keys and isinstance(api_keys["googleApiKey"], str):
                 Config.GOOGLE_API_KEY = api_keys["googleApiKey"].strip()

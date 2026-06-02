@@ -27,9 +27,10 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from src.config import Config
 from src.runtime.media_tools import require_media_tool
 
-_AZURE_MAI_MODEL = "mai-transcribe-1"
+_AZURE_MAI_DEFAULT_MODEL = "mai-transcribe-1.5"
 _AZURE_MAI_API_VERSION = "2025-10-15"
 _AZURE_MAI_DEFAULT_REGION = "northeurope"
 _AZURE_MAI_SUPPORTED_REGIONS = {"eastus", "northeurope", "westus"}
@@ -66,16 +67,35 @@ def azure_mai_language_locales(language: Language | str | None) -> list[str]:
     return [raw]
 
 
-def build_azure_mai_definition(language: Language | str | None) -> dict[str, Any]:
+def azure_mai_model(model: str | None = None) -> str:
+    selected = model or getattr(Config, "AZURE_MAI_MODEL", "") or _AZURE_MAI_DEFAULT_MODEL
+    return selected.strip() or _AZURE_MAI_DEFAULT_MODEL
+
+
+def azure_mai_phrase_list(custom_vocab: str | None = None) -> list[str]:
+    raw = custom_vocab if custom_vocab is not None else getattr(Config, "CUSTOM_VOCAB", "")
+    return [term.strip() for term in str(raw or "").split(",") if term.strip()]
+
+
+def build_azure_mai_definition(
+    language: Language | str | None,
+    *,
+    model: str | None = None,
+    custom_vocab: str | None = None,
+) -> dict[str, Any]:
+    selected_model = azure_mai_model(model)
     definition: dict[str, Any] = {
         "enhancedMode": {
             "enabled": True,
-            "model": _AZURE_MAI_MODEL,
+            "model": selected_model,
         }
     }
     locales = azure_mai_language_locales(language)
     if locales:
         definition["locales"] = locales
+    phrases = azure_mai_phrase_list(custom_vocab)
+    if selected_model == "mai-transcribe-1.5" and phrases:
+        definition["phraseList"] = {"phrases": phrases}
     return definition
 
 

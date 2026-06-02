@@ -3,6 +3,8 @@ from pathlib import Path
 from src.azure_mai_stt import (
     azure_mai_content_type,
     azure_mai_language_locales,
+    azure_mai_model,
+    azure_mai_phrase_list,
     azure_mai_region,
     azure_mai_transcript_payload_to_text,
     build_azure_mai_definition,
@@ -28,19 +30,47 @@ def test_validate_azure_mai_region_rejects_unsupported():
 
 
 def test_build_azure_mai_definition_sets_model_and_optional_locale():
-    assert build_azure_mai_definition("auto") == {
+    assert build_azure_mai_definition("auto", custom_vocab="") == {
         "enhancedMode": {
             "enabled": True,
-            "model": "mai-transcribe-1",
+            "model": "mai-transcribe-1.5",
         }
     }
-    assert build_azure_mai_definition("de") == {
+    assert build_azure_mai_definition("de", custom_vocab="") == {
         "enhancedMode": {
             "enabled": True,
-            "model": "mai-transcribe-1",
+            "model": "mai-transcribe-1.5",
         },
         "locales": ["de"],
     }
+
+
+def test_azure_mai_model_can_be_overridden(monkeypatch):
+    assert azure_mai_model("") == "mai-transcribe-1.5"
+
+    monkeypatch.setattr("src.azure_mai_stt.Config.AZURE_MAI_MODEL", "mai-transcribe-1")
+    assert (
+        build_azure_mai_definition("en", custom_vocab="")["enhancedMode"]["model"]
+        == "mai-transcribe-1"
+    )
+    assert (
+        build_azure_mai_definition("en", model="custom-model", custom_vocab="")["enhancedMode"]["model"]
+        == "custom-model"
+    )
+
+
+def test_azure_mai_phrase_list_uses_custom_vocab_for_transcribe_15():
+    assert azure_mai_phrase_list("Contoso, Jessie, , Rehaan") == ["Contoso", "Jessie", "Rehaan"]
+
+    definition = build_azure_mai_definition("en", custom_vocab="Contoso, Jessie")
+    assert definition["phraseList"] == {"phrases": ["Contoso", "Jessie"]}
+
+    old_model_definition = build_azure_mai_definition(
+        "en",
+        model="mai-transcribe-1",
+        custom_vocab="Contoso, Jessie",
+    )
+    assert "phraseList" not in old_model_definition
 
 
 def test_azure_mai_transcript_payload_to_text_prefers_combined_phrases():
