@@ -2035,8 +2035,11 @@ class ScriberWebController:
     def _on_audio_level(self, rms: float, *, session_id: str | None = None) -> None:
         if session_id is not None and session_id != self._session_id:
             return
+        level = max(0.0, float(rms))
         self._mark_hot_path(session_id or self._session_id, "first_audio_frame")
-        self._update_input_warning(rms, session_id=session_id)
+        if level >= self._mic_low_rms_clear_threshold:
+            self._mark_hot_path(session_id or self._session_id, "first_audible_audio_frame")
+        self._update_input_warning(level, session_id=session_id)
 
         has_ws_clients = self._has_ws_clients()
         if not has_ws_clients and not self._overlay_audio_enabled:
@@ -2049,12 +2052,12 @@ class ScriberWebController:
         self._last_audio_broadcast = now
         # Update native overlay waveform only when recording overlay is active
         if self._overlay_audio_enabled:
-            update_overlay_audio(rms)
+            update_overlay_audio(level)
         if not has_ws_clients:
             return
         if session_id is None:
             session_id = self._session_id
-        payload = audio_level_event(float(rms), session_id=session_id)
+        payload = audio_level_event(level, session_id=session_id)
         self._loop.call_soon_threadsafe(
             lambda: asyncio.create_task(self.broadcast(payload))
         )
@@ -2063,7 +2066,7 @@ class ScriberWebController:
         if session_id is not None and session_id != self._session_id:
             return
         logger.debug(f"Transcription received: final={is_final}, len={len(text) if text else 0}")
-        if is_final:
+        if is_final and text:
             self._mark_hot_path(session_id or self._session_id, "first_final_token")
             with self._current_lock:
                 if self._current and (session_id is None or self._current.id == session_id):

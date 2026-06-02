@@ -21,6 +21,8 @@ SEGMENTS_BY_REQUIREMENT = {
 }
 STOP_TO_TEXT_SEGMENT = "stop_requested_to_first_paste_ms"
 TEXT_BEFORE_STOP_SEGMENT = "first_paste_to_stop_requested_ms"
+PROVIDER_TRANSCRIPT_SEGMENT = "hotkey_received_to_first_final_token_ms"
+AUDIBLE_AUDIO_SEGMENT = "hotkey_received_to_first_audible_audio_frame_ms"
 TEXT_TARGET_WINDOW_FLAG = "--_text-target-window"
 
 
@@ -189,8 +191,18 @@ def requirement_values(
     values: list[float] = []
     after_stop_samples = 0
     already_injected_samples = 0
+    provider_transcript_samples = 0
+    provider_transcript_values: list[float] = []
+    audible_audio_samples = 0
+    audible_audio_values: list[float] = []
     for sample in samples:
         segments = sample.get("segments") or {}
+        if AUDIBLE_AUDIO_SEGMENT in segments:
+            audible_audio_samples += 1
+            audible_audio_values.append(float(segments[AUDIBLE_AUDIO_SEGMENT]))
+        if PROVIDER_TRANSCRIPT_SEGMENT in segments:
+            provider_transcript_samples += 1
+            provider_transcript_values.append(float(segments[PROVIDER_TRANSCRIPT_SEGMENT]))
         if STOP_TO_TEXT_SEGMENT in segments:
             values.append(float(segments[STOP_TO_TEXT_SEGMENT]))
             after_stop_samples += 1
@@ -202,8 +214,13 @@ def requirement_values(
 
     return values, {
         "sourceSegments": [STOP_TO_TEXT_SEGMENT, TEXT_BEFORE_STOP_SEGMENT],
+        "diagnosticSegments": [PROVIDER_TRANSCRIPT_SEGMENT, AUDIBLE_AUDIO_SEGMENT],
         "afterStopInjectionSamples": after_stop_samples,
         "alreadyInjectedBeforeStopSamples": already_injected_samples,
+        "audibleAudioSamples": audible_audio_samples,
+        "audibleAudioDurations": summarize(audible_audio_values),
+        "providerTranscriptSamples": provider_transcript_samples,
+        "providerTranscriptDurations": summarize(provider_transcript_values),
     }
 
 
@@ -364,7 +381,12 @@ def build_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         values, details = requirement_values(samples, requirement, segment_name)
         status = "measured" if values else "missing"
         if requirement == "stop_to_text_injection" and not values:
-            status = "missing_text_injection"
+            if details.get("providerTranscriptSamples", 0):
+                status = "missing_injection_after_transcript"
+            elif details.get("audibleAudioSamples", 0):
+                status = "missing_provider_transcript"
+            else:
+                status = "missing_audible_audio"
         requirements[requirement] = {
             "status": status,
             "segment": segment_name,
@@ -408,6 +430,8 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
         "segments": {
             "hotkey_received_to_mic_ready_ms": 120.0,
             "hotkey_received_to_first_audio_frame_ms": 180.0,
+            "hotkey_received_to_first_audible_audio_frame_ms": 190.0,
+            "hotkey_received_to_first_final_token_ms": 240.0,
             "hotkey_received_to_first_paste_ms": 260.0,
             "first_paste_to_stop_requested_ms": 350.0,
             "stop_requested_to_session_finished_ms": 90.0,

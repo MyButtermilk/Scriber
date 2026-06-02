@@ -100,6 +100,63 @@ def test_recording_hot_path_summary_treats_text_before_stop_as_zero_wait():
     assert stop_requirement["alreadyInjectedBeforeStopSamples"] == 1
 
 
+def test_recording_hot_path_summary_reports_missing_audible_audio():
+    summary = build_summary(
+        [
+            {
+                "segments": {
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_session_finished_ms": 90.0,
+                }
+            }
+        ]
+    )
+
+    stop_requirement = summary["requirements"]["stop_to_text_injection"]
+    assert stop_requirement["status"] == "missing_audible_audio"
+    assert stop_requirement["audibleAudioSamples"] == 0
+    assert stop_requirement["audibleAudioDurations"]["count"] == 0
+    assert stop_requirement["providerTranscriptSamples"] == 0
+    assert stop_requirement["providerTranscriptDurations"]["count"] == 0
+
+
+def test_recording_hot_path_summary_reports_missing_provider_transcript_after_audible_audio():
+    summary = build_summary(
+        [
+            {
+                "segments": {
+                    "hotkey_received_to_first_audible_audio_frame_ms": 210.0,
+                    "stop_requested_to_session_finished_ms": 90.0,
+                }
+            }
+        ]
+    )
+
+    stop_requirement = summary["requirements"]["stop_to_text_injection"]
+    assert stop_requirement["status"] == "missing_provider_transcript"
+    assert stop_requirement["audibleAudioSamples"] == 1
+    assert stop_requirement["audibleAudioDurations"]["p95Ms"] == 210.0
+    assert stop_requirement["providerTranscriptSamples"] == 0
+
+
+def test_recording_hot_path_summary_reports_missing_injection_after_transcript():
+    summary = build_summary(
+        [
+            {
+                "segments": {
+                    "hotkey_received_to_first_final_token_ms": 240.0,
+                    "stop_requested_to_session_finished_ms": 90.0,
+                }
+            }
+        ]
+    )
+
+    stop_requirement = summary["requirements"]["stop_to_text_injection"]
+    assert stop_requirement["status"] == "missing_injection_after_transcript"
+    assert stop_requirement["providerTranscriptSamples"] == 1
+    assert stop_requirement["providerTranscriptDurations"]["p95Ms"] == 240.0
+
+
 def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
     repo_root = Path(__file__).resolve().parents[2]
     script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(

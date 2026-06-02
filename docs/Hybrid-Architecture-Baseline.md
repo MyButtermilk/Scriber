@@ -105,6 +105,8 @@ recording sample has run and text injection has completed:
 
 - `hotkey_received_to_mic_ready_ms`
 - `hotkey_received_to_first_audio_frame_ms`
+- `hotkey_received_to_first_audible_audio_frame_ms`
+- `hotkey_received_to_first_final_token_ms`
 - `stop_requested_to_first_paste_ms`
 - `first_paste_to_stop_requested_ms` for realtime text that was already
   injected before stop
@@ -113,6 +115,21 @@ recording sample has run and text injection has completed:
 `first_audio_frame` is marked from the audio callback path before WebSocket/UI
 throttling decisions, so it measures backend audio arrival even without a
 connected frontend client.
+
+`first_audible_audio_frame` is marked only when the RMS level reaches the same
+threshold that clears the low-microphone warning. This distinguishes a live
+audio stream that is connected but silent from one that actually carries speech
+or other audible input. `first_final_token` is marked only for non-empty final
+provider transcript text.
+
+For stop-to-text-injection, the recording benchmark reports the more specific
+status:
+
+- `missing_audible_audio`: frames arrived, but no audible input was observed.
+- `missing_provider_transcript`: audible input was observed, but no final
+  provider transcript arrived.
+- `missing_injection_after_transcript`: provider text arrived, but no paste
+  callback happened.
 
 ## Still Open
 

@@ -4,6 +4,137 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Audible Audio Hotpath Diagnostics
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m py_compile `
+  scripts\measure_recording_hot_path_baseline.py `
+  tests\perf\test_recording_hot_path_baseline_script.py `
+  tests\test_web_api_hot_path_metrics.py `
+  src\web_api.py
+
+venv\Scripts\python.exe -m pytest `
+  tests\perf\test_recording_hot_path_baseline_script.py `
+  tests\test_web_api_hot_path_metrics.py
+
+venv\Scripts\python.exe scripts\measure_recording_hot_path_baseline.py `
+  --validate-only `
+  --output tmp\hybrid-baseline\recording-hotpath-diagnostic-validate-20260602.json
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 `
+  -SkipFrontendBuild `
+  -BundleMediaTools `
+  -CopyToTauriRelease
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1 `
+  -ExePath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\scriber-desktop.exe" `
+  -DataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\tauri-smoke-data\audible-diagnostic-sidecar-20260602" `
+  -DisableDevFallback `
+  -StabilityDurationSec 3 `
+  -StabilityProbeIntervalSec 1 `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\tauri-audible-diagnostic-sidecar-20260602.json"
+
+# Before the live command, .env was loaded into the process environment only;
+# secret values were not printed and .env was not modified.
+# The live command additionally set process-local:
+# $env:SCRIBER_MIC_DEVICE = 'Stereomix (Realtek HD Audio Stereo input)'
+# $env:SCRIBER_FAVORITE_MIC = ''
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 1 `
+  -DisableDevFallback `
+  -SkipUploadExportBenchmark `
+  -SkipWsBenchmark `
+  -SkipHistoryScrollBenchmark `
+  -RecordHotPathSamples `
+  -RecordingHotPathIterations 1 `
+  -RecordingHotPathSeconds 10 `
+  -RecordingHotPathTimeoutSec 120 `
+  -RecordingHotPathTextTargetFile "tmp\hybrid-baseline\live-hotpath-text-target-audible-diagnostic-20260602.txt" `
+  -RecordingHotPathTextTargetSettleSec 1.5 `
+  -RecordingHotPathSpeechPrompt "Hallo Scriber. Dies ist ein Test der Transkription fuer die Hybrid Architektur Messung." `
+  -RecordingHotPathSpeechDelaySec 1.0 `
+  -OutputPath "tmp\hybrid-baseline\hybrid-baseline-live-hotpath-audible-diagnostic-20260602.json"
+```
+
+Result: implemented and validated a sharper live-recording diagnostic boundary.
+The previous `first_audio_frame` marker proved that frames reached the backend,
+but could not distinguish silent frames from speech/audio. The hotpath now also
+records `first_audible_audio_frame` when RMS reaches the existing low-mic clear
+threshold.
+
+Implemented improvements:
+
+- `src\web_api.py` now marks `first_audible_audio_frame` only when RMS is high
+  enough to clear the low-input warning threshold.
+- `src\web_api.py` now marks `first_final_token` only for non-empty final
+  transcript text.
+- `scripts\measure_recording_hot_path_baseline.py` now classifies
+  stop-to-text-injection failures as:
+  - `missing_audible_audio`: frames arrived, but no audible input was observed.
+  - `missing_provider_transcript`: audible input was observed, but no final
+    provider transcript arrived.
+  - `missing_injection_after_transcript`: provider text arrived, but no paste
+    callback happened.
+- The recording-hotpath JSON now includes diagnostic counts and durations for
+  audible audio and provider transcript arrival.
+
+Evidence:
+
+- Focused tests: `17 passed`.
+- Validate artifact:
+  `tmp\hybrid-baseline\recording-hotpath-diagnostic-validate-20260602.json`.
+- Rebuilt sidecar:
+  `Frontend\src-tauri\target\release\backend\scriber-backend.exe`.
+- Rebuilt sidecar size: 33,443,742 bytes.
+- Rebuilt sidecar timestamp: 2026-06-02 05:24:24 +02:00.
+- Tauri sidecar smoke artifact:
+  `tmp\hybrid-baseline\tauri-audible-diagnostic-sidecar-20260602.json`.
+- Tauri sidecar smoke:
+  - Runtime mode: `tauri-supervised`.
+  - Launch kind: `sidecar`.
+  - Stability verified: true.
+  - Samples: 3.
+  - Backend working-set peak growth: 0.05 MB.
+  - Combined CPU max: 0.06%.
+  - Cleanup verified: true.
+- Live diagnostic baseline artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-live-hotpath-audible-diagnostic-20260602.json`.
+- Live diagnostic recording child artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-live-hotpath-audible-diagnostic-20260602-recording-hot-path-1.json`.
+- Live diagnostic result:
+  - Runtime mode: `tauri-supervised`.
+  - Launch kind: `sidecar`.
+  - UI visible: 1,931.81 ms.
+  - Backend ready: 2,736.33 ms.
+  - Hotkey/API start to mic ready: 760.646 ms.
+  - Hotkey/API start to first audio frame: 777.673 ms.
+  - Stop-to-text-injection status: `missing_audible_audio`.
+  - Audible audio samples: 0.
+  - Provider transcript samples: 0.
+  - Target window captured chars: 0.
+
+Goal coverage:
+
+- Phase 0: separates "backend received audio frames" from "backend received
+  audible speech/audio" for hotkey-to-audio analysis.
+- Phase 0: makes the remaining stop-to-text-injection gap actionable by showing
+  whether the next failed run is input routing, provider STT, or injector/focus.
+- Phase 2/3: verifies the rebuilt Tauri-supervised sidecar still starts without
+  dev fallback after the instrumentation change.
+
+Remaining limits:
+
+- Stop-to-text-injection remains incomplete. The latest Stereomix/TTS attempt
+  did not prove audible input reached the backend, so it cannot prove provider
+  or injector behavior.
+- A real spoken live sample or a verified loopback route with audible RMS is
+  still required to close Phase 0 stop-to-text-injection.
+- This is not the 30-minute live microphone/STT provider stability pass.
+- Physical global-hotkey dispatch, USB/Bluetooth/dock/default-mic hardware
+  matrix, real signing, and updater publication remain open.
+
 ## 2026-06-02 - Live Hotpath Artifact Persistence + Loopback Attempts
 
 Commands:
