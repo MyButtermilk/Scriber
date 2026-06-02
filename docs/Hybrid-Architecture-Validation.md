@@ -90,7 +90,9 @@ Remaining limits:
   580.09 MiB and still needs a deliberate reduction pass if the 450-MiB
   installed Lite-App target is kept.
 - ffmpeg/ffprobe dominate the current backend resource footprint; reducing that
-  likely requires a slimmer media-tools bundle or on-demand media tools.
+  requires a smaller compatible media-tools bundle or another full-function
+  packaging strategy. Removing ffmpeg/ffprobe from the standard Windows build
+  is intentionally out of scope because the app needs that functionality.
 
 ## 2026-06-02 - Safe Installed Live Recording 5-Minute Gate
 

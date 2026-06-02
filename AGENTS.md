@@ -403,7 +403,7 @@ Current summarization default is `gemini-flash-latest`.
 - Full bundled desktop release activation: actual Authenticode signing step/certificate, Tauri updater signing keys, signed update artifacts, and published `latest.json`. The Authenticode validation gate is wired, but CI still needs a real signing provider before enabling it.
 - Optional longer live recording/provider soak tests. A 5-minute installed `azure_mai` + Insta360 Link live run passed with `-DisableLiveTextInjection`; a 30-minute installed idle stability gate has also passed.
 - Remaining CPU-heavy media preprocessing profiling around ffmpeg/provider behavior.
-- Installed app size reduction. The setup artifact is under the 220 MiB gate, but the current bundled backend resource tree is still dominated by full ffmpeg/ffprobe binaries.
+- Installed app size reduction must preserve bundled media-tool functionality. The setup artifact is under the 220 MiB gate, but the current bundled backend resource tree is still dominated by full ffmpeg/ffprobe binaries; do not solve this by removing ffmpeg/ffprobe from the standard Windows build.
 - More hardware regression tests for dock connect/disconnect, USB mic add/remove, and favorite mic fallback.
 - Stronger typed API contract between backend and frontend across remaining REST endpoints; Settings and transcript-history consumers already use shared frontend API types.
 - Splitting `web_api.py` into smaller domain modules.
