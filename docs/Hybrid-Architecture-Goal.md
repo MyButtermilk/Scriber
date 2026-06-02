@@ -168,7 +168,8 @@ architecture work. It replaces earlier incomplete goal text.
     Runtime-Import-Gates, Updater-Plugin-Wiring,
     Authenticode-/Updater-Metadaten-Gates, Authenticode-Report-Output,
     Updater-Publikationsreport-Generator, CI-Post-Publish-Updater-
-    Verifikation und installierte Smoke-Gates sind umgesetzt.
+    Verifikation, finaler Release-Readiness-Runner und installierte
+    Smoke-Gates sind umgesetzt.
   - Python-Audio bleibt Default. `SCRIBER_AUDIO_ENGINE=rust` ist weiterhin nur
     ein requested Feature Flag, solange kein gemessener Rust-Audio-Prototyp
     existiert.
@@ -212,7 +213,10 @@ architecture work. It replaces earlier incomplete goal text.
   bewiesen; der Authenticode-Report-Output und der Report-Generator fuer den
   spaeteren Published-`latest.json`-Nachweis sind vorhanden und der Tag-
   Release-Workflow fuehrt diesen Published-Check nach der GitHub-Release-
-  Veroeffentlichung aus, sobald Updater-Signing konfiguriert ist.
+  Veroeffentlichung aus, sobald Updater-Signing konfiguriert ist. Der
+  finale Release-Readiness-Runner kann die Hardware-Matrix, Authenticode,
+  Updater-Publikation und den finalen Aggregat-Check in einem Operator-Lauf
+  zusammenfuehren, sobald die externen Nachweise existieren.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen. Einzel-Smoke, gefuehrter Windows-Runner und
   Aggregat-Validator fuer diese Matrix sind vorhanden; die physischen USB-,

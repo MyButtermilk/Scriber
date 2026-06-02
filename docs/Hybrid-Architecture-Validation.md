@@ -3823,3 +3823,54 @@ Remaining limits:
 - This still does not close the physical hardware matrix. The runner must be
   executed on a Windows machine with the required USB/Bluetooth/dock/favorite
   microphone conditions and its artifacts must pass the matrix validator.
+
+## 2026-06-02 - Final Hybrid Release Readiness Runner
+
+Commands:
+
+```powershell
+python -m py_compile tests\test_hybrid_release_readiness_runner.py
+
+python -m pytest tests\test_hybrid_release_readiness_runner.py
+```
+
+Result: implemented and covered by focused tests. The local validation did not
+run the final release gate against real signed/published artifacts; it verified
+the final runner wiring, plan output, report reuse mode, and early validation of
+required Authenticode artifact paths.
+
+Implemented improvements:
+
+- Added `scripts\run_hybrid_release_readiness.ps1` as the top-level final
+  release-readiness runner.
+- The runner validates the physical microphone matrix, creates or reuses the
+  updater publication report, creates or reuses the Authenticode report, and
+  then runs `scripts\validate_hybrid_release_readiness.py`.
+- `-PlanOnly` writes `hybrid-release-readiness-runner-plan.json` so an operator
+  can review exact commands and output paths before touching external release
+  endpoints or artifacts.
+- `-UseExistingAuthenticodeReport` and `-UseExistingUpdaterPublicationReport`
+  support CI/release runs where those reports have already been produced.
+
+Evidence:
+
+- `tests\test_hybrid_release_readiness_runner.py`: `4 passed`.
+- Python compile check: passed.
+- Plan-only test verifies all four command steps are emitted.
+- Missing-Authenticode-path test verifies the runner fails before backend or
+  external release work when required signing artifact paths are absent.
+
+Goal coverage:
+
+- Phase 6: reduces the final release readiness path to one operator/CI command
+  once real signing and publication evidence exists.
+- Phase 7: adds regression coverage for the final runner's command ordering and
+  report reuse behavior.
+- Phase 8: prevents final completion from depending on a hand-assembled chain
+  of independent evidence commands.
+
+Remaining limits:
+
+- This still does not produce external evidence. The runner is the final
+  orchestration layer; it must be executed after real hardware matrix,
+  Authenticode signing, and signed updater publication evidence exists.
