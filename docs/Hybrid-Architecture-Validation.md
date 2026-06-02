@@ -3716,3 +3716,55 @@ Remaining limits:
 
 - This does not sign artifacts. It ensures the post-signing validation result is
   persisted once a real certificate or cloud-signing provider is available.
+
+## 2026-06-02 - Release Workflow Published-Updater Verification
+
+Commands:
+
+```powershell
+python -m py_compile tests\test_tauri_updater_release_gates.py
+python -m py_compile tests\test_verify_tauri_updater_publication.py
+
+python -m pytest tests\test_tauri_updater_release_gates.py
+python -m pytest tests\test_verify_tauri_updater_publication.py
+```
+
+Result: implemented and covered by focused workflow tests. No live GitHub
+release publication was performed in this local validation entry.
+
+Implemented improvements:
+
+- `.github\workflows\release-windows.yml` now runs
+  `scripts\verify_tauri_updater_publication.py` after
+  `softprops/action-gh-release` on `v*` tag releases when Tauri updater signing
+  is configured.
+- The workflow uses `SCRIBER_TAURI_UPDATER_ENDPOINT` when configured and falls
+  back to the default GitHub `latest/download/latest.json` endpoint.
+- The post-publish check retries the fetch up to 6 times with a 10-second delay
+  to tolerate short GitHub release-asset propagation delays.
+- The workflow writes `release-artifacts\updater-publication.json` and uploads
+  it as the `scriber-windows-publication-evidence` CI artifact when the report
+  exists.
+- Unsigned/no-updater tag releases skip the post-publish verification instead
+  of failing unrelated release paths.
+
+Evidence:
+
+- `tests\test_tauri_updater_release_gates.py`: `9 passed`.
+- `tests\test_verify_tauri_updater_publication.py`: `7 passed`.
+- Python compile check: passed.
+- The workflow regression test asserts that publication verification runs after
+  GitHub release publishing and before the publication evidence upload step.
+
+Goal coverage:
+
+- Phase 6: wires the previously local published-updater evidence generator into
+  the actual release workflow once signing is configured.
+- Phase 7: adds regression coverage so the post-publish verification step and
+  evidence artifact cannot be silently removed.
+
+Remaining limits:
+
+- This still does not prove a real tag release has published a signed
+  `latest.json`; it makes the CI workflow produce that proof automatically when
+  the external signing/release configuration is present.

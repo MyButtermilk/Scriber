@@ -111,3 +111,35 @@ jobs:
         with:
           files: release-artifacts/*
           generate_release_notes: true
+
+      - name: Verify published updater metadata
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
+          SCRIBER_TAURI_UPDATER_ENDPOINT: ${{ vars.SCRIBER_TAURI_UPDATER_ENDPOINT }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PATH }}
+        run: |
+          $hasUpdaterSigning = $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY -and ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)
+          if (-not $hasUpdaterSigning) {
+            Write-Host "Skipping published updater metadata verification because Tauri updater signing is not configured."
+            exit 0
+          }
+          $endpoint = $env:SCRIBER_TAURI_UPDATER_ENDPOINT
+          if (-not $endpoint) {
+            $endpoint = "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
+          }
+          python scripts\verify_tauri_updater_publication.py `
+            --url $endpoint `
+            --metadata Frontend\src-tauri\target\release\release-metadata\latest.json `
+            --attempts 6 `
+            --retry-delay-sec 10 `
+            --output release-artifacts\updater-publication.json
+
+      - name: Upload publication evidence
+        if: startsWith(github.ref, 'refs/tags/') && hashFiles('release-artifacts/updater-publication.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: scriber-windows-publication-evidence
+          path: release-artifacts/updater-publication.json

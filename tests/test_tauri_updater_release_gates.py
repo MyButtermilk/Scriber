@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATE_SCRIPT = REPO_ROOT / "scripts" / "validate_tauri_updater_metadata.py"
 PREPARE_SCRIPT = REPO_ROOT / "scripts" / "prepare_tauri_updater_config.py"
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
 
 
 def run_script(script: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -219,3 +220,22 @@ def test_prepare_tauri_updater_config_requires_signing_key(tmp_path: Path) -> No
 
     assert result.returncode == 1
     assert "TAURI_SIGNING_PRIVATE_KEY" in result.stderr
+
+
+def test_release_workflow_verifies_published_updater_metadata_after_release() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    publish_index = workflow.index("Publish GitHub release")
+    verify_index = workflow.index("Verify published updater metadata")
+    upload_index = workflow.index("Upload publication evidence")
+    assert publish_index < verify_index < upload_index
+    assert "scripts\\verify_tauri_updater_publication.py" in workflow
+    assert "--output release-artifacts\\updater-publication.json" in workflow
+    assert "--attempts 6" in workflow
+    assert "--retry-delay-sec 10" in workflow
+    assert "SCRIBER_TAURI_UPDATER_PUBLIC_KEY" in workflow
+    assert "TAURI_SIGNING_PRIVATE_KEY" in workflow
+    assert "TAURI_SIGNING_PRIVATE_KEY_PATH" in workflow
+    assert "SCRIBER_TAURI_UPDATER_ENDPOINT" in workflow
+    assert "latest/download/latest.json" in workflow
+    assert "hashFiles('release-artifacts/updater-publication.json')" in workflow

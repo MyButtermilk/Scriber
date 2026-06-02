@@ -122,6 +122,36 @@ def test_verify_publication_uses_fetcher_and_writes_expected_report(monkeypatch,
     assert report["ok"] is True
     assert report["statusCode"] == 200
     assert report["metadataSha256"] == sha256(body).hexdigest()
+    assert report["attempt"] == 1
+    assert report["attempts"] == 1
+
+
+def test_verify_publication_retries_until_metadata_is_available(monkeypatch, tmp_path: Path) -> None:
+    body = signed_latest_json_bytes()
+    local_metadata = tmp_path / "latest.json"
+    local_metadata.write_bytes(body)
+    calls: list[str] = []
+
+    def fake_fetch(url: str, *, timeout_sec: float) -> tuple[int, bytes, str]:
+        calls.append(url)
+        if len(calls) == 1:
+            return 404, b"not found", url
+        return 200, body, url
+
+    monkeypatch.setattr(publication, "fetch_published_metadata", fake_fetch)
+    monkeypatch.setattr(publication.time, "sleep", lambda _seconds: None)
+
+    report = publication.verify_publication(
+        url="https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
+        local_metadata_path=local_metadata,
+        attempts=2,
+        retry_delay_sec=0.01,
+    )
+
+    assert report["ok"] is True
+    assert report["attempt"] == 2
+    assert report["attempts"] == 2
+    assert len(calls) == 2
 
 
 def test_verify_publication_does_not_fetch_non_https_url(monkeypatch, tmp_path: Path) -> None:

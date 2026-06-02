@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -102,6 +103,33 @@ def verify_publication(
     local_metadata_path: Path,
     platform: str = "windows-x86_64",
     timeout_sec: float = 20.0,
+    attempts: int = 1,
+    retry_delay_sec: float = 2.0,
+) -> dict[str, Any]:
+    normalized_attempts = max(1, attempts)
+    last_report: dict[str, Any] | None = None
+    for attempt in range(1, normalized_attempts + 1):
+        report = verify_publication_once(
+            url=url,
+            local_metadata_path=local_metadata_path,
+            platform=platform,
+            timeout_sec=timeout_sec,
+        )
+        report["attempt"] = attempt
+        report["attempts"] = normalized_attempts
+        last_report = report
+        if report["ok"] or attempt >= normalized_attempts:
+            return report
+        time.sleep(max(0.0, retry_delay_sec))
+    return last_report or {}
+
+
+def verify_publication_once(
+    *,
+    url: str,
+    local_metadata_path: Path,
+    platform: str,
+    timeout_sec: float,
 ) -> dict[str, Any]:
     if not is_https_url(url):
         return build_publication_report(
@@ -176,6 +204,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--metadata", default=str(DEFAULT_METADATA))
     parser.add_argument("--platform", default="windows-x86_64")
     parser.add_argument("--timeout-sec", type=float, default=20.0)
+    parser.add_argument("--attempts", type=int, default=1)
+    parser.add_argument("--retry-delay-sec", type=float, default=2.0)
     parser.add_argument("--output", default="")
     return parser.parse_args(argv)
 
@@ -187,6 +217,8 @@ def main(argv: list[str]) -> int:
         local_metadata_path=Path(args.metadata).expanduser().resolve(),
         platform=args.platform,
         timeout_sec=args.timeout_sec,
+        attempts=args.attempts,
+        retry_delay_sec=args.retry_delay_sec,
     )
     write_output(payload, args.output)
     print(json.dumps(payload, separators=(",", ":")))

@@ -165,8 +165,8 @@ architecture work. It replaces earlier incomplete goal text.
     ffmpeg/ffprobe-Bundling, yt-dlp-Bundling, ONNXRuntime/Silero-VAD
     Runtime-Import-Gates, Updater-Plugin-Wiring,
     Authenticode-/Updater-Metadaten-Gates, Authenticode-Report-Output,
-    Updater-Publikationsreport-Generator und installierte Smoke-Gates sind
-    umgesetzt.
+    Updater-Publikationsreport-Generator, CI-Post-Publish-Updater-
+    Verifikation und installierte Smoke-Gates sind umgesetzt.
   - Python-Audio bleibt Default. `SCRIBER_AUDIO_ENGINE=rust` ist weiterhin nur
     ein requested Feature Flag, solange kein gemessener Rust-Audio-Prototyp
     existiert.
@@ -208,7 +208,9 @@ architecture work. It replaces earlier incomplete goal text.
   Setup-Artefakt unter dem 220 MiB Gate durchgelaufen. Echte Signierung und
   reale Updater-Veroeffentlichung sind externe Release-Schritte und noch nicht
   bewiesen; der Authenticode-Report-Output und der Report-Generator fuer den
-  spaeteren Published-`latest.json`-Nachweis sind vorhanden.
+  spaeteren Published-`latest.json`-Nachweis sind vorhanden und der Tag-
+  Release-Workflow fuehrt diesen Published-Check nach der GitHub-Release-
+  Veroeffentlichung aus, sobald Updater-Signing konfiguriert ist.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen.
 - Phase 8 hat synthetische Guards, eine 30-Minuten-Idle-Stability, mehrere
