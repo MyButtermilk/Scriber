@@ -33,6 +33,7 @@ param(
     [string]$InstallerPath = "",
     [string]$InstallDir = "",
     [string]$DataDir = "",
+    [string]$OutputPath = "",
     [switch]$OccupyDefaultPort,
     [switch]$SimulateBackendCrash,
     [switch]$SimulateBackendShutdown,
@@ -69,6 +70,23 @@ function Assert-UnderRoot {
     if (-not $pathFull.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "$Label must stay under repo root. Got: $pathFull"
     }
+}
+
+function Write-SmokeJson {
+    param(
+        [object]$Payload,
+        [string]$Path,
+        [string]$Root
+    )
+
+    $json = $Payload | ConvertTo-Json -Compress -Depth 8
+    if ($Path) {
+        $outputFull = Convert-ToFullPath -Path $Path
+        Assert-UnderRoot -Root (Join-Path $Root "tmp") -Path $outputFull -Label "Smoke output"
+        New-Item -ItemType Directory -Force -Path (Split-Path $outputFull) | Out-Null
+        Set-Content -LiteralPath $outputFull -Value $json -Encoding UTF8
+    }
+    return $json
 }
 
 function Invoke-ProcessChecked {
@@ -444,7 +462,7 @@ try {
         $cleanupCompleted = $true
     }
 
-    [pscustomobject]$result | ConvertTo-Json -Compress -Depth 8
+    Write-SmokeJson -Payload ([pscustomobject]$result) -Path $OutputPath -Root $RepoRoot
 } finally {
     if (-not $KeepInstalled -and -not $cleanupCompleted) {
         $uninstaller = Resolve-InstalledUninstaller -Root $InstallDir

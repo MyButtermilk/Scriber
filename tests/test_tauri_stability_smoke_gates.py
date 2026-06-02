@@ -69,3 +69,18 @@ def test_installer_uninstall_smoke_is_a_strict_build_gate() -> None:
     assert "[switch]$RunInstallerUninstallSmoke" in build
     assert "$RunInstallerUninstallSmoke" in build
     assert '$installerSmokeArgs += "-VerifyUninstall"' in build
+
+
+def test_desktop_and_installer_smokes_can_persist_json_output_under_tmp() -> None:
+    desktop = read_script("scripts/smoke_tauri_desktop.ps1")
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+
+    for script in (desktop, installer):
+        assert '[string]$OutputPath = ""' in script
+        assert "function Write-SmokeJson" in script
+        assert 'Assert-UnderRoot -Root (Join-Path $Root "tmp") -Path $outputFull -Label "Smoke output"' in script
+        assert "Set-Content -LiteralPath $outputFull -Value $json -Encoding UTF8" in script
+        assert "ConvertTo-Json -Compress -Depth 8" in script
+
+    assert "Write-SmokeJson -Payload $result -Path $OutputPath -Root $RepoRoot" in desktop
+    assert "Write-SmokeJson -Payload ([pscustomobject]$result) -Path $OutputPath -Root $RepoRoot" in installer

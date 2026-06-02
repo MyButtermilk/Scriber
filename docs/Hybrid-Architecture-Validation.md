@@ -4,6 +4,114 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Installer Legacy Upgrade Stability + Smoke Output Artifacts
+
+Commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -LegacyDataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber" `
+  -VerifyLegacyDataMigration `
+  -SimulateUpgrade `
+  -VerifyUninstall `
+  -StabilityDurationSec 120 `
+  -StabilityProbeIntervalSec 10 `
+  -MaxBackendWorkingSetGrowthMB 25 `
+  -MaxIdleCpuPercent 2
+
+$scripts = @('scripts\smoke_tauri_desktop.ps1','scripts\smoke_windows_installer.ps1')
+foreach ($script in $scripts) {
+  $tokens=$null; $errors=$null
+  $null=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors)
+  if ($errors.Count) { $errors | ForEach-Object { Write-Error "${script}: $($_.Message)" }; exit 1 }
+}
+'OK'
+
+venv\Scripts\python.exe -m py_compile tests\test_tauri_stability_smoke_gates.py
+venv\Scripts\python.exe -m pytest tests\test_tauri_stability_smoke_gates.py
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1 `
+  -ExePath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\scriber-desktop.exe" `
+  -DataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\tauri-smoke-data\outputpath-20260602" `
+  -DisableDevFallback `
+  -StabilityDurationSec 5 `
+  -StabilityProbeIntervalSec 2 `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\tauri-smoke-outputpath-20260602.json"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -LegacyDataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber" `
+  -VerifyLegacyDataMigration `
+  -VerifyUninstall `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\installer-smoke-outputpath-20260602.json"
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\smoke_tauri_desktop.ps1` now supports `-OutputPath` and writes the
+  same JSON payload it emits to stdout.
+- `scripts\smoke_windows_installer.ps1` now supports `-OutputPath` for
+  persisted installer-smoke JSON.
+- Smoke output paths are restricted to the repository `tmp` tree before writing.
+
+Evidence:
+
+- Long installer smoke:
+  - Runtime mode: `tauri-supervised`.
+  - Launch kind: `sidecar`.
+  - Legacy migration verified from
+    `C:\Users\Alexander.Immler\Documents\Github\Scriber`.
+  - Migrated files: `.env` 2,162 bytes, `settings.json` 944 bytes,
+    `transcripts.db` 24,276,992 bytes.
+  - Upgrade verified: true.
+  - Upgrade sentinel preserved: true.
+  - Silent uninstall verified: true.
+  - Runtime cleanup verified: true.
+  - Stability duration after upgrade: 120 seconds.
+  - Stability samples after upgrade: 12.
+  - Backend working set start/end/max: 187.66 MB / 187.68 MB / 187.73 MB.
+  - Backend working-set peak growth: 0.07 MB under the 25 MB gate.
+  - Combined app+backend idle CPU max/avg: 0.03% / 0.02% under the 2% gate.
+  - `/api/health` and `/api/state` remained responsive for all samples.
+- Output artifact smoke:
+  - Artifact:
+    `tmp\hybrid-baseline\tauri-smoke-outputpath-20260602.json`.
+  - Runtime mode: `tauri-supervised`.
+  - Launch kind: `sidecar`.
+  - Stability samples: 3.
+  - Backend working-set growth: 0.07 MB.
+  - Combined idle CPU average: 0.01%.
+  - Cleanup verified: true.
+- Installer output artifact smoke:
+  - Artifact:
+    `tmp\hybrid-baseline\installer-smoke-outputpath-20260602.json`.
+  - Runtime mode: `tauri-supervised`.
+  - Launch kind: `sidecar`.
+  - Legacy migration verified: true.
+  - Silent uninstall verified: true.
+  - Cleanup verified: true.
+- PowerShell parser check passed for both smoke scripts.
+- `tests\test_tauri_stability_smoke_gates.py`: `6 passed`.
+
+Goal coverage:
+
+- Phase 6: strengthens fresh install, legacy-data migration, upgrade,
+  uninstall, data preservation, and installed sidecar startup evidence.
+- Phase 7: adds regression coverage for persisted smoke JSON artifacts.
+- Phase 8: adds an installed idle stability gate with explicit memory and CPU
+  thresholds.
+
+Remaining limits:
+
+- This is an installed idle stability run, not a real 30-minute live STT
+  provider/microphone session.
+- It does not close the physical USB/Bluetooth/dock/default-mic manual matrix.
+- It does not replace real Authenticode signing keys or a published signed
+  updater manifest.
+
 ## 2026-06-02 - Synthetic 30-Minute Transcript Buffer Growth Guard
 
 Commands:

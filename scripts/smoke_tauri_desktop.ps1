@@ -36,6 +36,7 @@ param(
     [string]$PythonPath = "",
     [string]$BackendExePath = "",
     [string]$DataDir = "",
+    [string]$OutputPath = "",
     [string]$SessionToken = "",
     [int]$TimeoutSec = 60,
     [int]$BackendHealthTimeoutSec = 20,
@@ -390,6 +391,37 @@ function Convert-ToFullPath {
     param([string]$Path)
 
     return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+}
+
+function Assert-UnderRoot {
+    param(
+        [string]$Root,
+        [string]$Path,
+        [string]$Label
+    )
+
+    $rootFull = Convert-ToFullPath -Path $Root
+    $pathFull = Convert-ToFullPath -Path $Path
+    if (-not $pathFull.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label must stay under repo root. Got: $pathFull"
+    }
+}
+
+function Write-SmokeJson {
+    param(
+        [object]$Payload,
+        [string]$Path,
+        [string]$Root
+    )
+
+    $json = $Payload | ConvertTo-Json -Compress -Depth 8
+    if ($Path) {
+        $outputFull = Convert-ToFullPath -Path $Path
+        Assert-UnderRoot -Root (Join-Path $Root "tmp") -Path $outputFull -Label "Smoke output"
+        New-Item -ItemType Directory -Force -Path (Split-Path $outputFull) | Out-Null
+        Set-Content -LiteralPath $outputFull -Value $json -Encoding UTF8
+    }
+    return $json
 }
 
 function Wait-ProcessExit {
@@ -983,4 +1015,4 @@ try {
     }
 }
 
-$result | ConvertTo-Json -Compress -Depth 8
+Write-SmokeJson -Payload $result -Path $OutputPath -Root $RepoRoot
