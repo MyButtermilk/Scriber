@@ -228,7 +228,11 @@ try {
                 $validationArgs = @(
                     "scripts\validate_tauri_updater_metadata.py",
                     "--metadata",
-                    (Join-Path $metadataDir "latest.json")
+                    (Join-Path $metadataDir "latest.json"),
+                    "--artifact-dir",
+                    $bundleRoot,
+                    "--sha256sums",
+                    (Join-Path $metadataDir "SHA256SUMS.txt")
                 )
                 if ($RequireUpdaterSignatures) {
                     $validationArgs += "--require-signatures"

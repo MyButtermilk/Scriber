@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from hashlib import sha256
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +54,27 @@ def write_manifest(path: Path, *, signature: str = "signed-update") -> None:
     )
 
 
+def write_local_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
+    artifact_dir = tmp_path / "bundle"
+    artifact_dir.mkdir()
+    artifact = artifact_dir / "Scriber_0.1.0_x64-setup.exe"
+    artifact.write_bytes(b"Scriber setup")
+    checksum = sha256(artifact.read_bytes()).hexdigest()
+
+    manifest = tmp_path / "latest.json"
+    write_manifest(manifest)
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["platforms"]["windows-x86_64"]["url"] = artifact.name
+    data["artifacts"][0]["url"] = artifact.name
+    data["artifacts"][0]["sha256"] = checksum
+    data["artifacts"][0]["sizeBytes"] = artifact.stat().st_size
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+
+    sums = tmp_path / "SHA256SUMS.txt"
+    sums.write_text(f"{checksum}  {artifact.name}\n", encoding="utf-8")
+    return manifest, artifact_dir, sums, checksum
+
+
 def test_validate_tauri_updater_metadata_accepts_signed_manifest(tmp_path: Path) -> None:
     manifest = tmp_path / "latest.json"
     write_manifest(manifest)
@@ -93,6 +115,54 @@ def test_validate_tauri_updater_metadata_allows_local_urls_only_when_not_require
     assert local_result.returncode == 0, local_result.stderr
     assert release_result.returncode == 1
     assert "Updater URL must be absolute HTTPS" in release_result.stderr
+
+
+def test_validate_tauri_updater_metadata_verifies_local_artifacts_and_sums(tmp_path: Path) -> None:
+    manifest, artifact_dir, sums, _checksum = write_local_release_fixture(tmp_path)
+
+    result = run_script(
+        VALIDATE_SCRIPT,
+        "--metadata",
+        str(manifest),
+        "--allow-local-urls",
+        "--artifact-dir",
+        str(artifact_dir),
+        "--sha256sums",
+        str(sums),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["localArtifactsVerified"] == 1
+
+
+def test_validate_tauri_updater_metadata_rejects_local_artifact_checksum_mismatch(tmp_path: Path) -> None:
+    manifest, artifact_dir, sums, _checksum = write_local_release_fixture(tmp_path)
+    (artifact_dir / "Scriber_0.1.0_x64-setup.exe").write_bytes(b"tampered setup")
+
+    result = run_script(
+        VALIDATE_SCRIPT,
+        "--metadata",
+        str(manifest),
+        "--allow-local-urls",
+        "--artifact-dir",
+        str(artifact_dir),
+        "--sha256sums",
+        str(sums),
+    )
+
+    assert result.returncode == 1
+    assert "Artifact size mismatch" in result.stderr or "Artifact SHA256 mismatch" in result.stderr
+
+
+def test_build_script_validates_release_metadata_against_local_artifacts() -> None:
+    build_script = (REPO_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
+
+    assert '"--artifact-dir",' in build_script
+    assert "$bundleRoot" in build_script
+    assert '"--sha256sums",' in build_script
+    assert 'Join-Path $metadataDir "SHA256SUMS.txt"' in build_script
 
 
 def test_prepare_tauri_updater_config_writes_signed_release_config(tmp_path: Path) -> None:

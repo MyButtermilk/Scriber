@@ -4,6 +4,71 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Release Metadata Artifact Integrity Gate
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m pytest `
+  tests\test_tauri_updater_release_gates.py `
+  -q
+
+$tokens=$null
+$errors=$null
+$null=[System.Management.Automation.Language.Parser]::ParseFile(
+  (Resolve-Path 'scripts\build_windows.ps1'),
+  [ref]$tokens,
+  [ref]$errors
+)
+if ($errors.Count) {
+  $errors | ForEach-Object { Write-Error $_.Message }
+  exit 1
+}
+'OK'
+
+python scripts\validate_tauri_updater_metadata.py `
+  --metadata Frontend\src-tauri\target\release\release-metadata\latest.json `
+  --allow-local-urls `
+  --artifact-dir Frontend\src-tauri\target\release\bundle `
+  --sha256sums Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\validate_tauri_updater_metadata.py` can now verify local release
+  artifacts listed in `latest.json` against the built artifact file size and
+  SHA256 digest.
+- The validator can cross-check `SHA256SUMS.txt` against `latest.json`, so
+  stale or mismatched release metadata fails before publication.
+- `scripts\build_windows.ps1` now passes the local bundle root and
+  `SHA256SUMS.txt` to the updater metadata validation step.
+- Nested Tauri bundle directories such as `bundle\nsis\` are supported by
+  resolving each manifest artifact name under the bundle root and rejecting
+  ambiguous duplicate names.
+
+Evidence:
+
+- Focused updater release-gate tests: `8 passed`.
+- PowerShell parser check for `scripts\build_windows.ps1`: passed.
+- Current release metadata validation verified `1` local artifact against
+  `Frontend\src-tauri\target\release\bundle` and
+  `Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt`.
+
+Goal coverage:
+
+- Phase 6: strengthens the Windows release/update metadata gate before real
+  signing keys and publication are enabled.
+- Phase 7: adds regression coverage for manifest-to-artifact integrity and
+  checksum mismatch failures.
+
+Remaining limits:
+
+- This does not replace the external Authenticode signing step, Tauri updater
+  signing keys, or a published signed `latest.json`; it makes those later
+  release steps harder to mispackage.
+
 ## 2026-06-02 - Full Media Tools Sidecar Gate
 
 Commands:
