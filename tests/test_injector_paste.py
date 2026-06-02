@@ -10,6 +10,7 @@ from src.injector import (
     _CLIPBOARD_ACCESS_FAILED,
     _paste_text,
     _windows_clipboard_get_text,
+    _windows_clipboard_set_text,
 )
 
 
@@ -38,16 +39,19 @@ async def test_paste_injection_uses_ctrl_v_and_restores_clipboard(monkeypatch):
     mock_kb.press_and_release.assert_called_once_with("ctrl+v")
 
 
-def test_paste_text_aborts_when_clipboard_read_fails():
+def test_paste_text_continues_without_restore_when_clipboard_read_fails():
     with (
         patch("src.injector.HAS_GUI", True),
         patch("src.injector.sys.platform", "win32"),
         patch("src.injector._windows_clipboard_get_text", return_value=_CLIPBOARD_ACCESS_FAILED),
         patch("src.injector._windows_clipboard_set_text", return_value=True) as set_clip,
+        patch("src.injector.keyboard") as mock_kb,
     ):
-        assert _paste_text("new text") is False
+        mock_kb.press_and_release.return_value = None
+        assert _paste_text("new text") is True
 
-    set_clip.assert_not_called()
+    set_clip.assert_called_once_with("new text")
+    mock_kb.press_and_release.assert_called_once_with("ctrl+v")
 
 
 def test_paste_text_restores_previous_text_when_set_fails():
@@ -73,10 +77,29 @@ def test_windows_clipboard_get_text_reports_open_failure():
         patch("src.injector.sys.platform", "win32"),
         patch("src.injector.ctypes.windll", windll, create=True),
         patch("src.injector.time.sleep", return_value=None),
+        patch("src.injector._tkinter_clipboard_get_text", return_value=_CLIPBOARD_ACCESS_FAILED),
     ):
         result = _windows_clipboard_get_text(retries=2, delay_secs=0)
 
     assert result is _CLIPBOARD_ACCESS_FAILED
+
+
+def test_windows_clipboard_get_text_uses_tkinter_fallback_after_open_failure():
+    class _User32:
+        def OpenClipboard(self, _owner):
+            return False
+
+    windll = type("_Windll", (), {"user32": _User32(), "kernel32": object()})()
+
+    with (
+        patch("src.injector.sys.platform", "win32"),
+        patch("src.injector.ctypes.windll", windll, create=True),
+        patch("src.injector.time.sleep", return_value=None),
+        patch("src.injector._tkinter_clipboard_get_text", return_value="fallback text"),
+    ):
+        result = _windows_clipboard_get_text(retries=2, delay_secs=0)
+
+    assert result == "fallback text"
 
 
 def test_windows_clipboard_get_text_distinguishes_missing_text_format():
@@ -99,3 +122,22 @@ def test_windows_clipboard_get_text_distinguishes_missing_text_format():
         result = _windows_clipboard_get_text()
 
     assert result is None
+
+
+def test_windows_clipboard_set_text_uses_tkinter_fallback_after_open_failure():
+    class _User32:
+        def OpenClipboard(self, _owner):
+            return False
+
+    windll = type("_Windll", (), {"user32": _User32(), "kernel32": object()})()
+
+    with (
+        patch("src.injector.sys.platform", "win32"),
+        patch("src.injector.ctypes.windll", windll, create=True),
+        patch("src.injector.time.sleep", return_value=None),
+        patch("src.injector._tkinter_clipboard_set_text", return_value=True) as fallback,
+    ):
+        result = _windows_clipboard_set_text("new text", retries=2, delay_secs=0)
+
+    assert result is True
+    fallback.assert_called_once_with("new text")

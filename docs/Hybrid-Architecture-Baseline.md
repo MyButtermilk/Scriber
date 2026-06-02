@@ -69,6 +69,20 @@ When `-OutputPath` is set, each recording-hot-path child artifact is written as
 This keeps live recording evidence available after the temporary runtime data
 directory is cleaned up.
 
+Text injection can also be isolated from microphone and STT behavior with:
+
+```powershell
+venv\Scripts\python.exe scripts\smoke_text_injection_target.py `
+  --method paste `
+  --output tmp\hybrid-baseline\text-injection-smoke.json
+```
+
+The smoke opens a safe local text target window, calls the real
+`TextInjector._inject_text(...)` path, records target-window focus details, and
+fails separately for missing injector callback versus missing target text. Use
+this when a recording-hot-path run reports no text injection and the next step
+is to distinguish provider transcript failure from OS input/focus failure.
+
 ## Automated Today
 
 `scripts/measure_hybrid_baseline.ps1` currently measures:
@@ -92,6 +106,8 @@ directory is cleaned up.
   counts via `scripts/measure_history_scroll_baseline.py`.
 - frontend route smoke coverage, expected-route text, history virtualization
   markers, and browser console/page errors via `scripts/smoke_frontend_browser.py`.
+- standalone text-injection callback, foreground target focus, and target text
+  capture via `scripts/smoke_text_injection_target.py`.
 
 The runner intentionally reports an incomplete Phase 0 gate until all required
 measurements are present. Missing fields are listed in

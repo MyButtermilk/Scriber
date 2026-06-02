@@ -41,6 +41,41 @@ class _ClipboardAccessFailed:
 _CLIPBOARD_ACCESS_FAILED = _ClipboardAccessFailed()
 
 
+def _tkinter_clipboard_get_text() -> str | None | _ClipboardAccessFailed:
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            return root.clipboard_get()
+        except tk.TclError:
+            return None
+        finally:
+            root.destroy()
+    except Exception as exc:
+        logger.debug(f"Tkinter clipboard read fallback failed: {exc}")
+        return _CLIPBOARD_ACCESS_FAILED
+
+
+def _tkinter_clipboard_set_text(text: str) -> bool:
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.clipboard_clear()
+            root.clipboard_append(text)
+            root.update()
+            return True
+        finally:
+            root.destroy()
+    except Exception as exc:
+        logger.debug(f"Tkinter clipboard write fallback failed: {exc}")
+        return False
+
+
 # =============================================================================
 # SendInput API for instant keystroke injection (Windows only)
 # =============================================================================
@@ -204,6 +239,11 @@ def _windows_clipboard_get_text(
         finally:
             user32.CloseClipboard()
 
+    fallback_text = _tkinter_clipboard_get_text()
+    if fallback_text is not _CLIPBOARD_ACCESS_FAILED:
+        logger.warning("Clipboard read used Tkinter fallback after Win32 access retries failed")
+        return fallback_text
+
     logger.warning("Clipboard read access failed after retries")
     return _CLIPBOARD_ACCESS_FAILED
 
@@ -257,6 +297,10 @@ def _windows_clipboard_set_text(text: str, *, retries: int = 5, delay_secs: floa
         finally:
             user32.CloseClipboard()
 
+    if _tkinter_clipboard_set_text(text):
+        logger.warning("Clipboard write used Tkinter fallback after Win32 access retries failed")
+        return True
+
     return False
 
 
@@ -278,8 +322,9 @@ def _paste_text(text: str, *, skip_clipboard_restore: bool = False) -> bool:
     previous_text = None if skip_clipboard_restore else _windows_clipboard_get_text()
 
     if previous_text is _CLIPBOARD_ACCESS_FAILED:
-        logger.warning("Clipboard paste injection aborted because current clipboard could not be read")
-        return False
+        logger.warning("Current clipboard could not be read; continuing paste injection without restore")
+        previous_text = None
+        skip_clipboard_restore = True
 
     if not _windows_clipboard_set_text(text):
         if isinstance(previous_text, str):

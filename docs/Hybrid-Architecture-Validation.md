@@ -4,6 +4,95 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Text Injection Target Smoke + Clipboard Fallback
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m py_compile `
+  src\injector.py `
+  tests\test_injector_paste.py `
+  scripts\smoke_text_injection_target.py `
+  tests\perf\test_text_injection_smoke_script.py
+
+venv\Scripts\python.exe -m pytest `
+  tests\perf\test_text_injection_smoke_script.py `
+  tests\test_injector.py `
+  tests\test_injector_paste.py `
+  tests\test_injector_methods.py
+
+venv\Scripts\python.exe scripts\smoke_text_injection_target.py `
+  --validate-only `
+  --text "Scriber injection validate 20260602" `
+  --output tmp\hybrid-baseline\text-injection-smoke-validate-20260602.json
+
+venv\Scripts\python.exe scripts\smoke_text_injection_target.py `
+  --method paste `
+  --text "Scriber paste injection smoke foreground 20260602." `
+  --timeout-sec 8 `
+  --settle-sec 1.5 `
+  --output tmp\hybrid-baseline\text-injection-smoke-paste-foreground-20260602.json
+```
+
+Result: implemented a standalone text-injection smoke gate and fixed a Windows
+clipboard reliability gap found by that gate.
+
+Implemented improvements:
+
+- Added `scripts\smoke_text_injection_target.py`, which opens the existing safe
+  Tk text target window, invokes the real `TextInjector._inject_text(...)`
+  path, polls the target text file, and writes JSON evidence.
+- The smoke classifies failures as `failed`, `callback_without_target_text`,
+  `target_text_without_callback`, or `passed`, so provider/STT issues do not
+  get conflated with injector/focus issues.
+- The smoke now searches the target window by title, brings it to foreground,
+  clicks inside it using window-relative coordinates, and records focus
+  evidence in `targetFocus`.
+- `src\injector.py` now falls back to Tkinter clipboard read/write when the
+  fast Win32 clipboard path cannot open the clipboard in the current desktop
+  session.
+- Paste injection no longer aborts solely because the previous clipboard could
+  not be read. It continues without restoring the unknown previous value.
+
+Evidence:
+
+- Focused tests: `17 passed`.
+- Validate artifact:
+  `tmp\hybrid-baseline\text-injection-smoke-validate-20260602.json`.
+- Direct clipboard helper diagnostic after fallback:
+  - `_windows_clipboard_set_text(...)`: true.
+  - `_windows_clipboard_get_text(...)`: returned the fallback-set text.
+- Real paste smoke artifact:
+  `tmp\hybrid-baseline\text-injection-smoke-paste-foreground-20260602.json`.
+- Real paste smoke result in this Codex desktop session:
+  - status: `callback_without_target_text`.
+  - callback verified: true.
+  - target text verified: false.
+  - callback elapsed: 651.928 ms.
+  - target captured chars: 0.
+  - clipboard read/write used the Tkinter fallback successfully.
+  - target window was found by title and clicked at window-relative coordinates.
+
+Goal coverage:
+
+- Phase 0/7: adds a repeatable standalone gate for the stop-to-text-injection
+  tail, independent of microphone routing and STT provider behavior.
+- Phase 0: proves the current failure boundary is after the injector callback
+  in this desktop session, not in the transcription pipeline or clipboard
+  staging.
+- Phase 8: improves paste robustness for blocked Win32 clipboard sessions
+  without adding overhead to the normal fast path.
+
+Remaining limits:
+
+- This does not yet close real stop-to-text-injection. In this Codex desktop
+  session, OS-level keyboard/paste events did not reach the Tk target window
+  even after foreground activation and even in a direct `pyautogui.hotkey`
+  diagnostic.
+- A final pass still needs to run the smoke in a normal interactive foreground
+  desktop target or another trusted editable app where OS input delivery is
+  known to work.
+
 ## 2026-06-02 - Audible Audio Hotpath Diagnostics
 
 Commands:
