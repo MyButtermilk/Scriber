@@ -4,6 +4,117 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Synthetic 30-Minute Transcript Buffer Growth Guard
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m py_compile scripts\check_transcript_buffer_growth.py tests\perf\test_transcript_buffer_growth_script.py
+venv\Scripts\python.exe -m pytest tests\perf\test_transcript_buffer_growth_script.py
+venv\Scripts\python.exe scripts\check_transcript_buffer_growth.py --output tmp\hybrid-baseline\transcript-buffer-growth-20260602.json
+```
+
+Result: passed.
+
+Evidence:
+
+- Artifact:
+  `tmp\hybrid-baseline\transcript-buffer-growth-20260602.json`.
+- Simulated final transcript segments: 1,800.
+- Segment size: 96 chars.
+- Metadata reads during append loop: 60.
+- Append loop time: 18.139 ms.
+- Final materialization time: 0.199 ms.
+- Expected content length: 176,398 chars.
+- Materialized content length: 176,398 chars.
+- Pending segments before materialization: 1,799.
+- Peak memory before explicit materialization: 272,704 bytes.
+- Peak memory after explicit materialization: 623,386 bytes.
+- `metadataContentLeaked`: false.
+- Checks passed:
+  `metadataDoesNotExposeContent`,
+  `appendDidNotMaterializePendingSegments`,
+  `contentStayedAtFirstSegmentBeforeMaterialize`,
+  `materializedContentHasExpectedLength`,
+  `pendingSegmentsClearedAfterMaterialize`.
+- `tests\perf\test_transcript_buffer_growth_script.py`: `2 passed`.
+
+Goal coverage:
+
+- Phase 8: adds the synthetic guard for a 30-minute live transcript session
+  without unbounded transcript-string growth.
+- Phase 7: keeps this behavior under focused pytest coverage.
+- Backend validation: confirms public transcript metadata access does not
+  force full transcript materialization.
+
+Remaining limits:
+
+- This is a synthetic backend guard. It does not replace a real 30-minute
+  microphone/provider run.
+- It does not measure provider memory, frontend live-update memory, audio
+  buffers, OS text injection, or docking/device churn during a long session.
+
+## 2026-06-02 - Combined Phase 0 Baseline Attempt With Legacy Data
+
+Command:
+
+```powershell
+$env:SCRIBER_LEGACY_DATA_DIR = 'C:\Users\Alexander.Immler\Documents\Github\Scriber'
+$env:SCRIBER_AUTO_MIGRATE_LEGACY_DATA = '1'
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 1 `
+  -DisableDevFallback `
+  -RecordHotPathSamples `
+  -RecordingHotPathIterations 3 `
+  -RecordingHotPathSeconds 8 `
+  -RecordingHotPathTimeoutSec 120 `
+  -RecordingHotPathTextTargetFile "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\phase0-full-recording-target.txt" `
+  -RecordingHotPathSpeechPrompt "Dies ist ein Scriber Test. Bitte schreibe diesen kurzen Satz in das Textfeld." `
+  -RecordingHotPathSpeechDelaySec 1.0 `
+  -RecordingHotPathTextTargetSettleSec 1.5 `
+  -FailOnPerformanceBudget `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\hybrid-baseline-20260602-phase0-complete-attempt.json"
+```
+
+Result: performance budget passed, but Phase 0 is not complete in this combined
+run because `stop_to_text_injection` reported `missing_text_injection`.
+
+Evidence:
+
+- Artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-20260602-phase0-complete-attempt.json`.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- `phase0Complete`: false.
+- Incomplete requirement: `stop_to_text_injection`.
+- UI visible p95: 1,483.36 ms.
+- Backend ready p95: 2,519.4 ms.
+- Upload/export benchmark: passed.
+- WebSocket benchmark: passed.
+- History scroll benchmark: passed.
+- Recording hotpath iterations: 3.
+- `hotkey_to_recording_state`: measured, p95 301.091 ms.
+- `hotkey_to_first_audio_frame`: measured, p95 574.904 ms.
+- `stop_to_text_injection`: `missing_text_injection`.
+- Upload throughput: 726.06 MB/s across 4 x 4 MB uploads.
+- Export total: 345.514 ms.
+
+Goal coverage:
+
+- Phase 0: consolidates startup, upload/export, WebSocket, history, and partial
+  recording hot-path evidence in one Tauri-managed sidecar run.
+- Phase 2: confirms the combined run used the packaged sidecar with
+  `DisableDevFallback`.
+- Phase 6: uses the existing legacy data/config directory as runtime input.
+
+Remaining limits:
+
+- This artifact cannot close Phase 0 because stop-to-text injection was missing
+  in the combined run.
+- The focused sample in
+  `tmp\hybrid-baseline\hybrid-baseline-20260602-stop-to-text-quoted.json`
+  remains the current stop-to-text latency evidence.
+
 ## 2026-06-02 - Stop-to-Text Hot-Path Sample + Gate Hardening
 
 Commands:
