@@ -198,7 +198,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           </CommandItem>
           <CommandItem onSelect={() => navigate("/debug")}>
             <Terminal className="mr-2 h-4 w-4" />
-            <span>Debug Console</span>
+            <span>Debug-Konsole</span>
           </CommandItem>
           <CommandItem onSelect={() => navigate("/settings")}>
             <Settings className="mr-2 h-4 w-4" />

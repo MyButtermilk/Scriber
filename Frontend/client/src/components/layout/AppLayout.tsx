@@ -75,7 +75,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
     { href: "/", icon: Mic, label: "Live Mic" },
     { href: "/youtube", icon: Youtube, label: "YouTube" },
     { href: "/file", icon: FolderOpen, label: "File" },
-    { href: "/debug", icon: Terminal, label: "Debug" },
+    { href: "/debug", icon: Terminal, label: "Console" },
     { href: "/settings", icon: Settings, label: "Settings" },
   ];
 

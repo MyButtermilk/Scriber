@@ -1,5 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Bug, CheckCircle2, Circle, Filter, RefreshCw, Search, Terminal } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  ArrowDownToLine,
+  Bug,
+  CheckCircle2,
+  Circle,
+  Clipboard,
+  Download,
+  Eraser,
+  Filter,
+  RefreshCw,
+  Search,
+  Terminal,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +22,7 @@ import { apiUrl } from "@/lib/backend";
 import { cn } from "@/lib/utils";
 import type { RuntimeLogEntry, RuntimeLogsResponse } from "@/lib/api-types";
 
-const LEVELS = ["ALL", "ERROR", "WARNING", "INFO", "DEBUG"] as const;
+const LEVELS = ["ALL", "CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "TRACE"] as const;
 
 const levelStyles: Record<string, string> = {
   TRACE: "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300",
@@ -19,6 +32,16 @@ const levelStyles: Record<string, string> = {
   WARNING: "border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200",
   ERROR: "border-red-300 bg-red-100 text-red-800 dark:border-red-800 dark:bg-red-950/50 dark:text-red-200",
   CRITICAL: "border-red-400 bg-red-200 text-red-950 dark:border-red-700 dark:bg-red-950 dark:text-red-100",
+};
+
+const rowStyles: Record<string, string> = {
+  TRACE: "border-l-slate-300 bg-slate-500/5",
+  DEBUG: "border-l-sky-400 bg-sky-500/5",
+  INFO: "border-l-blue-400",
+  SUCCESS: "border-l-emerald-400 bg-emerald-500/5",
+  WARNING: "border-l-amber-400 bg-amber-500/10",
+  ERROR: "border-l-red-500 bg-red-500/10",
+  CRITICAL: "border-l-red-600 bg-red-500/15",
 };
 
 function iconForLevel(level: string) {
@@ -31,7 +54,7 @@ function iconForLevel(level: string) {
 function normalizeLevel(level: string) {
   const value = (level || "INFO").toUpperCase();
   if (value === "WARN") return "WARNING";
-  if (value === "ERR") return "ERROR";
+  if (value === "ERR" || value === "FATAL") return value === "FATAL" ? "CRITICAL" : "ERROR";
   return value;
 }
 
@@ -43,10 +66,18 @@ function formatEntryTime(entry: RuntimeLogEntry) {
       second: "2-digit",
     });
   }
-  if (entry.timestamp) {
-    return entry.timestamp;
-  }
-  return "";
+  return entry.timestamp || "";
+}
+
+function formatLogLine(entry: RuntimeLogEntry) {
+  const level = normalizeLevel(entry.level);
+  const component = entry.component ? ` [${entry.component}]` : "";
+  return `${formatEntryTime(entry).padEnd(12)} ${level.padEnd(8)} ${entry.source}:${entry.line}${component} ${entry.message}`;
+}
+
+function filenameFromDisposition(disposition: string | null) {
+  const match = disposition?.match(/filename="?([^";]+)"?/i);
+  return match?.[1] || `scriber-support-bundle-${Date.now()}.zip`;
 }
 
 export default function DebugConsole() {
@@ -56,16 +87,21 @@ export default function DebugConsole() {
   const [selectedSource, setSelectedSource] = useState("all");
   const [query, setQuery] = useState("");
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [newestFirst, setNewestFirst] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [supportBundleLoading, setSupportBundleLoading] = useState(false);
   const [error, setError] = useState("");
+  const [actionStatus, setActionStatus] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [truncated, setTruncated] = useState(false);
+  const logEndRef = useRef<HTMLDivElement | null>(null);
 
   const loadLogs = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(apiUrl("/api/runtime/logs?limit=900"), { credentials: "include" });
+      const res = await fetch(apiUrl("/api/runtime/logs?limit=1200"), { credentials: "include" });
       if (!res.ok) {
         throw new Error((await res.text()) || res.statusText);
       }
@@ -114,13 +150,70 @@ export default function DebugConsole() {
     });
   }, [logs, query, selectedLevel, selectedSource]);
 
+  const displayedLogs = useMemo(
+    () => (newestFirst ? [...filteredLogs].reverse() : filteredLogs),
+    [filteredLogs, newestFirst],
+  );
+
+  useEffect(() => {
+    if (!autoScroll || newestFirst) return;
+    logEndRef.current?.scrollIntoView({ block: "end" });
+  }, [autoScroll, newestFirst, displayedLogs.length, lastUpdated]);
+
   const errorCount = logs.filter((entry) => ["ERROR", "CRITICAL"].includes(normalizeLevel(entry.level))).length;
   const warningCount = logs.filter((entry) => normalizeLevel(entry.level) === "WARNING").length;
+  const debugCount = logs.filter((entry) => ["DEBUG", "TRACE"].includes(normalizeLevel(entry.level))).length;
+  const hasActiveFilters = selectedLevel !== "ALL" || selectedSource !== "all" || query.trim().length > 0;
+
+  const resetFilters = () => {
+    setSelectedLevel("ALL");
+    setSelectedSource("all");
+    setQuery("");
+  };
+
+  const copyVisibleLogs = async () => {
+    const text = displayedLogs.map(formatLogLine).join("\n");
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setActionStatus(`Copied ${displayedLogs.length} visible log entries.`);
+    } catch (err: any) {
+      setError(`Copy failed: ${String(err?.message || err)}`);
+    }
+  };
+
+  const downloadSupportBundle = async () => {
+    setSupportBundleLoading(true);
+    setError("");
+    try {
+      const res = await fetch(apiUrl("/api/runtime/support-bundle"), {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error((await res.text()) || res.statusText);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filenameFromDisposition(res.headers.get("Content-Disposition"));
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setActionStatus("Support bundle downloaded.");
+    } catch (err: any) {
+      setError(`Support bundle failed: ${String(err?.message || err)}`);
+    } finally {
+      setSupportBundleLoading(false);
+    }
+  };
 
   return (
     <div className="flex h-full min-h-[calc(100vh-1.5rem)] flex-col overflow-hidden">
       <header className="border-b border-border/70 px-4 py-3 md:px-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <Terminal className="h-5 w-5 text-foreground" />
@@ -128,6 +221,7 @@ export default function DebugConsole() {
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
               <span>{filteredLogs.length} of {logs.length} entries</span>
+              <span>{sources.length} sources</span>
               {lastUpdated && <span>Updated {lastUpdated.toLocaleTimeString("de-DE")}</span>}
               {truncated && <span>Tail view</span>}
             </div>
@@ -135,10 +229,15 @@ export default function DebugConsole() {
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={errorCount ? "destructive" : "outline"}>{errorCount} errors</Badge>
             <Badge variant={warningCount ? "secondary" : "outline"}>{warningCount} warnings</Badge>
-            <div className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
-              <span className="text-sm text-muted-foreground">Auto</span>
-              <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="Toggle auto refresh" />
-            </div>
+            <Badge variant={debugCount ? "outline" : "secondary"}>{debugCount} debug</Badge>
+            <Button type="button" variant="outline" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
+              <Clipboard className="h-4 w-4" />
+              Copy visible
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void downloadSupportBundle()} disabled={supportBundleLoading}>
+              <Download className={cn("h-4 w-4", supportBundleLoading && "animate-pulse")} />
+              Support bundle
+            </Button>
             <Button type="button" variant="outline" onClick={() => void loadLogs()} disabled={loading}>
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
               Refresh
@@ -148,14 +247,14 @@ export default function DebugConsole() {
       </header>
 
       <section className="border-b border-border/70 px-4 py-3 md:px-6">
-        <div className="grid gap-2 lg:grid-cols-[minmax(240px,1fr)_180px_220px]">
+        <div className="grid gap-2 xl:grid-cols-[minmax(260px,1fr)_190px_360px_auto]">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               className="pl-9"
-              placeholder="Filter logs..."
+              placeholder="Filter message, source, component..."
               aria-label="Filter logs"
             />
           </div>
@@ -188,7 +287,38 @@ export default function DebugConsole() {
               </button>
             ))}
           </div>
+          <Button type="button" variant="ghost" onClick={resetFilters} disabled={!hasActiveFilters}>
+            <Eraser className="h-4 w-4" />
+            Clear
+          </Button>
         </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+          <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
+            <span>Auto refresh</span>
+            <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="Toggle auto refresh" />
+          </label>
+          <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
+            <span>Auto scroll</span>
+            <Switch checked={autoScroll} onCheckedChange={setAutoScroll} aria-label="Toggle auto scroll" />
+          </label>
+          <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
+            <span>Newest first</span>
+            <Switch checked={newestFirst} onCheckedChange={setNewestFirst} aria-label="Show newest logs first" />
+          </label>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => logEndRef.current?.scrollIntoView({ block: "end" })}
+            disabled={!displayedLogs.length || newestFirst}
+          >
+            <ArrowDownToLine className="h-4 w-4" />
+            Bottom
+          </Button>
+          {actionStatus && <span>{actionStatus}</span>}
+        </div>
+
         {error && (
           <div className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
             {error}
@@ -198,25 +328,21 @@ export default function DebugConsole() {
 
       <section className="min-h-0 flex-1 overflow-auto px-3 py-3 md:px-5">
         <div className="overflow-hidden rounded-md border border-border/70 bg-background/45">
-          {filteredLogs.length === 0 ? (
+          {displayedLogs.length === 0 ? (
             <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
               No matching log entries.
             </div>
           ) : (
             <div className="divide-y divide-border/60 font-mono text-[12px] leading-5">
-              {filteredLogs.map((entry, index) => {
+              {displayedLogs.map((entry, index) => {
                 const level = normalizeLevel(entry.level);
                 const Icon = iconForLevel(level);
                 return (
                   <div
                     key={`${entry.source}-${entry.line}-${index}`}
                     className={cn(
-                      "grid gap-2 px-3 py-2 md:grid-cols-[76px_132px_92px_minmax(0,1fr)]",
-                      level === "ERROR" || level === "CRITICAL"
-                        ? "bg-red-500/5"
-                        : level === "WARNING"
-                          ? "bg-amber-500/7"
-                          : "bg-transparent",
+                      "grid border-l-2 gap-2 px-3 py-2 md:grid-cols-[76px_160px_96px_minmax(0,1fr)]",
+                      rowStyles[level] || rowStyles.INFO,
                     )}
                   >
                     <span className="text-muted-foreground">{formatEntryTime(entry)}</span>
@@ -243,6 +369,7 @@ export default function DebugConsole() {
                   </div>
                 );
               })}
+              <div ref={logEndRef} />
             </div>
           )}
         </div>

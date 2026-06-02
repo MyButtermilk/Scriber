@@ -56,6 +56,7 @@ const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstance";
 const AUTOSTART_REGISTRY_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const AUTOSTART_REGISTRY_VALUE: &str = "Scriber";
 const AUTOSTART_DEFAULT_MARKER_FILE: &str = "desktop-autostart-default-applied";
+const AUTOSTART_DEFAULT_ENV: &str = "SCRIBER_DESKTOP_AUTOSTART_DEFAULT";
 const HOTKEY_DISPATCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_ID: &str = "scriber-tray";
@@ -545,6 +546,11 @@ fn configure_desktop_shell<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()>
 }
 
 fn apply_default_desktop_autostart<R: Runtime>(app: &AppHandle<R>) {
+    if !desktop_autostart_default_enabled() {
+        write_shell_log("desktop autostart first-run default skipped by environment");
+        return;
+    }
+
     if cfg!(debug_assertions) {
         write_shell_log("desktop autostart first-run default skipped in debug build");
         return;
@@ -574,6 +580,20 @@ fn apply_default_desktop_autostart<R: Runtime>(app: &AppHandle<R>) {
             "desktop autostart first-run default skipped: app data directory unavailable",
         ),
     }
+}
+
+fn desktop_autostart_default_enabled() -> bool {
+    match env::var(AUTOSTART_DEFAULT_ENV) {
+        Ok(value) => env_flag_enabled(&value),
+        Err(_) => true,
+    }
+}
+
+fn env_flag_enabled(value: &str) -> bool {
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off" | "disabled"
+    )
 }
 
 fn default_autostart_marker_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
@@ -2013,15 +2033,16 @@ fn health_response_ready(response: &str) -> bool {
 mod tests {
     use super::{
         acquire_single_instance_guard, autostart_command_for_exe, autostart_commands_match,
-        backend_executable_names, backend_start_timeout, find_backend_executable,
-        find_backend_executable_in_dirs, health_response_ready, is_safe_transcript_id,
-        is_shell_menu_item, managed_backend_start_timed_out, normalize_global_shortcut,
-        normalize_hotkey_mode, parse_loopback_backend_url, recent_transcript_label,
-        resolve_session_token, sanitize_menu_label, should_refresh_hotkey_after_backend_ready,
+        backend_executable_names, backend_start_timeout, desktop_autostart_default_enabled,
+        env_flag_enabled, find_backend_executable, find_backend_executable_in_dirs,
+        health_response_ready, is_safe_transcript_id, is_shell_menu_item,
+        managed_backend_start_timed_out, normalize_global_shortcut, normalize_hotkey_mode,
+        parse_loopback_backend_url, recent_transcript_label, resolve_session_token,
+        sanitize_menu_label, should_refresh_hotkey_after_backend_ready,
         should_show_window_for_tray_click, split_http_response, DesktopHotkeyState,
-        RecentTranscriptMenuEntry, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
-        HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
-        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        RecentTranscriptMenuEntry, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
+        BACKEND_START_TIMEOUT_ENV, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX,
+        MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         SESSION_TOKEN_ENV,
     };
     use std::{
@@ -2213,6 +2234,38 @@ mod tests {
             r#""C:\Python313\python.exe" "C:\Scriber\src\tray.py""#,
             r#""C:\Program Files\Scriber\scriber-desktop.exe""#
         ));
+    }
+
+    #[test]
+    fn desktop_autostart_default_is_enabled_unless_disabled_by_environment() {
+        let previous = std::env::var(AUTOSTART_DEFAULT_ENV).ok();
+
+        std::env::remove_var(AUTOSTART_DEFAULT_ENV);
+        assert!(desktop_autostart_default_enabled());
+
+        std::env::set_var(AUTOSTART_DEFAULT_ENV, "0");
+        assert!(!desktop_autostart_default_enabled());
+
+        std::env::set_var(AUTOSTART_DEFAULT_ENV, "false");
+        assert!(!desktop_autostart_default_enabled());
+
+        std::env::set_var(AUTOSTART_DEFAULT_ENV, "1");
+        assert!(desktop_autostart_default_enabled());
+
+        match previous {
+            Some(value) => std::env::set_var(AUTOSTART_DEFAULT_ENV, value),
+            None => std::env::remove_var(AUTOSTART_DEFAULT_ENV),
+        }
+    }
+
+    #[test]
+    fn env_flag_enabled_accepts_common_negative_values() {
+        for value in ["0", "false", "no", "off", "disabled"] {
+            assert!(!env_flag_enabled(value));
+        }
+        for value in ["", "1", "true", "yes", "enabled"] {
+            assert!(env_flag_enabled(value));
+        }
     }
 
     #[test]

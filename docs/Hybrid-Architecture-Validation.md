@@ -3874,3 +3874,67 @@ Remaining limits:
 - This still does not produce external evidence. The runner is the final
   orchestration layer; it must be executed after real hardware matrix,
   Authenticode signing, and signed updater publication evidence exists.
+
+## 2026-06-02 - In-App Debug Console and Default Desktop Autostart
+
+Commands:
+
+```powershell
+cd Frontend
+npm run check
+npm run build
+
+cd Frontend\src-tauri
+cargo fmt
+cargo test
+
+cd ..\..
+python -m pytest tests\test_web_api_security.py
+python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke-debug-console.json
+```
+
+Result: implemented and covered by frontend, backend security, Rust unit, and
+browser-route smoke tests.
+
+Implemented improvements:
+
+- The `/debug` route is now a visible in-app runtime console for packaged
+  diagnostics. It tails the existing redacted `/api/runtime/logs` output and
+  exposes text, source, and level filters.
+- Log entries are color-coded by severity, include source/line/component
+  context, and support auto-refresh, auto-scroll, newest-first ordering, and a
+  bottom jump.
+- Operators can copy the currently visible filtered log lines and download the
+  token-protected redacted support bundle directly from the console.
+- The main navigation labels the route as `Console`, and the command palette
+  exposes it as `Debug-Konsole`.
+- Tauri desktop autostart remains owned by Rust and is now explicitly enabled
+  by default on first release start. `SCRIBER_DESKTOP_AUTOSTART_DEFAULT=0`
+  disables that first-run default for dev/smoke scenarios without changing the
+  user-facing Settings toggle.
+
+Evidence:
+
+- `npm run check`: passed.
+- `npm run build`: passed; `DebugConsole-*.js` was emitted as a lazy route
+  chunk.
+- `cargo test`: `27 passed`.
+- `tests\test_web_api_security.py`: `38 passed`.
+- `scripts\smoke_frontend_browser.py --output
+  tmp\frontend-browser-smoke-debug-console.json`: passed with `/debug`
+  validated against synthetic log data and `0` critical console/page errors.
+
+Goal coverage:
+
+- Phase 2: strengthens crash/log support in packaged runs without re-enabling a
+  visible Python console window.
+- Phase 4: makes the Tauri-owned Windows autostart policy explicit and
+  test-covered.
+- Phase 7: adds current validation evidence for the user-visible debug console
+  route and the default-autostart policy.
+
+Remaining limits:
+
+- This does not close the external release gates. Physical microphone matrix,
+  real Authenticode signing, and published signed updater evidence remain
+  separate final-readiness requirements.
