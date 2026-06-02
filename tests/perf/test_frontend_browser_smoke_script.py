@@ -29,10 +29,14 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["ok"] is True
-    assert payload["summary"]["routeCount"] == 5
+    assert payload["summary"]["routeCount"] == 6
     assert payload["summary"]["criticalConsoleErrorCount"] == 0
     assert "/settings" in payload["summary"]["routes"]
+    assert "/debug" in payload["summary"]["routes"]
     assert set(payload["summary"]["virtualizedHistoryRoutes"]) == {"/", "/youtube", "/file"}
+    debug = next(item for item in payload["scenarios"] if item["route"] == "/debug")
+    assert "Copy visible" in debug["expectedText"]
+    assert "Support bundle" in debug["expectedText"]
 
 
 def test_hybrid_goal_frontend_smoke_is_documented() -> None:

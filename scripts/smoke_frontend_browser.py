@@ -34,7 +34,15 @@ ROUTE_EXPECTATIONS: dict[str, list[str]] = {
     "/": ["Live Transcription", "Recent Recordings"],
     "/youtube": ["Youtube Transcription", "Recent Videos"],
     "/file": ["Import File", "Recent Files"],
-    "/debug": ["Debug Console", "ui-debug-sample.log", "Debug console sample error"],
+    "/debug": [
+        "Debug Console",
+        "ui-debug-sample.log",
+        "Debug console sample error",
+        "Copy visible",
+        "Support bundle",
+        "Auto scroll",
+        "Newest first",
+    ],
     "/settings": ["Settings", "Transcription Settings", "API Configuration"],
     "/transcript/mic-00001": ["Synthetic Recording 00002", "Summary", "Transcript"],
 }

@@ -3890,6 +3890,7 @@ cargo test
 
 cd ..\..
 python -m pytest tests\test_web_api_security.py
+python -m pytest tests\perf\test_frontend_browser_smoke_script.py
 python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke-debug-console.json
 ```
 
@@ -3920,6 +3921,9 @@ Evidence:
   chunk.
 - `cargo test`: `27 passed`.
 - `tests\test_web_api_security.py`: `38 passed`.
+- `tests\perf\test_frontend_browser_smoke_script.py`: validates that `/debug`
+  remains part of the default frontend browser smoke route set and that the
+  debug-console controls are expected text.
 - `scripts\smoke_frontend_browser.py --output
   tmp\frontend-browser-smoke-debug-console.json`: passed with `/debug`
   validated against synthetic log data and `0` critical console/page errors.
