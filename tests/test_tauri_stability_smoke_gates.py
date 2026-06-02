@@ -82,6 +82,17 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "executable failed validation" in sidecar
 
 
+def test_release_workflow_installs_media_tools_for_standard_build() -> None:
+    workflow = read_script(".github/workflows/release-windows.yml")
+
+    assert "Install media tools" in workflow
+    assert "choco install ffmpeg --yes --no-progress" in workflow
+    assert "Get-Command ffmpeg -ErrorAction Stop" in workflow
+    assert "Get-Command ffprobe -ErrorAction Stop" in workflow
+    assert "& $ffmpeg.Source -version" in workflow
+    assert "& $ffprobe.Source -version" in workflow
+
+
 def test_installer_uninstall_smoke_is_a_strict_build_gate() -> None:
     installer = read_script("scripts/smoke_windows_installer.ps1")
     build = read_script("scripts/build_windows.ps1")

@@ -289,6 +289,51 @@ Remaining limits:
   packaging strategy. Removing ffmpeg/ffprobe from the standard Windows build
   is intentionally out of scope because the app needs that functionality.
 
+## 2026-06-02 - Release Workflow Media Tools Prerequisite Gate
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m pytest -p no:cacheprovider -p no:langsmith `
+  tests\test_tauri_stability_smoke_gates.py `
+  tests\test_windows_authenticode_gate.py `
+  tests\test_tauri_updater_release_gates.py `
+  -q
+
+venv\Scripts\python.exe -m py_compile `
+  tests\test_tauri_stability_smoke_gates.py
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `.github\workflows\release-windows.yml` now installs `ffmpeg` through
+  Chocolatey before the Windows installer build.
+- The workflow verifies both `ffmpeg` and `ffprobe` with `Get-Command` and
+  `-version` before Tauri invokes the sidecar build.
+- `tests\test_tauri_stability_smoke_gates.py` now guards that the workflow
+  keeps this media-tools prerequisite wired.
+
+Evidence:
+
+- Focused workflow/release-gate tests: `26 passed`.
+- Python compile check for the updated workflow-gate test: passed.
+
+Goal coverage:
+
+- Phase 6: keeps the GitHub Windows release path aligned with the standard
+  full media-tools build; CI should not attempt a standard package that cannot
+  bundle `ffmpeg`/`ffprobe`.
+- Phase 7: adds regression coverage so future workflow edits cannot silently
+  drop the media-tools prerequisite.
+
+Remaining limits:
+
+- This verifies the CI prerequisite wiring, not a fresh GitHub-hosted run.
+- It does not replace real Authenticode signing keys or a published signed
+  updater manifest.
+
 ## 2026-06-02 - Safe Installed Live Recording 5-Minute Gate
 
 Commands:

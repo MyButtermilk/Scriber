@@ -44,6 +44,15 @@ jobs:
         working-directory: Frontend
         run: npm ci
 
+      - name: Install media tools
+        shell: pwsh
+        run: |
+          choco install ffmpeg --yes --no-progress
+          $ffmpeg = Get-Command ffmpeg -ErrorAction Stop
+          $ffprobe = Get-Command ffprobe -ErrorAction Stop
+          & $ffmpeg.Source -version
+          & $ffprobe.Source -version
+
       - name: Build Windows installer
         shell: pwsh
         env:
