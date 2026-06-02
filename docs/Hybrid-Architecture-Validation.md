@@ -4,6 +4,77 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Manual Microphone Hardware Matrix Gate
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m py_compile scripts\smoke_microphone_hardware_matrix.py tests\test_microphone_hardware_matrix_smoke.py
+venv\Scripts\python.exe -m pytest tests\test_microphone_hardware_matrix_smoke.py
+venv\Scripts\python.exe -m pytest tests\test_device_monitor.py tests\test_microphone_device_resolution.py
+venv\Scripts\python.exe scripts\smoke_microphone_hardware_matrix.py `
+  --plan-only `
+  --output tmp\hybrid-baseline\microphone-hardware-matrix-plan-20260602.json
+```
+
+Result: implemented and covered by focused tests. Not executed as a physical
+hardware pass in this Codex desktop session because it requires operator-driven
+USB/Bluetooth/dock/default-input changes.
+
+Implemented improvements:
+
+- Added `scripts\smoke_microphone_hardware_matrix.py`, a manual hardware matrix
+  gate that uses the existing backend REST contract:
+  `GET /api/microphones`, `POST /api/microphones/refresh`, and
+  `GET /api/settings`.
+- The script captures before/after microphone snapshots, posts refresh hints,
+  polls for expected changes, and writes JSON evidence.
+- Supported scenarios:
+  `usb-add`, `usb-remove`, `dock-disconnect`, `dock-connect`,
+  `bluetooth-add`, `bluetooth-remove`, `default-mic-change`, and
+  `favorite-fallback`.
+- Expectation flags cover added labels, removed labels, default input movement,
+  and favorite-mic fallback.
+- The gate refuses to pass a no-op run unless an explicit expectation is set and
+  satisfied.
+
+Example physical USB-add gate:
+
+```powershell
+venv\Scripts\python.exe scripts\smoke_microphone_hardware_matrix.py `
+  --scenario usb-add `
+  --expect-added "usb" `
+  --wait-sec 60 `
+  --output tmp\hybrid-baseline\microphone-hardware-usb-add.json
+```
+
+Plan artifact:
+
+- `tmp\hybrid-baseline\microphone-hardware-matrix-plan-20260602.json`.
+- Artifact size: 1,687 bytes.
+- Artifact timestamp: 2026-06-02 04:53:14 +02:00.
+
+Regression evidence:
+
+- `tests\test_microphone_hardware_matrix_smoke.py`: `4 passed`.
+- `tests\test_device_monitor.py` and
+  `tests\test_microphone_device_resolution.py`: `27 passed`.
+
+Goal coverage:
+
+- Phase 5: creates a repeatable evidence path for USB mic add/remove,
+  Bluetooth mic add/remove, dock connect/disconnect, default-mic changes, and
+  favorite fallback using the authoritative backend APIs.
+- Phase 7/8: converts the hardware matrix from an ad-hoc manual note into a
+  JSON-producing gate with regression tests.
+
+Remaining limits:
+
+- The gate exists and is tested, but no physical USB/Bluetooth/dock/default-mic
+  pass is claimed until it is run with real hardware.
+- Physical global-hotkey dispatch, real live provider recording, and real
+  signing/updater publication remain separate open items.
+
 ## 2026-06-02 - Live Recording Stability Gate
 
 Commands:

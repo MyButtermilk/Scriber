@@ -742,10 +742,14 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -Ve
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -SimulateGlobalHotkey -GlobalHotkeySmokeHotkey "ctrl+alt+shift+f12"
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -WaitForManualGlobalHotkey -GlobalHotkeySmokeHotkey "ctrl+alt+shift+f12" -GlobalHotkeyDispatchTimeoutSec 30
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec 1800 -LiveRecordingProbeIntervalSec 30 -MaxLiveBackendWorkingSetGrowthMB 100 -MaxLiveCpuPercent 10
+python scripts\smoke_microphone_hardware_matrix.py --plan-only --output tmp\hybrid-baseline\microphone-hardware-matrix-plan.json
+python scripts\smoke_microphone_hardware_matrix.py --scenario usb-add --expect-added usb --wait-sec 60 --output tmp\hybrid-baseline\microphone-hardware-usb-add.json
 python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
 ```
 
 The desktop smoke test starts `Frontend\src-tauri\target\release\scriber-desktop.exe` with a random session token, verifies that Tauri starts a managed backend with `runtimeMode=tauri-supervised`, then hard-stops the app and checks that no newly spawned backend process remains, waiting up to `-CleanupTimeoutSec` for Windows job-object cleanup. Pass `-BackendExePath path\to\scriber-backend.exe` to force a specific sidecar. Pass `-SimulateBackendCrash` to kill the managed worker, wait for the Tauri/frontend recovery path to start a replacement, and verify `backend-crash-metadata.jsonl`. Pass `-OccupyDefaultPort` to bind `127.0.0.1:8765` before launch and verify that the supervisor selects a different backend port. Pass `-SimulateBackendShutdown` to call the token-protected controlled shutdown endpoint, wait for the worker to exit, and verify that the supervisor starts a replacement. Pass `-AttachExternalBackend` to start an external Python backend on `127.0.0.1:8765`, start Tauri without force-managed mode, and verify that no managed sidecar is spawned. Pass `-SimulateBackendStartupTimeout` to make the first worker start block before readiness and verify that the supervisor times it out and starts a replacement. Pass `-StabilityDurationSec <seconds>` to keep the app alive for repeated health/state probes, verify that the backend PID stays stable, and capture backend working-set plus normalized Tauri/backend CPU samples; add `-MaxBackendWorkingSetGrowthMB <mb>` to fail when peak backend working-set growth exceeds the threshold and `-MaxIdleCpuPercent <percent>` to fail when average idle CPU exceeds the threshold. Pass `-LiveRecordingDurationSec <seconds>` only for intentional live microphone/provider runs; it starts `/api/live-mic/start`, requires recording/listening state, samples stability while recording, then calls `/api/live-mic/stop` and verifies the app returns to idle. Pass `-LegacyDataDir <old-scriber-dir> -VerifyLegacyDataMigration` to verify first-run migration into `SCRIBER_DATA_DIR`; secrets are not printed, only paths, byte counts, and hash-match booleans for `.env`/`settings.json`. Pass `-VerifyGlobalHotkeyRegistration` to assert that the Tauri shell registered the configured shortcut after backend readiness; `-SimulateGlobalHotkey` tries synthetic OS shortcut dispatch, and `-WaitForManualGlobalHotkey` waits for a physical shortcut press and records successful evidence as `globalHotkey.dispatchMethod: manual`. The installer smoke runs the same runtime gate against the installed NSIS package and disables the source-checkout Python fallback. Add `-SimulateUpgrade` to reinstall into the same temporary install directory, reuse the same data directory, and verify a data sentinel survives the installer rerun. Add `-VerifyUninstall` to require a silent uninstaller, verify that app install artifacts are gone, and confirm the runtime-data sentinel still exists before temp cleanup.
+
+`scripts\smoke_microphone_hardware_matrix.py` is the manual hardware matrix gate for USB, Bluetooth, dock connect/disconnect, Windows default input changes, and favorite-mic fallback. It talks to the running backend through `GET /api/microphones`, `POST /api/microphones/refresh`, and `GET /api/settings`, then writes before/after JSON evidence. Use `--plan-only` to produce the operator checklist; use scenario-specific expectation flags such as `--expect-added`, `--expect-removed`, `--expect-default-changed`, and `--expect-favorite-fallback` during physical hardware runs.
 
 For Phase 0 hybrid performance baselines, run:
 
@@ -796,6 +800,7 @@ Useful focused tests:
 
 ```bash
 python -m py_compile src\microphone.py src\pipeline.py src\web_api.py
+python -m py_compile scripts\smoke_microphone_hardware_matrix.py
 git diff --check
 ```
 
@@ -814,6 +819,7 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -Ve
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -VerifyGlobalHotkeyRegistration -GlobalHotkeySmokeHotkey "ctrl+alt+shift+f12"
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -SimulateGlobalHotkey -GlobalHotkeySmokeHotkey "ctrl+alt+shift+f12"
 powershell -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 -WaitForManualGlobalHotkey -GlobalHotkeySmokeHotkey "ctrl+alt+shift+f12" -GlobalHotkeyDispatchTimeoutSec 30
+python scripts\smoke_microphone_hardware_matrix.py --plan-only --output tmp\hybrid-baseline\microphone-hardware-matrix-plan.json
 ```
 
 ```bash
