@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import scripts.smoke_microphone_hardware_matrix as matrix_smoke
 from scripts.smoke_microphone_hardware_matrix import (
     Device,
     evaluate_expectations,
@@ -82,6 +83,45 @@ def test_plan_only_token_placeholder_does_not_leak_real_token(tmp_path: Path) ->
     assert "<session token>" in command
     assert "real-session-token" not in result.stdout
     assert "real-session-token" not in output.read_text(encoding="utf-8")
+
+
+def test_prompted_physical_run_records_operator_completion(monkeypatch, tmp_path: Path) -> None:
+    output = tmp_path / "microphone-hardware-usb-add.json"
+    prompted: list[bool] = []
+
+    class FakeClient:
+        def __init__(self, base_url: str, token: str = "", timeout_sec: float = 5.0) -> None:
+            self.base_url = base_url
+
+        def get_microphones(self) -> list[Device]:
+            return [Device("Built-in Mic", "Built-in Mic")]
+
+        def get_settings(self) -> dict[str, object]:
+            return {}
+
+    def fake_wait_for_condition(**_kwargs: object) -> tuple[list[Device], dict[str, object], list[str]]:
+        return [Device("USB Mic", "USB Mic")], {}, []
+
+    monkeypatch.setattr(matrix_smoke, "HttpClient", FakeClient)
+    monkeypatch.setattr(matrix_smoke, "wait_for_condition", fake_wait_for_condition)
+    monkeypatch.setattr("builtins.input", lambda: prompted.append(True) or "")
+
+    result = matrix_smoke.main(
+        [
+            "--scenario",
+            "usb-add",
+            "--expect-added",
+            "usb",
+            "--output",
+            str(output),
+        ]
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert result == 0
+    assert prompted == [True]
+    assert payload["planOnly"] is False
+    assert payload["assumeCompleted"] is True
 
 
 def test_change_summary_tracks_added_removed_and_default_change() -> None:

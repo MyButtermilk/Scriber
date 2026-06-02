@@ -317,7 +317,7 @@ def main(argv: list[str]) -> int:
         "baseUrl": args.base_url,
         "scenarios": scenarios,
         "planOnly": bool(args.plan_only),
-        "assumeCompleted": bool(args.assume_completed),
+        "assumeCompleted": False,
         "plan": plan,
         "instructions": [
             {"scenario": scenario, "instruction": SCENARIO_INSTRUCTIONS[scenario]}
@@ -339,6 +339,7 @@ def main(argv: list[str]) -> int:
     if not args.assume_completed:
         print(instruction)
         input()
+    payload["assumeCompleted"] = True
 
     after, settings_after, failures = wait_for_condition(
         client=client,

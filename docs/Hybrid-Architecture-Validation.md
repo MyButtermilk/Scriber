@@ -2020,13 +2020,18 @@ Implemented improvements:
 - The validator requires all selected scenario artifacts, rejects
   `planOnly=true`, rejects placeholder expectation labels, requires
   `assumeCompleted=true`, and checks scenario-specific change evidence.
+- Prompted physical smokes now set `assumeCompleted=true` after the operator
+  presses Enter, so the default guided runner produces artifacts that satisfy
+  the validator without requiring `-AssumeCompleted`.
 - The validator writes a JSON summary with pass/fail status per scenario so a
   release run can archive a single matrix verdict.
 
 Evidence:
 
 - `tests\test_microphone_hardware_matrix_smoke.py` and
-  `tests\test_validate_microphone_hardware_matrix.py`: `9 passed`.
+  `tests\test_validate_microphone_hardware_matrix.py`: focused regression tests
+  cover plan output, prompted operator completion recording, scenario evidence,
+  and aggregation validation.
 - Python compile check: passed.
 - Current incomplete-validation artifact:
   `tmp\hybrid-baseline\microphone-hardware-matrix-validation-current-20260602.json`.
