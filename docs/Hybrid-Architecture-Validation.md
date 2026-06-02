@@ -4,6 +4,92 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Tauri Global Hotkey Registration Retry + Runtime Gate
+
+Commands:
+
+```powershell
+$scripts = @('scripts\smoke_tauri_desktop.ps1','scripts\smoke_windows_installer.ps1','scripts\build_windows.ps1')
+foreach ($script in $scripts) {
+  $tokens=$null; $errors=$null
+  $null=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors)
+  if ($errors.Count) { $errors | ForEach-Object { Write-Error "${script}: $($_.Message)" }; exit 1 }
+}
+'OK'
+
+venv\Scripts\python.exe -m pytest tests\test_tauri_stability_smoke_gates.py
+cargo test --manifest-path Frontend\src-tauri\Cargo.toml hotkey_registration_retries_once_after_backend_ready -- --nocapture
+cargo build --manifest-path Frontend\src-tauri\Cargo.toml --release
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1 `
+  -ExePath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\scriber-desktop.exe" `
+  -DataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\tauri-smoke-data\global-hotkey-registration-20260602" `
+  -DisableDevFallback `
+  -VerifyGlobalHotkeyRegistration `
+  -GlobalHotkeySmokeHotkey "ctrl+alt+shift+f12" `
+  -GlobalHotkeyDispatchTimeoutSec 30 `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\tauri-global-hotkey-registration-20260602.json"
+```
+
+Result: passed for global-hotkey registration in the Tauri-managed sidecar
+runtime.
+
+Implemented improvements:
+
+- `Frontend\src-tauri\src\lib.rs` now retries global-hotkey registration once
+  from the backend supervisor after the backend becomes ready. This closes the
+  race where setup could attempt registration before `/api/settings` was
+  reachable and then never retry.
+- `scripts\smoke_tauri_desktop.ps1` now supports
+  `-VerifyGlobalHotkeyRegistration` for a deterministic registration gate.
+- The same script also has a stricter `-SimulateGlobalHotkey` dispatch gate for
+  environments where synthetic or manual OS keyboard input reaches the global
+  shortcut hook.
+- `scripts\smoke_windows_installer.ps1` and `scripts\build_windows.ps1` can
+  forward the registration and dispatch hotkey gates to installed-app smokes.
+
+Evidence:
+
+- Artifact:
+  `tmp\hybrid-baseline\tauri-global-hotkey-registration-20260602.json`.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- Hotkey registered: `ctrl+alt+shift+f12`.
+- Registration verified: true.
+- Dispatch verified: false.
+- Cleanup verified: true.
+- Shell log:
+  `tmp\tauri-smoke-data\global-hotkey-registration-20260602\logs\tauri-shell.log`.
+- Shell log observed:
+  `Global hotkey registered: ctrl+alt+shift+f12 (toggle)`.
+- Updated release executable:
+  `Frontend\src-tauri\target\release\scriber-desktop.exe`
+  (12,456,960 bytes, timestamp 2026-06-02 03:28:01).
+- PowerShell parser check passed for `scripts\smoke_tauri_desktop.ps1`,
+  `scripts\smoke_windows_installer.ps1`, and `scripts\build_windows.ps1`.
+- `tests\test_tauri_stability_smoke_gates.py`: `8 passed`.
+- Targeted Rust test:
+  `hotkey_registration_retries_once_after_backend_ready`: `1 passed`.
+
+Goal coverage:
+
+- Phase 4: hardens global-hotkey registration in the Tauri shell and prevents
+  startup timing from leaving hotkeys silently unregistered.
+- Phase 7: adds smoke-script and Rust regression coverage for this behavior.
+- Phase 8: adds a runtime gate that verifies Tauri hotkey registration against
+  the packaged sidecar runtime without Node/Python dev fallback.
+
+Remaining limits:
+
+- This proves registration, not a physical OS-key dispatch into
+  `/api/live-mic/toggle`.
+- The stricter synthetic dispatch gate was attempted with `keybd_event` and
+  `SendInput`, but this desktop session did not deliver the synthetic key event
+  to the Tauri global-shortcut hook. No dispatch proof is claimed from those
+  failed attempts.
+- A final manual Windows hotkey smoke still needs a physical keypress or an
+  automation environment where global shortcut hooks receive synthetic input.
+
 ## 2026-06-02 - Installer Legacy Upgrade Stability + Smoke Output Artifacts
 
 Commands:

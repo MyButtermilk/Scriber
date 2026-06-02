@@ -1065,13 +1065,39 @@ fn handle_global_shortcut_event(app: &AppHandle, event_state: ShortcutState) {
 }
 
 fn start_backend_supervisor(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);
-        let Some(manager) = app.try_state::<BackendManager>() else {
-            break;
-        };
-        let _ = manager.ensure_started();
+    std::thread::spawn(move || {
+        let mut hotkey_refreshed_after_ready = false;
+        loop {
+            std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);
+            let Some(manager) = app.try_state::<BackendManager>() else {
+                break;
+            };
+            let status = manager.ensure_started();
+            if should_refresh_hotkey_after_backend_ready(status.ready, hotkey_refreshed_after_ready)
+            {
+                match refresh_global_hotkey_for_app(&app) {
+                    Ok(_) => {
+                        hotkey_refreshed_after_ready = true;
+                    }
+                    Err(err) => {
+                        hotkey_refreshed_after_ready = true;
+                        write_shell_log(&format!(
+                            "global hotkey registration after backend ready skipped: {err}"
+                        ));
+                    }
+                }
+            } else if !status.ready {
+                hotkey_refreshed_after_ready = false;
+            }
+        }
     });
+}
+
+fn should_refresh_hotkey_after_backend_ready(
+    backend_ready: bool,
+    hotkey_refreshed_after_ready: bool,
+) -> bool {
+    backend_ready && !hotkey_refreshed_after_ready
 }
 
 fn tauri_global_hotkey_enabled() -> bool {
@@ -1667,7 +1693,8 @@ mod tests {
         backend_executable_names, backend_start_timeout, find_backend_executable,
         find_backend_executable_in_dirs, health_response_ready, is_shell_menu_item,
         managed_backend_start_timed_out, normalize_global_shortcut, normalize_hotkey_mode,
-        parse_loopback_backend_url, resolve_session_token, should_show_window_for_tray_click,
+        parse_loopback_backend_url, resolve_session_token,
+        should_refresh_hotkey_after_backend_ready, should_show_window_for_tray_click,
         split_http_response, DesktopHotkeyState, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
         HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_QUIT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         SESSION_TOKEN_ENV,
@@ -1729,6 +1756,13 @@ mod tests {
             Some(now - BACKEND_START_TIMEOUT),
             now
         ));
+    }
+
+    #[test]
+    fn hotkey_registration_retries_once_after_backend_ready() {
+        assert!(!should_refresh_hotkey_after_backend_ready(false, false));
+        assert!(!should_refresh_hotkey_after_backend_ready(true, true));
+        assert!(should_refresh_hotkey_after_backend_ready(true, false));
     }
 
     #[test]

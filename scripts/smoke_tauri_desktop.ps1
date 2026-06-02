@@ -53,6 +53,10 @@ param(
     [switch]$SimulateBackendShutdown,
     [switch]$AttachExternalBackend,
     [switch]$SimulateBackendStartupTimeout,
+    [switch]$VerifyGlobalHotkeyRegistration,
+    [switch]$SimulateGlobalHotkey,
+    [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
+    [int]$GlobalHotkeyDispatchTimeoutSec = 20,
     [int]$BackendStartupTimeoutMs = 3000,
     [int]$CrashRecoveryTimeoutSec = 75,
     [string]$LegacyDataDir = "",
@@ -424,6 +428,348 @@ function Write-SmokeJson {
     return $json
 }
 
+function Initialize-WindowsKeyboardInput {
+    if (-not $IsWindows -and $PSVersionTable.PSVersion.Major -ge 6) {
+        throw "Global hotkey simulation is only available on Windows."
+    }
+    if ([System.Type]::GetType("ScriberSmoke.KeyboardInput", $false)) {
+        return
+    }
+    Add-Type -TypeDefinition @"
+namespace ScriberSmoke {
+    using System;
+    using System.Runtime.InteropServices;
+
+    public static class KeyboardInput {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct INPUT {
+            public uint type;
+            public InputUnion u;
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        public struct InputUnion {
+            [FieldOffset(0)]
+            public MOUSEINPUT mi;
+            [FieldOffset(0)]
+            public KEYBDINPUT ki;
+            [FieldOffset(0)]
+            public HARDWAREINPUT hi;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MOUSEINPUT {
+            public int dx;
+            public int dy;
+            public uint mouseData;
+            public uint dwFlags;
+            public uint time;
+            public UIntPtr dwExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct KEYBDINPUT {
+            public ushort wVk;
+            public ushort wScan;
+            public uint dwFlags;
+            public uint time;
+            public UIntPtr dwExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct HARDWAREINPUT {
+            public uint uMsg;
+            public ushort wParamL;
+            public ushort wParamH;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+        [DllImport("user32.dll")]
+        public static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+        public static void SendKey(ushort virtualKey, bool keyUp) {
+            INPUT input = new INPUT();
+            input.type = 1;
+            input.u.ki.wVk = virtualKey;
+            input.u.ki.wScan = (ushort)MapVirtualKey(virtualKey, 0);
+            input.u.ki.dwFlags = keyUp ? 0x0002u : 0u;
+            input.u.ki.time = 0;
+            input.u.ki.dwExtraInfo = UIntPtr.Zero;
+            INPUT[] inputs = new INPUT[] { input };
+            uint sent = SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
+            if (sent != 1) {
+                int error = Marshal.GetLastWin32Error();
+                throw new InvalidOperationException("SendInput failed for virtual key " + virtualKey + " error=" + error);
+            }
+        }
+    }
+}
+"@
+}
+
+function Convert-HotkeyPartToVirtualKey {
+    param([string]$Part)
+
+    $key = if ($Part) { $Part.Trim().ToLowerInvariant() } else { "" }
+    switch ($key) {
+        "ctrl" { return 0x11 }
+        "control" { return 0x11 }
+        "alt" { return 0x12 }
+        "shift" { return 0x10 }
+        "win" { return 0x5B }
+        "meta" { return 0x5B }
+    }
+    if ($key -match "^f([1-9]|1[0-9]|2[0-4])$") {
+        return 0x70 + ([int]$Matches[1]) - 1
+    }
+    if ($key -match "^[a-z]$") {
+        return [byte][char]$key.ToUpperInvariant()
+    }
+    if ($key -match "^[0-9]$") {
+        return [byte][char]$key
+    }
+    throw "Unsupported hotkey part for smoke simulation: '$Part'"
+}
+
+function Convert-HotkeyToKeyChord {
+    param([string]$Hotkey)
+
+    $parts = @($Hotkey.Split("+") | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($parts.Count -lt 1) {
+        throw "Global hotkey smoke requires a non-empty hotkey."
+    }
+    $primary = $parts[-1]
+    $modifierParts = @()
+    if ($parts.Count -gt 1) {
+        $modifierParts = @($parts[0..($parts.Count - 2)])
+    }
+    return [pscustomobject]@{
+        modifiers = @($modifierParts | ForEach-Object { Convert-HotkeyPartToVirtualKey -Part $_ })
+        key = Convert-HotkeyPartToVirtualKey -Part $primary
+    }
+}
+
+function Invoke-GlobalHotkeyChord {
+    param([string]$Hotkey)
+
+    Initialize-WindowsKeyboardInput
+    $chord = Convert-HotkeyToKeyChord -Hotkey $Hotkey
+
+    foreach ($modifier in $chord.modifiers) {
+        [ScriberSmoke.KeyboardInput]::SendKey([UInt16]$modifier, $false)
+        Start-Sleep -Milliseconds 25
+    }
+    [ScriberSmoke.KeyboardInput]::SendKey([UInt16]$chord.key, $false)
+    Start-Sleep -Milliseconds 50
+    [ScriberSmoke.KeyboardInput]::SendKey([UInt16]$chord.key, $true)
+    $releaseModifiers = @($chord.modifiers)
+    [array]::Reverse($releaseModifiers)
+    foreach ($modifier in $releaseModifiers) {
+        Start-Sleep -Milliseconds 25
+        [ScriberSmoke.KeyboardInput]::SendKey([UInt16]$modifier, $true)
+    }
+}
+
+function Wait-TextFileContains {
+    param(
+        [string]$Path,
+        [string]$Pattern,
+        [int]$DeadlineSec
+    )
+
+    $deadline = (Get-Date).AddSeconds($DeadlineSec)
+    do {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            $content = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+            if ($content -and $content.Contains($Pattern)) {
+                return $true
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
+function Get-MicTranscriptSummary {
+    param(
+        [int]$Port,
+        [hashtable]$Headers = @{}
+    )
+
+    $payload = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/transcripts?type=mic&limit=5" -Headers $Headers -TimeoutSec 5
+    $items = @($payload.items)
+    $latest = if ($items.Count -gt 0) { $items[0] } else { $null }
+    $preview = ""
+    if ($latest) {
+        if ($latest.PSObject.Properties.Name -contains "previewText") {
+            $preview = [string]$latest.previewText
+        } elseif ($latest.PSObject.Properties.Name -contains "_previewText") {
+            $preview = [string]$latest._previewText
+        }
+    }
+    return [pscustomobject]@{
+        total = [int]$payload.total
+        latestId = if ($latest) { $latest.id } else { "" }
+        latestStatus = if ($latest) { $latest.status } else { "" }
+        latestType = if ($latest) { $latest.type } else { "" }
+        latestPreview = $preview
+    }
+}
+
+function Initialize-GlobalHotkeySmokeData {
+    param(
+        [string]$RuntimeDataDir,
+        [string]$Hotkey,
+        [string]$Root
+    )
+
+    Assert-UnderRoot -Root (Join-Path $Root "tmp") -Path $RuntimeDataDir -Label "Global hotkey smoke DataDir"
+    New-Item -ItemType Directory -Force -Path $RuntimeDataDir | Out-Null
+    $envPath = Join-Path $RuntimeDataDir ".env"
+    $invalidProvider = "__hotkey_smoke_invalid__"
+    $lines = @(
+        "SCRIBER_HOTKEY=$Hotkey",
+        "SCRIBER_MODE=toggle",
+        "SCRIBER_DEFAULT_STT=$invalidProvider",
+        "SCRIBER_INJECT_METHOD=type",
+        "SCRIBER_AUTO_SUMMARIZE=0"
+    )
+    Set-Content -LiteralPath $envPath -Value $lines -Encoding UTF8
+    return [pscustomobject]@{
+        envPath = $envPath
+        hotkey = $Hotkey
+        invalidProvider = $invalidProvider
+    }
+}
+
+function Test-GlobalHotkeyRegistration {
+    param(
+        [string]$RuntimeDataDir,
+        [string]$Hotkey,
+        [string]$InvalidProvider,
+        [int]$DeadlineSec
+    )
+
+    $shellLogPath = Join-Path $RuntimeDataDir "logs\tauri-shell.log"
+    $expectedRegistration = "Global hotkey registered: $Hotkey (toggle)"
+    if (-not (Wait-TextFileContains -Path $shellLogPath -Pattern $expectedRegistration -DeadlineSec $DeadlineSec)) {
+        throw "Global hotkey registration was not observed in $shellLogPath."
+    }
+    return [pscustomobject]@{
+        verified = $true
+        hotkey = $Hotkey
+        mode = "toggle"
+        invalidProvider = $InvalidProvider
+        shellLogPath = $shellLogPath
+        registrationObserved = $true
+        dispatchVerified = $false
+    }
+}
+
+function Test-GlobalHotkeyDispatch {
+    param(
+        [int]$Port,
+        [string]$Token,
+        [string]$RuntimeDataDir,
+        [string]$Hotkey,
+        [string]$InvalidProvider,
+        [int]$DeadlineSec
+    )
+
+    $headers = @{}
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+
+    $registration = Test-GlobalHotkeyRegistration `
+        -RuntimeDataDir $RuntimeDataDir `
+        -Hotkey $Hotkey `
+        -InvalidProvider $InvalidProvider `
+        -DeadlineSec $DeadlineSec
+
+    $initialStateProbe = Invoke-TimedRestGet -Uri "http://127.0.0.1:$Port/api/state" -Headers $headers
+    $initialTranscripts = Get-MicTranscriptSummary -Port $Port -Headers $headers
+    Invoke-GlobalHotkeyChord -Hotkey $Hotkey
+
+    $observedStates = @()
+    $finalState = $null
+    $finalTranscripts = $initialTranscripts
+    $deadline = (Get-Date).AddSeconds($DeadlineSec)
+    do {
+        Start-Sleep -Milliseconds 500
+        $stateProbe = Invoke-TimedRestGet -Uri "http://127.0.0.1:$Port/api/state" -Headers $headers
+        $state = $stateProbe.payload
+        $finalState = $state
+        $observedStates += [pscustomobject]@{
+            elapsedMs = $stateProbe.elapsedMs
+            status = [string]$state.status
+            recordingState = [string]$state.recordingState
+            listening = [bool]$state.listening
+            sessionId = if ($state.sessionId) { [string]$state.sessionId } else { "" }
+        }
+        $finalTranscripts = Get-MicTranscriptSummary -Port $Port -Headers $headers
+
+        $stateChanged = (
+            [string]$state.status -ne [string]$initialStateProbe.payload.status -or
+            [string]$state.recordingState -ne [string]$initialStateProbe.payload.recordingState -or
+            [bool]$state.listening -ne [bool]$initialStateProbe.payload.listening
+        )
+        $transcriptAdded = [int]$finalTranscripts.total -gt [int]$initialTranscripts.total
+        if ($stateChanged -or $transcriptAdded) {
+            break
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    if (-not $finalState) {
+        throw "Global hotkey smoke did not collect any state after dispatch."
+    }
+
+    $addedTranscript = [int]$finalTranscripts.total -gt [int]$initialTranscripts.total
+    $stateChangedFromInitial = (
+        [string]$finalState.status -ne [string]$initialStateProbe.payload.status -or
+        [string]$finalState.recordingState -ne [string]$initialStateProbe.payload.recordingState -or
+        [bool]$finalState.listening -ne [bool]$initialStateProbe.payload.listening
+    )
+    if (-not ($addedTranscript -or $stateChangedFromInitial)) {
+        throw "Global hotkey did not change backend state or create a mic transcript within ${DeadlineSec}s."
+    }
+
+    if ([bool]$finalState.listening) {
+        try {
+            Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/api/live-mic/stop" -Headers $headers -TimeoutSec 5 | Out-Null
+        } catch {
+            Write-Warning "Global hotkey smoke cleanup stop failed: $_"
+        }
+    }
+
+    return [pscustomobject]@{
+        verified = $true
+        hotkey = $Hotkey
+        mode = "toggle"
+        invalidProvider = $InvalidProvider
+        shellLogPath = $registration.shellLogPath
+        registrationObserved = $true
+        dispatchVerified = $true
+        initialState = [pscustomobject]@{
+            status = [string]$initialStateProbe.payload.status
+            recordingState = [string]$initialStateProbe.payload.recordingState
+            listening = [bool]$initialStateProbe.payload.listening
+        }
+        finalState = [pscustomobject]@{
+            status = [string]$finalState.status
+            recordingState = [string]$finalState.recordingState
+            listening = [bool]$finalState.listening
+        }
+        initialTranscriptTotal = [int]$initialTranscripts.total
+        finalTranscriptTotal = [int]$finalTranscripts.total
+        transcriptAdded = $addedTranscript
+        latestTranscriptStatus = [string]$finalTranscripts.latestStatus
+        observedStates = $observedStates
+    }
+}
+
 function Wait-ProcessExit {
     param(
         [int]$ProcessId,
@@ -679,11 +1025,18 @@ if ($AttachExternalBackend -and $KeepAppOpen) {
 if ($SimulateBackendStartupTimeout -and ($SimulateBackendCrash -or $SimulateBackendShutdown)) {
     throw "-SimulateBackendStartupTimeout cannot be combined with -SimulateBackendCrash or -SimulateBackendShutdown."
 }
+if ($SimulateGlobalHotkey -and ($SimulateBackendCrash -or $SimulateBackendShutdown -or $SimulateBackendStartupTimeout)) {
+    throw "-SimulateGlobalHotkey cannot be combined with -SimulateBackendCrash, -SimulateBackendShutdown, or -SimulateBackendStartupTimeout."
+}
 if (-not $DataDir) {
     $DataDir = Join-Path $RepoRoot ("tmp\tauri-smoke-data\" + [System.Guid]::NewGuid().ToString("N"))
 }
 $DataDir = Convert-ToFullPath -Path $DataDir
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+$globalHotkeySmokeConfig = $null
+if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey) {
+    $globalHotkeySmokeConfig = Initialize-GlobalHotkeySmokeData -RuntimeDataDir $DataDir -Hotkey $GlobalHotkeySmokeHotkey -Root $RepoRoot
+}
 if (-not $SessionToken) {
     $SessionToken = [System.Guid]::NewGuid().ToString("N")
 }
@@ -702,6 +1055,12 @@ $oldWebHost = $env:SCRIBER_WEB_HOST
 $oldWebPort = $env:SCRIBER_WEB_PORT
 $oldRuntimeMode = $env:SCRIBER_RUNTIME_MODE
 $oldLaunchKind = $env:SCRIBER_BACKEND_LAUNCH_KIND
+$oldTauriGlobalHotkey = $env:SCRIBER_TAURI_GLOBAL_HOTKEY
+$oldScriberHotkey = $env:SCRIBER_HOTKEY
+$oldScriberMode = $env:SCRIBER_MODE
+$oldScriberDefaultStt = $env:SCRIBER_DEFAULT_STT
+$oldScriberInjectMethod = $env:SCRIBER_INJECT_METHOD
+$oldScriberAutoSummarize = $env:SCRIBER_AUTO_SUMMARIZE
 $oldBackendStartTimeout = $env:SCRIBER_BACKEND_START_TIMEOUT_MS
 $oldSimulateStartupTimeout = $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE
 $oldSimulateStartupTimeoutMarker = $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER
@@ -734,6 +1093,14 @@ if (-not $EnableHotkeys) {
 }
 if (-not $EnableDeviceMonitor) {
     $env:SCRIBER_DISABLE_DEVICE_MONITOR = "1"
+}
+if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey) {
+    $env:SCRIBER_TAURI_GLOBAL_HOTKEY = "1"
+    $env:SCRIBER_HOTKEY = $globalHotkeySmokeConfig.hotkey
+    $env:SCRIBER_MODE = "toggle"
+    $env:SCRIBER_DEFAULT_STT = $globalHotkeySmokeConfig.invalidProvider
+    $env:SCRIBER_INJECT_METHOD = "type"
+    $env:SCRIBER_AUTO_SUMMARIZE = "0"
 }
 if ($LegacyDataDir) {
     $env:SCRIBER_LEGACY_DATA_DIR = $LegacyDataDir
@@ -846,6 +1213,22 @@ try {
     if ($VerifyLegacyDataMigration) {
         $legacyDataMigration = Test-LegacyDataMigration -SourceDir $LegacyDataDir -TargetDir $DataDir
     }
+    $globalHotkey = $null
+    if ($SimulateGlobalHotkey) {
+        $globalHotkey = Test-GlobalHotkeyDispatch `
+            -Port ([int]$listener.Port) `
+            -Token $SessionToken `
+            -RuntimeDataDir $DataDir `
+            -Hotkey $globalHotkeySmokeConfig.hotkey `
+            -InvalidProvider $globalHotkeySmokeConfig.invalidProvider `
+            -DeadlineSec $GlobalHotkeyDispatchTimeoutSec
+    } elseif ($VerifyGlobalHotkeyRegistration) {
+        $globalHotkey = Test-GlobalHotkeyRegistration `
+            -RuntimeDataDir $DataDir `
+            -Hotkey $globalHotkeySmokeConfig.hotkey `
+            -InvalidProvider $globalHotkeySmokeConfig.invalidProvider `
+            -DeadlineSec $GlobalHotkeyDispatchTimeoutSec
+    }
     $crashRecovery = $null
     if ($SimulateBackendCrash) {
         $initialBackendPid = [int]$listener.BackendPid
@@ -949,6 +1332,7 @@ try {
         externalAttach = $externalAttach
         portConflict = $portConflictResult
         legacyDataMigration = $legacyDataMigration
+        globalHotkey = $globalHotkey
         startupTimeout = $startupTimeout
         crashRecovery = $crashRecovery
         controlledShutdown = $controlledShutdown
@@ -1006,6 +1390,12 @@ try {
     $env:SCRIBER_WEB_PORT = $oldWebPort
     $env:SCRIBER_RUNTIME_MODE = $oldRuntimeMode
     $env:SCRIBER_BACKEND_LAUNCH_KIND = $oldLaunchKind
+    $env:SCRIBER_TAURI_GLOBAL_HOTKEY = $oldTauriGlobalHotkey
+    $env:SCRIBER_HOTKEY = $oldScriberHotkey
+    $env:SCRIBER_MODE = $oldScriberMode
+    $env:SCRIBER_DEFAULT_STT = $oldScriberDefaultStt
+    $env:SCRIBER_INJECT_METHOD = $oldScriberInjectMethod
+    $env:SCRIBER_AUTO_SUMMARIZE = $oldScriberAutoSummarize
     $env:SCRIBER_BACKEND_START_TIMEOUT_MS = $oldBackendStartTimeout
     $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE = $oldSimulateStartupTimeout
     $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER = $oldSimulateStartupTimeoutMarker

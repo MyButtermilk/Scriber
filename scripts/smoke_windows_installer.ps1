@@ -39,6 +39,10 @@ param(
     [switch]$SimulateBackendShutdown,
     [switch]$AttachExternalBackend,
     [switch]$SimulateBackendStartupTimeout,
+    [switch]$VerifyGlobalHotkeyRegistration,
+    [switch]$SimulateGlobalHotkey,
+    [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
+    [int]$GlobalHotkeyDispatchTimeoutSec = 20,
     [int]$StabilityDurationSec = 0,
     [int]$StabilityProbeIntervalSec = 5,
     [double]$MaxBackendWorkingSetGrowthMB = 0,
@@ -328,6 +332,16 @@ function Invoke-InstalledDesktopSmoke {
     if ($SimulateBackendStartupTimeout) {
         $smokeArgs += "-SimulateBackendStartupTimeout"
     }
+    if ($VerifyGlobalHotkeyRegistration) {
+        $smokeArgs += "-VerifyGlobalHotkeyRegistration"
+        $smokeArgs += @("-GlobalHotkeySmokeHotkey", $GlobalHotkeySmokeHotkey)
+        $smokeArgs += @("-GlobalHotkeyDispatchTimeoutSec", $GlobalHotkeyDispatchTimeoutSec.ToString())
+    }
+    if ($SimulateGlobalHotkey) {
+        $smokeArgs += "-SimulateGlobalHotkey"
+        $smokeArgs += @("-GlobalHotkeySmokeHotkey", $GlobalHotkeySmokeHotkey)
+        $smokeArgs += @("-GlobalHotkeyDispatchTimeoutSec", $GlobalHotkeyDispatchTimeoutSec.ToString())
+    }
     if ($OccupyDefaultPort) {
         $smokeArgs += "-OccupyDefaultPort"
     }
@@ -424,6 +438,7 @@ try {
             portConflict = $secondSmoke.portConflict
             controlledShutdown = $secondSmoke.controlledShutdown
             startupTimeout = $secondSmoke.startupTimeout
+            globalHotkey = $secondSmoke.globalHotkey
             stability = $secondSmoke.stability
             legacyDataMigration = $secondSmoke.legacyDataMigration
         }
@@ -445,6 +460,7 @@ try {
         crashRecovery = $smoke.crashRecovery
         controlledShutdown = $smoke.controlledShutdown
         startupTimeout = $smoke.startupTimeout
+        globalHotkey = $smoke.globalHotkey
         stability = $smoke.stability
         cleanupVerified = $smoke.cleanupVerified
         uninstall = $null
