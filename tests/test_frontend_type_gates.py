@@ -21,12 +21,49 @@ def test_tauri_backend_status_trusts_supervisor_readiness() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-backend-status.tsx").read_text(
         encoding="utf-8"
     )
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(
+        encoding="utf-8"
+    )
 
+    assert "export interface BackendHealthResponse" in api_types
     assert "loadBackendBaseUrlFromTauri" in source
     assert 'invoke<TauriBackendStatus>("ensure_backend_running")' in source
+    assert "type BackendHealthResponse" in source
+    assert "health?.apiVersion === REST_API_VERSION" in source
+    assert "health.ok === true && health.ready === true" in source
     assert "Tauri backend supervisor check failed; falling back to HTTP health probe." in source
     assert "void reportFrontendReady().catch" in source
     assert "return true;" in source[source.index('invoke<TauriBackendStatus>("ensure_backend_running")'):]
+
+
+def test_settings_microphones_use_shared_api_types() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+    websocket_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx"
+    ).read_text(encoding="utf-8")
+    device_refresh_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-device-change-refresh.ts"
+    ).read_text(encoding="utf-8")
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "export interface MicrophoneDevice" in api_types
+    assert "export interface MicrophonesResponse" in api_types
+    assert "export interface MicrophonesRefreshResponse" in api_types
+    assert "import type {" in source
+    assert "MicrophoneDevice," in source
+    assert "MicrophonesResponse," in source
+    assert "useState<MicrophoneDevice[]>([])" in source
+    assert "(await micsRes.json()) as MicrophonesResponse" in source
+    assert "(await res.json()) as MicrophonesResponse" in source
+    assert "import type { MicrophoneDevice }" in websocket_source
+    assert "devices: MicrophoneDevice[]" in websocket_source
+    assert "import type { MicrophonesRefreshResponse }" in device_refresh_source
+    assert "Promise<MicrophonesRefreshResponse | null>" in device_refresh_source
+    assert "as { deviceId: string" not in source
 
 
 def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:

@@ -6,6 +6,7 @@ import {
     reportFrontendReady,
     setBackendBaseUrl,
 } from "@/lib/backend";
+import { REST_API_VERSION, type BackendHealthResponse } from "@/lib/api-types";
 
 interface BackendStatus {
     isOnline: boolean;
@@ -75,7 +76,8 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
             });
             clearTimeout(timeoutId);
 
-            const online = res.ok;
+            const health = res.ok ? ((await res.json()) as BackendHealthResponse) : null;
+            const online = health?.apiVersion === REST_API_VERSION && health.ok === true && health.ready === true;
             if (online) {
                 try {
                     await reportFrontendReady();

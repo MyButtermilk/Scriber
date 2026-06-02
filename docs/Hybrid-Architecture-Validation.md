@@ -4003,3 +4003,53 @@ Remaining limits:
 - This does not replace the full Windows release workflow, installed-package
   smokes, or external hardware/signing/updater evidence. It is a fast PR gate,
   not final release-readiness proof.
+
+## 2026-06-02 - Typed Runtime and Microphone REST Frontend Contracts
+
+Commands:
+
+```powershell
+python -m pytest tests\test_frontend_type_gates.py
+
+cd Frontend
+npm run check
+```
+
+Result: implemented and covered by focused frontend type-boundary regression
+tests plus TypeScript checking.
+
+Implemented improvements:
+
+- Added shared frontend API types for `/api/health`, `/api/autostart`,
+  `/api/microphones`, and `/api/microphones/refresh` in
+  `Frontend\client\src\lib\api-types.ts`.
+- The backend-status hook now treats HTTP health as online only when the
+  versioned health payload reports `apiVersion: "1"`, `ok: true`, and
+  `ready: true`; this keeps the browser fallback aligned with the backend REST
+  contract instead of accepting any HTTP 200 response.
+- Browser autostart responses now return the shared `AutostartStatus` type.
+- Settings microphone loading, refresh, browser device-change refresh hints,
+  and `microphones_updated` WebSocket handling now consume shared microphone
+  types without ad hoc device casts.
+
+Evidence:
+
+- `tests\test_frontend_type_gates.py`: validates the shared
+  `BackendHealthResponse`, `MicrophoneDevice`, and `MicrophonesResponse`
+  boundaries, including the microphone WebSocket event type, and guards against
+  restoring the old ad hoc microphone cast.
+- `npm run check`: passed.
+
+Goal coverage:
+
+- Phase 1: tightens the REST boundary used by the Tauri/browser health path and
+  microphone settings UI.
+- Phase 5: keeps microphone device data typed at the frontend/backend boundary
+  while Python remains the authoritative audio/device owner.
+- Phase 7: adds regression coverage for these frontend API contract boundaries.
+
+Remaining limits:
+
+- This does not complete typed coverage for every remaining REST endpoint.
+  YouTube/file/transcript-detail action routes still have some local response
+  casts and should be handled in follow-up slices.

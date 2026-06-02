@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { wsUrl } from "@/lib/backend";
+import type { MicrophoneDevice } from "@/lib/api-types";
 
 type BaseWsMessage = {
     apiVersion: string;
@@ -59,7 +60,7 @@ export type ScriberWebSocketMessage =
     | (BaseWsMessage & { type: "session_finished"; session: TranscriptSession })
     | (BaseWsMessage & {
         type: "microphones_updated";
-        devices: { deviceId: string; label: string; [key: string]: unknown }[];
+        devices: MicrophoneDevice[];
         favoriteMicRestored: boolean;
         restoredDeviceId?: string;
         restoredDeviceLabel?: string;

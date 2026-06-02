@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import { apiUrl } from "@/lib/backend";
+import type { MicrophonesRefreshResponse } from "@/lib/api-types";
 
 export function useDeviceChangeRefresh(enabled: boolean): void {
   useEffect(() => {
@@ -22,6 +23,11 @@ export function useDeviceChangeRefresh(enabled: boolean): void {
         void fetch(apiUrl("/api/microphones/refresh"), {
           method: "POST",
           credentials: "include",
+        }).then(async (res): Promise<MicrophonesRefreshResponse | null> => {
+          if (!res.ok) {
+            return null;
+          }
+          return (await res.json()) as MicrophonesRefreshResponse;
         }).catch(() => {
           // Best-effort hint; backend DeviceMonitor polling/native callbacks remain authoritative.
         });

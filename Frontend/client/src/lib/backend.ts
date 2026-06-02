@@ -1,4 +1,9 @@
-import { REST_API_VERSION, type FrontendReadyRequest, type FrontendReadyResponse } from "@/lib/api-types";
+import {
+  REST_API_VERSION,
+  type AutostartStatus,
+  type FrontendReadyRequest,
+  type FrontendReadyResponse,
+} from "@/lib/api-types";
 
 declare global {
   interface Window {
@@ -19,12 +24,6 @@ let frontendReadyReportKey = "";
 interface BackendAccess {
   baseUrl: string;
   sessionToken: string;
-}
-
-export interface AutostartStatus {
-  enabled: boolean;
-  available: boolean;
-  message?: string;
 }
 
 export function isTauriRuntime(): boolean {
@@ -143,7 +142,7 @@ export async function getAutostartStatus(): Promise<AutostartStatus> {
   if (!res.ok) {
     throw new Error(await responseMessage(res, "Failed to load autostart status"));
   }
-  return res.json();
+  return (await res.json()) as AutostartStatus;
 }
 
 export async function setAutostartEnabled(enabled: boolean): Promise<AutostartStatus> {
@@ -161,7 +160,7 @@ export async function setAutostartEnabled(enabled: boolean): Promise<AutostartSt
   if (!res.ok) {
     throw new Error(await responseMessage(res, "Failed to update autostart"));
   }
-  return res.json();
+  return (await res.json()) as AutostartStatus;
 }
 
 export async function refreshGlobalHotkey(): Promise<void> {

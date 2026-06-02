@@ -17,7 +17,12 @@ import {
   refreshGlobalHotkey,
   setAutostartEnabled as setDesktopAutostartEnabled,
 } from "@/lib/backend";
-import type { SettingsResponse, SettingsUpdatePayload } from "@/lib/api-types";
+import type {
+  MicrophoneDevice,
+  MicrophonesResponse,
+  SettingsResponse,
+  SettingsUpdatePayload,
+} from "@/lib/api-types";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
@@ -220,7 +225,7 @@ export default function Settings() {
   const { toast } = useToast();
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
 
-  const [inputDevices, setInputDevices] = useState<{ deviceId: string, label: string }[]>([]);
+  const [inputDevices, setInputDevices] = useState<MicrophoneDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState("default");
   const [transcriptionModel, setTranscriptionModel] = useState("soniox-realtime");
   const [summarizationModel, setSummarizationModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
@@ -331,7 +336,7 @@ export default function Settings() {
         if (!micsRes.ok) throw new Error(await micsRes.text());
 
         const settings = (await settingsRes.json()) as SettingsResponse;
-        const mics = await micsRes.json();
+        const mics = (await micsRes.json()) as MicrophonesResponse;
         if (cancelled) return;
 
         const keys = settings.apiKeys || {};
@@ -369,7 +374,7 @@ export default function Settings() {
         setGladiaKey(keys.gladia || "");
         setGroqKey(keys.groq || "");
 
-        setInputDevices((mics.devices || []) as { deviceId: string, label: string }[]);
+        setInputDevices(mics.devices || []);
 
         // Show page immediately - don't wait for model info
         setSettingsLoaded(true);
@@ -419,8 +424,8 @@ export default function Settings() {
       if (!res.ok) {
         return;
       }
-      const data = await res.json();
-      const devices = ((data?.devices || []) as { deviceId: string; label: string }[]);
+      const data = (await res.json()) as MicrophonesResponse;
+      const devices = data.devices || [];
       setInputDevices(devices);
       const availableIds = new Set(devices.map((d) => d.deviceId));
       setSelectedDeviceId((prev) => {
@@ -1013,7 +1018,7 @@ export default function Settings() {
   const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     if (!msg) return;
     if (msg.type === "microphones_updated") {
-      const devices = ((msg.devices || []) as { deviceId: string; label: string }[]);
+      const devices = msg.devices || [];
       setInputDevices(devices);
 
       const availableIds = new Set(devices.map((d) => d.deviceId));

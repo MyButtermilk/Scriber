@@ -4,6 +4,42 @@ export const REST_API_VERSION = "1";
 
 export type TranscriptType = "mic" | "file" | "youtube";
 
+export interface BackendHealthResponse {
+  ok: boolean;
+  ready: boolean;
+  version: string;
+  apiVersion: typeof REST_API_VERSION;
+  workerVersion: string;
+  pid: number;
+  host: string;
+  port: number;
+  startedAt: string;
+  uptimeSeconds: number;
+  activeSession: string | null;
+  recordingState: string;
+  runtimeMode: string;
+}
+
+export interface AutostartStatus {
+  enabled: boolean;
+  available: boolean;
+  message?: string;
+}
+
+export interface MicrophoneDevice {
+  deviceId: string;
+  label: string;
+}
+
+export interface MicrophonesResponse {
+  devices: MicrophoneDevice[];
+}
+
+export interface MicrophonesRefreshResponse {
+  scheduled: boolean;
+  deviceMonitor: "running" | "disabled" | string;
+}
+
 export interface FrontendReadyRequest {
   apiVersion: typeof REST_API_VERSION;
   tauriRuntime: boolean;
