@@ -48,12 +48,17 @@ Implemented improvements:
 - Test setup now forces `SCRIBER_MIC_ALWAYS_ON=0` by default, and prewarm tests
   opt in explicitly, keeping local developer settings from changing test
   behavior.
+- Added controller lifecycle coverage proving that `ScriberWebController`
+  schedules idle mic prewarm when `MIC_ALWAYS_ON` is enabled and that
+  `PUT /api/settings` toggles the idle prewarm manager without opening real
+  PortAudio streams during tests.
 
 Evidence:
 
 - Mic prewarm/device-monitor/device-resolution/pipeline-stop focused tests:
   `36 passed`.
-- Web API lifecycle/session-token focused tests: `23 passed`.
+- Web API lifecycle/session-token focused tests after controller prewarm
+  coverage: `25 passed`.
 - Python compile check for touched runtime modules: passed.
 
 Goal coverage:

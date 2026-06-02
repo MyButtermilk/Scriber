@@ -8,6 +8,59 @@ from src import web_api
 from src.web_api import ScriberWebController, TranscriptRecord
 
 
+class _FakeMicPrewarmManager:
+    instances: list["_FakeMicPrewarmManager"] = []
+
+    def __init__(self):
+        self.active = False
+        self.pause_calls = 0
+        self.resume_calls = 0
+        self.stop_calls = 0
+        self.quiesce_calls = 0
+        self.refresh_resume_calls = 0
+        type(self).instances.append(self)
+
+    @property
+    def is_active(self) -> bool:
+        return self.active
+
+    def pause_for_active_capture(self) -> None:
+        self.pause_calls += 1
+        self.active = False
+
+    def resume_after_active_capture(self) -> bool:
+        self.resume_calls += 1
+        self.active = bool(web_api.Config.MIC_ALWAYS_ON)
+        if not self.active:
+            self.stop_calls += 1
+        return self.active
+
+    def quiesce_for_device_refresh(self) -> None:
+        self.quiesce_calls += 1
+        self.active = False
+
+    def resume_after_device_refresh(self) -> bool:
+        self.refresh_resume_calls += 1
+        self.active = bool(web_api.Config.MIC_ALWAYS_ON)
+        return self.active
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        self.active = False
+
+
+async def _wait_for_prewarm_task(ctl: ScriberWebController) -> None:
+    for _ in range(100):
+        task = ctl._mic_prewarm_task
+        if task is None:
+            return
+        if task.done():
+            await asyncio.sleep(0)
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("mic prewarm task did not finish")
+
+
 def _make_record(session_id: str) -> TranscriptRecord:
     rec = TranscriptRecord(
         id=session_id,
@@ -139,6 +192,55 @@ async def test_update_settings_flushes_pending_persist_on_shutdown(monkeypatch, 
     ctl.shutdown()
 
     assert persist_mock.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_controller_starts_idle_mic_prewarm_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(web_api, "MicrophonePrewarmManager", _FakeMicPrewarmManager)
+    _FakeMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    await _wait_for_prewarm_task(ctl)
+    manager = _FakeMicPrewarmManager.instances[-1]
+
+    assert manager.resume_calls == 1
+    assert manager.active is True
+
+    ctl.shutdown()
+
+    assert manager.stop_calls >= 1
+    assert manager.active is False
+
+
+@pytest.mark.asyncio
+async def test_update_settings_toggles_idle_mic_prewarm(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(web_api.Config, "persist_to_env_file", MagicMock())
+    monkeypatch.setattr(web_api, "MicrophonePrewarmManager", _FakeMicPrewarmManager)
+    _FakeMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeMicPrewarmManager.instances[-1]
+
+    await ctl.update_settings({"micAlwaysOn": True})
+
+    assert web_api.Config.MIC_ALWAYS_ON is True
+    assert manager.resume_calls == 1
+    assert manager.active is True
+
+    await ctl.update_settings({"micAlwaysOn": False})
+
+    assert web_api.Config.MIC_ALWAYS_ON is False
+    assert manager.resume_calls == 2
+    assert manager.stop_calls >= 1
+    assert manager.active is False
+
+    ctl.shutdown()
 
 
 @pytest.mark.asyncio
