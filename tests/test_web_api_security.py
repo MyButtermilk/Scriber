@@ -42,6 +42,20 @@ def test_origin_allowed_wildcard(monkeypatch):
     assert web_api._origin_allowed("https://any.example")
 
 
+def test_safe_youtube_thumbnail_url_allows_only_youtube_thumbnail_hosts():
+    assert (
+        web_api._safe_youtube_thumbnail_url("https://i.ytimg.com/vi/abc123/hqdefault.jpg")
+        == "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
+    )
+    assert (
+        web_api._safe_youtube_thumbnail_url("https://img.youtube.com/vi/abc123/mqdefault.jpg")
+        == "https://img.youtube.com/vi/abc123/mqdefault.jpg"
+    )
+    assert web_api._safe_youtube_thumbnail_url("http://i.ytimg.com/vi/abc123/hqdefault.jpg") is None
+    assert web_api._safe_youtube_thumbnail_url("https://evil.example/vi/abc123/hqdefault.jpg") is None
+    assert web_api._safe_youtube_thumbnail_url("https://user:pass@i.ytimg.com/vi/abc123/hqdefault.jpg") is None
+
+
 class _FakeTransport:
     def __init__(self, peername=("127.0.0.1", 12345)):
         self._peername = peername

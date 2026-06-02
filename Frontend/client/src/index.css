@@ -168,6 +168,7 @@
 /* Prevent layout shifts with scrollbar */
 html {
   scrollbar-gutter: stable;
+  font-size: 93.75%;
 }
 
 html:has(body[data-scroll-locked]) {

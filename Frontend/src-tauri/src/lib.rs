@@ -11,14 +11,19 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
-    menu::{MenuBuilder, SubmenuBuilder},
+    menu::{IsMenuItem, Menu, MenuBuilder, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Runtime,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE,
+    CloseHandle, GetLastError, GlobalFree, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
+    ERROR_SUCCESS, HANDLE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
@@ -27,6 +32,10 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 #[cfg(windows)]
+use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
+#[cfg(windows)]
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
     HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE,
@@ -34,7 +43,6 @@ use windows_sys::Win32::System::Registry::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
-
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -52,7 +60,12 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_ID: &str = "scriber-tray";
 const MENU_ITEM_SHOW_WINDOW: &str = "scriber-show-window";
 const MENU_ITEM_RESTART_BACKEND: &str = "scriber-restart-backend";
+const MENU_ITEM_REFRESH_RECENT: &str = "scriber-refresh-recent";
 const MENU_ITEM_QUIT: &str = "scriber-quit";
+const MENU_ITEM_COPY_TRANSCRIPT_PREFIX: &str = "scriber-copy-transcript-";
+const MENU_RECENT_TRANSCRIPTS: &str = "scriber-recent-transcripts";
+const MENU_ITEM_EMPTY_RECENT: &str = "scriber-empty-recent";
+const TRAY_RECENT_TRANSCRIPT_LIMIT: usize = 5;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -74,6 +87,13 @@ pub struct BackendStatus {
 pub struct BackendAccess {
     base_url: String,
     session_token: String,
+}
+
+struct RecentTranscriptMenuEntry {
+    id: String,
+    title: String,
+    date: String,
+    transcript_type: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -518,32 +538,13 @@ pub fn run() {
 }
 
 fn configure_desktop_shell<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
-    install_application_menu(app)?;
     install_tray(app)?;
-    Ok(())
-}
-
-fn install_application_menu<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
-    let handle = app.handle();
-    let app_submenu = SubmenuBuilder::new(handle, "Scriber")
-        .text(MENU_ITEM_SHOW_WINDOW, "Open Scriber")
-        .text(MENU_ITEM_RESTART_BACKEND, "Restart Backend")
-        .separator()
-        .text(MENU_ITEM_QUIT, "Quit")
-        .build()?;
-    let menu = MenuBuilder::new(handle).item(&app_submenu).build()?;
-    app.set_menu(menu)?;
     Ok(())
 }
 
 fn install_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let handle = app.handle();
-    let tray_menu = MenuBuilder::new(handle)
-        .text(MENU_ITEM_SHOW_WINDOW, "Open Scriber")
-        .text(MENU_ITEM_RESTART_BACKEND, "Restart Backend")
-        .separator()
-        .text(MENU_ITEM_QUIT, "Quit")
-        .build()?;
+    let tray_menu = build_tray_menu(handle)?;
     let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Scriber")
         .menu(&tray_menu)
@@ -562,14 +563,105 @@ fn install_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let show_item = MenuItem::with_id(
+        app,
+        MENU_ITEM_SHOW_WINDOW,
+        "Open Scriber",
+        true,
+        None::<&str>,
+    )?;
+    let refresh_item = MenuItem::with_id(
+        app,
+        MENU_ITEM_REFRESH_RECENT,
+        "Refresh Recent Transcripts",
+        true,
+        None::<&str>,
+    )?;
+    let restart_item = MenuItem::with_id(
+        app,
+        MENU_ITEM_RESTART_BACKEND,
+        "Restart Backend",
+        true,
+        None::<&str>,
+    )?;
+    let quit_item = MenuItem::with_id(app, MENU_ITEM_QUIT, "Quit", true, None::<&str>)?;
+    let recent_submenu = build_recent_transcripts_submenu(app)?;
+
+    MenuBuilder::new(app)
+        .item(&show_item)
+        .item(&recent_submenu)
+        .item(&refresh_item)
+        .separator()
+        .item(&restart_item)
+        .separator()
+        .item(&quit_item)
+        .build()
+}
+
+fn build_recent_transcripts_submenu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Submenu<R>> {
+    let mut recent_items: Vec<MenuItem<R>> = Vec::new();
+    if let Some(manager) = app.try_state::<BackendManager>() {
+        let status = manager.status();
+        if status.ready {
+            match fetch_recent_transcripts(&manager.access()) {
+                Ok(entries) => {
+                    for entry in entries {
+                        let label = recent_transcript_label(&entry);
+                        let item_id = format!("{MENU_ITEM_COPY_TRANSCRIPT_PREFIX}{}", entry.id);
+                        recent_items.push(MenuItem::with_id(
+                            app,
+                            item_id,
+                            label,
+                            true,
+                            None::<&str>,
+                        )?);
+                    }
+                }
+                Err(err) => {
+                    write_shell_log(&format!("recent transcripts tray fetch failed: {err}"));
+                }
+            }
+        }
+    }
+
+    if recent_items.is_empty() {
+        recent_items.push(MenuItem::with_id(
+            app,
+            MENU_ITEM_EMPTY_RECENT,
+            "No completed transcripts",
+            false,
+            None::<&str>,
+        )?);
+    }
+
+    let recent_refs: Vec<&dyn IsMenuItem<R>> = recent_items
+        .iter()
+        .map(|item| item as &dyn IsMenuItem<R>)
+        .collect();
+    Submenu::with_id_and_items(
+        app,
+        MENU_RECENT_TRANSCRIPTS,
+        "Recent Transcripts",
+        true,
+        &recent_refs,
+    )
+}
+
 fn handle_shell_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
     if !is_shell_menu_item(item_id) {
+        return;
+    }
+
+    if let Some(transcript_id) = item_id.strip_prefix(MENU_ITEM_COPY_TRANSCRIPT_PREFIX) {
+        copy_recent_transcript_from_shell(app, transcript_id);
         return;
     }
 
     match item_id {
         MENU_ITEM_SHOW_WINDOW => show_main_window(app),
         MENU_ITEM_RESTART_BACKEND => restart_backend_from_shell(app),
+        MENU_ITEM_REFRESH_RECENT => refresh_tray_menu_for_app(app, "manual refresh"),
         MENU_ITEM_QUIT => app.exit(0),
         _ => {}
     }
@@ -601,13 +693,197 @@ fn restart_backend_from_shell<R: Runtime>(app: &AppHandle<R>) {
         )),
         Err(err) => write_shell_log(&format!("backend restart from shell menu failed: {err}")),
     }
+    refresh_tray_menu_for_app(app, "backend restart");
 }
 
 fn is_shell_menu_item(item_id: &str) -> bool {
     matches!(
         item_id,
-        MENU_ITEM_SHOW_WINDOW | MENU_ITEM_RESTART_BACKEND | MENU_ITEM_QUIT
-    )
+        MENU_ITEM_SHOW_WINDOW
+            | MENU_ITEM_RESTART_BACKEND
+            | MENU_ITEM_REFRESH_RECENT
+            | MENU_ITEM_QUIT
+    ) || item_id.starts_with(MENU_ITEM_COPY_TRANSCRIPT_PREFIX)
+}
+
+fn refresh_tray_menu_for_app<R: Runtime>(app: &AppHandle<R>, reason: &str) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        write_shell_log(&format!(
+            "tray menu refresh skipped ({reason}): tray not found"
+        ));
+        return;
+    };
+    match build_tray_menu(app) {
+        Ok(menu) => {
+            if let Err(err) = tray.set_menu(Some(menu)) {
+                write_shell_log(&format!("tray menu refresh failed ({reason}): {err}"));
+            }
+        }
+        Err(err) => write_shell_log(&format!("tray menu rebuild failed ({reason}): {err}")),
+    }
+}
+
+fn fetch_recent_transcripts(
+    access: &BackendAccess,
+) -> Result<Vec<RecentTranscriptMenuEntry>, String> {
+    let value = request_backend_json(access, "GET", "/api/transcripts?limit=20&offset=0")?;
+    let items = value
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "backend transcript list did not include items".to_string())?;
+    let mut entries = Vec::new();
+
+    for item in items {
+        let status = value_string(item, "status");
+        if !status.eq_ignore_ascii_case("completed") {
+            continue;
+        }
+        let id = value_string(item, "id");
+        if id.is_empty() || !is_safe_transcript_id(&id) {
+            continue;
+        }
+        entries.push(RecentTranscriptMenuEntry {
+            id,
+            title: value_string(item, "title"),
+            date: value_string(item, "date"),
+            transcript_type: value_string(item, "type"),
+        });
+        if entries.len() >= TRAY_RECENT_TRANSCRIPT_LIMIT {
+            break;
+        }
+    }
+
+    Ok(entries)
+}
+
+fn copy_recent_transcript_from_shell<R: Runtime>(app: &AppHandle<R>, transcript_id: &str) {
+    if !is_safe_transcript_id(transcript_id) {
+        write_shell_log("recent transcript copy skipped: invalid transcript id");
+        return;
+    }
+    let manager = app.state::<BackendManager>();
+    let status = manager.ensure_started();
+    if !status.ready {
+        write_shell_log(&format!(
+            "recent transcript copy skipped because backend is not ready: {}",
+            status.message
+        ));
+        return;
+    }
+    let path = format!("/api/transcripts/{transcript_id}");
+    let value = match request_backend_json(&manager.access(), "GET", &path) {
+        Ok(value) => value,
+        Err(err) => {
+            write_shell_log(&format!("recent transcript copy fetch failed: {err}"));
+            return;
+        }
+    };
+    let content = value_string(&value, "content");
+    if content.trim().is_empty() {
+        write_shell_log("recent transcript copy skipped: transcript content is empty");
+        return;
+    }
+    match copy_text_to_clipboard(&content) {
+        Ok(()) => write_shell_log(&format!(
+            "recent transcript copied to clipboard: {transcript_id}"
+        )),
+        Err(err) => write_shell_log(&format!("recent transcript clipboard copy failed: {err}")),
+    }
+}
+
+fn value_string(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn is_safe_transcript_id(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn recent_transcript_label(entry: &RecentTranscriptMenuEntry) -> String {
+    let kind = match entry.transcript_type.as_str() {
+        "youtube" => "YouTube",
+        "file" => "File",
+        "mic" => "Mic",
+        _ => "Transcript",
+    };
+    let title = sanitize_menu_label(&entry.title, "Untitled transcript", 48);
+    let date = sanitize_menu_label(&entry.date, "", 22);
+    if date.is_empty() {
+        format!("{kind}: {title}")
+    } else {
+        format!("{kind}: {title} ({date})")
+    }
+}
+
+fn sanitize_menu_label(value: &str, fallback: &str, max_chars: usize) -> String {
+    let mut collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        collapsed = fallback.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    if collapsed.chars().count() <= max_chars {
+        return collapsed;
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let mut truncated = collapsed
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+#[cfg(windows)]
+fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let byte_len = wide.len() * std::mem::size_of::<u16>();
+    unsafe {
+        let handle = GlobalAlloc(GMEM_MOVEABLE, byte_len);
+        if handle.is_null() {
+            return Err("could not allocate clipboard memory".to_string());
+        }
+        let locked = GlobalLock(handle) as *mut u16;
+        if locked.is_null() {
+            let _ = GlobalFree(handle);
+            return Err("could not lock clipboard memory".to_string());
+        }
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), locked, wide.len());
+        let _ = GlobalUnlock(handle);
+
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            let _ = GlobalFree(handle);
+            return Err("could not open clipboard".to_string());
+        }
+        if EmptyClipboard() == 0 {
+            let _ = CloseClipboard();
+            let _ = GlobalFree(handle);
+            return Err("could not empty clipboard".to_string());
+        }
+        if SetClipboardData(CF_UNICODETEXT as u32, handle).is_null() {
+            let _ = CloseClipboard();
+            let _ = GlobalFree(handle);
+            return Err("could not set clipboard data".to_string());
+        }
+        let _ = CloseClipboard();
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn copy_text_to_clipboard(_text: &str) -> Result<(), String> {
+    Err("clipboard copy is only implemented on Windows".to_string())
 }
 
 fn should_show_window_for_tray_event(event: &TrayIconEvent) -> bool {
@@ -1067,6 +1343,7 @@ fn handle_global_shortcut_event(app: &AppHandle, event_state: ShortcutState) {
 fn start_backend_supervisor(app: AppHandle) {
     std::thread::spawn(move || {
         let mut hotkey_refreshed_after_ready = false;
+        let mut tray_refreshed_after_ready = false;
         loop {
             std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);
             let Some(manager) = app.try_state::<BackendManager>() else {
@@ -1086,8 +1363,13 @@ fn start_backend_supervisor(app: AppHandle) {
                         ));
                     }
                 }
+            }
+            if status.ready && !tray_refreshed_after_ready {
+                refresh_tray_menu_for_app(&app, "backend ready");
+                tray_refreshed_after_ready = true;
             } else if !status.ready {
                 hotkey_refreshed_after_ready = false;
+                tray_refreshed_after_ready = false;
             }
         }
     });
@@ -1161,7 +1443,7 @@ fn request_backend_json(access: &BackendAccess, method: &str, path: &str) -> Res
     let addr = SocketAddr::from((host, port));
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500))
         .map_err(|err| format!("could not connect to backend: {err}"))?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
     let token_header = if access.session_token.is_empty() {
@@ -1691,12 +1973,14 @@ mod tests {
     use super::{
         acquire_single_instance_guard, autostart_command_for_exe, autostart_commands_match,
         backend_executable_names, backend_start_timeout, find_backend_executable,
-        find_backend_executable_in_dirs, health_response_ready, is_shell_menu_item,
-        managed_backend_start_timed_out, normalize_global_shortcut, normalize_hotkey_mode,
-        parse_loopback_backend_url, resolve_session_token,
-        should_refresh_hotkey_after_backend_ready, should_show_window_for_tray_click,
-        split_http_response, DesktopHotkeyState, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
-        HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_QUIT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        find_backend_executable_in_dirs, health_response_ready, is_safe_transcript_id,
+        is_shell_menu_item, managed_backend_start_timed_out, normalize_global_shortcut,
+        normalize_hotkey_mode, parse_loopback_backend_url, recent_transcript_label,
+        resolve_session_token, sanitize_menu_label, should_refresh_hotkey_after_backend_ready,
+        should_show_window_for_tray_click, split_http_response, DesktopHotkeyState,
+        RecentTranscriptMenuEntry, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
+        HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
+        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         SESSION_TOKEN_ENV,
     };
     use std::{
@@ -1987,8 +2271,43 @@ mod tests {
     fn shell_menu_item_filter_accepts_only_owned_items() {
         assert!(is_shell_menu_item(MENU_ITEM_SHOW_WINDOW));
         assert!(is_shell_menu_item(MENU_ITEM_RESTART_BACKEND));
+        assert!(is_shell_menu_item(MENU_ITEM_REFRESH_RECENT));
         assert!(is_shell_menu_item(MENU_ITEM_QUIT));
+        assert!(is_shell_menu_item(&format!(
+            "{MENU_ITEM_COPY_TRANSCRIPT_PREFIX}mic-00001"
+        )));
         assert!(!is_shell_menu_item("copy"));
+    }
+
+    #[test]
+    fn recent_transcript_menu_labels_are_short_and_stable() {
+        let entry = RecentTranscriptMenuEntry {
+            id: "mic-00001".to_string(),
+            title: "A very long transcript title with a lot of extra whitespace".to_string(),
+            date: "Today, 15:26".to_string(),
+            transcript_type: "mic".to_string(),
+        };
+
+        let label = recent_transcript_label(&entry);
+
+        assert!(label.starts_with("Mic: A very long transcript title"));
+        assert!(label.ends_with("(Today, 15:26)"));
+        assert_eq!(
+            sanitize_menu_label("  one\n two\tthree  ", "fallback", 20),
+            "one two three"
+        );
+        assert_eq!(sanitize_menu_label("", "fallback", 20), "fallback");
+    }
+
+    #[test]
+    fn transcript_ids_allow_only_safe_path_characters() {
+        assert!(is_safe_transcript_id("mic-00001"));
+        assert!(is_safe_transcript_id(
+            "550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(!is_safe_transcript_id(""));
+        assert!(!is_safe_transcript_id("../secret"));
+        assert!(!is_safe_transcript_id("bad?id=1"));
     }
 
     #[test]

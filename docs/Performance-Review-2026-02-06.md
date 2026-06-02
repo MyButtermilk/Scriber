@@ -13,7 +13,7 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
 3. Frontend-Refetch-Stürme bei `history_updated`
 4. O(n²)-Stringaufbau bei Live-Transkriptsegmenten
 
-**Status-Update 2026-06-02:** Die FTS5-/Pagination-Empfehlung ist im Backend umgesetzt, `history_updated` ist global gedrosselt, `audio_level` läuft nur noch ~30fps, und der Mic-Hotpath wurde mit Device-Resolution-Cache, DeviceMonitor-Deferral und Audio-Callback-Throttling weiter optimiert. Der O(n²)-Content-Aufbau bei Live-Segmenten ist durch gepufferte Final-Segmente und `scripts/check_transcript_buffer_growth.py` als synthetisches 30-Minuten-Guard abgedeckt. Settings-Updates schreiben `.env` jetzt debounced statt pro `PUT /api/settings`, mit Shutdown-Flush. Weiter offen bleiben große Upload-/Export-I/O-Pfade, echte Frontend-Virtualisierung in allen Randfällen und reale Langzeit-Providerläufe.
+**Status-Update 2026-06-02:** Die FTS5-/Pagination-Empfehlung ist im Backend umgesetzt, `history_updated` ist global gedrosselt, `audio_level` läuft für flüssigere Waveform-Darstellung mit ~60Hz und wird ohne UI-/Overlay-Consumer übersprungen. Der Mic-Hotpath wurde mit Device-Resolution-Cache, DeviceMonitor-Deferral und Audio-Callback-Throttling weiter optimiert. Der O(n²)-Content-Aufbau bei Live-Segmenten ist durch gepufferte Final-Segmente und `scripts/check_transcript_buffer_growth.py` als synthetisches 30-Minuten-Guard abgedeckt. Settings-Updates schreiben `.env` jetzt debounced statt pro `PUT /api/settings`, mit Shutdown-Flush. Weiter offen bleiben große Upload-/Export-I/O-Pfade, echte Frontend-Virtualisierung in allen Randfällen und reale Langzeit-Providerläufe.
 
 ## Findings (priorisiert)
 
@@ -138,8 +138,8 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
 - Erwarteter Impact:
   - Weniger CPU/Netzwerk bei aktiver Aufnahme.
 - Status 2026-06-01:
-  - ✅ Broadcast-Frequenz ist auf ~30fps begrenzt.
-  - ✅ `MicrophoneInput` berechnet UI/RMS-Werte ebenfalls nur ~30fps, ohne Audioframes für STT zu droppen.
+  - ✅ Broadcast-Frequenz ist auf ~60Hz begrenzt und wird ohne UI-/Overlay-Consumer übersprungen.
+  - ✅ `MicrophoneInput` berechnet UI/RMS-Werte ebenfalls nur ~60Hz, ohne Audioframes für STT zu droppen.
   - ✅ No-client Fast-Path vor `json.dumps` ist inzwischen umgesetzt und wird ueber die Hybrid-Baseline mitgemessen.
 
 ### P2: Startup-Init ist teilweise sequenziell und Mistral-Prewarm fehlt
@@ -176,5 +176,5 @@ Die größten verbleibenden Performance-Gewinne liegen bei:
 ## Quick Wins (geringer Aufwand)
 - `src/web_api.py:356` Join-Strategie ersetzen (inkrementell)
 - `Frontend/client/src/pages/TranscriptDetail.tsx` Polling bei WS-Verbindung deaktivieren
-- ~~`src/web_api.py` `audio_level` von 60fps auf 30fps reduzieren~~ ✅ umgesetzt
+- `src/web_api.py` `audio_level` laeuft aktuell mit ~60Hz fuer smootheres Waveform-Rendering; die React-Waveform nutzt Canvas statt Frame-State.
 - `src/web_api.py` no-client Fast-Path vor `json.dumps` ergänzen

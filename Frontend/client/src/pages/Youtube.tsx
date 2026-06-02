@@ -46,6 +46,99 @@ type SortOption = "date" | "likes" | "views";
 const DELETE_GLITCH_DURATION_MS = 1200;
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
 
+function youtubeThumbnailSrc(thumbnailUrl?: string): string {
+  const value = (thumbnailUrl || "").trim();
+  return value ? apiUrl(`/api/youtube/thumbnail?url=${encodeURIComponent(value)}`) : "";
+}
+
+function isCompletedStep(step?: string): boolean {
+  return /^(completed|complete|ready|done)$/i.test((step || "").trim());
+}
+
+function isVisiblyProcessing(item: TranscriptHistoryItem): boolean {
+  return item.status === "processing" && !isCompletedStep(item.step);
+}
+
+interface YoutubeThumbnailProps {
+  thumbnailUrl?: string;
+  title?: string;
+  className?: string;
+  iconClassName?: string;
+  loading?: "eager" | "lazy";
+}
+
+const YoutubeThumbnail = memo(function YoutubeThumbnail({
+  thumbnailUrl,
+  title,
+  className = "w-full h-full object-cover",
+  iconClassName = "w-8 h-8",
+  loading = "lazy",
+}: YoutubeThumbnailProps) {
+  const [failed, setFailed] = useState(false);
+  const [objectUrl, setObjectUrl] = useState("");
+
+  useEffect(() => {
+    const src = youtubeThumbnailSrc(thumbnailUrl);
+    let cancelled = false;
+    let createdUrl = "";
+
+    setFailed(false);
+    setObjectUrl("");
+
+    if (!src) {
+      return;
+    }
+
+    fetch(src, { credentials: "include" })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Thumbnail request failed: ${response.status}`);
+        }
+        return response.blob();
+      })
+      .then((blob) => {
+        createdUrl = URL.createObjectURL(blob);
+        if (cancelled) {
+          URL.revokeObjectURL(createdUrl);
+          return;
+        }
+        setObjectUrl(createdUrl);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFailed(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      if (createdUrl) {
+        URL.revokeObjectURL(createdUrl);
+      }
+    };
+  }, [thumbnailUrl]);
+
+  const src = failed ? "" : objectUrl;
+
+  if (!src) {
+    return (
+      <div className="w-full h-full bg-secondary flex items-center justify-center">
+        <YoutubeIcon className={`${iconClassName} text-muted-foreground/50`} />
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={title || "Video thumbnail"}
+      className={className}
+      loading={loading}
+      onError={() => setFailed(true)}
+    />
+  );
+});
+
 // Memoized YoutubeVideoCard to prevent unnecessary re-renders
 interface YoutubeVideoCardProps {
   item: TranscriptHistoryItem;
@@ -81,6 +174,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
     ? "hue-rotate-180 saturate-200 blur-md skew-x-[40deg] scale-y-50 translate-x-12 opacity-0"
     : "hue-rotate-0 saturate-100 blur-0 skew-x-0 scale-y-100 translate-x-0 opacity-100"
     }`;
+  const isProcessing = isVisiblyProcessing(item);
 
   return (
     <motion.div
@@ -113,18 +207,12 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
           // List view
           <div className="flex gap-4 p-4 min-w-0 overflow-hidden">
             <div className="relative w-32 h-20 bg-muted rounded-md shrink-0 overflow-hidden">
-              {item.thumbnailUrl ? (
-                <img
-                  src={item.thumbnailUrl}
-                  alt={item.title || "Thumbnail"}
-                  className="w-full h-full object-cover opacity-90"
-                  loading="lazy"
-                />
-              ) : (
-                <div className="w-full h-full bg-secondary flex items-center justify-center">
-                  <YoutubeIcon className="w-8 h-8 text-muted-foreground/50" />
-                </div>
-              )}
+              <YoutubeThumbnail
+                thumbnailUrl={item.thumbnailUrl}
+                title={item.title}
+                className="w-full h-full object-cover opacity-90"
+                iconClassName="w-8 h-8"
+              />
               <div className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">
                 {item.duration}
               </div>
@@ -133,7 +221,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
             <div className="flex-1 min-w-0 overflow-hidden">
               <div className="flex justify-between items-start gap-2">
                 <h3 className="font-medium text-foreground truncate text-base flex-1 min-w-0">{item.title}</h3>
-                {item.status === 'processing' ? (
+                {isProcessing ? (
                   <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1 shrink-0">
                     <Loader2 className="w-3 h-3 animate-spin" />
                     {item.step || "Processing"}
@@ -175,23 +263,17 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
           // Grid view
           <div className="flex flex-col">
             <div className="relative w-full aspect-video bg-muted overflow-hidden">
-              {item.thumbnailUrl ? (
-                <img
-                  src={item.thumbnailUrl}
-                  alt={item.title || "Thumbnail"}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                  loading="lazy"
-                />
-              ) : (
-                <div className="w-full h-full bg-secondary flex items-center justify-center">
-                  <YoutubeIcon className="w-12 h-12 text-muted-foreground/50" />
-                </div>
-              )}
+              <YoutubeThumbnail
+                thumbnailUrl={item.thumbnailUrl}
+                title={item.title}
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                iconClassName="w-12 h-12"
+              />
               <div className="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded">
                 {item.duration}
               </div>
               <div className="absolute top-2 right-2">
-                {item.status === 'processing' ? (
+                {isProcessing ? (
                   <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50/90 text-[10px] flex items-center gap-1">
                     <Loader2 className="w-3 h-3 animate-spin" />
                   </Badge>
@@ -653,17 +735,13 @@ export default function Youtube() {
                   >
                     <div className="flex gap-4 p-4">
                       <div className="relative w-32 h-20 bg-muted rounded-md shrink-0 overflow-hidden">
-                        {item.thumbnailUrl ? (
-                          <img
-                            src={item.thumbnailUrl}
-                            alt={item.title || "Thumbnail"}
-                            className="w-full h-full object-cover opacity-90 group-hover:scale-105 transition-transform duration-500"
-                          />
-                        ) : (
-                          <div className="w-full h-full bg-secondary flex items-center justify-center">
-                            <YoutubeIcon className="w-8 h-8 text-muted-foreground/50" />
-                          </div>
-                        )}
+                        <YoutubeThumbnail
+                          thumbnailUrl={item.thumbnailUrl}
+                          title={item.title}
+                          className="w-full h-full object-cover opacity-90 group-hover:scale-105 transition-transform duration-500"
+                          iconClassName="w-8 h-8"
+                          loading="eager"
+                        />
                         <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/10 transition-colors">
                           <PlayCircle className="w-8 h-8 text-white opacity-80" />
                         </div>

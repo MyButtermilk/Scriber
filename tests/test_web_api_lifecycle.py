@@ -435,6 +435,25 @@ async def test_audio_level_skips_broadcast_work_without_clients_or_overlay():
 
 
 @pytest.mark.asyncio
+async def test_audio_level_broadcast_is_throttled_to_sixty_hz():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    ctl._session_id = "s1"
+    ctl._client_count = 1
+
+    with (
+        patch.object(ctl, "_update_input_warning"),
+        patch.object(ctl._loop, "call_soon_threadsafe") as call_soon_mock,
+        patch("src.web_api.time.monotonic", side_effect=[100.0, 100.01, 100.02]),
+    ):
+        ctl._on_audio_level(0.02, session_id="s1")
+        ctl._on_audio_level(0.03, session_id="s1")
+        ctl._on_audio_level(0.04, session_id="s1")
+
+    assert call_soon_mock.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_audio_level_updates_overlay_without_ws_clients():
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)

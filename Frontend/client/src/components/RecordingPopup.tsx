@@ -35,46 +35,105 @@ function interpolateColor(colors: string[], factor: number): string {
     return `rgb(${r}, ${g}, ${b})`;
 }
 
-// Custom mirrored waveform that responds to WebSocket audio levels
-// Memoized to prevent re-renders when parent state changes
-const AudioWaveform = memo(function AudioWaveform({ audioLevels }: { audioLevels: number[] }) {
-    return (
-        <div
-            style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                height: 48,
-                gap: 2,
-                paddingLeft: 16,
-                paddingRight: 24,
-            }}
-        >
-            {audioLevels.map((level, index) => {
-                // Apply center-weighted variation for natural look
-                const centerFactor = 1.0 - Math.abs(index - audioLevels.length / 2) / (audioLevels.length / 2);
-                const adjustedLevel = level * (0.5 + 0.5 * centerFactor);
-                const barHeight = Math.max(2, adjustedLevel * 40);
+interface AudioWaveformProps {
+    levelsRef: React.MutableRefObject<number[]>;
+    displayRef: React.MutableRefObject<number[]>;
+    fallRef: React.MutableRefObject<number[]>;
+}
 
-                return (
-                    <motion.div
-                        key={index}
-                        animate={{
-                            height: barHeight,
-                        }}
-                        transition={{
-                            duration: 0,
-                        }}
-                        style={{
-                            width: 2.5,
-                            borderRadius: 1,
-                            // Color based on height (bright when tall, dark when short)
-                            backgroundColor: interpolateColor(MIDNIGHT_COLORS, 1.0 - Math.min(1.0, adjustedLevel)),
-                        }}
-                    />
-                );
-            })}
-        </div>
+const AudioWaveform = memo(function AudioWaveform({ levelsRef, displayRef, fallRef }: AudioWaveformProps) {
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        let rafId = 0;
+        let lastFrameAt = performance.now();
+        const gravity = 0.8;
+        const riseSpeed = 0.6;
+
+        const resize = () => {
+            const rect = canvas.getBoundingClientRect();
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            const width = Math.max(1, Math.round(rect.width * dpr));
+            const height = Math.max(1, Math.round(rect.height * dpr));
+            if (canvas.width !== width || canvas.height !== height) {
+                canvas.width = width;
+                canvas.height = height;
+            }
+        };
+
+        const draw = (now: number) => {
+            resize();
+            const ctx = canvas.getContext("2d");
+            if (!ctx) {
+                rafId = requestAnimationFrame(draw);
+                return;
+            }
+
+            const dt = Math.min(0.034, Math.max(0.001, (now - lastFrameAt) / 1000));
+            lastFrameAt = now;
+            const levels = levelsRef.current;
+            const display = displayRef.current;
+            const fall = fallRef.current;
+            const width = canvas.width;
+            const height = canvas.height;
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            const padLeft = 16 * dpr;
+            const padRight = 24 * dpr;
+            const usableWidth = Math.max(1, width - padLeft - padRight);
+            const gap = 2 * dpr;
+            const barWidth = Math.max(2, (usableWidth - gap * (BAR_COUNT - 1)) / BAR_COUNT);
+            const centerY = height / 2;
+            const maxHeight = 40 * dpr;
+
+            ctx.clearRect(0, 0, width, height);
+
+            for (let i = 0; i < BAR_COUNT; i++) {
+                const target = levels[i] || 0;
+                const current = display[i] || 0.12;
+
+                if (target > current) {
+                    display[i] = current + (target - current) * riseSpeed;
+                    fall[i] = 0;
+                } else if (current > 0.12) {
+                    fall[i] = (fall[i] || 0) + gravity * dt;
+                    display[i] = Math.max(0.12, current - fall[i]);
+                }
+
+                const centerFactor = 1.0 - Math.abs(i - BAR_COUNT / 2) / (BAR_COUNT / 2);
+                const adjustedLevel = display[i] * (0.5 + 0.5 * centerFactor);
+                const barHeight = Math.max(2 * dpr, adjustedLevel * maxHeight);
+                const x = padLeft + i * (barWidth + gap);
+                const y = centerY - barHeight / 2;
+                const radius = Math.min(barWidth / 2, 2 * dpr);
+
+                ctx.fillStyle = interpolateColor(MIDNIGHT_COLORS, 1.0 - Math.min(1.0, adjustedLevel));
+                ctx.beginPath();
+                ctx.roundRect(x, y, barWidth, barHeight, radius);
+                ctx.fill();
+            }
+
+            rafId = requestAnimationFrame(draw);
+        };
+
+        rafId = requestAnimationFrame(draw);
+        return () => cancelAnimationFrame(rafId);
+    }, [displayRef, fallRef, levelsRef]);
+
+    return (
+        <canvas
+            ref={canvasRef}
+            width={270}
+            height={48}
+            style={{
+                width: 270,
+                height: 48,
+                display: "block",
+            }}
+            aria-hidden="true"
+        />
     );
 });
 
@@ -132,58 +191,12 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
     const [isRecording, setIsRecording] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
     const activeSessionIdRef = useRef<string | null>(null);
-    const [audioLevels, setAudioLevels] = useState<number[]>(Array(BAR_COUNT).fill(0.12));
 
     // CAVA-style state refs
     const levelsRef = useRef<number[]>(Array(BAR_COUNT).fill(0));  // Target levels
     const displayRef = useRef<number[]>(Array(BAR_COUNT).fill(0.12));  // Displayed levels
     const fallRef = useRef<number[]>(Array(BAR_COUNT).fill(0));  // Fall velocities
     const agcRef = useRef(0.02);  // Auto-gain control
-    const animFrameRef = useRef<number | null>(null);
-
-    // CAVA-style animation loop
-    useEffect(() => {
-        const gravity = 0.8;
-        const riseSpeed = 0.6;
-
-        const animate = () => {
-            const levels = levelsRef.current;
-            const display = displayRef.current;
-            const fall = fallRef.current;
-            let changed = false;
-
-            for (let i = 0; i < BAR_COUNT; i++) {
-                const target = levels[i];
-                const current = display[i];
-
-                if (target > current) {
-                    // Fast rise
-                    display[i] = current + (target - current) * riseSpeed;
-                    fall[i] = 0;
-                    changed = true;
-                } else if (current > 0.12) {
-                    // Gravity fall
-                    fall[i] += gravity * 0.016;
-                    display[i] = Math.max(0.12, current - fall[i]);
-                    changed = true;
-                }
-            }
-
-            if (changed) {
-                setAudioLevels([...display]);
-            }
-
-            animFrameRef.current = requestAnimationFrame(animate);
-        };
-
-        animFrameRef.current = requestAnimationFrame(animate);
-
-        return () => {
-            if (animFrameRef.current) {
-                cancelAnimationFrame(animFrameRef.current);
-            }
-        };
-    }, []);
 
     // WebSocket message handler with error support
     const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
@@ -357,7 +370,7 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
 
                         {/* Content: Waveform during recording, "Transcribing..." after */}
                         {isRecording ? (
-                            <AudioWaveform audioLevels={audioLevels} />
+                            <AudioWaveform levelsRef={levelsRef} displayRef={displayRef} fallRef={fallRef} />
                         ) : isTranscribing ? (
                             <TranscribingText />
                         ) : null}

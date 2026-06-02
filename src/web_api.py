@@ -120,6 +120,8 @@ _DEFAULT_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "tauri.localhost"}
 _DEFAULT_ALLOWED_CUSTOM_ORIGINS = {"tauri://localhost"}
 _PRIVATE_NETWORK_ACCESS_REQUEST_HEADER = "Access-Control-Request-Private-Network"
 _PRIVATE_NETWORK_ACCESS_ALLOW_HEADER = "Access-Control-Allow-Private-Network"
+_YOUTUBE_THUMBNAIL_ALLOWED_HOSTS = {"i.ytimg.com", "img.youtube.com"}
+_YOUTUBE_THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
 _RUST_AUDIO_PROTOTYPE_AVAILABLE = False
 _AUDIO_DIAGNOSTIC_IMPORTS = (
     "scipy",
@@ -430,6 +432,21 @@ def _origin_allowed(origin: str) -> bool:
     if not host:
         return False
     return host in _DEFAULT_ALLOWED_HOSTS
+
+
+def _safe_youtube_thumbnail_url(raw_url: str) -> str | None:
+    value = (raw_url or "").strip()
+    if not value:
+        return None
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https":
+        return None
+    if parsed.username or parsed.password:
+        return None
+    if host not in _YOUTUBE_THUMBNAIL_ALLOWED_HOSTS:
+        return None
+    return parsed.geturl()
 
 
 def _validate_mode(raw_mode: str) -> str:
@@ -2206,9 +2223,9 @@ class ScriberWebController:
         if not has_ws_clients and not self._overlay_audio_enabled:
             return
 
-        # Called from the sounddevice callback thread; throttle broadcasts to ~30fps.
+        # Called from the sounddevice callback thread; throttle UI broadcasts to ~60fps.
         now = time.monotonic()
-        if now - self._last_audio_broadcast < 0.033:  # ~30fps
+        if now - self._last_audio_broadcast < (1.0 / 60.0):  # ~60fps
             return
         self._last_audio_broadcast = now
         # Update native overlay waveform only when recording overlay is active
@@ -4536,6 +4553,37 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         return web.json_response(video)
 
+    async def youtube_thumbnail(request: web.Request):
+        url = _safe_youtube_thumbnail_url(request.query.get("url") or "")
+        if not url:
+            return web.json_response({"message": "Invalid YouTube thumbnail URL"}, status=400)
+
+        session: ClientSession | None = request.app.get("http_session")
+        if not session:
+            return web.json_response({"message": "HTTP session not initialized"}, status=500)
+
+        try:
+            async with session.get(url, timeout=ClientTimeout(total=10)) as resp:
+                if resp.status >= 400:
+                    return web.json_response({"message": "Thumbnail fetch failed"}, status=resp.status)
+                content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                if not content_type.startswith("image/"):
+                    return web.json_response({"message": "Thumbnail response is not an image"}, status=415)
+                body = await resp.content.read(_YOUTUBE_THUMBNAIL_MAX_BYTES + 1)
+                if len(body) > _YOUTUBE_THUMBNAIL_MAX_BYTES:
+                    return web.json_response({"message": "Thumbnail response is too large"}, status=413)
+        except asyncio.TimeoutError:
+            return web.json_response({"message": "Thumbnail fetch timed out"}, status=504)
+        except Exception:
+            logger.exception("YouTube thumbnail proxy failed")
+            return web.json_response({"message": "Thumbnail fetch failed"}, status=502)
+
+        return web.Response(
+            body=body,
+            content_type=content_type or "image/jpeg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     async def youtube_transcribe(request: web.Request):
         ctl: ScriberWebController = request.app["controller"]
         try:
@@ -4890,6 +4938,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     app.router.add_get("/api/youtube/search", youtube_search)
     app.router.add_get("/api/youtube/video", youtube_video)
+    app.router.add_get("/api/youtube/thumbnail", youtube_thumbnail)
     app.router.add_post("/api/youtube/transcribe", youtube_transcribe)
     app.router.add_post("/api/file/transcribe", file_transcribe)
 

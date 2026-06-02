@@ -107,6 +107,15 @@ def test_tauri_does_not_expose_general_shell_or_opener_plugins() -> None:
     assert "tauri_plugin_opener" not in lib_rs
 
 
+def test_tauri_window_menu_is_not_installed() -> None:
+    lib_rs = (TAURI_DIR / "src" / "lib.rs").read_text(encoding="utf-8")
+
+    assert "fn install_application_menu" not in lib_rs
+    assert "install_application_menu(app)" not in lib_rs
+    assert "app.set_menu" not in lib_rs
+    assert "install_tray(app)?" in lib_rs
+
+
 def test_tauri_bundle_only_carries_backend_resource_directory() -> None:
     config = read_json(TAURI_DIR / "tauri.conf.json")
 

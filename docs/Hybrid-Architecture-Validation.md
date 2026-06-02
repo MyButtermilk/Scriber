@@ -4,6 +4,75 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Frontend Scale, YouTube Thumbnail, Tray, and Waveform Fixes
+
+Commands:
+
+```powershell
+python -m pytest `
+  tests/test_frontend_type_gates.py `
+  tests/test_web_api_security.py `
+  tests/test_microphone_callback.py `
+  tests/test_tauri_security_gates.py `
+  tests/test_web_api_lifecycle.py
+
+cd Frontend
+npm run check
+npm run build
+cd src-tauri
+cargo test
+cd ..\..
+
+python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke-ui-fixes.json
+python -m py_compile src/web_api.py src/microphone.py
+git diff --check
+
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\build_windows.ps1 `
+  -SkipChecks `
+  -SkipSmoke `
+  -RunInstallerSmoke `
+  -RunInstallerFrontendSmoke
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- Frontend UI scale is reduced slightly through the root rem size.
+- YouTube thumbnails are loaded through a backend thumbnail proxy, then rendered
+  from `blob:` URLs so the installed Tauri CSP can stay restrictive.
+- YouTube history cards no longer show the processing spinner when a stale
+  cache item still says `processing` but the backend step is already completed.
+- The native Tauri window menu is no longer installed; shell actions remain in
+  the tray only.
+- The tray menu now includes a recent-transcripts submenu and can copy recent
+  transcript contents to the Windows clipboard through the token-protected
+  backend API.
+- The recording popup waveform is drawn on a canvas at animation-frame cadence
+  instead of using React state for every visual frame. Backend and mic
+  audio-level throttles now run at about 60Hz for smoother UI motion.
+
+Evidence:
+
+- Focused Python gates: `73 passed`.
+- Re-run thumbnail/frontend security gates: `40 passed`.
+- Frontend TypeScript check: passed.
+- Frontend production build: passed.
+- Tauri Rust unit tests: `25 passed`.
+- Frontend browser smoke: passed with 5 routes, 0 critical console errors, 0
+  page errors, and 0 unhandled rejections.
+- Python compile check for `src/web_api.py` and `src/microphone.py`: passed.
+- Whitespace diff check: passed.
+- Installed NSIS package smoke: passed with `runtimeMode=tauri-supervised`,
+  `launchKind=sidecar`, `webViewReady=true`,
+  `privateNetworkPreflight=true`,
+  `webViewBackendBaseUrl=http://127.0.0.1:8765`,
+  `webViewLocationOrigin=http://tauri.localhost`, `cleanupVerified=true`, and
+  `uninstall.verified=true`.
+- Built installer:
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+
 ## 2026-06-02 - Installed WebView Backend Availability Fix
 
 Commands:

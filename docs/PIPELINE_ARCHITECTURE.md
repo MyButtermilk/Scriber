@@ -653,7 +653,7 @@ def _audio_callback(self, indata, frames, time_info, status):
             self._queue.put_nowait, audio_bytes
         )
 
-        # Calculate RMS for visualization, capped to ~30fps.
+        # Calculate RMS for visualization, capped to ~60Hz.
         # Raw audio is still queued every callback.
         if self.on_audio_level and enough_time_elapsed():
             samples = output_data.view(np.int16).ravel()
@@ -675,7 +675,7 @@ def _audio_callback(self, indata, frames, time_info, status):
 Current implementation details:
 - Multi-channel endpoints are captured with extra channels when useful, then the strongest channel is selected for mono STT.
 - Channel energy is rescanned every 10 callback frames; in-between callbacks reuse the previously selected channel.
-- Visualizer/input-warning RMS work is throttled to ~30fps, but `InputAudioRawFrame` delivery is not throttled.
+- Visualizer/input-warning RMS work is throttled to ~60Hz, but `InputAudioRawFrame` delivery is not throttled.
 - Stream open/stop/close is guarded by the same PortAudio lock used by `DeviceMonitor`.
 
 #### Queue Consumer (lines 229-264)

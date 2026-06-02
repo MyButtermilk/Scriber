@@ -139,7 +139,7 @@ export function useSharedWebSocket(onMessage: MessageHandler) {
 **Problem:**
 - Bei *jedem* State-Change im Parent werden *alle* Cards neu gerendert
 - Bei 50 Transcripts = 50 unnötige Re-Renders pro State-Änderung
-- Besonders bei `audioLevels` Updates (30fps) problematisch
+- Besonders bei `audioLevels` Updates (now ~60Hz for smoother waveform rendering) problematisch
 
 **Proposed Solution:**
 ```tsx
@@ -261,8 +261,8 @@ build: {
 ### 1.6 WebSocket Message Throttling ✅ IMPLEMENTED
 
 **Current State:**
-- `ScriberWebController._on_audio_level()` throttles audio-level broadcasts to ~30fps.
-- `MicrophoneInput._audio_callback()` also throttles visualizer/input-warning RMS work to ~30fps before the WebSocket path.
+- `ScriberWebController._on_audio_level()` throttles audio-level broadcasts to ~60Hz.
+- `MicrophoneInput._audio_callback()` also throttles visualizer/input-warning RMS work to ~60Hz before the WebSocket path.
 - `history_updated` broadcasts are globally throttled/coalesced to avoid refetch storms.
 - `broadcast()` validates optional contracts first, then refreshes the client snapshot and returns before `json.dumps()` when no WebSocket clients are connected.
 - `_on_audio_level()` skips UI broadcast scheduling when no WebSocket clients are connected and the native overlay is not enabled.
@@ -409,7 +409,7 @@ def _audio_callback(self, indata, frames, time, status):
     audio_bytes = output_data.tobytes()
     self._loop.call_soon_threadsafe(self._queue.put_nowait, audio_bytes)
 
-    # Throttled UI/RMS calculation (~30fps); audio frames are not dropped.
+    # Throttled UI/RMS calculation (~60Hz); audio frames are not dropped.
     if self.on_audio_level and enough_time_elapsed():
         samples = np.asarray(output_data).astype(np.int16, copy=False).ravel()
         rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) / 32768.0
@@ -417,7 +417,7 @@ def _audio_callback(self, indata, frames, time, status):
 ```
 
 **Impact:** Lower callback CPU during recording without sacrificing STT audio throughput.
-**Status:** ✅ Initial optimization completed (2026-01-01); ✅ channel-rescan + 30fps UI/RMS throttle updated (2026-06-01).
+**Status:** ✅ Initial optimization completed (2026-01-01); ✅ channel-rescan + 60Hz UI/RMS throttle updated (2026-06-02).
 
 ---
 
@@ -612,7 +612,7 @@ Status 2026-06-02: `scripts/measure_hybrid_baseline.ps1` creates a JSON baseline
 | Initial page load (LCP) | ~2.5s | ~1.8s | <1.5s | 🔄 Improved |
 | Memory usage (100 transcripts) | ~15MB | ~2MB | <5MB | ✅ Achieved |
 | WebSocket connections | 5 | 1 | 1 | ✅ Achieved |
-| WebSocket messages/sec (recording) | ~60/s | ~30/s for audio_level | <30/s | ✅ Achieved for audio_level |
+| WebSocket messages/sec (recording) | ~60/s | ~60/s for audio_level, skipped when no UI/overlay consumer exists | ~60/s with no React frame-state churn | ✅ Updated for smoother waveform |
 | Bundle size (gzipped) | ~800KB | ~650KB | <400KB | 🔄 Improved |
 | Database query time (1000+ items) | ~150ms | ~50ms | <100ms | ✅ Achieved |
 

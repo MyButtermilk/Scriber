@@ -485,7 +485,7 @@ Hinweis: In der Tauri-Desktop-Runtime laeuft Autostart ueber Rust-Commands statt
 - WAL-Modus für parallele Lesezugriffe
 - Analyzer-Caching (VAD, SmartTurn) für schnelleren Pipeline-Start
 - Mikrofon-Geräteauflösung mit TTL-Cache + Invalidation bei Device-/Settings-Änderungen
-- Audio-Callback optimiert: vollständiger Audiofluss bleibt erhalten, UI/RMS-Arbeit auf ~30fps limitiert, Multi-Channel-Auswahl periodisch statt pro Callback
+- Audio-Callback optimiert: vollständiger Audiofluss bleibt erhalten, UI/RMS-Arbeit auf ~60Hz limitiert, Multi-Channel-Auswahl periodisch statt pro Callback
 - DeviceMonitor vermeidet PortAudio-Refresh während aktiver Aufnahme und nutzt native Device-Events, wo verfügbar
 - SpooledTemporaryFile für große Audio-Buffer (10 MB RAM-Cap)
 - WebSocket Event-Throttling (`audio_level`, `history_updated`)

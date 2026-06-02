@@ -106,7 +106,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `MIC_ALWAYS_ON` is implemented by `src/mic_prewarm.py` as an app-level idle prewarm stream. It opens a discard-only PortAudio stream while the app is idle, releases it before live recording starts, and resumes it after recording stops if the setting is still enabled.
 - Per-session pipeline cleanup still calls `stop(..., close_stream=True)`; do not try to reuse a Pipecat session transport across sessions. The app-level prewarm manager owns only idle warmup, not transcription audio delivery.
 - `SCRIBER_AUDIO_ENGINE=rust` is treated as requested-only until a measured Rust audio prototype exists. `/api/runtime.featureFlags.audioEngine` is the effective engine and must remain `python` while `rustAudioAvailable=false`; `requestedAudioEngine` and `rustAudioRequested` expose the opt-in request separately.
-- `MicrophoneInput` still queues raw audio on every PortAudio callback. Only UI/visualizer/input-warning RMS work is throttled to about 30fps.
+- `MicrophoneInput` still queues raw audio on every PortAudio callback. Only UI/visualizer/input-warning RMS work is throttled to about 60Hz.
 - Multi-channel capture rescans strongest-channel selection every 10 callback frames and reuses the last channel between rescans.
 
 ### Pipeline and Providers
@@ -137,7 +137,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `tests/contract/test_ws_events.py` is the gate for WebSocket payload compatibility. Add new event types there before broadcasting them.
 - `/api/health` and `/api/runtime` payloads are versioned with `apiVersion` and validated by `src/core/rest_contracts.py`; `tests/contract/test_rest_contracts.py` is the gate for REST runtime/readiness payload compatibility.
 - Frontend REST consumers should prefer shared API types from `Frontend/client/src/lib/api-types.ts`. Settings and transcript-history routes are already typed there; do not add new ad hoc `any` payload boundaries for those endpoints.
-- `audio_level` is throttled around 30fps.
+- `audio_level` is throttled around 60Hz for smoother waveform rendering.
 - `broadcast()` skips JSON serialization when there are no connected WebSocket clients.
 - `_on_audio_level()` avoids scheduling UI broadcast work when there are no WebSocket clients and the native overlay is not consuming waveform updates.
 - Frontend routes: LiveMic is eager for first paint; YouTube, File, Settings, TranscriptDetail, and NotFound are lazy-loaded.

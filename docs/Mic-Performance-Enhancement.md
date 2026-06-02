@@ -11,7 +11,7 @@
   - Transitions to "Transcribing" spinner when processing async transcription
 - ✅ **Mic device resolution cache**: Repeated recording starts reuse the resolved device index for a short TTL and invalidate on mic/favorite setting changes or device-change events
 - ✅ **DeviceMonitor active-stream deferral**: PortAudio cache refreshes are deferred while a stream is active and run once after the stream becomes idle
-- ✅ **Audio callback hot-path reduction**: Raw audio still flows every callback, but visualizer/input-warning RMS work is capped to ~30fps and multi-channel selection is rescanned every 10 frames
+- ✅ **Audio callback hot-path reduction**: Raw audio still flows every callback, but visualizer/input-warning RMS work is capped to ~60Hz and multi-channel selection is rescanned every 10 frames
 - ✅ **Solution 2 (Idle Pre-warming)**: `MIC_ALWAYS_ON` now uses `src/mic_prewarm.py` to keep a discard-only app-level PortAudio stream open while idle. The manager releases the prewarm stream before active recording and resumes it after recording stops.
 
 **Not Implemented:**

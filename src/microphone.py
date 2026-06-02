@@ -122,7 +122,7 @@ class MicrophoneInput(BaseInputTransport):
         self._channel_selection_counter = 0
         self._channel_selection_interval_frames = 10
         self._last_audio_level_at = 0.0
-        self._audio_level_interval = 1.0 / 30.0
+        self._audio_level_interval = 1.0 / 60.0
         self._stream_claimed = False
 
     def _claim_active_stream(self) -> None:
