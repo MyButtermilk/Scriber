@@ -127,6 +127,40 @@ Evidence:
   `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
 - New installer size: `205.78 MiB`, under the `220 MiB` budget.
 
+## 2026-06-02 - Installed Always-On Stream Reuse Package Smoke
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -InstallDir "tmp\installer-smoke\alwayson-stream\Scriber" `
+  -DataDir "tmp\installer-smoke\alwayson-stream\data" `
+  -OutputPath "tmp\hybrid-baseline\installer-alwayson-frontend-smoke-20260602.json" `
+  -VerifyFrontend `
+  -MaxInstalledSizeMB 650
+```
+
+Result: passed.
+
+Evidence:
+
+- Installed runtime mode: `tauri-supervised`.
+- Installed launch kind: `sidecar`.
+- Real Tauri WebView frontend readiness: `webViewReady=true`.
+- Tauri production origin verified: `webViewLocationOrigin=http://tauri.localhost`.
+- WebView backend URL: `http://127.0.0.1:8765`.
+- Frontend root served HTTP `200`, and all `6` referenced JS/CSS assets returned HTTP `200`.
+- Tauri-origin CORS checks passed for `/api/health` and tokenized `/api/runtime`; Chromium private-network preflight passed.
+- Installed directory size: `614.49 MiB`, under the temporary `650 MiB` smoke budget. The largest files remain bundled `ffmpeg.exe` and `ffprobe.exe`, which are intentionally retained.
+- Cleanup verified: managed backend exited with the app.
+- Silent uninstall verified: install artifacts were removed and runtime-data preservation was confirmed before temp cleanup.
+
+Artifact:
+
+- `tmp\hybrid-baseline\installer-alwayson-frontend-smoke-20260602.json`
+
 ## 2026-06-02 - Frontend Scale, YouTube Thumbnail, Tray, and Waveform Fixes
 
 Commands:
