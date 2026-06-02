@@ -54,6 +54,16 @@ def test_recording_hot_path_text_target_path_is_unique_per_iteration(tmp_path: P
     assert iteration_text_target_path(str(target), 2, 2) == tmp_path / "capture.iteration-2.txt"
 
 
+def test_recording_hot_path_text_target_keeps_focus_during_measurement():
+    repo_root = Path(__file__).resolve().parents[2]
+    script = (
+        repo_root / "scripts" / "measure_recording_hot_path_baseline.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'root.attributes("-topmost", True)' in script
+    assert "root.after(500, focus_window)" in script
+
+
 def test_recording_hot_path_summary_measures_text_injection_after_stop():
     summary = build_summary(
         [
@@ -106,3 +116,16 @@ def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
     assert "RecordingHotPathSpeechPrompt" in script
     assert "--text-target-file" in script
     assert "--speech-prompt-text" in script
+    assert "Convert-ToProcessArgument" in script
+
+
+def test_hybrid_baseline_recording_samples_do_not_fall_back_to_old_metric_rows():
+    repo_root = Path(__file__).resolve().parents[2]
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    recording_branch = script.split('if ($RecordHotPathSamples) {', 1)[1].split(
+        'if ($segmentNames -contains $SegmentName)', 1
+    )[0]
+    assert 'return "missing_samples"' in recording_branch

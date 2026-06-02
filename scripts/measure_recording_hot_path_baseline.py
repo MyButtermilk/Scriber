@@ -72,6 +72,7 @@ def run_text_target_window(argv: list[str]) -> int:
     root = tk.Tk()
     root.title(args.target_title)
     root.geometry("760x320+80+80")
+    root.attributes("-topmost", True)
     text = tk.Text(root, wrap="word", font=("Segoe UI", 12))
     text.pack(fill="both", expand=True)
 
@@ -85,11 +86,10 @@ def run_text_target_window(argv: list[str]) -> int:
     def focus_window() -> None:
         try:
             root.lift()
-            root.attributes("-topmost", True)
-            root.after(500, lambda: root.attributes("-topmost", False))
             text.focus_force()
         except Exception:
             pass
+        root.after(500, focus_window)
 
     root.after(100, focus_window)
     root.after(200, save_text)

@@ -82,6 +82,16 @@ function Assert-UnderRoot {
     }
 }
 
+function Convert-ToProcessArgument {
+    param([string]$Argument)
+
+    $value = [string]$Argument
+    if ($value -notmatch '[\s"]') {
+        return $value
+    }
+    return '"' + ($value -replace '"', '\"') + '"'
+}
+
 function Get-ManagedBackendProcesses {
     Get-CimInstance Win32_Process |
         Where-Object {
@@ -782,7 +792,7 @@ function Invoke-RecordingHotPathBenchmark {
 
     $process = Start-Process `
         -FilePath $PythonPath `
-        -ArgumentList $recordingArgs `
+        -ArgumentList @($recordingArgs | ForEach-Object { Convert-ToProcessArgument $_ }) `
         -WorkingDirectory $RepoRoot `
         -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutPath `
@@ -1094,8 +1104,11 @@ function Get-RecordingHotPathRequirementStatus {
     if ($statuses -contains "measured") {
         return "measured"
     }
-    if ($RecordHotPathSamples -and $statuses.Count -gt 0) {
-        return [string]($statuses | Select-Object -First 1)
+    if ($RecordHotPathSamples) {
+        if ($statuses.Count -gt 0) {
+            return [string]($statuses | Select-Object -First 1)
+        }
+        return "missing_samples"
     }
     if ($segmentNames -contains $SegmentName) {
         return "measured"

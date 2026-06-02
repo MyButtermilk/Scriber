@@ -4,6 +4,92 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Stop-to-Text Hot-Path Sample + Gate Hardening
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m py_compile scripts\measure_recording_hot_path_baseline.py tests\perf\test_recording_hot_path_baseline_script.py
+venv\Scripts\python.exe -m pytest tests\perf\test_recording_hot_path_baseline_script.py
+
+$tokens=$null; $errors=$null
+$null=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path scripts\measure_hybrid_baseline.ps1), [ref]$tokens, [ref]$errors)
+if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 } else { 'OK' }
+
+$env:SCRIBER_LEGACY_DATA_DIR = 'C:\Users\Alexander.Immler\Documents\Github\Scriber'
+$env:SCRIBER_AUTO_MIGRATE_LEGACY_DATA = '1'
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 1 `
+  -DisableDevFallback `
+  -RecordHotPathSamples `
+  -RecordingHotPathIterations 1 `
+  -RecordingHotPathSeconds 8 `
+  -RecordingHotPathTimeoutSec 120 `
+  -RecordingHotPathTextTargetFile "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\recording-hotpath-text-target-quoted.txt" `
+  -RecordingHotPathSpeechPrompt "Dies ist ein Scriber Test. Bitte schreibe diesen kurzen Satz in das Textfeld." `
+  -RecordingHotPathSpeechDelaySec 1.0 `
+  -RecordingHotPathTextTargetSettleSec 1.5 `
+  -SkipUploadExportBenchmark `
+  -SkipWsBenchmark `
+  -SkipHistoryScrollBenchmark `
+  -KeepArtifacts `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\hybrid-baseline-20260602-stop-to-text-quoted.json"
+```
+
+Result: passed for the session-specific live recording hot-path sample.
+
+Implemented improvements:
+
+- `scripts\measure_hybrid_baseline.ps1` now quotes recording-hotpath child
+  process arguments before `Start-Process`; speech prompts containing spaces
+  are passed as one argument.
+- When `-RecordHotPathSamples` is set, Phase 0 recording-hotpath requirement
+  status no longer falls back to arbitrary existing `/api/metrics/hot-path`
+  rows. This prevents legacy migrated DB metrics from falsely satisfying a
+  failed live recording benchmark.
+- The optional text target window in
+  `scripts\measure_recording_hot_path_baseline.py` now stays topmost and
+  refocuses periodically during the measurement.
+
+Evidence:
+
+- Syntax checks passed for the Python recording script and test.
+- PowerShell parser check passed for `scripts\measure_hybrid_baseline.ps1`.
+- `tests\perf\test_recording_hot_path_baseline_script.py`: `7 passed`.
+- Artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-20260602-stop-to-text-quoted.json`.
+- Child recording artifact:
+  `tmp\hybrid-baseline-data\a55ad3757e414e27aa3635bb6bee3e72\recording-hot-path-1.json`.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- UI visible: 1,455.38 ms.
+- Backend ready: 2,283.69 ms.
+- `hotkey_received_to_mic_ready_ms`: 363.664 ms.
+- `hotkey_received_to_first_audio_frame_ms`: 604.303 ms.
+- `stop_requested_to_first_paste_ms`: 2,397.109 ms.
+- `afterStopInjectionSamples`: 1.
+- Recording benchmark summary: `complete: true`.
+
+Goal coverage:
+
+- Phase 0: completes the previously missing live recording hot-path evidence
+  for hotkey-to-recording-state, hotkey-to-first-audio-frame, and
+  stop-to-text-injection in a Tauri-managed sidecar run.
+- Phase 2: confirms the sample ran with `DisableDevFallback` and the packaged
+  sidecar runtime.
+- Phase 7: adds regression coverage around the measurement runner so failed
+  live samples cannot be masked by old database metrics.
+
+Remaining limits:
+
+- The dedicated text target file reported `capturedChars: 0` in the successful
+  latency sample, so the measured value is the backend/injector callback timing,
+  not verified persisted text inside the target window.
+- This is still one short prompted live sample, not the final long live-session
+  stability gate.
+- Upload/export, WebSocket, and history benchmarks were intentionally skipped
+  in this focused run; earlier full-baseline artifacts cover them.
+
 ## 2026-06-02 - Stop-to-Text Hot-Path Measurement Tooling
 
 Commands:
