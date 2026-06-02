@@ -4,6 +4,69 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - 30-Minute Installed Idle Stability Gate
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -LegacyDataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber" `
+  -VerifyLegacyDataMigration `
+  -VerifyUninstall `
+  -StabilityDurationSec 1800 `
+  -StabilityProbeIntervalSec 30 `
+  -MaxBackendWorkingSetGrowthMB 100 `
+  -MaxIdleCpuPercent 2 `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\installer-idle-stability-30m-20260602.json"
+```
+
+Result: passed for a full 30-minute installed idle stability gate.
+
+Evidence:
+
+- Artifact:
+  `tmp\hybrid-baseline\installer-idle-stability-30m-20260602.json`.
+- Artifact size: 15,774 bytes.
+- Artifact timestamp: 2026-06-02 04:37:22 +02:00.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- Legacy migration verified: true.
+- Silent uninstall verified: true.
+- Cleanup verified: true.
+- Stability verified: true.
+- Duration: 1,800 seconds.
+- Probe interval: 30 seconds.
+- Sample count: 60.
+- Backend PID stayed stable: `48496`.
+- Backend working-set start/end/max:
+  187.11 MB / 187.21 MB / 187.25 MB.
+- Backend working-set growth: 0.10 MB.
+- Backend working-set peak growth: 0.14 MB under the 100 MB gate.
+- Combined app+backend idle CPU max/avg:
+  0.43% / 0.04% under the 2% gate.
+- Max `/api/health` latency: 455.94 ms.
+- Max token-protected `/api/state` latency: 148.13 ms.
+- All samples reported health ready: true.
+- All samples stayed in recording state `idle`.
+
+Goal coverage:
+
+- Phase 6: confirms the installed NSIS package, migrated runtime data,
+  packaged sidecar, cleanup, and silent uninstall path over a full-duration
+  installed run.
+- Phase 8: provides a real 30-minute installed-app idle CPU and memory-growth
+  gate instead of only short stability smokes.
+- Phase 7: persists the long-run JSON artifact for future comparison.
+
+Remaining limits:
+
+- This is a 30-minute installed idle run, not a 30-minute live microphone/STT
+  provider session.
+- It does not close the physical USB/Bluetooth/dock/default-mic manual matrix.
+- It does not replace real Authenticode signing keys or a published signed
+  updater manifest.
+
 ## 2026-06-02 - Manual Physical Hotkey Smoke Gate
 
 Commands:

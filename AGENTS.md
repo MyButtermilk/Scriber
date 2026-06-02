@@ -392,7 +392,7 @@ Current summarization default is `gemini-flash-latest`.
 - Real app-level mic prewarming for `SCRIBER_MIC_ALWAYS_ON`.
 - Real recording text-injection samples during `-RecordHotPathSamples`: either `stop_requested_to_first_paste_ms` for async injection after stop or an already-injected-before-stop realtime sample counted as `0 ms` stop-to-text wait.
 - Full bundled desktop release activation: actual Authenticode signing step/certificate, Tauri updater signing keys, signed update artifacts, and published `latest.json`. The Authenticode validation gate is wired, but CI still needs a real signing provider before enabling it.
-- Full-duration Tauri runtime stability runs, for example real 30-minute recording/provider sessions with memory-growth review beyond the synthetic transcript string-growth guard.
+- Full-duration live recording/provider stability runs with real microphone/STT traffic. A 30-minute installed idle stability gate has passed, but it does not replace live audio/provider evidence.
 - Remaining CPU-heavy media preprocessing profiling around ffmpeg/provider behavior.
 - More hardware regression tests for dock connect/disconnect, USB mic add/remove, and favorite mic fallback.
 - Stronger typed API contract between backend and frontend across remaining REST endpoints; Settings and transcript-history consumers already use shared frontend API types.
