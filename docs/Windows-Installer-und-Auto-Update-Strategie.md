@@ -12,7 +12,7 @@ Nicht versierte Nutzer sollen Scriber wie eine normale Windows-App installieren 
 2. Schnell produktionsfaehig im Vergleich zu MSIX-only oder Squirrel-Integration.
 3. Silent Updates sind robust moeglich; aktuell ueber Tauri/NSIS, spaeter bei Bedarf mit eigenem Updater/Launcher.
 4. Security kann sauber gehaertet werden (SHA256, Signaturpruefung, immutable Releases).
-5. Der aktuelle Code enthaelt bereits Tauri 2 mit Rust-Supervisor, Windows-Single-Instance-Mutex, PyInstaller-Sidecar, NSIS-Build, installiertem Smoke-Test, Tauri-Updater-Plugin-Wiring und Manifest-Gates; offen bleiben echte Signier-Keys, signierte Release-Artefakte und die veroeffentlichte Update-Manifest-Aktivierung.
+5. Der aktuelle Code enthaelt bereits Tauri 2 mit Rust-Supervisor, Windows-Single-Instance-Mutex, PyInstaller-Sidecar, NSIS-Build, installiertem Smoke-Test, Tauri-Updater-Plugin-Wiring sowie Manifest-/Artefakt-Integritaets-Gates; offen bleiben echte Signier-Keys, signierte Release-Artefakte und die veroeffentlichte Update-Manifest-Aktivierung.
 
 ### Warum nicht Electron/MSIX-only/Squirrel jetzt
 | Alternative        | Warum nicht jetzt                                                                       |
@@ -69,7 +69,7 @@ Scriber laeuft als signierte, installierte Windows-App (per-user), startet singl
    - Status 2026-06-01: Die Tauri-Shell fuehrt einen eigenen Backend-Supervisor-Loop aus. Wenn der gemanagte Worker stirbt, schreibt Rust `backend-crash-metadata.jsonl` und startet einen Ersatz-Worker, ohne auf den React-Health-Poll angewiesen zu sein. `scripts/smoke_tauri_desktop.ps1 -SimulateBackendCrash` und der Installer-Smoke mit derselben Option pruefen diesen Pfad.
 
 ### 3) Updater-Komponente
-Status 2026-06-01: Fuer den Tauri-Desktop-Pfad ist der primaere Updater jetzt der Tauri-v2-Updater, nicht ein Python-Downloader. `Frontend/src-tauri/src/lib.rs` initialisiert `tauri-plugin-updater` und `tauri-plugin-process`, `Frontend/client/src/lib/desktop-updates.ts` stellt den Settings-Check/Install-Pfad bereit, und `scripts/build_windows.ps1 -EnableTauriUpdater` aktiviert signierte Tauri-Updater-Artefakte nur, wenn Public-Key, Endpoint und Tauri-Signing-Key vorhanden sind. Ohne diese Konfiguration bleibt die UI absichtlich inaktiv bzw. meldet "not configured".
+Status 2026-06-02: Fuer den Tauri-Desktop-Pfad ist der primaere Updater jetzt der Tauri-v2-Updater, nicht ein Python-Downloader. `Frontend/src-tauri/src/lib.rs` initialisiert `tauri-plugin-updater` und `tauri-plugin-process`, `Frontend/client/src/lib/desktop-updates.ts` stellt den Settings-Check/Install-Pfad bereit, und `scripts/build_windows.ps1 -EnableTauriUpdater` aktiviert signierte Tauri-Updater-Artefakte nur, wenn Public-Key, Endpoint und Tauri-Signing-Key vorhanden sind. Ohne diese Konfiguration bleibt die UI absichtlich inaktiv bzw. meldet "not configured". `scripts/validate_tauri_updater_metadata.py` prueft das Manifest zusaetzlich gegen lokale Artefaktgroesse, SHA256 und `SHA256SUMS.txt`, bevor ein Build weiterlaeuft.
 
 Frueherer Python-Plan, falls spaeter ein eigener Updater ausserhalb des Tauri-Plugins noetig wird:
 Neue Komponente `src/updater.py`:
@@ -107,7 +107,7 @@ Pro Release:
 3. `SHA256SUMS.txt` (signiert oder im Release-Body)
 4. `latest.json` (als Release-Asset)
 
-Status 2026-06-01: `scripts/create_release_metadata.py` erzeugt `SHA256SUMS.txt` und `latest.json` fuer die gebauten NSIS-Artefakte. `scripts/build_windows.ps1` ruft das Script nach erfolgreichem Bundle-Build automatisch auf. `scripts/validate_tauri_updater_metadata.py` prueft das Manifest gegen das Tauri-Updater-Schema und erzwingt bei updater-aktivierten Builds nicht-leere Signaturen.
+Status 2026-06-02: `scripts/create_release_metadata.py` erzeugt `SHA256SUMS.txt` und `latest.json` fuer die gebauten NSIS-Artefakte. `scripts/build_windows.ps1` ruft das Script nach erfolgreichem Bundle-Build automatisch auf. `scripts/validate_tauri_updater_metadata.py` prueft das Manifest gegen das Tauri-Updater-Schema, verifiziert die lokal gebauten Artefakte gegen Manifestgroesse/SHA256 und `SHA256SUMS.txt`, und erzwingt bei updater-aktivierten Builds nicht-leere Signaturen.
 
 Aktuelles `latest.json`-Format:
 ```json
@@ -186,8 +186,8 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - installierte Groesse (`dist/app`),
    - groesste 20 Dateien.
 2. CI failt bei Grenzwert-Ueberschreitung (Startwerte):
-   - `Lite Setup <= 220 MB`,
-   - `installierte Lite-App <= 450 MB`.
+   - `Standard Setup <= 220 MB`,
+   - `installierte Standard-App <= 450 MB` als Zielwert nach Groessenoptimierung.
 3. Jede Release-PR enthaelt den Groessenvergleich zur Vorversion.
    - Status 2026-06-02: `scripts/create_release_size_report.py` erzeugt `size-report.json` mit Artefaktgroessen, Top-Dateien und optionaler installierter App-Groesse. `scripts/build_windows.ps1` ruft den Report nach `latest.json`/`SHA256SUMS.txt` auf und failt standardmaessig, wenn das groesste Installer-Artefakt ueber `-MaxInstallerSizeMB 220` liegt. `scripts/smoke_windows_installer.ps1 -MaxInstalledSizeMB <MB>` misst den temporaeren Installationsordner und kann die installierte Groesse als hartes Gate pruefen. Der GitHub-Workflow kopiert `release-metadata\*.json`, sodass `size-report.json` als Release-Artefakt verfuegbar ist. Der aktuelle lokale NSIS-Setup liegt mit 197.27 MiB unter dem 220-MiB-Gate; die temporaer installierte App lag im letzten Full-Smoke bei 580.09 MiB und damit noch ueber dem 450-MiB-Ziel. Der gebuendelte Backend-Resource-Ordner ist 567.26 MiB und wird vor allem durch vollstaendige `ffmpeg.exe`/`ffprobe.exe` dominiert. Dieses Ziel darf nicht durch Entfernen von ffmpeg/ffprobe aus dem Standard-Windows-Build erreicht werden; sinnvolle Folgearbeit ist ein kleineres kompatibles Media-Tools-Bundle, nicht eine Lite-Variante ohne Media-Tools.
 
@@ -253,7 +253,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Status 2026-06-01: `scripts/build_windows.ps1` orchestriert Version-Sync, Tests, Frontend-Typecheck, Tauri/NSIS-Build, Release-Metadaten und optionalen Release-/Installer-Smoke-Test.
 6. **Size-Profiling direkt in Phase 1**:
    - Status 2026-06-01: `requirements-base.txt`, `requirements-local-asr.txt`, `requirements-dev.txt` und `requirements-build.txt` existieren.
-   - Lite-Build als Standard ist im Sidecar-Spec vorgespurt; Gesamtpipeline in `build_windows.ps1` bleibt offen.
+   - Standard-Sidecar bleibt ein Cloud-Provider-Build mit gebuendeltem `ffmpeg`/`ffprobe`. Eine Groessenoptimierung darf die Media-Tools nicht aus dem Standard-Windows-Build entfernen.
    - Groessenreport (`size-report.json`) erzeugen und in CI publizieren.
 
 Lieferobjekte:
@@ -266,7 +266,7 @@ Lieferobjekte:
 7. `size-report.json` (CI-Artefakt)
 8. Start/Healthcheck fuer gebaute App (Release-Smoke vorhanden; Sidecar-Pfad optional ueber `-BackendExePath`)
 9. `scripts/smoke_windows_installer.ps1` (umgesetzt: temporaere NSIS-Installation, Start ohne Dev-Fallback, Sidecar-Verifikation, optionale Worker-Crash-Recovery-, belegter-Default-Port-, kontrollierter-Shutdown-, External-Backend-Attach-, Startup-Timeout-, Stability-, Legacy-Datenmigrations-, Installer-Rerun-Datenerhalt- und strikte Silent-Uninstall-Checks, Cleanup)
-10. `scripts/build_windows.ps1` (umgesetzt fuer Version-Sync, Tauri/NSIS-Release-Build, Release-Metadaten, Smoke-Test und optionale Worker-Crash-/Port-Konflikt-/kontrollierter-Shutdown-/External-Backend-Attach-/Startup-Timeout-/Stability-/Legacy-Daten-/Upgrade-Smokes; Signing/Updater offen)
+10. `scripts/build_windows.ps1` (umgesetzt fuer Version-Sync, Tauri/NSIS-Release-Build, Release-Metadaten, Manifest-zu-Artefakt-Integritaetsgate, Groessenreport, Smoke-Test und optionale Worker-Crash-/Port-Konflikt-/kontrollierter-Shutdown-/External-Backend-Attach-/Startup-Timeout-/Stability-/Legacy-Daten-/Upgrade-Smokes; externe Signing-Keys/Publikation offen)
 
 ### Phase 2 - Installer
 1. `installer/scriber.iss` erstellen.
@@ -345,6 +345,7 @@ Lieferobjekte:
    - Status 2026-06-01: Bei `v*` Tags publiziert `softprops/action-gh-release` die erzeugten Artefakte als GitHub Release.
    - Status 2026-06-01: Tauri-Updater-Plugin, Frontend-Check/Install-UI und Manifest-/Signing-Gates sind integriert. Ohne `SCRIBER_TAURI_UPDATER_PUBLIC_KEY` und `TAURI_SIGNING_PRIVATE_KEY` bleibt der Workflow beim bisherigen NSIS-Release ohne Updater-Artefakte.
    - Status 2026-06-02: Authenticode-Validierung ist als optionales Release-Gate umgesetzt. `scripts\validate_windows_authenticode.ps1` prueft gueltige Authenticode-Signaturen, optional erwarteten Publisher und optional Timestamp. `scripts\build_windows.ps1 -RequireAuthenticodeSignature` ruft das Gate fuer erzeugte `.exe`/`.msi` Artefakte auf; `.github/workflows/release-windows.yml` kann es mit `SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE=1` aktivieren.
+   - Status 2026-06-02: Release-Metadaten werden nicht nur erzeugt, sondern gegen die lokalen Bundle-Artefakte geprueft. `latest.json`, Artefaktgroesse, SHA256 und `SHA256SUMS.txt` muessen zusammenpassen; verschachtelte Tauri-Bundle-Ordner wie `bundle\nsis\` werden unter dem Bundle-Root aufgeloest.
    - Noch offen: eigentlicher Authenticode-Signing-Schritt in CI mit Zertifikat/Cloud-Signing-Provider, echte Tauri-Updater-Keys, signierte Update-Artefakte und veroeffentlichtes `latest.json`.
 3. **Signierung**:
    - Authenticode mit OV- oder EV-Zertifikat.
@@ -406,10 +407,11 @@ Lieferobjekte:
 | `installer/scriber.iss` | Inno Setup Script. |
 | `scripts/check_backend_runtime_imports.py` | Umgesetzt: Preflight fuer kritische Backend-Startup-Imports vor PyInstaller und als gefrorener Sidecar-Check via `--runtime-import-check`. |
 | `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Import-Preflight -> Frontend Build -> PyInstaller Sidecar -> gefrorener Runtime-Import-Check -> optionales FFmpeg/FFprobe-Bundling -> optionaler Copy nach Tauri Release. |
-| `scripts/build_windows.ps1` | Umgesetzt fuer Tests -> Tauri/NSIS Bundle -> Release-Metadaten -> Release-Groessenreport -> Release-/Installer-Smoke-Test. `-MaxInstallerSizeMB` aktiviert das Standard-Setup-Groessenbudget von 220 MiB; `-InstallerMaxInstalledSizeMB` reicht ein installiertes App-Groessenbudget an den Installer-Smoke weiter. `-RequireAuthenticodeSignature` aktiviert das Windows-Signatur-Gate nach einem externen Signing-Schritt; `-ExpectedAuthenticodePublisher` und `-RequireAuthenticodeTimestamp` verschaerfen es. `-RunInstallerCrashSmoke` fuehrt den installierten Worker-Crash-Recovery-Gate aus; `-RunInstallerPortConflictSmoke` prueft dynamische Backend-Portwahl bei belegtem `127.0.0.1:8765`; `-RunInstallerControlledShutdownSmoke` prueft den token-geschuetzten kontrollierten Worker-Shutdown mit Supervisor-Recovery; `-RunInstallerExternalBackendSmoke` prueft External-Backend-Attach ohne Sidecar-Spawn; `-RunInstallerStartupTimeoutSmoke` prueft Supervisor-Ersatzstart nach nicht-ready Worker; `-RunInstallerStabilitySmoke` prueft wiederholte Health-/State-Probes, stabile Backend-PID, Speicher- und CPU-Samples; `-InstallerMaxBackendWorkingSetGrowthMB` aktiviert ein Memory-Growth-Gate fuer lange Stability-Laeufe; `-InstallerMaxIdleCpuPercent` aktiviert ein Average-Idle-CPU-Gate; `-RunInstallerLegacyDataSmoke -RunInstallerUpgradeSmoke` prueft Legacy-Datenmigration und Datenerhalt ueber einen zweiten Installerlauf; `-RunInstallerUninstallSmoke` prueft die stille Deinstallation als striktes Gate. Zusaetzlich optional `-EnableTauriUpdater` fuer signierte Tauri-Updater-Artefakte und Manifest-Signatur-Gates. Der eigentliche Authenticode-Signing-Schritt mit Zertifikat/Cloud-Signing-Provider bleibt offen. |
+| `scripts/build_windows.ps1` | Umgesetzt fuer Tests -> Tauri/NSIS Bundle -> Release-Metadaten -> Manifest-zu-Artefakt-Integritaetsgate -> Release-Groessenreport -> Release-/Installer-Smoke-Test. `-MaxInstallerSizeMB` aktiviert das Standard-Setup-Groessenbudget von 220 MiB; `-InstallerMaxInstalledSizeMB` reicht ein installiertes App-Groessenbudget an den Installer-Smoke weiter. `-RequireAuthenticodeSignature` aktiviert das Windows-Signatur-Gate nach einem externen Signing-Schritt; `-ExpectedAuthenticodePublisher` und `-RequireAuthenticodeTimestamp` verschaerfen es. `-RunInstallerCrashSmoke` fuehrt den installierten Worker-Crash-Recovery-Gate aus; `-RunInstallerPortConflictSmoke` prueft dynamische Backend-Portwahl bei belegtem `127.0.0.1:8765`; `-RunInstallerControlledShutdownSmoke` prueft den token-geschuetzten kontrollierten Worker-Shutdown mit Supervisor-Recovery; `-RunInstallerExternalBackendSmoke` prueft External-Backend-Attach ohne Sidecar-Spawn; `-RunInstallerStartupTimeoutSmoke` prueft Supervisor-Ersatzstart nach nicht-ready Worker; `-RunInstallerStabilitySmoke` prueft wiederholte Health-/State-Probes, stabile Backend-PID, Speicher- und CPU-Samples; `-InstallerMaxBackendWorkingSetGrowthMB` aktiviert ein Memory-Growth-Gate fuer lange Stability-Laeufe; `-InstallerMaxIdleCpuPercent` aktiviert ein Average-Idle-CPU-Gate; `-RunInstallerLegacyDataSmoke -RunInstallerUpgradeSmoke` prueft Legacy-Datenmigration und Datenerhalt ueber einen zweiten Installerlauf; `-RunInstallerUninstallSmoke` prueft die stille Deinstallation als striktes Gate. Zusaetzlich optional `-EnableTauriUpdater` fuer signierte Tauri-Updater-Artefakte und Manifest-Signatur-Gates. Der eigentliche Authenticode-Signing-Schritt mit Zertifikat/Cloud-Signing-Provider bleibt offen. |
 | `scripts/smoke_windows_installer.ps1` | Umgesetzt: installiert das NSIS-Artefakt temporaer, prueft den installierten Tauri/Sidecar-Start ohne Python/Node-Dev-Fallback, kann mit `-SimulateBackendCrash` Worker-Recovery samt Crash-Metadata verifizieren, kann mit `-OccupyDefaultPort` die dynamische Portwahl bei belegtem Default-Port verifizieren, kann mit `-SimulateBackendShutdown` kontrolliertes Worker-Beenden plus Supervisor-Recovery verifizieren, kann mit `-AttachExternalBackend` das Andocken an ein externes Python-Backend ohne Sidecar-Spawn verifizieren, kann mit `-SimulateBackendStartupTimeout` einen nicht-ready Worker und Supervisor-Ersatzstart pruefen, kann mit `-StabilityDurationSec ...` wiederholte Health-/State-Probes, Backend-Working-Set-Samples und normalisierte Tauri/Backend-CPU-Samples erfassen und mit `-MaxBackendWorkingSetGrowthMB` auf Speicherwachstum bzw. mit `-MaxIdleCpuPercent` auf durchschnittliche Idle-CPU failen, kann mit `-LegacyDataDir ... -VerifyLegacyDataMigration -SimulateUpgrade` Legacy-Datenmigration und Datenerhalt pruefen, kann mit `-VerifyUninstall` den stillen Uninstaller auf Artefaktentfernung und Datenerhalt pruefen und entfernt anschliessend die Testinstallation. |
 | `scripts/sync_version.py` | Umgesetzt: synchronisiert `src/version.py` in Python/Tauri/Cargo/npm-Manifeste. |
 | `scripts/create_release_metadata.py` | Umgesetzt: erzeugt `latest.json` und `SHA256SUMS.txt` fuer Release-Artefakte. |
+| `scripts/validate_tauri_updater_metadata.py` | Umgesetzt: prueft Tauri-Updater-Manifest, HTTPS-/Lokale-URL-Regeln, erforderliche Signaturen und lokale Artefaktgroesse/SHA256 gegen `SHA256SUMS.txt`. |
 | `.github/workflows/release-windows.yml` | Umgesetzt: manueller und Tag-basierter Windows-NSIS-Release-Build mit GitHub-Release-Publish auf `v*` Tags. |
 | `LICENSE` | Umgesetzt: MIT License Datei. |
 
