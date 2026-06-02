@@ -1989,6 +1989,67 @@ Remaining limits:
   eight physical scenario commands must be run with real hardware before the
   manual matrix is closed.
 
+## 2026-06-02 - Physical Microphone Hardware Matrix Aggregator Gate
+
+Commands:
+
+```powershell
+python -m py_compile `
+  scripts\smoke_microphone_hardware_matrix.py `
+  scripts\validate_microphone_hardware_matrix.py `
+  tests\test_microphone_hardware_matrix_smoke.py `
+  tests\test_validate_microphone_hardware_matrix.py
+
+python -m pytest `
+  tests\test_microphone_hardware_matrix_smoke.py `
+  tests\test_validate_microphone_hardware_matrix.py
+
+python scripts\validate_microphone_hardware_matrix.py `
+  --input-dir tmp\hybrid-baseline `
+  --output tmp\hybrid-baseline\microphone-hardware-matrix-validation-current-20260602.json
+```
+
+Result: implemented and covered by focused tests. The current repository
+artifact directory validation intentionally returned `ok=false` because no
+physical hardware scenario artifacts are present yet.
+
+Implemented improvements:
+
+- Added `scripts\validate_microphone_hardware_matrix.py` as the aggregation
+  gate for completed physical microphone matrix runs.
+- The validator requires all selected scenario artifacts, rejects
+  `planOnly=true`, rejects placeholder expectation labels, requires
+  `assumeCompleted=true`, and checks scenario-specific change evidence.
+- The validator writes a JSON summary with pass/fail status per scenario so a
+  release run can archive a single matrix verdict.
+
+Evidence:
+
+- `tests\test_microphone_hardware_matrix_smoke.py` and
+  `tests\test_validate_microphone_hardware_matrix.py`: `9 passed`.
+- Python compile check: passed.
+- Current incomplete-validation artifact:
+  `tmp\hybrid-baseline\microphone-hardware-matrix-validation-current-20260602.json`.
+- Current incomplete artifact size: 2,755 bytes.
+- Current incomplete artifact timestamp: 2026-06-02 19:20:37 +02:00.
+- Current incomplete artifact reports all eight physical scenario JSON files as
+  missing, which matches the known external hardware-evidence gap.
+
+Goal coverage:
+
+- Phase 7: adds a hard aggregator for the manual USB/Bluetooth/dock/default
+  microphone matrix instead of relying on ad-hoc inspection of individual
+  files.
+- Phase 8: makes the remaining physical gate auditable and prevents a plan-only
+  or placeholder-label artifact from being mistaken for completed hardware
+  evidence.
+
+Remaining limits:
+
+- This still does not close the physical matrix. It makes missing physical
+  evidence explicit and gives the release process a strict final validator once
+  the eight operator-driven runs are complete.
+
 ## 2026-06-02 - Live Recording Stability Gate
 
 Commands:
