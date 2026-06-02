@@ -3191,6 +3191,7 @@ class ScriberWebController:
                 return
 
             self._active_provider = live_provider
+            mic_prewarm_manager = self._mic_prewarm if Config.MIC_ALWAYS_ON else None
             self._pipeline = _create_scriber_pipeline(
                 service_name=live_provider,
                 on_status_change=lambda status: self._set_live_pipeline_status(status, session_id=session_id),
@@ -3199,8 +3200,10 @@ class ScriberWebController:
                 on_text_injected=on_text_injected,
                 on_mic_ready=on_mic_ready,
                 on_error=on_pipeline_error,
+                mic_prewarm_manager=mic_prewarm_manager,
             )
-            await self._pause_idle_mic_prewarm_for_capture()
+            if mic_prewarm_manager is None:
+                await self._pause_idle_mic_prewarm_for_capture()
             self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
             self._pipeline_task.add_done_callback(lambda task: self._on_pipeline_done(task, session_id=session_id))
             self._is_listening = True

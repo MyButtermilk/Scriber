@@ -4,6 +4,70 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Always-On Mic Stream Reuse For Faster Preparing
+
+Commands:
+
+```powershell
+python -m py_compile `
+  src/mic_prewarm.py `
+  src/microphone.py `
+  src/pipeline.py `
+  src/web_api.py
+
+python -m pytest `
+  tests/test_mic_prewarm.py `
+  tests/test_microphone_callback.py `
+  tests/test_web_api_lifecycle.py `
+  tests/test_pipeline_stop.py `
+  tests/test_microphone_device_resolution.py `
+  tests/test_web_api_hot_path_metrics.py `
+  tests/test_web_api_reliability.py
+
+git diff --check
+
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\build_windows.ps1 `
+  -SkipChecks `
+  -SkipSmoke
+
+Frontend\src-tauri\target\release\backend\scriber-backend.exe `
+  --runtime-import-check
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `MIC_ALWAYS_ON` no longer necessarily closes the warm idle PortAudio stream
+  before live recording starts.
+- `MicrophonePrewarmManager` can route its warm stream callback into the active
+  `MicrophoneInput` when sample rate, target channels, block size, and requested
+  device still match.
+- `MicrophoneInput` adopts that warm stream before falling back to the old
+  close-and-open path; stop detaches the callback and returns the stream to idle
+  discard mode.
+- `ScriberWebController.start_listening()` passes the prewarm manager into the
+  pipeline and avoids the pre-start close when `MIC_ALWAYS_ON` is enabled.
+- The warm stream now uses the same multi-channel capture strategy as active
+  mono capture where available, preserving the strongest-channel workaround.
+
+Evidence:
+
+- Current installed-package logs before this change showed the hotkey dispatch
+  itself was not the bottleneck: `hotkey_received_to_controller_accepted_ms`
+  was about `0 ms`, while `hotkey_received_to_mic_ready_ms` varied between
+  about `176 ms` and `632 ms`; the slow segment was PortAudio stream
+  query/open/start and not Tauri hotkey dispatch.
+- Focused lifecycle tests: `64 passed`.
+- Python compile check: passed.
+- Whitespace diff check: passed.
+- Windows build without smoke gates: passed.
+- Frozen backend runtime import check: passed.
+- New installer:
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- New installer size: `205.78 MiB`, under the `220 MiB` budget.
+
 ## 2026-06-02 - Frontend Scale, YouTube Thumbnail, Tray, and Waveform Fixes
 
 Commands:

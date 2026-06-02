@@ -578,7 +578,7 @@ string during append.
 - [x] **Microphone device resolution cache ✅ (2026-06-01)**
 - [x] **Audio callback channel-rescan/RMS throttle update ✅ (2026-06-01)**
 - [x] **Per-session keep_alive cleanup forced closed ✅ (2026-06-01)** - prevents orphaned Pipecat/PortAudio session streams; idle prewarm is owned separately
-- [x] **App-level idle mic prewarming ✅ (2026-06-02)** - `SCRIBER_MIC_ALWAYS_ON` keeps a discard-only PortAudio stream open while idle, releases it for active recording/device refresh, and resumes after stop
+- [x] **App-level idle mic prewarming ✅ (2026-06-02)** - `SCRIBER_MIC_ALWAYS_ON` keeps a discard-only PortAudio stream open while idle, adopts that warm stream for active recording when the stream/device signature still matches, and resumes idle discard mode after stop
 - [x] **Settings persistence debounce ✅ (2026-06-02)** - live config updates immediately, `.env` writes are batched by `SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC` and flushed on shutdown
 - [x] **Lazy transcript content loading (3.3) ✅ (2026-01-13)** - 80-90% Memory reduction
 - [x] **Long live transcript append buffering guard ✅ (2026-06-02)** - synthetic 30-minute segment-growth check

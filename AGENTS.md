@@ -103,7 +103,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `_enumerate_microphones()` runs under the shared device guard lock. Do not remove this lock; it protects against native `sounddevice`/PortAudio races.
 - `_resolve_mic_device()` in `pipeline.py` caches device-name/favorite-to-index resolution for a short TTL. Default TTL is `SCRIBER_MIC_DEVICE_CACHE_TTL_SEC=10.0`.
 - The mic resolution cache is invalidated when DeviceMonitor sees a device-list change and when `micDevice` or `favoriteMic` settings change.
-- `MIC_ALWAYS_ON` is implemented by `src/mic_prewarm.py` as an app-level idle prewarm stream. It opens a discard-only PortAudio stream while the app is idle, releases it before live recording starts, and resumes it after recording stops if the setting is still enabled.
+- `MIC_ALWAYS_ON` is implemented by `src/mic_prewarm.py` as an app-level idle prewarm stream. It opens a discard-only PortAudio stream while the app is idle; live recording now first tries to adopt that warm stream by routing its callback into `MicrophoneInput`, and only falls back to closing/reopening PortAudio when the stream signature or device no longer matches.
 - Per-session pipeline cleanup still calls `stop(..., close_stream=True)`; do not try to reuse a Pipecat session transport across sessions. The app-level prewarm manager owns only idle warmup, not transcription audio delivery.
 - `SCRIBER_AUDIO_ENGINE=rust` is treated as requested-only until a measured Rust audio prototype exists. `/api/runtime.featureFlags.audioEngine` is the effective engine and must remain `python` while `rustAudioAvailable=false`; `requestedAudioEngine` and `rustAudioRequested` expose the opt-in request separately.
 - `MicrophoneInput` still queues raw audio on every PortAudio callback. Only UI/visualizer/input-warning RMS work is throttled to about 60Hz.
@@ -359,7 +359,7 @@ Current summarization default is `gemini-flash-latest`.
 - Use `loguru` for logging. Avoid `print`.
 - Validate user/config input early. Raise `ValueError` for user-facing config issues where existing patterns do that.
 - Be careful with PortAudio/sounddevice. Any new device enumeration or stream lifecycle code must respect `get_device_guard_lock()`.
-- Do not describe `MIC_ALWAYS_ON` as a reusable transcription stream or speech pre-buffer; it is an idle discard-only PortAudio prewarm manager.
+- Do not describe `MIC_ALWAYS_ON` as a speech pre-buffer. It reuses the warm PortAudio stream for active capture when possible, but it does not buffer earlier speech and still depends on the live recording pipeline for transcription.
 
 ### TypeScript and React
 
@@ -427,7 +427,7 @@ Current summarization default is `gemini-flash-latest`.
 ## Documentation Rules
 
 - Update docs when behavior or implementation status changes.
-- Keep `MIC_ALWAYS_ON` docs precise: it keeps an idle discard-only prewarm stream open, not a reusable Pipecat transcription stream and not a rolling speech pre-buffer.
+- Keep `MIC_ALWAYS_ON` docs precise: it keeps an idle prewarm stream open and can hand that stream to active capture, but it is not a reusable Pipecat transcription pipeline and not a rolling speech pre-buffer.
 - Keep `README.md` user-facing.
 - Keep `docs/PRD.md` broad and current.
 - Keep performance docs explicit about completed, partial, and pending work.

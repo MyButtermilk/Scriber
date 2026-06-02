@@ -1,5 +1,7 @@
 import types
 
+import numpy as np
+
 from src.config import Config
 from src.device_monitor import get_active_stream_count
 from src.mic_prewarm import MicrophonePrewarmManager
@@ -84,6 +86,68 @@ def test_mic_prewarm_stays_paused_during_active_capture(monkeypatch):
     assert manager.resume_after_active_capture() is True
     assert manager.is_active is True
     assert len(_FakeInputStream.instances) == 2
+
+    manager.stop()
+
+
+def test_mic_prewarm_can_route_active_capture_without_reopening(monkeypatch):
+    _install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+
+    manager = MicrophonePrewarmManager()
+    received = []
+
+    assert manager.start_if_enabled() is True
+    stream = _FakeInputStream.instances[-1]
+
+    attached = manager.attach_active_capture(
+        lambda indata, frames, time_info, status: received.append(
+            (indata, frames, time_info, status)
+        ),
+        sample_rate=16000,
+        target_channels=1,
+        block_size=stream.kwargs["blocksize"],
+        device="0",
+    )
+
+    assert attached is not None
+    assert len(_FakeInputStream.instances) == 1
+
+    data = np.zeros((512, 1), dtype=np.int16)
+    stream.kwargs["callback"](data, 512, {"t": 1}, None)
+
+    assert received == [(data, 512, {"t": 1}, None)]
+
+    assert manager.detach_active_capture() is True
+    stream.kwargs["callback"](data, 512, {"t": 2}, None)
+
+    assert len(received) == 1
+
+    manager.stop()
+
+
+def test_mic_prewarm_rejects_active_capture_signature_mismatch(monkeypatch):
+    _install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+
+    manager = MicrophonePrewarmManager()
+
+    assert manager.start_if_enabled() is True
+
+    attached = manager.attach_active_capture(
+        lambda *_args: None,
+        sample_rate=48000,
+        target_channels=1,
+        block_size=512,
+        device="0",
+    )
+
+    assert attached is None
+    assert manager.is_active is True
 
     manager.stop()
 

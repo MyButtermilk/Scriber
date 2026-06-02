@@ -12,7 +12,7 @@
 - ✅ **Mic device resolution cache**: Repeated recording starts reuse the resolved device index for a short TTL and invalidate on mic/favorite setting changes or device-change events
 - ✅ **DeviceMonitor active-stream deferral**: PortAudio cache refreshes are deferred while a stream is active and run once after the stream becomes idle
 - ✅ **Audio callback hot-path reduction**: Raw audio still flows every callback, but visualizer/input-warning RMS work is capped to ~60Hz and multi-channel selection is rescanned every 10 frames
-- ✅ **Solution 2 (Idle Pre-warming)**: `MIC_ALWAYS_ON` now uses `src/mic_prewarm.py` to keep a discard-only app-level PortAudio stream open while idle. The manager releases the prewarm stream before active recording and resumes it after recording stops.
+- ✅ **Solution 2 (Idle Pre-warming)**: `MIC_ALWAYS_ON` now uses `src/mic_prewarm.py` to keep a discard-only app-level PortAudio stream open while idle. Active recording first tries to adopt that warm stream by routing its callback into `MicrophoneInput`; it falls back to closing/reopening PortAudio only when the warmed stream no longer matches the requested device or stream settings.
 
 **Not Implemented:**
 - ❌ **Solution 3 (Pre-buffer)**: Planned for future if needed
@@ -88,9 +88,10 @@ The overlay is shown **immediately** after calling `_pipeline.start()`, but the 
 
 **Current behavior (2026-06-02):**
 1. When `MIC_ALWAYS_ON` is enabled, `MicrophonePrewarmManager` opens a discard-only PortAudio stream while no live recording is active.
-2. On hotkey/live-start, the manager closes that idle stream before the per-session Pipecat pipeline opens its own `MicrophoneInput`.
-3. After stop/error cleanup, the manager starts the idle stream again if the setting is still enabled.
-4. During DeviceMonitor PortAudio refreshes, the manager quiesces the idle stream so hotplug/default-device changes are not deferred forever.
+2. When live recording starts, `MicrophoneInput` attempts to attach its audio callback to the warm stream instead of opening a second `sounddevice.InputStream`.
+3. If the warm stream does not match the requested sample rate, channel count, block size, or device index, the manager closes the idle stream and recording uses the existing safe fresh-open fallback.
+4. After stop/error cleanup, the manager returns to idle discard mode if the setting is still enabled.
+5. During DeviceMonitor PortAudio refreshes, the manager quiesces the idle stream so hotplug/default-device changes are not deferred forever.
 
 `ScriberPipeline._cleanup_audio_input()` still calls `stop(..., close_stream=True)` because pipeline instances are per-session. Do not reuse a Pipecat transport across sessions; the app-level prewarm manager owns only idle warmup.
 

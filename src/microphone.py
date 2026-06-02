@@ -84,6 +84,7 @@ class MicrophoneInput(BaseInputTransport):
         vad_analyzer=None,
         device="default",
         keep_alive=False,
+        prewarm_manager=None,
         on_audio_level=None,
         on_ready=None,
     ):
@@ -105,9 +106,12 @@ class MicrophoneInput(BaseInputTransport):
         self.block_size = block_size
         self.device = device
         self.keep_alive = keep_alive
+        self.prewarm_manager = prewarm_manager
         self.on_audio_level = on_audio_level
         self.on_ready = on_ready
         self.stream = None
+        self._using_prewarm_stream = False
+        self._prewarm_callback = None
         self._running = False
         self._loop = None
         self._queue = asyncio.Queue()
@@ -146,8 +150,46 @@ class MicrophoneInput(BaseInputTransport):
         self._active_capture_channel = None
         self._channel_selection_counter = 0
         self._last_audio_level_at = 0.0
+        self._create_audio_task()
+        self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")
 
         try:
+            if self.keep_alive and self.prewarm_manager is not None:
+                adopted = None
+                self._prewarm_callback = self._audio_callback
+                try:
+                    adopted = self.prewarm_manager.attach_active_capture(
+                        self._prewarm_callback,
+                        sample_rate=self._target_sample_rate,
+                        target_channels=self._target_channels,
+                        block_size=self.block_size,
+                        device=self.device,
+                    )
+                except Exception as exc:
+                    logger.debug(f"Could not attach prewarmed microphone stream: {exc}")
+
+                if adopted:
+                    self._capture_channels = int(
+                        adopted.get("capture_channels") or self._target_channels
+                    )
+                    self._using_prewarm_stream = True
+                    logger.info(
+                        "Microphone prewarm stream adopted "
+                        f"(device={'default' if adopted.get('device_index') is None else adopted.get('device_index')})"
+                    )
+                    if self.on_ready:
+                        try:
+                            self.on_ready()
+                        except Exception as e:
+                            logger.warning(f"on_ready callback error: {e}")
+                    return
+
+                try:
+                    self.prewarm_manager.pause_for_active_capture()
+                except Exception as exc:
+                    logger.debug(f"Could not pause idle mic prewarm before fallback capture: {exc}")
+                self._prewarm_callback = None
+
             # Device enumeration/open is guarded against concurrent PortAudio refresh.
             with get_device_guard_lock():
                 # Define device_index at the outer scope so it's available for logging
@@ -269,9 +311,6 @@ class MicrophoneInput(BaseInputTransport):
                     self.on_ready()
                 except Exception as e:
                     logger.warning(f"on_ready callback error: {e}")
-            # Ensure transport audio queue exists before we push frames
-            self._create_audio_task()
-            self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")
         except Exception as e:
             logger.error(f"Microphone error: {e}")
             await self.stop(frame=EndFrame())
@@ -429,16 +468,26 @@ class MicrophoneInput(BaseInputTransport):
         # With keep_alive: pause stream (fast restart via stream.start())
         # Without keep_alive: close stream entirely
         should_close_stream = (not self.keep_alive) if close_stream is None else bool(close_stream)
-        with get_device_guard_lock():
-            if self.stream:
-                try:
-                    self.stream.stop()  # Stops callbacks, saves CPU, prevents overflow
-                    if should_close_stream:
-                        self.stream.close()
-                        self.stream = None
-                except Exception:
-                    pass
-            self._release_active_stream()
+        if self._using_prewarm_stream:
+            try:
+                if self.prewarm_manager is not None:
+                    self.prewarm_manager.detach_active_capture(self._prewarm_callback)
+            except Exception as exc:
+                logger.debug(f"Could not detach prewarmed microphone stream: {exc}")
+            finally:
+                self._using_prewarm_stream = False
+                self._prewarm_callback = None
+        else:
+            with get_device_guard_lock():
+                if self.stream:
+                    try:
+                        self.stream.stop()  # Stops callbacks, saves CPU, prevents overflow
+                        if should_close_stream:
+                            self.stream.close()
+                            self.stream = None
+                    except Exception:
+                        pass
+                self._release_active_stream()
 
         # Signal the queue to stop
         if self._queue:

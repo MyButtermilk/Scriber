@@ -158,7 +158,7 @@ In der Tauri-Desktop-Runtime registriert Rust den globalen Hotkey und ruft nur d
 - Hotplug-Erkennung via `DeviceMonitor` mit nativen Windows-Endpoint-Events und Polling-Fallback
 - Recording-aware PortAudio-Refresh: Device-Refreshes werden während aktiver Streams zurückgestellt und nach Stop einmalig nachgeholt
 - Kurzlebiger Cache für Mikrofon-Name/Favorit → Device-Index-Auflösung (`SCRIBER_MIC_DEVICE_CACHE_TTL_SEC`)
-- `MIC_ALWAYS_ON` – aktiviert einen App-Level-Idle-Prewarm-Stream. Der Stream verwirft Audio, wird vor aktiver Aufnahme geschlossen und nach Stop wieder geöffnet; per-session Pipecat-Streams werden weiterhin bewusst geschlossen.
+- `MIC_ALWAYS_ON` – aktiviert einen App-Level-Idle-Prewarm-Stream. Der Stream verwirft Audio im Idle, kann bei passender Stream-/Device-Signatur von der aktiven Aufnahme übernommen werden und kehrt nach Stop wieder in den Idle-Discard-Modus zurück; per-session Pipecat-Pipeline-State wird weiterhin bewusst bereinigt.
 
 ### 5.2 YouTube-Transkription
 

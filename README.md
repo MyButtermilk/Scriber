@@ -54,7 +54,7 @@ Current implementation highlights:
 
 Known limits:
 
-- `SCRIBER_MIC_ALWAYS_ON` now enables an app-level idle microphone prewarm stream. The prewarm stream is discard-only, is released before active recording, and is restarted after recording stops; per-session Pipecat streams are still closed during cleanup.
+- `SCRIBER_MIC_ALWAYS_ON` now enables an app-level idle microphone prewarm stream. The prewarm stream discards audio while idle, can be adopted directly by live recording to avoid reopening PortAudio, and is reused again after recording stops; per-session Pipecat pipeline state is still cleaned up for each session.
 - Frontend transcript histories use infinite backend pagination plus scroll-container virtualization, so large local history lists no longer render every card at once.
 - The Tauri shell can supervise a packaged backend worker and produce an NSIS installer, but signing and the updater client are still separate packaging phases.
 - Some CPU-heavy media preprocessing still depends on ffmpeg/provider behavior even though disk writes, cleanup, and export rendering are offloaded.
@@ -274,7 +274,7 @@ Important microphone behavior:
 - Browser/WebView `devicechange` events send a lightweight `/api/microphones/refresh` hint so hotplug changes do not wait for fallback polling while the UI is open.
 - PortAudio refresh is deferred during active recording to avoid native races.
 - Mic selection is cached briefly to avoid repeated device scans on consecutive starts.
-- `SCRIBER_MIC_ALWAYS_ON=1` keeps a discard-only idle mic stream open for prewarming, then releases it before live recording opens the per-session Pipecat stream.
+- `SCRIBER_MIC_ALWAYS_ON=1` keeps a discard-only idle mic stream open for prewarming. Live recording first tries to adopt that warm PortAudio stream and falls back to opening a fresh stream only if the device or stream settings no longer match.
 
 ### YouTube
 
@@ -574,7 +574,7 @@ SCRIBER_PASTE_PRE_DELAY_MS=80
 SCRIBER_PASTE_RESTORE_DELAY_MS=1500
 ```
 
-`SCRIBER_MIC_ALWAYS_ON` enables idle mic prewarming. It keeps a discard-only PortAudio stream active while the app is idle, pauses it for active recording and PortAudio device refreshes, then restarts it after recording stops if the setting is still enabled.
+`SCRIBER_MIC_ALWAYS_ON` enables idle mic prewarming. It keeps a discard-only PortAudio stream active while the app is idle, hands that stream to active recording when the signature still matches, pauses it for PortAudio device refreshes, then returns it to idle prewarm mode after recording stops if the setting is still enabled.
 
 Set `SCRIBER_DISABLE_TEXT_INJECTION=1` for live recording stability or provider diagnostics where transcribed text must not be written into the active desktop app.
 

@@ -44,6 +44,12 @@ class _FakeMicPrewarmManager:
         self.active = bool(web_api.Config.MIC_ALWAYS_ON)
         return self.active
 
+    def attach_active_capture(self, *_args, **_kwargs):
+        return None
+
+    def detach_active_capture(self, *_args, **_kwargs):
+        return self.active
+
     def stop(self) -> None:
         self.stop_calls += 1
         self.active = False
@@ -605,6 +611,22 @@ class _LateReadyPipeline:
         self.stop_gate.set()
 
 
+class _PrewarmAwarePipeline:
+    service_name = "openai"
+    instances: list["_PrewarmAwarePipeline"] = []
+
+    def __init__(self, *_, mic_prewarm_manager=None, **__):
+        self.mic_prewarm_manager = mic_prewarm_manager
+        self.stop_gate = asyncio.Event()
+        type(self).instances.append(self)
+
+    async def start(self):
+        await self.stop_gate.wait()
+
+    async def stop(self):
+        self.stop_gate.set()
+
+
 @pytest.mark.asyncio
 async def test_hotkey_toggle_is_deferred_while_stop_is_in_progress():
     loop = asyncio.get_running_loop()
@@ -682,6 +704,40 @@ async def test_late_mic_ready_is_ignored_while_stop_is_in_progress():
         await stop_task
 
     assert ctl.get_state()["recordingState"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_start_listening_passes_idle_prewarm_without_closing_it(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(web_api, "MicrophonePrewarmManager", _FakeMicPrewarmManager)
+    _FakeMicPrewarmManager.instances.clear()
+    _PrewarmAwarePipeline.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    await _wait_for_prewarm_task(ctl)
+    manager = _FakeMicPrewarmManager.instances[-1]
+
+    with (
+        patch("src.web_api.ScriberPipeline", _PrewarmAwarePipeline),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay"),
+    ):
+        await ctl.start_listening()
+
+        pipeline = _PrewarmAwarePipeline.instances[-1]
+
+        assert pipeline.mic_prewarm_manager is manager
+        assert manager.pause_calls == 0
+
+        pipeline.stop_gate.set()
+        await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
+
+    ctl.shutdown()
 
 
 @pytest.mark.asyncio
