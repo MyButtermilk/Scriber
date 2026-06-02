@@ -39,7 +39,49 @@ def test_plan_only_outputs_manual_hardware_matrix(tmp_path: Path) -> None:
     assert "usb-add" in payload["scenarios"]
     assert "dock-disconnect" in payload["scenarios"]
     assert "favorite-fallback" in payload["scenarios"]
+    assert len(payload["plan"]) == len(payload["scenarios"])
+
+    usb_plan = next(item for item in payload["plan"] if item["scenario"] == "usb-add")
+    assert usb_plan["expectationFlags"] == {"expectAdded": "<usb label substring>"}
+    assert "After snapshot contains" in usb_plan["evidence"]
+    assert "--scenario usb-add" in usb_plan["exampleCommand"]
+    assert "--expect-added" in usb_plan["exampleCommand"]
+    assert "microphone-hardware-usb-add.json" in usb_plan["exampleCommand"]
+
+    favorite_plan = next(item for item in payload["plan"] if item["scenario"] == "favorite-fallback")
+    assert favorite_plan["expectationFlags"]["expectFavoriteFallback"] is True
+    assert "--expect-favorite-fallback" in favorite_plan["exampleCommand"]
     assert written == payload
+
+
+def test_plan_only_token_placeholder_does_not_leak_real_token(tmp_path: Path) -> None:
+    output = tmp_path / "hardware-plan-token.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "smoke_microphone_hardware_matrix.py"),
+            "--scenario",
+            "dock-connect",
+            "--token",
+            "real-session-token",
+            "--plan-only",
+            "--output",
+            str(output),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    payload = json.loads(result.stdout)
+    command = payload["plan"][0]["exampleCommand"]
+    assert payload["scenarios"] == ["dock-connect"]
+    assert "--token" in command
+    assert "<session token>" in command
+    assert "real-session-token" not in result.stdout
+    assert "real-session-token" not in output.read_text(encoding="utf-8")
 
 
 def test_change_summary_tracks_added_removed_and_default_change() -> None:

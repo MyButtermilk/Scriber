@@ -35,6 +35,42 @@ SCENARIO_INSTRUCTIONS = {
 }
 
 
+SCENARIO_EXPECTATION_HINTS = {
+    "usb-add": {
+        "flags": {"expectAdded": "<usb label substring>"},
+        "evidence": "After snapshot contains a newly available USB microphone endpoint.",
+    },
+    "usb-remove": {
+        "flags": {"expectRemoved": "<usb label substring>"},
+        "evidence": "After snapshot no longer contains the removed USB microphone endpoint.",
+    },
+    "dock-disconnect": {
+        "flags": {"expectRemoved": "<dock label substring>"},
+        "evidence": "After snapshot no longer contains dock-provided microphone endpoints.",
+    },
+    "dock-connect": {
+        "flags": {"expectAdded": "<dock label substring>"},
+        "evidence": "After snapshot contains dock-provided microphone endpoints.",
+    },
+    "bluetooth-add": {
+        "flags": {"expectAdded": "<bluetooth label substring>"},
+        "evidence": "After snapshot contains the connected Bluetooth microphone/headset endpoint.",
+    },
+    "bluetooth-remove": {
+        "flags": {"expectRemoved": "<bluetooth label substring>"},
+        "evidence": "After snapshot no longer contains the disconnected Bluetooth microphone/headset endpoint.",
+    },
+    "default-mic-change": {
+        "flags": {"expectDefaultChanged": True},
+        "evidence": "Default marker moves to a different microphone endpoint.",
+    },
+    "favorite-fallback": {
+        "flags": {"expectFavoriteFallback": True, "expectRemoved": "<favorite mic label substring>"},
+        "evidence": "favoriteMicAvailable=false and micDevice falls back away from the unavailable favorite mic.",
+    },
+}
+
+
 @dataclass(frozen=True)
 class Device:
     device_id: str
@@ -219,15 +255,70 @@ def write_output(payload: dict[str, Any], path: str) -> None:
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def flag_args(flags: dict[str, Any]) -> list[str]:
+    args: list[str] = []
+    if flags.get("expectAdded"):
+        args.extend(["--expect-added", str(flags["expectAdded"])])
+    if flags.get("expectRemoved"):
+        args.extend(["--expect-removed", str(flags["expectRemoved"])])
+    if flags.get("expectDefaultChanged"):
+        args.append("--expect-default-changed")
+    if flags.get("expectFavoriteFallback"):
+        args.append("--expect-favorite-fallback")
+    return args
+
+
+def quote_arg(value: str) -> str:
+    if not value or any(char.isspace() for char in value):
+        return '"' + value.replace('"', '\\"') + '"'
+    return value
+
+
+def build_plan_entry(scenario: str, *, base_url: str, token_required: bool) -> dict[str, Any]:
+    hints = SCENARIO_EXPECTATION_HINTS[scenario]
+    flags = dict(hints["flags"])
+    command_parts = [
+        "python",
+        "scripts\\smoke_microphone_hardware_matrix.py",
+        "--scenario",
+        scenario,
+        "--base-url",
+        base_url,
+    ]
+    if token_required:
+        command_parts.extend(["--token", "<session token>"])
+    command_parts.extend(flag_args(flags))
+    command_parts.extend([
+        "--output",
+        f"tmp\\hybrid-baseline\\microphone-hardware-{scenario}.json",
+    ])
+    return {
+        "scenario": scenario,
+        "instruction": SCENARIO_INSTRUCTIONS[scenario],
+        "expectationFlags": flags,
+        "evidence": hints["evidence"],
+        "exampleCommand": " ".join(quote_arg(part) for part in command_parts),
+    }
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     scenarios = args.scenario or DEFAULT_SCENARIOS
+    plan = [
+        build_plan_entry(
+            scenario,
+            base_url=args.base_url,
+            token_required=bool(args.token),
+        )
+        for scenario in scenarios
+    ]
     payload: dict[str, Any] = {
         "ok": False,
         "baseUrl": args.base_url,
         "scenarios": scenarios,
         "planOnly": bool(args.plan_only),
         "assumeCompleted": bool(args.assume_completed),
+        "plan": plan,
         "instructions": [
             {"scenario": scenario, "instruction": SCENARIO_INSTRUCTIONS[scenario]}
             for scenario in scenarios

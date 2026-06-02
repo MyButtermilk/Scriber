@@ -1941,6 +1941,54 @@ Remaining limits:
 - Physical global-hotkey dispatch, real live provider recording, and real
   signing/updater publication remain separate open items.
 
+## 2026-06-02 - Manual Microphone Hardware Matrix Operator Plan Enrichment
+
+Commands:
+
+```powershell
+python -m py_compile scripts\smoke_microphone_hardware_matrix.py tests\test_microphone_hardware_matrix_smoke.py
+python -m pytest tests\test_microphone_hardware_matrix_smoke.py
+python scripts\smoke_microphone_hardware_matrix.py `
+  --plan-only `
+  --output tmp\hybrid-baseline\microphone-hardware-matrix-plan-enriched-20260602.json
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `--plan-only` now emits a `plan` array in addition to the short
+  instructions list.
+- Every manual hardware scenario now includes:
+  - scenario-specific expectation flags,
+  - the expected evidence statement,
+  - a ready-to-run example command with an output artifact path.
+- Tokenized plan runs use a `<session token>` placeholder in example commands
+  instead of echoing the real session token into stdout or the output JSON.
+
+Evidence:
+
+- `tests\test_microphone_hardware_matrix_smoke.py`: `5 passed`.
+- Python compile check: passed.
+- Enriched plan artifact:
+  `tmp\hybrid-baseline\microphone-hardware-matrix-plan-enriched-20260602.json`.
+- Artifact size: 6,597 bytes.
+- Artifact timestamp: 2026-06-02 19:16:15 +02:00.
+
+Goal coverage:
+
+- Phase 7: makes the remaining physical microphone hardware matrix easier to
+  execute consistently by turning the operator checklist into scenario-specific
+  commands and expectation evidence.
+- Phase 8: improves repeatability of the remaining manual gate without changing
+  the Python-audio/default-device architecture.
+
+Remaining limits:
+
+- This still does not claim a physical USB/Bluetooth/dock/default-mic pass. The
+  eight physical scenario commands must be run with real hardware before the
+  manual matrix is closed.
+
 ## 2026-06-02 - Live Recording Stability Gate
 
 Commands:
