@@ -201,12 +201,13 @@ architecture work. It replaces earlier incomplete goal text.
 - Phase 6 ist fuer Standard-Cloud-Provider-Sidecar, NSIS, ffmpeg/ffprobe,
   yt-dlp, ONNXRuntime/Silero-VAD Startup-Imports, Runtime-Datenmigration,
   Release-Metadaten und optionale Gates umgesetzt. Am 2026-06-02 ist
-  `build_windows.ps1 -SkipChecks -SkipSmoke -RunInstallerSmoke
-  -RunInstallerFrontendSmoke` mit Tauri-Origin-CORS fuer `/api/health`,
+  der aktuelle Installer mit Tauri-Origin-CORS fuer `/api/health`,
   tokenisiertem `/api/runtime`, echtem Tauri-WebView-Beacon ueber
-  `/api/runtime/frontend-ready`, Cleanup, Uninstall und 205.75 MiB
-  Setup-Artefakt unter dem 220 MiB Gate durchgelaufen. Echte Signierung und reale
-  Updater-Veroeffentlichung sind externe Release-Schritte und noch nicht
+  `/api/runtime/frontend-ready`, Cleanup, Uninstall, Support-Bundle,
+  Crash-Recovery, kontrolliertem Worker-Shutdown, Startup-Timeout-Recovery,
+  Default-Port-Konflikt, External-Backend-Attach und 205.78 MiB
+  Setup-Artefakt unter dem 220 MiB Gate durchgelaufen. Echte Signierung und
+  reale Updater-Veroeffentlichung sind externe Release-Schritte und noch nicht
   bewiesen.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen.

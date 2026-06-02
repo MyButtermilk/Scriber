@@ -267,6 +267,112 @@ Limitations:
 - This does not prove Tauri updater signatures because no real signing key was
   provided for this local build.
 
+## 2026-06-02 - Current Installer Supervisor Recovery Matrix
+
+Commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -InstallDir "tmp\installer-smoke\current-recovery\Scriber" `
+  -DataDir "tmp\installer-smoke\current-recovery\data" `
+  -OutputPath "tmp\hybrid-baseline\installer-current-recovery-20260602.json" `
+  -VerifyFrontend `
+  -VerifySupportBundle `
+  -SimulateBackendCrash `
+  -SimulateBackendShutdown `
+  -OccupyDefaultPort `
+  -VerifyUninstall `
+  -MaxInstalledSizeMB 650
+
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -InstallDir "tmp\installer-smoke\current-startup-timeout\Scriber" `
+  -DataDir "tmp\installer-smoke\current-startup-timeout\data" `
+  -OutputPath "tmp\hybrid-baseline\installer-current-startup-timeout-20260602.json" `
+  -VerifyFrontend `
+  -SimulateBackendStartupTimeout `
+  -VerifyUninstall `
+  -MaxInstalledSizeMB 650
+
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -InstallDir "tmp\installer-smoke\current-external-attach\Scriber" `
+  -DataDir "tmp\installer-smoke\current-external-attach\data" `
+  -OutputPath "tmp\hybrid-baseline\installer-current-external-attach-20260602.json" `
+  -VerifyFrontend `
+  -AttachExternalBackend `
+  -VerifyUninstall `
+  -MaxInstalledSizeMB 650
+```
+
+Result: passed.
+
+Evidence:
+
+- Current installer:
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- Installed directory size in all three runs: `614.49 MiB`, under the temporary
+  `650 MiB` installed-size smoke budget.
+- Recovery run:
+  - Runtime mode: `tauri-supervised`.
+  - Launch kind: `sidecar`.
+  - Default backend port `8765` was occupied; the installed supervisor selected
+    port `50812`.
+  - Worker crash recovery verified:
+    killed backend PID `44036`, replacement backend PID `40512`.
+  - Controlled shutdown recovery verified:
+    stopped backend PID `40512`, replacement backend PID `43500`, response
+    message `Shutdown requested`.
+  - Crash metadata written:
+    `tmp\installer-smoke\current-recovery\data\logs\backend-crash-metadata.jsonl`.
+  - Support bundle verified: token-protected, unauthorized request returned
+    `401`, `11` required entries present, redaction verified.
+  - WebView frontend ready:
+    `webViewReady=true`,
+    `webViewBackendBaseUrl=http://127.0.0.1:50812`,
+    `webViewLocationOrigin=http://tauri.localhost`.
+  - Cleanup verified and strict silent uninstall verified.
+- Startup-timeout run:
+  - Runtime mode: `tauri-supervised`.
+  - Launch kind: `sidecar`.
+  - Startup timeout recovery verified:
+    timed-out backend PID `38948`, replacement backend PID `42504`,
+    `backendStartupTimeoutMs=3000`.
+  - WebView frontend ready:
+    `webViewReady=true`,
+    `webViewBackendBaseUrl=http://127.0.0.1:8765`.
+  - Cleanup verified and strict silent uninstall verified.
+- External-backend attach run:
+  - Runtime mode: `external-python`.
+  - Launch kind: `external-python`.
+  - External backend attach verified:
+    external backend PID `3008`, port `8765`,
+    `managedBackendSpawned=false`.
+  - WebView frontend ready:
+    `webViewReady=true`,
+    `webViewBackendBaseUrl=http://127.0.0.1:8765`.
+  - Cleanup verified and strict silent uninstall verified.
+
+Artifacts:
+
+- `tmp\hybrid-baseline\installer-current-recovery-20260602.json`
+- `tmp\hybrid-baseline\installer-current-startup-timeout-20260602.json`
+- `tmp\hybrid-baseline\installer-current-external-attach-20260602.json`
+
+Goal coverage:
+
+- Phase 2: revalidates the current installed supervisor against crash,
+  controlled shutdown, startup-timeout replacement, default-port conflict, and
+  external-backend attach paths.
+- Phase 3: revalidates the real installed Tauri WebView readiness beacon and
+  runtime backend URL in sidecar, dynamic-port, and external-backend modes.
+- Phase 6/7: revalidates current NSIS install/uninstall behavior, installed
+  support-bundle redaction, and sidecar packaging after the Always-On rebuild.
+
 ## 2026-06-02 - Frontend Scale, YouTube Thumbnail, Tray, and Waveform Fixes
 
 Commands:
