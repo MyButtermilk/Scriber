@@ -49,7 +49,6 @@ from src.core.ws_contracts import (
 )
 from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
-from src.pipeline import ScriberPipeline, invalidate_mic_device_resolution_cache
 from src.runtime.paths import data_dir, downloads_dir, logs_dir
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.provider_router import ProviderRouter
@@ -63,6 +62,37 @@ from src import database as db
 
 TranscriptStatus = Literal["completed", "processing", "failed", "recording", "stopped"]
 TranscriptType = Literal["mic", "youtube", "file"]
+
+ScriberPipeline: Any | None = None
+_invalidate_mic_device_resolution_cache_impl: Callable[[], None] | None = None
+
+
+def _get_scriber_pipeline_class() -> Any:
+    """Load the heavy Pipecat-backed pipeline only when transcription needs it."""
+    global ScriberPipeline, _invalidate_mic_device_resolution_cache_impl
+    if ScriberPipeline is None:
+        from src.pipeline import (
+            ScriberPipeline as pipeline_class,
+            invalidate_mic_device_resolution_cache as invalidate_cache,
+        )
+
+        ScriberPipeline = pipeline_class
+        _invalidate_mic_device_resolution_cache_impl = invalidate_cache
+    return ScriberPipeline
+
+
+def _create_scriber_pipeline(*args: Any, **kwargs: Any) -> Any:
+    pipeline_class = _get_scriber_pipeline_class()
+    return pipeline_class(*args, **kwargs)
+
+
+def invalidate_mic_device_resolution_cache() -> None:
+    global _invalidate_mic_device_resolution_cache_impl
+    if _invalidate_mic_device_resolution_cache_impl is None:
+        from src.pipeline import invalidate_mic_device_resolution_cache as invalidate_cache
+
+        _invalidate_mic_device_resolution_cache_impl = invalidate_cache
+    _invalidate_mic_device_resolution_cache_impl()
 
 _ALLOWED_ORIGINS_ENV = "SCRIBER_ALLOWED_ORIGINS"
 _UPLOAD_MAX_BYTES_ENV = "SCRIBER_UPLOAD_MAX_BYTES"
@@ -944,7 +974,7 @@ class ScriberWebController:
         self._clients_dirty = False
         self._client_count = 0
 
-        self._pipeline: Optional[ScriberPipeline] = None
+        self._pipeline: Optional[Any] = None
         self._pipeline_task: Optional[asyncio.Task] = None
         self._ptt_task: Optional[asyncio.Task] = None
         self._toggle_hotkey_poll_task: Optional[asyncio.Task] = None
@@ -2242,7 +2272,7 @@ class ScriberWebController:
                 outcome="started",
             )
 
-            pipeline = ScriberPipeline(
+            pipeline = _create_scriber_pipeline(
                 service_name=provider,
                 on_status_change=None,
                 on_audio_level=None,
@@ -2550,7 +2580,7 @@ class ScriberWebController:
             await self._broadcast_history_updated()
             transcribe_started = time.monotonic()
 
-            pipeline = ScriberPipeline(
+            pipeline = _create_scriber_pipeline(
                 service_name=provider,
                 on_status_change=None,
                 on_audio_level=None,
@@ -2908,7 +2938,7 @@ class ScriberWebController:
                 return
 
             self._active_provider = live_provider
-            self._pipeline = ScriberPipeline(
+            self._pipeline = _create_scriber_pipeline(
                 service_name=live_provider,
                 on_status_change=lambda status: self._set_live_pipeline_status(status, session_id=session_id),
                 on_audio_level=lambda rms: self._on_audio_level(rms, session_id=session_id),
@@ -4991,9 +5021,13 @@ async def _background_init(controller: ScriberWebController) -> None:
 
     async def _prewarm_models() -> None:
         try:
-            from src.pipeline import _AnalyzerCache
-            await asyncio.to_thread(_AnalyzerCache.get_vad_analyzer)
-            await asyncio.to_thread(_AnalyzerCache.get_smart_turn_analyzer)
+            def _warm_analyzers() -> None:
+                from src.pipeline import _AnalyzerCache
+
+                _AnalyzerCache.get_vad_analyzer()
+                _AnalyzerCache.get_smart_turn_analyzer()
+
+            await asyncio.to_thread(_warm_analyzers)
             logger.info("ML model cache warmed (first recording will start faster)")
         except Exception as e:
             logger.debug(f"Cache prewarm skipped: {e}")

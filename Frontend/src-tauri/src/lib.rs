@@ -458,6 +458,15 @@ pub fn run() {
             return;
         }
     };
+    let backend_manager = BackendManager::new();
+    let early_backend_status = backend_manager.ensure_started();
+    write_shell_log(&format!(
+        "early backend ensure pid={:?} ready={} launch_kind={} message={}",
+        early_backend_status.pid,
+        early_backend_status.ready,
+        early_backend_status.launch_kind,
+        early_backend_status.message
+    ));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
@@ -474,12 +483,19 @@ pub fn run() {
         })
         .manage(single_instance_guard)
         .manage(DesktopHotkeyState::new())
-        .manage(BackendManager::new())
+        .manage(backend_manager)
         .setup(|app| {
             configure_desktop_shell(app)?;
             let manager = app.state::<BackendManager>();
             manager.set_resource_dir(app.path().resource_dir().ok());
-            let _ = manager.ensure_started();
+            let setup_backend_status = manager.ensure_started();
+            write_shell_log(&format!(
+                "setup backend ensure pid={:?} ready={} launch_kind={} message={}",
+                setup_backend_status.pid,
+                setup_backend_status.ready,
+                setup_backend_status.launch_kind,
+                setup_backend_status.message
+            ));
             start_backend_supervisor(app.handle().clone());
             if let Err(err) = refresh_global_hotkey_for_app(app.handle()) {
                 write_shell_log(&format!("global hotkey registration skipped: {err}"));

@@ -127,6 +127,112 @@ function Wait-AppMainWindow {
     return $null
 }
 
+function Test-TcpPortOpen {
+    param(
+        [int]$Port,
+        [int]$TimeoutMs = 100
+    )
+
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $connect = $client.ConnectAsync("127.0.0.1", $Port)
+        if (-not $connect.Wait($TimeoutMs)) {
+            return $false
+        }
+        $connect.GetAwaiter().GetResult()
+        return $client.Connected
+    } catch {
+        return $false
+    } finally {
+        $client.Dispose()
+    }
+}
+
+function Wait-StartupSignals {
+    param(
+        [System.Diagnostics.Process]$Process,
+        [System.Diagnostics.Stopwatch]$Stopwatch,
+        [int]$ExpectedBackendPort,
+        [int]$UiVisibleDeadlineSec,
+        [int]$BackendHealthDeadlineSec,
+        [bool]$ShouldWaitForUi
+    )
+
+    $uiVisibleMs = $null
+    $backendListenerMs = $null
+    $healthResult = $null
+    $backendPid = $null
+    $backendPort = $ExpectedBackendPort
+    $uiDeadline = (Get-Date).AddSeconds($UiVisibleDeadlineSec)
+    $backendDeadline = (Get-Date).AddSeconds($BackendHealthDeadlineSec)
+    $deadline = if ($UiVisibleDeadlineSec -gt $BackendHealthDeadlineSec) { $uiDeadline } else { $backendDeadline }
+    $nextHealthAttempt = Get-Date
+
+    while ((Get-Date) -lt $deadline) {
+        $now = Get-Date
+        try {
+            $Process.Refresh()
+            if ($Process.HasExited) {
+                throw "Tauri process exited early with code $($Process.ExitCode)."
+            }
+        } catch {
+            throw
+        }
+
+        if ($ShouldWaitForUi -and $null -eq $uiVisibleMs -and $now -lt $uiDeadline) {
+            $current = Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
+            if ($current -and [int64]$current.MainWindowHandle -ne 0) {
+                $uiVisibleMs = [math]::Round($Stopwatch.Elapsed.TotalMilliseconds, 2)
+            }
+        }
+
+        if ($null -eq $backendListenerMs -and $now -lt $backendDeadline) {
+            if (Test-TcpPortOpen -Port $ExpectedBackendPort -TimeoutMs 50) {
+                $backendListenerMs = [math]::Round($Stopwatch.Elapsed.TotalMilliseconds, 2)
+            }
+        }
+
+        if ($null -eq $healthResult -and $now -ge $nextHealthAttempt -and $now -lt $backendDeadline) {
+            $nextHealthAttempt = $now.AddMilliseconds(100)
+            try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:$ExpectedBackendPort/api/health" -TimeoutSec 1
+                if ($health.ok -and $health.runtimeMode -eq "tauri-supervised" -and $health.apiVersion) {
+                    $backendPort = [int]$health.port
+                    $backendPid = [int]$health.pid
+                    $readyMs = [math]::Round($Stopwatch.Elapsed.TotalMilliseconds, 2)
+                    if ($null -eq $backendListenerMs) {
+                        $backendListenerMs = $readyMs
+                    }
+                    $healthResult = [pscustomobject]@{
+                        backendReadyMs = $readyMs
+                        health = $health
+                    }
+                }
+            } catch {
+                # Backend is not accepting health requests yet.
+            }
+        }
+
+        $uiDone = (-not $ShouldWaitForUi) -or $null -ne $uiVisibleMs -or $now -ge $uiDeadline
+        if ($uiDone -and $null -ne $healthResult) {
+            break
+        }
+        Start-Sleep -Milliseconds 50
+    }
+
+    if ($null -eq $healthResult) {
+        throw "Managed backend on port $ExpectedBackendPort did not return tauri-supervised health."
+    }
+
+    return [pscustomobject]@{
+        uiVisibleMs = $uiVisibleMs
+        backendPid = $backendPid
+        backendPort = $backendPort
+        backendListenerMs = $backendListenerMs
+        healthResult = $healthResult
+    }
+}
+
 function Wait-NewBackendListener {
     param(
         [int[]]$BaselinePids,
@@ -395,6 +501,81 @@ function New-Requirement {
     }
 }
 
+function Add-ArtifactPath {
+    param(
+        [object]$Benchmark,
+        [string]$Path
+    )
+
+    if ($Benchmark) {
+        $Benchmark | Add-Member -NotePropertyName artifactPath -NotePropertyValue $Path -Force
+    }
+    return $Benchmark
+}
+
+function New-BenchmarkArtifactSummary {
+    param([object]$Benchmark)
+
+    if (-not $Benchmark) {
+        return $null
+    }
+    return [pscustomobject]@{
+        ok = [bool]$Benchmark.ok
+        artifactPath = $Benchmark.artifactPath
+        summary = $Benchmark.summary
+    }
+}
+
+function New-BaselineSampleArtifactSummary {
+    param([object]$Sample)
+
+    $sampleSegmentNames = @()
+    if ($Sample.hotPathMetrics -and $Sample.hotPathMetrics.items) {
+        $sampleSegmentNames = @(Get-HotPathSegmentNames -Samples @($Sample))
+    }
+
+    return [pscustomobject]@{
+        iteration = $Sample.iteration
+        ok = [bool]$Sample.ok
+        appPid = $Sample.appPid
+        backendPid = $Sample.backendPid
+        backendPort = $Sample.backendPort
+        coldStartToUiVisibleMs = $Sample.coldStartToUiVisibleMs
+        backendListenerMs = $Sample.backendListenerMs
+        backendReadyMs = $Sample.backendReadyMs
+        runtimeFetchMs = $Sample.runtimeFetchMs
+        runtimeMode = $Sample.runtimeMode
+        apiVersion = $Sample.apiVersion
+        ready = [bool]$Sample.ready
+        dataDir = $Sample.dataDir
+        downloadsDir = $Sample.downloadsDir
+        launchKind = $Sample.launchKind
+        recordingHotPathBenchmark = $(New-BenchmarkArtifactSummary -Benchmark $Sample.recordingHotPathBenchmark)
+        hotPathMetrics = [pscustomobject]@{
+            summary = $(if ($Sample.hotPathMetrics) { $Sample.hotPathMetrics.summary } else { $null })
+            segmentNames = $sampleSegmentNames
+        }
+        cleanupVerified = [bool]$Sample.cleanupVerified
+        cleanupMs = $Sample.cleanupMs
+        remainingBackendPids = @($Sample.remainingBackendPids)
+    }
+}
+
+function Wait-BenchmarkProcess {
+    param(
+        [System.Diagnostics.Process]$Process,
+        [string]$Label,
+        [int]$TimeoutSec = 600
+    )
+
+    if (-not $Process.WaitForExit($TimeoutSec * 1000)) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        throw "$Label did not exit within ${TimeoutSec}s."
+    }
+    $Process.Refresh()
+    return $Process
+}
+
 function Invoke-WebSocketBroadcastBenchmark {
     param(
         [string]$BaselineOutputPath
@@ -427,10 +608,10 @@ function Invoke-WebSocketBroadcastBenchmark {
         -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutPath `
         -RedirectStandardError $stderrPath `
-        -Wait `
         -PassThru
+    $process = Wait-BenchmarkProcess -Process $process -Label "WebSocket baseline benchmark"
 
-    if ($process.ExitCode -ne 0) {
+    if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
         $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
         $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
         throw "WebSocket baseline benchmark failed with exit code $($process.ExitCode). stdout: $stdout stderr: $stderr"
@@ -439,7 +620,11 @@ function Invoke-WebSocketBroadcastBenchmark {
         throw "WebSocket baseline benchmark did not write output: $wsOutputPath"
     }
 
-    return Get-Content -LiteralPath $wsOutputPath -Raw | ConvertFrom-Json
+    $benchmark = Get-Content -LiteralPath $wsOutputPath -Raw | ConvertFrom-Json
+    if (-not $benchmark.ok) {
+        throw "WebSocket baseline benchmark wrote ok=false: $wsOutputPath"
+    }
+    return Add-ArtifactPath -Benchmark $benchmark -Path $wsOutputPath
 }
 
 function Invoke-UploadExportBenchmark {
@@ -477,10 +662,10 @@ function Invoke-UploadExportBenchmark {
         -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutPath `
         -RedirectStandardError $stderrPath `
-        -Wait `
         -PassThru
+    $process = Wait-BenchmarkProcess -Process $process -Label "Upload/export baseline benchmark"
 
-    if ($process.ExitCode -ne 0) {
+    if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
         $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
         $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
         throw "Upload/export baseline benchmark failed with exit code $($process.ExitCode). stdout: $stdout stderr: $stderr"
@@ -489,7 +674,11 @@ function Invoke-UploadExportBenchmark {
         throw "Upload/export baseline benchmark did not write output: $benchmarkOutputPath"
     }
 
-    return Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
+    $benchmark = Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
+    if (-not $benchmark.ok) {
+        throw "Upload/export baseline benchmark wrote ok=false: $benchmarkOutputPath"
+    }
+    return Add-ArtifactPath -Benchmark $benchmark -Path $benchmarkOutputPath
 }
 
 function Invoke-HistoryScrollBenchmark {
@@ -524,10 +713,10 @@ function Invoke-HistoryScrollBenchmark {
         -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutPath `
         -RedirectStandardError $stderrPath `
-        -Wait `
         -PassThru
+    $process = Wait-BenchmarkProcess -Process $process -Label "History scroll baseline benchmark"
 
-    if ($process.ExitCode -ne 0) {
+    if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
         $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
         $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
         throw "History scroll baseline benchmark failed with exit code $($process.ExitCode). stdout: $stdout stderr: $stderr"
@@ -536,7 +725,11 @@ function Invoke-HistoryScrollBenchmark {
         throw "History scroll baseline benchmark did not write output: $benchmarkOutputPath"
     }
 
-    return Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
+    $benchmark = Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
+    if (-not $benchmark.ok) {
+        throw "History scroll baseline benchmark wrote ok=false: $benchmarkOutputPath"
+    }
+    return Add-ArtifactPath -Benchmark $benchmark -Path $benchmarkOutputPath
 }
 
 function Invoke-RecordingHotPathBenchmark {
@@ -576,10 +769,10 @@ function Invoke-RecordingHotPathBenchmark {
         -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutPath `
         -RedirectStandardError $stderrPath `
-        -Wait `
         -PassThru
+    $process = Wait-BenchmarkProcess -Process $process -Label "Recording hot-path baseline benchmark"
 
-    if ($process.ExitCode -ne 0) {
+    if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
         $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
         $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
         return [pscustomobject]@{
@@ -602,7 +795,11 @@ function Invoke-RecordingHotPathBenchmark {
         }
     }
 
-    return Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
+    $benchmark = Get-Content -LiteralPath $benchmarkOutputPath -Raw | ConvertFrom-Json
+    if (-not $benchmark.ok) {
+        throw "Recording hot-path baseline benchmark wrote ok=false: $benchmarkOutputPath"
+    }
+    return Add-ArtifactPath -Benchmark $benchmark -Path $benchmarkOutputPath
 }
 
 function Invoke-BaselineIteration {
@@ -662,24 +859,23 @@ function Invoke-BaselineIteration {
             $startArgs.WindowStyle = "Hidden"
         }
         $app = Start-Process @startArgs
-        $uiVisibleMs = $null
-        if (-not $Hidden -and -not $SkipUiVisibleWait) {
-            $uiVisibleMs = Wait-AppMainWindow -Process $app -Stopwatch $watch -DeadlineSec $UiVisibleTimeoutSec
-        }
-
-        $listener = Wait-NewBackendListener -BaselinePids $baseline -Stopwatch $watch -DeadlineSec $TimeoutSec
-        if ($app.HasExited) {
-            throw "Tauri process exited early with code $($app.ExitCode)."
-        }
-        $healthResult = Wait-BackendHealth -Port $listener.backendPort -Stopwatch $watch -DeadlineSec $BackendHealthTimeoutSec
+        $startupSignals = Wait-StartupSignals `
+            -Process $app `
+            -Stopwatch $watch `
+            -ExpectedBackendPort 8765 `
+            -UiVisibleDeadlineSec $UiVisibleTimeoutSec `
+            -BackendHealthDeadlineSec $BackendHealthTimeoutSec `
+            -ShouldWaitForUi (-not $Hidden -and -not $SkipUiVisibleWait)
+        $uiVisibleMs = $startupSignals.uiVisibleMs
+        $healthResult = $startupSignals.healthResult
         $runtimeFetchStart = $watch.Elapsed.TotalMilliseconds
-        $runtime = Invoke-BackendJson -Port $listener.backendPort -Path "/api/runtime" -Token $sessionToken
+        $runtime = Invoke-BackendJson -Port $startupSignals.backendPort -Path "/api/runtime" -Token $sessionToken
         $runtimeFetchMs = [math]::Round($watch.Elapsed.TotalMilliseconds - $runtimeFetchStart, 2)
 
         $recordingHotPathBenchmark = $null
         if ($RecordHotPathSamples) {
             $recordingHotPathBenchmark = Invoke-RecordingHotPathBenchmark `
-                -Port $listener.backendPort `
+                -Port $startupSignals.backendPort `
                 -Token $sessionToken `
                 -DataDir $dataDir `
                 -Iteration $Index
@@ -687,7 +883,7 @@ function Invoke-BaselineIteration {
 
         $hotPathMetrics = $null
         try {
-            $hotPathMetrics = Invoke-BackendJson -Port $listener.backendPort -Path "/api/metrics/hot-path?limit=200" -Token $sessionToken
+            $hotPathMetrics = Invoke-BackendJson -Port $startupSignals.backendPort -Path "/api/metrics/hot-path?limit=200" -Token $sessionToken
         } catch {
             $hotPathMetrics = [pscustomobject]@{
                 summary = [pscustomobject]@{ count = 0 }
@@ -700,10 +896,10 @@ function Invoke-BaselineIteration {
             iteration = $Index
             ok = $true
             appPid = $app.Id
-            backendPid = $listener.backendPid
-            backendPort = $listener.backendPort
+            backendPid = $startupSignals.backendPid
+            backendPort = $startupSignals.backendPort
             coldStartToUiVisibleMs = $uiVisibleMs
-            backendListenerMs = $listener.backendListenerMs
+            backendListenerMs = $startupSignals.backendListenerMs
             backendReadyMs = $healthResult.backendReadyMs
             runtimeFetchMs = $runtimeFetchMs
             runtimeMode = $healthResult.health.runtimeMode
@@ -1012,11 +1208,11 @@ $result = [pscustomobject]@{
         incompleteRequirements = @($incomplete | ForEach-Object { $_.name })
         requirements = $requirements
     }
-    uploadExportBenchmark = $uploadExportBenchmark
-    webSocketBenchmark = $webSocketBenchmark
-    historyScrollBenchmark = $historyScrollBenchmark
-    recordingHotPathBenchmarks = @($recordingHotPathBenchmarks)
-    samples = $samples
+    uploadExportBenchmark = $(New-BenchmarkArtifactSummary -Benchmark $uploadExportBenchmark)
+    webSocketBenchmark = $(New-BenchmarkArtifactSummary -Benchmark $webSocketBenchmark)
+    historyScrollBenchmark = $(New-BenchmarkArtifactSummary -Benchmark $historyScrollBenchmark)
+    recordingHotPathBenchmarks = @($recordingHotPathBenchmarks | ForEach-Object { New-BenchmarkArtifactSummary -Benchmark $_ })
+    samples = @($samples | ForEach-Object { New-BaselineSampleArtifactSummary -Sample $_ })
 }
 
 $json = $result | ConvertTo-Json -Depth 12

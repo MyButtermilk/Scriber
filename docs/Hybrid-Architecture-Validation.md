@@ -4,6 +4,118 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Startup Hot Path + Corrected Baseline Runner
+
+Commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 `
+  -SkipFrontendBuild `
+  -BundleMediaTools `
+  -CopyToTauriRelease
+
+cargo build --manifest-path Frontend\src-tauri\Cargo.toml --release
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 3 `
+  -DisableDevFallback `
+  -SkipUploadExportBenchmark `
+  -SkipWsBenchmark `
+  -SkipHistoryScrollBenchmark `
+  -FailOnPerformanceBudget `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\hybrid-baseline-20260602-early-backend-corrected-startup-budget.json"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -Iterations 3 `
+  -DisableDevFallback `
+  -FailOnPerformanceBudget `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\hybrid-baseline-20260602-early-backend-corrected-full-budget.json"
+```
+
+Result: passed for the corrected startup and full visible baseline budgets.
+
+Implemented improvements:
+
+- `src.web_api` no longer imports the Pipecat-backed `src.pipeline` at module
+  import time. The transcription pipeline is loaded lazily when live mic,
+  file, or YouTube transcription actually needs it.
+- The Tauri shell creates `BackendManager` before the Tauri builder and calls
+  `ensure_started()` immediately, so the backend sidecar starts before shell
+  menu, tray, updater, global shortcut, and WebView setup work.
+- `scripts\measure_hybrid_baseline.ps1` now measures UI visibility and backend
+  health in parallel and polls `/api/health` directly on the expected managed
+  backend port. The previous serial flow waited for UI first and then used
+  expensive process/TCP enumeration, which over-counted backend readiness by
+  several seconds.
+- Child benchmark waits now use explicit process wait timeouts and compact
+  artifact summaries. This fixed the previous final-JSON hang after child
+  benchmark output had already been written.
+
+Evidence:
+
+- Source import timing before lazy pipeline loading: `import src.web_api`
+  imported `src.pipeline` and took about 10.4 seconds, with `src.pipeline`
+  accounting for about 9.1 seconds.
+- Source import timing after lazy pipeline loading: `import src.web_api` took
+  about 1.3-1.4 seconds, and `src.pipeline` was no longer imported during
+  web API startup.
+- Rebuilt sidecar copied to
+  `Frontend\src-tauri\target\release\backend\scriber-backend.exe`
+  (33,442,124 bytes, timestamp 2026-06-02 02:03:08).
+- Rebuilt desktop shell:
+  `Frontend\src-tauri\target\release\scriber-desktop.exe`
+  (12,442,624 bytes, timestamp 2026-06-02 02:11:17).
+- A rebuilt-sidecar startup run with the old serial/WMI runner still failed the
+  backend budget: UI p95 296.36 ms passed, backend ready p95 11,932.67 ms
+  failed. Keep-artifact logs showed the Python sidecar reached the HTTP
+  listener about 1.6 seconds after spawn, so the old runner was measuring
+  shell/runner delay rather than only backend readiness.
+- Corrected startup-only baseline:
+  `tmp\hybrid-baseline\hybrid-baseline-20260602-early-backend-corrected-startup-budget.json`.
+  UI visible p95: 1,630.87 ms. Backend listener p95: 2,595.13 ms.
+  Backend ready p95: 2,595.13 ms. Both budgets passed.
+- Corrected full visible baseline:
+  `tmp\hybrid-baseline\hybrid-baseline-20260602-early-backend-corrected-full-budget.json`.
+  UI visible p95: 1,597.45 ms. Backend listener p95: 2,669.90 ms.
+  Backend ready p95: 2,669.90 ms. Runtime fetch p95: 71.77 ms.
+  Both startup budgets passed.
+- Upload/export artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-20260602-early-backend-corrected-full-budget-upload-export.json`.
+  Synthetic upload: 4 x 4 MB, total 20.36 ms, 785.84 MB/s, upload p95
+  18.76 ms. Export p95: 236.37 ms. `/api/health` p95 under load:
+  27.56 ms. `/api/state` p95 under load: 27.35 ms.
+- WebSocket artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-20260602-early-backend-corrected-full-budget-websocket.json`.
+  JSON serialization p95: 0.0023 ms. Broadcast p95: 0.0002 ms with no
+  clients, 0.0102 ms with one client, 0.0236 ms with five clients.
+- History scroll artifact:
+  `tmp\hybrid-baseline\hybrid-baseline-20260602-early-backend-corrected-full-budget-history-scroll.json`.
+  2,000 transcript items, virtualized: true, max visible cards: 54, total API
+  requests: 80, duration p95: 34,314.9 ms, max frame gap p95: 316.7 ms.
+
+Goal coverage:
+
+- Phase 0: adds corrected, repeatable startup evidence for UI-visible and
+  backend-ready budgets.
+- Phase 0: adds upload/export, WebSocket serialization/broadcast, and large
+  history scroll baseline artifacts.
+- Phase 2: validates that the release Tauri shell can start the packaged
+  sidecar early and reach `tauri-supervised` health without dev fallback.
+- Phase 8: adds baseline endpoint responsiveness evidence under synthetic
+  upload/export load.
+
+Remaining limits:
+
+- Phase 0 is still incomplete for live recording hot-path metrics:
+  hotkey-to-recording-state, hotkey-to-first-audio-frame, and
+  stop-to-text-injection were not collected in this run.
+- The history list is virtualized, but the browser scroll benchmark still shows
+  high duration and frame gaps; this remains a UX performance improvement
+  target rather than a startup gate failure.
+- This run did not exercise microphone hardware, provider stability during a
+  long live recording, Authenticode signing, updater publication, or the final
+  long-duration memory-growth gate.
+
 ## 2026-06-02 - Tauri Sidecar + Real Legacy Data Smoke
 
 Command:
