@@ -4,6 +4,59 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Stop-to-Text Hot-Path Measurement Tooling
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m py_compile scripts\measure_recording_hot_path_baseline.py tests\perf\test_recording_hot_path_baseline_script.py
+venv\Scripts\python.exe -m pytest tests\perf\test_recording_hot_path_baseline_script.py
+
+$tokens=$null; $errors=$null
+$null=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path scripts\measure_hybrid_baseline.ps1), [ref]$tokens, [ref]$errors)
+if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 } else { 'OK' }
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\measure_recording_hot_path_baseline.py` now has an optional
+  `--text-target-file` mode that opens a dedicated Tk text target window and
+  periodically persists injected text length. This gives manual or prompted
+  hot-path runs a safe injection destination instead of relying on whatever
+  application happens to be focused.
+- The same script now supports optional Windows SAPI prompt playback via
+  `--speech-prompt-text` and `--speech-prompt-delay-sec` so future runs can
+  attempt a reproducible speech sample without changing the STT pipeline.
+- Multi-iteration target files are suffixed per iteration to keep captured
+  injection evidence separated.
+- `scripts\measure_hybrid_baseline.ps1` forwards these options through
+  `-RecordingHotPathTextTargetFile`, `-RecordingHotPathSpeechPrompt`,
+  `-RecordingHotPathSpeechDelaySec`, and
+  `-RecordingHotPathTextTargetSettleSec`.
+
+Evidence:
+
+- Recording hot-path script syntax check passed.
+- PowerShell parser check for `scripts\measure_hybrid_baseline.ps1` passed.
+- `tests\perf\test_recording_hot_path_baseline_script.py`: `5 passed`.
+
+Goal coverage:
+
+- Phase 0: reduces the remaining `stop_to_text_injection` measurement risk by
+  making real text-injection samples safer and more reproducible.
+- Phase 7: adds regression coverage for the new recording hot-path measurement
+  flags and per-iteration target-file behavior.
+
+Remaining limits:
+
+- This is tooling evidence only. It does not itself prove
+  `stop_requested_to_first_paste_ms`; that still requires a live sample where
+  STT recognizes speech and the injector writes text.
+- Prompt playback depends on Windows audio routing and microphone pickup; it is
+  an aid for repeatability, not a substitute for final manual microphone tests.
+
 ## 2026-06-02 - Live Mic Hot-Path Partial Hardware Sample
 
 Command:

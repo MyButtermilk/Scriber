@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
+import subprocess
 import sys
 import time
 import urllib.error
@@ -19,6 +21,7 @@ SEGMENTS_BY_REQUIREMENT = {
 }
 STOP_TO_TEXT_SEGMENT = "stop_requested_to_first_paste_ms"
 TEXT_BEFORE_STOP_SEGMENT = "first_paste_to_stop_requested_ms"
+TEXT_TARGET_WINDOW_FLAG = "--_text-target-window"
 
 
 def percentile(values: list[float], pct: float) -> float:
@@ -39,6 +42,136 @@ def summarize(values: list[float]) -> dict[str, float | int]:
         "p95Ms": round(percentile(values, 95.0), 3),
         "maxMs": round(max(values), 3),
     }
+
+
+def iteration_text_target_path(raw_path: str, index: int, total_iterations: int) -> Path:
+    path = Path(raw_path).expanduser().resolve()
+    if total_iterations <= 1:
+        return path
+    suffix = path.suffix
+    stem = path.name[: -len(suffix)] if suffix else path.name
+    return path.with_name(f"{stem}.iteration-{index}{suffix}")
+
+
+def run_text_target_window(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Internal text target window for recording hot-path measurement.")
+    parser.add_argument("--target-output", required=True)
+    parser.add_argument("--target-title", default="Scriber Hot Path Text Target")
+    args = parser.parse_args(argv)
+
+    try:
+        import tkinter as tk
+    except Exception as exc:
+        print(f"Could not import tkinter for text target window: {exc}", file=sys.stderr)
+        return 1
+
+    output_path = Path(args.target_output).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("", encoding="utf-8")
+
+    root = tk.Tk()
+    root.title(args.target_title)
+    root.geometry("760x320+80+80")
+    text = tk.Text(root, wrap="word", font=("Segoe UI", 12))
+    text.pack(fill="both", expand=True)
+
+    def save_text() -> None:
+        try:
+            output_path.write_text(text.get("1.0", "end-1c"), encoding="utf-8")
+        except Exception:
+            pass
+        root.after(200, save_text)
+
+    def focus_window() -> None:
+        try:
+            root.lift()
+            root.attributes("-topmost", True)
+            root.after(500, lambda: root.attributes("-topmost", False))
+            text.focus_force()
+        except Exception:
+            pass
+
+    root.after(100, focus_window)
+    root.after(200, save_text)
+    root.mainloop()
+    return 0
+
+
+def launch_text_target(args: argparse.Namespace, index: int) -> tuple[dict[str, Any] | None, subprocess.Popen | None]:
+    if not args.text_target_file:
+        return None, None
+
+    target_path = iteration_text_target_path(args.text_target_file, index, args.iterations)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text("", encoding="utf-8")
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            TEXT_TARGET_WINDOW_FLAG,
+            "--target-output",
+            str(target_path),
+            "--target-title",
+            args.text_target_title,
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    time.sleep(args.text_target_settle_sec)
+    if proc.poll() is not None:
+        stderr = proc.stderr.read() if proc.stderr else ""
+        raise RuntimeError(f"Text target window exited early with code {proc.returncode}: {stderr}")
+
+    return {
+        "path": str(target_path),
+        "pid": proc.pid,
+        "title": args.text_target_title,
+    }, proc
+
+
+def terminate_process(proc: subprocess.Popen | None, *, timeout_sec: float = 2.0) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=timeout_sec)
+
+
+def read_text_target_length(info: dict[str, Any] | None) -> int:
+    if not info or not info.get("path"):
+        return 0
+    path = Path(str(info["path"]))
+    if not path.is_file():
+        return 0
+    return len(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def start_speech_prompt(args: argparse.Namespace) -> tuple[dict[str, Any] | None, subprocess.Popen | None]:
+    text = (args.speech_prompt_text or "").strip()
+    if not text:
+        return None, None
+    if sys.platform != "win32":
+        return {"started": False, "error": "speech prompt is only supported on Windows"}, None
+
+    env = os.environ.copy()
+    env["SCRIBER_RECORDING_PROMPT_TEXT"] = text
+    command = (
+        "$voice = New-Object -ComObject SAPI.SpVoice; "
+        "$voice.Speak([string]$env:SCRIBER_RECORDING_PROMPT_TEXT) | Out-Null"
+    )
+    proc = subprocess.Popen(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return {"started": True, "pid": proc.pid, "chars": len(text)}, proc
 
 
 def requirement_values(
@@ -159,7 +292,13 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
         "error": "",
     }
     started = False
+    text_target_proc: subprocess.Popen | None = None
+    speech_proc: subprocess.Popen | None = None
     try:
+        text_target, text_target_proc = launch_text_target(args, index)
+        if text_target:
+            sample["textTarget"] = text_target
+
         state = client.post("/api/live-mic/start")
         started = True
         session_id = str(state.get("sessionId") or state.get("current", {}).get("id") or "")
@@ -178,7 +317,13 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
         if not session_id:
             raise RuntimeError("Backend did not expose a live session id.")
 
-        time.sleep(args.record_seconds)
+        record_started_at = time.monotonic()
+        if args.speech_prompt_text:
+            time.sleep(min(args.speech_prompt_delay_sec, args.record_seconds))
+            speech_prompt, speech_proc = start_speech_prompt(args)
+            sample["speechPrompt"] = speech_prompt
+        elapsed = time.monotonic() - record_started_at
+        time.sleep(max(0.0, args.record_seconds - elapsed))
         client.post("/api/live-mic/stop")
         started = False
         wait_for_state(
@@ -193,6 +338,8 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
         segments = metric.get("segments") or {}
         sample["segments"] = segments
         sample["totalMs"] = metric.get("totalMs", 0.0)
+        if "textTarget" in sample:
+            sample["textTarget"]["capturedChars"] = read_text_target_length(sample["textTarget"])
         sample["ok"] = any(name in segments for name in SEGMENTS_BY_REQUIREMENT.values())
     except Exception as exc:
         sample["error"] = str(exc)
@@ -201,6 +348,13 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
                 client.post("/api/live-mic/stop")
             except Exception:
                 pass
+    finally:
+        if speech_proc is not None:
+            try:
+                speech_proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                terminate_process(speech_proc)
+        terminate_process(text_target_proc)
     return sample
 
 
@@ -281,11 +435,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--stop-timeout-sec", type=float, default=60.0)
     parser.add_argument("--metric-timeout-sec", type=float, default=10.0)
     parser.add_argument("--http-timeout-sec", type=float, default=10.0)
+    parser.add_argument("--text-target-file", default="")
+    parser.add_argument("--text-target-title", default="Scriber Hot Path Text Target")
+    parser.add_argument("--text-target-settle-sec", type=float, default=1.0)
+    parser.add_argument("--speech-prompt-text", default="")
+    parser.add_argument("--speech-prompt-delay-sec", type=float, default=0.5)
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--output", default="")
     args = parser.parse_args(argv)
     args.iterations = max(1, int(args.iterations))
     args.record_seconds = max(0.1, float(args.record_seconds))
+    args.text_target_settle_sec = max(0.1, float(args.text_target_settle_sec))
+    args.speech_prompt_delay_sec = max(0.0, float(args.speech_prompt_delay_sec))
     return args
 
 
@@ -299,7 +460,10 @@ def write_result(result: dict[str, Any], output_path: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv or sys.argv[1:])
+    argv = argv or sys.argv[1:]
+    if argv and argv[0] == TEXT_TARGET_WINDOW_FLAG:
+        return run_text_target_window(argv[1:])
+    args = parse_args(argv)
     result = build_validate_result(args) if args.validate_only else run_benchmark(args)
     write_result(result, args.output)
     return 0 if result.get("ok") else 1

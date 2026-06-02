@@ -41,6 +41,10 @@ param(
     [int]$RecordingHotPathIterations = 1,
     [double]$RecordingHotPathSeconds = 2.0,
     [int]$RecordingHotPathTimeoutSec = 60,
+    [string]$RecordingHotPathTextTargetFile = "",
+    [string]$RecordingHotPathSpeechPrompt = "",
+    [double]$RecordingHotPathSpeechDelaySec = 0.5,
+    [double]$RecordingHotPathTextTargetSettleSec = 1.0,
     [switch]$Hidden,
     [switch]$SkipUiVisibleWait,
     [switch]$SkipUploadExportBenchmark,
@@ -752,19 +756,33 @@ function Invoke-RecordingHotPathBenchmark {
     $stderrPath = Join-Path $DataDir "recording-hot-path-$Iteration.err"
     Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
 
+    $recordingArgs = @(
+        $scriptPath,
+        "--base-url", "http://127.0.0.1:$Port",
+        "--token", $Token,
+        "--iterations", [string]$RecordingHotPathIterations,
+        "--record-seconds", [string]$RecordingHotPathSeconds,
+        "--start-timeout-sec", [string]$RecordingHotPathTimeoutSec,
+        "--stop-timeout-sec", [string]$RecordingHotPathTimeoutSec,
+        "--metric-timeout-sec", [string]$RecordingHotPathTimeoutSec,
+        "--output", $benchmarkOutputPath
+    )
+    if ($RecordingHotPathTextTargetFile) {
+        $recordingArgs += @(
+            "--text-target-file", $RecordingHotPathTextTargetFile,
+            "--text-target-settle-sec", [string]$RecordingHotPathTextTargetSettleSec
+        )
+    }
+    if ($RecordingHotPathSpeechPrompt) {
+        $recordingArgs += @(
+            "--speech-prompt-text", $RecordingHotPathSpeechPrompt,
+            "--speech-prompt-delay-sec", [string]$RecordingHotPathSpeechDelaySec
+        )
+    }
+
     $process = Start-Process `
         -FilePath $PythonPath `
-        -ArgumentList @(
-            $scriptPath,
-            "--base-url", "http://127.0.0.1:$Port",
-            "--token", $Token,
-            "--iterations", [string]$RecordingHotPathIterations,
-            "--record-seconds", [string]$RecordingHotPathSeconds,
-            "--start-timeout-sec", [string]$RecordingHotPathTimeoutSec,
-            "--stop-timeout-sec", [string]$RecordingHotPathTimeoutSec,
-            "--metric-timeout-sec", [string]$RecordingHotPathTimeoutSec,
-            "--output", $benchmarkOutputPath
-        ) `
+        -ArgumentList $recordingArgs `
         -WorkingDirectory $RepoRoot `
         -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutPath `
@@ -1008,6 +1026,12 @@ if ($RecordingHotPathSeconds -le 0) {
 if ($RecordingHotPathTimeoutSec -lt 1) {
     throw "RecordingHotPathTimeoutSec must be >= 1."
 }
+if ($RecordingHotPathSpeechDelaySec -lt 0) {
+    throw "RecordingHotPathSpeechDelaySec must be >= 0."
+}
+if ($RecordingHotPathTextTargetSettleSec -le 0) {
+    throw "RecordingHotPathTextTargetSettleSec must be > 0."
+}
 if ($MaxUiVisibleP95Ms -le 0) {
     throw "MaxUiVisibleP95Ms must be > 0."
 }
@@ -1197,6 +1221,10 @@ $result = [pscustomobject]@{
         recordingHotPathIterations = $RecordingHotPathIterations
         recordingHotPathSeconds = $RecordingHotPathSeconds
         recordingHotPathTimeoutSec = $RecordingHotPathTimeoutSec
+        recordingHotPathTextTargetFile = $RecordingHotPathTextTargetFile
+        recordingHotPathSpeechPromptChars = $RecordingHotPathSpeechPrompt.Length
+        recordingHotPathSpeechDelaySec = $RecordingHotPathSpeechDelaySec
+        recordingHotPathTextTargetSettleSec = $RecordingHotPathTextTargetSettleSec
         failOnPerformanceBudget = [bool]$FailOnPerformanceBudget
         maxUiVisibleP95Ms = $MaxUiVisibleP95Ms
         maxBackendReadyP95Ms = $MaxBackendReadyP95Ms

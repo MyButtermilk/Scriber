@@ -5,7 +5,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.measure_recording_hot_path_baseline import build_summary
+from scripts.measure_recording_hot_path_baseline import (
+    build_summary,
+    iteration_text_target_path,
+)
 
 
 def test_recording_hot_path_baseline_script_validate_only_writes_artifact(tmp_path: Path):
@@ -17,6 +20,10 @@ def test_recording_hot_path_baseline_script_validate_only_writes_artifact(tmp_pa
             sys.executable,
             "scripts/measure_recording_hot_path_baseline.py",
             "--validate-only",
+            "--text-target-file",
+            str(tmp_path / "target.txt"),
+            "--speech-prompt-text",
+            "Scriber validation prompt",
             "--output",
             str(output_path),
         ],
@@ -37,6 +44,14 @@ def test_recording_hot_path_baseline_script_validate_only_writes_artifact(tmp_pa
     assert stop_requirement["status"] == "measured"
     assert stop_requirement["durations"]["p95Ms"] == 0.0
     assert stop_requirement["alreadyInjectedBeforeStopSamples"] == 1
+
+
+def test_recording_hot_path_text_target_path_is_unique_per_iteration(tmp_path: Path):
+    target = tmp_path / "capture.txt"
+
+    assert iteration_text_target_path(str(target), 1, 1) == target
+    assert iteration_text_target_path(str(target), 1, 2) == tmp_path / "capture.iteration-1.txt"
+    assert iteration_text_target_path(str(target), 2, 2) == tmp_path / "capture.iteration-2.txt"
 
 
 def test_recording_hot_path_summary_measures_text_injection_after_stop():
@@ -87,3 +102,7 @@ def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
     assert "hotkey_to_recording_state" in script
     assert "hotkey_to_first_audio_frame" in script
     assert "stop_to_text_injection" in script
+    assert "RecordingHotPathTextTargetFile" in script
+    assert "RecordingHotPathSpeechPrompt" in script
+    assert "--text-target-file" in script
+    assert "--speech-prompt-text" in script
