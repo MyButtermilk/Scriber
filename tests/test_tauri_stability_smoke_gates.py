@@ -131,3 +131,26 @@ def test_installer_and_build_scripts_forward_global_hotkey_smoke() -> None:
     assert '"-VerifyGlobalHotkeyRegistration"' in build
     assert '"-WaitForManualGlobalHotkey"' in build
     assert '"-GlobalHotkeySmokeHotkey", $InstallerGlobalHotkeySmokeHotkey' in build
+
+
+def test_desktop_and_installer_smokes_support_live_recording_stability_gate() -> None:
+    desktop = read_script("scripts/smoke_tauri_desktop.ps1")
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+    build = read_script("scripts/build_windows.ps1")
+
+    assert "[int]$LiveRecordingDurationSec = 0" in desktop
+    assert "function Test-LiveRecordingStability" in desktop
+    assert "Invoke-LiveMicStart" in desktop
+    assert "Invoke-LiveMicStop" in desktop
+    assert "nonRecordingSampleCount = $nonRecordingSamples.Count" in desktop
+    assert "liveRecording = $liveRecording" in desktop
+
+    assert "[int]$LiveRecordingDurationSec = 0" in installer
+    assert '"-LiveRecordingDurationSec", $LiveRecordingDurationSec.ToString()' in installer
+    assert "liveRecording = $smoke.liveRecording" in installer
+
+    assert "[switch]$RunInstallerLiveRecordingSmoke" in build
+    assert "[int]$InstallerLiveRecordingDurationSec = 0" in build
+    assert "$RunInstallerLiveRecordingSmoke" in build
+    assert '"-LiveRecordingDurationSec", $liveDuration.ToString()' in build
+    assert '"-MaxLiveBackendWorkingSetGrowthMB", $InstallerMaxLiveBackendWorkingSetGrowthMB.ToString' in build

@@ -40,6 +40,13 @@ param(
     [int]$InstallerStabilityProbeIntervalSec = 5,
     [double]$InstallerMaxBackendWorkingSetGrowthMB = 0,
     [double]$InstallerMaxIdleCpuPercent = 0,
+    [switch]$RunInstallerLiveRecordingSmoke,
+    [int]$InstallerLiveRecordingDurationSec = 0,
+    [int]$InstallerLiveRecordingProbeIntervalSec = 5,
+    [double]$InstallerMaxLiveBackendWorkingSetGrowthMB = 0,
+    [double]$InstallerMaxLiveCpuPercent = 0,
+    [int]$InstallerLiveRecordingStartTimeoutSec = 60,
+    [int]$InstallerLiveRecordingStopTimeoutSec = 60,
     [switch]$RunInstallerLegacyDataSmoke,
     [switch]$RunInstallerUpgradeSmoke,
     [switch]$RunInstallerUninstallSmoke
@@ -231,7 +238,7 @@ try {
         }
     }
 
-    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
@@ -280,6 +287,19 @@ try {
                     }
                     if ($InstallerMaxIdleCpuPercent -gt 0) {
                         $installerSmokeArgs += @("-MaxIdleCpuPercent", $InstallerMaxIdleCpuPercent.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                    }
+                }
+                if ($RunInstallerLiveRecordingSmoke) {
+                    $liveDuration = if ($InstallerLiveRecordingDurationSec -gt 0) { $InstallerLiveRecordingDurationSec } else { 1800 }
+                    $installerSmokeArgs += @("-LiveRecordingDurationSec", $liveDuration.ToString())
+                    $installerSmokeArgs += @("-LiveRecordingProbeIntervalSec", $InstallerLiveRecordingProbeIntervalSec.ToString())
+                    $installerSmokeArgs += @("-LiveRecordingStartTimeoutSec", $InstallerLiveRecordingStartTimeoutSec.ToString())
+                    $installerSmokeArgs += @("-LiveRecordingStopTimeoutSec", $InstallerLiveRecordingStopTimeoutSec.ToString())
+                    if ($InstallerMaxLiveBackendWorkingSetGrowthMB -gt 0) {
+                        $installerSmokeArgs += @("-MaxLiveBackendWorkingSetGrowthMB", $InstallerMaxLiveBackendWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                    }
+                    if ($InstallerMaxLiveCpuPercent -gt 0) {
+                        $installerSmokeArgs += @("-MaxLiveCpuPercent", $InstallerMaxLiveCpuPercent.ToString([System.Globalization.CultureInfo]::InvariantCulture))
                     }
                 }
                 if ($RunInstallerLegacyDataSmoke) {

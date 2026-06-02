@@ -26,6 +26,8 @@ working-set peak growth exceeds the configured threshold. With
 for the Tauri app plus backend exceeds the configured threshold. With
 -WaitForManualGlobalHotkey, it waits for a physical OS hotkey press and verifies
 that the Tauri global shortcut dispatch reaches the existing backend endpoints.
+With -LiveRecordingDurationSec, it explicitly starts live microphone recording,
+keeps it running while sampling health/state, CPU, and memory, then stops it.
 
 Build the executable first with:
   cd Frontend
@@ -47,6 +49,12 @@ param(
     [int]$StabilityProbeIntervalSec = 5,
     [double]$MaxBackendWorkingSetGrowthMB = 0,
     [double]$MaxIdleCpuPercent = 0,
+    [int]$LiveRecordingDurationSec = 0,
+    [int]$LiveRecordingProbeIntervalSec = 5,
+    [double]$MaxLiveBackendWorkingSetGrowthMB = 0,
+    [double]$MaxLiveCpuPercent = 0,
+    [int]$LiveRecordingStartTimeoutSec = 60,
+    [int]$LiveRecordingStopTimeoutSec = 60,
     [switch]$KeepAppOpen,
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
@@ -208,6 +216,64 @@ function Invoke-BackendShutdown {
     return $response
 }
 
+function Invoke-LiveMicStart {
+    param(
+        [int]$Port,
+        [string]$Token
+    )
+
+    $headers = @{}
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+    return Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/api/live-mic/start" -Headers $headers -TimeoutSec 10
+}
+
+function Invoke-LiveMicStop {
+    param(
+        [int]$Port,
+        [string]$Token
+    )
+
+    $headers = @{}
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+    return Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/api/live-mic/stop" -Headers $headers -TimeoutSec 10
+}
+
+function Wait-BackendState {
+    param(
+        [int]$Port,
+        [string]$Token,
+        [scriptblock]$Predicate,
+        [int]$DeadlineSec,
+        [string]$Label
+    )
+
+    $headers = @{}
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+    $deadline = (Get-Date).AddSeconds($DeadlineSec)
+    $lastState = $null
+    do {
+        try {
+            $state = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/state" -Headers $headers -TimeoutSec 5
+            $lastState = $state
+            if (& $Predicate $state) {
+                return $state
+            }
+        } catch {
+            $lastState = $_.Exception.Message
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    $lastStateJson = try { $lastState | ConvertTo-Json -Compress -Depth 4 } catch { [string]$lastState }
+    throw "Timed out waiting for backend state '$Label' within ${DeadlineSec}s. Last state: $lastStateJson"
+}
+
 function Invoke-TimedRestGet {
     param(
         [string]$Uri,
@@ -341,7 +407,9 @@ function Test-RuntimeStability {
             healthMs = $healthProbe.elapsedMs
             stateMs = $stateProbe.elapsedMs
             healthReady = [bool]$health.ready
+            status = [string]$state.status
             recordingState = [string]$state.recordingState
+            listening = [bool]$state.listening
         }
 
         if ((Get-Date) -ge $deadline) {
@@ -391,6 +459,84 @@ function Test-RuntimeStability {
         combinedCpuAvgPercent = $combinedCpuAvg
         maxIdleCpuPercent = if ($MaxIdleCpuPercent -gt 0) { $MaxIdleCpuPercent } else { $null }
         samples = $samples
+    }
+}
+
+function Test-LiveRecordingStability {
+    param(
+        [System.Diagnostics.Process]$AppProcess,
+        [int]$BackendPid,
+        [int]$Port,
+        [string]$Token,
+        [string]$ExpectedRuntimeMode,
+        [int]$DurationSec,
+        [int]$ProbeIntervalSec,
+        [double]$MaxWorkingSetGrowthMB = 0,
+        [double]$MaxCpuPercent = 0,
+        [int]$StartTimeoutSec = 60,
+        [int]$StopTimeoutSec = 60
+    )
+
+    if ($DurationSec -le 0) {
+        return $null
+    }
+
+    $startedState = $null
+    $stability = $null
+    $stopResponse = $null
+    $stoppedState = $null
+    try {
+        $startResponse = Invoke-LiveMicStart -Port $Port -Token $Token
+        $startedState = Wait-BackendState `
+            -Port $Port `
+            -Token $Token `
+            -Predicate { param($state) ([string]$state.recordingState -eq "recording") -or ([bool]$state.listening) } `
+            -DeadlineSec $StartTimeoutSec `
+            -Label "live recording started"
+        $stability = Test-RuntimeStability `
+            -AppProcess $AppProcess `
+            -BackendPid $BackendPid `
+            -Port $Port `
+            -Token $Token `
+            -ExpectedRuntimeMode $ExpectedRuntimeMode `
+            -DurationSec $DurationSec `
+            -ProbeIntervalSec $ProbeIntervalSec `
+            -MaxWorkingSetGrowthMB $MaxWorkingSetGrowthMB `
+            -MaxIdleCpuPercent $MaxCpuPercent
+        $nonRecordingSamples = @(
+            $stability.samples |
+                Where-Object { ([string]$_.recordingState -ne "recording") -and -not ([bool]$_.listening) }
+        )
+        if ($nonRecordingSamples.Count -gt 0) {
+            throw "Live recording smoke observed non-recording state during stability sampling."
+        }
+        $stopResponse = Invoke-LiveMicStop -Port $Port -Token $Token
+        $stoppedState = Wait-BackendState `
+            -Port $Port `
+            -Token $Token `
+            -Predicate { param($state) ([string]$state.recordingState -eq "idle") -and -not ([bool]$state.listening) } `
+            -DeadlineSec $StopTimeoutSec `
+            -Label "live recording stopped"
+        return [pscustomobject]@{
+            verified = $true
+            durationSec = $DurationSec
+            probeIntervalSec = [Math]::Max(1, $ProbeIntervalSec)
+            startResponseOk = [bool]$startResponse.ok
+            startedRecordingState = [string]$startedState.recordingState
+            startedListening = [bool]$startedState.listening
+            stopResponseOk = [bool]$stopResponse.ok
+            stoppedRecordingState = [string]$stoppedState.recordingState
+            stoppedListening = [bool]$stoppedState.listening
+            nonRecordingSampleCount = $nonRecordingSamples.Count
+            stability = $stability
+        }
+    } catch {
+        try {
+            Invoke-LiveMicStop -Port $Port -Token $Token | Out-Null
+        } catch {
+            Write-Warning "Live recording smoke cleanup stop failed: $_"
+        }
+        throw
     }
 }
 
@@ -1035,6 +1181,12 @@ if ($AttachExternalBackend -and $KeepAppOpen) {
 if ($SimulateBackendStartupTimeout -and ($SimulateBackendCrash -or $SimulateBackendShutdown)) {
     throw "-SimulateBackendStartupTimeout cannot be combined with -SimulateBackendCrash or -SimulateBackendShutdown."
 }
+if ($LiveRecordingDurationSec -gt 0 -and ($SimulateBackendCrash -or $SimulateBackendShutdown -or $SimulateBackendStartupTimeout -or $AttachExternalBackend)) {
+    throw "-LiveRecordingDurationSec cannot be combined with -SimulateBackendCrash, -SimulateBackendShutdown, -SimulateBackendStartupTimeout, or -AttachExternalBackend."
+}
+if ($LiveRecordingDurationSec -gt 0 -and ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey)) {
+    throw "-LiveRecordingDurationSec cannot be combined with global hotkey smoke options because hotkey smokes override STT settings."
+}
 if (($SimulateGlobalHotkey -or $WaitForManualGlobalHotkey) -and ($SimulateBackendCrash -or $SimulateBackendShutdown -or $SimulateBackendStartupTimeout)) {
     throw "-SimulateGlobalHotkey and -WaitForManualGlobalHotkey cannot be combined with -SimulateBackendCrash, -SimulateBackendShutdown, or -SimulateBackendStartupTimeout."
 }
@@ -1327,6 +1479,18 @@ try {
             metadataPath = $metadataPath
         }
     }
+    $liveRecording = Test-LiveRecordingStability `
+        -AppProcess $app `
+        -BackendPid ([int]$listener.BackendPid) `
+        -Port ([int]$listener.Port) `
+        -Token $SessionToken `
+        -ExpectedRuntimeMode $expectedRuntimeMode `
+        -DurationSec $LiveRecordingDurationSec `
+        -ProbeIntervalSec $LiveRecordingProbeIntervalSec `
+        -MaxWorkingSetGrowthMB $MaxLiveBackendWorkingSetGrowthMB `
+        -MaxCpuPercent $MaxLiveCpuPercent `
+        -StartTimeoutSec $LiveRecordingStartTimeoutSec `
+        -StopTimeoutSec $LiveRecordingStopTimeoutSec
     $portConflictResult = $null
     if ($portConflict) {
         $portConflictResult = [pscustomobject]$portConflict
@@ -1359,6 +1523,7 @@ try {
         startupTimeout = $startupTimeout
         crashRecovery = $crashRecovery
         controlledShutdown = $controlledShutdown
+        liveRecording = $liveRecording
         stability = $stability
         cleanupVerified = $false
     }

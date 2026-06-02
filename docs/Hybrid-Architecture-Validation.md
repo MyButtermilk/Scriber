@@ -4,6 +4,94 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Live Recording Stability Gate
+
+Commands:
+
+```powershell
+$scripts = @('scripts\smoke_tauri_desktop.ps1','scripts\smoke_windows_installer.ps1','scripts\build_windows.ps1')
+foreach ($script in $scripts) {
+  $tokens=$null; $errors=$null
+  $null=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors)
+  if ($errors.Count) { $errors | ForEach-Object { Write-Error "${script}: $($_.Message)" }; exit 1 }
+}
+'OK'
+
+venv\Scripts\python.exe -m pytest tests\test_tauri_stability_smoke_gates.py
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1 `
+  -ExePath "C:\Users\Alexander.Immler\Documents\Github\Scriber\Frontend\src-tauri\target\release\scriber-desktop.exe" `
+  -DataDir "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\tauri-smoke-data\live-gate-script-regression-20260602" `
+  -DisableDevFallback `
+  -StabilityDurationSec 3 `
+  -StabilityProbeIntervalSec 1 `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\tauri-live-gate-script-regression-20260602.json"
+```
+
+Result: implemented, covered by smoke-script regression tests, and verified
+with a short non-recording Tauri sidecar runtime smoke. The live recording gate
+itself was not executed as a microphone/provider proof in this Codex desktop
+session because it starts real live mic recording and should only be run
+intentionally with known microphone routing and STT provider credentials.
+
+Implemented improvements:
+
+- `scripts\smoke_tauri_desktop.ps1` now supports
+  `-LiveRecordingDurationSec`. The gate starts `/api/live-mic/start`, waits for
+  recording/listening state, samples `/api/health`, token-protected
+  `/api/state`, backend memory, and app/backend CPU while recording is active,
+  stops through `/api/live-mic/stop`, and verifies the app returns to idle.
+- The live gate fails if the backend exits, the backend PID changes, health
+  becomes invalid, the state leaves recording/listening during the sampling
+  window, backend working-set peak growth exceeds
+  `-MaxLiveBackendWorkingSetGrowthMB`, or average live CPU exceeds
+  `-MaxLiveCpuPercent`.
+- `scripts\smoke_windows_installer.ps1` forwards the live recording stability
+  options to the installed-app smoke.
+- `scripts\build_windows.ps1` exposes `-RunInstallerLiveRecordingSmoke` with
+  duration, probe interval, start/stop timeout, memory-growth, and CPU gates.
+- The regular stability sampler now records `status` and `listening` alongside
+  `recordingState`, which lets the live gate fail if recording stops during the
+  sampling window.
+
+Runtime regression evidence:
+
+- Artifact:
+  `tmp\hybrid-baseline\tauri-live-gate-script-regression-20260602.json`.
+- Runtime mode: `tauri-supervised`.
+- Launch kind: `sidecar`.
+- Short stability samples: 3.
+- Backend PID: `47972`.
+- Cleanup verified: true.
+- `liveRecording`: null, because this was intentionally a non-recording
+  runtime regression smoke.
+
+Example installed 30-minute gate:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -LiveRecordingDurationSec 1800 `
+  -LiveRecordingProbeIntervalSec 30 `
+  -MaxLiveBackendWorkingSetGrowthMB 100 `
+  -MaxLiveCpuPercent 10 `
+  -OutputPath "C:\Users\Alexander.Immler\Documents\Github\Scriber\tmp\hybrid-baseline\installer-live-recording-30m.json"
+```
+
+Goal coverage:
+
+- Phase 0/8: adds a concrete full-duration live recording/provider stability
+  gate for the previously open long live-session requirement.
+- Phase 6/7: makes the same live recording gate available against the installed
+  NSIS package and as a build-script release gate.
+
+Remaining limits:
+
+- The gate exists and is tested, but no live microphone/provider pass is claimed
+  until it is run intentionally with real microphone input and valid STT
+  provider configuration.
+- This does not close the physical USB/Bluetooth/dock/default-mic manual
+  matrix, physical global-hotkey dispatch, or real signing/updater publication.
+
 ## 2026-06-02 - 30-Minute Installed Idle Stability Gate
 
 Command:

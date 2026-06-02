@@ -28,6 +28,9 @@ strict release gate: it must remove installed app artifacts while preserving
 runtime data before the script removes temporary smoke-test directories.
 With -WaitForManualGlobalHotkey, the installed desktop smoke waits for a
 physical OS hotkey press and verifies the dispatch against the installed app.
+With -LiveRecordingDurationSec, the installed desktop smoke explicitly records
+from the live microphone path for the configured duration and samples CPU,
+memory, health, and state while recording is active.
 #>
 
 param(
@@ -50,6 +53,12 @@ param(
     [int]$StabilityProbeIntervalSec = 5,
     [double]$MaxBackendWorkingSetGrowthMB = 0,
     [double]$MaxIdleCpuPercent = 0,
+    [int]$LiveRecordingDurationSec = 0,
+    [int]$LiveRecordingProbeIntervalSec = 5,
+    [double]$MaxLiveBackendWorkingSetGrowthMB = 0,
+    [double]$MaxLiveCpuPercent = 0,
+    [int]$LiveRecordingStartTimeoutSec = 60,
+    [int]$LiveRecordingStopTimeoutSec = 60,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
     [switch]$SimulateUpgrade,
@@ -363,6 +372,18 @@ function Invoke-InstalledDesktopSmoke {
             $smokeArgs += @("-MaxIdleCpuPercent", $MaxIdleCpuPercent.ToString([System.Globalization.CultureInfo]::InvariantCulture))
         }
     }
+    if ($LiveRecordingDurationSec -gt 0) {
+        $smokeArgs += @("-LiveRecordingDurationSec", $LiveRecordingDurationSec.ToString())
+        $smokeArgs += @("-LiveRecordingProbeIntervalSec", $LiveRecordingProbeIntervalSec.ToString())
+        $smokeArgs += @("-LiveRecordingStartTimeoutSec", $LiveRecordingStartTimeoutSec.ToString())
+        $smokeArgs += @("-LiveRecordingStopTimeoutSec", $LiveRecordingStopTimeoutSec.ToString())
+        if ($MaxLiveBackendWorkingSetGrowthMB -gt 0) {
+            $smokeArgs += @("-MaxLiveBackendWorkingSetGrowthMB", $MaxLiveBackendWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+        }
+        if ($MaxLiveCpuPercent -gt 0) {
+            $smokeArgs += @("-MaxLiveCpuPercent", $MaxLiveCpuPercent.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+        }
+    }
     if ($LegacyDataDir) {
         $smokeArgs += @("-LegacyDataDir", $LegacyDataDir)
     }
@@ -447,6 +468,7 @@ try {
             controlledShutdown = $secondSmoke.controlledShutdown
             startupTimeout = $secondSmoke.startupTimeout
             globalHotkey = $secondSmoke.globalHotkey
+            liveRecording = $secondSmoke.liveRecording
             stability = $secondSmoke.stability
             legacyDataMigration = $secondSmoke.legacyDataMigration
         }
@@ -469,6 +491,7 @@ try {
         controlledShutdown = $smoke.controlledShutdown
         startupTimeout = $smoke.startupTimeout
         globalHotkey = $smoke.globalHotkey
+        liveRecording = $smoke.liveRecording
         stability = $smoke.stability
         cleanupVerified = $smoke.cleanupVerified
         uninstall = $null
