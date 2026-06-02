@@ -4,6 +4,66 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-02 - Full Media Tools Sidecar Gate
+
+Commands:
+
+```powershell
+venv\Scripts\python.exe -m pytest `
+  tests\test_tauri_stability_smoke_gates.py `
+  -q
+
+$tokens=$null
+$errors=$null
+$null=[System.Management.Automation.Language.Parser]::ParseFile(
+  (Resolve-Path 'scripts\build_tauri_backend_sidecar.ps1'),
+  [ref]$tokens,
+  [ref]$errors
+)
+if ($errors.Count) {
+  $errors | ForEach-Object { Write-Error $_.Message }
+  exit 1
+}
+'OK'
+
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  scripts\build_tauri_backend_sidecar.ps1 `
+  -SkipFrontendBuild `
+  -InstallPyInstaller `
+  -BundleMediaTools `
+  -CopyToTauriRelease
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools` now requires
+  both `ffmpeg` and `ffprobe`.
+- The script validates each copied media tool by running `-version` after the
+  copy into `tools\ffmpeg\`.
+- Missing or non-executable media tools now fail the sidecar build before NSIS
+  packaging can produce an incomplete standard Windows build.
+
+Evidence:
+
+- Focused smoke-gate tests: `12 passed`.
+- PowerShell parser check: passed.
+- Sidecar runtime-import preflight: `ok: true`.
+- Frozen sidecar runtime-import check: passed.
+- Copied media tools:
+  `dist\tauri-sidecar\scriber-backend\tools\ffmpeg\ffmpeg.exe` and
+  `dist\tauri-sidecar\scriber-backend\tools\ffmpeg\ffprobe.exe`.
+- Tauri release backend copy:
+  `Frontend\src-tauri\target\release\backend`.
+
+Goal coverage:
+
+- Phase 6: strengthens the standard full Windows sidecar packaging gate for
+  ffmpeg/ffprobe without introducing a Lite/no-media-tools build.
+- Phase 7: adds a regression test that keeps the media-tool requirement wired
+  into future sidecar build changes.
+
 ## 2026-06-02 - Release Size Report Gate
 
 Commands:

@@ -164,6 +164,40 @@ function Resolve-MediaTool {
     return $null
 }
 
+function Test-MediaToolExecutable {
+    param(
+        [string]$Path,
+        [string]$Name
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Name executable was not found: $Path"
+    }
+
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    $process = $null
+    try {
+        $process = Start-Process `
+            -FilePath $Path `
+            -ArgumentList @("-version") `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath `
+            -Wait `
+            -PassThru
+    } finally {
+        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($null -eq $process) {
+        throw "$Name executable validation did not start: $Path"
+    }
+    if ($process.ExitCode -ne 0) {
+        throw "$Name executable failed validation with exit code $($process.ExitCode): $Path"
+    }
+}
+
 function Copy-MediaTools {
     param(
         [string]$SidecarDir,
@@ -183,13 +217,21 @@ function Copy-MediaTools {
         throw "ffmpeg was not found on PATH. Pass -MediaToolsDir or install ffmpeg before using -BundleMediaTools."
     }
     Copy-Item -LiteralPath $ffmpeg -Destination (Join-Path $toolsTarget (Split-Path $ffmpeg -Leaf)) -Force
-    $copied += (Join-Path $toolsTarget (Split-Path $ffmpeg -Leaf))
+    $copiedFfmpeg = Join-Path $toolsTarget (Split-Path $ffmpeg -Leaf)
+    Test-MediaToolExecutable -Path $copiedFfmpeg -Name "ffmpeg"
+    $copied += $copiedFfmpeg
 
     $ffprobe = Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir
-    if ($ffprobe) {
-        Copy-Item -LiteralPath $ffprobe -Destination (Join-Path $toolsTarget (Split-Path $ffprobe -Leaf)) -Force
-        $copied += (Join-Path $toolsTarget (Split-Path $ffprobe -Leaf))
+    if (-not $ffprobe) {
+        if ($SearchDir) {
+            throw "ffprobe was not found in MediaToolsDir: $SearchDir"
+        }
+        throw "ffprobe was not found on PATH. Install ffprobe or pass -MediaToolsDir before using -BundleMediaTools."
     }
+    Copy-Item -LiteralPath $ffprobe -Destination (Join-Path $toolsTarget (Split-Path $ffprobe -Leaf)) -Force
+    $copiedFfprobe = Join-Path $toolsTarget (Split-Path $ffprobe -Leaf)
+    Test-MediaToolExecutable -Path $copiedFfprobe -Name "ffprobe"
+    $copied += $copiedFfprobe
 
     $ytDlp = Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir $SearchDir
     if ($ytDlp) {

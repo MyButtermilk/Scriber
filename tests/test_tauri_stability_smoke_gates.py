@@ -71,6 +71,17 @@ def test_release_build_and_installer_smoke_report_size_budgets() -> None:
     assert "installSize = $installSize" in installer
 
 
+def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
+    sidecar = read_script("scripts/build_tauri_backend_sidecar.ps1")
+
+    assert "function Test-MediaToolExecutable" in sidecar
+    assert 'Test-MediaToolExecutable -Path $copiedFfmpeg -Name "ffmpeg"' in sidecar
+    assert 'Test-MediaToolExecutable -Path $copiedFfprobe -Name "ffprobe"' in sidecar
+    assert "ffprobe was not found on PATH" in sidecar
+    assert "ffprobe was not found in MediaToolsDir" in sidecar
+    assert "executable failed validation" in sidecar
+
+
 def test_installer_uninstall_smoke_is_a_strict_build_gate() -> None:
     installer = read_script("scripts/smoke_windows_installer.ps1")
     build = read_script("scripts/build_windows.ps1")
