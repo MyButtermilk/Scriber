@@ -231,7 +231,9 @@ architecture work. It replaces earlier incomplete goal text.
   Hardware-Matrix bleibt offen. Einzel-Smoke, gefuehrter Windows-Runner und
   Aggregat-Validator fuer diese Matrix sind vorhanden; die physischen USB-,
   Bluetooth-, Dock-, Default-Mic- und Favorite-Fallback-Laeufe selbst sind noch
-  nicht erbracht.
+  nicht erbracht. Der Runner-Plan meldet inzwischen `readyForPhysicalRun` und
+  `missingLabelParameters`, damit fehlende USB-/Dock-/Bluetooth-/Favorite-
+  Labels vor den physischen Aktionen auffallen.
 - Phase 8 hat synthetische Guards, eine 30-Minuten-Idle-Stability, mehrere
   installierte Stability-Smokes und einen vom Nutzer fuer diese Iteration
   akzeptierten 5-Minuten-Live-Recording-Gate. Nicht erbracht sind reale

@@ -40,43 +40,43 @@ $scenarios = @(
         Scenario = "usb-add"
         LabelParameter = "UsbLabel"
         LabelValue = $UsbLabel
-        Flags = @("--expect-added", $UsbLabel)
-        Instruction = "Plug in the USB microphone matching '$UsbLabel', wait until Windows exposes it, then press Enter."
+        Flags = @("--expect-added", $(if ($UsbLabel) { $UsbLabel } else { "<UsbLabel>" }))
+        Instruction = "Plug in the USB microphone matching '$(if ($UsbLabel) { $UsbLabel } else { "<UsbLabel>" })', wait until Windows exposes it, then press Enter."
     },
     [pscustomobject]@{
         Scenario = "usb-remove"
         LabelParameter = "UsbLabel"
         LabelValue = $UsbLabel
-        Flags = @("--expect-removed", $UsbLabel)
-        Instruction = "Unplug the USB microphone matching '$UsbLabel', wait until Windows removes it, then press Enter."
+        Flags = @("--expect-removed", $(if ($UsbLabel) { $UsbLabel } else { "<UsbLabel>" }))
+        Instruction = "Unplug the USB microphone matching '$(if ($UsbLabel) { $UsbLabel } else { "<UsbLabel>" })', wait until Windows removes it, then press Enter."
     },
     [pscustomobject]@{
         Scenario = "dock-disconnect"
         LabelParameter = "DockLabel"
         LabelValue = $DockLabel
-        Flags = @("--expect-removed", $DockLabel)
-        Instruction = "Disconnect the laptop from the dock matching '$DockLabel', wait for dock audio endpoints to disappear, then press Enter."
+        Flags = @("--expect-removed", $(if ($DockLabel) { $DockLabel } else { "<DockLabel>" }))
+        Instruction = "Disconnect the laptop from the dock matching '$(if ($DockLabel) { $DockLabel } else { "<DockLabel>" })', wait for dock audio endpoints to disappear, then press Enter."
     },
     [pscustomobject]@{
         Scenario = "dock-connect"
         LabelParameter = "DockLabel"
         LabelValue = $DockLabel
-        Flags = @("--expect-added", $DockLabel)
-        Instruction = "Reconnect the laptop to the dock matching '$DockLabel', wait for dock audio endpoints to appear, then press Enter."
+        Flags = @("--expect-added", $(if ($DockLabel) { $DockLabel } else { "<DockLabel>" }))
+        Instruction = "Reconnect the laptop to the dock matching '$(if ($DockLabel) { $DockLabel } else { "<DockLabel>" })', wait for dock audio endpoints to appear, then press Enter."
     },
     [pscustomobject]@{
         Scenario = "bluetooth-add"
         LabelParameter = "BluetoothLabel"
         LabelValue = $BluetoothLabel
-        Flags = @("--expect-added", $BluetoothLabel)
-        Instruction = "Connect the Bluetooth microphone/headset matching '$BluetoothLabel', wait until Windows exposes it, then press Enter."
+        Flags = @("--expect-added", $(if ($BluetoothLabel) { $BluetoothLabel } else { "<BluetoothLabel>" }))
+        Instruction = "Connect the Bluetooth microphone/headset matching '$(if ($BluetoothLabel) { $BluetoothLabel } else { "<BluetoothLabel>" })', wait until Windows exposes it, then press Enter."
     },
     [pscustomobject]@{
         Scenario = "bluetooth-remove"
         LabelParameter = "BluetoothLabel"
         LabelValue = $BluetoothLabel
-        Flags = @("--expect-removed", $BluetoothLabel)
-        Instruction = "Disconnect the Bluetooth microphone/headset matching '$BluetoothLabel', wait until Windows removes it, then press Enter."
+        Flags = @("--expect-removed", $(if ($BluetoothLabel) { $BluetoothLabel } else { "<BluetoothLabel>" }))
+        Instruction = "Disconnect the Bluetooth microphone/headset matching '$(if ($BluetoothLabel) { $BluetoothLabel } else { "<BluetoothLabel>" })', wait until Windows removes it, then press Enter."
     },
     [pscustomobject]@{
         Scenario = "default-mic-change"
@@ -89,8 +89,8 @@ $scenarios = @(
         Scenario = "favorite-fallback"
         LabelParameter = "FavoriteLabel"
         LabelValue = $FavoriteLabel
-        Flags = @("--expect-favorite-fallback", "--expect-removed", $FavoriteLabel)
-        Instruction = "Make the configured favorite microphone matching '$FavoriteLabel' unavailable, wait for Scriber to fall back, then press Enter."
+        Flags = @("--expect-favorite-fallback", "--expect-removed", $(if ($FavoriteLabel) { $FavoriteLabel } else { "<FavoriteLabel>" }))
+        Instruction = "Make the configured favorite microphone matching '$(if ($FavoriteLabel) { $FavoriteLabel } else { "<FavoriteLabel>" })' unavailable, wait for Scriber to fall back, then press Enter."
     }
 )
 
@@ -114,6 +114,16 @@ function Convert-ToDisplayCommand {
             $_
         }
     }) -join " ")
+}
+
+function Write-Utf8NoBomJson {
+    param(
+        [string]$Path,
+        [string]$Json
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Json, $encoding)
 }
 
 function New-SmokeArgs {
@@ -145,7 +155,20 @@ function New-SmokeArgs {
     return $args
 }
 
+function Get-MissingLabelParameters {
+    $seen = @{}
+    $missing = @()
+    foreach ($scenario in $scenarios) {
+        if ($scenario.LabelParameter -and -not $scenario.LabelValue -and -not $seen.ContainsKey($scenario.LabelParameter)) {
+            $missing += $scenario.LabelParameter
+            $seen[$scenario.LabelParameter] = $true
+        }
+    }
+    return $missing
+}
+
 function New-Plan {
+    $missingLabelParameters = @(Get-MissingLabelParameters)
     $entries = @()
     foreach ($scenario in $scenarios) {
         $args = New-SmokeArgs -Scenario $scenario
@@ -165,6 +188,8 @@ function New-Plan {
         outputDir = $OutputDir
         waitSec = $WaitSec
         pollSec = $PollSec
+        readyForPhysicalRun = ($missingLabelParameters.Count -eq 0)
+        missingLabelParameters = $missingLabelParameters
         scenarios = @($entries)
         validationCommand = "python scripts\validate_microphone_hardware_matrix.py --input-dir `"$OutputDir`" --output `"$((Join-Path $OutputDir "microphone-hardware-matrix-validation.json"))`""
     }
@@ -181,7 +206,7 @@ function Assert-RequiredLabels {
 $plan = New-Plan
 $planPath = Join-Path $OutputDir "microphone-hardware-matrix-runner-plan.json"
 $planJson = $plan | ConvertTo-Json -Depth 8 -Compress
-Set-Content -LiteralPath $planPath -Value $planJson -Encoding UTF8
+Write-Utf8NoBomJson -Path $planPath -Json $planJson
 
 if ($PlanOnly) {
     $planJson

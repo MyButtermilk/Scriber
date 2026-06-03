@@ -80,7 +80,9 @@ def test_microphone_matrix_runner_plan_only_writes_redacted_plan(tmp_path: Path)
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    written = json.loads((tmp_path / "microphone-hardware-matrix-runner-plan.json").read_text(encoding="utf-8-sig"))
+    plan_path = tmp_path / "microphone-hardware-matrix-runner-plan.json"
+    assert not plan_path.read_bytes().startswith(b"\xef\xbb\xbf")
+    written = json.loads(plan_path.read_text(encoding="utf-8"))
     scenarios = [entry["scenario"] for entry in payload["scenarios"]]
     assert scenarios == [
         "usb-add",
@@ -94,10 +96,40 @@ def test_microphone_matrix_runner_plan_only_writes_redacted_plan(tmp_path: Path)
     ]
     assert payload["ok"] is True
     assert payload["planOnly"] is True
+    assert payload["readyForPhysicalRun"] is True
+    assert payload["missingLabelParameters"] == []
     assert "validate_microphone_hardware_matrix.py" in payload["validationCommand"]
     assert "real-session-token" not in result.stdout
     assert any("<session token>" in entry["command"] for entry in payload["scenarios"])
     assert written == payload
+
+
+def test_microphone_matrix_runner_plan_only_reports_missing_labels(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-OutputDir",
+        str(tmp_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["planOnly"] is True
+    assert payload["readyForPhysicalRun"] is False
+    assert payload["missingLabelParameters"] == [
+        "UsbLabel",
+        "DockLabel",
+        "BluetoothLabel",
+        "FavoriteLabel",
+    ]
+    usb_add = next(entry for entry in payload["scenarios"] if entry["scenario"] == "usb-add")
+    assert "<UsbLabel>" in usb_add["command"]
+    assert '--expect-added ""' not in usb_add["command"]
 
 
 def test_microphone_matrix_runner_requires_labels_before_backend_access(tmp_path: Path) -> None:

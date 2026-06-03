@@ -4,6 +4,57 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Physical Mic Matrix Runner Readiness Plan
+
+Commands:
+
+```powershell
+python -m pytest tests\test_microphone_hardware_matrix_runner.py tests\test_validate_microphone_hardware_matrix.py tests\test_hybrid_release_readiness_runner.py -q
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_microphone_hardware_matrix.ps1 `
+  -PlanOnly `
+  -OutputDir tmp\hybrid-baseline
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\run_microphone_hardware_matrix.ps1 -PlanOnly` now reports
+  `readyForPhysicalRun` and a de-duplicated `missingLabelParameters` list.
+- Missing required hardware labels are surfaced in the plan before the operator
+  starts a physical run: `UsbLabel`, `DockLabel`, `BluetoothLabel`, and
+  `FavoriteLabel`.
+- Plan commands and instructions now show placeholder labels such as
+  `<UsbLabel>` instead of empty expectation arguments.
+- The runner plan JSON is now written as UTF-8 without BOM.
+
+Evidence:
+
+- `tests\test_microphone_hardware_matrix_runner.py`: `5 passed`.
+- `tests\test_validate_microphone_hardware_matrix.py` plus
+  `tests\test_hybrid_release_readiness_runner.py`: `8 passed`.
+- PowerShell parser check passed for
+  `scripts\run_microphone_hardware_matrix.ps1`.
+- PlanOnly output for an unconfigured run reported:
+  `readyForPhysicalRun=false` and
+  `missingLabelParameters=["UsbLabel","DockLabel","BluetoothLabel","FavoriteLabel"]`.
+- The written `microphone-hardware-matrix-runner-plan.json` starts with `{`
+  (`7b226f`), not a UTF-8 BOM.
+
+Goal coverage:
+
+- Phase 7/8: tightens the still-open physical microphone hardware gate by
+  making operator preconditions explicit and machine-readable before any
+  physical backend/device interaction begins.
+
+Remaining limits:
+
+- This does not close the physical hardware matrix. The eight physical
+  scenarios still require a real Windows machine with USB, dock, Bluetooth,
+  default-device, and favorite-mic fallback actions, followed by
+  `scripts\validate_microphone_hardware_matrix.py`.
+
 ## 2026-06-03 - Final Release Readiness Evidence Checklist
 
 Commands:
