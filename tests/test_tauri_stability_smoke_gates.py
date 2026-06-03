@@ -118,6 +118,7 @@ def test_release_workflow_installs_media_tools_for_standard_build() -> None:
     assert "Get-Command ffprobe -ErrorAction Stop" in workflow
     assert "& $ffmpeg.Source -version" in workflow
     assert "& $ffprobe.Source -version" in workflow
+    assert '"-RunMediaPreparationSmoke"' in workflow
 
 
 def test_installer_uninstall_smoke_is_a_strict_build_gate() -> None:

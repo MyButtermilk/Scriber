@@ -347,7 +347,7 @@ Lieferobjekte:
    - Status 2026-06-01: Workflow existiert fuer `workflow_dispatch` und Push von Tags `v*`.
    - Status 2026-06-01: Runner ist `windows-latest` mit Python 3.13, Node 20 und Rust stable.
 2. **Build-Pipeline**:
-   - Status 2026-06-01: Checkout -> Python/Node/Rust Setup -> `pip install` fuer base/dev/build -> `npm ci` -> `scripts/build_windows.ps1 -SkipSmoke` -> NSIS-Artefakt + `latest.json` + `SHA256SUMS.txt` als Workflow-Artefakt.
+   - Status 2026-06-03: Checkout -> Python/Node/Rust Setup -> `pip install` fuer base/dev/build -> `npm ci` -> `scripts/build_windows.ps1 -SkipSmoke -RunMediaPreparationSmoke` -> NSIS-Artefakt, `latest.json`, `SHA256SUMS.txt`, `size-report.json` und `media-preparation-smoke.json` als Workflow-Artefakte.
    - Status 2026-06-01: Bei `v*` Tags publiziert `softprops/action-gh-release` die erzeugten Artefakte als GitHub Release.
    - Status 2026-06-02: Bei `v*` Tags mit konfiguriertem Tauri-Updater-Signing fuehrt der Workflow nach `softprops/action-gh-release` `scripts\verify_tauri_updater_publication.py` mit Retry aus, prueft das veroeffentlichte HTTPS-`latest.json` gegen die lokale Release-Metadatei und laedt `updater-publication.json` als CI-Evidence-Artefakt hoch.
    - Status 2026-06-01: Tauri-Updater-Plugin, Frontend-Check/Install-UI und Manifest-/Signing-Gates sind integriert. Ohne `SCRIBER_TAURI_UPDATER_PUBLIC_KEY` und `TAURI_SIGNING_PRIVATE_KEY` bleibt der Workflow beim bisherigen NSIS-Release ohne Updater-Artefakte.
@@ -419,7 +419,7 @@ Lieferobjekte:
 | `scripts/sync_version.py` | Umgesetzt: synchronisiert `src/version.py` in Python/Tauri/Cargo/npm-Manifeste. |
 | `scripts/create_release_metadata.py` | Umgesetzt: erzeugt `latest.json` und `SHA256SUMS.txt` fuer Release-Artefakte. |
 | `scripts/validate_tauri_updater_metadata.py` | Umgesetzt: prueft Tauri-Updater-Manifest, HTTPS-/Lokale-URL-Regeln, erforderliche Signaturen und lokale Artefaktgroesse/SHA256 gegen `SHA256SUMS.txt`. |
-| `.github/workflows/release-windows.yml` | Umgesetzt: manueller und Tag-basierter Windows-NSIS-Release-Build mit GitHub-Release-Publish auf `v*` Tags. |
+| `.github/workflows/release-windows.yml` | Umgesetzt: manueller und Tag-basierter Windows-NSIS-Release-Build mit GitHub-Release-Publish auf `v*` Tags. Der Standard-Release-Workflow installiert/verifiziert ffmpeg/ffprobe, fuehrt `-RunMediaPreparationSmoke` aus und sammelt `media-preparation-smoke.json` mit den Release-Artefakten ein. |
 | `LICENSE` | Umgesetzt: MIT License Datei. |
 
 ### Anzupassende Dateien

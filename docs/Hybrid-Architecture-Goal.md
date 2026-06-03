@@ -232,7 +232,9 @@ architecture work. It replaces earlier incomplete goal text.
   Updater-Manifest, Authenticode-Report und finalen Aggregat-Check. Tauri- und
   Installer-Smoke-`-OutputPath`-Artefakte werden ebenfalls als UTF-8 ohne BOM
   geschrieben. Der finale Aggregat-Validator wertet inzwischen auch
-  `release-metadata\media-preparation-smoke.json` aus.
+  `release-metadata\media-preparation-smoke.json` aus; der Windows-Release-
+  Workflow erzeugt dieses Artefakt im Standard-Release-Build mit
+  `scripts\build_windows.ps1 -RunMediaPreparationSmoke`.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen. Einzel-Smoke, gefuehrter Windows-Runner und
   Aggregat-Validator fuer diese Matrix sind vorhanden; die physischen USB-,

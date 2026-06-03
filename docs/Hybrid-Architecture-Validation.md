@@ -4,6 +4,40 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Release Workflow Produces Media Smoke Evidence
+
+Commands:
+
+```powershell
+python -m pytest tests\test_tauri_stability_smoke_gates.py -q
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `.github\workflows\release-windows.yml` now passes
+  `-RunMediaPreparationSmoke` to `scripts\build_windows.ps1`.
+- The release workflow already collects `release-metadata\*.json`, so
+  `media-preparation-smoke.json` is uploaded with the standard Windows release
+  artifacts and is available to the final readiness validator.
+
+Evidence:
+
+- `tests\test_tauri_stability_smoke_gates.py`: verifies the release workflow
+  installs/verifies `ffmpeg`/`ffprobe` and forwards `-RunMediaPreparationSmoke`.
+
+Goal coverage:
+
+- Phase 6/7: closes the automation gap between requiring
+  `media-preparation-smoke.json` in final readiness and actually producing it
+  during the GitHub Windows release build.
+
+Remaining limits:
+
+- This still does not provide the external Authenticode certificate/signing
+  evidence, published signed updater evidence, or physical microphone matrix.
+
 ## 2026-06-03 - Final Readiness Media Smoke Requirement
 
 Commands:
