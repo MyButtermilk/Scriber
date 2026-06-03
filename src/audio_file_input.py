@@ -8,6 +8,7 @@ from pipecat.frames.frames import InputAudioRawFrame, StartFrame, EndFrame
 from pipecat.transports.base_transport import TransportParams
 
 from src.runtime.media_tools import require_media_tool
+from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 
 try:
     from pipecat.transports.base_input import BaseInputTransport
@@ -118,6 +119,7 @@ class FfmpegAudioFileInput(BaseInputTransport):
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **hidden_subprocess_kwargs(),
             )
             assert self._ffmpeg.stdout is not None
             assert self._ffmpeg.stderr is not None

@@ -85,8 +85,9 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert "type YouTubeSearchItem = {" not in source
     assert "/api/youtube/thumbnail?url=" in source
     assert "encodeURIComponent(value)" in source
-    assert "fetch(src, { credentials: \"include\" })" in source
-    assert "URL.createObjectURL(blob)" in source
+    assert "decoding=\"async\"" in source
+    assert "referrerPolicy=\"no-referrer\"" in source
+    assert "URL.createObjectURL(blob)" not in source
     assert "function isCompletedStep" in source
     assert "function isVisiblyProcessing" in source
     assert "const isProcessing = isVisiblyProcessing(item);" in source

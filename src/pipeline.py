@@ -1,6 +1,5 @@
 import asyncio
 import aiohttp
-import subprocess
 import io
 import wave
 import contextlib
@@ -31,6 +30,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from src.runtime.media_tools import find_media_tool
+from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 
 try:
     from pipecat.audio.streams.input import SoundDeviceAudioInputStream
@@ -410,7 +410,8 @@ class SonioxAsyncProcessor(FrameProcessor):
                     *cmd,
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    stderr=asyncio.subprocess.PIPE,
+                    **hidden_subprocess_kwargs(),
                 )
 
                 _, stderr = await proc.communicate()

@@ -74,18 +74,35 @@ class _FakeRequest:
 
 
 class _FakeThumbnailContent:
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, *, chunk_size: int | None = None):
         self._body = body
+        self._chunk_size = chunk_size
 
-    async def read(self, _limit: int) -> bytes:
-        return self._body
+    async def read(self, limit: int) -> bytes:
+        if not self._body:
+            return b""
+        size = len(self._body)
+        if limit >= 0:
+            size = min(size, limit)
+        if self._chunk_size:
+            size = min(size, self._chunk_size)
+        chunk = self._body[:size]
+        self._body = self._body[size:]
+        return chunk
 
 
 class _FakeThumbnailResponse:
-    def __init__(self, *, status: int = 200, content_type: str = "image/jpeg", body: bytes = b"jpg"):
+    def __init__(
+        self,
+        *,
+        status: int = 200,
+        content_type: str = "image/jpeg",
+        body: bytes = b"jpg",
+        chunk_size: int | None = None,
+    ):
         self.status = status
         self.headers = {"Content-Type": content_type}
-        self.content = _FakeThumbnailContent(body)
+        self.content = _FakeThumbnailContent(body, chunk_size=chunk_size)
 
     async def __aenter__(self):
         return self
@@ -339,7 +356,11 @@ async def test_youtube_thumbnail_proxy_serves_allowed_image(monkeypatch, tmp_pat
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     fake_session = _FakeThumbnailSession(
-        _FakeThumbnailResponse(content_type="image/jpeg; charset=binary", body=b"\xff\xd8\xff")
+        _FakeThumbnailResponse(
+            content_type="image/jpeg; charset=binary",
+            body=b"\xff\xd8\xff\xe0full",
+            chunk_size=2,
+        )
     )
     monkeypatch.setattr(web_api, "ClientSession", lambda *, timeout: fake_session)
 
@@ -359,7 +380,7 @@ async def test_youtube_thumbnail_proxy_serves_allowed_image(monkeypatch, tmp_pat
         assert response.headers["Access-Control-Allow-Origin"] == "http://tauri.localhost"
         assert response.headers["Cache-Control"] == "public, max-age=86400"
         assert response.headers["Content-Type"].startswith("image/jpeg")
-        assert await response.read() == b"\xff\xd8\xff"
+        assert await response.read() == b"\xff\xd8\xff\xe0full"
         assert fake_session.urls == ["https://i.ytimg.com/vi/abc123/hqdefault.jpg"]
     finally:
         await client.close()

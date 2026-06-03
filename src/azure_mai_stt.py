@@ -29,6 +29,7 @@ from pipecat.utils.time import time_now_iso8601
 
 from src.config import Config
 from src.runtime.media_tools import require_media_tool
+from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 
 _AZURE_MAI_DEFAULT_MODEL = "mai-transcribe-1.5"
 _AZURE_MAI_API_VERSION = "2025-10-15"
@@ -172,6 +173,7 @@ async def _transcode_to_mp3(source_path: Path, target_path: Path) -> Path:
         str(target_path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **hidden_subprocess_kwargs(),
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:

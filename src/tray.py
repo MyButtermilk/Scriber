@@ -19,6 +19,8 @@ from collections import deque
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.runtime.subprocess_utils import hidden_subprocess_kwargs
+
 try:
     import pystray
     from PIL import Image, ImageDraw
@@ -886,7 +888,7 @@ def restart_app(icon, item):
         script_path = str(Path(__file__).resolve())
 
         # Start new instance
-        subprocess.Popen([python_exe, script_path])
+        subprocess.Popen([python_exe, script_path], **hidden_subprocess_kwargs())
 
         # Stop current instance
         icon.stop()

@@ -8,6 +8,7 @@ from typing import Callable, Optional
 from loguru import logger
 
 from src.runtime.media_tools import find_media_tool, require_media_tool
+from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 
 
 class YouTubeDownloadError(RuntimeError):
@@ -106,6 +107,7 @@ async def _has_video_stream(path: Path) -> bool:
         str(path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **hidden_subprocess_kwargs(),
     )
     stdout_b, _stderr_b = await _communicate_or_kill_on_cancel(proc)
     return bool((stdout_b or b"").decode("utf-8", errors="replace").strip())
@@ -139,6 +141,7 @@ async def _extract_audio_track(source_path: Path) -> Path:
         str(target_path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **hidden_subprocess_kwargs(),
     )
     _stdout_b, stderr_b = await _communicate_or_kill_on_cancel(proc)
     if proc.returncode != 0 or not target_path.exists():
@@ -354,6 +357,7 @@ async def download_youtube_audio(
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **hidden_subprocess_kwargs(),
             )
             stdout_b, stderr_b = await _communicate_or_kill_on_cancel(proc)
             stdout = (stdout_b or b"").decode("utf-8", errors="replace")

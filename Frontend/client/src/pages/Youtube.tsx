@@ -66,50 +66,11 @@ const YoutubeThumbnail = memo(function YoutubeThumbnail({
   loading = "lazy",
 }: YoutubeThumbnailProps) {
   const [failed, setFailed] = useState(false);
-  const [objectUrl, setObjectUrl] = useState("");
+  const src = failed ? "" : youtubeThumbnailSrc(thumbnailUrl);
 
   useEffect(() => {
-    const src = youtubeThumbnailSrc(thumbnailUrl);
-    let cancelled = false;
-    let createdUrl = "";
-
     setFailed(false);
-    setObjectUrl("");
-
-    if (!src) {
-      return;
-    }
-
-    fetch(src, { credentials: "include" })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`Thumbnail request failed: ${response.status}`);
-        }
-        return response.blob();
-      })
-      .then((blob) => {
-        createdUrl = URL.createObjectURL(blob);
-        if (cancelled) {
-          URL.revokeObjectURL(createdUrl);
-          return;
-        }
-        setObjectUrl(createdUrl);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setFailed(true);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      if (createdUrl) {
-        URL.revokeObjectURL(createdUrl);
-      }
-    };
   }, [thumbnailUrl]);
-
-  const src = failed ? "" : objectUrl;
 
   if (!src) {
     return (
@@ -123,8 +84,10 @@ const YoutubeThumbnail = memo(function YoutubeThumbnail({
     <img
       src={src}
       alt={title || "Video thumbnail"}
-      className={className}
+      className={`block ${className}`}
+      decoding="async"
       loading={loading}
+      referrerPolicy="no-referrer"
       onError={() => setFailed(true)}
     />
   );

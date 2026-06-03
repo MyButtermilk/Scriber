@@ -52,6 +52,7 @@ from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.runtime.paths import app_root, data_dir, downloads_dir, is_frozen, logs_dir, repo_root
 from src.runtime.media_tools import find_media_tool, require_media_tool
+from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 from src.mic_prewarm import MicrophonePrewarmManager
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
@@ -449,6 +450,28 @@ def _safe_youtube_thumbnail_url(raw_url: str) -> str | None:
     return parsed.geturl()
 
 
+async def _read_limited_response_body(content: Any, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    chunk_size = 64 * 1024
+
+    while True:
+        remaining = max_bytes + 1 - total
+        if remaining <= 0:
+            raise ValueError("response too large")
+
+        chunk = await content.read(min(chunk_size, remaining))
+        if not chunk:
+            break
+
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("response too large")
+
+    return b"".join(chunks)
+
+
 def _validate_mode(raw_mode: str) -> str:
     mode = (raw_mode or "").strip().lower()
     if mode not in _VALID_MODES:
@@ -649,6 +672,7 @@ async def _transcode_media_to_webm_audio(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **hidden_subprocess_kwargs(),
     )
 
     _, stderr = await proc.communicate()
@@ -864,6 +888,7 @@ def _probe_media_duration_seconds(file_path: Path) -> float | None:
             text=True,
             timeout=15,
             check=False,
+            **hidden_subprocess_kwargs(),
         )
     except Exception as exc:
         logger.debug(f"ffprobe failed for {file_path.name}: {exc}")
@@ -4601,8 +4626,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
                 if not content_type.startswith("image/"):
                     return web.json_response({"message": "Thumbnail response is not an image"}, status=415)
-                body = await resp.content.read(_YOUTUBE_THUMBNAIL_MAX_BYTES + 1)
-                if len(body) > _YOUTUBE_THUMBNAIL_MAX_BYTES:
+                try:
+                    body = await _read_limited_response_body(resp.content, _YOUTUBE_THUMBNAIL_MAX_BYTES)
+                except ValueError:
                     return web.json_response({"message": "Thumbnail response is too large"}, status=413)
         except asyncio.TimeoutError:
             return web.json_response({"message": "Thumbnail fetch timed out"}, status=504)
