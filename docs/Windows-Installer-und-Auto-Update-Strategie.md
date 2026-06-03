@@ -147,13 +147,14 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Cloud-STT, YouTube, Datei-Transkription, Export und Web-Features enthalten.
    - `ffmpeg` und `ffprobe` bleiben im Standard-Windows-Build gebuendelt, weil sie fuer YouTube-, Video- und Datei-Workflows zum Kernumfang gehoeren.
    - Status 2026-06-03: `scripts/build_tauri_backend_sidecar.ps1` und `scripts/build_windows.ps1` bieten `-SkipBundledFfprobe` als expliziten Groessenvergleichsmodus. Der Vergleichsbuild reduzierte den Installer von 205.79 MiB auf 163.43 MiB und die installierte App auf 481.10 MiB, weil `ffprobe.exe` mit 133.43 MiB aus dem Backend-Resource-Ordner entfaellt. Dieser Modus darf trotzdem nicht als Standard gelten, bis YouTube-/Datei-/Azure-MAI-Media-Smokes den reduzierten Umfang belegen.
+   - Status 2026-06-03: `-ValidateSlimMediaTools` ist als Gate fuer kleinere FFmpeg-Kandidaten umgesetzt. Es prueft vor dem Packaging die fuer Scriber benoetigten FFmpeg-Faehigkeiten: WebM/Opus-Ausgabe, MP3-Ausgabe, AAC/Opus/MP3-Decoding sowie die zentralen Muxer/Demuxer fuer WebM, MP4/M4A, MP3 und WAV. Damit kann ein kleineres Binary getestet werden, ohne den Standard-Build blind auf unbewiesenen Funktionsumfang umzustellen.
    - Schwere lokale ASR-Stacks (`torch`, `nemo_toolkit`, grosse ONNX/Nemo-Modelle) **nicht** im Standard-Installer.
 2. **Optionaler Zusatzkanal = Offline-ASR-Pack**:
    - Separate Artefakte wie `Scriber-Offline-Pack-x64.zip` oder eigener Offline-Provider-Installer.
    - Download nur bei Bedarf aus Settings ("Offline-Spracherkennung installieren").
 3. **Vorteil**:
    - Der Standard-Installer bleibt funktional komplett fuer den geplanten Online-/Media-Funktionsumfang.
-   - Groessenoptimierung darf ueber schlankere kompatible Media-Binaries, Dependency-Cleanup oder explizite Vergleichsbuilds wie `-SkipBundledFfprobe` erfolgen, aber nicht durch stilles Entfernen von Media-Tools aus dem Standard-Build.
+   - Groessenoptimierung darf ueber schlankere kompatible Media-Binaries, Dependency-Cleanup oder explizite Vergleichsbuilds wie `-SkipBundledFfprobe` erfolgen, aber nicht durch stilles Entfernen von Media-Tools aus dem Standard-Build. Schlankere FFmpeg-Binaries muessen mindestens `-ValidateSlimMediaTools` bestehen und danach reale YouTube-/Datei-/Azure-MAI-Smokes liefern.
 
 ### B) Python-Dependencies in Build-Profile aufteilen
 1. Status 2026-06-01: `requirements.txt` ist ein Aggregator aus:

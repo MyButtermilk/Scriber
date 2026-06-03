@@ -11,6 +11,7 @@ Typical flow:
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease
+  powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -ValidateSlimMediaTools -MediaToolsDir path\to\slim-ffmpeg -CopyToTauriRelease
   cd Frontend
   npm run tauri:build
 #>
@@ -25,6 +26,7 @@ param(
     [switch]$InstallPyInstaller,
     [switch]$BundleMediaTools,
     [switch]$SkipBundledFfprobe,
+    [switch]$ValidateSlimMediaTools,
     [switch]$CopyToTauriRelease
 )
 
@@ -202,11 +204,84 @@ function Test-MediaToolExecutable {
     }
 }
 
+function Invoke-MediaToolText {
+    param(
+        [string]$Path,
+        [string[]]$Arguments,
+        [string]$Label
+    )
+
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    $process = $null
+    try {
+        $process = Start-Process `
+            -FilePath $Path `
+            -ArgumentList $Arguments `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath `
+            -Wait `
+            -PassThru
+
+        $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
+        $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
+    } finally {
+        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($null -eq $process) {
+        throw "$Label validation did not start: $Path"
+    }
+    if ($process.ExitCode -ne 0) {
+        throw "$Label validation failed with exit code $($process.ExitCode): $stderr"
+    }
+
+    return "$stdout`n$stderr"
+}
+
+function Assert-MediaToolOutputContains {
+    param(
+        [string]$Output,
+        [string]$Needle,
+        [string]$Label
+    )
+
+    if ($Output -notmatch [regex]::Escape($Needle)) {
+        throw "Slim ffmpeg validation failed: missing $Label '$Needle'."
+    }
+}
+
+function Test-ScriberFfmpegCapabilities {
+    param([string]$Path)
+
+    $encoders = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-encoders") -Label "ffmpeg encoder list"
+    foreach ($encoder in @("libopus", "libmp3lame")) {
+        Assert-MediaToolOutputContains -Output $encoders -Needle $encoder -Label "encoder"
+    }
+
+    $decoders = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-decoders") -Label "ffmpeg decoder list"
+    foreach ($decoder in @("aac", "opus", "mp3")) {
+        Assert-MediaToolOutputContains -Output $decoders -Needle $decoder -Label "decoder"
+    }
+
+    $demuxers = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-demuxers") -Label "ffmpeg demuxer list"
+    foreach ($demuxer in @("matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2", "mp3", "wav")) {
+        Assert-MediaToolOutputContains -Output $demuxers -Needle $demuxer -Label "demuxer"
+    }
+
+    $muxers = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-muxers") -Label "ffmpeg muxer list"
+    foreach ($muxer in @("webm", "mp3")) {
+        Assert-MediaToolOutputContains -Output $muxers -Needle $muxer -Label "muxer"
+    }
+}
+
 function Copy-MediaTools {
     param(
         [string]$SidecarDir,
         [string]$SearchDir,
-        [bool]$SkipFfprobe = $false
+        [bool]$SkipFfprobe = $false,
+        [bool]$ValidateSlimBundle = $false
     )
 
     $toolsTarget = Join-Path $SidecarDir "tools\ffmpeg"
@@ -224,6 +299,9 @@ function Copy-MediaTools {
     Copy-Item -LiteralPath $ffmpeg -Destination (Join-Path $toolsTarget (Split-Path $ffmpeg -Leaf)) -Force
     $copiedFfmpeg = Join-Path $toolsTarget (Split-Path $ffmpeg -Leaf)
     Test-MediaToolExecutable -Path $copiedFfmpeg -Name "ffmpeg"
+    if ($ValidateSlimBundle) {
+        Test-ScriberFfmpegCapabilities -Path $copiedFfmpeg
+    }
     $copied += $copiedFfmpeg
 
     if (-not $SkipFfprobe) {
@@ -329,7 +407,7 @@ Invoke-FrozenBackendRuntimeImportCheck -SidecarExe $sidecarExe -SidecarDir $side
 
 $mediaToolsCopied = @()
 if ($BundleMediaTools -or $MediaToolsDir) {
-    $mediaToolsCopied = @(Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe))
+    $mediaToolsCopied = @(Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe) -ValidateSlimBundle ([bool]$ValidateSlimMediaTools))
 }
 
 $copiedTo = $null

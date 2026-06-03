@@ -4,6 +4,92 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Slim FFmpeg Candidate Validation Gate
+
+Commands:
+
+```powershell
+python -m pytest tests\test_tauri_stability_smoke_gates.py tests\runtime\test_media_tools.py -q
+
+powershell -NoProfile -Command `
+  '$scripts=@("scripts\build_tauri_backend_sidecar.ps1","scripts\build_windows.ps1","scripts\smoke_tauri_desktop.ps1","scripts\smoke_windows_installer.ps1"); foreach($script in $scripts){ $tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors) | Out-Null; if($errors.Count -gt 0){ Write-Error "Parser errors in $script"; $errors | Format-List *; exit 1 } }; "parser ok"'
+
+powershell -NoProfile -Command `
+  '$ffmpeg=(Get-Command ffmpeg -ErrorAction Stop).Source; $enc=(& $ffmpeg -hide_banner -v error -encoders | Out-String); $dec=(& $ffmpeg -hide_banner -v error -decoders | Out-String); $dem=(& $ffmpeg -hide_banner -v error -demuxers | Out-String); $mux=(& $ffmpeg -hide_banner -v error -muxers | Out-String); foreach($needle in @("libopus","libmp3lame")){ if($enc -notmatch [regex]::Escape($needle)){ throw "missing encoder $needle" } }; foreach($needle in @("aac","opus","mp3")){ if($dec -notmatch [regex]::Escape($needle)){ throw "missing decoder $needle" } }; foreach($needle in @("matroska,webm","mov,mp4,m4a,3gp,3g2,mj2","mp3","wav")){ if($dem -notmatch [regex]::Escape($needle)){ throw "missing demuxer $needle" } }; foreach($needle in @("webm","mp3")){ if($mux -notmatch [regex]::Escape($needle)){ throw "missing muxer $needle" } }; "ffmpeg capability ok: $ffmpeg"'
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\build_tauri_backend_sidecar.ps1` now accepts
+  `-ValidateSlimMediaTools` and validates smaller FFmpeg candidates before
+  packaging accepts them.
+- The validation checks the Scriber-required media surface: WebM/Opus output,
+  MP3 output, AAC/Opus/MP3 decode support, WebM/MP3 muxers, and common WebM,
+  MP4/M4A, MP3, and WAV demuxers.
+- `scripts\build_windows.ps1 -ValidateSlimMediaTools` temporarily injects that
+  sidecar switch into Tauri's `beforeBundleCommand`, preserving the existing
+  UTF-8-without-BOM config write/restore behavior.
+
+Evidence:
+
+- `tests\test_tauri_stability_smoke_gates.py` and
+  `tests\runtime\test_media_tools.py`: `18 passed`.
+- PowerShell parser checks passed for the sidecar build, Windows build, desktop
+  smoke, and installer smoke scripts.
+- Local full FFmpeg at `C:\Program Files\FFmpeg\bin\ffmpeg.exe` passed the same
+  capability checklist used by the new slim-candidate gate.
+
+Goal coverage:
+
+- Phase 6/7/8: adds a concrete, repeatable packaging gate for reducing installer
+  size through a smaller compatible FFmpeg binary instead of removing media-tool
+  functionality blindly.
+
+Remaining limits:
+
+- This does not make a slim FFmpeg binary the standard release default.
+- Real installed-package YouTube, file-upload, and Azure-MAI media workflow
+  smokes are still required before replacing the current full FFmpeg bundle.
+
+## 2026-06-03 - Desktop Smoke Evidence UTF-8 Output
+
+Commands:
+
+```powershell
+python -m pytest tests\test_tauri_stability_smoke_gates.py -q
+
+powershell -NoProfile -Command `
+  '$tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts\smoke_tauri_desktop.ps1"), [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count -gt 0) { $errors | Format-List *; exit 1 }; $tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts\smoke_windows_installer.ps1"), [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count -gt 0) { $errors | Format-List *; exit 1 }'
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\smoke_tauri_desktop.ps1 -OutputPath` now writes smoke evidence JSON
+  as UTF-8 without BOM.
+- `scripts\smoke_windows_installer.ps1 -OutputPath` now writes installed
+  package smoke evidence JSON as UTF-8 without BOM.
+- Both scripts retain the existing `tmp\` output-root guard and JSON shape.
+
+Evidence:
+
+- `tests\test_tauri_stability_smoke_gates.py`: `14 passed`.
+- PowerShell parser checks passed for both smoke scripts.
+
+Goal coverage:
+
+- Phase 6/7/8: hardens the Tauri and installed-package smoke evidence files
+  consumed by release validation and documentation, aligning them with the
+  BOM-free Authenticode, hardware-plan, and final-readiness evidence outputs.
+
+Remaining limits:
+
+- This changes evidence-file encoding only. It does not replace the real
+  installed-package, hardware, signing, or updater publication runs.
+
 ## 2026-06-03 - Published Updater Final URL Gate
 
 Commands:

@@ -75,13 +75,22 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     sidecar = read_script("scripts/build_tauri_backend_sidecar.ps1")
 
     assert "function Test-MediaToolExecutable" in sidecar
+    assert "function Test-ScriberFfmpegCapabilities" in sidecar
     assert 'Test-MediaToolExecutable -Path $copiedFfmpeg -Name "ffmpeg"' in sidecar
     assert 'Test-MediaToolExecutable -Path $copiedFfprobe -Name "ffprobe"' in sidecar
+    assert "[switch]$ValidateSlimMediaTools" in sidecar
+    assert 'Test-ScriberFfmpegCapabilities -Path $copiedFfmpeg' in sidecar
+    assert "-encoders" in sidecar
+    assert "libopus" in sidecar
+    assert "libmp3lame" in sidecar
+    assert "-decoders" in sidecar
+    assert "matroska,webm" in sidecar
+    assert "mov,mp4,m4a,3gp,3g2,mj2" in sidecar
     assert "ffprobe was not found on PATH" in sidecar
     assert "ffprobe was not found in MediaToolsDir" in sidecar
     assert "executable failed validation" in sidecar
     assert "[switch]$SkipBundledFfprobe" in sidecar
-    assert 'Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe)' in sidecar
+    assert 'Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe) -ValidateSlimBundle ([bool]$ValidateSlimMediaTools)' in sidecar
     assert "Skipping bundled ffprobe" in sidecar
 
 
@@ -89,8 +98,11 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     build = read_script("scripts/build_windows.ps1")
 
     assert "[switch]$SkipBundledFfprobe" in build
-    assert "-BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease" in build
-    assert "$currentTauriConfig.Replace(" in build
+    assert "[switch]$ValidateSlimMediaTools" in build
+    assert "function Add-TauriBeforeBundleCommandSwitch" in build
+    assert 'SwitchName "-SkipBundledFfprobe"' in build
+    assert 'SwitchName "-ValidateSlimMediaTools"' in build
+    assert '$ConfigText.Replace($copySwitch, " $SwitchName$copySwitch")' in build
     assert "finally {" in build
     assert "function Set-Utf8NoBomContent" in build
     assert "Set-Utf8NoBomContent -Path $tauriConfigPath -Value $currentTauriConfig" in build
@@ -133,7 +145,8 @@ def test_desktop_and_installer_smokes_can_persist_json_output_under_tmp() -> Non
         assert '[string]$OutputPath = ""' in script
         assert "function Write-SmokeJson" in script
         assert 'Assert-UnderRoot -Root (Join-Path $Root "tmp") -Path $outputFull -Label "Smoke output"' in script
-        assert "Set-Content -LiteralPath $outputFull -Value $json -Encoding UTF8" in script
+        assert "function Write-Utf8NoBomJson" in script
+        assert "Write-Utf8NoBomJson -Path $outputFull -Json $json" in script
         assert "ConvertTo-Json -Compress -Depth 8" in script
 
     assert "Write-SmokeJson -Payload $result -Path $OutputPath -Root $RepoRoot" in desktop

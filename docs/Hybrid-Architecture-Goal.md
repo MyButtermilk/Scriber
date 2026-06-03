@@ -229,14 +229,19 @@ architecture work. It replaces earlier incomplete goal text.
   `-PlanOnly`-Modus schreibt inzwischen neben den konkreten Befehlen auch eine
   strukturierte `requiredEvidence`-Checkliste fuer physische Mic-Matrix,
   signierte Updater-Metadaten, veroeffentlichtes Updater-Manifest,
-  Authenticode-Report und finalen Aggregat-Check.
+  Authenticode-Report und finalen Aggregat-Check. Tauri- und
+  Installer-Smoke-`-OutputPath`-Artefakte werden ebenfalls als UTF-8 ohne BOM
+  geschrieben.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen. Einzel-Smoke, gefuehrter Windows-Runner und
   Aggregat-Validator fuer diese Matrix sind vorhanden; die physischen USB-,
   Bluetooth-, Dock-, Default-Mic- und Favorite-Fallback-Laeufe selbst sind noch
   nicht erbracht. Der Runner-Plan meldet inzwischen `readyForPhysicalRun` und
   `missingLabelParameters`, damit fehlende USB-/Dock-/Bluetooth-/Favorite-
-  Labels vor den physischen Aktionen auffallen.
+  Labels vor den physischen Aktionen auffallen. Fuer Installer-Groesse ist
+  `-ValidateSlimMediaTools` als expliziter Gate fuer kleinere FFmpeg-Kandidaten
+  vorhanden; ein Slim-FFmpeg-Release-Default bleibt aber bis zu realen
+  YouTube-/Datei-/Azure-MAI-Media-Smokes offen.
 - Phase 8 hat synthetische Guards, eine 30-Minuten-Idle-Stability, mehrere
   installierte Stability-Smokes und einen vom Nutzer fuer diese Iteration
   akzeptierten 5-Minuten-Live-Recording-Gate. Nicht erbracht sind reale

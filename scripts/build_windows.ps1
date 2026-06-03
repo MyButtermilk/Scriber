@@ -25,6 +25,7 @@ param(
     [double]$MaxInstallerSizeMB = 220,
     [double]$InstallerMaxInstalledSizeMB = 0,
     [switch]$SkipBundledFfprobe,
+    [switch]$ValidateSlimMediaTools,
     [switch]$SkipChecks,
     [switch]$SkipSmoke,
     [switch]$RunInstallerSmoke,
@@ -81,6 +82,24 @@ function Set-Utf8NoBomContent {
 
     $encoding = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+}
+
+function Add-TauriBeforeBundleCommandSwitch {
+    param(
+        [string]$ConfigText,
+        [string]$SwitchName
+    )
+
+    if ($ConfigText.Contains($SwitchName)) {
+        return $ConfigText
+    }
+
+    $copySwitch = " -CopyToTauriRelease"
+    if (-not $ConfigText.Contains($copySwitch)) {
+        throw "Cannot enable $SwitchName because beforeBundleCommand does not contain '$copySwitch'."
+    }
+
+    return $ConfigText.Replace($copySwitch, " $SwitchName$copySwitch")
 }
 
 $RepoRoot = (Resolve-Path $RepoRoot).Path
@@ -146,20 +165,20 @@ try {
         $RequireUpdaterSignatures = $true
     }
 
-    if ($SkipBundledFfprobe) {
+    if ($SkipBundledFfprobe -or $ValidateSlimMediaTools) {
         if ($null -eq $tauriConfigOriginal) {
             $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
         }
         $currentTauriConfig = Get-Content -Raw $tauriConfigPath
-        $expectedCommandSegment = "-BundleMediaTools -CopyToTauriRelease"
-        if (-not $currentTauriConfig.Contains("-SkipBundledFfprobe")) {
-            if (-not $currentTauriConfig.Contains($expectedCommandSegment)) {
-                throw "Cannot enable -SkipBundledFfprobe because beforeBundleCommand does not contain '$expectedCommandSegment'."
-            }
-            $currentTauriConfig = $currentTauriConfig.Replace(
-                $expectedCommandSegment,
-                "-BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease"
-            )
+        $updatedTauriConfig = $currentTauriConfig
+        if ($SkipBundledFfprobe) {
+            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-SkipBundledFfprobe"
+        }
+        if ($ValidateSlimMediaTools) {
+            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-ValidateSlimMediaTools"
+        }
+        if ($updatedTauriConfig -ne $currentTauriConfig) {
+            $currentTauriConfig = $updatedTauriConfig
             Set-Utf8NoBomContent -Path $tauriConfigPath -Value $currentTauriConfig
         }
     }

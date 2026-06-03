@@ -571,6 +571,16 @@ function Assert-UnderRoot {
     }
 }
 
+function Write-Utf8NoBomJson {
+    param(
+        [string]$Path,
+        [string]$Json
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Json, $encoding)
+}
+
 function Write-SmokeJson {
     param(
         [object]$Payload,
@@ -583,7 +593,7 @@ function Write-SmokeJson {
         $outputFull = Convert-ToFullPath -Path $Path
         Assert-UnderRoot -Root (Join-Path $Root "tmp") -Path $outputFull -Label "Smoke output"
         New-Item -ItemType Directory -Force -Path (Split-Path $outputFull) | Out-Null
-        Set-Content -LiteralPath $outputFull -Value $json -Encoding UTF8
+        Write-Utf8NoBomJson -Path $outputFull -Json $json
     }
     return $json
 }
