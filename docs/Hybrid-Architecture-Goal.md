@@ -167,9 +167,9 @@ architecture work. It replaces earlier incomplete goal text.
     ffmpeg/ffprobe-Bundling, yt-dlp-Bundling, ONNXRuntime/Silero-VAD
     Runtime-Import-Gates, Updater-Plugin-Wiring,
     Authenticode-/Updater-Metadaten-Gates, Authenticode-Report-Output,
-    Updater-Publikationsreport-Generator, CI-Post-Publish-Updater-
-    Verifikation, finaler Release-Readiness-Runner und installierte
-    Smoke-Gates sind umgesetzt.
+    Updater-Publikationsreport-Generator, SciPy-/ONNXRuntime-
+    Footprint-Report, CI-Post-Publish-Updater-Verifikation, finaler
+    Release-Readiness-Runner und installierte Smoke-Gates sind umgesetzt.
   - Python-Audio bleibt Default. `SCRIBER_AUDIO_ENGINE=rust` ist weiterhin nur
     ein requested Feature Flag, solange kein gemessener Rust-Audio-Prototyp
     existiert.
@@ -228,17 +228,19 @@ architecture work. It replaces earlier incomplete goal text.
   zusammenfuehren, sobald die externen Nachweise existieren. Sein
   `-PlanOnly`-Modus schreibt inzwischen neben den konkreten Befehlen auch eine
   strukturierte `requiredEvidence`-Checkliste fuer physische Mic-Matrix,
-  signierte Updater-Metadaten, Media-Preparation-Smoke, veroeffentlichtes
-  Updater-Manifest, Authenticode-Report und finalen Aggregat-Check. Tauri- und
-  Installer-Smoke-`-OutputPath`-Artefakte werden ebenfalls als UTF-8 ohne BOM
-  geschrieben. Der finale Aggregat-Validator wertet inzwischen auch
-  `release-metadata\media-preparation-smoke.json` aus; der Windows-Release-
-  Workflow erzeugt dieses Artefakt im Standard-Release-Build mit
-  `scripts\build_windows.ps1 -RunMediaPreparationSmoke`, und der finale Runner
-  kann es mit `scripts\smoke_media_preparation.py` selbst erzeugen oder ueber
-  `-UseExistingMediaPreparationReport` wiederverwenden. Der Installer-Smoke kann
-  denselben Media-Preparation-Gate inzwischen auch gegen die tatsaechlich
-  installierten `backend\tools\ffmpeg`-Binaries ausfuehren:
+  signierte Updater-Metadaten, Media-Preparation-Smoke, Runtime-Dependency-
+  Footprint, veroeffentlichtes Updater-Manifest, Authenticode-Report und
+  finalen Aggregat-Check. Tauri- und Installer-Smoke-`-OutputPath`-Artefakte
+  werden ebenfalls als UTF-8 ohne BOM geschrieben. Der finale Aggregat-
+  Validator wertet inzwischen auch `release-metadata\media-preparation-smoke.json`
+  und `release-metadata\runtime-dependency-footprint.json` aus; der Windows-
+  Release-Workflow erzeugt diese Artefakte im Standard-Release-Build mit
+  `scripts\build_windows.ps1 -RunMediaPreparationSmoke -RunRuntimeDependencyFootprint`,
+  und der finale Runner kann sie selbst erzeugen oder ueber
+  `-UseExistingMediaPreparationReport` bzw.
+  `-UseExistingRuntimeDependencyFootprintReport` wiederverwenden. Der
+  Installer-Smoke kann denselben Media-Preparation-Gate inzwischen auch gegen
+  die tatsaechlich installierten `backend\tools\ffmpeg`-Binaries ausfuehren:
   `scripts\smoke_windows_installer.ps1 -VerifyMediaPreparation` bzw.
   `scripts\build_windows.ps1 -RunInstallerMediaPreparationSmoke`.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
@@ -256,6 +258,11 @@ architecture work. It replaces earlier incomplete goal text.
   kann nun sowohl gegen den Release-Backend-Ordner als auch gegen eine
   temporaer installierte NSIS-App laufen. Ein Slim-FFmpeg-Release-Default bleibt
   aber bis zu realen installierten YouTube-/Datei-/Azure-MAI-Media-Smokes offen.
+  Fuer SciPy/ONNXRuntime ist `scripts\analyze_backend_runtime_dependencies.py`
+  vorhanden. Der aktuelle Sidecar-Snapshot meldet `107.46 MiB` fuer diese
+  Runtime-Gruppe (`73.70 MiB` SciPy/SciPy libs, `33.76 MiB` ONNXRuntime) und
+  prueft die Pflichtpfade fuer `pyloudnorm`/`scipy.signal` sowie
+  ONNXRuntime/Silero-VAD, bevor kleinere Kandidaten akzeptiert werden.
 - Phase 8 hat synthetische Guards, eine 30-Minuten-Idle-Stability, mehrere
   installierte Stability-Smokes und einen vom Nutzer fuer diese Iteration
   akzeptierten 5-Minuten-Live-Recording-Gate. Nicht erbracht sind reale

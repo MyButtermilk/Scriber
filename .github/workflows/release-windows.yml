@@ -72,7 +72,8 @@ jobs:
             "-File",
             "scripts\build_windows.ps1",
             "-SkipSmoke",
-            "-RunMediaPreparationSmoke"
+            "-RunMediaPreparationSmoke",
+            "-RunRuntimeDependencyFootprint"
           )
           if ($env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY -and ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)) {
             $buildArgs += "-EnableTauriUpdater"

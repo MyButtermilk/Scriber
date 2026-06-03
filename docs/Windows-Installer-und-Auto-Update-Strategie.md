@@ -166,11 +166,13 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
 3. Status 2026-06-01: Der GitHub Release-Build nutzt `requirements-base.txt`, `requirements-dev.txt` und `requirements-build.txt`, aber nicht `requirements-local-asr.txt`.
 4. Lokale Provider werden per **Lazy Import** geladen (erst wenn Nutzer sie aktiviert).
 5. Nicht genutzte Provider im Standard-Build per Feature-Flag deaktivieren.
+6. Status 2026-06-03: `scripts/analyze_backend_runtime_dependencies.py` misst und gated die gefrorenen SciPy-/ONNXRuntime-Anteile im Sidecar. Der aktuelle Release-Backend-Snapshot meldet `107.46 MiB` fuer diese Gruppe: `73.70 MiB` fuer `scipy` + `scipy.libs` und `33.76 MiB` fuer `onnxruntime`. Der Report prueft die Pflichtpfade fuer `pyloudnorm`/`scipy.signal` und ONNXRuntime/Silero-VAD, bevor ein kleinerer Kandidat akzeptiert werden darf.
 
 ### C) PyInstaller gezielt schlank halten
 1. In `scriber.spec` nur benoetigte `hiddenimports`/`datas` aufnehmen.
    - Status 2026-06-01: `packaging/scriber-backend.spec` listet SciPy/pyloudnorm explizit fuer den Pipecat-Startup-Pfad und schliesst schwere lokale ASR-Stacks aus.
    - Status 2026-06-01: `scripts/check_backend_runtime_imports.py` prueft kritische Startup-Imports vor PyInstaller; danach startet der Build den gefrorenen `scriber-backend --runtime-import-check`, damit fehlende Module wie SciPy den Build stoppen statt erst beim Endnutzer zu crashen.
+   - Status 2026-06-03: `scripts/build_windows.ps1 -RunRuntimeDependencyFootprint` schreibt `release-metadata\runtime-dependency-footprint.json`; optionale Budgets `-MaxScipyRuntimeDependencyMB`, `-MaxOnnxRuntimeDependencyMB` und `-MaxPythonRuntimeDependencyMB` machen Groessenregressionen hart.
 2. Unnoetige Inhalte explizit ausschliessen:
    - `tests`, `__pycache__`, Dokumentation, Beispiele, nicht benoetigte Provider-Assets.
 3. Source Maps und Debug-Artefakte fuer Release-Build deaktivieren (Frontend + Python-Pakete soweit moeglich).
@@ -194,7 +196,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - `Standard Setup <= 220 MB`,
    - `installierte Standard-App <= 450 MB` als Zielwert nach Groessenoptimierung.
 3. Jede Release-PR enthaelt den Groessenvergleich zur Vorversion.
-   - Status 2026-06-03: `scripts/create_release_size_report.py` erzeugt `size-report.json` mit Artefaktgroessen, Top-Dateien und optionaler installierter App-Groesse. `scripts/build_windows.ps1` ruft den Report nach `latest.json`/`SHA256SUMS.txt` auf und failt standardmaessig, wenn das groesste Installer-Artefakt ueber `-MaxInstallerSizeMB 220` liegt. `scripts/smoke_windows_installer.ps1 -MaxInstalledSizeMB <MB>` misst den temporaeren Installationsordner und kann die installierte Groesse als hartes Gate pruefen. Der GitHub-Workflow kopiert `release-metadata\*.json`, sodass `size-report.json` als Release-Artefakt verfuegbar ist. Der aktuelle Full-NSIS-Setup liegt mit 205.79 MiB unter dem 220-MiB-Gate; der explizite `-SkipBundledFfprobe`-Vergleichsbuild liegt bei 163.43 MiB und der installierte Vergleichs-Smoke bei 481.10 MiB. Der Standard-Backend-Resource-Ordner ist 601.66 MiB und wird vor allem durch vollstaendige `ffmpeg.exe`/`ffprobe.exe` dominiert; ohne gebuendeltes `ffprobe.exe` sinkt er auf 468.23 MiB. Das installierte 450-MiB-Ziel ist damit noch nicht erreicht. Dieses Ziel darf nicht durch stilles Entfernen von ffmpeg/ffprobe aus dem Standard-Windows-Build erreicht werden; sinnvolle Folgearbeit ist ein kleineres kompatibles Media-Tools-Bundle oder weiterer PyInstaller-Dependency-Cleanup.
+   - Status 2026-06-03: `scripts/create_release_size_report.py` erzeugt `size-report.json` mit Artefaktgroessen, Top-Dateien und optionaler installierter App-Groesse. `scripts/build_windows.ps1` ruft den Report nach `latest.json`/`SHA256SUMS.txt` auf und failt standardmaessig, wenn das groesste Installer-Artefakt ueber `-MaxInstallerSizeMB 220` liegt. `scripts/smoke_windows_installer.ps1 -MaxInstalledSizeMB <MB>` misst den temporaeren Installationsordner und kann die installierte Groesse als hartes Gate pruefen. Der GitHub-Workflow kopiert `release-metadata\*.json`, sodass `size-report.json`, `media-preparation-smoke.json` und `runtime-dependency-footprint.json` als Release-Artefakte verfuegbar sind. Der aktuelle Full-NSIS-Setup liegt mit 205.79 MiB unter dem 220-MiB-Gate; der explizite `-SkipBundledFfprobe`-Vergleichsbuild liegt bei 163.43 MiB und der installierte Vergleichs-Smoke bei 481.10 MiB. Der Standard-Backend-Resource-Ordner ist 601.66 MiB und wird vor allem durch vollstaendige `ffmpeg.exe`/`ffprobe.exe` dominiert; SciPy/SciPy libs und ONNXRuntime machen zusammen weitere `107.46 MiB` aus. Ohne gebuendeltes `ffprobe.exe` sinkt der Backend-Resource-Ordner auf 468.23 MiB. Das installierte 450-MiB-Ziel ist damit noch nicht erreicht. Dieses Ziel darf nicht durch stilles Entfernen von ffmpeg/ffprobe, SciPy oder ONNXRuntime aus dem Standard-Windows-Build erreicht werden; sinnvolle Folgearbeit ist ein kleineres kompatibles Media-Tools-Bundle, ein bewiesener SciPy-signal-only/Pipecat-Loudness-Ersatz oder weiterer PyInstaller-Dependency-Cleanup.
 
 ### F) Update-Bandbreite minimieren (ab Phase 2)
 1. Zunaechst Full-Installer beibehalten (einfacher und robust).
@@ -347,7 +349,7 @@ Lieferobjekte:
    - Status 2026-06-01: Workflow existiert fuer `workflow_dispatch` und Push von Tags `v*`.
    - Status 2026-06-01: Runner ist `windows-latest` mit Python 3.13, Node 20 und Rust stable.
 2. **Build-Pipeline**:
-   - Status 2026-06-03: Checkout -> Python/Node/Rust Setup -> `pip install` fuer base/dev/build -> `npm ci` -> `scripts/build_windows.ps1 -SkipSmoke -RunMediaPreparationSmoke` -> NSIS-Artefakt, `latest.json`, `SHA256SUMS.txt`, `size-report.json` und `media-preparation-smoke.json` als Workflow-Artefakte.
+   - Status 2026-06-03: Checkout -> Python/Node/Rust Setup -> `pip install` fuer base/dev/build -> `npm ci` -> `scripts/build_windows.ps1 -SkipSmoke -RunMediaPreparationSmoke -RunRuntimeDependencyFootprint` -> NSIS-Artefakt, `latest.json`, `SHA256SUMS.txt`, `size-report.json`, `media-preparation-smoke.json` und `runtime-dependency-footprint.json` als Workflow-Artefakte.
    - Status 2026-06-01: Bei `v*` Tags publiziert `softprops/action-gh-release` die erzeugten Artefakte als GitHub Release.
    - Status 2026-06-02: Bei `v*` Tags mit konfiguriertem Tauri-Updater-Signing fuehrt der Workflow nach `softprops/action-gh-release` `scripts\verify_tauri_updater_publication.py` mit Retry aus, prueft das veroeffentlichte HTTPS-`latest.json` gegen die lokale Release-Metadatei und laedt `updater-publication.json` als CI-Evidence-Artefakt hoch.
    - Status 2026-06-01: Tauri-Updater-Plugin, Frontend-Check/Install-UI und Manifest-/Signing-Gates sind integriert. Ohne `SCRIBER_TAURI_UPDATER_PUBLIC_KEY` und `TAURI_SIGNING_PRIVATE_KEY` bleibt der Workflow beim bisherigen NSIS-Release ohne Updater-Artefakte.
@@ -419,7 +421,7 @@ Lieferobjekte:
 | `scripts/sync_version.py` | Umgesetzt: synchronisiert `src/version.py` in Python/Tauri/Cargo/npm-Manifeste. |
 | `scripts/create_release_metadata.py` | Umgesetzt: erzeugt `latest.json` und `SHA256SUMS.txt` fuer Release-Artefakte. |
 | `scripts/validate_tauri_updater_metadata.py` | Umgesetzt: prueft Tauri-Updater-Manifest, HTTPS-/Lokale-URL-Regeln, erforderliche Signaturen und lokale Artefaktgroesse/SHA256 gegen `SHA256SUMS.txt`. |
-| `.github/workflows/release-windows.yml` | Umgesetzt: manueller und Tag-basierter Windows-NSIS-Release-Build mit GitHub-Release-Publish auf `v*` Tags. Der Standard-Release-Workflow installiert/verifiziert ffmpeg/ffprobe, fuehrt `-RunMediaPreparationSmoke` aus und sammelt `media-preparation-smoke.json` mit den Release-Artefakten ein. |
+| `.github/workflows/release-windows.yml` | Umgesetzt: manueller und Tag-basierter Windows-NSIS-Release-Build mit GitHub-Release-Publish auf `v*` Tags. Der Standard-Release-Workflow installiert/verifiziert ffmpeg/ffprobe, fuehrt `-RunMediaPreparationSmoke` und `-RunRuntimeDependencyFootprint` aus und sammelt `media-preparation-smoke.json` sowie `runtime-dependency-footprint.json` mit den Release-Artefakten ein. |
 | `LICENSE` | Umgesetzt: MIT License Datei. |
 
 ### Anzupassende Dateien

@@ -43,6 +43,7 @@ def validate_release_readiness(
     updater_artifact_dir: Path | None = None,
     sha256sums: Path | None = None,
     media_preparation_report: Path | None = None,
+    runtime_dependency_footprint_report: Path | None = None,
     updater_publication_report: Path | None = None,
     authenticode_report: Path | None = None,
     expected_authenticode_publisher: str = "",
@@ -59,6 +60,7 @@ def validate_release_readiness(
             sha256sums=sha256sums,
         ),
         validate_media_preparation_report(media_preparation_report),
+        validate_runtime_dependency_footprint_report(runtime_dependency_footprint_report),
         validate_updater_publication_report(updater_publication_report, metadata_path=updater_metadata),
         validate_authenticode_report(
             authenticode_report,
@@ -243,6 +245,78 @@ def validate_media_preparation_report(report_path: Path | None) -> ReadinessChec
     return ReadinessCheck("mediaPreparationSmoke", not failures, failures, details)
 
 
+def validate_runtime_dependency_footprint_report(report_path: Path | None) -> ReadinessCheck:
+    failures: list[str] = []
+    details: dict[str, Any] = {
+        "report": str(report_path) if report_path else "",
+        "requiredDependencies": ["scipy", "onnxruntime"],
+    }
+    if report_path is None:
+        failures.append("runtime dependency footprint report is required")
+        return ReadinessCheck("runtimeDependencyFootprint", False, failures, details)
+
+    report = read_json_object(report_path, failures, "runtime dependency footprint report")
+    if not report:
+        return ReadinessCheck("runtimeDependencyFootprint", False, failures, details)
+
+    details.update(
+        {
+            "apiVersion": report.get("apiVersion", ""),
+            "summary": report.get("summary", {}),
+            "budgets": report.get("budgets", {}),
+        }
+    )
+    if report.get("ok") is not True:
+        failures.append("runtime dependency footprint report ok must be true")
+    if str(report.get("apiVersion") or "") != "1":
+        failures.append("runtime dependency footprint report apiVersion must be 1")
+
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        failures.append("runtime dependency footprint report summary must be an object")
+        summary = {}
+    missing = summary.get("missingRequiredPaths", [])
+    if not isinstance(missing, list):
+        failures.append("runtime dependency footprint missingRequiredPaths must be a list")
+    elif missing:
+        failures.append("runtime dependency footprint has missing required paths: " + ", ".join(map(str, missing)))
+    budget_failures = summary.get("budgetFailures", [])
+    if not isinstance(budget_failures, list):
+        failures.append("runtime dependency footprint budgetFailures must be a list")
+    elif budget_failures:
+        failures.append("runtime dependency footprint has budget failures: " + ", ".join(map(str, budget_failures)))
+    total_mb = summary.get("totalMb")
+    if not isinstance(total_mb, (int, float)) or total_mb <= 0:
+        failures.append("runtime dependency footprint summary.totalMb must be positive")
+
+    dependencies = report.get("dependencies")
+    if not isinstance(dependencies, dict):
+        failures.append("runtime dependency footprint dependencies must be an object")
+        dependencies = {}
+    for dependency_name in details["requiredDependencies"]:
+        dependency = dependencies.get(dependency_name)
+        if not isinstance(dependency, dict):
+            failures.append(f"runtime dependency footprint is missing dependency: {dependency_name}")
+            continue
+        if dependency.get("name") != dependency_name:
+            failures.append(f"runtime dependency {dependency_name} name is invalid")
+        if dependency.get("totalMb", 0) <= 0:
+            failures.append(f"runtime dependency {dependency_name} totalMb must be positive")
+        dependency_missing = dependency.get("missingRequiredPaths", [])
+        if not isinstance(dependency_missing, list):
+            failures.append(f"runtime dependency {dependency_name} missingRequiredPaths must be a list")
+        elif dependency_missing:
+            failures.append(
+                f"runtime dependency {dependency_name} has missing required paths: "
+                + ", ".join(map(str, dependency_missing))
+            )
+        paths = dependency.get("paths")
+        if not isinstance(paths, list) or not paths:
+            failures.append(f"runtime dependency {dependency_name} paths must be a non-empty list")
+
+    return ReadinessCheck("runtimeDependencyFootprint", not failures, failures, details)
+
+
 def validate_updater_publication_report(report_path: Path | None, *, metadata_path: Path) -> ReadinessCheck:
     failures: list[str] = []
     details: dict[str, Any] = {
@@ -421,6 +495,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--updater-artifact-dir", default="")
     parser.add_argument("--sha256sums", default="")
     parser.add_argument("--media-preparation-report", default="")
+    parser.add_argument("--runtime-dependency-footprint-report", default="")
     parser.add_argument("--updater-publication-report", default="")
     parser.add_argument("--authenticode-report", default="")
     parser.add_argument("--expected-authenticode-publisher", default="")
@@ -438,6 +513,7 @@ def main(argv: list[str]) -> int:
         updater_artifact_dir=parse_optional_path(args.updater_artifact_dir),
         sha256sums=parse_optional_path(args.sha256sums),
         media_preparation_report=parse_optional_path(args.media_preparation_report),
+        runtime_dependency_footprint_report=parse_optional_path(args.runtime_dependency_footprint_report),
         updater_publication_report=parse_optional_path(args.updater_publication_report),
         authenticode_report=parse_optional_path(args.authenticode_report),
         expected_authenticode_publisher=args.expected_authenticode_publisher,

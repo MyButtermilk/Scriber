@@ -81,6 +81,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
         "microphoneMatrixValidation",
         "updaterPublicationVerification",
         "mediaPreparationSmoke",
+        "runtimeDependencyFootprint",
         "authenticodeValidation",
         "hybridReleaseReadiness",
     ]
@@ -91,6 +92,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
         "physicalMicrophoneMatrix",
         "signedTauriUpdaterMetadata",
         "mediaPreparationSmoke",
+        "runtimeDependencyFootprint",
         "publishedUpdaterManifest",
         "authenticodeSignatures",
         "hybridReleaseReadinessAggregate",
@@ -107,9 +109,14 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert media_evidence["report"].endswith("media-preparation-smoke.json")
     assert "smoke_media_preparation.py" in media_evidence["producer"]
     assert media_evidence["mediaToolsDir"].endswith("backend\\tools\\ffmpeg")
-    publication_evidence = payload["requiredEvidence"][3]
+    runtime_evidence = payload["requiredEvidence"][3]
+    assert runtime_evidence["external"] is False
+    assert runtime_evidence["report"].endswith("runtime-dependency-footprint.json")
+    assert "analyze_backend_runtime_dependencies.py" in runtime_evidence["producer"]
+    assert runtime_evidence["sidecarDir"].endswith("target\\release\\backend")
+    publication_evidence = payload["requiredEvidence"][4]
     assert "final redirect URL" in publication_evidence["notes"]
-    authenticode_evidence = payload["requiredEvidence"][4]
+    authenticode_evidence = payload["requiredEvidence"][5]
     assert authenticode_evidence["expectedPublisher"] == "Scriber Publisher"
     assert authenticode_evidence["requireTimestamp"] is True
     assert "validate_microphone_hardware_matrix.py" in payload["commands"][0]["command"]
@@ -117,11 +124,16 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert "smoke_media_preparation.py" in payload["commands"][2]["command"]
     assert "--media-tools-dir" in payload["commands"][2]["command"]
     assert "--require-ffprobe" in payload["commands"][2]["command"]
-    assert "validate_windows_authenticode.ps1" in payload["commands"][3]["command"]
-    assert "validate_hybrid_release_readiness.py" in payload["commands"][4]["command"]
-    assert "--media-preparation-report" in payload["commands"][4]["command"]
-    assert "media-preparation-smoke.json" in payload["commands"][4]["command"]
-    assert "--require-authenticode-timestamp" in payload["commands"][4]["command"]
+    assert "analyze_backend_runtime_dependencies.py" in payload["commands"][3]["command"]
+    assert "--sidecar-dir" in payload["commands"][3]["command"]
+    assert "runtime-dependency-footprint.json" in payload["commands"][3]["command"]
+    assert "validate_windows_authenticode.ps1" in payload["commands"][4]["command"]
+    assert "validate_hybrid_release_readiness.py" in payload["commands"][5]["command"]
+    assert "--media-preparation-report" in payload["commands"][5]["command"]
+    assert "media-preparation-smoke.json" in payload["commands"][5]["command"]
+    assert "--runtime-dependency-footprint-report" in payload["commands"][5]["command"]
+    assert "runtime-dependency-footprint.json" in payload["commands"][5]["command"]
+    assert "--require-authenticode-timestamp" in payload["commands"][5]["command"]
     assert written == payload
 
 
@@ -151,6 +163,7 @@ def test_hybrid_release_readiness_runner_can_reuse_existing_external_reports(tmp
         "-HardwareInputDir",
         str(tmp_path),
         "-UseExistingMediaPreparationReport",
+        "-UseExistingRuntimeDependencyFootprintReport",
         "-UseExistingAuthenticodeReport",
         "-UseExistingUpdaterPublicationReport",
     )
@@ -162,4 +175,6 @@ def test_hybrid_release_readiness_runner_can_reuse_existing_external_reports(tmp
     assert "reuse" in payload["commands"][2]["command"]
     assert "media-preparation-smoke.json" in payload["commands"][2]["command"]
     assert "reuse" in payload["commands"][3]["command"]
-    assert "authenticode.json" in payload["commands"][3]["command"]
+    assert "runtime-dependency-footprint.json" in payload["commands"][3]["command"]
+    assert "reuse" in payload["commands"][4]["command"]
+    assert "authenticode.json" in payload["commands"][4]["command"]

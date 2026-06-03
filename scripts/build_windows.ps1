@@ -26,6 +26,10 @@ param(
     [double]$InstallerMaxInstalledSizeMB = 0,
     [switch]$SkipBundledFfprobe,
     [switch]$ValidateSlimMediaTools,
+    [switch]$RunRuntimeDependencyFootprint,
+    [double]$MaxScipyRuntimeDependencyMB = 0,
+    [double]$MaxOnnxRuntimeDependencyMB = 0,
+    [double]$MaxPythonRuntimeDependencyMB = 0,
     [switch]$SkipChecks,
     [switch]$SkipSmoke,
     [switch]$RunInstallerSmoke,
@@ -210,6 +214,7 @@ try {
     $bundleRoot = Join-Path $targetRelease "bundle"
     $metadataDir = Join-Path $targetRelease "release-metadata"
     $mediaPreparationSmokePath = Join-Path $metadataDir "media-preparation-smoke.json"
+    $runtimeDependencyFootprintPath = Join-Path $metadataDir "runtime-dependency-footprint.json"
     $artifacts = @()
     if (Test-Path $bundleRoot) {
         $artifacts = @(
@@ -238,6 +243,38 @@ try {
                     $mediaSmokeArgs += "--require-ffprobe"
                 }
                 python @mediaSmokeArgs
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
+    if ($RunRuntimeDependencyFootprint) {
+        Invoke-Checked -Label "Runtime dependency footprint" -Command {
+            Push-Location $RepoRoot
+            try {
+                New-Item -ItemType Directory -Force -Path $metadataDir | Out-Null
+                $backendReleaseDir = Join-Path $targetRelease "backend"
+                if (-not (Test-Path -LiteralPath $backendReleaseDir -PathType Container)) {
+                    throw "Bundled backend directory was not found: $backendReleaseDir"
+                }
+                $footprintArgs = @(
+                    "scripts\analyze_backend_runtime_dependencies.py",
+                    "--sidecar-dir",
+                    $backendReleaseDir,
+                    "--output",
+                    $runtimeDependencyFootprintPath
+                )
+                if ($MaxScipyRuntimeDependencyMB -gt 0) {
+                    $footprintArgs += @("--max-scipy-mb", $MaxScipyRuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                }
+                if ($MaxOnnxRuntimeDependencyMB -gt 0) {
+                    $footprintArgs += @("--max-onnxruntime-mb", $MaxOnnxRuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                }
+                if ($MaxPythonRuntimeDependencyMB -gt 0) {
+                    $footprintArgs += @("--max-total-mb", $MaxPythonRuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                }
+                python @footprintArgs
             } finally {
                 Pop-Location
             }
@@ -459,6 +496,7 @@ try {
         metadataDir = $metadataDir
         sizeReport = Join-Path $metadataDir "size-report.json"
         mediaPreparationSmoke = $mediaPreparationSmokePath
+        runtimeDependencyFootprint = $runtimeDependencyFootprintPath
     } | ConvertTo-Json -Compress
 } finally {
     if ($null -ne $tauriConfigOriginal) {

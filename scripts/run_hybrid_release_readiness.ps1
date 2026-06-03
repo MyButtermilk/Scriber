@@ -18,6 +18,8 @@ param(
     [string]$Sha256Sums = "Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt",
     [string]$MediaPreparationReport = "Frontend\src-tauri\target\release\release-metadata\media-preparation-smoke.json",
     [string]$MediaToolsDir = "Frontend\src-tauri\target\release\backend\tools\ffmpeg",
+    [string]$RuntimeDependencyFootprintReport = "Frontend\src-tauri\target\release\release-metadata\runtime-dependency-footprint.json",
+    [string]$SidecarDir = "Frontend\src-tauri\target\release\backend",
     [string]$UpdaterPublicationUrl = "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
     [string]$UpdaterPublicationReport = "",
     [int]$UpdaterPublicationAttempts = 6,
@@ -29,6 +31,7 @@ param(
     [string]$OutputPath = "",
     [switch]$UseExistingAuthenticodeReport,
     [switch]$UseExistingMediaPreparationReport,
+    [switch]$UseExistingRuntimeDependencyFootprintReport,
     [switch]$UseExistingUpdaterPublicationReport,
     [switch]$PlanOnly
 )
@@ -123,6 +126,8 @@ $UpdaterArtifactDir = Convert-ToFullPath -Path $UpdaterArtifactDir -Root $RepoRo
 $Sha256Sums = Convert-ToFullPath -Path $Sha256Sums -Root $RepoRoot
 $MediaPreparationReport = Convert-ToFullPath -Path $MediaPreparationReport -Root $RepoRoot
 $MediaToolsDir = Convert-ToFullPath -Path $MediaToolsDir -Root $RepoRoot
+$RuntimeDependencyFootprintReport = Convert-ToFullPath -Path $RuntimeDependencyFootprintReport -Root $RepoRoot
+$SidecarDir = Convert-ToFullPath -Path $SidecarDir -Root $RepoRoot
 $AuthenticodePath = @($AuthenticodePath | ForEach-Object { Convert-ToFullPath -Path $_ -Root $RepoRoot })
 
 $matrixArgs = @(
@@ -171,6 +176,14 @@ $mediaPreparationArgs = @(
     "--require-ffprobe"
 )
 
+$runtimeDependencyFootprintArgs = @(
+    "scripts\analyze_backend_runtime_dependencies.py",
+    "--sidecar-dir",
+    $SidecarDir,
+    "--output",
+    $RuntimeDependencyFootprintReport
+)
+
 $readinessArgs = @(
     "scripts\validate_hybrid_release_readiness.py",
     "--hardware-input-dir",
@@ -183,6 +196,8 @@ $readinessArgs = @(
     $Sha256Sums,
     "--media-preparation-report",
     $MediaPreparationReport,
+    "--runtime-dependency-footprint-report",
+    $RuntimeDependencyFootprintReport,
     "--updater-publication-report",
     $UpdaterPublicationReport,
     "--authenticode-report",
@@ -239,6 +254,15 @@ $requiredEvidence = @(
         notes = "Validates bundled ffmpeg/ffprobe through Scriber file-upload compression, video extraction, YouTube normalization, Azure-MAI preparation, and ffprobe duration probing."
     },
     [pscustomobject]@{
+        name = "runtimeDependencyFootprint"
+        required = $true
+        external = $false
+        producer = $(if ($UseExistingRuntimeDependencyFootprintReport) { "existing report" } else { "scripts\analyze_backend_runtime_dependencies.py" })
+        report = $RuntimeDependencyFootprintReport
+        sidecarDir = $SidecarDir
+        notes = "Validates that the frozen backend sidecar still contains required SciPy/pyloudnorm and ONNXRuntime/Silero-VAD runtime paths while recording their size footprint."
+    },
+    [pscustomobject]@{
         name = "publishedUpdaterManifest"
         required = $true
         external = $true
@@ -275,11 +299,14 @@ $plan = [pscustomobject]@{
     matrixValidationOutput = $MatrixValidationOutput
     mediaPreparationReport = $MediaPreparationReport
     mediaToolsDir = $MediaToolsDir
+    runtimeDependencyFootprintReport = $RuntimeDependencyFootprintReport
+    sidecarDir = $SidecarDir
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
     outputPath = $OutputPath
     useExistingAuthenticodeReport = [bool]$UseExistingAuthenticodeReport
     useExistingMediaPreparationReport = [bool]$UseExistingMediaPreparationReport
+    useExistingRuntimeDependencyFootprintReport = [bool]$UseExistingRuntimeDependencyFootprintReport
     useExistingUpdaterPublicationReport = [bool]$UseExistingUpdaterPublicationReport
     requiredEvidence = $requiredEvidence
     commands = @(
@@ -294,6 +321,10 @@ $plan = [pscustomobject]@{
         [pscustomobject]@{
             name = "mediaPreparationSmoke"
             command = $(if ($UseExistingMediaPreparationReport) { "reuse $MediaPreparationReport" } else { "python " + (Convert-ToDisplayCommand -CommandArgs $mediaPreparationArgs) })
+        },
+        [pscustomobject]@{
+            name = "runtimeDependencyFootprint"
+            command = $(if ($UseExistingRuntimeDependencyFootprintReport) { "reuse $RuntimeDependencyFootprintReport" } else { "python " + (Convert-ToDisplayCommand -CommandArgs $runtimeDependencyFootprintArgs) })
         },
         [pscustomobject]@{
             name = "authenticodeValidation"
@@ -340,6 +371,14 @@ try {
         }
     }
 
+    if ($UseExistingRuntimeDependencyFootprintReport) {
+        Assert-ExistingFile -Path $RuntimeDependencyFootprintReport -Label "Runtime dependency footprint report"
+    } else {
+        Invoke-Checked -Label "Runtime dependency footprint" -Command {
+            python @runtimeDependencyFootprintArgs
+        }
+    }
+
     if ($UseExistingAuthenticodeReport) {
         Assert-ExistingFile -Path $AuthenticodeReport -Label "Authenticode report"
     } else {
@@ -360,6 +399,7 @@ try {
     planPath = $planPath
     matrixValidationOutput = $MatrixValidationOutput
     mediaPreparationReport = $MediaPreparationReport
+    runtimeDependencyFootprintReport = $RuntimeDependencyFootprintReport
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
     outputPath = $OutputPath

@@ -4,6 +4,74 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - SciPy ONNXRuntime Footprint Gate
+
+Commands:
+
+```powershell
+python scripts\analyze_backend_runtime_dependencies.py `
+  --sidecar-dir Frontend\src-tauri\target\release\backend `
+  --output tmp\runtime-dependency-footprint-current.json
+
+python -m pytest `
+  tests\test_backend_runtime_dependency_footprint.py `
+  tests\test_validate_hybrid_release_readiness.py `
+  tests\test_hybrid_release_readiness_runner.py `
+  tests\test_backend_runtime_import_check.py `
+  -q
+
+python -m py_compile `
+  scripts\analyze_backend_runtime_dependencies.py `
+  scripts\validate_hybrid_release_readiness.py
+
+powershell -NoProfile -Command `
+  '$scripts=@("scripts\run_hybrid_release_readiness.ps1","scripts\build_windows.ps1"); foreach($script in $scripts){ $tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors) | Out-Null; if($errors.Count -gt 0){ Write-Error "Parser errors in $script"; $errors | Format-List *; exit 1 } }; "parser ok"'
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- Added `scripts\analyze_backend_runtime_dependencies.py`.
+- The report measures frozen `_internal\scipy`, `_internal\scipy.libs`, and
+  `_internal\onnxruntime` payloads, records top files, verifies required
+  `pyloudnorm`/`scipy.signal` and ONNXRuntime/Silero-VAD paths, and supports
+  explicit `--max-scipy-mb`, `--max-onnxruntime-mb`, and `--max-total-mb`
+  budgets.
+- `scripts\build_windows.ps1 -RunRuntimeDependencyFootprint` writes
+  `release-metadata\runtime-dependency-footprint.json`; the Windows release
+  workflow now emits that report with release metadata.
+- `scripts\validate_hybrid_release_readiness.py` and
+  `scripts\run_hybrid_release_readiness.ps1` now treat the runtime dependency
+  footprint report as required final readiness evidence.
+
+Evidence:
+
+- Current release-backend snapshot:
+  - Total SciPy/ONNXRuntime footprint: `107.46 MiB`.
+  - SciPy plus SciPy libs: `73.70 MiB`.
+  - ONNXRuntime: `33.76 MiB`.
+  - Missing required paths: `[]`.
+- `tests\test_backend_runtime_dependency_footprint.py`,
+  `tests\test_validate_hybrid_release_readiness.py`,
+  `tests\test_hybrid_release_readiness_runner.py`, and
+  `tests\test_backend_runtime_import_check.py`: `26 passed`.
+- PowerShell parser check for `scripts\run_hybrid_release_readiness.ps1` and
+  `scripts\build_windows.ps1`: passed.
+- Python compile check for the analyzer and final readiness validator: passed.
+
+Goal coverage:
+
+- Phase 6/8: adds the SciPy/ONNXRuntime equivalent of the media-tools footprint
+  gate. Size work can now use measured dependency-level budgets without
+  silently dropping Pipecat loudness/VAD startup dependencies.
+
+Remaining limits:
+
+- This does not remove SciPy or ONNXRuntime. It establishes the hard evidence
+  gate needed before experimenting with a smaller SciPy signal/loudness path or
+  a smaller ONNXRuntime distribution.
+
 ## 2026-06-03 - Installed Package Media Preparation Smoke
 
 Commands:
