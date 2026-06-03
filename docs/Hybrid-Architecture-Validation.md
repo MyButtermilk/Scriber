@@ -21,11 +21,16 @@ Implemented improvements:
 - The release workflow already collects `release-metadata\*.json`, so
   `media-preparation-smoke.json` is uploaded with the standard Windows release
   artifacts and is available to the final readiness validator.
+- `.github\workflows\hybrid-pr-checks.yml` now also runs the static/skip-capable
+  media-preparation smoke script tests and Tauri stability smoke gate tests,
+  so this wiring is checked before the heavier release workflow runs.
 
 Evidence:
 
 - `tests\test_tauri_stability_smoke_gates.py`: verifies the release workflow
   installs/verifies `ffmpeg`/`ffprobe` and forwards `-RunMediaPreparationSmoke`.
+- `tests\test_hybrid_pr_checks_workflow.py`: verifies the fast PR workflow keeps
+  the media-preparation and Tauri stability gate tests in its Python gate list.
 
 Goal coverage:
 
