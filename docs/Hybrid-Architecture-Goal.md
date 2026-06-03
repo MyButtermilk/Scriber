@@ -234,7 +234,9 @@ architecture work. It replaces earlier incomplete goal text.
   geschrieben. Der finale Aggregat-Validator wertet inzwischen auch
   `release-metadata\media-preparation-smoke.json` aus; der Windows-Release-
   Workflow erzeugt dieses Artefakt im Standard-Release-Build mit
-  `scripts\build_windows.ps1 -RunMediaPreparationSmoke`.
+  `scripts\build_windows.ps1 -RunMediaPreparationSmoke`, und der finale Runner
+  kann es mit `scripts\smoke_media_preparation.py` selbst erzeugen oder ueber
+  `-UseExistingMediaPreparationReport` wiederverwenden.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen. Einzel-Smoke, gefuehrter Windows-Runner und
   Aggregat-Validator fuer diese Matrix sind vorhanden; die physischen USB-,

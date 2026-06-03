@@ -80,6 +80,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert command_names == [
         "microphoneMatrixValidation",
         "updaterPublicationVerification",
+        "mediaPreparationSmoke",
         "authenticodeValidation",
         "hybridReleaseReadiness",
     ]
@@ -104,7 +105,8 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     media_evidence = payload["requiredEvidence"][2]
     assert media_evidence["external"] is False
     assert media_evidence["report"].endswith("media-preparation-smoke.json")
-    assert "-RunMediaPreparationSmoke" in media_evidence["producer"]
+    assert "smoke_media_preparation.py" in media_evidence["producer"]
+    assert media_evidence["mediaToolsDir"].endswith("backend\\tools\\ffmpeg")
     publication_evidence = payload["requiredEvidence"][3]
     assert "final redirect URL" in publication_evidence["notes"]
     authenticode_evidence = payload["requiredEvidence"][4]
@@ -112,11 +114,14 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert authenticode_evidence["requireTimestamp"] is True
     assert "validate_microphone_hardware_matrix.py" in payload["commands"][0]["command"]
     assert "verify_tauri_updater_publication.py" in payload["commands"][1]["command"]
-    assert "validate_windows_authenticode.ps1" in payload["commands"][2]["command"]
-    assert "validate_hybrid_release_readiness.py" in payload["commands"][3]["command"]
-    assert "--media-preparation-report" in payload["commands"][3]["command"]
-    assert "media-preparation-smoke.json" in payload["commands"][3]["command"]
-    assert "--require-authenticode-timestamp" in payload["commands"][3]["command"]
+    assert "smoke_media_preparation.py" in payload["commands"][2]["command"]
+    assert "--media-tools-dir" in payload["commands"][2]["command"]
+    assert "--require-ffprobe" in payload["commands"][2]["command"]
+    assert "validate_windows_authenticode.ps1" in payload["commands"][3]["command"]
+    assert "validate_hybrid_release_readiness.py" in payload["commands"][4]["command"]
+    assert "--media-preparation-report" in payload["commands"][4]["command"]
+    assert "media-preparation-smoke.json" in payload["commands"][4]["command"]
+    assert "--require-authenticode-timestamp" in payload["commands"][4]["command"]
     assert written == payload
 
 
@@ -145,6 +150,7 @@ def test_hybrid_release_readiness_runner_can_reuse_existing_external_reports(tmp
         "-PlanOnly",
         "-HardwareInputDir",
         str(tmp_path),
+        "-UseExistingMediaPreparationReport",
         "-UseExistingAuthenticodeReport",
         "-UseExistingUpdaterPublicationReport",
     )
@@ -154,4 +160,6 @@ def test_hybrid_release_readiness_runner_can_reuse_existing_external_reports(tmp
     assert "reuse" in payload["commands"][1]["command"]
     assert "updater-publication.json" in payload["commands"][1]["command"]
     assert "reuse" in payload["commands"][2]["command"]
-    assert "authenticode.json" in payload["commands"][2]["command"]
+    assert "media-preparation-smoke.json" in payload["commands"][2]["command"]
+    assert "reuse" in payload["commands"][3]["command"]
+    assert "authenticode.json" in payload["commands"][3]["command"]

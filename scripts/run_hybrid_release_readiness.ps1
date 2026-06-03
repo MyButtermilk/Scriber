@@ -17,6 +17,7 @@ param(
     [string]$UpdaterArtifactDir = "Frontend\src-tauri\target\release\bundle\nsis",
     [string]$Sha256Sums = "Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt",
     [string]$MediaPreparationReport = "Frontend\src-tauri\target\release\release-metadata\media-preparation-smoke.json",
+    [string]$MediaToolsDir = "Frontend\src-tauri\target\release\backend\tools\ffmpeg",
     [string]$UpdaterPublicationUrl = "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
     [string]$UpdaterPublicationReport = "",
     [int]$UpdaterPublicationAttempts = 6,
@@ -27,6 +28,7 @@ param(
     [switch]$RequireAuthenticodeTimestamp,
     [string]$OutputPath = "",
     [switch]$UseExistingAuthenticodeReport,
+    [switch]$UseExistingMediaPreparationReport,
     [switch]$UseExistingUpdaterPublicationReport,
     [switch]$PlanOnly
 )
@@ -120,6 +122,7 @@ $UpdaterMetadata = Convert-ToFullPath -Path $UpdaterMetadata -Root $RepoRoot
 $UpdaterArtifactDir = Convert-ToFullPath -Path $UpdaterArtifactDir -Root $RepoRoot
 $Sha256Sums = Convert-ToFullPath -Path $Sha256Sums -Root $RepoRoot
 $MediaPreparationReport = Convert-ToFullPath -Path $MediaPreparationReport -Root $RepoRoot
+$MediaToolsDir = Convert-ToFullPath -Path $MediaToolsDir -Root $RepoRoot
 $AuthenticodePath = @($AuthenticodePath | ForEach-Object { Convert-ToFullPath -Path $_ -Root $RepoRoot })
 
 $matrixArgs = @(
@@ -158,6 +161,15 @@ if ($RequireAuthenticodeTimestamp) {
     $authenticodeArgs += "-RequireTimestamp"
 }
 $authenticodeArgs += @("-OutputPath", $AuthenticodeReport)
+
+$mediaPreparationArgs = @(
+    "scripts\smoke_media_preparation.py",
+    "--output",
+    $MediaPreparationReport,
+    "--media-tools-dir",
+    $MediaToolsDir,
+    "--require-ffprobe"
+)
 
 $readinessArgs = @(
     "scripts\validate_hybrid_release_readiness.py",
@@ -221,8 +233,9 @@ $requiredEvidence = @(
         name = "mediaPreparationSmoke"
         required = $true
         external = $false
-        producer = "scripts\build_windows.ps1 -RunMediaPreparationSmoke"
+        producer = $(if ($UseExistingMediaPreparationReport) { "existing report" } else { "scripts\smoke_media_preparation.py" })
         report = $MediaPreparationReport
+        mediaToolsDir = $MediaToolsDir
         notes = "Validates bundled ffmpeg/ffprobe through Scriber file-upload compression, video extraction, YouTube normalization, Azure-MAI preparation, and ffprobe duration probing."
     },
     [pscustomobject]@{
@@ -261,10 +274,12 @@ $plan = [pscustomobject]@{
     hardwareInputDir = $HardwareInputDir
     matrixValidationOutput = $MatrixValidationOutput
     mediaPreparationReport = $MediaPreparationReport
+    mediaToolsDir = $MediaToolsDir
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
     outputPath = $OutputPath
     useExistingAuthenticodeReport = [bool]$UseExistingAuthenticodeReport
+    useExistingMediaPreparationReport = [bool]$UseExistingMediaPreparationReport
     useExistingUpdaterPublicationReport = [bool]$UseExistingUpdaterPublicationReport
     requiredEvidence = $requiredEvidence
     commands = @(
@@ -275,6 +290,10 @@ $plan = [pscustomobject]@{
         [pscustomobject]@{
             name = "updaterPublicationVerification"
             command = $(if ($UseExistingUpdaterPublicationReport) { "reuse $UpdaterPublicationReport" } else { "python " + (Convert-ToDisplayCommand -CommandArgs $updaterArgs) })
+        },
+        [pscustomobject]@{
+            name = "mediaPreparationSmoke"
+            command = $(if ($UseExistingMediaPreparationReport) { "reuse $MediaPreparationReport" } else { "python " + (Convert-ToDisplayCommand -CommandArgs $mediaPreparationArgs) })
         },
         [pscustomobject]@{
             name = "authenticodeValidation"
@@ -313,6 +332,14 @@ try {
         }
     }
 
+    if ($UseExistingMediaPreparationReport) {
+        Assert-ExistingFile -Path $MediaPreparationReport -Label "Media preparation smoke report"
+    } else {
+        Invoke-Checked -Label "Media preparation smoke" -Command {
+            python @mediaPreparationArgs
+        }
+    }
+
     if ($UseExistingAuthenticodeReport) {
         Assert-ExistingFile -Path $AuthenticodeReport -Label "Authenticode report"
     } else {
@@ -332,6 +359,7 @@ try {
     ok = $true
     planPath = $planPath
     matrixValidationOutput = $MatrixValidationOutput
+    mediaPreparationReport = $MediaPreparationReport
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
     outputPath = $OutputPath

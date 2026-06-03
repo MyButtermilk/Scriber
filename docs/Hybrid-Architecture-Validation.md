@@ -4,6 +4,46 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Final Runner Media Smoke Command
+
+Commands:
+
+```powershell
+python -m pytest tests\test_hybrid_release_readiness_runner.py -q
+
+powershell -NoProfile -Command `
+  '$tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts\run_hybrid_release_readiness.ps1"), [ref]$tokens, [ref]$errors) | Out-Null; if($errors.Count -gt 0){ $errors | Format-List *; exit 1 }; "parser ok"'
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\run_hybrid_release_readiness.ps1` now has `-MediaToolsDir` and
+  `-UseExistingMediaPreparationReport`.
+- The runner's `-PlanOnly` command list now includes a concrete
+  `mediaPreparationSmoke` command:
+  `python scripts\smoke_media_preparation.py --output ... --media-tools-dir ... --require-ffprobe`.
+- In non-plan mode, the runner creates the media-preparation report by default
+  and only reuses an existing report when `-UseExistingMediaPreparationReport`
+  is passed.
+
+Evidence:
+
+- `tests\test_hybrid_release_readiness_runner.py`: `4 passed`.
+- PowerShell parser check for `scripts\run_hybrid_release_readiness.ps1`:
+  passed.
+
+Goal coverage:
+
+- Phase 6/7: makes the non-external media-preparation evidence reproducible
+  from the final runner itself instead of leaving it as an implied pre-step.
+
+Remaining limits:
+
+- The runner still intentionally does not create external hardware,
+  Authenticode, or published-updater evidence.
+
 ## 2026-06-03 - Release Workflow Produces Media Smoke Evidence
 
 Commands:
