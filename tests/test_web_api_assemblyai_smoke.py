@@ -23,6 +23,7 @@ class _FakeAssemblyPipeline:
         on_mic_ready=None,
         on_error=None,
         on_text_injected=None,
+        **_kwargs,
     ):
         self.service_name = service_name
         self.on_status_change = on_status_change

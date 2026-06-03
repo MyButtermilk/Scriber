@@ -34,6 +34,7 @@ class _StressFakePipeline:
         on_text_injected=None,
         on_mic_ready=None,
         on_error=None,
+        **_kwargs,
     ):
         type(self).created += 1
         self.instance_id = type(self).created
