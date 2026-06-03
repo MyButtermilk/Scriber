@@ -17,8 +17,9 @@ hiddenimports = [
     "PySide6.QtGui",
     "PySide6.QtWidgets",
     "pyloudnorm",
-    "scipy",
-    "scipy.signal",
+    "pyloudnorm.meter",
+    "pyloudnorm.normalize",
+    "pyloudnorm.util",
     "onnxruntime",
     "pipecat.audio.vad.silero",
     "yt_dlp",
@@ -63,11 +64,21 @@ frontend_dist = repo_root / "Frontend" / "dist" / "public"
 if frontend_dist.exists():
     datas.append((str(frontend_dist), "Frontend/dist/public"))
 
-for package in ("pipecat", "google", "yt_dlp", "onnxruntime"):
+for package in ("pipecat", "google", "yt_dlp"):
     try:
         datas += collect_data_files(package)
     except Exception:
         pass
+
+try:
+    # ONNXRuntime runtime DLLs are handled by collect_dynamic_libs(). Keep legal
+    # notices, but avoid bundling sample models and mobile-helper docs.
+    datas += collect_data_files(
+        "onnxruntime",
+        includes=["LICENSE", "Privacy.md", "ThirdPartyNotices.txt"],
+    )
+except Exception:
+    pass
 
 a = Analysis(
     [str(repo_root / "src" / "backend_worker.py")],
@@ -87,6 +98,7 @@ a = Analysis(
         "matplotlib",
         "pandas",
         "sklearn",
+        "scipy",
         "torch",
         "torchaudio",
         "torchvision",

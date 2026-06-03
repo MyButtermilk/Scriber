@@ -259,10 +259,11 @@ architecture work. It replaces earlier incomplete goal text.
   temporaer installierte NSIS-App laufen. Ein Slim-FFmpeg-Release-Default bleibt
   aber bis zu realen installierten YouTube-/Datei-/Azure-MAI-Media-Smokes offen.
   Fuer SciPy/ONNXRuntime ist `scripts\analyze_backend_runtime_dependencies.py`
-  vorhanden. Der aktuelle Sidecar-Snapshot meldet `107.46 MiB` fuer diese
-  Runtime-Gruppe (`73.70 MiB` SciPy/SciPy libs, `33.76 MiB` ONNXRuntime) und
-  prueft die Pflichtpfade fuer `pyloudnorm`/`scipy.signal` sowie
-  ONNXRuntime/Silero-VAD, bevor kleinere Kandidaten akzeptiert werden.
+  vorhanden. Der aktuelle Sidecar-Snapshot meldet `33.75 MiB` fuer diese
+  Runtime-Gruppe (`0.00 MiB` SciPy/SciPy libs, `33.75 MiB` ONNXRuntime), weil
+  das lokale `pyloudnorm`-Kompatibilitaetsmodul Pipecat-Loudness ohne SciPy
+  abdeckt. Der Gate erwartet SciPy als absent, prueft ONNXRuntime/Silero-VAD
+  Pflichtpfade und lehnt ONNXRuntime-Beispiel-/Tooldaten ab.
 - Phase 8 hat synthetische Guards, eine 30-Minuten-Idle-Stability, mehrere
   installierte Stability-Smokes und einen vom Nutzer fuer diese Iteration
   akzeptierten 5-Minuten-Live-Recording-Gate. Nicht erbracht sind reale

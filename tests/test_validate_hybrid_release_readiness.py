@@ -217,8 +217,10 @@ def write_runtime_dependency_footprint_report(path: Path, *, ok: bool = True) ->
                 "apiVersion": "1",
                 "ok": ok,
                 "summary": {
-                    "totalMb": 107.46,
+                    "totalMb": 33.75,
                     "missingRequiredPaths": [],
+                    "disallowedPaths": [],
+                    "unexpectedPresentDependencies": [],
                     "budgetFailures": [] if ok else ["scipy"],
                 },
                 "budgets": {
@@ -229,14 +231,20 @@ def write_runtime_dependency_footprint_report(path: Path, *, ok: bool = True) ->
                 "dependencies": {
                     "scipy": {
                         "name": "scipy",
-                        "totalMb": 73.7,
+                        "expectedPresent": False,
+                        "unexpectedPresent": False,
+                        "totalMb": 0,
                         "missingRequiredPaths": [],
-                        "paths": [{"path": "scipy", "exists": True}],
+                        "disallowedPaths": [],
+                        "paths": [{"path": "scipy", "exists": False}],
                     },
                     "onnxruntime": {
                         "name": "onnxruntime",
-                        "totalMb": 33.76,
+                        "expectedPresent": True,
+                        "unexpectedPresent": False,
+                        "totalMb": 33.75,
                         "missingRequiredPaths": [],
+                        "disallowedPaths": [],
                         "paths": [{"path": "onnxruntime", "exists": True}],
                     },
                 },

@@ -162,16 +162,16 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - `requirements-base.txt` (Runtime fuer Standardnutzer),
    - `requirements-local-asr.txt` (nur lokale ASR-Provider),
    - `requirements-dev.txt` (Tests/Tools).
-2. Status 2026-06-01: `requirements-base.txt` enthaelt explizit `scipy`, weil Pipecat ueber `pyloudnorm` beim Backend-Start davon abhaengt.
+2. Status 2026-06-03: `requirements-base.txt` enthaelt kein `scipy` mehr. Scriber stellt ein lokales `pyloudnorm`-Kompatibilitaetsmodul bereit, damit Pipecat-Loudness ohne `scipy.signal` funktioniert.
 3. Status 2026-06-01: Der GitHub Release-Build nutzt `requirements-base.txt`, `requirements-dev.txt` und `requirements-build.txt`, aber nicht `requirements-local-asr.txt`.
 4. Lokale Provider werden per **Lazy Import** geladen (erst wenn Nutzer sie aktiviert).
 5. Nicht genutzte Provider im Standard-Build per Feature-Flag deaktivieren.
-6. Status 2026-06-03: `scripts/analyze_backend_runtime_dependencies.py` misst und gated die gefrorenen SciPy-/ONNXRuntime-Anteile im Sidecar. Der aktuelle Release-Backend-Snapshot meldet `107.46 MiB` fuer diese Gruppe: `73.70 MiB` fuer `scipy` + `scipy.libs` und `33.76 MiB` fuer `onnxruntime`. Der Report prueft die Pflichtpfade fuer `pyloudnorm`/`scipy.signal` und ONNXRuntime/Silero-VAD, bevor ein kleinerer Kandidat akzeptiert werden darf.
+6. Status 2026-06-03: `scripts/analyze_backend_runtime_dependencies.py` misst und gated die gefrorenen SciPy-/ONNXRuntime-Anteile im Sidecar. Der aktuelle Release-Backend-Snapshot meldet `33.75 MiB` fuer diese Gruppe: `0.00 MiB` fuer `scipy` + `scipy.libs` und `33.75 MiB` fuer `onnxruntime`. Der Report erwartet SciPy als absent, prueft ONNXRuntime/Silero-VAD-Pflichtpfade und lehnt ONNXRuntime-Beispiel-/Tooldaten ab.
 
 ### C) PyInstaller gezielt schlank halten
 1. In `scriber.spec` nur benoetigte `hiddenimports`/`datas` aufnehmen.
-   - Status 2026-06-01: `packaging/scriber-backend.spec` listet SciPy/pyloudnorm explizit fuer den Pipecat-Startup-Pfad und schliesst schwere lokale ASR-Stacks aus.
-   - Status 2026-06-01: `scripts/check_backend_runtime_imports.py` prueft kritische Startup-Imports vor PyInstaller; danach startet der Build den gefrorenen `scriber-backend --runtime-import-check`, damit fehlende Module wie SciPy den Build stoppen statt erst beim Endnutzer zu crashen.
+   - Status 2026-06-03: `packaging/scriber-backend.spec` listet das lokale `pyloudnorm` explizit fuer den Pipecat-Startup-Pfad, schliesst SciPy aus dem Standard-Sidecar aus und schliesst schwere lokale ASR-Stacks aus.
+   - Status 2026-06-03: `scripts/check_backend_runtime_imports.py` prueft kritische Startup-Imports vor PyInstaller; danach startet der Build den gefrorenen `scriber-backend --runtime-import-check`, damit fehlende Module wie lokales `pyloudnorm`, ONNXRuntime oder Silero VAD den Build stoppen statt erst beim Endnutzer zu crashen.
    - Status 2026-06-03: `scripts/build_windows.ps1 -RunRuntimeDependencyFootprint` schreibt `release-metadata\runtime-dependency-footprint.json`; optionale Budgets `-MaxScipyRuntimeDependencyMB`, `-MaxOnnxRuntimeDependencyMB` und `-MaxPythonRuntimeDependencyMB` machen Groessenregressionen hart.
 2. Unnoetige Inhalte explizit ausschliessen:
    - `tests`, `__pycache__`, Dokumentation, Beispiele, nicht benoetigte Provider-Assets.
@@ -196,7 +196,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - `Standard Setup <= 220 MB`,
    - `installierte Standard-App <= 450 MB` als Zielwert nach Groessenoptimierung.
 3. Jede Release-PR enthaelt den Groessenvergleich zur Vorversion.
-   - Status 2026-06-03: `scripts/create_release_size_report.py` erzeugt `size-report.json` mit Artefaktgroessen, Top-Dateien und optionaler installierter App-Groesse. `scripts/build_windows.ps1` ruft den Report nach `latest.json`/`SHA256SUMS.txt` auf und failt standardmaessig, wenn das groesste Installer-Artefakt ueber `-MaxInstallerSizeMB 220` liegt. `scripts/smoke_windows_installer.ps1 -MaxInstalledSizeMB <MB>` misst den temporaeren Installationsordner und kann die installierte Groesse als hartes Gate pruefen. Der GitHub-Workflow kopiert `release-metadata\*.json`, sodass `size-report.json`, `media-preparation-smoke.json` und `runtime-dependency-footprint.json` als Release-Artefakte verfuegbar sind. Der aktuelle Full-NSIS-Setup liegt mit 205.79 MiB unter dem 220-MiB-Gate; der explizite `-SkipBundledFfprobe`-Vergleichsbuild liegt bei 163.43 MiB und der installierte Vergleichs-Smoke bei 481.10 MiB. Der Standard-Backend-Resource-Ordner ist 601.66 MiB und wird vor allem durch vollstaendige `ffmpeg.exe`/`ffprobe.exe` dominiert; SciPy/SciPy libs und ONNXRuntime machen zusammen weitere `107.46 MiB` aus. Ohne gebuendeltes `ffprobe.exe` sinkt der Backend-Resource-Ordner auf 468.23 MiB. Das installierte 450-MiB-Ziel ist damit noch nicht erreicht. Dieses Ziel darf nicht durch stilles Entfernen von ffmpeg/ffprobe, SciPy oder ONNXRuntime aus dem Standard-Windows-Build erreicht werden; sinnvolle Folgearbeit ist ein kleineres kompatibles Media-Tools-Bundle, ein bewiesener SciPy-signal-only/Pipecat-Loudness-Ersatz oder weiterer PyInstaller-Dependency-Cleanup.
+   - Status 2026-06-03: `scripts/create_release_size_report.py` erzeugt `size-report.json` mit Artefaktgroessen, Top-Dateien und optionaler installierter App-Groesse. `scripts/build_windows.ps1` ruft den Report nach `latest.json`/`SHA256SUMS.txt` auf und failt standardmaessig, wenn das groesste Installer-Artefakt ueber `-MaxInstallerSizeMB 220` liegt. `scripts/smoke_windows_installer.ps1 -MaxInstalledSizeMB <MB>` misst den temporaeren Installationsordner und kann die installierte Groesse als hartes Gate pruefen. Der GitHub-Workflow kopiert `release-metadata\*.json`, sodass `size-report.json`, `media-preparation-smoke.json` und `runtime-dependency-footprint.json` als Release-Artefakte verfuegbar sind. Der aktuelle Full-NSIS-Setup liegt mit 205.79 MiB unter dem 220-MiB-Gate; der explizite `-SkipBundledFfprobe`-Vergleichsbuild liegt bei 163.43 MiB und der installierte Vergleichs-Smoke bei 481.10 MiB. Der Standard-Backend-Resource-Ordner wurde durch den lokalen `pyloudnorm`-Ersatz um rund `73.70 MiB` SciPy/SciPy-libs reduziert; die verbleibende ONNXRuntime-Gruppe liegt bei `33.75 MiB`, waehrend vollstaendige `ffmpeg.exe`/`ffprobe.exe` weiterhin den groessten Block bilden. Das installierte 450-MiB-Ziel ist damit naeher, aber ohne neuen Full-Installer-Smoke noch nicht final neu bewertet. Dieses Ziel darf nicht durch stilles Entfernen von ffmpeg/ffprobe oder ONNXRuntime aus dem Standard-Windows-Build erreicht werden; sinnvolle Folgearbeit ist ein kleineres kompatibles Media-Tools-Bundle oder weiterer PyInstaller-Dependency-Cleanup.
 
 ### F) Update-Bandbreite minimieren (ab Phase 2)
 1. Zunaechst Full-Installer beibehalten (einfacher und robust).
@@ -229,7 +229,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Status 2026-06-01: Der Rust-Supervisor bevorzugt `SCRIBER_BACKEND_EXE` nur fuer erlaubte `scriber-backend`-Dateinamen bzw. `backend\scriber-backend.exe` neben der Tauri-Exe und faellt im Dev-Modus auf `python -m src.web_api` zurueck.
    - Status 2026-06-02: Der Standard-Sidecar ist ein Cloud-Provider-Build mit gebuendeltem `ffmpeg`/`ffprobe` und schliesst nur schwere lokale ASR-Stacks (`torch`, NeMo, ONNX-ASR) aus.
    - Status 2026-06-01: Tauri bundelt `target/release/backend/` als Resource `backend/`, sodass installierte NSIS-Builds denselben Sidecar-Pfad nutzen.
-   - Status 2026-06-01: Der Sidecar-Build fuehrt vor PyInstaller einen Runtime-Import-Preflight aus und prueft danach den gefrorenen Sidecar mit `--runtime-import-check`; beides deckt unter anderem SciPy, pyloudnorm, Pipecat und `src.web_api` ab.
+   - Status 2026-06-03: Der Sidecar-Build fuehrt vor PyInstaller einen Runtime-Import-Preflight aus und prueft danach den gefrorenen Sidecar mit `--runtime-import-check`; beides deckt unter anderem lokales `pyloudnorm`, ONNXRuntime, Pipecat/Silero-VAD und `src.web_api` ab.
    - Status 2026-06-01: Die Default-Capability ist auf App-Version, Prozess-Relaunch und Updater-Check/Download-Install beschraenkt; Tauri-Shell- und Opener-Plugin sind nicht registriert. `tests/test_tauri_security_gates.py` prueft diese Grenze.
    - Status 2026-06-01: Der Tauri-Supervisor erzeugt ein zufaelliges `SCRIBER_SESSION_TOKEN`, uebergibt es an den Python-Worker und stellt es dem React-Frontend ueber `get_backend_access` bereit. Das Backend erzwingt den Token fuer lokale REST-/WebSocket-Zugriffe; `/api/health` bleibt fuer Readiness tokenfrei.
    - Status 2026-06-02: React meldet erfolgreiche WebView-Backend-Bereitschaft ueber den token-geschuetzten `/api/runtime/frontend-ready` Beacon, damit Installer-Smokes nicht nur den laufenden Backend-Port, sondern auch den echten WebView-zu-Backend-Pfad pruefen.
@@ -252,7 +252,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
    - Entry-Point: `src/backend_worker.py` (wird vom Tauri-Supervisor gemanagt).
    - Hidden imports explizit listen (basierend auf Codebase-Analyse):
      - `pipecat-ai` Submodule (google, assemblyai, silero, deepgram, openai, azure, gladia, groq, speechmatics, aws, elevenlabs)
-     - `scipy`, `scipy.signal`, `pyloudnorm`
+     - lokales `pyloudnorm`
      - `sounddevice`, `pycaw`, `keyboard`, `pyautogui`
      - `PySide6`, `pystray`, `customtkinter`
      - `yt-dlp`, `python-docx`, `reportlab`, `lxml`
@@ -266,7 +266,7 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
 
 Lieferobjekte:
 1. `scripts/build_tauri_backend_sidecar.ps1` (umgesetzt fuer Sidecar, Import-Preflight, gefrorenen Runtime-Import-Check, Frontend-Build, optionales FFmpeg/FFprobe-Bundling und Copy nach Tauri Release)
-2. `packaging/scriber-backend.spec` (umgesetzt fuer Standard-Cloud-Sidecar inkl. `yt-dlp`, SciPy und pyloudnorm)
+2. `packaging/scriber-backend.spec` (umgesetzt fuer Standard-Cloud-Sidecar inkl. `yt-dlp`, lokalem `pyloudnorm` ohne SciPy und ONNXRuntime)
 3. `src/version.py` (umgesetzt)
 4. `src/runtime/paths.py` (teilweise umgesetzt: Runtime-Data-Pfade; Asset-Resolution offen)
 5. `src/runtime/media_tools.py` (umgesetzt: zentrale Resolution fuer `ffmpeg`, `ffprobe`, `yt-dlp`)
@@ -412,7 +412,7 @@ Lieferobjekte:
 | `src/runtime/support_bundle.py` | Umgesetzt: redigiertes Support-ZIP mit Runtime-/State-Metadaten, Logs und redigierter Config/Env. |
 | `src/backend_worker.py` | Umgesetzt: Tauri/PyInstaller Worker-Entry-Point. |
 | `Frontend/src-tauri/src/lib.rs` | Umgesetzt: Rust-Supervisor, Session-Token-Bridge, Worker-Lifecycle, App-Menue/Tray fuer Shell-Aktionen, Windows-Named-Mutex fuer Single Instance, Windows-Autostart via HKCU Run-Key, globaler Hotkey via bestehende Live-Mic-API, Tauri-Updater- und Process-Plugin-Initialisierung. |
-| `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar inkl. SciPy/pyloudnorm-Startup-Abhaengigkeiten. |
+| `packaging/scriber-backend.spec` | Umgesetzt: PyInstaller-Spec fuer den Backend-Sidecar inkl. lokalem pyloudnorm-Startup-Pfad ohne SciPy und ONNXRuntime/Silero-VAD. |
 | `installer/scriber.iss` | Inno Setup Script. |
 | `scripts/check_backend_runtime_imports.py` | Umgesetzt: Preflight fuer kritische Backend-Startup-Imports vor PyInstaller und als gefrorener Sidecar-Check via `--runtime-import-check`. |
 | `scripts/build_tauri_backend_sidecar.ps1` | Umgesetzt: Import-Preflight -> Frontend Build -> PyInstaller Sidecar -> gefrorener Runtime-Import-Check -> optionales FFmpeg/FFprobe-Bundling -> optionaler Copy nach Tauri Release. |

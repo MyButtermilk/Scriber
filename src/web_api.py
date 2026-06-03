@@ -125,7 +125,6 @@ _YOUTUBE_THUMBNAIL_ALLOWED_HOSTS = {"i.ytimg.com", "img.youtube.com"}
 _YOUTUBE_THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
 _RUST_AUDIO_PROTOTYPE_AVAILABLE = False
 _AUDIO_DIAGNOSTIC_IMPORTS = (
-    "scipy",
     "pyloudnorm",
     "onnxruntime",
     "pipecat.frames.frames",

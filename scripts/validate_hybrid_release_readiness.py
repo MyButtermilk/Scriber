@@ -249,7 +249,7 @@ def validate_runtime_dependency_footprint_report(report_path: Path | None) -> Re
     failures: list[str] = []
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
-        "requiredDependencies": ["scipy", "onnxruntime"],
+        "trackedDependencies": ["scipy", "onnxruntime"],
     }
     if report_path is None:
         failures.append("runtime dependency footprint report is required")
@@ -285,6 +285,19 @@ def validate_runtime_dependency_footprint_report(report_path: Path | None) -> Re
         failures.append("runtime dependency footprint budgetFailures must be a list")
     elif budget_failures:
         failures.append("runtime dependency footprint has budget failures: " + ", ".join(map(str, budget_failures)))
+    disallowed = summary.get("disallowedPaths", [])
+    if not isinstance(disallowed, list):
+        failures.append("runtime dependency footprint disallowedPaths must be a list")
+    elif disallowed:
+        failures.append("runtime dependency footprint has disallowed paths: " + ", ".join(map(str, disallowed)))
+    unexpected_present = summary.get("unexpectedPresentDependencies", [])
+    if not isinstance(unexpected_present, list):
+        failures.append("runtime dependency footprint unexpectedPresentDependencies must be a list")
+    elif unexpected_present:
+        failures.append(
+            "runtime dependency footprint has unexpected dependencies: "
+            + ", ".join(map(str, unexpected_present))
+        )
     total_mb = summary.get("totalMb")
     if not isinstance(total_mb, (int, float)) or total_mb <= 0:
         failures.append("runtime dependency footprint summary.totalMb must be positive")
@@ -293,15 +306,21 @@ def validate_runtime_dependency_footprint_report(report_path: Path | None) -> Re
     if not isinstance(dependencies, dict):
         failures.append("runtime dependency footprint dependencies must be an object")
         dependencies = {}
-    for dependency_name in details["requiredDependencies"]:
+    for dependency_name in details["trackedDependencies"]:
         dependency = dependencies.get(dependency_name)
         if not isinstance(dependency, dict):
             failures.append(f"runtime dependency footprint is missing dependency: {dependency_name}")
             continue
         if dependency.get("name") != dependency_name:
             failures.append(f"runtime dependency {dependency_name} name is invalid")
-        if dependency.get("totalMb", 0) <= 0:
+        expected_present = dependency.get("expectedPresent", True) is not False
+        total = dependency.get("totalMb", 0)
+        if expected_present and total <= 0:
             failures.append(f"runtime dependency {dependency_name} totalMb must be positive")
+        if not expected_present and total > 0:
+            failures.append(f"runtime dependency {dependency_name} must not be bundled")
+        if dependency.get("unexpectedPresent") is True:
+            failures.append(f"runtime dependency {dependency_name} is unexpectedly bundled")
         dependency_missing = dependency.get("missingRequiredPaths", [])
         if not isinstance(dependency_missing, list):
             failures.append(f"runtime dependency {dependency_name} missingRequiredPaths must be a list")
@@ -313,6 +332,11 @@ def validate_runtime_dependency_footprint_report(report_path: Path | None) -> Re
         paths = dependency.get("paths")
         if not isinstance(paths, list) or not paths:
             failures.append(f"runtime dependency {dependency_name} paths must be a non-empty list")
+        dependency_disallowed = dependency.get("disallowedPaths", [])
+        if not isinstance(dependency_disallowed, list):
+            failures.append(f"runtime dependency {dependency_name} disallowedPaths must be a list")
+        elif dependency_disallowed:
+            failures.append(f"runtime dependency {dependency_name} has disallowed paths")
 
     return ReadinessCheck("runtimeDependencyFootprint", not failures, failures, details)
 

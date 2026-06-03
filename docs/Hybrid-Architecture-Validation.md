@@ -4,16 +4,26 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
-## 2026-06-03 - SciPy ONNXRuntime Footprint Gate
+## 2026-06-03 - SciPy Removal and ONNXRuntime Footprint Gate
 
 Commands:
 
 ```powershell
+python scripts\check_backend_runtime_imports.py
+
+powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 `
+  -SkipFrontendBuild `
+  -CopyToTauriRelease
+
+Frontend\src-tauri\target\release\backend\scriber-backend.exe `
+  --runtime-import-check
+
 python scripts\analyze_backend_runtime_dependencies.py `
   --sidecar-dir Frontend\src-tauri\target\release\backend `
-  --output tmp\runtime-dependency-footprint-current.json
+  --output tmp\runtime-dependency-footprint-after-rebuild.json
 
 python -m pytest `
+  tests\test_local_pyloudnorm.py `
   tests\test_backend_runtime_dependency_footprint.py `
   tests\test_validate_hybrid_release_readiness.py `
   tests\test_hybrid_release_readiness_runner.py `
@@ -21,7 +31,12 @@ python -m pytest `
   -q
 
 python -m py_compile `
+  pyloudnorm\__init__.py `
+  pyloudnorm\meter.py `
+  pyloudnorm\normalize.py `
+  pyloudnorm\util.py `
   scripts\analyze_backend_runtime_dependencies.py `
+  scripts\check_backend_runtime_imports.py `
   scripts\validate_hybrid_release_readiness.py
 
 powershell -NoProfile -Command `
@@ -32,12 +47,22 @@ Result: passed.
 
 Implemented improvements:
 
+- Added a repository-local `pyloudnorm` compatibility package that implements
+  the Pipecat-needed `Meter.integrated_loudness` path without SciPy. Pipecat's
+  `calculate_audio_volume()` now imports that local package and does not load
+  `scipy`.
+- Removed SciPy from `requirements-base.txt`, PyInstaller hidden imports, audio
+  diagnostic import checks, and frozen sidecar required paths.
+- The PyInstaller spec now explicitly excludes SciPy for the standard
+  cloud-provider sidecar.
+- ONNXRuntime data collection now keeps license/privacy/third-party notices but
+  no longer collects bundled sample models or mobile-helper docs; native
+  ONNXRuntime DLLs remain handled through `collect_dynamic_libs("onnxruntime")`.
 - Added `scripts\analyze_backend_runtime_dependencies.py`.
-- The report measures frozen `_internal\scipy`, `_internal\scipy.libs`, and
-  `_internal\onnxruntime` payloads, records top files, verifies required
-  `pyloudnorm`/`scipy.signal` and ONNXRuntime/Silero-VAD paths, and supports
-  explicit `--max-scipy-mb`, `--max-onnxruntime-mb`, and `--max-total-mb`
-  budgets.
+- The report tracks expected-zero `_internal\scipy` and `_internal\scipy.libs`,
+  verifies required `_internal\onnxruntime` native paths, rejects
+  ONNXRuntime sample/tool payloads, records top files, and supports explicit
+  `--max-scipy-mb`, `--max-onnxruntime-mb`, and `--max-total-mb` budgets.
 - `scripts\build_windows.ps1 -RunRuntimeDependencyFootprint` writes
   `release-metadata\runtime-dependency-footprint.json`; the Windows release
   workflow now emits that report with release metadata.
@@ -48,14 +73,22 @@ Implemented improvements:
 Evidence:
 
 - Current release-backend snapshot:
-  - Total SciPy/ONNXRuntime footprint: `107.46 MiB`.
-  - SciPy plus SciPy libs: `73.70 MiB`.
-  - ONNXRuntime: `33.76 MiB`.
+  - Total tracked SciPy/ONNXRuntime footprint: `33.75 MiB`.
+  - SciPy plus SciPy libs: `0.00 MiB`.
+  - ONNXRuntime: `33.75 MiB`.
   - Missing required paths: `[]`.
+  - Disallowed paths: `[]`.
 - `tests\test_backend_runtime_dependency_footprint.py`,
   `tests\test_validate_hybrid_release_readiness.py`,
   `tests\test_hybrid_release_readiness_runner.py`, and
-  `tests\test_backend_runtime_import_check.py`: `26 passed`.
+  `tests\test_backend_runtime_import_check.py`: passed in focused runs.
+- `tests\test_local_pyloudnorm.py`: confirms Pipecat audio utils use the local
+  `pyloudnorm` package and do not import SciPy.
+- Frozen `scriber-backend.exe --runtime-import-check`: passed.
+- `scripts\smoke_media_preparation.py --media-tools-dir
+  Frontend\src-tauri\target\release\backend\tools\ffmpeg`: passed after
+  restoring bundled `ffmpeg.exe` and `ffprobe.exe` to the locally rebuilt
+  release backend folder.
 - PowerShell parser check for `scripts\run_hybrid_release_readiness.ps1` and
   `scripts\build_windows.ps1`: passed.
 - Python compile check for the analyzer and final readiness validator: passed.
@@ -64,13 +97,14 @@ Goal coverage:
 
 - Phase 6/8: adds the SciPy/ONNXRuntime equivalent of the media-tools footprint
   gate. Size work can now use measured dependency-level budgets without
-  silently dropping Pipecat loudness/VAD startup dependencies.
+  silently dropping Pipecat loudness/VAD startup dependencies. SciPy is now a
+  disallowed standard-sidecar dependency rather than a required payload.
 
 Remaining limits:
 
-- This does not remove SciPy or ONNXRuntime. It establishes the hard evidence
-  gate needed before experimenting with a smaller SciPy signal/loudness path or
-  a smaller ONNXRuntime distribution.
+- ONNXRuntime is still required for Pipecat Silero VAD and remains the tracked
+  native runtime payload. Further reduction needs a measured VAD/runtime
+  alternative or a smaller compatible ONNXRuntime distribution.
 
 ## 2026-06-03 - Installed Package Media Preparation Smoke
 
@@ -647,7 +681,8 @@ Goal coverage:
 - Phase 8: confirms the current largest single installer-size lever is
   `ffprobe.exe` omission, but also shows the remaining installed footprint is
   still dominated by `ffmpeg.exe`, PyInstaller/Python native libraries,
-  PySide6, SciPy/OpenBLAS, ONNXRuntime, and Pipecat model data.
+  PySide6, ONNXRuntime, and Pipecat model data. Later 2026-06-03 work removed
+  the standard-sidecar SciPy/OpenBLAS payload.
 
 Remaining limits:
 
@@ -1493,8 +1528,9 @@ Implemented improvements:
 - The endpoint reports non-secret live-recording readiness data:
   effective/requested audio engine flags, configured and active provider,
   microphone selection, idle prewarm state, text-injection method/disable flag,
-  paste timing settings, and importability for SciPy, pyloudnorm, ONNXRuntime,
-  Pipecat frames, Pipecat VAD, Silero VAD, SmartTurn, and UserIdleProcessor.
+  paste timing settings, and importability for local `pyloudnorm`,
+  ONNXRuntime, Pipecat frames, Pipecat VAD, Silero VAD, SmartTurn, and
+  UserIdleProcessor.
 - `scripts\measure_recording_hot_path_baseline.py` now writes that
   `audioDiagnostics` snapshot into each benchmark artifact before driving the
   live-mic start/stop sample.
@@ -1563,7 +1599,7 @@ Implemented improvements:
   native runtime.
 - Extended `scripts\check_backend_runtime_imports.py` so both the source
   preflight and frozen sidecar `--runtime-import-check` cover ONNXRuntime and
-  `pipecat.audio.vad.silero`, not just SciPy/pyloudnorm/Pipecat frames.
+  `pipecat.audio.vad.silero`, not just pyloudnorm/Pipecat frames.
 - Updated `packaging\scriber-backend.spec` to bundle ONNXRuntime native
   libraries and data for Silero VAD while excluding heavy local ASR/tooling
   modules (`onnx`, `numba`, `llvmlite`, `torch`, NeMo, ONNX-ASR).
@@ -1597,9 +1633,9 @@ Goal coverage:
 
 - Phase 6: standard Windows installer now bundles the runtime dependency that
   was missing in the packaged backend startup path.
-- Phase 7: build and installed-package smoke gates now fail early if SciPy,
-  pyloudnorm, ONNXRuntime, Silero VAD, Pipecat frames, or `src.web_api` are not
-  importable from the packaged sidecar.
+- Phase 7: build and installed-package smoke gates now fail early if local
+  `pyloudnorm`, ONNXRuntime, Silero VAD, Pipecat frames, or `src.web_api` are
+  not importable from the packaged sidecar.
 
 Remaining limits:
 

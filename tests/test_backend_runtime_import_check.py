@@ -23,8 +23,6 @@ def test_backend_worker_startup_timeout_simulation_is_once(monkeypatch, tmp_path
 def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     required_modules = {module for module, _reason in REQUIRED_IMPORTS}
 
-    assert "scipy" in required_modules
-    assert "scipy.signal" in required_modules
     assert "pyloudnorm" in required_modules
     assert "onnxruntime" in required_modules
     assert "pipecat.audio.vad.silero" in required_modules
@@ -36,7 +34,7 @@ def test_standard_requirements_include_audio_runtime_dependencies():
         Path(__file__).resolve().parents[1] / "requirements-base.txt"
     ).read_text(encoding="utf-8").splitlines()
 
-    assert "scipy" in requirements
+    assert "scipy" not in requirements
     assert "onnxruntime" in requirements
 
 
@@ -99,17 +97,26 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert "collect_dynamic_libs" in spec
     assert '"onnxruntime"' in spec
     assert '"pipecat.audio.vad.silero"' in spec
+    assert '"pyloudnorm.meter"' in spec
+    assert '"scipy",' in spec
+    assert '"scipy.signal"' not in spec
     collect_submodules_packages = spec.split("for package in (", 1)[1].split(
         "):\n    try:\n        hiddenimports += collect_submodules(package)",
         1,
     )[0]
     assert '"onnxruntime"' not in collect_submodules_packages
+    assert "collect_data_files(" in spec
+    assert '"onnxruntime",' in spec
+    assert "includes=[" in spec
+    assert "ThirdPartyNotices.txt" in spec
     assert '"onnxruntime",' not in spec.split("excludes=[", 1)[1]
     assert '"onnx",' in spec
     assert '"numba",' in spec
     assert '"llvmlite",' in spec
+    assert '"scipy",' in spec.split("excludes=[", 1)[1]
     assert "_internal\\onnxruntime" in build_script
     assert "_internal\\onnxruntime\\capi" in build_script
+    assert "_internal\\scipy" not in build_script
 
 
 def test_backend_runtime_import_check_reports_missing_modules():

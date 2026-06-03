@@ -26,8 +26,10 @@ BYTES_PER_MIB = 1024 * 1024
 DEPENDENCY_GROUPS: dict[str, dict[str, Any]] = {
     "scipy": {
         "paths": ("scipy", "scipy.libs"),
-        "requiredPaths": ("scipy", "scipy.libs"),
-        "reason": "Pipecat/pyloudnorm startup path through scipy.signal",
+        "requiredPaths": (),
+        "disallowedPaths": ("scipy", "scipy.libs"),
+        "expectedPresent": False,
+        "reason": "Intentionally absent: local pyloudnorm compatibility avoids SciPy for Pipecat loudness",
     },
     "onnxruntime": {
         "paths": ("onnxruntime", "onnxruntime.libs"),
@@ -37,6 +39,8 @@ DEPENDENCY_GROUPS: dict[str, dict[str, Any]] = {
             "onnxruntime/capi/onnxruntime.dll",
             "onnxruntime/capi/onnxruntime_pybind11_state.pyd",
         ),
+        "disallowedPaths": ("onnxruntime/datasets", "onnxruntime/tools"),
+        "expectedPresent": True,
         "reason": "Pipecat Silero VAD native runtime",
     },
 }
@@ -133,15 +137,29 @@ def summarize_dependency(
         for relative in group["requiredPaths"]
         if not (internal_dir / relative).exists()
     ]
+    disallowed_paths = [
+        summarize_existing_path(
+            internal_dir / relative,
+            relative_to=internal_dir,
+            top_files_limit=top_files_limit,
+        )
+        for relative in group.get("disallowedPaths", ())
+        if (internal_dir / relative).exists()
+    ]
     total_mb = size_mb(total_bytes)
     budget = evaluate_budget(total_mb, max_mb)
+    expected_present = bool(group.get("expectedPresent", True))
+    unexpected_present = not expected_present and total_bytes > 0
     return {
         "name": name,
         "reason": group["reason"],
+        "expectedPresent": expected_present,
+        "unexpectedPresent": unexpected_present,
         "totalBytes": total_bytes,
         "totalMb": total_mb,
         "fileCount": len(all_files),
         "missingRequiredPaths": missing_required,
+        "disallowedPaths": disallowed_paths,
         "budget": budget,
         "paths": path_entries,
         "topFiles": [
@@ -189,6 +207,14 @@ def build_report(
         for name, item in dependencies.items()
         if item["budget"]["withinBudget"] is False
     ]
+    disallowed = [
+        f"{name}:{item['path']}"
+        for name, dependency in dependencies.items()
+        for item in dependency["disallowedPaths"]
+    ]
+    unexpected_present = [
+        name for name, item in dependencies.items() if item["unexpectedPresent"]
+    ]
     if total_budget["withinBudget"] is False:
         budget_failures.append("total")
 
@@ -197,6 +223,8 @@ def build_report(
         "ok": sidecar_dir.is_dir()
         and internal_dir.is_dir()
         and not missing
+        and not disallowed
+        and not unexpected_present
         and not budget_failures,
         "generatedAt": _utc_now(),
         "sidecarDir": str(sidecar_dir),
@@ -205,6 +233,8 @@ def build_report(
             "totalBytes": total_bytes,
             "totalMb": total_mb,
             "missingRequiredPaths": missing,
+            "disallowedPaths": disallowed,
+            "unexpectedPresentDependencies": unexpected_present,
             "budgetFailures": budget_failures,
         },
         "budgets": {
@@ -232,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Report and optionally gate the frozen backend sidecar footprint for "
-            "SciPy and ONNXRuntime."
+            "expected-absent SciPy and required ONNXRuntime."
         )
     )
     parser.add_argument("--sidecar-dir", type=Path, default=DEFAULT_SIDECAR_DIR)

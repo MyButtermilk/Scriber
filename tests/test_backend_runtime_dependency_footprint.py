@@ -14,8 +14,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def write_fake_sidecar(root: Path) -> Path:
     internal = root / "_internal"
     files = {
-        "scipy/signal/_sigtools.pyd": b"s" * 1024,
-        "scipy.libs/libopenblas.dll": b"l" * 2048,
         "onnxruntime/capi/onnxruntime.dll": b"o" * 4096,
         "onnxruntime/capi/onnxruntime_pybind11_state.pyd": b"p" * 4096,
     }
@@ -36,6 +34,8 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
     assert report["summary"]["totalMb"] > 0
     assert report["summary"]["missingRequiredPaths"] == []
     assert set(report["dependencies"]) == {"scipy", "onnxruntime"}
+    assert report["dependencies"]["scipy"]["expectedPresent"] is False
+    assert report["dependencies"]["scipy"]["totalMb"] == 0
     assert report["dependencies"]["scipy"]["missingRequiredPaths"] == []
     assert report["dependencies"]["onnxruntime"]["missingRequiredPaths"] == []
     assert report["dependencies"]["onnxruntime"]["topFiles"][0]["path"].startswith(
@@ -50,6 +50,31 @@ def test_runtime_dependency_footprint_fails_when_budget_is_exceeded(tmp_path: Pa
 
     assert report["ok"] is False
     assert "total" in report["summary"]["budgetFailures"]
+
+
+def test_runtime_dependency_footprint_fails_when_scipy_is_bundled(tmp_path: Path) -> None:
+    sidecar = write_fake_sidecar(tmp_path / "scriber-backend")
+    scipy_path = sidecar / "_internal" / "scipy" / "signal" / "_sigtools.pyd"
+    scipy_path.parent.mkdir(parents=True, exist_ok=True)
+    scipy_path.write_bytes(b"s" * 1024)
+
+    report = build_report(sidecar)
+
+    assert report["ok"] is False
+    assert report["dependencies"]["scipy"]["unexpectedPresent"] is True
+    assert "scipy" in report["summary"]["unexpectedPresentDependencies"]
+
+
+def test_runtime_dependency_footprint_fails_on_prunable_onnxruntime_data(tmp_path: Path) -> None:
+    sidecar = write_fake_sidecar(tmp_path / "scriber-backend")
+    sample_model = sidecar / "_internal" / "onnxruntime" / "datasets" / "sample.onnx"
+    sample_model.parent.mkdir(parents=True, exist_ok=True)
+    sample_model.write_bytes(b"model")
+
+    report = build_report(sidecar)
+
+    assert report["ok"] is False
+    assert report["summary"]["disallowedPaths"] == ["onnxruntime:onnxruntime\\datasets"]
 
 
 def test_runtime_dependency_footprint_cli_writes_report(tmp_path: Path) -> None:

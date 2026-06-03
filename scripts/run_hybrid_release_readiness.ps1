@@ -260,7 +260,7 @@ $requiredEvidence = @(
         producer = $(if ($UseExistingRuntimeDependencyFootprintReport) { "existing report" } else { "scripts\analyze_backend_runtime_dependencies.py" })
         report = $RuntimeDependencyFootprintReport
         sidecarDir = $SidecarDir
-        notes = "Validates that the frozen backend sidecar still contains required SciPy/pyloudnorm and ONNXRuntime/Silero-VAD runtime paths while recording their size footprint."
+        notes = "Validates that the frozen backend sidecar keeps SciPy absent, contains required ONNXRuntime/Silero-VAD runtime paths, and records the tracked dependency footprint."
     },
     [pscustomobject]@{
         name = "publishedUpdaterManifest"
