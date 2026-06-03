@@ -72,6 +72,8 @@ def test_tauri_csp_restricts_webview_to_local_backend_and_assets() -> None:
     assert "'unsafe-inline'" in directives["style-src"]
     assert "data:" in directives["img-src"]
     assert "blob:" in directives["img-src"]
+    assert "http://127.0.0.1:*" in directives["img-src"]
+    assert "http://localhost:*" in directives["img-src"]
     assert "data:" in directives["font-src"]
     assert "data:" in directives["media-src"]
     assert "blob:" in directives["media-src"]
