@@ -24,6 +24,7 @@ param(
     [switch]$RequireAuthenticodeTimestamp,
     [double]$MaxInstallerSizeMB = 220,
     [double]$InstallerMaxInstalledSizeMB = 0,
+    [switch]$SkipBundledFfprobe,
     [switch]$SkipChecks,
     [switch]$SkipSmoke,
     [switch]$RunInstallerSmoke,
@@ -133,6 +134,24 @@ try {
             }
         }
         $RequireUpdaterSignatures = $true
+    }
+
+    if ($SkipBundledFfprobe) {
+        if ($null -eq $tauriConfigOriginal) {
+            $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
+        }
+        $currentTauriConfig = Get-Content -Raw $tauriConfigPath
+        $expectedCommandSegment = "-BundleMediaTools -CopyToTauriRelease"
+        if (-not $currentTauriConfig.Contains("-SkipBundledFfprobe")) {
+            if (-not $currentTauriConfig.Contains($expectedCommandSegment)) {
+                throw "Cannot enable -SkipBundledFfprobe because beforeBundleCommand does not contain '$expectedCommandSegment'."
+            }
+            $currentTauriConfig = $currentTauriConfig.Replace(
+                $expectedCommandSegment,
+                "-BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease"
+            )
+            Set-Content -Path $tauriConfigPath -Value $currentTauriConfig -NoNewline -Encoding UTF8
+        }
     }
 
     Invoke-Checked -Label "Tauri Windows bundle" -Command {

@@ -80,6 +80,19 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "ffprobe was not found on PATH" in sidecar
     assert "ffprobe was not found in MediaToolsDir" in sidecar
     assert "executable failed validation" in sidecar
+    assert "[switch]$SkipBundledFfprobe" in sidecar
+    assert 'Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe)' in sidecar
+    assert "Skipping bundled ffprobe" in sidecar
+
+
+def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> None:
+    build = read_script("scripts/build_windows.ps1")
+
+    assert "[switch]$SkipBundledFfprobe" in build
+    assert "-BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease" in build
+    assert "$currentTauriConfig.Replace(" in build
+    assert "finally {" in build
+    assert "Set-Content -Path $tauriConfigPath -Value $tauriConfigOriginal" in build
 
 
 def test_release_workflow_installs_media_tools_for_standard_build() -> None:

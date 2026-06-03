@@ -10,6 +10,7 @@ target\release\backend.
 Typical flow:
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
+  powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease
   cd Frontend
   npm run tauri:build
 #>
@@ -23,6 +24,7 @@ param(
     [switch]$SkipFrontendBuild,
     [switch]$InstallPyInstaller,
     [switch]$BundleMediaTools,
+    [switch]$SkipBundledFfprobe,
     [switch]$CopyToTauriRelease
 )
 
@@ -203,7 +205,8 @@ function Test-MediaToolExecutable {
 function Copy-MediaTools {
     param(
         [string]$SidecarDir,
-        [string]$SearchDir
+        [string]$SearchDir,
+        [bool]$SkipFfprobe = $false
     )
 
     $toolsTarget = Join-Path $SidecarDir "tools\ffmpeg"
@@ -223,17 +226,21 @@ function Copy-MediaTools {
     Test-MediaToolExecutable -Path $copiedFfmpeg -Name "ffmpeg"
     $copied += $copiedFfmpeg
 
-    $ffprobe = Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir
-    if (-not $ffprobe) {
-        if ($SearchDir) {
-            throw "ffprobe was not found in MediaToolsDir: $SearchDir"
+    if (-not $SkipFfprobe) {
+        $ffprobe = Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir
+        if (-not $ffprobe) {
+            if ($SearchDir) {
+                throw "ffprobe was not found in MediaToolsDir: $SearchDir"
+            }
+            throw "ffprobe was not found on PATH. Install ffprobe or pass -SkipBundledFfprobe only for explicit slim-size experiments."
         }
-        throw "ffprobe was not found on PATH. Install ffprobe or pass -MediaToolsDir before using -BundleMediaTools."
+        Copy-Item -LiteralPath $ffprobe -Destination (Join-Path $toolsTarget (Split-Path $ffprobe -Leaf)) -Force
+        $copiedFfprobe = Join-Path $toolsTarget (Split-Path $ffprobe -Leaf)
+        Test-MediaToolExecutable -Path $copiedFfprobe -Name "ffprobe"
+        $copied += $copiedFfprobe
+    } else {
+        Write-Host "Skipping bundled ffprobe; packaged duration and stream probing will use env/system ffprobe or best-effort fallbacks."
     }
-    Copy-Item -LiteralPath $ffprobe -Destination (Join-Path $toolsTarget (Split-Path $ffprobe -Leaf)) -Force
-    $copiedFfprobe = Join-Path $toolsTarget (Split-Path $ffprobe -Leaf)
-    Test-MediaToolExecutable -Path $copiedFfprobe -Name "ffprobe"
-    $copied += $copiedFfprobe
 
     $ytDlp = Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir $SearchDir
     if ($ytDlp) {
@@ -322,7 +329,7 @@ Invoke-FrozenBackendRuntimeImportCheck -SidecarExe $sidecarExe -SidecarDir $side
 
 $mediaToolsCopied = @()
 if ($BundleMediaTools -or $MediaToolsDir) {
-    $mediaToolsCopied = @(Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir)
+    $mediaToolsCopied = @(Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe))
 }
 
 $copiedTo = $null

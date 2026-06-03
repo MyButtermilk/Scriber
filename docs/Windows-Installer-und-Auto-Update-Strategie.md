@@ -146,13 +146,14 @@ Felder gegenueber Tauri-Updater-Minimum ergaenzt:
 1. **Default-Installer = voller Standard-Build fuer Cloud-/Online-Workflows**:
    - Cloud-STT, YouTube, Datei-Transkription, Export und Web-Features enthalten.
    - `ffmpeg` und `ffprobe` bleiben im Standard-Windows-Build gebuendelt, weil sie fuer YouTube-, Video- und Datei-Workflows zum Kernumfang gehoeren.
+   - Status 2026-06-03: `scripts/build_tauri_backend_sidecar.ps1` und `scripts/build_windows.ps1` bieten `-SkipBundledFfprobe` als expliziten Groessenvergleichsmodus. Dieser Modus darf nicht als Standard gelten, bis YouTube-/Datei-/Azure-MAI-Media-Smokes den reduzierten Umfang belegen.
    - Schwere lokale ASR-Stacks (`torch`, `nemo_toolkit`, grosse ONNX/Nemo-Modelle) **nicht** im Standard-Installer.
 2. **Optionaler Zusatzkanal = Offline-ASR-Pack**:
    - Separate Artefakte wie `Scriber-Offline-Pack-x64.zip` oder eigener Offline-Provider-Installer.
    - Download nur bei Bedarf aus Settings ("Offline-Spracherkennung installieren").
 3. **Vorteil**:
    - Der Standard-Installer bleibt funktional komplett fuer den geplanten Online-/Media-Funktionsumfang.
-   - Groessenoptimierung darf ueber schlankere kompatible Media-Binaries oder Dependency-Cleanup erfolgen, aber nicht durch Entfernen von `ffmpeg`/`ffprobe`.
+   - Groessenoptimierung darf ueber schlankere kompatible Media-Binaries, Dependency-Cleanup oder explizite Vergleichsbuilds wie `-SkipBundledFfprobe` erfolgen, aber nicht durch stilles Entfernen von Media-Tools aus dem Standard-Build.
 
 ### B) Python-Dependencies in Build-Profile aufteilen
 1. Status 2026-06-01: `requirements.txt` ist ein Aggregator aus:

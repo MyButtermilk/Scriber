@@ -4,6 +4,58 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Experimental ffprobe-Omission Build Switch
+
+Commands:
+
+```powershell
+python -m pytest tests\test_tauri_stability_smoke_gates.py -q
+
+powershell -NoProfile -Command `
+  '$tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts\build_tauri_backend_sidecar.ps1"), [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count -gt 0) { $errors | Format-List *; exit 1 }; $tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts\build_windows.ps1"), [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count -gt 0) { $errors | Format-List *; exit 1 }'
+
+git diff --check
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\build_tauri_backend_sidecar.ps1` now accepts
+  `-SkipBundledFfprobe` as an explicit size-experiment mode.
+- Standard `-BundleMediaTools` behavior is unchanged: `ffmpeg` and `ffprobe`
+  are both required and each copied binary is validated with `-version`.
+- When `-SkipBundledFfprobe` is used, the sidecar still bundles and validates
+  `ffmpeg`, but omits only the bundled `ffprobe` binary. Runtime duration and
+  stream probing then use explicit env/system `ffprobe` if present, otherwise
+  the existing best-effort fallbacks.
+- `scripts\build_windows.ps1 -SkipBundledFfprobe` temporarily patches the
+  Tauri `beforeBundleCommand` for that build run and restores
+  `tauri.conf.json` in `finally`, so the checked-in release config remains the
+  standard full-media-tools path.
+- README, AGENTS, and the installer strategy docs now distinguish the
+  experimental ffmpeg-only comparison mode from the standard Windows release
+  build.
+
+Evidence:
+
+- `tests\test_tauri_stability_smoke_gates.py`: `14 passed`.
+- PowerShell parser checks passed for both build scripts.
+- Whitespace diff check passed.
+
+Goal coverage:
+
+- Phase 6/8: creates a controlled way to measure installer-size impact from
+  omitting the duplicate full-size `ffprobe.exe` without silently weakening the
+  standard release package.
+
+Remaining limits:
+
+- No slim installer was produced in this entry.
+- `-SkipBundledFfprobe` must not become the release default until YouTube,
+  file-upload, Azure MAI media preparation, and installed-package smokes prove
+  the reduced media-tool bundle preserves required behavior.
+
 ## 2026-06-03 - Full Current Windows Installer Build
 
 Command:
