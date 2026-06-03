@@ -236,7 +236,11 @@ architecture work. It replaces earlier incomplete goal text.
   Workflow erzeugt dieses Artefakt im Standard-Release-Build mit
   `scripts\build_windows.ps1 -RunMediaPreparationSmoke`, und der finale Runner
   kann es mit `scripts\smoke_media_preparation.py` selbst erzeugen oder ueber
-  `-UseExistingMediaPreparationReport` wiederverwenden.
+  `-UseExistingMediaPreparationReport` wiederverwenden. Der Installer-Smoke kann
+  denselben Media-Preparation-Gate inzwischen auch gegen die tatsaechlich
+  installierten `backend\tools\ffmpeg`-Binaries ausfuehren:
+  `scripts\smoke_windows_installer.ps1 -VerifyMediaPreparation` bzw.
+  `scripts\build_windows.ps1 -RunInstallerMediaPreparationSmoke`.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen. Einzel-Smoke, gefuehrter Windows-Runner und
   Aggregat-Validator fuer diese Matrix sind vorhanden; die physischen USB-,
@@ -248,9 +252,10 @@ architecture work. It replaces earlier incomplete goal text.
   vorhanden. `scripts\smoke_media_preparation.py` prueft inzwischen die echten
   FFmpeg-basierten Python-Helfer fuer Datei-Kompression,
   Upload-Audioextraktion, YouTube-Post-Download-Normalisierung,
-  Azure-MAI-MP3-Vorbereitung und optionale `ffprobe`-Dauerprobe; ein
-  Slim-FFmpeg-Release-Default bleibt aber bis zu realen installierten
-  YouTube-/Datei-/Azure-MAI-Media-Smokes offen.
+  Azure-MAI-MP3-Vorbereitung und optionale `ffprobe`-Dauerprobe; dieser Gate
+  kann nun sowohl gegen den Release-Backend-Ordner als auch gegen eine
+  temporaer installierte NSIS-App laufen. Ein Slim-FFmpeg-Release-Default bleibt
+  aber bis zu realen installierten YouTube-/Datei-/Azure-MAI-Media-Smokes offen.
 - Phase 8 hat synthetische Guards, eine 30-Minuten-Idle-Stability, mehrere
   installierte Stability-Smokes und einen vom Nutzer fuer diese Iteration
   akzeptierten 5-Minuten-Live-Recording-Gate. Nicht erbracht sind reale

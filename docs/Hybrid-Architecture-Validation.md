@@ -4,6 +4,58 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Installed Package Media Preparation Smoke
+
+Commands:
+
+```powershell
+python -m pytest `
+  tests\perf\test_media_preparation_smoke_script.py `
+  tests\test_tauri_stability_smoke_gates.py `
+  -q
+
+python -m py_compile scripts\smoke_media_preparation.py
+
+powershell -NoProfile -Command `
+  '$scripts=@("scripts\smoke_windows_installer.ps1","scripts\build_windows.ps1"); foreach($script in $scripts){ $tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors) | Out-Null; if($errors.Count -gt 0){ Write-Error "Parser errors in $script"; $errors | Format-List *; exit 1 } }; "parser ok"'
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\smoke_windows_installer.ps1` now supports
+  `-VerifyMediaPreparation`.
+- The installer smoke resolves the installed package media-tools directory from
+  `backend\tools\ffmpeg` or `resources\backend\tools\ffmpeg`, then runs
+  `scripts\smoke_media_preparation.py` against those installed binaries.
+- The installer-smoke JSON now includes `mediaPreparation` with the nested smoke
+  report, media-tools path, and whether ffprobe was required.
+- `scripts\build_windows.ps1` now supports
+  `-RunInstallerMediaPreparationSmoke`; it forwards
+  `-AllowMissingFfprobeForMediaPreparation` only for explicit
+  `-SkipBundledFfprobe` comparison builds.
+
+Evidence:
+
+- `tests\perf\test_media_preparation_smoke_script.py` and
+  `tests\test_tauri_stability_smoke_gates.py`: `18 passed`.
+- PowerShell parser check for `scripts\smoke_windows_installer.ps1` and
+  `scripts\build_windows.ps1`: passed.
+- `scripts\smoke_media_preparation.py` compiles.
+
+Goal coverage:
+
+- Phase 6/7: closes the gap between "release backend folder has media tools"
+  and "the NSIS-installed app contains media tools usable by Scriber helper
+  paths".
+
+Remaining limits:
+
+- This is still a local helper-path media smoke. It does not replace real
+  network YouTube download, provider STT, Azure-MAI resource, Authenticode,
+  updater-publication, or physical hardware evidence.
+
 ## 2026-06-03 - Final Runner Media Smoke Command
 
 Commands:

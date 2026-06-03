@@ -37,6 +37,9 @@ With -VerifyFrontend, the installed desktop smoke verifies the frontend
 entrypoint and bundled JS/CSS assets through the running backend and verifies
 that Tauri production origins can call /api/health and tokenized /api/runtime,
 then waits for the actual Tauri WebView frontend-ready beacon.
+With -VerifyMediaPreparation, the installed desktop smoke runs the media
+preparation helper smoke against the ffmpeg/ffprobe binaries that were actually
+installed with the packaged app.
 #>
 
 param(
@@ -55,6 +58,8 @@ param(
     [switch]$WaitForManualGlobalHotkey,
     [switch]$VerifySupportBundle,
     [switch]$VerifyFrontend,
+    [switch]$VerifyMediaPreparation,
+    [switch]$AllowMissingFfprobeForMediaPreparation,
     [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$GlobalHotkeyDispatchTimeoutSec = 20,
     [int]$StabilityDurationSec = 0,
@@ -203,6 +208,30 @@ function Resolve-InstalledUninstaller {
         return $uninstaller.FullName
     }
     return $null
+}
+
+function Resolve-InstalledMediaToolsDir {
+    param([string]$Root)
+
+    $candidates = @(
+        (Join-Path $Root "backend\tools\ffmpeg"),
+        (Join-Path $Root "resources\backend\tools\ffmpeg")
+    )
+    foreach ($candidate in $candidates) {
+        $ffmpeg = Join-Path $candidate "ffmpeg.exe"
+        if (Test-Path -LiteralPath $ffmpeg -PathType Leaf) {
+            return (Resolve-Path $candidate).Path
+        }
+    }
+
+    $ffmpegExe = Get-ChildItem -LiteralPath $Root -Recurse -File -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match "\\tools\\ffmpeg\\ffmpeg\.exe$" } |
+        Select-Object -First 1
+    if ($ffmpegExe) {
+        return $ffmpegExe.Directory.FullName
+    }
+
+    throw "Installed ffmpeg.exe was not found under $Root."
 }
 
 function Convert-ToRelativePath {
@@ -475,6 +504,53 @@ function Invoke-InstalledDesktopSmoke {
     return ($smokeJson | ConvertFrom-Json)
 }
 
+function Invoke-InstalledMediaPreparationSmoke {
+    param(
+        [string]$InstallRoot,
+        [string]$RuntimeDataDir
+    )
+
+    $mediaToolsDir = Resolve-InstalledMediaToolsDir -Root $InstallRoot
+    $outputPath = Join-Path $RuntimeDataDir "installed-media-preparation-smoke.json"
+    New-Item -ItemType Directory -Force -Path (Split-Path $outputPath) | Out-Null
+
+    $mediaSmokeArgs = @(
+        "scripts\smoke_media_preparation.py",
+        "--output",
+        $outputPath,
+        "--media-tools-dir",
+        $mediaToolsDir
+    )
+    if (-not $AllowMissingFfprobeForMediaPreparation) {
+        $mediaSmokeArgs += "--require-ffprobe"
+    }
+
+    Push-Location $RepoRoot
+    try {
+        python @mediaSmokeArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "Installed media preparation smoke failed with exit code $LASTEXITCODE."
+        }
+    } finally {
+        Pop-Location
+    }
+
+    if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+        throw "Installed media preparation smoke did not write output: $outputPath"
+    }
+    $report = Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json
+    if (-not $report.ok) {
+        throw "Installed media preparation smoke wrote ok=false: $outputPath"
+    }
+
+    return [pscustomobject]@{
+        verified = $true
+        mediaToolsDir = $mediaToolsDir
+        requireFfprobe = -not [bool]$AllowMissingFfprobeForMediaPreparation
+        report = $report
+    }
+}
+
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 if ($VerifyUninstall -and $KeepInstalled) {
     throw "-VerifyUninstall cannot be combined with -KeepInstalled."
@@ -516,6 +592,7 @@ New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
 
 $smoke = $null
 $upgrade = $null
+$mediaPreparation = $null
 $cleanupCompleted = $false
 try {
     Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer"
@@ -557,6 +634,10 @@ try {
         $smoke = $secondSmoke
     }
 
+    if ($VerifyMediaPreparation) {
+        $mediaPreparation = Invoke-InstalledMediaPreparationSmoke -InstallRoot $InstallDir -RuntimeDataDir $DataDir
+    }
+
     $result = [ordered]@{
         ok = $true
         installer = $InstallerPath
@@ -576,6 +657,7 @@ try {
         globalHotkey = $smoke.globalHotkey
         supportBundle = $smoke.supportBundle
         frontend = $smoke.frontend
+        mediaPreparation = $mediaPreparation
         liveRecording = $smoke.liveRecording
         stability = $smoke.stability
         cleanupVerified = $smoke.cleanupVerified

@@ -39,6 +39,7 @@ param(
     [switch]$RunInstallerManualGlobalHotkeySmoke,
     [switch]$RunInstallerSupportBundleSmoke,
     [switch]$RunInstallerFrontendSmoke,
+    [switch]$RunInstallerMediaPreparationSmoke,
     [string]$InstallerGlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$InstallerGlobalHotkeyDispatchTimeoutSec = 20,
     [switch]$RunInstallerStabilitySmoke,
@@ -351,7 +352,7 @@ try {
         }
     }
 
-    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerFrontendSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerFrontendSmoke -or $RunInstallerMediaPreparationSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
@@ -397,6 +398,12 @@ try {
                 }
                 if ($RunInstallerFrontendSmoke) {
                     $installerSmokeArgs += "-VerifyFrontend"
+                }
+                if ($RunInstallerMediaPreparationSmoke) {
+                    $installerSmokeArgs += "-VerifyMediaPreparation"
+                    if ($SkipBundledFfprobe) {
+                        $installerSmokeArgs += "-AllowMissingFfprobeForMediaPreparation"
+                    }
                 }
                 if ($RunInstallerStabilitySmoke) {
                     $installerSmokeArgs += @("-StabilityDurationSec", $InstallerStabilityDurationSec.ToString())

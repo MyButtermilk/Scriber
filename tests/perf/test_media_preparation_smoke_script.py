@@ -40,6 +40,30 @@ def test_windows_build_can_run_media_preparation_smoke_against_bundled_tools() -
     assert "mediaPreparationSmoke = $mediaPreparationSmokePath" in build
 
 
+def test_installer_smoke_can_verify_installed_media_preparation_tools() -> None:
+    installer = (REPO_ROOT / "scripts" / "smoke_windows_installer.ps1").read_text(
+        encoding="utf-8"
+    )
+    build = (REPO_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
+
+    assert "[switch]$VerifyMediaPreparation" in installer
+    assert "[switch]$AllowMissingFfprobeForMediaPreparation" in installer
+    assert "function Resolve-InstalledMediaToolsDir" in installer
+    assert "backend\\tools\\ffmpeg" in installer
+    assert "resources\\backend\\tools\\ffmpeg" in installer
+    assert "function Invoke-InstalledMediaPreparationSmoke" in installer
+    assert "scripts\\smoke_media_preparation.py" in installer
+    assert "--media-tools-dir" in installer
+    assert "--require-ffprobe" in installer
+    assert "mediaPreparation = $mediaPreparation" in installer
+
+    assert "[switch]$RunInstallerMediaPreparationSmoke" in build
+    assert "$RunInstallerMediaPreparationSmoke" in build
+    assert '"-VerifyMediaPreparation"' in build
+    assert '"-AllowMissingFfprobeForMediaPreparation"' in build
+    assert "$SkipBundledFfprobe" in build
+
+
 def test_media_preparation_smoke_script_writes_artifact(tmp_path: Path) -> None:
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg is not available on PATH")
