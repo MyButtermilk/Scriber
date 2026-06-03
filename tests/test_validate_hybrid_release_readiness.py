@@ -159,25 +159,79 @@ def write_publication_report(path: Path, metadata: Path) -> None:
     )
 
 
-def write_complete_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path]:
+def write_media_preparation_report(path: Path, *, ok: bool = True, require_ffprobe: bool = True) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "apiVersion": "1",
+                "ok": ok,
+                "durationMs": 700.0,
+                "mediaTools": {
+                    "ffmpeg": "C:/Program Files/FFmpeg/bin/ffmpeg.exe",
+                    "ffprobe": "C:/Program Files/FFmpeg/bin/ffprobe.exe" if require_ffprobe else "",
+                    "requireFfprobe": require_ffprobe,
+                },
+                "summary": {"totalChecks": 5, "passedChecks": 5 if ok else 4, "failedChecks": 0 if ok else 1},
+                "checks": [
+                    {
+                        "name": "file_upload_compression",
+                        "ok": True,
+                        "output": {"suffix": ".webm", "sizeBytes": 1024},
+                    },
+                    {
+                        "name": "video_upload_audio_extraction",
+                        "ok": True,
+                        "output": {"suffix": ".webm", "sizeBytes": 1024},
+                    },
+                    {
+                        "name": "youtube_post_download_normalization",
+                        "ok": True,
+                        "output": {"suffix": ".webm", "sizeBytes": 1024},
+                    },
+                    {
+                        "name": "azure_mai_audio_preparation",
+                        "ok": True,
+                        "prepared": {
+                            "suffix": ".mp3",
+                            "sizeBytes": 1024,
+                            "contentType": "audio/mpeg",
+                        },
+                    },
+                    {
+                        "name": "ffprobe_duration_probe",
+                        "ok": ok,
+                        "ffprobeAvailable": require_ffprobe,
+                        "durationSeconds": 4.0 if require_ffprobe else None,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_complete_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path]:
     hardware_dir = tmp_path / "hardware"
     write_full_hardware_matrix(hardware_dir)
     metadata, artifact_dir, sums = write_signed_release_fixture(tmp_path)
+    media_preparation_report = tmp_path / "media-preparation-smoke.json"
     authenticode_report = tmp_path / "authenticode.json"
     publication_report = tmp_path / "updater-publication.json"
+    write_media_preparation_report(media_preparation_report)
     write_authenticode_report(authenticode_report)
     write_publication_report(publication_report, metadata)
-    return hardware_dir, metadata, artifact_dir, sums, publication_report, authenticode_report
+    return hardware_dir, metadata, artifact_dir, sums, media_preparation_report, publication_report, authenticode_report
 
 
 def test_validate_release_readiness_accepts_complete_evidence(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
         updater_metadata=metadata,
         updater_artifact_dir=artifact_dir,
         sha256sums=sums,
+        media_preparation_report=media_preparation_report,
         updater_publication_report=publication_report,
         authenticode_report=authenticode_report,
         expected_authenticode_publisher="Scriber Release Publisher",
@@ -188,6 +242,7 @@ def test_validate_release_readiness_accepts_complete_evidence(tmp_path: Path) ->
     assert {check["name"] for check in result["checks"]} == {
         "physicalMicrophoneMatrix",
         "signedTauriUpdaterMetadata",
+        "mediaPreparationSmoke",
         "publishedUpdaterManifest",
         "authenticodeSignatures",
     }
@@ -207,12 +262,13 @@ def test_validate_release_readiness_rejects_missing_external_reports(tmp_path: P
 
     assert result["ok"] is False
     failures_by_name = {check["name"]: check["failures"] for check in result["checks"]}
+    assert "media preparation smoke report is required" in failures_by_name["mediaPreparationSmoke"]
     assert "published updater evidence report is required" in failures_by_name["publishedUpdaterManifest"]
     assert "Authenticode validation report is required" in failures_by_name["authenticodeSignatures"]
 
 
 def test_validate_release_readiness_rejects_unsigned_updater_metadata(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     data = json.loads(metadata.read_text(encoding="utf-8"))
     data["platforms"]["windows-x86_64"]["signature"] = ""
     data["artifacts"][0]["signature"] = ""
@@ -224,6 +280,7 @@ def test_validate_release_readiness_rejects_unsigned_updater_metadata(tmp_path: 
         updater_metadata=metadata,
         updater_artifact_dir=artifact_dir,
         sha256sums=sums,
+        media_preparation_report=media_preparation_report,
         updater_publication_report=publication_report,
         authenticode_report=authenticode_report,
     )
@@ -233,8 +290,45 @@ def test_validate_release_readiness_rejects_unsigned_updater_metadata(tmp_path: 
     assert any("signature is required" in failure for failure in updater_check["failures"])
 
 
+def test_validate_release_readiness_rejects_missing_media_preparation_report(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, _media_preparation_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+    )
+
+    assert result["ok"] is False
+    media_check = next(check for check in result["checks"] if check["name"] == "mediaPreparationSmoke")
+    assert "media preparation smoke report is required" in media_check["failures"]
+
+
+def test_validate_release_readiness_rejects_media_preparation_without_ffprobe(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    write_media_preparation_report(media_preparation_report, require_ffprobe=False)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+    )
+
+    assert result["ok"] is False
+    media_check = next(check for check in result["checks"] if check["name"] == "mediaPreparationSmoke")
+    assert any("ffprobe path" in failure for failure in media_check["failures"])
+    assert any("requireFfprobe=true" in failure for failure in media_check["failures"])
+
+
 def test_validate_release_readiness_rejects_publication_report_with_non_https_final_url(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     data = json.loads(publication_report.read_text(encoding="utf-8"))
     data["finalUrl"] = "http://example.test/latest.json"
     publication_report.write_text(json.dumps(data), encoding="utf-8")
@@ -244,6 +338,7 @@ def test_validate_release_readiness_rejects_publication_report_with_non_https_fi
         updater_metadata=metadata,
         updater_artifact_dir=artifact_dir,
         sha256sums=sums,
+        media_preparation_report=media_preparation_report,
         updater_publication_report=publication_report,
         authenticode_report=authenticode_report,
     )
@@ -254,7 +349,7 @@ def test_validate_release_readiness_rejects_publication_report_with_non_https_fi
 
 
 def test_validate_release_readiness_rejects_authenticode_report_for_wrong_artifact(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     write_authenticode_report_for(authenticode_report, artifact_path="unrelated-signed-tool.exe")
 
     result = validate_release_readiness(
@@ -262,6 +357,7 @@ def test_validate_release_readiness_rejects_authenticode_report_for_wrong_artifa
         updater_metadata=metadata,
         updater_artifact_dir=artifact_dir,
         sha256sums=sums,
+        media_preparation_report=media_preparation_report,
         updater_publication_report=publication_report,
         authenticode_report=authenticode_report,
     )
@@ -273,7 +369,7 @@ def test_validate_release_readiness_rejects_authenticode_report_for_wrong_artifa
 
 
 def test_validate_release_readiness_requires_latest_json_artifact_names(tmp_path: Path) -> None:
-    hardware_dir, metadata, _artifact_dir, _sums, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    hardware_dir, metadata, _artifact_dir, _sums, media_preparation_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     data = json.loads(metadata.read_text(encoding="utf-8"))
     data["artifacts"] = []
     metadata.write_text(json.dumps(data), encoding="utf-8")
@@ -282,6 +378,7 @@ def test_validate_release_readiness_requires_latest_json_artifact_names(tmp_path
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
         updater_metadata=metadata,
+        media_preparation_report=media_preparation_report,
         updater_publication_report=publication_report,
         authenticode_report=authenticode_report,
     )
@@ -295,7 +392,7 @@ def test_validate_release_readiness_requires_latest_json_artifact_names(tmp_path
 
 
 def test_validate_release_readiness_cli_writes_summary(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     output = tmp_path / "readiness.json"
 
     completed = subprocess.run(
@@ -310,6 +407,8 @@ def test_validate_release_readiness_cli_writes_summary(tmp_path: Path) -> None:
             str(artifact_dir),
             "--sha256sums",
             str(sums),
+            "--media-preparation-report",
+            str(media_preparation_report),
             "--updater-publication-report",
             str(publication_report),
             "--authenticode-report",

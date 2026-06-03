@@ -16,6 +16,7 @@ param(
     [string]$UpdaterMetadata = "Frontend\src-tauri\target\release\release-metadata\latest.json",
     [string]$UpdaterArtifactDir = "Frontend\src-tauri\target\release\bundle\nsis",
     [string]$Sha256Sums = "Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt",
+    [string]$MediaPreparationReport = "Frontend\src-tauri\target\release\release-metadata\media-preparation-smoke.json",
     [string]$UpdaterPublicationUrl = "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
     [string]$UpdaterPublicationReport = "",
     [int]$UpdaterPublicationAttempts = 6,
@@ -118,6 +119,7 @@ if (-not $OutputPath) {
 $UpdaterMetadata = Convert-ToFullPath -Path $UpdaterMetadata -Root $RepoRoot
 $UpdaterArtifactDir = Convert-ToFullPath -Path $UpdaterArtifactDir -Root $RepoRoot
 $Sha256Sums = Convert-ToFullPath -Path $Sha256Sums -Root $RepoRoot
+$MediaPreparationReport = Convert-ToFullPath -Path $MediaPreparationReport -Root $RepoRoot
 $AuthenticodePath = @($AuthenticodePath | ForEach-Object { Convert-ToFullPath -Path $_ -Root $RepoRoot })
 
 $matrixArgs = @(
@@ -167,6 +169,8 @@ $readinessArgs = @(
     $UpdaterArtifactDir,
     "--sha256sums",
     $Sha256Sums,
+    "--media-preparation-report",
+    $MediaPreparationReport,
     "--updater-publication-report",
     $UpdaterPublicationReport,
     "--authenticode-report",
@@ -214,6 +218,14 @@ $requiredEvidence = @(
         notes = "latest.json must use absolute HTTPS release URLs and non-empty Tauri updater signatures."
     },
     [pscustomobject]@{
+        name = "mediaPreparationSmoke"
+        required = $true
+        external = $false
+        producer = "scripts\build_windows.ps1 -RunMediaPreparationSmoke"
+        report = $MediaPreparationReport
+        notes = "Validates bundled ffmpeg/ffprobe through Scriber file-upload compression, video extraction, YouTube normalization, Azure-MAI preparation, and ffprobe duration probing."
+    },
+    [pscustomobject]@{
         name = "publishedUpdaterManifest"
         required = $true
         external = $true
@@ -248,6 +260,7 @@ $plan = [pscustomobject]@{
     planOnly = [bool]$PlanOnly
     hardwareInputDir = $HardwareInputDir
     matrixValidationOutput = $MatrixValidationOutput
+    mediaPreparationReport = $MediaPreparationReport
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
     outputPath = $OutputPath

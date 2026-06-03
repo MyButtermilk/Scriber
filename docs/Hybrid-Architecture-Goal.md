@@ -228,10 +228,11 @@ architecture work. It replaces earlier incomplete goal text.
   zusammenfuehren, sobald die externen Nachweise existieren. Sein
   `-PlanOnly`-Modus schreibt inzwischen neben den konkreten Befehlen auch eine
   strukturierte `requiredEvidence`-Checkliste fuer physische Mic-Matrix,
-  signierte Updater-Metadaten, veroeffentlichtes Updater-Manifest,
-  Authenticode-Report und finalen Aggregat-Check. Tauri- und
+  signierte Updater-Metadaten, Media-Preparation-Smoke, veroeffentlichtes
+  Updater-Manifest, Authenticode-Report und finalen Aggregat-Check. Tauri- und
   Installer-Smoke-`-OutputPath`-Artefakte werden ebenfalls als UTF-8 ohne BOM
-  geschrieben.
+  geschrieben. Der finale Aggregat-Validator wertet inzwischen auch
+  `release-metadata\media-preparation-smoke.json` aus.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen. Einzel-Smoke, gefuehrter Windows-Runner und
   Aggregat-Validator fuer diese Matrix sind vorhanden; die physischen USB-,

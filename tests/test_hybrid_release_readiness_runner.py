@@ -89,6 +89,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert evidence_names == [
         "physicalMicrophoneMatrix",
         "signedTauriUpdaterMetadata",
+        "mediaPreparationSmoke",
         "publishedUpdaterManifest",
         "authenticodeSignatures",
         "hybridReleaseReadinessAggregate",
@@ -100,15 +101,21 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     updater_evidence = payload["requiredEvidence"][1]
     assert updater_evidence["metadata"].endswith("latest.json")
     assert "absolute HTTPS" in updater_evidence["notes"]
-    publication_evidence = payload["requiredEvidence"][2]
+    media_evidence = payload["requiredEvidence"][2]
+    assert media_evidence["external"] is False
+    assert media_evidence["report"].endswith("media-preparation-smoke.json")
+    assert "-RunMediaPreparationSmoke" in media_evidence["producer"]
+    publication_evidence = payload["requiredEvidence"][3]
     assert "final redirect URL" in publication_evidence["notes"]
-    authenticode_evidence = payload["requiredEvidence"][3]
+    authenticode_evidence = payload["requiredEvidence"][4]
     assert authenticode_evidence["expectedPublisher"] == "Scriber Publisher"
     assert authenticode_evidence["requireTimestamp"] is True
     assert "validate_microphone_hardware_matrix.py" in payload["commands"][0]["command"]
     assert "verify_tauri_updater_publication.py" in payload["commands"][1]["command"]
     assert "validate_windows_authenticode.ps1" in payload["commands"][2]["command"]
     assert "validate_hybrid_release_readiness.py" in payload["commands"][3]["command"]
+    assert "--media-preparation-report" in payload["commands"][3]["command"]
+    assert "media-preparation-smoke.json" in payload["commands"][3]["command"]
     assert "--require-authenticode-timestamp" in payload["commands"][3]["command"]
     assert written == payload
 

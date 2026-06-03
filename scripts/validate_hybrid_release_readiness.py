@@ -42,6 +42,7 @@ def validate_release_readiness(
     updater_metadata: Path,
     updater_artifact_dir: Path | None = None,
     sha256sums: Path | None = None,
+    media_preparation_report: Path | None = None,
     updater_publication_report: Path | None = None,
     authenticode_report: Path | None = None,
     expected_authenticode_publisher: str = "",
@@ -57,6 +58,7 @@ def validate_release_readiness(
             artifact_dir=updater_artifact_dir,
             sha256sums=sha256sums,
         ),
+        validate_media_preparation_report(media_preparation_report),
         validate_updater_publication_report(updater_publication_report, metadata_path=updater_metadata),
         validate_authenticode_report(
             authenticode_report,
@@ -136,6 +138,109 @@ def validate_signed_updater_metadata(
         failures=failures,
         details=details,
     )
+
+
+def validate_media_preparation_report(report_path: Path | None) -> ReadinessCheck:
+    failures: list[str] = []
+    details: dict[str, Any] = {
+        "report": str(report_path) if report_path else "",
+        "requiredChecks": [
+            "file_upload_compression",
+            "video_upload_audio_extraction",
+            "youtube_post_download_normalization",
+            "azure_mai_audio_preparation",
+            "ffprobe_duration_probe",
+        ],
+    }
+    if report_path is None:
+        failures.append("media preparation smoke report is required")
+        return ReadinessCheck("mediaPreparationSmoke", False, failures, details)
+
+    report = read_json_object(report_path, failures, "media preparation smoke report")
+    if not report:
+        return ReadinessCheck("mediaPreparationSmoke", False, failures, details)
+
+    details.update(
+        {
+            "apiVersion": report.get("apiVersion", ""),
+            "durationMs": report.get("durationMs", None),
+            "mediaTools": report.get("mediaTools", {}),
+            "summary": report.get("summary", {}),
+        }
+    )
+    if report.get("ok") is not True:
+        failures.append("media preparation smoke report ok must be true")
+    if str(report.get("apiVersion") or "") != "1":
+        failures.append("media preparation smoke report apiVersion must be 1")
+
+    media_tools = report.get("mediaTools")
+    if not isinstance(media_tools, dict):
+        failures.append("media preparation smoke report mediaTools must be an object")
+        media_tools = {}
+    if not str(media_tools.get("ffmpeg") or "").strip():
+        failures.append("media preparation smoke report must record the ffmpeg path")
+    if not str(media_tools.get("ffprobe") or "").strip():
+        failures.append("media preparation smoke report must record the ffprobe path for standard release readiness")
+    if media_tools.get("requireFfprobe") is not True:
+        failures.append("media preparation smoke report must be produced with requireFfprobe=true")
+
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        failures.append("media preparation smoke report summary must be an object")
+    elif summary.get("failedChecks") != 0:
+        failures.append("media preparation smoke report failedChecks must be 0")
+
+    checks = report.get("checks")
+    if not isinstance(checks, list):
+        failures.append("media preparation smoke report checks must be a list")
+        checks = []
+    checks_by_name: dict[str, dict[str, Any]] = {}
+    for index, check in enumerate(checks):
+        if not isinstance(check, dict):
+            failures.append(f"media preparation smoke checks[{index}] must be an object")
+            continue
+        name = str(check.get("name") or "")
+        if not name:
+            failures.append(f"media preparation smoke checks[{index}].name is required")
+            continue
+        checks_by_name[name] = check
+        if check.get("ok") is not True:
+            failures.append(f"media preparation smoke check failed: {name}")
+
+    for required_name in details["requiredChecks"]:
+        check = checks_by_name.get(required_name)
+        if check is None:
+            failures.append(f"media preparation smoke is missing required check: {required_name}")
+            continue
+        if required_name == "file_upload_compression":
+            output = check.get("output")
+            if not isinstance(output, dict) or output.get("suffix") != ".webm":
+                failures.append("file_upload_compression must produce a .webm output")
+        if required_name == "video_upload_audio_extraction":
+            output = check.get("output")
+            if not isinstance(output, dict) or output.get("suffix") != ".webm":
+                failures.append("video_upload_audio_extraction must produce a .webm output")
+        if required_name == "youtube_post_download_normalization":
+            output = check.get("output")
+            if not isinstance(output, dict) or output.get("suffix") != ".webm":
+                failures.append("youtube_post_download_normalization must produce a .webm output")
+        if required_name == "azure_mai_audio_preparation":
+            prepared = check.get("prepared")
+            if not isinstance(prepared, dict) or prepared.get("suffix") != ".mp3":
+                failures.append("azure_mai_audio_preparation must produce a .mp3 prepared file")
+            if isinstance(prepared, dict) and prepared.get("contentType") != "audio/mpeg":
+                failures.append("azure_mai_audio_preparation must report audio/mpeg content type")
+        if required_name == "ffprobe_duration_probe":
+            if check.get("ffprobeAvailable") is not True:
+                failures.append("ffprobe_duration_probe must report ffprobeAvailable=true")
+            duration = check.get("durationSeconds")
+            if not isinstance(duration, (int, float)) or duration <= 0:
+                failures.append("ffprobe_duration_probe must report a positive duration")
+
+    details["checkCount"] = len(checks)
+    details["passedCheckCount"] = sum(1 for check in checks if isinstance(check, dict) and check.get("ok") is True)
+
+    return ReadinessCheck("mediaPreparationSmoke", not failures, failures, details)
 
 
 def validate_updater_publication_report(report_path: Path | None, *, metadata_path: Path) -> ReadinessCheck:
@@ -315,6 +420,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--updater-metadata", default=str(DEFAULT_METADATA))
     parser.add_argument("--updater-artifact-dir", default="")
     parser.add_argument("--sha256sums", default="")
+    parser.add_argument("--media-preparation-report", default="")
     parser.add_argument("--updater-publication-report", default="")
     parser.add_argument("--authenticode-report", default="")
     parser.add_argument("--expected-authenticode-publisher", default="")
@@ -331,6 +437,7 @@ def main(argv: list[str]) -> int:
         updater_metadata=Path(args.updater_metadata).expanduser().resolve(),
         updater_artifact_dir=parse_optional_path(args.updater_artifact_dir),
         sha256sums=parse_optional_path(args.sha256sums),
+        media_preparation_report=parse_optional_path(args.media_preparation_report),
         updater_publication_report=parse_optional_path(args.updater_publication_report),
         authenticode_report=parse_optional_path(args.authenticode_report),
         expected_authenticode_publisher=args.expected_authenticode_publisher,

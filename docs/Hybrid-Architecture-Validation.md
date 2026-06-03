@@ -4,6 +4,52 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Final Readiness Media Smoke Requirement
+
+Commands:
+
+```powershell
+python -m py_compile scripts\validate_hybrid_release_readiness.py
+
+python -m pytest `
+  tests\test_validate_hybrid_release_readiness.py `
+  tests\test_hybrid_release_readiness_runner.py `
+  -q
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\validate_hybrid_release_readiness.py` now requires a
+  `media-preparation-smoke.json` report in addition to the existing hardware,
+  updater, publication, and Authenticode evidence.
+- The new `mediaPreparationSmoke` check verifies `ok=true`, `apiVersion=1`,
+  `failedChecks=0`, recorded `ffmpeg` and `ffprobe` paths,
+  `requireFfprobe=true`, and the required media-helper outputs:
+  `file_upload_compression`, `video_upload_audio_extraction`,
+  `youtube_post_download_normalization`, `azure_mai_audio_preparation`, and
+  `ffprobe_duration_probe`.
+- `scripts\run_hybrid_release_readiness.ps1` now passes
+  `--media-preparation-report` to the Python validator and includes
+  `mediaPreparationSmoke` in the UTF-8-without-BOM `requiredEvidence` plan.
+
+Evidence:
+
+- `tests\test_validate_hybrid_release_readiness.py` plus
+  `tests\test_hybrid_release_readiness_runner.py`: `13 passed`.
+- `scripts\validate_hybrid_release_readiness.py` compiles.
+
+Goal coverage:
+
+- Phase 6/7: makes bundled media-tool functionality a required final release
+  readiness artifact instead of an optional build side note.
+
+Remaining limits:
+
+- This still does not replace real hardware, Authenticode signing, published
+  updater, or installed E2E YouTube/file/Azure-MAI transcription evidence.
+
 ## 2026-06-03 - Media Preparation Smoke Gate
 
 Commands:
