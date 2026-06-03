@@ -155,6 +155,7 @@ def validate_updater_publication_report(report_path: Path | None, *, metadata_pa
     details.update(
         {
             "url": report.get("url", ""),
+            "finalUrl": report.get("finalUrl", ""),
             "statusCode": report.get("statusCode", None),
             "metadataSha256": report.get("metadataSha256", ""),
         }
@@ -166,6 +167,9 @@ def validate_updater_publication_report(report_path: Path | None, *, metadata_pa
     url = str(report.get("url") or "")
     if not is_https_url(url):
         failures.append("updater publication report url must be absolute HTTPS")
+    final_url = str(report.get("finalUrl") or "")
+    if not is_https_url(final_url):
+        failures.append("updater publication report finalUrl must be absolute HTTPS")
     if report.get("requireSignatures") is not True:
         failures.append("updater publication report must record requireSignatures=true")
 

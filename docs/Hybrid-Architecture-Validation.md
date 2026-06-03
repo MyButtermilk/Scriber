@@ -4,6 +4,45 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Published Updater Final URL Gate
+
+Commands:
+
+```powershell
+python -m py_compile scripts\verify_tauri_updater_publication.py scripts\validate_hybrid_release_readiness.py
+
+python -m pytest tests\test_verify_tauri_updater_publication.py tests\test_validate_hybrid_release_readiness.py -q
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\verify_tauri_updater_publication.py` now rejects a publication
+  report when the final URL reached after redirects is not absolute HTTPS.
+- `scripts\validate_hybrid_release_readiness.py` now requires reused
+  `updater-publication.json` evidence to include an absolute-HTTPS `finalUrl`.
+- This prevents a release-readiness report from passing when the configured
+  updater URL starts as HTTPS but redirects to an insecure endpoint.
+
+Evidence:
+
+- `tests\test_verify_tauri_updater_publication.py` and
+  `tests\test_validate_hybrid_release_readiness.py`: `16 passed`.
+- Python compile check passed for both changed scripts.
+- New negative coverage rejects `finalUrl="http://example.test/latest.json"`
+  in both the publication generator and the final aggregate validator.
+
+Goal coverage:
+
+- Phase 6/7/8: tightens the published signed updater manifest evidence gate so
+  both the requested updater URL and the actually fetched URL remain HTTPS.
+
+Remaining limits:
+
+- This still does not publish a real signed updater manifest. It hardens the
+  validator that will judge that external release evidence once it exists.
+
 ## 2026-06-03 - Authenticode Report UTF-8 Evidence Output
 
 Commands:

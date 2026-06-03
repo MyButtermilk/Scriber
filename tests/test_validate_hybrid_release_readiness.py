@@ -149,6 +149,7 @@ def write_publication_report(path: Path, metadata: Path) -> None:
             {
                 "ok": True,
                 "url": "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
+                "finalUrl": "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
                 "statusCode": 200,
                 "requireSignatures": True,
                 "metadataSha256": sha256_file(metadata),
@@ -230,6 +231,26 @@ def test_validate_release_readiness_rejects_unsigned_updater_metadata(tmp_path: 
     assert result["ok"] is False
     updater_check = next(check for check in result["checks"] if check["name"] == "signedTauriUpdaterMetadata")
     assert any("signature is required" in failure for failure in updater_check["failures"])
+
+
+def test_validate_release_readiness_rejects_publication_report_with_non_https_final_url(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    data = json.loads(publication_report.read_text(encoding="utf-8"))
+    data["finalUrl"] = "http://example.test/latest.json"
+    publication_report.write_text(json.dumps(data), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+    )
+
+    assert result["ok"] is False
+    publication_check = next(check for check in result["checks"] if check["name"] == "publishedUpdaterManifest")
+    assert any("finalUrl must be absolute HTTPS" in failure for failure in publication_check["failures"])
 
 
 def test_validate_release_readiness_rejects_authenticode_report_for_wrong_artifact(tmp_path: Path) -> None:

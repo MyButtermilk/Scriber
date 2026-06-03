@@ -43,6 +43,7 @@ def test_publication_report_accepts_signed_https_metadata(tmp_path: Path) -> Non
         status_code=200,
         body=body,
         local_metadata_path=local_metadata,
+        final_url="https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
     )
 
     assert report["ok"] is True
@@ -50,6 +51,23 @@ def test_publication_report_accepts_signed_https_metadata(tmp_path: Path) -> Non
     assert report["metadataSha256"] == sha256(body).hexdigest()
     assert report["metadataMatchesLocal"] is True
     assert report["failures"] == []
+
+
+def test_publication_report_rejects_non_https_final_url(tmp_path: Path) -> None:
+    body = signed_latest_json_bytes()
+    local_metadata = tmp_path / "latest.json"
+    local_metadata.write_bytes(body)
+
+    report = publication.build_publication_report(
+        url="https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
+        status_code=200,
+        body=body,
+        local_metadata_path=local_metadata,
+        final_url="http://example.test/latest.json",
+    )
+
+    assert report["ok"] is False
+    assert "updater publication finalUrl must be absolute HTTPS" in report["failures"]
 
 
 def test_publication_report_rejects_non_https_url(tmp_path: Path) -> None:
@@ -78,6 +96,7 @@ def test_publication_report_rejects_unsigned_metadata(tmp_path: Path) -> None:
         status_code=200,
         body=body,
         local_metadata_path=local_metadata,
+        final_url="https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
     )
 
     assert report["ok"] is False
@@ -94,6 +113,7 @@ def test_publication_report_rejects_local_mismatch(tmp_path: Path) -> None:
         status_code=200,
         body=body,
         local_metadata_path=local_metadata,
+        final_url="https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
     )
 
     assert report["ok"] is False
@@ -124,6 +144,26 @@ def test_verify_publication_uses_fetcher_and_writes_expected_report(monkeypatch,
     assert report["metadataSha256"] == sha256(body).hexdigest()
     assert report["attempt"] == 1
     assert report["attempts"] == 1
+
+
+def test_verify_publication_rejects_non_https_redirect_target(monkeypatch, tmp_path: Path) -> None:
+    body = signed_latest_json_bytes()
+    local_metadata = tmp_path / "latest.json"
+    local_metadata.write_bytes(body)
+
+    def fake_fetch(url: str, *, timeout_sec: float) -> tuple[int, bytes, str]:
+        return 200, body, "http://example.test/latest.json"
+
+    monkeypatch.setattr(publication, "fetch_published_metadata", fake_fetch)
+
+    report = publication.verify_publication(
+        url="https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
+        local_metadata_path=local_metadata,
+    )
+
+    assert report["ok"] is False
+    assert report["finalUrl"] == "http://example.test/latest.json"
+    assert "updater publication finalUrl must be absolute HTTPS" in report["failures"]
 
 
 def test_verify_publication_retries_until_metadata_is_available(monkeypatch, tmp_path: Path) -> None:

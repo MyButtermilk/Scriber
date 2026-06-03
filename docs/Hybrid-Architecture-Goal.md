@@ -220,7 +220,9 @@ architecture work. It replaces earlier incomplete goal text.
   spaeteren Published-`latest.json`-Nachweis sind vorhanden. Der
   Authenticode-Report wird als UTF-8 ohne BOM geschrieben. Der Tag-
   Release-Workflow fuehrt den Published-Check nach der GitHub-Release-
-  Veroeffentlichung aus, sobald Updater-Signing konfiguriert ist. Der
+  Veroeffentlichung aus, sobald Updater-Signing konfiguriert ist; dieser
+  Nachweis verlangt inzwischen, dass auch die finale URL nach Redirects
+  absolute HTTPS bleibt. Der
   finale Release-Readiness-Runner kann die Hardware-Matrix, Authenticode,
   Updater-Publikation und den finalen Aggregat-Check in einem Operator-Lauf
   zusammenfuehren, sobald die externen Nachweise existieren. Sein

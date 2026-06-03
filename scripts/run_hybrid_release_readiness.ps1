@@ -220,7 +220,7 @@ $requiredEvidence = @(
         producer = $(if ($UseExistingUpdaterPublicationReport) { "existing report" } else { "scripts\verify_tauri_updater_publication.py" })
         url = $UpdaterPublicationUrl
         report = $UpdaterPublicationReport
-        notes = "The signed latest.json must be publicly reachable and match the local release metadata SHA256."
+        notes = "The signed latest.json must be publicly reachable, keep its final redirect URL on HTTPS, and match the local release metadata SHA256."
     },
     [pscustomobject]@{
         name = "authenticodeSignatures"

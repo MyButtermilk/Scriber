@@ -59,6 +59,8 @@ def build_publication_report(
 
     if not is_https_url(url):
         failures.append("updater publication URL must be absolute HTTPS")
+    if not is_https_url(report["finalUrl"]):
+        failures.append("updater publication finalUrl must be absolute HTTPS")
     if status_code != 200:
         failures.append(f"updater publication status code must be 200, got {status_code}")
 

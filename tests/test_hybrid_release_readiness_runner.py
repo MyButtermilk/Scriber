@@ -100,6 +100,8 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     updater_evidence = payload["requiredEvidence"][1]
     assert updater_evidence["metadata"].endswith("latest.json")
     assert "absolute HTTPS" in updater_evidence["notes"]
+    publication_evidence = payload["requiredEvidence"][2]
+    assert "final redirect URL" in publication_evidence["notes"]
     authenticode_evidence = payload["requiredEvidence"][3]
     assert authenticode_evidence["expectedPublisher"] == "Scriber Publisher"
     assert authenticode_evidence["requireTimestamp"] is True
