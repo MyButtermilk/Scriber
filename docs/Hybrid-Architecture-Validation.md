@@ -4,6 +4,84 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Full Standard Installer After SciPy Removal
+
+Commands:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -RunMediaPreparationSmoke `
+  -RunRuntimeDependencyFootprint `
+  -RunInstallerFrontendSmoke `
+  -RunInstallerMediaPreparationSmoke `
+  -RunInstallerUninstallSmoke
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -VerifyFrontend `
+  -VerifyMediaPreparation `
+  -VerifyUninstall `
+  -OutputPath tmp\installer-smoke-after-scipy-removal.json
+```
+
+Result: passed.
+
+Evidence:
+
+- Python test suite: `408 passed`, `13 warnings`.
+- Frontend type check: `npm run check` passed.
+- Tauri release build: passed and produced
+  `Frontend\src-tauri\target\release\scriber-desktop.exe`.
+- PyInstaller sidecar build: passed, copied standard `ffmpeg.exe` and
+  `ffprobe.exe` into `target\release\backend\tools\ffmpeg`.
+- Tauri release smoke: `runtimeMode=tauri-supervised`, `launchKind=sidecar`,
+  backend ready on `127.0.0.1:8765`, cleanup verified.
+- Release media-preparation smoke:
+  `release-metadata\media-preparation-smoke.json`, `ok=true`, `5/5` checks
+  passed including file-upload compression, upload audio extraction,
+  YouTube post-download normalization, Azure-MAI MP3 preparation, and
+  `ffprobe` duration probing.
+- Runtime dependency footprint:
+  `release-metadata\runtime-dependency-footprint.json`, `ok=true`,
+  tracked total `33.75 MiB`, SciPy/SciPy libs `0.00 MiB`, ONNXRuntime
+  `33.75 MiB`, no missing required paths, no disallowed paths, no unexpected
+  dependencies.
+- Release metadata and local updater metadata validation: passed.
+- Size report:
+  `release-metadata\size-report.json`, `ok=true`,
+  `Scriber_0.1.0_x64-setup.exe` size `197,283,907` bytes / `188.14 MiB`,
+  under the `220 MiB` installer budget. SHA256:
+  `b13d57f5cb6252bcf0eaa54db81bd67ffe96cdc5f1bbb1718bf7e8f29817ad22`.
+- Standard backend resource folder:
+  `Frontend\src-tauri\target\release\backend`, `523.01 MiB`.
+  Top files remain `ffmpeg.exe` (`133.58 MiB`), `ffprobe.exe`
+  (`133.43 MiB`), `scriber-backend.exe` (`27.50 MiB`), PySide6 OpenGL
+  (`19.68 MiB`), NumPy OpenBLAS (`19.45 MiB`), and ONNXRuntime native files
+  (`18.43 MiB` + `14.98 MiB`).
+- Installed package smoke with persisted report
+  `tmp\installer-smoke-after-scipy-removal.json`: `ok=true`, installed size
+  `535.88 MiB`, frontend assets `6/6`, real WebView readiness beacon reached
+  `/api/runtime/frontend-ready`, installed media-preparation smoke `ok=true`,
+  cleanup verified, and silent uninstall verified install artifacts were
+  removed while runtime data was preserved.
+
+Goal coverage:
+
+- Phase 6/7: refreshes the standard installer evidence after SciPy removal and
+  proves the standard build still starts, serves the bundled frontend, carries
+  full ffmpeg/ffprobe media functionality, keeps ONNXRuntime/Silero-VAD valid,
+  and preserves strict uninstall behavior.
+- Phase 8: installer artifact dropped from the earlier standard `205.79 MiB`
+  snapshot to `188.14 MiB`. The installed package remains above the informal
+  `450 MiB` installed-size target because standard releases still bundle full
+  `ffmpeg.exe` and `ffprobe.exe`.
+
+Remaining limits:
+
+- This is not a signed release. Authenticode evidence still requires a real
+  signing step and expected publisher.
+- This does not publish or verify a signed updater manifest over HTTPS.
+- This does not close the physical microphone hardware matrix.
+
 ## 2026-06-03 - SciPy Removal and ONNXRuntime Footprint Gate
 
 Commands:

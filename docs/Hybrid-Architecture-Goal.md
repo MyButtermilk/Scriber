@@ -203,13 +203,19 @@ architecture work. It replaces earlier incomplete goal text.
 - Phase 6 ist fuer Standard-Cloud-Provider-Sidecar, NSIS, ffmpeg/ffprobe,
   yt-dlp, ONNXRuntime/Silero-VAD Startup-Imports, Runtime-Datenmigration,
   Release-Metadaten und optionale Gates umgesetzt. Am 2026-06-03 ist
-  der aktuelle Installer erneut per `scripts\build_windows.ps1` mit kompletter
-  Backend-Test-Suite, Frontend-Typecheck, Tauri-Release-Build,
+  der aktuelle Standard-Installer nach der SciPy-Entfernung erneut per
+  `scripts\build_windows.ps1 -RunMediaPreparationSmoke
+  -RunRuntimeDependencyFootprint -RunInstallerFrontendSmoke
+  -RunInstallerMediaPreparationSmoke -RunInstallerUninstallSmoke` mit
+  kompletter Backend-Test-Suite, Frontend-Typecheck, Tauri-Release-Build,
   PyInstaller-Sidecar, ffmpeg/ffprobe-Bundling, Release-Smoke,
-  Release-Metadaten, Updater-Metadatenvalidierung und Size-Report gebaut
-  worden: `Scriber_0.1.0_x64-setup.exe`, `205.79 MiB`,
-  SHA256 `12724cdd2fbabd0f7dc54262ac850b8fd44b159737a07e10bfbd90b7c3176b0f`.
-  Am 2026-06-02 ist der Installer zusaetzlich mit Tauri-Origin-CORS fuer `/api/health`,
+  Release-Metadaten, Updater-Metadatenvalidierung, Size-Report und
+  installierten Frontend-/Media-/Uninstall-Smokes gebaut worden:
+  `Scriber_0.1.0_x64-setup.exe`, `188.14 MiB`,
+  SHA256 `b13d57f5cb6252bcf0eaa54db81bd67ffe96cdc5f1bbb1718bf7e8f29817ad22`;
+  der Standard-Backend-Resource-Ordner liegt bei `523.01 MiB`, die
+  temporaer installierte App bei `535.88 MiB`.
+  In einem aelteren 2026-06-02-Standard-Build ist der Installer zusaetzlich mit Tauri-Origin-CORS fuer `/api/health`,
   tokenisiertem `/api/runtime`, echtem Tauri-WebView-Beacon ueber
   `/api/runtime/frontend-ready`, Cleanup, Uninstall, Support-Bundle,
   Crash-Recovery, kontrolliertem Worker-Shutdown, Startup-Timeout-Recovery,
