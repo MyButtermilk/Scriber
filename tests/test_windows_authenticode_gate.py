@@ -97,7 +97,8 @@ def test_authenticode_gate_supports_json_output_path() -> None:
     script = AUTHENTICODE_SCRIPT.read_text(encoding="utf-8")
 
     assert '[string]$OutputPath = ""' in script
-    assert "Set-Content -LiteralPath $resolvedOutputPath -Value $json -Encoding UTF8" in script
+    assert "function Write-Utf8NoBomJson" in script
+    assert "Write-Utf8NoBomJson -Path $resolvedOutputPath -Json $json" in script
     assert "$json" in script
 
 

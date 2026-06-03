@@ -51,6 +51,16 @@ function Test-Publisher {
     return $Certificate.Subject -like "*$ExpectedPublisher*"
 }
 
+function Write-Utf8NoBomJson {
+    param(
+        [string]$Path,
+        [string]$Json
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Json, $encoding)
+}
+
 $results = @()
 
 foreach ($rawPath in $Path) {
@@ -100,7 +110,7 @@ if ($OutputPath) {
     if ($outputDirectory) {
         New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
     }
-    Set-Content -LiteralPath $resolvedOutputPath -Value $json -Encoding UTF8
+    Write-Utf8NoBomJson -Path $resolvedOutputPath -Json $json
 }
 
 $json

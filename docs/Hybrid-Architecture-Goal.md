@@ -217,8 +217,9 @@ architecture work. It replaces earlier incomplete goal text.
   Setup-Artefakt unter dem 220 MiB Gate durchgelaufen. Echte Signierung und
   reale Updater-Veroeffentlichung sind externe Release-Schritte und noch nicht
   bewiesen; der Authenticode-Report-Output und der Report-Generator fuer den
-  spaeteren Published-`latest.json`-Nachweis sind vorhanden und der Tag-
-  Release-Workflow fuehrt diesen Published-Check nach der GitHub-Release-
+  spaeteren Published-`latest.json`-Nachweis sind vorhanden. Der
+  Authenticode-Report wird als UTF-8 ohne BOM geschrieben. Der Tag-
+  Release-Workflow fuehrt den Published-Check nach der GitHub-Release-
   Veroeffentlichung aus, sobald Updater-Signing konfiguriert ist. Der
   finale Release-Readiness-Runner kann die Hardware-Matrix, Authenticode,
   Updater-Publikation und den finalen Aggregat-Check in einem Operator-Lauf

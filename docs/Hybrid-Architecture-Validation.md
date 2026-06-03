@@ -4,6 +4,48 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Authenticode Report UTF-8 Evidence Output
+
+Commands:
+
+```powershell
+python -m pytest tests\test_windows_authenticode_gate.py tests\test_validate_hybrid_release_readiness.py tests\test_hybrid_release_readiness_runner.py -q
+
+powershell -NoProfile -Command `
+  '$tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts\validate_windows_authenticode.ps1"), [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count -gt 0) { $errors | Format-List *; exit 1 }'
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\validate_windows_authenticode.ps1 -OutputPath` now writes the
+  successful Authenticode evidence report as UTF-8 without BOM.
+- The validator behavior is unchanged: unsigned artifacts still fail and do
+  not produce a success report.
+- The final release-readiness validators continue to consume the same
+  `authenticode.json` shape, now with stricter evidence-file encoding.
+
+Evidence:
+
+- `tests\test_windows_authenticode_gate.py`: `6 passed`.
+- `tests\test_validate_hybrid_release_readiness.py` plus
+  `tests\test_hybrid_release_readiness_runner.py`: `10 passed`.
+- PowerShell parser check passed for
+  `scripts\validate_windows_authenticode.ps1`.
+
+Goal coverage:
+
+- Phase 6/7/8: hardens the Authenticode evidence artifact consumed by the final
+  hybrid release-readiness gate, reducing parser variance between Windows
+  PowerShell, PowerShell 7, Python, and release CI.
+
+Remaining limits:
+
+- This does not provide a real Authenticode signature. A signed release build
+  with the expected publisher and optional timestamp is still required before
+  final readiness can pass.
+
 ## 2026-06-03 - Physical Mic Matrix Runner Readiness Plan
 
 Commands:
