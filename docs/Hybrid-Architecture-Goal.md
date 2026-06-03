@@ -1,6 +1,6 @@
 # Scriber Hybrid-Architektur Goal
 
-Last updated: 2026-06-02
+Last updated: 2026-06-03
 
 This document is the authoritative Codex goal for the Scriber hybrid
 architecture work. It replaces earlier incomplete goal text.
@@ -202,8 +202,14 @@ architecture work. It replaces earlier incomplete goal text.
   Rust-Device-Watcher bleiben bewusst experimentell bzw. nicht default.
 - Phase 6 ist fuer Standard-Cloud-Provider-Sidecar, NSIS, ffmpeg/ffprobe,
   yt-dlp, ONNXRuntime/Silero-VAD Startup-Imports, Runtime-Datenmigration,
-  Release-Metadaten und optionale Gates umgesetzt. Am 2026-06-02 ist
-  der aktuelle Installer mit Tauri-Origin-CORS fuer `/api/health`,
+  Release-Metadaten und optionale Gates umgesetzt. Am 2026-06-03 ist
+  der aktuelle Installer erneut per `scripts\build_windows.ps1` mit kompletter
+  Backend-Test-Suite, Frontend-Typecheck, Tauri-Release-Build,
+  PyInstaller-Sidecar, ffmpeg/ffprobe-Bundling, Release-Smoke,
+  Release-Metadaten, Updater-Metadatenvalidierung und Size-Report gebaut
+  worden: `Scriber_0.1.0_x64-setup.exe`, `205.79 MiB`,
+  SHA256 `12724cdd2fbabd0f7dc54262ac850b8fd44b159737a07e10bfbd90b7c3176b0f`.
+  Am 2026-06-02 ist der Installer zusaetzlich mit Tauri-Origin-CORS fuer `/api/health`,
   tokenisiertem `/api/runtime`, echtem Tauri-WebView-Beacon ueber
   `/api/runtime/frontend-ready`, Cleanup, Uninstall, Support-Bundle,
   Crash-Recovery, kontrolliertem Worker-Shutdown, Startup-Timeout-Recovery,

@@ -200,14 +200,20 @@ status:
 - `missing_injection_after_transcript`: provider text arrived, but no paste
   callback happened.
 
-## Still Open
+## Current Live Evidence
 
-The following baseline requirement still needs a real spoken/injected sample:
+The baseline gate now has a real Tauri-managed spoken/injected sample from
+2026-06-02 with a controlled text target:
 
-- stop to text injection.
+- `hotkey_received_to_mic_ready_ms=70.933`
+- `hotkey_received_to_first_audio_frame_ms=99.428`
+- `stop_requested_to_first_paste_ms=1387.75`
+- controlled target text persisted with `capturedSamples=1`,
+  `maxCapturedChars=39`, and `captureElapsedMs=4636.593`
 
-`-RecordHotPathSamples` can measure hotkey/API-start to recording state and
-first audio frame even when no text is produced. Stop-to-injection is measured
-when STT returns text and injection succeeds, either after stop
-(`stop_requested_to_first_paste_ms`) or before stop for realtime providers
-(`first_paste_to_stop_requested_ms`, recorded as `0 ms` wait from stop).
+Use `-RecordHotPathSamples` for future regression runs when hotkey/API-start to
+recording state, first audio frame, provider text, and stop-to-injection timing
+need to be remeasured. Stop-to-injection is measured when STT returns text and
+injection succeeds, either after stop (`stop_requested_to_first_paste_ms`) or
+before stop for realtime providers (`first_paste_to_stop_requested_ms`,
+recorded as `0 ms` wait from stop).

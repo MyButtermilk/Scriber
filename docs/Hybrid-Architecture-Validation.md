@@ -4,6 +4,70 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Full Current Windows Installer Build
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+```
+
+Result: passed.
+
+Evidence:
+
+- Version sync passed with version `0.1.0`; no manifest changes were needed.
+- Full backend test suite passed: `388 passed`, `13 warnings`.
+- Frontend TypeScript check passed: `npm run check`.
+- Frontend production build passed and emitted the expected lazy chunks,
+  including `DebugConsole-*.js`, `Settings-*.js`, `Youtube-*.js`,
+  `FileTranscribe-*.js`, and `TranscriptDetail-*.js`.
+- Tauri release build produced
+  `Frontend\src-tauri\target\release\scriber-desktop.exe`.
+- `beforeBundleCommand` built the Python sidecar with PyInstaller and copied it
+  to `Frontend\src-tauri\target\release\backend`.
+- Frozen backend runtime import check passed before packaging.
+- Bundled media tools were copied into the sidecar:
+  `tools\ffmpeg\ffmpeg.exe` and `tools\ffmpeg\ffprobe.exe`.
+- NSIS produced
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- Installer artifact size: `215,781,886` bytes / `205.79 MiB`.
+- Installer SHA256:
+  `12724cdd2fbabd0f7dc54262ac850b8fd44b159737a07e10bfbd90b7c3176b0f`.
+- Tauri release smoke passed with:
+  - `runtimeMode=tauri-supervised`
+  - `launchKind=sidecar`
+  - `backendPort=8765`
+  - `apiVersion=1`
+  - `ready=true`
+  - `cleanupVerified=true`
+- Release metadata generation passed:
+  `Frontend\src-tauri\target\release\release-metadata\latest.json` and
+  `SHA256SUMS.txt`.
+- Tauri updater metadata validation passed for the local unsigned build with
+  `allowLocalUrls=true` and `localArtifactsVerified=1`.
+- Release size report passed with the installer under the default `220 MiB`
+  budget. The generated report is
+  `Frontend\src-tauri\target\release\release-metadata\size-report.json`.
+
+Goal coverage:
+
+- Phase 2/3/6/7: revalidates the current branch end-to-end through a fresh
+  Windows NSIS build, bundled Python sidecar, bundled frontend assets, frozen
+  backend runtime imports, media-tool bundling, release smoke, release metadata,
+  updater metadata validation, and installer size budget.
+- Phase 8: confirms the current cloud-provider sidecar remains under the
+  `220 MiB` installer budget after the Azure MAI 1.5 and test-fake updates.
+
+Remaining limits:
+
+- This local build is unsigned and uses local updater URLs. It does not close
+  the real Authenticode or published signed-updater external release gates.
+- This smoke validates the Tauri release executable and managed sidecar. It is
+  not the heavier installed-package matrix with frontend, crash, shutdown,
+  startup-timeout, port-conflict, external-attach, upgrade, uninstall, hardware,
+  or long live-recording evidence.
+
 ## 2026-06-02 - Strict Recording Text Target Persistence Gate
 
 Commands:
