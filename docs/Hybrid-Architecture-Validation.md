@@ -4,6 +4,93 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - SkipBundledFfprobe Size Comparison Build
+
+Commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -SkipBundledFfprobe -SkipChecks
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe" `
+  -InstallDir "tmp\installer-smoke\skip-ffprobe\Scriber" `
+  -DataDir "tmp\installer-smoke\skip-ffprobe\data" `
+  -OutputPath "tmp\hybrid-baseline\installer-skip-ffprobe-frontend-smoke-20260603.json" `
+  -VerifyFrontend `
+  -VerifyUninstall `
+  -MaxInstalledSizeMB 520
+
+python -m pytest tests\test_youtube_download.py tests\runtime\test_media_tools.py -q
+```
+
+Result: passed.
+
+Evidence:
+
+- Full reference artifact saved before the comparison build:
+  `tmp\installer-size-comparison\full\Scriber_0.1.0_x64-setup-full.exe`.
+- Full reference installer size:
+  `215,781,886` bytes / `205.79 MiB`.
+- Full reference SHA256:
+  `12724cdd2fbabd0f7dc54262ac850b8fd44b159737a07e10bfbd90b7c3176b0f`.
+- Full reference backend resource size:
+  `601.66 MiB`.
+- Full reference media tools:
+  `tools\ffmpeg\ffmpeg.exe` at `133.58 MiB` and
+  `tools\ffmpeg\ffprobe.exe` at `133.43 MiB`.
+- Slim artifact saved as:
+  `tmp\installer-size-comparison\slim\Scriber_0.1.0_x64-setup-skip-ffprobe.exe`.
+- Slim installer size:
+  `171,365,150` bytes / `163.43 MiB`.
+- Slim installer SHA256:
+  `f873f71629b39fa06c49002aac372fc60a65df14eebef5cceba6483cde9268f1`.
+- Slim backend resource size:
+  `468.23 MiB`.
+- Slim media tools copied by the sidecar build:
+  `tools\ffmpeg\ffmpeg.exe` only.
+- Measured saving versus the full reference build:
+  `44,416,736` bytes / `42.36 MiB` installer size, or `20.58%`.
+- Measured backend resource saving:
+  `133.43 MiB`, matching the omitted `ffprobe.exe`.
+- `build_windows.ps1 -SkipBundledFfprobe` now writes temporary
+  `tauri.conf.json` edits as UTF-8 without BOM. The first comparison attempt
+  exposed that Windows PowerShell `Set-Content -Encoding UTF8` adds a BOM that
+  Tauri rejects at JSON parse time.
+- The comparison build's built-in Tauri release smoke passed with
+  `runtimeMode=tauri-supervised`, `launchKind=sidecar`, `backendPort=8765`,
+  `ready=true`, and `cleanupVerified=true`.
+- Installed slim package smoke passed:
+  - installed size: `481.10 MiB`, under the temporary `520 MiB` gate
+  - installed frontend entrypoint and all six JS/CSS assets served correctly
+  - Tauri-origin CORS and tokenized `/api/runtime` passed
+  - real WebView posted `/api/runtime/frontend-ready`
+  - silent uninstall removed installed app artifacts
+  - runtime data sentinel was preserved
+- Focused media-tool/unit coverage passed:
+  `15 passed` for `tests\test_youtube_download.py` and
+  `tests\runtime\test_media_tools.py`.
+
+Goal coverage:
+
+- Phase 6/8: proves the explicit ffmpeg-only comparison mode can produce a
+  working installed package and quantifies its real size impact.
+- Phase 8: confirms the current largest single installer-size lever is
+  `ffprobe.exe` omission, but also shows the remaining installed footprint is
+  still dominated by `ffmpeg.exe`, PyInstaller/Python native libraries,
+  PySide6, SciPy/OpenBLAS, ONNXRuntime, and Pipecat model data.
+
+Remaining limits:
+
+- `-SkipBundledFfprobe` remains experimental and is not the standard release
+  path.
+- The installed smoke proves backend/frontend availability, WebView readiness,
+  size budget, and uninstall behavior. It does not prove real YouTube
+  transcription, file video duration extraction, or Azure MAI media-preparation
+  behavior without bundled `ffprobe`.
+- Standard releases should continue bundling both `ffmpeg` and `ffprobe` until
+  media workflow smokes prove the reduced bundle across the app's supported
+  media paths.
+
 ## 2026-06-03 - Experimental ffprobe-Omission Build Switch
 
 Commands:

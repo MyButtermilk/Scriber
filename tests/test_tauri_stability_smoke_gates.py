@@ -92,7 +92,9 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "-BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease" in build
     assert "$currentTauriConfig.Replace(" in build
     assert "finally {" in build
-    assert "Set-Content -Path $tauriConfigPath -Value $tauriConfigOriginal" in build
+    assert "function Set-Utf8NoBomContent" in build
+    assert "Set-Utf8NoBomContent -Path $tauriConfigPath -Value $currentTauriConfig" in build
+    assert "Set-Utf8NoBomContent -Path $tauriConfigPath -Value $tauriConfigOriginal" in build
 
 
 def test_release_workflow_installs_media_tools_for_standard_build() -> None:

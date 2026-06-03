@@ -73,6 +73,16 @@ function Invoke-Checked {
     }
 }
 
+function Set-Utf8NoBomContent {
+    param(
+        [string]$Path,
+        [string]$Value
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+}
+
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 $frontendRoot = Join-Path $RepoRoot "Frontend"
 $bundleArg = ($Bundles -join ",")
@@ -150,7 +160,7 @@ try {
                 $expectedCommandSegment,
                 "-BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease"
             )
-            Set-Content -Path $tauriConfigPath -Value $currentTauriConfig -NoNewline -Encoding UTF8
+            Set-Utf8NoBomContent -Path $tauriConfigPath -Value $currentTauriConfig
         }
     }
 
@@ -397,6 +407,6 @@ try {
     } | ConvertTo-Json -Compress
 } finally {
     if ($null -ne $tauriConfigOriginal) {
-        Set-Content -Path $tauriConfigPath -Value $tauriConfigOriginal -NoNewline -Encoding UTF8
+        Set-Utf8NoBomContent -Path $tauriConfigPath -Value $tauriConfigOriginal
     }
 }
