@@ -222,7 +222,11 @@ architecture work. It replaces earlier incomplete goal text.
   Veroeffentlichung aus, sobald Updater-Signing konfiguriert ist. Der
   finale Release-Readiness-Runner kann die Hardware-Matrix, Authenticode,
   Updater-Publikation und den finalen Aggregat-Check in einem Operator-Lauf
-  zusammenfuehren, sobald die externen Nachweise existieren.
+  zusammenfuehren, sobald die externen Nachweise existieren. Sein
+  `-PlanOnly`-Modus schreibt inzwischen neben den konkreten Befehlen auch eine
+  strukturierte `requiredEvidence`-Checkliste fuer physische Mic-Matrix,
+  signierte Updater-Metadaten, veroeffentlichtes Updater-Manifest,
+  Authenticode-Report und finalen Aggregat-Check.
 - Phase 7 hat automatisierte Smoke-/Regression-Gates, aber die manuelle
   Hardware-Matrix bleibt offen. Einzel-Smoke, gefuehrter Windows-Runner und
   Aggregat-Validator fuer diese Matrix sind vorhanden; die physischen USB-,

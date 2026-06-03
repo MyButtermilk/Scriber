@@ -85,6 +85,24 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     ]
     assert payload["ok"] is True
     assert payload["planOnly"] is True
+    evidence_names = [entry["name"] for entry in payload["requiredEvidence"]]
+    assert evidence_names == [
+        "physicalMicrophoneMatrix",
+        "signedTauriUpdaterMetadata",
+        "publishedUpdaterManifest",
+        "authenticodeSignatures",
+        "hybridReleaseReadinessAggregate",
+    ]
+    hardware_evidence = payload["requiredEvidence"][0]
+    assert hardware_evidence["external"] is True
+    assert len(hardware_evidence["expectedArtifacts"]) == 8
+    assert any("favorite-fallback" in artifact for artifact in hardware_evidence["expectedArtifacts"])
+    updater_evidence = payload["requiredEvidence"][1]
+    assert updater_evidence["metadata"].endswith("latest.json")
+    assert "absolute HTTPS" in updater_evidence["notes"]
+    authenticode_evidence = payload["requiredEvidence"][3]
+    assert authenticode_evidence["expectedPublisher"] == "Scriber Publisher"
+    assert authenticode_evidence["requireTimestamp"] is True
     assert "validate_microphone_hardware_matrix.py" in payload["commands"][0]["command"]
     assert "verify_tauri_updater_publication.py" in payload["commands"][1]["command"]
     assert "validate_windows_authenticode.ps1" in payload["commands"][2]["command"]

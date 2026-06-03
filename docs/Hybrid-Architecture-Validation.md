@@ -4,6 +4,64 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Final Release Readiness Evidence Checklist
+
+Commands:
+
+```powershell
+python -m pytest tests\test_hybrid_release_readiness_runner.py -q
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -PlanOnly `
+  -HardwareInputDir tmp\hybrid-baseline `
+  -UseExistingAuthenticodeReport `
+  -UseExistingUpdaterPublicationReport
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- `scripts\run_hybrid_release_readiness.ps1 -PlanOnly` now emits a structured
+  `requiredEvidence` list in addition to the command plan.
+- The required evidence list names the five final blocks:
+  `physicalMicrophoneMatrix`, `signedTauriUpdaterMetadata`,
+  `publishedUpdaterManifest`, `authenticodeSignatures`, and
+  `hybridReleaseReadinessAggregate`.
+- The physical microphone entry lists the eight expected
+  `microphone-hardware-*.json` scenario artifacts under the selected hardware
+  evidence directory.
+- The signed updater metadata entry names `latest.json`, the release artifact
+  directory, `SHA256SUMS.txt`, and the requirement for absolute HTTPS URLs plus
+  non-empty updater signatures.
+- The publication and Authenticode entries identify the report files consumed by
+  the final aggregate validator and clarify that Authenticode evidence must
+  cover the release artifact names listed in `latest.json`.
+- The plan JSON is now written as UTF-8 without BOM, matching the stricter
+  config-write handling added for temporary Tauri config edits.
+
+Evidence:
+
+- `tests\test_hybrid_release_readiness_runner.py`: `4 passed`.
+- PlanOnly output wrote
+  `tmp\hybrid-baseline\hybrid-release-readiness-runner-plan.json`.
+- The PlanOnly payload included all five `requiredEvidence` blocks and all four
+  final runner commands: microphone matrix validation, updater publication
+  verification, Authenticode validation, and hybrid release-readiness
+  aggregation.
+
+Goal coverage:
+
+- Phase 6/7/8: makes the remaining external release gates explicit and
+  machine-readable for an operator or release CI run. This reduces the risk of
+  treating local build evidence as final hybrid release-readiness proof.
+
+Remaining limits:
+
+- This still does not close the physical hardware matrix, real Authenticode
+  signing, or signed updater publication. It improves the evidence plan and
+  leaves the final aggregate gate red until those real artifacts exist.
+
 ## 2026-06-03 - SkipBundledFfprobe Size Comparison Build
 
 Commands:

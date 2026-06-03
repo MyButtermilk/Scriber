@@ -56,6 +56,16 @@ function Convert-ToDisplayCommand {
     }) -join " ")
 }
 
+function Write-Utf8NoBomJson {
+    param(
+        [string]$Path,
+        [string]$Json
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Json, $encoding)
+}
+
 function Invoke-Checked {
     param(
         [string]$Label,
@@ -171,6 +181,68 @@ if ($RequireAuthenticodeTimestamp) {
     $readinessArgs += "--require-authenticode-timestamp"
 }
 
+$hardwareArtifacts = @(
+    "microphone-hardware-usb-add.json",
+    "microphone-hardware-usb-remove.json",
+    "microphone-hardware-dock-disconnect.json",
+    "microphone-hardware-dock-connect.json",
+    "microphone-hardware-bluetooth-add.json",
+    "microphone-hardware-bluetooth-remove.json",
+    "microphone-hardware-default-mic-change.json",
+    "microphone-hardware-favorite-fallback.json"
+)
+$requiredEvidence = @(
+    [pscustomobject]@{
+        name = "physicalMicrophoneMatrix"
+        required = $true
+        external = $true
+        producer = "scripts\run_microphone_hardware_matrix.ps1"
+        validator = "scripts\validate_microphone_hardware_matrix.py"
+        inputDir = $HardwareInputDir
+        expectedArtifacts = @($hardwareArtifacts | ForEach-Object { Join-Path $HardwareInputDir $_ })
+        output = $MatrixValidationOutput
+        notes = "Requires physical USB, dock, Bluetooth, Windows default-device, and favorite-mic fallback actions on the target Windows machine."
+    },
+    [pscustomobject]@{
+        name = "signedTauriUpdaterMetadata"
+        required = $true
+        external = $true
+        producer = "scripts\build_windows.ps1 -EnableTauriUpdater with signing keys"
+        metadata = $UpdaterMetadata
+        artifactDir = $UpdaterArtifactDir
+        sha256Sums = $Sha256Sums
+        notes = "latest.json must use absolute HTTPS release URLs and non-empty Tauri updater signatures."
+    },
+    [pscustomobject]@{
+        name = "publishedUpdaterManifest"
+        required = $true
+        external = $true
+        producer = $(if ($UseExistingUpdaterPublicationReport) { "existing report" } else { "scripts\verify_tauri_updater_publication.py" })
+        url = $UpdaterPublicationUrl
+        report = $UpdaterPublicationReport
+        notes = "The signed latest.json must be publicly reachable and match the local release metadata SHA256."
+    },
+    [pscustomobject]@{
+        name = "authenticodeSignatures"
+        required = $true
+        external = $true
+        producer = $(if ($UseExistingAuthenticodeReport) { "existing report" } else { "scripts\validate_windows_authenticode.ps1" })
+        inputPaths = $AuthenticodePath
+        report = $AuthenticodeReport
+        expectedPublisher = $ExpectedAuthenticodePublisher
+        requireTimestamp = [bool]$RequireAuthenticodeTimestamp
+        notes = "The Authenticode report must include the release artifact names from latest.json, not only an unrelated signed executable."
+    },
+    [pscustomobject]@{
+        name = "hybridReleaseReadinessAggregate"
+        required = $true
+        external = $false
+        producer = "scripts\validate_hybrid_release_readiness.py"
+        output = $OutputPath
+        notes = "Final aggregate verdict remains red until every required external evidence item above is present and valid."
+    }
+)
+
 $plan = [pscustomobject]@{
     ok = $true
     planOnly = [bool]$PlanOnly
@@ -181,6 +253,7 @@ $plan = [pscustomobject]@{
     outputPath = $OutputPath
     useExistingAuthenticodeReport = [bool]$UseExistingAuthenticodeReport
     useExistingUpdaterPublicationReport = [bool]$UseExistingUpdaterPublicationReport
+    requiredEvidence = $requiredEvidence
     commands = @(
         [pscustomobject]@{
             name = "microphoneMatrixValidation"
@@ -202,7 +275,7 @@ $plan = [pscustomobject]@{
 }
 $planPath = Join-Path $HardwareInputDir "hybrid-release-readiness-runner-plan.json"
 $planJson = $plan | ConvertTo-Json -Depth 8 -Compress
-Set-Content -LiteralPath $planPath -Value $planJson -Encoding UTF8
+Write-Utf8NoBomJson -Path $planPath -Json $planJson
 
 if ($PlanOnly) {
     $planJson
