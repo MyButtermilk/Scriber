@@ -240,7 +240,11 @@ architecture work. It replaces earlier incomplete goal text.
   `missingLabelParameters`, damit fehlende USB-/Dock-/Bluetooth-/Favorite-
   Labels vor den physischen Aktionen auffallen. Fuer Installer-Groesse ist
   `-ValidateSlimMediaTools` als expliziter Gate fuer kleinere FFmpeg-Kandidaten
-  vorhanden; ein Slim-FFmpeg-Release-Default bleibt aber bis zu realen
+  vorhanden. `scripts\smoke_media_preparation.py` prueft inzwischen die echten
+  FFmpeg-basierten Python-Helfer fuer Datei-Kompression,
+  Upload-Audioextraktion, YouTube-Post-Download-Normalisierung,
+  Azure-MAI-MP3-Vorbereitung und optionale `ffprobe`-Dauerprobe; ein
+  Slim-FFmpeg-Release-Default bleibt aber bis zu realen installierten
   YouTube-/Datei-/Azure-MAI-Media-Smokes offen.
 - Phase 8 hat synthetische Guards, eine 30-Minuten-Idle-Stability, mehrere
   installierte Stability-Smokes und einen vom Nutzer fuer diese Iteration

@@ -56,7 +56,8 @@ param(
     [switch]$InstallerDisableLiveTextInjection,
     [switch]$RunInstallerLegacyDataSmoke,
     [switch]$RunInstallerUpgradeSmoke,
-    [switch]$RunInstallerUninstallSmoke
+    [switch]$RunInstallerUninstallSmoke,
+    [switch]$RunMediaPreparationSmoke
 )
 
 $ErrorActionPreference = "Stop"
@@ -207,12 +208,39 @@ try {
     $releaseExe = Join-Path $targetRelease "scriber-desktop.exe"
     $bundleRoot = Join-Path $targetRelease "bundle"
     $metadataDir = Join-Path $targetRelease "release-metadata"
+    $mediaPreparationSmokePath = Join-Path $metadataDir "media-preparation-smoke.json"
     $artifacts = @()
     if (Test-Path $bundleRoot) {
         $artifacts = @(
             Get-ChildItem -Path $bundleRoot -Recurse -File -Include *.exe,*.msi |
                 Select-Object -ExpandProperty FullName
         )
+    }
+
+    if ($RunMediaPreparationSmoke) {
+        Invoke-Checked -Label "Media preparation smoke" -Command {
+            Push-Location $RepoRoot
+            try {
+                New-Item -ItemType Directory -Force -Path $metadataDir | Out-Null
+                $backendMediaToolsDir = Join-Path $targetRelease "backend\tools\ffmpeg"
+                if (-not (Test-Path -LiteralPath $backendMediaToolsDir -PathType Container)) {
+                    throw "Bundled backend media tools directory was not found: $backendMediaToolsDir"
+                }
+                $mediaSmokeArgs = @(
+                    "scripts\smoke_media_preparation.py",
+                    "--output",
+                    $mediaPreparationSmokePath,
+                    "--media-tools-dir",
+                    $backendMediaToolsDir
+                )
+                if (-not $SkipBundledFfprobe) {
+                    $mediaSmokeArgs += "--require-ffprobe"
+                }
+                python @mediaSmokeArgs
+            } finally {
+                Pop-Location
+            }
+        }
     }
 
     if ($RequireAuthenticodeSignature) {
@@ -423,6 +451,7 @@ try {
         artifacts = $artifacts
         metadataDir = $metadataDir
         sizeReport = Join-Path $metadataDir "size-report.json"
+        mediaPreparationSmoke = $mediaPreparationSmokePath
     } | ConvertTo-Json -Compress
 } finally {
     if ($null -ne $tauriConfigOriginal) {

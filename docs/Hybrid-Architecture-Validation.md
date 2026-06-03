@@ -4,6 +4,55 @@ This file records concrete validation evidence for `docs/Hybrid-Architecture-Goa
 It is intentionally separate from the goal text so local goal edits can stay
 unmixed with verification results.
 
+## 2026-06-03 - Media Preparation Smoke Gate
+
+Commands:
+
+```powershell
+python scripts\smoke_media_preparation.py `
+  --output tmp\media-preparation-smoke-local.json `
+  --require-ffprobe
+
+python -m pytest tests\perf\test_media_preparation_smoke_script.py -q
+```
+
+Result: passed.
+
+Implemented improvements:
+
+- Added `scripts\smoke_media_preparation.py`, a local FFmpeg media-preparation
+  smoke that requires no STT provider API keys.
+- The script creates a synthetic WAV signal, then uses the real Scriber Python
+  helpers for:
+  - file-upload compression through `_maybe_compress_audio_upload`;
+  - upload audio extraction through `_extract_audio_from_video`;
+  - YouTube post-download normalization through `_ensure_audio_only_file`;
+  - Azure-MAI MP3 preparation through `prepared_azure_mai_audio_file`;
+  - optional duration probing through `_probe_media_duration_seconds`.
+- Added `scripts\build_windows.ps1 -RunMediaPreparationSmoke`, which runs the
+  script against the bundled release `backend\tools\ffmpeg` directory and writes
+  `release-metadata\media-preparation-smoke.json`.
+
+Evidence:
+
+- Local run against `C:\Program Files\FFmpeg\bin\ffmpeg.exe` and
+  `C:\Program Files\FFmpeg\bin\ffprobe.exe`: `ok=true`, `5/5` checks passed,
+  total duration about `699 ms`.
+- `tests\perf\test_media_preparation_smoke_script.py`: `3 passed`.
+
+Goal coverage:
+
+- Phase 6/7/8: adds a concrete automated gate for the FFmpeg-heavy media
+  preparation paths most likely to break when replacing the current full
+  FFmpeg/ffprobe bundle with a smaller candidate.
+
+Remaining limits:
+
+- This is a local media-preparation smoke, not a network YouTube download, not a
+  provider STT call, and not an installed-package E2E transcription proof.
+- Real installed YouTube, file-upload, and Azure-MAI media workflow smokes are
+  still required before making slim media tools the release default.
+
 ## 2026-06-03 - Slim FFmpeg Candidate Validation Gate
 
 Commands:
