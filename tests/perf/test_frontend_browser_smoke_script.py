@@ -31,12 +31,21 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert payload["ok"] is True
     assert payload["summary"]["routeCount"] == 6
     assert payload["summary"]["criticalConsoleErrorCount"] == 0
+    assert payload["summary"]["interactionCheckCount"] == 4
+    assert set(payload["summary"]["interactionChecks"]) == {
+        "youtube-thumbnails",
+        "file-drag-drop",
+        "debug-clear",
+        "token-required-browser-state",
+    }
     assert "/settings" in payload["summary"]["routes"]
     assert "/debug" in payload["summary"]["routes"]
     assert set(payload["summary"]["virtualizedHistoryRoutes"]) == {"/", "/youtube", "/file"}
     debug = next(item for item in payload["scenarios"] if item["route"] == "/debug")
     assert "Copy visible" in debug["expectedText"]
     assert "Support bundle" in debug["expectedText"]
+    assert debug["interactionChecks"] == [{"name": "debug-clear", "ok": True}]
+    assert payload["tokenRequiredCheck"]["name"] == "token-required-browser-state"
 
 
 def test_hybrid_goal_frontend_smoke_is_documented() -> None:

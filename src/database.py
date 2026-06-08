@@ -120,13 +120,35 @@ def init_database() -> None:
                 preview TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                summary TEXT DEFAULT ''
+                summary TEXT DEFAULT '',
+                summary_status TEXT DEFAULT 'idle',
+                summary_error TEXT DEFAULT '',
+                summary_updated_at TEXT DEFAULT ''
             )
         """)
-        # Migration: add preview column for existing databases.
+        # Migration: add columns for existing databases.
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(transcripts)").fetchall()}
         if "preview" not in cols:
             conn.execute("ALTER TABLE transcripts ADD COLUMN preview TEXT DEFAULT ''")
+        if "summary_status" not in cols:
+            conn.execute("ALTER TABLE transcripts ADD COLUMN summary_status TEXT DEFAULT 'idle'")
+        if "summary_error" not in cols:
+            conn.execute("ALTER TABLE transcripts ADD COLUMN summary_error TEXT DEFAULT ''")
+        if "summary_updated_at" not in cols:
+            conn.execute("ALTER TABLE transcripts ADD COLUMN summary_updated_at TEXT DEFAULT ''")
+        conn.execute(
+            """
+            UPDATE transcripts
+            SET summary_status = 'completed',
+                summary_error = '',
+                summary_updated_at = CASE
+                    WHEN COALESCE(summary_updated_at, '') = '' THEN updated_at
+                    ELSE summary_updated_at
+                END
+            WHERE COALESCE(summary, '') <> ''
+              AND COALESCE(summary_status, 'idle') IN ('', 'idle')
+            """
+        )
 
         # PERFORMANCE: Index on created_at for faster ORDER BY queries
         # Impact: 50-100ms improvement for 1000+ transcripts
@@ -172,8 +194,9 @@ def save_transcript(record: Any) -> None:
             conn.execute("""
                 INSERT OR REPLACE INTO transcripts 
                 (id, title, date, duration, status, type, language, step, 
-                 source_url, channel, thumbnail_url, content, preview, created_at, updated_at, summary)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 source_url, channel, thumbnail_url, content, preview, created_at, updated_at,
+                 summary, summary_status, summary_error, summary_updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data.get("id"),
                 data.get("title", ""),
@@ -191,6 +214,9 @@ def save_transcript(record: Any) -> None:
                 data.get("createdAt", datetime.now().isoformat()),
                 data.get("updatedAt", datetime.now().isoformat()),
                 data.get("summary", ""),
+                data.get("summaryStatus", "completed" if data.get("summary") else "idle"),
+                data.get("summaryError", ""),
+                data.get("summaryUpdatedAt", ""),
             ))
             transcript_id = data.get("id", "")
             if transcript_id:
@@ -229,6 +255,9 @@ def load_all_transcripts() -> List[dict]:
                     "createdAt": row["created_at"],
                     "updatedAt": row["updated_at"],
                     "summary": row["summary"],
+                    "summaryStatus": row["summary_status"] or ("completed" if row["summary"] else "idle"),
+                    "summaryError": row["summary_error"] or "",
+                    "summaryUpdatedAt": row["summary_updated_at"] or "",
                 })
             return transcripts
     except Exception as e:
@@ -249,7 +278,7 @@ def load_transcript_metadata() -> List[dict]:
             cursor = conn.execute("""
                 SELECT id, title, date, duration, status, type, language, step,
                        source_url, channel, thumbnail_url, created_at, updated_at,
-                       preview
+                       preview, summary_status, summary_error, summary_updated_at
                 FROM transcripts
                 ORDER BY created_at DESC
             """)
@@ -271,6 +300,9 @@ def load_transcript_metadata() -> List[dict]:
                     "thumbnailUrl": row["thumbnail_url"],
                     "createdAt": row["created_at"],
                     "updatedAt": row["updated_at"],
+                    "summaryStatus": row["summary_status"] or "idle",
+                    "summaryError": row["summary_error"] or "",
+                    "summaryUpdatedAt": row["summary_updated_at"] or "",
                     # content and summary are NOT loaded - loaded on demand
                     "content": "",
                     "summary": "",
@@ -310,6 +342,9 @@ def get_transcript(transcript_id: str) -> Optional[dict]:
                     "createdAt": row["created_at"],
                     "updatedAt": row["updated_at"],
                     "summary": row["summary"],
+                    "summaryStatus": row["summary_status"] or ("completed" if row["summary"] else "idle"),
+                    "summaryError": row["summary_error"] or "",
+                    "summaryUpdatedAt": row["summary_updated_at"] or "",
                 }
     except Exception as e:
         logger.error(f"Failed to get transcript: {e}")
@@ -346,16 +381,70 @@ def delete_transcript(transcript_id: str) -> bool:
 def update_transcript_summary(transcript_id: str, summary: str) -> bool:
     """Update just the summary field of a transcript."""
     try:
+        updated_at = datetime.now().isoformat()
         with _get_connection() as conn:
             conn.execute(
-                "UPDATE transcripts SET summary = ?, updated_at = ? WHERE id = ?",
-                (summary, datetime.now().isoformat(), transcript_id)
+                """
+                UPDATE transcripts
+                SET summary = ?,
+                    summary_status = 'completed',
+                    summary_error = '',
+                    summary_updated_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (summary, updated_at, updated_at, transcript_id)
             )
             _sync_fts_row(conn, transcript_id)
             conn.commit()
             return True
     except Exception as e:
         logger.error(f"Failed to update transcript summary: {e}")
+        return False
+
+
+def update_transcript_summary_state(
+    transcript_id: str,
+    *,
+    status: str,
+    error: str = "",
+    summary: Optional[str] = None,
+) -> bool:
+    """Update persisted summary lifecycle state without changing transcription status."""
+    try:
+        updated_at = datetime.now().isoformat()
+        status = status if status in {"idle", "pending", "completed", "failed"} else "idle"
+        with _get_connection() as conn:
+            if summary is None:
+                conn.execute(
+                    """
+                    UPDATE transcripts
+                    SET summary_status = ?,
+                        summary_error = ?,
+                        summary_updated_at = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (status, error, updated_at, updated_at, transcript_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE transcripts
+                    SET summary = ?,
+                        summary_status = ?,
+                        summary_error = ?,
+                        summary_updated_at = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (summary, status, error, updated_at, updated_at, transcript_id),
+                )
+                _sync_fts_row(conn, transcript_id)
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Failed to update transcript summary state: {e}")
         return False
 
 

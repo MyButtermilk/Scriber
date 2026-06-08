@@ -1,10 +1,12 @@
 import asyncio
-from unittest.mock import AsyncMock, patch
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.config import Config
 from src.data.job_store import JobStatus, JobStore
-from src.web_api import ScriberWebController
+from src.web_api import ScriberWebController, TranscriptRecord
 
 
 @pytest.mark.asyncio
@@ -58,3 +60,101 @@ async def test_cancel_transcript_marks_background_job_canceled(tmp_path):
     assert job is not None
     assert job.status == JobStatus.CANCELED
     assert job.job_type.value == "file"
+
+
+class _SyntheticPipeline:
+    def __init__(self, *, on_transcription):
+        self._on_transcription = on_transcription
+
+    async def transcribe_file_direct(self, _path):
+        self._on_transcription("Synthetic transcript text for summary failure.", True)
+
+
+def _completed_record(*, transcript_type: str, tmp_path) -> TranscriptRecord:
+    now = datetime.now()
+    return TranscriptRecord(
+        id="summary-failure-record",
+        title="Summary Failure",
+        date="Today",
+        duration="00:10",
+        status="processing",
+        type=transcript_type,
+        language="auto",
+        step="Queued",
+        source_url="https://youtube.com/watch?v=summaryfailure" if transcript_type == "youtube" else "",
+        created_at=now.isoformat(),
+        updated_at=now.isoformat(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_youtube_auto_summary_failure_is_exposed_as_summary_state(monkeypatch, tmp_path):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    ctl._downloads_dir = tmp_path / "downloads"
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"RIFF....WAVEfmt ")
+    rec = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
+
+    async def _download_youtube_audio(*_args, **_kwargs):
+        return audio_path
+
+    async def _fail_summary(*_args, **_kwargs):
+        raise RuntimeError("summary provider failed")
+
+    def _create_pipeline(*_args, **kwargs):
+        return _SyntheticPipeline(on_transcription=kwargs["on_transcription"])
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", True)
+    monkeypatch.setattr(Config, "SUMMARIZATION_MODEL", "synthetic-summary-model")
+
+    with (
+        patch("src.web_api.download_youtube_audio", new=AsyncMock(side_effect=_download_youtube_audio)),
+        patch("src.web_api.supports_direct_file_upload", return_value=True),
+        patch("src.web_api._create_scriber_pipeline", side_effect=_create_pipeline),
+        patch("src.summarization.summarize_text", new=AsyncMock(side_effect=_fail_summary)),
+        patch.object(ctl, "_save_transcript_to_db", new=MagicMock()) as save_mock,
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        await ctl._run_youtube_transcription(rec, provider="soniox")
+
+    assert rec.status == "completed"
+    assert rec.summary == ""
+    assert rec.summary_status == "failed"
+    assert "summary provider failed" in rec.summary_error
+    assert rec.to_public(include_content=True)["summaryStatus"] == "failed"
+    assert save_mock.call_count >= 3
+
+
+@pytest.mark.asyncio
+async def test_file_auto_summary_failure_is_exposed_as_summary_state(monkeypatch, tmp_path):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    file_path = tmp_path / "upload.wav"
+    file_path.write_bytes(b"RIFF....WAVEfmt ")
+    rec = _completed_record(transcript_type="file", tmp_path=tmp_path)
+
+    async def _fail_summary(*_args, **_kwargs):
+        raise RuntimeError("summary provider failed")
+
+    def _create_pipeline(*_args, **kwargs):
+        return _SyntheticPipeline(on_transcription=kwargs["on_transcription"])
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", True)
+    monkeypatch.setattr(Config, "SUMMARIZATION_MODEL", "synthetic-summary-model")
+
+    with (
+        patch("src.web_api.supports_direct_file_upload", return_value=True),
+        patch("src.web_api._create_scriber_pipeline", side_effect=_create_pipeline),
+        patch("src.summarization.summarize_text", new=AsyncMock(side_effect=_fail_summary)),
+        patch.object(ctl, "_save_transcript_to_db", new=MagicMock()) as save_mock,
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        await ctl._run_file_transcription(rec, file_path, provider="soniox")
+
+    assert rec.status == "completed"
+    assert rec.summary == ""
+    assert rec.summary_status == "failed"
+    assert "summary provider failed" in rec.summary_error
+    assert rec.to_public(include_content=True)["summaryStatus"] == "failed"
+    assert save_mock.call_count >= 3

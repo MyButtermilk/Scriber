@@ -215,6 +215,21 @@ try {
     $metadataDir = Join-Path $targetRelease "release-metadata"
     $mediaPreparationSmokePath = Join-Path $metadataDir "media-preparation-smoke.json"
     $runtimeDependencyFootprintPath = Join-Path $metadataDir "runtime-dependency-footprint.json"
+    foreach ($staleReport in @($mediaPreparationSmokePath, $runtimeDependencyFootprintPath)) {
+        if (Test-Path -LiteralPath $staleReport -PathType Leaf) {
+            Remove-Item -LiteralPath $staleReport -Force
+        }
+    }
+    $mediaPreparationSmoke = [ordered]@{
+        ran = [bool]$RunMediaPreparationSmoke
+        path = $null
+        generatedAt = $null
+    }
+    $runtimeDependencyFootprint = [ordered]@{
+        ran = [bool]$RunRuntimeDependencyFootprint
+        path = $null
+        generatedAt = $null
+    }
     $artifacts = @()
     if (Test-Path $bundleRoot) {
         $artifacts = @(
@@ -243,6 +258,11 @@ try {
                     $mediaSmokeArgs += "--require-ffprobe"
                 }
                 python @mediaSmokeArgs
+                if (-not (Test-Path -LiteralPath $mediaPreparationSmokePath -PathType Leaf)) {
+                    throw "Media preparation smoke did not write expected report: $mediaPreparationSmokePath"
+                }
+                $mediaPreparationSmoke["path"] = $mediaPreparationSmokePath
+                $mediaPreparationSmoke["generatedAt"] = (Get-Item -LiteralPath $mediaPreparationSmokePath).LastWriteTimeUtc.ToString("o")
             } finally {
                 Pop-Location
             }
@@ -275,6 +295,11 @@ try {
                     $footprintArgs += @("--max-total-mb", $MaxPythonRuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
                 }
                 python @footprintArgs
+                if (-not (Test-Path -LiteralPath $runtimeDependencyFootprintPath -PathType Leaf)) {
+                    throw "Runtime dependency footprint did not write expected report: $runtimeDependencyFootprintPath"
+                }
+                $runtimeDependencyFootprint["path"] = $runtimeDependencyFootprintPath
+                $runtimeDependencyFootprint["generatedAt"] = (Get-Item -LiteralPath $runtimeDependencyFootprintPath).LastWriteTimeUtc.ToString("o")
             } finally {
                 Pop-Location
             }
@@ -495,8 +520,8 @@ try {
         artifacts = $artifacts
         metadataDir = $metadataDir
         sizeReport = Join-Path $metadataDir "size-report.json"
-        mediaPreparationSmoke = $mediaPreparationSmokePath
-        runtimeDependencyFootprint = $runtimeDependencyFootprintPath
+        mediaPreparationSmoke = $mediaPreparationSmoke
+        runtimeDependencyFootprint = $runtimeDependencyFootprint
     } | ConvertTo-Json -Compress
 } finally {
     if ($null -ne $tauriConfigOriginal) {

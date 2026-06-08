@@ -47,10 +47,14 @@ export const getQueryFn = <T,>({
 
     await throwIfResNotOk(res);
     return (await res.json()) as T;
-  } catch {
-    // Backend offline / not yet ready / CORS blocked: treat as empty and let the UI render.
-    // The BackendOfflineBanner will handle showing the user a friendly message.
-    return null as T;
+  } catch (error) {
+    if (unauthorizedBehavior === "returnNull") {
+      // Backend offline / not yet ready / CORS blocked: treat as empty and let the UI render.
+      // The BackendOfflineBanner will handle showing the user a friendly message.
+      return null as T;
+    }
+    // In strict mode surface the failure to React Query instead of silently returning null.
+    throw error instanceof Error ? error : new Error("Query failed");
   }
 };
 

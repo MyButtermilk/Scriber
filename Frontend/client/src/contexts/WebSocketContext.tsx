@@ -1,5 +1,10 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
-import { wsUrl } from "@/lib/backend";
+import {
+    BACKEND_SESSION_TOKEN_REQUIRED_EVENT,
+    backendSessionToken,
+    isBackendSessionTokenRequired,
+    wsUrl,
+} from "@/lib/backend";
 import type { MicrophoneDevice } from "@/lib/api-types";
 
 type BaseWsMessage = {
@@ -144,6 +149,13 @@ export function WebSocketProvider({
     }, []);
 
     const connect = useCallback(() => {
+        if (isBackendSessionTokenRequired() && !backendSessionToken) {
+            setIsConnected(false);
+            wsRef.current = null;
+            clearReconnectTimeout();
+            return;
+        }
+
         // Clean up existing connection
         if (wsRef.current) {
             wsRef.current.close();
@@ -205,7 +217,7 @@ export function WebSocketProvider({
         } catch (error) {
             console.error("WebSocket connection error:", error);
         }
-    }, [path, reconnectDelay, maxReconnectAttempts]);
+    }, [path, reconnectDelay, maxReconnectAttempts, clearReconnectTimeout]);
 
     const send = useCallback((data: unknown) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -234,6 +246,26 @@ export function WebSocketProvider({
             }
         };
     }, [connect, autoReconnect, clearReconnectTimeout]);
+
+    useEffect(() => {
+        const handleAuthStateChange = () => {
+            if (isBackendSessionTokenRequired() && !backendSessionToken) {
+                shouldReconnectRef.current = false;
+                clearReconnectTimeout();
+                if (wsRef.current) {
+                    wsRef.current.close();
+                    wsRef.current = null;
+                }
+                setIsConnected(false);
+                shouldReconnectRef.current = autoReconnect;
+                return;
+            }
+            shouldReconnectRef.current = autoReconnect;
+            connect();
+        };
+        window.addEventListener(BACKEND_SESSION_TOKEN_REQUIRED_EVENT, handleAuthStateChange);
+        return () => window.removeEventListener(BACKEND_SESSION_TOKEN_REQUIRED_EVENT, handleAuthStateChange);
+    }, [autoReconnect, clearReconnectTimeout, connect]);
 
     const value: WebSocketContextValue = {
         isConnected,

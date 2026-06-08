@@ -1,10 +1,12 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
 import {
     apiUrl,
+    backendSessionToken,
     isTauriRuntime,
     loadBackendBaseUrlFromTauri,
     reportFrontendReady,
     setBackendBaseUrl,
+    setBackendSessionTokenRequired,
 } from "@/lib/backend";
 import { REST_API_VERSION, type BackendHealthResponse } from "@/lib/api-types";
 
@@ -79,6 +81,28 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
             const health = res.ok ? ((await res.json()) as BackendHealthResponse) : null;
             const online = health?.apiVersion === REST_API_VERSION && health.ok === true && health.ready === true;
             if (online) {
+                if (!isTauriRuntime() && !backendSessionToken) {
+                    const authController = new AbortController();
+                    const authTimeoutId = setTimeout(() => authController.abort(), 1500);
+                    try {
+                        const authProbe = await fetch(apiUrl("/api/runtime"), {
+                            signal: authController.signal,
+                            cache: "no-store",
+                        });
+                        if (authProbe.status === 401) {
+                            setBackendSessionTokenRequired(true);
+                            setIsOnline(false);
+                            setError("This backend requires a Scriber desktop session token. Open Scriber from the installed desktop app.");
+                            setLastChecked(new Date());
+                            return false;
+                        }
+                        setBackendSessionTokenRequired(false);
+                    } finally {
+                        clearTimeout(authTimeoutId);
+                    }
+                } else {
+                    setBackendSessionTokenRequired(false);
+                }
                 try {
                     await reportFrontendReady();
                 } catch (readyError) {

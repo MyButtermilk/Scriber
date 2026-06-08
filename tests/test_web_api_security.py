@@ -4,7 +4,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from src import web_api
-from src.web_api import ScriberWebController
+from src.web_api import APP_SHUTDOWN_EVENT, ScriberWebController
 
 
 def test_safe_upload_filename_strips_dirs():
@@ -180,7 +180,7 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
     ctl = ScriberWebController(asyncio.get_running_loop())
     app = web_api.create_app(ctl)
     shutdown_event = asyncio.Event()
-    app["shutdown_event"] = shutdown_event
+    app[APP_SHUTDOWN_EVENT] = shutdown_event
 
     server = TestServer(app)
     client = TestClient(server)

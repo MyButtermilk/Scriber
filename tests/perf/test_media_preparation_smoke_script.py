@@ -37,7 +37,8 @@ def test_windows_build_can_run_media_preparation_smoke_against_bundled_tools() -
     assert "--media-tools-dir" in build
     assert "--require-ffprobe" in build
     assert "media-preparation-smoke.json" in build
-    assert "mediaPreparationSmoke = $mediaPreparationSmokePath" in build
+    assert "$mediaPreparationSmoke[\"path\"] = $mediaPreparationSmokePath" in build
+    assert "mediaPreparationSmoke = $mediaPreparationSmoke" in build
 
 
 def test_installer_smoke_can_verify_installed_media_preparation_tools() -> None:

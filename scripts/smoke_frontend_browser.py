@@ -74,6 +74,8 @@ class FrontendSmokeBackend:
         self.request_log: list[dict[str, Any]] = []
         self.settings = self._default_settings()
         self.websockets: set[web.WebSocketResponse] = set()
+        self.session_token_required = False
+        self.session_token = "smoke-session-token"
 
     @property
     def base_url(self) -> str:
@@ -84,6 +86,8 @@ class FrontendSmokeBackend:
         async def cors_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
             if request.method == "OPTIONS":
                 response: web.StreamResponse = web.Response()
+            elif self._requires_session_token(request) and not self._has_valid_session_token(request):
+                response = web.json_response({"message": "Session token required"}, status=401)
             else:
                 response = await handler(request)
 
@@ -104,12 +108,17 @@ class FrontendSmokeBackend:
         app.router.add_post("/api/autostart", self.autostart)
         app.router.add_get("/api/microphones", self.microphones)
         app.router.add_post("/api/microphones/refresh", self.microphones)
+        app.router.add_get("/api/runtime", self.runtime)
+        app.router.add_post("/api/runtime/frontend-ready", self.frontend_ready)
         app.router.add_get("/api/onnx/models", self.local_models)
         app.router.add_get("/api/nemo/models", self.local_models)
         app.router.add_get("/api/youtube/search", self.youtube_search)
         app.router.add_get("/api/youtube/video", self.youtube_video)
+        app.router.add_get("/api/youtube/thumbnail", self.youtube_thumbnail)
         app.router.add_post("/api/youtube/transcribe", self.youtube_transcribe)
+        app.router.add_post("/api/file/transcribe", self.file_transcribe)
         app.router.add_get("/api/runtime/logs", self.runtime_logs)
+        app.router.add_post("/api/runtime/support-bundle", self.support_bundle)
         app.router.add_get("/api/transcripts", self.transcripts)
         app.router.add_get("/api/transcripts/{transcript_id}", self.transcript_detail)
         app.router.add_delete("/api/transcripts/{transcript_id}", self.delete_transcript)
@@ -120,6 +129,19 @@ class FrontendSmokeBackend:
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", self.port)
         await site.start()
+
+    def _requires_session_token(self, request: web.Request) -> bool:
+        if not self.session_token_required:
+            return False
+        if request.path == "/api/health":
+            return False
+        return request.path == "/ws" or request.path.startswith("/api/")
+
+    def _has_valid_session_token(self, request: web.Request) -> bool:
+        return (
+            request.query.get("scriberToken") == self.session_token
+            or request.headers.get("X-Scriber-Token") == self.session_token
+        )
 
     async def close(self) -> None:
         for ws in tuple(self.websockets):
@@ -140,6 +162,20 @@ class FrontendSmokeBackend:
                 "workerVersion": "0.1.0",
             }
         )
+
+    async def runtime(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "ok": True,
+                "ready": True,
+                "apiVersion": "1",
+                "runtimeMode": "frontend-browser-smoke",
+                "featureFlags": {"sessionTokenRequired": self.session_token_required},
+            }
+        )
+
+    async def frontend_ready(self, request: web.Request) -> web.Response:
+        return web.json_response({"apiVersion": "1", "ready": True})
 
     async def get_settings(self, request: web.Request) -> web.Response:
         return web.json_response(self.settings)
@@ -183,7 +219,7 @@ class FrontendSmokeBackend:
                         "videoId": "video-smoke-1",
                         "title": "Synthetic YouTube Result",
                         "channelTitle": "Smoke Channel",
-                        "thumbnailUrl": "",
+                        "thumbnailUrl": f"{self.base_url}/synthetic-thumbnail.svg",
                         "duration": "04:20",
                         "publishedAt": "2026-06-01T12:00:00Z",
                         "viewCount": 1234,
@@ -199,7 +235,7 @@ class FrontendSmokeBackend:
                 "videoId": "video-smoke-1",
                 "title": "Synthetic YouTube URL Result",
                 "channelTitle": "Smoke Channel",
-                "thumbnailUrl": "",
+                "thumbnailUrl": f"{self.base_url}/synthetic-thumbnail.svg",
                 "duration": "04:20",
                 "publishedAt": "2026-06-01T12:00:00Z",
                 "viewCount": 1234,
@@ -207,12 +243,40 @@ class FrontendSmokeBackend:
             }
         )
 
+    async def youtube_thumbnail(self, request: web.Request) -> web.Response:
+        self.request_log.append({"path": "/api/youtube/thumbnail", "url": request.query.get("url", "")})
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90" viewBox="0 0 160 90">'
+            '<rect width="160" height="90" fill="#2f6fed"/>'
+            '<circle cx="80" cy="45" r="24" fill="#ffffff" opacity="0.9"/>'
+            '<path d="M73 32v26l24-13z" fill="#2f6fed"/>'
+            "</svg>"
+        )
+        return web.Response(body=svg.encode("utf-8"), content_type="image/svg+xml")
+
     async def youtube_transcribe(self, request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "success": True,
                 "id": "youtube-queued-smoke",
                 "message": "Synthetic transcription queued.",
+            }
+        )
+
+    async def file_transcribe(self, request: web.Request) -> web.Response:
+        self.request_log.append({"path": "/api/file/transcribe"})
+        with suppress(Exception):
+            await request.post()
+        return web.json_response(
+            {
+                "id": "file-upload-smoke",
+                "title": "Synthetic File Upload",
+                "date": "Today, 12:03",
+                "duration": "00:01",
+                "status": "processing",
+                "type": "file",
+                "language": "auto",
+                "step": "Queued",
             }
         )
 
@@ -253,6 +317,13 @@ class FrontendSmokeBackend:
                 "limit": 900,
                 "truncated": False,
             }
+        )
+
+    async def support_bundle(self, request: web.Request) -> web.Response:
+        return web.Response(
+            body=b"PK\x03\x04synthetic-support-bundle",
+            content_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="synthetic-support-bundle.zip"'},
         )
 
     async def transcripts(self, request: web.Request) -> web.Response:
@@ -484,6 +555,228 @@ async def inspect_route(
     }
 
 
+async def wait_for_interaction_state(
+    cdp: CdpClient,
+    *,
+    label: str,
+    expression: str,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_sec
+    last_state: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        state = await cdp.evaluate(expression, timeout=5)
+        last_state = state or {}
+        if last_state.get("ok"):
+            return last_state
+        await asyncio.sleep(0.25)
+    raise RuntimeError(f"Timed out waiting for interaction '{label}'. Last state: {last_state}")
+
+
+async def exercise_youtube_interactions(cdp: CdpClient, *, timeout_sec: float) -> dict[str, Any]:
+    start_search = r"""
+(() => {
+  const input = Array.from(document.querySelectorAll('input'))
+    .find((node) => (node.getAttribute('placeholder') || '').includes('Youtube'));
+  const button = document.querySelector('button[aria-label="Search YouTube"]');
+  if (!input || !button) return { ok: false, reason: 'missing input/button' };
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  setter?.call(input, 'Gestaltung Stiftung');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  button.click();
+  return { ok: true };
+})()
+"""
+    search_started = await cdp.evaluate(start_search, timeout=5)
+    if not search_started or not search_started.get("ok"):
+        raise RuntimeError(f"Could not start YouTube search interaction: {search_started}")
+
+    search_state = await wait_for_interaction_state(
+        cdp,
+        label="youtube-search-thumbnail",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  const thumbnails = Array.from(document.images)
+    .filter((img) => img.src.includes('/api/youtube/thumbnail'));
+  const loaded = thumbnails.filter((img) => img.complete && img.naturalWidth > 0 && img.naturalHeight > 0);
+  return {
+    ok: text.includes('Synthetic YouTube Result') && loaded.length > 0,
+    resultVisible: text.includes('Synthetic YouTube Result'),
+    thumbnailCount: thumbnails.length,
+    loadedThumbnailCount: loaded.length
+  };
+})()
+""",
+    )
+
+    start_url_lookup = r"""
+(() => {
+  const input = Array.from(document.querySelectorAll('input'))
+    .find((node) => (node.getAttribute('placeholder') || '').includes('Youtube'));
+  const button = document.querySelector('button[aria-label="Search YouTube"]');
+  if (!input || !button) return { ok: false, reason: 'missing input/button' };
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  setter?.call(input, 'https://www.youtube.com/watch?v=0wEjbSYNUM8');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  button.click();
+  return { ok: true };
+})()
+"""
+    url_lookup_started = await cdp.evaluate(start_url_lookup, timeout=5)
+    if not url_lookup_started or not url_lookup_started.get("ok"):
+        raise RuntimeError(f"Could not start YouTube URL lookup interaction: {url_lookup_started}")
+
+    url_state = await wait_for_interaction_state(
+        cdp,
+        label="youtube-url-thumbnail",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  const thumbnails = Array.from(document.images)
+    .filter((img) => img.src.includes('/api/youtube/thumbnail'));
+  const loaded = thumbnails.filter((img) => img.complete && img.naturalWidth > 0 && img.naturalHeight > 0);
+  return {
+    ok: text.includes('Synthetic YouTube URL Result') && loaded.length > 0,
+    resultVisible: text.includes('Synthetic YouTube URL Result'),
+    thumbnailCount: thumbnails.length,
+    loadedThumbnailCount: loaded.length
+  };
+})()
+""",
+    )
+
+    return {"name": "youtube-thumbnails", "ok": True, "search": search_state, "url": url_state}
+
+
+async def exercise_file_drop_interaction(cdp: CdpClient, *, timeout_sec: float) -> dict[str, Any]:
+    drop_started = await cdp.evaluate(
+        r"""
+(() => {
+  const dropzone = document.querySelector('[aria-label="Upload file for transcription"]');
+  if (!dropzone) return { ok: false, reason: 'missing dropzone' };
+  const file = new File([new Uint8Array([82, 73, 70, 70])], 'smoke.wav', { type: 'audio/wav' });
+  const dataTransfer = new DataTransfer();
+  dataTransfer.items.add(file);
+  dropzone.dispatchEvent(new DragEvent('dragenter', { bubbles: true, dataTransfer }));
+  dropzone.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer }));
+  dropzone.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer }));
+  return { ok: true };
+})()
+""",
+        timeout=5,
+    )
+    if not drop_started or not drop_started.get("ok"):
+        raise RuntimeError(f"Could not dispatch file drop interaction: {drop_started}")
+
+    state = await wait_for_interaction_state(
+        cdp,
+        label="file-drop-upload",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  return {
+    ok: window.location.pathname === '/transcript/file-upload-smoke' && text.includes('Summary') && text.includes('Transcript'),
+    route: window.location.pathname,
+    hasSummary: text.includes('Summary'),
+    hasTranscript: text.includes('Transcript')
+  };
+})()
+""",
+    )
+    return {"name": "file-drag-drop", "ok": True, "state": state}
+
+
+async def exercise_debug_console_interaction(cdp: CdpClient, *, timeout_sec: float) -> dict[str, Any]:
+    initial = await cdp.evaluate(
+        r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  const stickyRoot = document.querySelector('.sticky');
+  const dateInput = document.querySelector('input[type="date"]');
+  const newestSwitch = document.querySelector('[aria-label="Show newest logs first"]');
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    ok: text.includes('Debug console sample error'),
+    sticky: stickyRoot ? getComputedStyle(stickyRoot).position === 'sticky' : false,
+    dateFilterToday: dateInput ? dateInput.value === today : false,
+    newestFirst: newestSwitch ? newestSwitch.getAttribute('aria-checked') === 'true' : false,
+    hasErrorLog: text.includes('Debug console sample error')
+  };
+})()
+""",
+        timeout=5,
+    )
+    if not initial or not initial.get("ok"):
+        raise RuntimeError(f"Debug console did not render sample logs: {initial}")
+
+    clear_started = await cdp.evaluate(
+        r"""
+(() => {
+  const button = Array.from(document.querySelectorAll('button'))
+    .find((node) => (node.textContent || '').includes('Clear view'));
+  if (!button) return { ok: false, reason: 'missing clear button' };
+  button.click();
+  return { ok: true };
+})()
+""",
+        timeout=5,
+    )
+    if not clear_started or not clear_started.get("ok"):
+        raise RuntimeError(f"Could not click debug clear button: {clear_started}")
+
+    cleared = await wait_for_interaction_state(
+        cdp,
+        label="debug-clear",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  return {
+    ok: text.includes('No matching log entries.') && text.includes('Cleared') && !text.includes('Debug console sample error'),
+    hasEmptyState: text.includes('No matching log entries.'),
+    hasActionStatus: text.includes('Cleared'),
+    errorLogStillVisible: text.includes('Debug console sample error')
+  };
+})()
+""",
+    )
+    return {"name": "debug-clear", "ok": True, "initial": initial, "cleared": cleared}
+
+
+async def inspect_token_required_browser_state(
+    cdp: CdpClient,
+    *,
+    frontend_base_url: str,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    await cdp.call("Page.navigate", {"url": f"{frontend_base_url}/"}, timeout=10)
+    state = await wait_for_interaction_state(
+        cdp,
+        label="token-required-browser-state",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  const smoke = window.__scriberSmoke || {};
+  const websocketErrors = (smoke.consoleErrors || [])
+    .filter((message) => String(message).includes('WebSocket error'));
+  return {
+    ok: text.includes('Backend Not Available') && text.includes('desktop session token') && websocketErrors.length <= 2,
+    hasOfflineBanner: text.includes('Backend Not Available'),
+    hasTokenMessage: text.includes('desktop session token'),
+    websocketErrorCount: websocketErrors.length,
+    consoleErrors: smoke.consoleErrors || []
+  };
+})()
+""",
+    )
+    return {"name": "token-required-browser-state", "ok": True, "state": state}
+
+
 async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
     backend_port = find_free_port()
     frontend_port = find_free_port()
@@ -509,15 +802,39 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
 
             frontend_base_url = f"http://127.0.0.1:{frontend_port}"
             routes = [route for route in args.routes if route in ROUTE_EXPECTATIONS]
-            scenarios = [
-                await inspect_route(
+            scenarios = []
+            token_required_check: dict[str, Any] | None = None
+            for route in routes:
+                scenario = await inspect_route(
                     cdp,
                     frontend_base_url=frontend_base_url,
                     route=route,
                     timeout_sec=args.page_timeout_sec,
                 )
-                for route in routes
-            ]
+                interaction_checks: list[dict[str, Any]] = []
+                if route == "/youtube":
+                    interaction_checks.append(
+                        await exercise_youtube_interactions(cdp, timeout_sec=args.page_timeout_sec)
+                    )
+                elif route == "/file":
+                    interaction_checks.append(
+                        await exercise_file_drop_interaction(cdp, timeout_sec=args.page_timeout_sec)
+                    )
+                elif route == "/debug":
+                    interaction_checks.append(
+                        await exercise_debug_console_interaction(cdp, timeout_sec=args.page_timeout_sec)
+                    )
+                if interaction_checks:
+                    scenario["interactionChecks"] = interaction_checks
+                    scenario["ok"] = bool(scenario["ok"]) and all(item.get("ok") for item in interaction_checks)
+                scenarios.append(scenario)
+
+            backend.session_token_required = True
+            token_required_check = await inspect_token_required_browser_state(
+                cdp,
+                frontend_base_url=frontend_base_url,
+                timeout_sec=args.page_timeout_sec,
+            )
         finally:
             if cdp:
                 with suppress(Exception):
@@ -531,12 +848,19 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
             if vite:
                 terminate_process_tree(vite)
 
-    ok = bool(scenarios) and all(item["ok"] for item in scenarios)
+    ok = bool(scenarios) and all(item["ok"] for item in scenarios) and bool(token_required_check and token_required_check.get("ok"))
     virtualized_routes = [
         item["route"]
         for item in scenarios
         if item["route"] in {"/", "/youtube", "/file"} and item["historyVirtualized"]
     ]
+    interaction_checks = [
+        check
+        for item in scenarios
+        for check in item.get("interactionChecks", [])
+    ]
+    if token_required_check:
+        interaction_checks.append(token_required_check)
     return {
         "schemaVersion": 1,
         "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -548,8 +872,11 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "criticalConsoleErrorCount": sum(len(item["consoleErrors"]) for item in scenarios),
             "pageErrorCount": sum(len(item["pageErrors"]) for item in scenarios),
             "unhandledRejectionCount": sum(len(item["unhandledRejections"]) for item in scenarios),
+            "interactionCheckCount": len(interaction_checks),
+            "interactionChecks": [item.get("name", "") for item in interaction_checks],
         },
         "scenarios": scenarios,
+        "tokenRequiredCheck": token_required_check,
     }
 
 
@@ -596,6 +923,13 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             "consoleErrors": [],
             "pageErrors": [],
             "unhandledRejections": [],
+            "interactionChecks": [
+                {"name": "youtube-thumbnails", "ok": True}
+            ] if route == "/youtube" else [
+                {"name": "file-drag-drop", "ok": True}
+            ] if route == "/file" else [
+                {"name": "debug-clear", "ok": True}
+            ] if route == "/debug" else [],
             "validateOnly": True,
         }
         for route in args.routes
@@ -614,9 +948,20 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             "criticalConsoleErrorCount": 0,
             "pageErrorCount": 0,
             "unhandledRejectionCount": 0,
+            "interactionCheckCount": sum(len(item.get("interactionChecks", [])) for item in scenarios) + 1,
+            "interactionChecks": [
+                check["name"]
+                for item in scenarios
+                for check in item.get("interactionChecks", [])
+            ] + ["token-required-browser-state"],
             "validateOnly": True,
         },
         "scenarios": scenarios,
+        "tokenRequiredCheck": {
+            "name": "token-required-browser-state",
+            "ok": True,
+            "validateOnly": True,
+        },
     }
 
 

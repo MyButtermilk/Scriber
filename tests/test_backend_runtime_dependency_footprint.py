@@ -118,6 +118,7 @@ def test_windows_build_and_release_workflow_can_emit_runtime_dependency_footprin
     assert "--max-scipy-mb" in build
     assert "--max-onnxruntime-mb" in build
     assert "--max-total-mb" in build
-    assert "runtimeDependencyFootprint = $runtimeDependencyFootprintPath" in build
+    assert "$runtimeDependencyFootprint[\"path\"] = $runtimeDependencyFootprintPath" in build
+    assert "runtimeDependencyFootprint = $runtimeDependencyFootprint" in build
 
     assert '"-RunRuntimeDependencyFootprint"' in workflow

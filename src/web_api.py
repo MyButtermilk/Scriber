@@ -66,6 +66,7 @@ from src import database as db
 
 TranscriptStatus = Literal["completed", "processing", "failed", "recording", "stopped"]
 TranscriptType = Literal["mic", "youtube", "file"]
+SummaryStatus = Literal["idle", "pending", "completed", "failed"]
 
 ScriberPipeline: Any | None = None
 _invalidate_mic_device_resolution_cache_impl: Callable[[], None] | None = None
@@ -1004,6 +1005,9 @@ class TranscriptRecord:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     summary: str = ""
+    summary_status: SummaryStatus = "idle"
+    summary_error: str = ""
+    summary_updated_at: str = ""
 
     _started_at_monotonic: float | None = None
     _last_segment: str = ""
@@ -1034,7 +1038,7 @@ class TranscriptRecord:
         
         step_value = self.step
         # If summary already exists, avoid showing a stale "Summarizing..." badge.
-        if self.summary and "summariz" in (self.step or "").lower():
+        if (self.summary or self.summary_status == "completed") and "summariz" in (self.step or "").lower():
             step_value = "Completed"
 
         data: dict[str, Any] = {
@@ -1051,6 +1055,9 @@ class TranscriptRecord:
             "thumbnailUrl": self.thumbnail_url,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
+            "summaryStatus": self.summary_status,
+            "summaryError": self.summary_error,
+            "summaryUpdatedAt": self.summary_updated_at,
         }
         
         content = self.content_text() if include_content or not self._preview else self.content
@@ -1068,6 +1075,31 @@ class TranscriptRecord:
             data["content"] = content
             data["summary"] = self.summary
         return data
+
+    def mark_summary_pending(self) -> None:
+        now = datetime.now().isoformat()
+        self.summary_status = "pending"
+        self.summary_error = ""
+        self.summary_updated_at = now
+        self.step = "Summarizing..."
+        self.updated_at = now
+
+    def mark_summary_completed(self, summary: str) -> None:
+        now = datetime.now().isoformat()
+        self.summary = summary
+        self.summary_status = "completed"
+        self.summary_error = ""
+        self.summary_updated_at = now
+        self.step = "Completed"
+        self.updated_at = now
+
+    def mark_summary_failed(self, error: Exception | str) -> None:
+        now = datetime.now().isoformat()
+        self.summary_status = "failed"
+        self.summary_error = str(error) or "Summary generation failed"
+        self.summary_updated_at = now
+        self.step = "Completed"
+        self.updated_at = now
 
     def start(self) -> None:
         self._started_at_monotonic = time.monotonic()
@@ -1994,6 +2026,9 @@ class ScriberWebController:
                     created_at=data.get("createdAt", ""),
                     updated_at=data.get("updatedAt", ""),
                     summary="",  # Summary also lazy loaded
+                    summary_status=data.get("summaryStatus", "idle"),
+                    summary_error=data.get("summaryError", ""),
+                    summary_updated_at=data.get("summaryUpdatedAt", ""),
                     _preview=data.get("_previewText", "") or "",
                     _content_loaded=False,
                     _summary_loaded=False,
@@ -2740,8 +2775,8 @@ class ScriberWebController:
             if Config.AUTO_SUMMARIZE and content:
                 try:
                     from src.summarization import summarize_text
-                    rec.step = "Summarizing..."
-                    rec.updated_at = datetime.now().isoformat()
+                    rec.mark_summary_pending()
+                    self._save_transcript_to_db(rec)
                     await self._broadcast_history_updated()
                     summarize_started = time.monotonic()
                     self._emit_workflow_event(
@@ -2755,12 +2790,14 @@ class ScriberWebController:
                         milestone=True,
                         outcome="started",
                     )
-                    rec.summary = await summarize_text(
+                    summary = await summarize_text(
                         content,
                         Config.SUMMARIZATION_MODEL,
                         duration=rec.duration,
                     )
-                    rec.step = "Completed"
+                    rec.mark_summary_completed(summary)
+                    self._save_transcript_to_db(rec)
+                    await self._broadcast_history_updated()
                     logger.info(f"YouTube auto-summarization completed: {len(rec.summary)} chars")
                     self._emit_workflow_event(
                         message="Summary generation completed",
@@ -2777,7 +2814,9 @@ class ScriberWebController:
                     )
                 except Exception as sum_err:
                     logger.warning(f"Auto-summarization failed: {sum_err}")
-                    rec.step = "Completed"
+                    rec.mark_summary_failed(sum_err)
+                    self._save_transcript_to_db(rec)
+                    await self._broadcast_history_updated()
                     self._emit_workflow_event(
                         message="Summary generation failed",
                         event="summary.generation.failed",
@@ -3047,8 +3086,8 @@ class ScriberWebController:
             if Config.AUTO_SUMMARIZE and content:
                 try:
                     from src.summarization import summarize_text
-                    rec.step = "Summarizing..."
-                    rec.updated_at = datetime.now().isoformat()
+                    rec.mark_summary_pending()
+                    self._save_transcript_to_db(rec)
                     await self._broadcast_history_updated()
                     summarize_started = time.monotonic()
                     self._emit_workflow_event(
@@ -3062,12 +3101,14 @@ class ScriberWebController:
                         milestone=True,
                         outcome="started",
                     )
-                    rec.summary = await summarize_text(
+                    summary = await summarize_text(
                         content,
                         Config.SUMMARIZATION_MODEL,
                         duration=rec.duration,
                     )
-                    rec.step = "Completed"
+                    rec.mark_summary_completed(summary)
+                    self._save_transcript_to_db(rec)
+                    await self._broadcast_history_updated()
                     logger.info(f"File auto-summarization completed: {len(rec.summary)} chars")
                     self._emit_workflow_event(
                         message="Summary generation completed",
@@ -3084,7 +3125,9 @@ class ScriberWebController:
                     )
                 except Exception as sum_err:
                     logger.warning(f"Auto-summarization failed: {sum_err}")
-                    rec.step = "Completed"
+                    rec.mark_summary_failed(sum_err)
+                    self._save_transcript_to_db(rec)
+                    await self._broadcast_history_updated()
                     self._emit_workflow_event(
                         message="Summary generation failed",
                         event="summary.generation.failed",
@@ -4354,6 +4397,9 @@ class ScriberWebController:
                     rec.content = full_data.get("content", rec.content)
                     rec._pending_content_segments.clear()
                     rec.summary = full_data.get("summary", rec.summary)
+                    rec.summary_status = full_data.get("summaryStatus", rec.summary_status)
+                    rec.summary_error = full_data.get("summaryError", rec.summary_error)
+                    rec.summary_updated_at = full_data.get("summaryUpdatedAt", rec.summary_updated_at)
                     if not rec._preview:
                         rec._preview = full_data.get("preview", "") or rec._preview
                 rec._content_loaded = True
@@ -4361,6 +4407,11 @@ class ScriberWebController:
             return rec.to_public(include_content=True)
         # Not found in memory - try database directly
         return db.get_transcript(transcript_id)
+
+
+APP_CONTROLLER: web.AppKey[ScriberWebController] = web.AppKey("controller", ScriberWebController)
+APP_HTTP_SESSION: web.AppKey[ClientSession] = web.AppKey("http_session", ClientSession)
+APP_SHUTDOWN_EVENT: web.AppKey[asyncio.Event] = web.AppKey("shutdown_event", asyncio.Event)
 
 
 @web.middleware
@@ -4404,19 +4455,19 @@ async def session_token_middleware(request: web.Request, handler):
 
 def create_app(controller: ScriberWebController) -> web.Application:
     app = web.Application(middlewares=[cors_middleware, session_token_middleware])
-    app["controller"] = controller
+    app[APP_CONTROLLER] = controller
 
     async def http_session_ctx(app_: web.Application):
         timeout = ClientTimeout(total=15)
         session = ClientSession(timeout=timeout)
-        app_["http_session"] = session
+        app_[APP_HTTP_SESSION] = session
         yield
         await session.close()
 
     app.cleanup_ctx.append(http_session_ctx)
 
     async def health(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         return web.json_response(ctl.get_health())
 
     async def ws_handler(request: web.Request):
@@ -4426,7 +4477,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         await ctl.add_client(ws)
         await ws.send_str(json.dumps(state_event(ctl.get_state())))
 
@@ -4443,19 +4494,19 @@ def create_app(controller: ScriberWebController) -> web.Application:
         return ws
 
     async def get_state(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         return web.json_response(ctl.get_state())
 
     async def get_runtime(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         return web.json_response(ctl.get_runtime_info())
 
     async def get_frontend_ready(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         return web.json_response(ctl.get_frontend_ready())
 
     async def post_frontend_ready(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         try:
             payload = await request.json()
         except Exception:
@@ -4469,7 +4520,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         return web.json_response(ctl.record_frontend_ready(payload, request))
 
     async def get_audio_diagnostics(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         return web.json_response(ctl.get_audio_diagnostics())
 
     async def get_runtime_logs(request: web.Request):
@@ -4494,7 +4545,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if not _request_has_valid_session_token(request, token):
             return web.json_response({"message": "Session token required"}, status=401)
 
-        stop_event = request.app.get("shutdown_event")
+        stop_event = request.app.get(APP_SHUTDOWN_EVENT)
         if not isinstance(stop_event, asyncio.Event):
             return web.json_response({"message": "Runtime shutdown is not available"}, status=503)
 
@@ -4502,7 +4553,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         return web.json_response({"ok": True, "message": "Shutdown requested"})
 
     async def create_runtime_support_bundle(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         try:
             bundle_path = await asyncio.to_thread(
                 create_support_bundle,
@@ -4521,7 +4572,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         )
 
     async def get_hot_path_metrics(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         try:
             limit = int(request.query.get("limit", "50"))
         except ValueError:
@@ -4529,26 +4580,26 @@ def create_app(controller: ScriberWebController) -> web.Application:
         return web.json_response(ctl.get_hot_path_metrics(limit=limit))
 
     async def start_live(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         await ctl.start_listening()
         return web.json_response(ctl.get_state())
 
     async def stop_live(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         await ctl.stop_listening()
         return web.json_response(ctl.get_state())
 
     async def toggle_live(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         await ctl.toggle_listening()
         return web.json_response(ctl.get_state())
 
     async def get_settings(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         return web.json_response(ctl.get_settings())
 
     async def put_settings(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         try:
             payload = await request.json()
         except Exception:
@@ -4626,11 +4677,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": f"Error: {str(e)}"}, status=500)
 
     async def microphones(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         return web.json_response({"devices": ctl.list_microphones()})
 
     async def refresh_microphones(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         return web.json_response(ctl.request_microphone_refresh())
 
     async def transcripts(request: web.Request):
@@ -4642,7 +4693,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             offset: Number of items to skip (default 0)
             limit: Maximum number of items to return (default 50, max 100)
         """
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         query = request.query.get("q", "")
         transcript_type = request.query.get("type", "")
 
@@ -4667,7 +4718,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         )
 
     async def transcript_detail(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         transcript_id = request.match_info["id"]
         rec = ctl.get_transcript(transcript_id)
         if not rec:
@@ -4693,7 +4744,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         page_token = (request.query.get("pageToken") or "").strip() or None
 
-        session: ClientSession | None = request.app.get("http_session")
+        session: ClientSession | None = request.app.get(APP_HTTP_SESSION)
         if not session:
             return web.json_response({"message": "HTTP session not initialized"}, status=500)
 
@@ -4733,7 +4784,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 {"message": "Missing YouTube API key. Set YOUTUBE_API_KEY or save it in Settings."}, status=400
             )
 
-        session: ClientSession | None = request.app.get("http_session")
+        session: ClientSession | None = request.app.get(APP_HTTP_SESSION)
         if not session:
             return web.json_response({"message": "HTTP session not initialized"}, status=500)
 
@@ -4762,7 +4813,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if not url:
             return web.json_response({"message": "Invalid YouTube thumbnail URL"}, status=400)
 
-        session: ClientSession | None = request.app.get("http_session")
+        session: ClientSession | None = request.app.get(APP_HTTP_SESSION)
         if not session:
             return web.json_response({"message": "HTTP session not initialized"}, status=500)
 
@@ -4790,7 +4841,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         )
 
     async def youtube_transcribe(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         try:
             payload = await request.json()
         except Exception:
@@ -4807,7 +4858,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         return web.json_response(rec.to_public(include_content=True))
 
     async def file_transcribe(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
 
         # Check content type for multipart upload
         if not request.content_type.startswith("multipart/"):
@@ -4963,7 +5014,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
 
     async def delete_transcript(request: web.Request):
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         transcript_id = request.match_info.get("id", "")
         if not transcript_id:
             return web.json_response({"message": "Missing transcript ID"}, status=400)
@@ -4987,7 +5038,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         """Summarize a transcript using the configured LLM model."""
         from src.summarization import summarize_text
         
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         transcript_id = request.match_info.get("id", "")
         if not transcript_id:
             return web.json_response({"message": "Missing transcript ID"}, status=400)
@@ -5009,12 +5060,18 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if status != "completed":
             return web.json_response({"message": "Transcript is not yet completed"}, status=400)
 
+        if rec:
+            rec.mark_summary_pending()
+            ctl._save_transcript_to_db(rec)
+            await ctl._broadcast_history_updated()
+        else:
+            db.update_transcript_summary_state(transcript_id, status="pending")
+
         try:
             model = getattr(Config, "SUMMARIZATION_MODEL", "") or Config.DEFAULT_SUMMARIZATION_MODEL
             summary = await summarize_text(content, model, duration=duration)
             if rec:
-                rec.summary = summary
-                rec.updated_at = datetime.now().isoformat()
+                rec.mark_summary_completed(summary)
                 ctl._save_transcript_to_db(rec)
                 await ctl._broadcast_history_updated()
                 logger.info(f"Summarized transcript: {rec.title} ({len(summary)} chars)")
@@ -5023,14 +5080,26 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 logger.info(f"Summarized transcript: {transcript_id} ({len(summary)} chars)")
             return web.json_response({"success": True, "summary": summary})
         except ValueError as exc:
+            if rec:
+                rec.mark_summary_failed(exc)
+                ctl._save_transcript_to_db(rec)
+                await ctl._broadcast_history_updated()
+            else:
+                db.update_transcript_summary_state(transcript_id, status="failed", error=str(exc))
             return web.json_response({"message": str(exc)}, status=400)
         except Exception as exc:
             logger.exception("Summarization failed")
+            if rec:
+                rec.mark_summary_failed(exc)
+                ctl._save_transcript_to_db(rec)
+                await ctl._broadcast_history_updated()
+            else:
+                db.update_transcript_summary_state(transcript_id, status="failed", error=str(exc))
             return web.json_response({"message": str(exc) or "Summarization failed"}, status=500)
 
     async def stop_transcript(request: web.Request):
         """Cancel a running transcription task."""
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         transcript_id = request.match_info.get("id", "")
         if not transcript_id:
             return web.json_response({"message": "Missing transcript ID"}, status=400)
@@ -5047,7 +5116,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def export_transcript(request: web.Request):
         """Export transcript as PDF or DOCX."""
-        ctl: ScriberWebController = request.app["controller"]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
         transcript_id = request.match_info.get("id", "")
         export_format = request.match_info.get("format", "pdf").lower()
         
@@ -5257,7 +5326,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     "modelId": model_id,
                 }, status=409)
 
-            ctl: ScriberWebController = request.app["controller"]
+            ctl: ScriberWebController = request.app[APP_CONTROLLER]
             loop = asyncio.get_running_loop()
 
             def on_progress(progress: float, message: str) -> None:
@@ -5326,7 +5395,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             
             if success:
                 logger.info(f"Deleted ONNX model: {model_id}")
-                await request.app["controller"].broadcast({
+                await request.app[APP_CONTROLLER].broadcast({
                     "type": "onnx_models_updated",
                     "modelId": model_id,
                 })
@@ -5409,7 +5478,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     "modelId": model_id,
                 }, status=409)
 
-            ctl: ScriberWebController = request.app["controller"]
+            ctl: ScriberWebController = request.app[APP_CONTROLLER]
             loop = asyncio.get_running_loop()
 
             def on_progress(progress: float, message: str) -> None:
@@ -5474,7 +5543,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             success = delete_model(model_id)
 
             if success:
-                ctl: ScriberWebController = request.app["controller"]
+                ctl: ScriberWebController = request.app[APP_CONTROLLER]
                 await ctl.broadcast({
                     "type": "nemo_models_updated",
                 })
@@ -5506,7 +5575,7 @@ async def run_server(host: str, port: int) -> None:
 
     stop_event = asyncio.Event()
     app = create_app(controller)
-    app["shutdown_event"] = stop_event
+    app[APP_SHUTDOWN_EVENT] = stop_event
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)

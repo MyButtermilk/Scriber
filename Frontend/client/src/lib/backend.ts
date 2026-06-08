@@ -9,6 +9,7 @@ declare global {
   interface Window {
     __SCRIBER_BACKEND_URL__?: string;
     __SCRIBER_SESSION_TOKEN__?: string;
+    __SCRIBER_BACKEND_SESSION_TOKEN_REQUIRED__?: boolean;
   }
 }
 
@@ -19,7 +20,10 @@ const defaultBase = "http://127.0.0.1:8765";
 export let backendBaseUrl = (runtimeBase || configuredBase || defaultBase).replace(/\/+$/, "");
 export let backendSessionToken =
   (typeof window !== "undefined" ? window.__SCRIBER_SESSION_TOKEN__?.trim() : "") || "";
+let backendSessionTokenRequired =
+  (typeof window !== "undefined" ? window.__SCRIBER_BACKEND_SESSION_TOKEN_REQUIRED__ === true : false);
 let frontendReadyReportKey = "";
+export const BACKEND_SESSION_TOKEN_REQUIRED_EVENT = "scriber-backend-session-token-required-change";
 
 interface BackendAccess {
   baseUrl: string;
@@ -45,7 +49,23 @@ export function setBackendSessionToken(sessionToken: string): void {
   backendSessionToken = normalized;
   if (typeof window !== "undefined") {
     window.__SCRIBER_SESSION_TOKEN__ = normalized;
+    window.dispatchEvent(new CustomEvent(BACKEND_SESSION_TOKEN_REQUIRED_EVENT));
   }
+}
+
+export function setBackendSessionTokenRequired(required: boolean): void {
+  const changed = backendSessionTokenRequired !== required;
+  backendSessionTokenRequired = required;
+  if (typeof window !== "undefined") {
+    window.__SCRIBER_BACKEND_SESSION_TOKEN_REQUIRED__ = required;
+    if (changed) {
+      window.dispatchEvent(new CustomEvent(BACKEND_SESSION_TOKEN_REQUIRED_EVENT, { detail: { required } }));
+    }
+  }
+}
+
+export function isBackendSessionTokenRequired(): boolean {
+  return backendSessionTokenRequired;
 }
 
 function appendSessionToken(url: string): string {

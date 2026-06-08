@@ -264,10 +264,12 @@ function SummarizeButton({
   transcriptId,
   onComplete,
   disabled = false,
+  label = "Summarize",
 }: {
   transcriptId: string | undefined;
   onComplete: () => void;
   disabled?: boolean;
+  label?: string;
 }) {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const { toast } = useToast();
@@ -297,6 +299,7 @@ function SummarizeButton({
         duration: 4000,
       });
     } finally {
+      onComplete();
       setIsSummarizing(false);
     }
   };
@@ -304,7 +307,7 @@ function SummarizeButton({
   return (
     <Button size="sm" variant="outline" onClick={handleSummarize} disabled={isSummarizing || disabled} type="button">
       {isSummarizing ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Sparkles className="w-3 h-3 mr-1" />}
-      {isSummarizing ? "Summarizing..." : "Summarize"}
+      {isSummarizing ? "Summarizing..." : label}
     </Button>
   );
 }
@@ -348,6 +351,7 @@ export default function TranscriptDetail() {
       const status = data?.status;
       const step = String(data?.step || "").toLowerCase();
       const summary = String(data?.summary || "").trim();
+      const summaryStatus = String(data?.summaryStatus || "").toLowerCase();
       const type = String(data?.type || "");
       const isActive = status === "processing" || status === "recording";
       if (isActive) {
@@ -363,7 +367,8 @@ export default function TranscriptDetail() {
       const isSummaryPending =
         status === "completed" &&
         !summary &&
-        (step.includes("summariz") || mayAutoSummarize) &&
+        summaryStatus !== "failed" &&
+        (summaryStatus === "pending" || step.includes("summariz") || mayAutoSummarize) &&
         isRecentlyUpdated;
       if (isSummaryPending) {
         // Completed transcripts can still be in summarization.
@@ -391,12 +396,19 @@ export default function TranscriptDetail() {
     [transcript?.summary],
   );
   const hasSummary = summaryMarkdown.length > 0;
+  const summaryStatus = String(transcript?.summaryStatus || (hasSummary ? "completed" : "idle")).toLowerCase();
   const summaryStepLower = String(transcript?.step || "").toLowerCase();
   const updatedAtMs = Date.parse(String(transcript?.updatedAt || ""));
   const isSummaryStep = summaryStepLower.includes("summariz");
   const isSummaryStepFresh = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs < 3 * 60 * 1000 : true;
-  const isSummaryInProgress = !hasSummary && isSummaryStep && isSummaryStepFresh;
-  const isSummaryStepStale = !hasSummary && isSummaryStep && !isSummaryStepFresh;
+  const isSummaryInProgress = !hasSummary && (summaryStatus === "pending" || (isSummaryStep && isSummaryStepFresh));
+  const isSummaryStepStale = !hasSummary && summaryStatus !== "failed" && isSummaryStep && !isSummaryStepFresh;
+  const isSummaryFailed = !hasSummary && summaryStatus === "failed";
+  const summaryFailureMessage = friendlyRequestMessage(
+    String(transcript?.summaryError || "").trim(),
+    "Summary generation failed.",
+  );
+  const summaryActionLabel = isSummaryFailed ? "Retry Summary" : "Summarize";
   const isFailedYoutubeTranscript =
     transcript?.status === "failed" && transcript?.type === "youtube";
   const rawFailureMessage = useMemo(
@@ -640,12 +652,12 @@ export default function TranscriptDetail() {
           )}
           {transcript.status === "completed" && !hasSummary && !isSummaryInProgress && (
             <div className="hidden md:block">
-              <SummarizeButton transcriptId={id} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
+              <SummarizeButton transcriptId={id} label={summaryActionLabel} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
             </div>
           )}
           {transcript.status === "completed" && !hasSummary && !isSummaryInProgress && (
             <div className="md:hidden">
-              <SummarizeButton transcriptId={id} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
+              <SummarizeButton transcriptId={id} label={summaryActionLabel} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
             </div>
           )}
         </div>
@@ -700,6 +712,20 @@ export default function TranscriptDetail() {
             </div>
           )}
 
+          {isSummaryFailed && (
+            <div className="space-y-3">
+              <QueryErrorState
+                title="Summary generation failed"
+                description={summaryFailureMessage}
+              />
+              <SummarizeButton
+                transcriptId={id}
+                label="Retry Summary"
+                onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })}
+              />
+            </div>
+          )}
+
           {/* Accordion with Summary and Transcript */}
           <Accordion type="multiple" value={accordionValue} onValueChange={setAccordionValue} className="space-y-4">
             {/* Summary Section */}
@@ -717,6 +743,9 @@ export default function TranscriptDetail() {
                   {isSummaryStepStale && (
                     <span className="text-xs text-amber-600 ml-2">Summarization timed out</span>
                   )}
+                  {isSummaryFailed && (
+                    <span className="text-xs text-destructive ml-2">Summarization failed</span>
+                  )}
                 </div>
               </AccordionTrigger>
               <AccordionContent className="px-4 pb-4">
@@ -729,6 +758,8 @@ export default function TranscriptDetail() {
                     {transcript.status === "completed"
                       ? isSummaryInProgress
                         ? "Summary is currently being generated."
+                        : isSummaryFailed
+                          ? `${summaryFailureMessage} Use "Retry Summary" to try again.`
                         : isSummaryStepStale
                           ? "Summary generation timed out. Click 'Summarize' in the header to retry."
                           : "No summary yet. Click 'Summarize' in the header to generate one."

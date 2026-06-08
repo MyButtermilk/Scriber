@@ -316,7 +316,7 @@ export default function FileTranscribe() {
     },
   });
 
-  const uploadFile = async (file: File) => {
+  const uploadFile = useCallback(async (file: File) => {
     setIsUploading(true);
     setUploadingFileName(file.name);
     setUploadStatusText(`Uploading ${file.name}...`);
@@ -401,7 +401,7 @@ export default function FileTranscribe() {
       setUploadingFileName("");
       setUploadStatusText("");
     }
-  };
+  }, [compressionThresholdBytes, setLocation, toast]);
 
   const deleteTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation(); // Prevent card click navigation
@@ -496,7 +496,7 @@ export default function FileTranscribe() {
     if (acceptedFiles.length > 0 && !isUploading) {
       uploadFile(acceptedFiles[0]);
     }
-  }, [isUploading]);
+  }, [isUploading, uploadFile]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
