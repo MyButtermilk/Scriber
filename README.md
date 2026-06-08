@@ -623,10 +623,13 @@ SCRIBER_SUMMARIZATION_MODEL=gemini-flash-latest
 SCRIBER_AUTO_SUMMARIZE=0
 SCRIBER_SUMMARY_MIN_WORDS=180
 SCRIBER_SUMMARY_MAX_WORDS=2200
+SCRIBER_SUMMARY_GEMINI_THINKING_BUDGET_TOKENS=1024
+SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRIES=2
+SCRIBER_SUMMARY_GEMINI_RETRY_MAX_OUTPUT_TOKENS=16384
 SCRIBER_SUMMARIZATION_PROMPT=...
 ```
 
-Current default summarization model: `gemini-flash-latest`.
+Current default summarization model: `gemini-flash-latest`. Gemini summaries send an explicit `thinkingConfig.thinkingBudget` so hidden reasoning does not consume most of the visible output budget. If Gemini returns `MAX_TOKENS`, Scriber retries with a larger `maxOutputTokens`; repeated `MAX_TOKENS` responses are treated as incomplete and are not saved as finished summaries.
 
 ### API Keys
 

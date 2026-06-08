@@ -61,6 +61,16 @@ def test_summary_budget_gemini_includes_thinking_reserve(monkeypatch: pytest.Mon
     assert gemini_tokens > gpt_tokens
 
 
+def test_gemini_payload_sets_explicit_thinking_budget(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_THINKING_BUDGET_TOKENS", "768")
+
+    payload = summarization._build_gemini_payload("prompt", "gemini-flash-latest", 4096)
+
+    generation_config = payload["generationConfig"]
+    assert generation_config["maxOutputTokens"] == 4096
+    assert generation_config["thinkingConfig"] == {"thinkingBudget": 768}
+
+
 def test_dynamic_length_instruction_contains_budget():
     instruction = summarization._dynamic_length_instruction(1500, 270)
     assert "1500" in instruction
@@ -132,3 +142,67 @@ async def test_summarize_text_normalizes_markdown_bullets(monkeypatch: pytest.Mo
     out = await summarization.summarize_text("x y z", model="gemini-flash-latest")
 
     assert out == "Zusammenfassung\n\n- Punkt A\n- Punkt B"
+
+
+@pytest.mark.asyncio
+async def test_summarize_gemini_retries_max_tokens_with_larger_budget(monkeypatch: pytest.MonkeyPatch):
+    calls: list[int] = []
+    monkeypatch.setattr(summarization.Config, "GOOGLE_API_KEY", "test-key")
+    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRIES", "1")
+    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_RETRY_MAX_OUTPUT_TOKENS", "8000")
+    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_THINKING_BUDGET_TOKENS", "512")
+
+    async def _fake_post(_session, _url, payload, *, retries):
+        calls.append(payload["generationConfig"]["maxOutputTokens"])
+        assert payload["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 512}
+        if len(calls) == 1:
+            return {
+                "candidates": [
+                    {
+                        "finishReason": "MAX_TOKENS",
+                        "content": {"parts": [{"text": "abgeschnitten"}]},
+                    }
+                ],
+                "usageMetadata": {"candidatesTokenCount": calls[-1], "totalTokenCount": calls[-1] + 100},
+            }
+        return {
+            "candidates": [
+                {
+                    "finishReason": "STOP",
+                    "content": {"parts": [{"text": "vollstaendige zusammenfassung"}]},
+                }
+            ],
+            "usageMetadata": {"candidatesTokenCount": 900, "totalTokenCount": 1200},
+        }
+
+    monkeypatch.setattr(summarization, "_post_gemini_generate_content", _fake_post)
+
+    out = await summarization._summarize_gemini("prompt", "gemini-flash-latest", 3000)
+
+    assert out == "vollstaendige zusammenfassung"
+    assert calls == [3000, 6000]
+
+
+@pytest.mark.asyncio
+async def test_summarize_gemini_discards_partial_after_repeated_max_tokens(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(summarization.Config, "GOOGLE_API_KEY", "test-key")
+    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRIES", "0")
+
+    async def _fake_post(_session, _url, payload, *, retries):
+        return {
+            "candidates": [
+                {
+                    "finishReason": "MAX_TOKENS",
+                    "content": {"parts": [{"text": "partial darf nicht zurueckkommen"}]},
+                }
+            ],
+            "usageMetadata": {
+                "candidatesTokenCount": payload["generationConfig"]["maxOutputTokens"],
+                "totalTokenCount": payload["generationConfig"]["maxOutputTokens"] + 100,
+            },
+        }
+
+    monkeypatch.setattr(summarization, "_post_gemini_generate_content", _fake_post)
+
+    with pytest.raises(RuntimeError, match="MAX_TOKENS"):
+        await summarization._summarize_gemini("prompt", "gemini-flash-latest", 3000)

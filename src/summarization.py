@@ -62,6 +62,8 @@ def _is_retryable_gemini_failure(message: str) -> bool:
         "gemini api error 429",
         "gemini api error 500",
         "gemini api error 503",
+        "gemini hit max_tokens",
+        "finish_reason=max_tokens",
         "resource_exhausted",
         "unavailable",
         "high demand",
@@ -77,6 +79,32 @@ def _should_fallback_to_openai() -> bool:
 
 def _is_gemini_thinking_model(model: str) -> bool:
     return model.startswith("gemini-3") or model == "gemini-flash-latest"
+
+
+def _env_int(name: str, default: int, *, min_value: int | None = None, max_value: int | None = None) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+def _env_float(name: str, default: float, *, min_value: float | None = None, max_value: float | None = None) -> float:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
 
 
 def _summary_budget_for_text(
@@ -188,6 +216,34 @@ def _parse_duration_seconds(duration: str | None) -> int | None:
     if hours < 0 or minutes < 0 or seconds < 0:
         return None
     return hours * 3600 + minutes * 60 + seconds
+
+
+def _gemini_thinking_budget_for_model(model: str) -> int | None:
+    if not _is_gemini_thinking_model(model):
+        return None
+    raw = os.getenv("SCRIBER_SUMMARY_GEMINI_THINKING_BUDGET_TOKENS", "1024").strip()
+    if raw == "":
+        return None
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 1024
+
+
+def _gemini_retry_output_cap(model: str, initial_max_output_tokens: int) -> int:
+    model_cap = _MODEL_OUTPUT_TOKEN_CAPS.get(model, max(initial_max_output_tokens, 16_384))
+    requested_cap = _env_int(
+        "SCRIBER_SUMMARY_GEMINI_RETRY_MAX_OUTPUT_TOKENS",
+        16_384,
+        min_value=initial_max_output_tokens,
+    )
+    return max(initial_max_output_tokens, min(model_cap, requested_cap))
+
+
+def _gemini_next_output_budget(current_tokens: int, retry_cap: int) -> int:
+    growth = _env_float("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRY_GROWTH", 2.0, min_value=1.1)
+    grown = int(math.ceil(current_tokens * growth))
+    return min(retry_cap, max(current_tokens + 512, grown))
 
 
 async def summarize_text(
@@ -358,6 +414,79 @@ def _extract_openai_response_text(response: Any) -> str:
     return "".join(chunks).strip()
 
 
+def _build_gemini_payload(prompt: str, model: str, max_output_tokens: int) -> dict[str, Any]:
+    generation_config: dict[str, Any] = {
+        "maxOutputTokens": max_output_tokens,
+    }
+    temperature_raw = os.getenv("SCRIBER_SUMMARY_GEMINI_TEMPERATURE", "").strip()
+    if temperature_raw:
+        generation_config["temperature"] = min(1.0, max(0.0, float(temperature_raw)))
+
+    thinking_budget = _gemini_thinking_budget_for_model(model)
+    if thinking_budget is not None:
+        generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+
+    return {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": generation_config,
+    }
+
+
+async def _post_gemini_generate_content(
+    session: aiohttp.ClientSession,
+    url: str,
+    payload: dict[str, Any],
+    *,
+    retries: int,
+) -> dict[str, Any]:
+    data: dict[str, Any] = {}
+    last_error: RuntimeError | None = None
+
+    for attempt in range(retries + 1):
+        async with session.post(url, json=payload) as resp:
+            raw = await resp.text()
+            if resp.status >= 400:
+                detail = raw[:600]
+                err = RuntimeError(f"Gemini API error {resp.status}: {detail}")
+                if resp.status in {429, 500, 503} and attempt < retries:
+                    delay = min(8.0, 1.5 * (2 ** attempt))
+                    logger.warning(
+                        "Gemini API transient error (status={}) on attempt {}/{}. Retrying in {:.1f}s.",
+                        resp.status,
+                        attempt + 1,
+                        retries + 1,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    last_error = err
+                    continue
+                raise err
+            data = json.loads(raw)
+            last_error = None
+            break
+
+    if last_error is not None:
+        raise last_error
+    return data
+
+
+def _extract_gemini_response(data: dict[str, Any]) -> tuple[str, str | None, Any, Any]:
+    candidates = data.get("candidates", []) if isinstance(data, dict) else []
+    first = candidates[0] if candidates else {}
+    content_parts = first.get("content", {}).get("parts", []) if isinstance(first, dict) else []
+    content = "".join(
+        part.get("text", "")
+        for part in content_parts
+        if isinstance(part, dict) and isinstance(part.get("text"), str)
+    ).strip()
+
+    finish_reason = first.get("finishReason") if isinstance(first, dict) else None
+    usage = data.get("usageMetadata", {}) if isinstance(data, dict) else {}
+    candidate_tokens = usage.get("candidatesTokenCount")
+    total_tokens = usage.get("totalTokenCount")
+    return content, finish_reason, candidate_tokens, total_tokens
+
+
 async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> str:
     """Summarize using Google Gemini API."""
     api_key = Config.GOOGLE_API_KEY
@@ -374,82 +503,59 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
         )
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        generation_config: dict[str, Any] = {
-            "maxOutputTokens": max_output_tokens,
-        }
-        temperature_raw = os.getenv("SCRIBER_SUMMARY_GEMINI_TEMPERATURE", "").strip()
-        if temperature_raw:
-            generation_config["temperature"] = min(1.0, max(0.0, float(temperature_raw)))
-
-        payload: dict[str, Any] = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": generation_config,
-        }
-
-        retries = max(0, int(os.getenv("SCRIBER_SUMMARY_GEMINI_RETRIES", "2")))
-        data: dict[str, Any] = {}
-        last_error: RuntimeError | None = None
+        http_retries = _env_int("SCRIBER_SUMMARY_GEMINI_RETRIES", 2, min_value=0)
+        max_token_retries = _env_int("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRIES", 2, min_value=0)
+        retry_cap = _gemini_retry_output_cap(model, max_output_tokens)
+        current_max_output_tokens = max_output_tokens
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            for attempt in range(retries + 1):
-                async with session.post(url, json=payload) as resp:
-                    raw = await resp.text()
-                    if resp.status >= 400:
-                        detail = raw[:600]
-                        err = RuntimeError(f"Gemini API error {resp.status}: {detail}")
-                        if resp.status in {429, 500, 503} and attempt < retries:
-                            delay = min(8.0, 1.5 * (2 ** attempt))
-                            logger.warning(
-                                "Gemini API transient error (status={}) on attempt {}/{}. Retrying in {:.1f}s.",
-                                resp.status,
-                                attempt + 1,
-                                retries + 1,
-                                delay,
-                            )
-                            await asyncio.sleep(delay)
-                            last_error = err
-                            continue
-                        raise err
-                    data = json.loads(raw)
-                    last_error = None
-                    break
+            for max_token_attempt in range(max_token_retries + 1):
+                payload = _build_gemini_payload(prompt, model, current_max_output_tokens)
+                data = await _post_gemini_generate_content(
+                    session,
+                    url,
+                    payload,
+                    retries=http_retries,
+                )
+                content, finish_reason, candidate_tokens, total_tokens = _extract_gemini_response(data)
 
-        if last_error is not None:
-            raise last_error
+                logger.info(
+                    "Gemini summarization complete: {} chars (finish_reason={}, candidate_tokens={}, total_tokens={}, max_output_tokens={})",
+                    len(content or ""),
+                    finish_reason,
+                    candidate_tokens,
+                    total_tokens,
+                    current_max_output_tokens,
+                )
 
-        candidates = data.get("candidates", []) if isinstance(data, dict) else []
-        first = candidates[0] if candidates else {}
-        content_parts = first.get("content", {}).get("parts", []) if isinstance(first, dict) else []
-        content = "".join(
-            part.get("text", "")
-            for part in content_parts
-            if isinstance(part, dict) and isinstance(part.get("text"), str)
-        ).strip()
+                if finish_reason == "MAX_TOKENS":
+                    if max_token_attempt < max_token_retries and current_max_output_tokens < retry_cap:
+                        next_max_output_tokens = _gemini_next_output_budget(current_max_output_tokens, retry_cap)
+                        logger.warning(
+                            "Gemini stopped due MAX_TOKENS (max_output_tokens={}, candidate_tokens={}, total_tokens={}). Retrying with max_output_tokens={} and thinkingBudget={}.",
+                            current_max_output_tokens,
+                            candidate_tokens,
+                            total_tokens,
+                            next_max_output_tokens,
+                            _gemini_thinking_budget_for_model(model),
+                        )
+                        current_max_output_tokens = next_max_output_tokens
+                        continue
 
-        finish_reason = first.get("finishReason") if isinstance(first, dict) else None
-        usage = data.get("usageMetadata", {}) if isinstance(data, dict) else {}
-        candidate_tokens = usage.get("candidatesTokenCount")
-        total_tokens = usage.get("totalTokenCount")
+                    raise RuntimeError(
+                        "Gemini hit MAX_TOKENS before completing the summary "
+                        f"(finish_reason=MAX_TOKENS, max_output_tokens={current_max_output_tokens}, "
+                        f"candidate_tokens={candidate_tokens}, total_tokens={total_tokens}). "
+                        "The partial summary was discarded to avoid saving truncated content."
+                    )
 
-        logger.info(
-            "Gemini summarization complete: {} chars (finish_reason={}, candidate_tokens={}, total_tokens={})",
-            len(content or ""),
-            finish_reason,
-            candidate_tokens,
-            total_tokens,
-        )
+                if not content:
+                    prompt_feedback = data.get("promptFeedback") if isinstance(data, dict) else None
+                    raise RuntimeError(f"Gemini returned empty response. promptFeedback={prompt_feedback}")
 
-        if finish_reason == "MAX_TOKENS":
-            logger.warning(
-                "Gemini stopped due MAX_TOKENS (max_output_tokens={}). Consider increasing SCRIBER_SUMMARY_GEMINI_THINKING_RESERVE_TOKENS.",
-                max_output_tokens,
-            )
+                return content
 
-        if not content:
-            prompt_feedback = data.get("promptFeedback") if isinstance(data, dict) else None
-            raise RuntimeError(f"Gemini returned empty response. promptFeedback={prompt_feedback}")
-
-        return content
+        raise RuntimeError("Gemini summarization failed before returning a response.")
 
     except aiohttp.ClientError as e:
         logger.exception("Gemini summarization HTTP error")
@@ -457,6 +563,8 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
     except json.JSONDecodeError as e:
         logger.exception("Gemini summarization parse error")
         raise RuntimeError(f"Gemini response parse failed: {e}")
+    except RuntimeError:
+        raise
     except Exception as e:
         logger.exception("Gemini summarization failed")
         raise RuntimeError(f"Gemini summarization failed: {e}")
