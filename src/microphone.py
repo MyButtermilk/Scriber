@@ -1,5 +1,6 @@
 import asyncio
 import queue as _queue
+import threading
 import time
 import numpy as np
 from loguru import logger
@@ -116,10 +117,14 @@ class MicrophoneInput(BaseInputTransport):
         self._using_prewarm_stream = False
         self._prewarm_callback = None
         self._running = False
-        self._loop = None
         self._queue = _queue.Queue(maxsize=512)
         self._dropped_chunks = 0
         self._consumer_task = None
+        # Serializes _audio_callback against itself. The prewarm path can invoke
+        # this callback from the PortAudio thread (live frames) and the event loop
+        # thread (prebuffer replay) concurrently; reentrant so the replay can hold
+        # the lock while calling back into _audio_callback.
+        self._callback_lock = threading.RLock()
         self._stopped = asyncio.Event()
         # Visualizer gating (reduce noise-triggered movement)
         self._noise_floor_db = -70.0
@@ -155,7 +160,6 @@ class MicrophoneInput(BaseInputTransport):
         """Start audio capture and feed frames into the transport queue."""
         logger.debug(f"MicrophoneInput.start() called, device={self.device}")
         await super().start(frame)
-        self._loop = asyncio.get_running_loop()
         self._running = True
         self._active_capture_channel = None
         self._channel_selection_counter = 0
@@ -336,115 +340,123 @@ class MicrophoneInput(BaseInputTransport):
             raise RuntimeError(f"Microphone initialization failed: {e}") from e
 
     def _audio_callback(self, indata, frames, time_info, status):
+        # Serialized via reentrant lock: the prewarm path can drive this callback
+        # from the PortAudio thread (live frames) and the event loop thread
+        # (prebuffer replay) at the same time. The lock keeps channel-selection and
+        # visualizer state consistent and preserves frame ordering into the queue.
         try:
-            self._callback_count += 1
-            if status:
-                self._last_status = str(status)
-                logger.warning(f"Audio status: {status}")
-            if not self._running:
-                return
-
-            output_data = indata
-            if (
-                isinstance(indata, np.ndarray)
-                and indata.ndim == 2
-                and indata.shape[1] > self._target_channels
-                and self._target_channels == 1
-            ):
-                self._channel_selection_counter += 1
-                previous_channel = self._active_capture_channel
-                should_rescan_channel = (
-                    previous_channel is None
-                    or previous_channel < 0
-                    or previous_channel >= indata.shape[1]
-                    or self._channel_selection_counter >= self._channel_selection_interval_frames
-                )
-                if should_rescan_channel:
-                    self._channel_selection_counter = 0
-                    output_data, chosen_channel = _select_best_mono_channel(
-                        indata,
-                        previous_channel,
-                    )
-                    if chosen_channel != previous_channel and chosen_channel is not None:
-                        logger.debug(
-                            "Microphone channel selection changed: {} -> {}",
-                            previous_channel,
-                            chosen_channel,
-                        )
-                    self._active_capture_channel = chosen_channel
-                else:
-                    mono = indata[:, previous_channel]
-                    if mono.dtype != np.int16:
-                        mono = np.clip(mono, -32768, 32767).astype(np.int16)
-                    else:
-                        mono = np.ascontiguousarray(mono)
-                    output_data = mono.reshape(-1, 1)
-
-            audio_bytes = output_data.tobytes()
-            # PortAudio is alive whenever it invokes us, regardless of whether the
-            # frame is queued or dropped. Mark liveness for the watchdog here so a
-            # full queue (slow consumer) is not misdiagnosed as a dead capture
-            # stream — that would trigger a pointless stream restart. Real capture
-            # stalls show up as the callback no longer firing at all.
-            self._last_callback_at = time.monotonic()
-            try:
-                self._queue.put_nowait(audio_bytes)
-            except _queue.Full:
-                self._dropped_chunks += 1
-                logger.warning(f"Mic queue full, dropped chunk (#{self._dropped_chunks})")
-
-            # Visualizer/input-warning calculation is capped to UI frame rate. The
-            # raw audio still flows downstream on every callback.
-            if self.on_audio_level:
-                try:
-                    now = time.monotonic()
-                    if now - self._last_audio_level_at < self._audio_level_interval:
-                        return
-                    self._last_audio_level_at = now
-                    # Optimized RMS: use int16 view directly, compute in float32 for speed
-                    # Use the exact frame we send downstream (after channel selection/downmix).
-                    samples = np.asarray(output_data).astype(np.int16, copy=False).ravel()
-                    # Use float32 for faster computation than float64
-                    rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) / 32768.0
-
-                    # Speech-focused gating (dynamic noise floor + hysteresis)
-                    db = 20.0 * float(np.log10(rms + 1e-6))
-
-                    # Update noise floor: quick to drop, very slow to rise (avoid "locking out" speech)
-                    if (not self._speech_active) or (db < self._noise_floor_db + 3.0):
-                        if db < self._noise_floor_db:
-                            self._noise_floor_db = self._noise_floor_db * 0.8 + db * 0.2
-                        elif db <= self._noise_floor_db + 1.0:
-                            self._noise_floor_db = self._noise_floor_db * 0.98 + db * 0.02
-
-                    # Lower thresholds for responsive visualization
-                    threshold_high = max(self._noise_floor_db + 6.0, -58.0)
-                    threshold_low = threshold_high - 8.0
-                    abs_on_rms = 0.0007
-                    abs_off_rms = 0.00025
-
-                    if db >= threshold_high or rms >= abs_on_rms:
-                        self._speech_active = True
-                        self._speech_hold_until = now + 0.45
-                    elif (
-                        (db <= threshold_low and rms <= abs_off_rms)
-                        and now >= self._speech_hold_until
-                    ):
-                        self._speech_active = False
-
-                    # Keep visualization continuous across syllables.
-                    vis_target = float(rms) if self._speech_active else max(0.0, rms * 0.10)
-                    if vis_target > self._visual_level:
-                        self._visual_level = self._visual_level * 0.25 + vis_target * 0.75
-                    else:
-                        self._visual_level = self._visual_level * 0.70 + vis_target * 0.30
-                    self.on_audio_level(self._visual_level)
-                except Exception:
-                    pass
+            with self._callback_lock:
+                self._process_audio_callback(indata, frames, time_info, status)
         except Exception as exc:
             # Never raise from PortAudio callback threads.
             self._last_callback_exception = str(exc)
             logger.debug(f"Audio callback exception ignored: {exc}")
+
+    def _process_audio_callback(self, indata, frames, time_info, status):
+        self._callback_count += 1
+        if status:
+            self._last_status = str(status)
+            logger.warning(f"Audio status: {status}")
+        if not self._running:
+            return
+
+        output_data = indata
+        if (
+            isinstance(indata, np.ndarray)
+            and indata.ndim == 2
+            and indata.shape[1] > self._target_channels
+            and self._target_channels == 1
+        ):
+            self._channel_selection_counter += 1
+            previous_channel = self._active_capture_channel
+            should_rescan_channel = (
+                previous_channel is None
+                or previous_channel < 0
+                or previous_channel >= indata.shape[1]
+                or self._channel_selection_counter >= self._channel_selection_interval_frames
+            )
+            if should_rescan_channel:
+                self._channel_selection_counter = 0
+                output_data, chosen_channel = _select_best_mono_channel(
+                    indata,
+                    previous_channel,
+                )
+                if chosen_channel != previous_channel and chosen_channel is not None:
+                    logger.debug(
+                        "Microphone channel selection changed: {} -> {}",
+                        previous_channel,
+                        chosen_channel,
+                    )
+                self._active_capture_channel = chosen_channel
+            else:
+                mono = indata[:, previous_channel]
+                if mono.dtype != np.int16:
+                    mono = np.clip(mono, -32768, 32767).astype(np.int16)
+                else:
+                    mono = np.ascontiguousarray(mono)
+                output_data = mono.reshape(-1, 1)
+
+        audio_bytes = output_data.tobytes()
+        # PortAudio is alive whenever it invokes us, regardless of whether the
+        # frame is queued or dropped. Mark liveness for the watchdog here so a
+        # full queue (slow consumer) is not misdiagnosed as a dead capture
+        # stream — that would trigger a pointless stream restart. Real capture
+        # stalls show up as the callback no longer firing at all.
+        self._last_callback_at = time.monotonic()
+        try:
+            self._queue.put_nowait(audio_bytes)
+        except _queue.Full:
+            self._dropped_chunks += 1
+            logger.warning(f"Mic queue full, dropped chunk (#{self._dropped_chunks})")
+
+        # Visualizer/input-warning calculation is capped to UI frame rate. The
+        # raw audio still flows downstream on every callback.
+        if self.on_audio_level:
+            try:
+                now = time.monotonic()
+                if now - self._last_audio_level_at < self._audio_level_interval:
+                    return
+                self._last_audio_level_at = now
+                # Optimized RMS: use int16 view directly, compute in float32 for speed
+                # Use the exact frame we send downstream (after channel selection/downmix).
+                samples = np.asarray(output_data).astype(np.int16, copy=False).ravel()
+                # Use float32 for faster computation than float64
+                rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) / 32768.0
+
+                # Speech-focused gating (dynamic noise floor + hysteresis)
+                db = 20.0 * float(np.log10(rms + 1e-6))
+
+                # Update noise floor: quick to drop, very slow to rise (avoid "locking out" speech)
+                if (not self._speech_active) or (db < self._noise_floor_db + 3.0):
+                    if db < self._noise_floor_db:
+                        self._noise_floor_db = self._noise_floor_db * 0.8 + db * 0.2
+                    elif db <= self._noise_floor_db + 1.0:
+                        self._noise_floor_db = self._noise_floor_db * 0.98 + db * 0.02
+
+                # Lower thresholds for responsive visualization
+                threshold_high = max(self._noise_floor_db + 6.0, -58.0)
+                threshold_low = threshold_high - 8.0
+                abs_on_rms = 0.0007
+                abs_off_rms = 0.00025
+
+                if db >= threshold_high or rms >= abs_on_rms:
+                    self._speech_active = True
+                    self._speech_hold_until = now + 0.45
+                elif (
+                    (db <= threshold_low and rms <= abs_off_rms)
+                    and now >= self._speech_hold_until
+                ):
+                    self._speech_active = False
+
+                # Keep visualization continuous across syllables.
+                vis_target = float(rms) if self._speech_active else max(0.0, rms * 0.10)
+                if vis_target > self._visual_level:
+                    self._visual_level = self._visual_level * 0.25 + vis_target * 0.75
+                else:
+                    self._visual_level = self._visual_level * 0.70 + vis_target * 0.30
+                self.on_audio_level(self._visual_level)
+            except Exception:
+                pass
 
     def diagnostic_snapshot(self) -> dict:
         stream = self.stream
@@ -562,12 +574,17 @@ class MicrophoneInput(BaseInputTransport):
         frames = adopted.get("prebuffer_frames") or []
         if not frames:
             return
-        for item in frames:
-            try:
-                indata, frame_count, time_info, status = item
-                self._audio_callback(indata, int(frame_count or 0), time_info, status)
-            except Exception as exc:
-                logger.debug(f"Prewarmed audio prepend skipped frame: {exc}")
+        # Hold the callback lock across the whole replay so the prebuffered frames
+        # are queued as a contiguous block before any live frame from the PortAudio
+        # thread can interleave ahead of them. The lock is reentrant, so the nested
+        # _audio_callback calls below re-acquire it without blocking.
+        with self._callback_lock:
+            for item in frames:
+                try:
+                    indata, frame_count, time_info, status = item
+                    self._audio_callback(indata, int(frame_count or 0), time_info, status)
+                except Exception as exc:
+                    logger.debug(f"Prewarmed audio prepend skipped frame: {exc}")
 
     async def _drain_queue(self):
         # Ensure audio queue exists (BaseInputTransport creates it in _create_audio_task)
