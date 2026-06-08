@@ -1,4 +1,5 @@
 import asyncio
+import queue as _queue
 import time
 import numpy as np
 from loguru import logger
@@ -116,7 +117,8 @@ class MicrophoneInput(BaseInputTransport):
         self._prewarm_callback = None
         self._running = False
         self._loop = None
-        self._queue = asyncio.Queue()
+        self._queue = _queue.Queue(maxsize=512)
+        self._dropped_chunks = 0
         self._consumer_task = None
         self._stopped = asyncio.Event()
         # Visualizer gating (reduce noise-triggered movement)
@@ -336,7 +338,6 @@ class MicrophoneInput(BaseInputTransport):
     def _audio_callback(self, indata, frames, time_info, status):
         try:
             self._callback_count += 1
-            self._last_callback_at = time.monotonic()
             if status:
                 self._last_status = str(status)
                 logger.warning(f"Audio status: {status}")
@@ -381,13 +382,11 @@ class MicrophoneInput(BaseInputTransport):
 
             audio_bytes = output_data.tobytes()
             try:
-                if self._loop and not self._loop.is_closed():
-                    self._loop.call_soon_threadsafe(self._queue.put_nowait, audio_bytes)
-            except RuntimeError as exc:
-                # Event loop already closing/closed; stop pushing frames from callback thread.
-                logger.debug(f"Audio callback loop unavailable: {exc}")
-                self._running = False
-                return
+                self._queue.put_nowait(audio_bytes)
+                self._last_callback_at = time.monotonic()
+            except _queue.Full:
+                self._dropped_chunks += 1
+                logger.warning(f"Mic queue full, dropped chunk (#{self._dropped_chunks})")
 
             # Visualizer/input-warning calculation is capped to UI frame rate. The
             # raw audio still flows downstream on every callback.
@@ -578,9 +577,10 @@ class MicrophoneInput(BaseInputTransport):
                 if not self._running and self._queue.empty():
                     break
                 try:
-                    # Use timeout to allow checking _running flag periodically
-                    data = await asyncio.wait_for(self._queue.get(), timeout=0.1)
-                except asyncio.TimeoutError:
+                    data = await asyncio.get_running_loop().run_in_executor(
+                        None, self._queue.get, True, 0.1
+                    )
+                except _queue.Empty:
                     continue
                 if data is None:
                     break
