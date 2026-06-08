@@ -381,9 +381,14 @@ class MicrophoneInput(BaseInputTransport):
                     output_data = mono.reshape(-1, 1)
 
             audio_bytes = output_data.tobytes()
+            # PortAudio is alive whenever it invokes us, regardless of whether the
+            # frame is queued or dropped. Mark liveness for the watchdog here so a
+            # full queue (slow consumer) is not misdiagnosed as a dead capture
+            # stream — that would trigger a pointless stream restart. Real capture
+            # stalls show up as the callback no longer firing at all.
+            self._last_callback_at = time.monotonic()
             try:
                 self._queue.put_nowait(audio_bytes)
-                self._last_callback_at = time.monotonic()
             except _queue.Full:
                 self._dropped_chunks += 1
                 logger.warning(f"Mic queue full, dropped chunk (#{self._dropped_chunks})")
