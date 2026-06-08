@@ -218,7 +218,18 @@ class MicrophonePrewarmManager:
                         callback=self._audio_callback,
                         device=device_index,
                     )
-                    stream.start()
+                    try:
+                        stream.start()
+                    except Exception:
+                        # start() failed before the stream was published to
+                        # self._stream, so _close_locked() in the except handler
+                        # cannot see it. Close the orphan here to avoid leaking the
+                        # PortAudio stream/device handle.
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
+                        raise
                     self._stream = stream
                     self._stream_signature = {
                         "sample_rate": sample_rate,

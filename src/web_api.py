@@ -3760,6 +3760,12 @@ class ScriberWebController:
             await asyncio.sleep(0.05)
 
     def shutdown(self) -> None:
+        # Cancel pending debounce timers so they don't fire on a tearing-down loop.
+        self._cancel_settings_persist_timer()
+        if self._history_broadcast_handle is not None:
+            self._history_broadcast_handle.cancel()
+            self._history_broadcast_handle = None
+
         if self._ptt_task:
             self._ptt_task.cancel()
             self._ptt_task = None
