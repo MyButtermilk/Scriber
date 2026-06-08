@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ArrowDownToLine,
   Bug,
+  CalendarDays,
   CheckCircle2,
   Circle,
   Clipboard,
@@ -23,6 +24,7 @@ import { cn } from "@/lib/utils";
 import type { RuntimeLogEntry, RuntimeLogsResponse } from "@/lib/api-types";
 
 const LEVELS = ["ALL", "CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "TRACE"] as const;
+const ALL_DATES_VALUE = "all";
 
 const levelStyles: Record<string, string> = {
   TRACE: "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300",
@@ -75,27 +77,93 @@ function formatLogLine(entry: RuntimeLogEntry) {
   return `${formatEntryTime(entry).padEnd(12)} ${level.padEnd(8)} ${entry.source}:${entry.line}${component} ${entry.message}`;
 }
 
+function dateInputValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function timestampToDate(timestamp: string | null | undefined) {
+  const value = (timestamp || "").trim();
+  if (!value) return null;
+
+  const germanDate = value.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[,\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (germanDate) {
+    const [, day, month, year, hour = "0", minute = "0", second = "0"] = germanDate;
+    return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
+  }
+
+  const isoLike = value.match(/\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?/);
+  if (isoLike) {
+    const normalized = isoLike[0].includes("T") ? isoLike[0] : isoLike[0].replace(" ", "T");
+    const parsed = new Date(normalized);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+
+  const timeOnly = value.match(/^(\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?/);
+  if (timeOnly) {
+    const today = new Date();
+    today.setHours(Number(timeOnly[1]), Number(timeOnly[2]), Number(timeOnly[3] || "0"), 0);
+    return today;
+  }
+
+  const parsedMs = Date.parse(value);
+  if (!Number.isNaN(parsedMs)) return new Date(parsedMs);
+  return null;
+}
+
+function entryDateKey(entry: RuntimeLogEntry) {
+  if (entry.timestampMs) {
+    return dateInputValue(new Date(entry.timestampMs));
+  }
+  const parsed = timestampToDate(entry.timestamp);
+  return parsed ? dateInputValue(parsed) : "";
+}
+
+function entrySortValue(entry: RuntimeLogEntry, fallbackIndex: number) {
+  if (entry.timestampMs) return entry.timestampMs;
+  const parsed = timestampToDate(entry.timestamp);
+  if (parsed) return parsed.getTime();
+  return fallbackIndex;
+}
+
+function logEntryKey(entry: RuntimeLogEntry) {
+  return [
+    entry.source,
+    entry.line,
+    entry.timestamp || "",
+    entry.timestampMs || "",
+    normalizeLevel(entry.level),
+    entry.component || "",
+    entry.message,
+  ].join("\u001f");
+}
+
 function filenameFromDisposition(disposition: string | null) {
   const match = disposition?.match(/filename="?([^";]+)"?/i);
   return match?.[1] || `scriber-support-bundle-${Date.now()}.zip`;
 }
 
 export default function DebugConsole() {
+  const defaultDateFilter = useMemo(() => dateInputValue(new Date()), []);
   const [logs, setLogs] = useState<RuntimeLogEntry[]>([]);
   const [sources, setSources] = useState<string[]>([]);
   const [selectedLevel, setSelectedLevel] = useState<(typeof LEVELS)[number]>("ALL");
   const [selectedSource, setSelectedSource] = useState("all");
+  const [dateFilter, setDateFilter] = useState(defaultDateFilter);
   const [query, setQuery] = useState("");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [autoScroll, setAutoScroll] = useState(true);
-  const [newestFirst, setNewestFirst] = useState(false);
+  const [newestFirst, setNewestFirst] = useState(true);
+  const [clearedLogKeys, setClearedLogKeys] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [supportBundleLoading, setSupportBundleLoading] = useState(false);
   const [error, setError] = useState("");
   const [actionStatus, setActionStatus] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [truncated, setTruncated] = useState(false);
-  const logEndRef = useRef<HTMLDivElement | null>(null);
+  const logScrollRef = useRef<HTMLElement | null>(null);
 
   const loadLogs = useCallback(async () => {
     setLoading(true);
@@ -132,9 +200,15 @@ export default function DebugConsole() {
   const filteredLogs = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return logs.filter((entry) => {
+      if (clearedLogKeys.has(logEntryKey(entry))) return false;
       const level = normalizeLevel(entry.level);
       if (selectedLevel !== "ALL" && level !== selectedLevel) return false;
       if (selectedSource !== "all" && entry.source !== selectedSource) return false;
+      if (dateFilter !== ALL_DATES_VALUE) {
+        const dateKey = entryDateKey(entry);
+        if (dateKey && dateKey !== dateFilter) return false;
+        if (!dateKey && dateFilter !== defaultDateFilter) return false;
+      }
       if (!needle) return true;
       return [
         entry.message,
@@ -148,27 +222,56 @@ export default function DebugConsole() {
         .toLowerCase()
         .includes(needle);
     });
-  }, [logs, query, selectedLevel, selectedSource]);
+  }, [clearedLogKeys, dateFilter, defaultDateFilter, logs, query, selectedLevel, selectedSource]);
 
-  const displayedLogs = useMemo(
-    () => (newestFirst ? [...filteredLogs].reverse() : filteredLogs),
-    [filteredLogs, newestFirst],
-  );
+  const displayedLogs = useMemo(() => {
+    return filteredLogs
+      .map((entry, index) => ({ entry, sortValue: entrySortValue(entry, index), index }))
+      .sort((a, b) => {
+        const sortDelta = newestFirst ? b.sortValue - a.sortValue : a.sortValue - b.sortValue;
+        if (sortDelta !== 0) return sortDelta;
+        return newestFirst ? b.index - a.index : a.index - b.index;
+      })
+      .map((item) => item.entry);
+  }, [filteredLogs, newestFirst]);
 
   useEffect(() => {
     if (!autoScroll || newestFirst) return;
-    logEndRef.current?.scrollIntoView({ block: "end" });
+    const scroller = logScrollRef.current;
+    if (!scroller) return;
+    scroller.scrollTop = scroller.scrollHeight;
   }, [autoScroll, newestFirst, displayedLogs.length, lastUpdated]);
 
   const errorCount = logs.filter((entry) => ["ERROR", "CRITICAL"].includes(normalizeLevel(entry.level))).length;
   const warningCount = logs.filter((entry) => normalizeLevel(entry.level) === "WARNING").length;
   const debugCount = logs.filter((entry) => ["DEBUG", "TRACE"].includes(normalizeLevel(entry.level))).length;
-  const hasActiveFilters = selectedLevel !== "ALL" || selectedSource !== "all" || query.trim().length > 0;
+  const hasActiveFilters =
+    selectedLevel !== "ALL" ||
+    selectedSource !== "all" ||
+    dateFilter !== defaultDateFilter ||
+    query.trim().length > 0;
 
   const resetFilters = () => {
     setSelectedLevel("ALL");
     setSelectedSource("all");
+    setDateFilter(defaultDateFilter);
     setQuery("");
+  };
+
+  const clearConsoleView = () => {
+    if (!displayedLogs.length) return;
+    setClearedLogKeys((previous) => {
+      const next = new Set(previous);
+      displayedLogs.forEach((entry) => next.add(logEntryKey(entry)));
+      return next;
+    });
+    setActionStatus(`Cleared ${displayedLogs.length} visible log entries from this view.`);
+  };
+
+  const jumpToLogEdge = () => {
+    const scroller = logScrollRef.current;
+    if (!scroller) return;
+    scroller.scrollTop = newestFirst ? 0 : scroller.scrollHeight;
   };
 
   const copyVisibleLogs = async () => {
@@ -211,122 +314,139 @@ export default function DebugConsole() {
   };
 
   return (
-    <div className="flex h-full min-h-[calc(100vh-1.5rem)] flex-col overflow-hidden">
-      <header className="border-b border-border/70 px-4 py-3 md:px-6">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <Terminal className="h-5 w-5 text-foreground" />
-              <h1 className="text-xl font-semibold tracking-tight text-foreground">Debug Console</h1>
+    <div className="flex h-[calc(100vh-1.5rem)] min-h-0 flex-col overflow-hidden">
+      <div className="sticky top-0 z-20 shrink-0 border-b border-border/70 bg-background/95 backdrop-blur">
+        <header className="border-b border-border/70 px-4 py-3 md:px-6">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Terminal className="h-5 w-5 text-foreground" />
+                <h1 className="text-xl font-semibold tracking-tight text-foreground">Debug Console</h1>
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <span>{filteredLogs.length} of {logs.length} entries</span>
+                <span>{sources.length} sources</span>
+                <span>{dateFilter === ALL_DATES_VALUE ? "All dates" : `Date ${dateFilter}`}</span>
+                {lastUpdated && <span>Updated {lastUpdated.toLocaleTimeString("de-DE")}</span>}
+                {truncated && <span>Tail view</span>}
+              </div>
             </div>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <span>{filteredLogs.length} of {logs.length} entries</span>
-              <span>{sources.length} sources</span>
-              {lastUpdated && <span>Updated {lastUpdated.toLocaleTimeString("de-DE")}</span>}
-              {truncated && <span>Tail view</span>}
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={errorCount ? "destructive" : "outline"}>{errorCount} errors</Badge>
+              <Badge variant={warningCount ? "secondary" : "outline"}>{warningCount} warnings</Badge>
+              <Badge variant={debugCount ? "outline" : "secondary"}>{debugCount} debug</Badge>
+              <Button type="button" variant="outline" onClick={clearConsoleView} disabled={!displayedLogs.length}>
+                <Eraser className="h-4 w-4" />
+                Clear view
+              </Button>
+              <Button type="button" variant="outline" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
+                <Clipboard className="h-4 w-4" />
+                Copy visible
+              </Button>
+              <Button type="button" variant="outline" onClick={() => void downloadSupportBundle()} disabled={supportBundleLoading}>
+                <Download className={cn("h-4 w-4", supportBundleLoading && "animate-pulse")} />
+                Support bundle
+              </Button>
+              <Button type="button" variant="outline" onClick={() => void loadLogs()} disabled={loading}>
+                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+                Refresh
+              </Button>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={errorCount ? "destructive" : "outline"}>{errorCount} errors</Badge>
-            <Badge variant={warningCount ? "secondary" : "outline"}>{warningCount} warnings</Badge>
-            <Badge variant={debugCount ? "outline" : "secondary"}>{debugCount} debug</Badge>
-            <Button type="button" variant="outline" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
-              <Clipboard className="h-4 w-4" />
-              Copy visible
-            </Button>
-            <Button type="button" variant="outline" onClick={() => void downloadSupportBundle()} disabled={supportBundleLoading}>
-              <Download className={cn("h-4 w-4", supportBundleLoading && "animate-pulse")} />
-              Support bundle
-            </Button>
-            <Button type="button" variant="outline" onClick={() => void loadLogs()} disabled={loading}>
-              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-              Refresh
-            </Button>
-          </div>
-        </div>
-      </header>
+        </header>
 
-      <section className="border-b border-border/70 px-4 py-3 md:px-6">
-        <div className="grid gap-2 xl:grid-cols-[minmax(260px,1fr)_190px_360px_auto]">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              className="pl-9"
-              placeholder="Filter message, source, component..."
-              aria-label="Filter logs"
-            />
-          </div>
-          <Select value={selectedSource} onValueChange={setSelectedSource}>
-            <SelectTrigger aria-label="Filter source">
-              <SelectValue placeholder="Source" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All sources</SelectItem>
-              {sources.map((source) => (
-                <SelectItem key={source} value={source}>{source}</SelectItem>
+        <section className="px-4 py-3 md:px-6">
+          <div className="grid gap-2 xl:grid-cols-[minmax(220px,1fr)_180px_150px_360px_auto]">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                className="pl-9"
+                placeholder="Filter message, source, component..."
+                aria-label="Filter logs"
+              />
+            </div>
+            <Select value={selectedSource} onValueChange={setSelectedSource}>
+              <SelectTrigger aria-label="Filter source">
+                <SelectValue placeholder="Source" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All sources</SelectItem>
+                {sources.map((source) => (
+                  <SelectItem key={source} value={source}>{source}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <div className="relative">
+              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                type="date"
+                value={dateFilter === ALL_DATES_VALUE ? "" : dateFilter}
+                onChange={(event) => setDateFilter(event.target.value || ALL_DATES_VALUE)}
+                className="pl-9"
+                aria-label="Filter log date"
+              />
+            </div>
+            <div className="flex items-center gap-1 rounded-md border border-border/70 bg-background/35 p-1">
+              <Filter className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
+              {LEVELS.map((level) => (
+                <button
+                  key={level}
+                  type="button"
+                  onClick={() => setSelectedLevel(level)}
+                  className={cn(
+                    "h-7 min-w-0 flex-1 rounded px-2 text-xs font-medium transition-colors",
+                    selectedLevel === level
+                      ? "bg-foreground text-background"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                >
+                  {level}
+                </button>
               ))}
-            </SelectContent>
-          </Select>
-          <div className="flex items-center gap-1 rounded-md border border-border/70 bg-background/35 p-1">
-            <Filter className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
-            {LEVELS.map((level) => (
-              <button
-                key={level}
-                type="button"
-                onClick={() => setSelectedLevel(level)}
-                className={cn(
-                  "h-7 min-w-0 flex-1 rounded px-2 text-xs font-medium transition-colors",
-                  selectedLevel === level
-                    ? "bg-foreground text-background"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                )}
-              >
-                {level}
-              </button>
-            ))}
+            </div>
+            <Button type="button" variant="ghost" onClick={resetFilters} disabled={!hasActiveFilters}>
+              <Eraser className="h-4 w-4" />
+              Reset filters
+            </Button>
           </div>
-          <Button type="button" variant="ghost" onClick={resetFilters} disabled={!hasActiveFilters}>
-            <Eraser className="h-4 w-4" />
-            Clear
-          </Button>
-        </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-          <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
-            <span>Auto refresh</span>
-            <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="Toggle auto refresh" />
-          </label>
-          <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
-            <span>Auto scroll</span>
-            <Switch checked={autoScroll} onCheckedChange={setAutoScroll} aria-label="Toggle auto scroll" />
-          </label>
-          <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
-            <span>Newest first</span>
-            <Switch checked={newestFirst} onCheckedChange={setNewestFirst} aria-label="Show newest logs first" />
-          </label>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => logEndRef.current?.scrollIntoView({ block: "end" })}
-            disabled={!displayedLogs.length || newestFirst}
-          >
-            <ArrowDownToLine className="h-4 w-4" />
-            Bottom
-          </Button>
-          {actionStatus && <span>{actionStatus}</span>}
-        </div>
-
-        {error && (
-          <div className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
-            {error}
+          <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+            <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
+              <span>Auto refresh</span>
+              <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="Toggle auto refresh" />
+            </label>
+            <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
+              <span>Auto scroll</span>
+              <Switch checked={autoScroll} onCheckedChange={setAutoScroll} aria-label="Toggle auto scroll" />
+            </label>
+            <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
+              <span>Newest first</span>
+              <Switch checked={newestFirst} onCheckedChange={setNewestFirst} aria-label="Show newest logs first" />
+            </label>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={jumpToLogEdge}
+              disabled={!displayedLogs.length}
+            >
+              <ArrowDownToLine className="h-4 w-4" />
+              {newestFirst ? "Top" : "Bottom"}
+            </Button>
+            {actionStatus && <span>{actionStatus}</span>}
           </div>
-        )}
-      </section>
 
-      <section className="min-h-0 flex-1 overflow-auto px-3 py-3 md:px-5">
+          {error && (
+            <div className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+              {error}
+            </div>
+          )}
+        </section>
+      </div>
+
+      <section ref={logScrollRef} className="min-h-0 flex-1 overflow-auto px-3 py-3 md:px-5">
         <div className="overflow-hidden rounded-md border border-border/70 bg-background/45">
           {displayedLogs.length === 0 ? (
             <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
@@ -339,7 +459,7 @@ export default function DebugConsole() {
                 const Icon = iconForLevel(level);
                 return (
                   <div
-                    key={`${entry.source}-${entry.line}-${index}`}
+                    key={`${logEntryKey(entry)}-${index}`}
                     className={cn(
                       "grid border-l-2 gap-2 px-3 py-2 md:grid-cols-[76px_160px_96px_minmax(0,1fr)]",
                       rowStyles[level] || rowStyles.INFO,
@@ -369,7 +489,6 @@ export default function DebugConsole() {
                   </div>
                 );
               })}
-              <div ref={logEndRef} />
             </div>
           )}
         </div>

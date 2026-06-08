@@ -85,6 +85,14 @@ def test_tauri_csp_restricts_webview_to_local_backend_and_assets() -> None:
     assert "ws://localhost:*" in directives["connect-src"]
 
 
+def test_tauri_main_window_allows_html_file_drag_and_drop() -> None:
+    config = read_json(TAURI_DIR / "tauri.conf.json")
+    windows = config["app"]["windows"]
+
+    assert windows
+    assert windows[0]["dragDropEnabled"] is False
+
+
 def test_frontend_entrypoint_is_compatible_with_tauri_csp() -> None:
     index_html = (REPO_ROOT / "Frontend" / "client" / "index.html").read_text(encoding="utf-8")
     css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")

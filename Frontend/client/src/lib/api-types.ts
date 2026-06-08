@@ -20,6 +20,27 @@ export interface BackendHealthResponse {
   runtimeMode: string;
 }
 
+export interface BackendStateResponse {
+  listening: boolean;
+  status: string;
+  inputWarning?: string;
+  inputWarningCode?: string;
+  inputWarningActions?: Array<{
+    id: string;
+    label: string;
+    uri: string;
+  }>;
+  current?: {
+    id?: string | number;
+    content?: string;
+    [key: string]: unknown;
+  } | null;
+  sessionId?: string | null;
+  backgroundProcessing: boolean;
+  recordingState: string;
+  transcribing: boolean;
+}
+
 export interface AutostartStatus {
   enabled: boolean;
   available: boolean;

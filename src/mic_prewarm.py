@@ -42,11 +42,36 @@ class MicrophonePrewarmManager:
         self._prebuffer_frame_count = 0
         self._prebuffer_max_frames = 0
         self._prebuffer_sample_rate = 0
+        self._callback_count = 0
+        self._last_callback_at = 0.0
+        self._last_status = ""
+        self._last_health_restart_at = 0.0
 
     @property
     def is_active(self) -> bool:
         with self._lock:
             return bool(self._stream and getattr(self._stream, "active", False))
+
+    def diagnostic_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            stream = self._stream
+            return {
+                "configured": bool(Config.MIC_ALWAYS_ON),
+                "active": bool(stream and getattr(stream, "active", False)),
+                "hasStream": bool(stream),
+                "streamClaimed": bool(self._stream_claimed),
+                "pausedForActiveCapture": bool(self._paused_for_active_capture),
+                "pausedForDeviceRefresh": bool(self._paused_for_device_refresh),
+                "activeCaptureAttached": self._active_capture_callback is not None,
+                "callbackCount": self._callback_count,
+                "lastCallbackAgoSeconds": (
+                    round(time.monotonic() - self._last_callback_at, 3)
+                    if self._last_callback_at > 0
+                    else None
+                ),
+                "lastStatus": self._last_status,
+                "signature": dict(self._stream_signature),
+            }
 
     def _claim_stream(self) -> None:
         if self._stream_claimed:
@@ -79,6 +104,10 @@ class MicrophonePrewarmManager:
 
     def _audio_callback(self, indata, frames, time_info, status) -> None:
         with self._lock:
+            self._callback_count += 1
+            self._last_callback_at = time.monotonic()
+            if status:
+                self._last_status = str(status)
             active_callback = self._active_capture_callback
             if active_callback is None:
                 self._append_prebuffer_locked(indata, frames, time_info, status)
@@ -211,6 +240,76 @@ class MicrophonePrewarmManager:
                 self._log_start_error(exc)
                 return False
 
+    def ensure_healthy(self, *, reason: str = "watchdog") -> bool:
+        if not Config.MIC_ALWAYS_ON:
+            self.stop(reason=f"{reason}:disabled")
+            return False
+
+        with self._lock:
+            if self._paused_for_active_capture or self._paused_for_device_refresh:
+                return False
+            stream = self._stream
+            if stream and getattr(stream, "active", False):
+                return True
+            if stream:
+                logger.warning(f"Mic prewarm stream inactive; restarting idle stream ({reason})")
+                self._close_locked(reason=f"{reason}:inactive")
+
+        restarted = self.start_if_enabled()
+        if restarted:
+            with self._lock:
+                self._last_health_restart_at = time.monotonic()
+            logger.info(f"Mic prewarm stream recovered ({reason})")
+        return restarted
+
+    def ensure_active_capture_healthy(
+        self,
+        callback: Callable[[Any, int, Any, Any], None] | None,
+        *,
+        reason: str = "watchdog",
+        max_callback_gap_seconds: float | None = None,
+        min_restart_interval_seconds: float = 15.0,
+    ) -> bool:
+        with self._lock:
+            if callback is not None and self._active_capture_callback is not callback:
+                return False
+            if self._active_capture_callback is None:
+                return False
+            stream = self._stream
+            active = bool(stream and getattr(stream, "active", False))
+            now = time.monotonic()
+            callback_stale = (
+                max_callback_gap_seconds is not None
+                and self._last_callback_at > 0
+                and now - self._last_callback_at > max_callback_gap_seconds
+            )
+            if active and not callback_stale:
+                return True
+            if not stream:
+                return False
+            if now - self._last_health_restart_at < min_restart_interval_seconds:
+                return active
+            self._last_health_restart_at = now
+
+        try:
+            with get_device_guard_lock():
+                try:
+                    stream.stop()
+                except Exception:
+                    pass
+                stream.start()
+            logger.warning(
+                "Mic prewarm active capture stream restarted "
+                f"({reason}, stale_callbacks={callback_stale})"
+            )
+            return bool(getattr(stream, "active", False))
+        except Exception as exc:
+            with self._lock:
+                if stream is self._stream and not bool(getattr(stream, "active", False)):
+                    self._release_stream()
+            logger.warning(f"Mic prewarm active capture restart failed ({reason}): {exc}")
+            return False
+
     def attach_active_capture(
         self,
         callback: Callable[[Any, int, Any, Any], None],
@@ -265,7 +364,7 @@ class MicrophonePrewarmManager:
             self._paused_for_active_capture = False
             return bool(self._stream and getattr(self._stream, "active", False))
 
-    def _close_locked(self) -> None:
+    def _close_locked(self, *, reason: str = "close") -> None:
         stream = self._stream
         self._stream = None
         self._stream_signature = {}
@@ -282,16 +381,18 @@ class MicrophonePrewarmManager:
                 except Exception:
                     pass
             self._release_stream()
+        if stream:
+            logger.debug(f"Mic prewarm stream closed ({reason})")
 
-    def stop(self) -> None:
+    def stop(self, *, reason: str = "stop") -> None:
         with self._lock:
-            self._close_locked()
+            self._close_locked(reason=reason)
 
     def pause_for_active_capture(self) -> None:
         with self._lock:
             self._paused_for_active_capture = True
             self._active_capture_callback = None
-            self._close_locked()
+            self._close_locked(reason="active_capture")
 
     def resume_after_active_capture(self) -> bool:
         with self._lock:
@@ -301,7 +402,7 @@ class MicrophonePrewarmManager:
     def quiesce_for_device_refresh(self) -> None:
         with self._lock:
             self._paused_for_device_refresh = bool(self._stream)
-            self._close_locked()
+            self._close_locked(reason="device_refresh")
 
     def resume_after_device_refresh(self) -> bool:
         with self._lock:

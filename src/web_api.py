@@ -1172,6 +1172,22 @@ class ScriberWebController:
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
         self._mic_prewarm = MicrophonePrewarmManager()
         self._mic_prewarm_task: Optional[asyncio.Task] = None
+        self._mic_watchdog_task: Optional[asyncio.Task] = None
+        self._last_mic_watchdog_warning_at = 0.0
+        try:
+            self._mic_watchdog_interval_seconds = max(
+                0.0,
+                float(os.getenv("SCRIBER_MIC_WATCHDOG_INTERVAL_SEC", "5.0") or 5.0),
+            )
+        except Exception:
+            self._mic_watchdog_interval_seconds = 5.0
+        try:
+            self._mic_watchdog_callback_gap_seconds = max(
+                2.0,
+                float(os.getenv("SCRIBER_MIC_WATCHDOG_CALLBACK_GAP_SEC", "15.0") or 15.0),
+            )
+        except Exception:
+            self._mic_watchdog_callback_gap_seconds = 15.0
         self._pending_hotkey_toggle = False
         self._last_hotkey_deferred_log = 0.0
         self._last_ptt_error_log = 0.0
@@ -1275,6 +1291,7 @@ class ScriberWebController:
             )
             self._device_monitor.start()
         self._schedule_idle_mic_prewarm()
+        self._start_mic_watchdog()
 
     def _cancel_settings_persist_timer(self) -> None:
         if self._settings_persist_handle is not None:
@@ -1359,17 +1376,126 @@ class ScriberWebController:
         )
         self._mic_prewarm_task.add_done_callback(self._on_mic_prewarm_done)
 
+    def _start_mic_watchdog(self) -> None:
+        if self._mic_watchdog_interval_seconds <= 0:
+            return
+        if not Config.MIC_ALWAYS_ON and not self._is_listening:
+            return
+        if self._loop.is_closed() or not self._loop.is_running():
+            return
+        if self._mic_watchdog_task is not None and not self._mic_watchdog_task.done():
+            return
+        self._mic_watchdog_task = self._loop.create_task(
+            self._mic_watchdog_loop(),
+            name="mic_watchdog",
+        )
+
+    def _stop_mic_watchdog_if_idle(self) -> None:
+        if Config.MIC_ALWAYS_ON or self._is_listening or self._is_stopping:
+            return
+        if self._mic_watchdog_task is None:
+            return
+        self._mic_watchdog_task.cancel()
+        self._mic_watchdog_task = None
+
+    async def _mic_watchdog_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._mic_watchdog_interval_seconds)
+                try:
+                    await self._run_mic_watchdog_check()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    now = time.monotonic()
+                    if now - self._last_mic_watchdog_warning_at >= 15.0:
+                        self._last_mic_watchdog_warning_at = now
+                        logger.warning(f"Mic watchdog check failed: {exc}")
+                    else:
+                        logger.debug(f"Mic watchdog check failed: {exc}")
+        except asyncio.CancelledError:
+            return
+
+    def _active_audio_diagnostics(self) -> dict[str, Any] | None:
+        pipeline = self._pipeline
+        snapshot = getattr(pipeline, "audio_diagnostics", None)
+        if not callable(snapshot):
+            return None
+        try:
+            return snapshot()
+        except Exception as exc:
+            return {"available": False, "error": str(exc)}
+
+    def _prewarm_diagnostics(self) -> dict[str, Any] | None:
+        snapshot = getattr(self._mic_prewarm, "diagnostic_snapshot", None)
+        if not callable(snapshot):
+            return None
+        try:
+            return snapshot()
+        except Exception as exc:
+            return {"available": False, "error": str(exc)}
+
+    def _log_mic_watchdog_warning(self, message: str, *, diagnostics: dict[str, Any] | None = None) -> None:
+        now = time.monotonic()
+        if now - self._last_mic_watchdog_warning_at < 15.0:
+            logger.debug(f"{message}: {diagnostics}")
+            return
+        self._last_mic_watchdog_warning_at = now
+        logger.warning(f"{message}: {diagnostics}")
+
+    async def _run_mic_watchdog_check(self) -> None:
+        if self._is_stopping:
+            return
+
+        if self._is_listening:
+            pipeline = self._pipeline
+            ensure = getattr(pipeline, "ensure_audio_health", None)
+            if not callable(ensure):
+                return
+            healthy = await asyncio.to_thread(
+                ensure,
+                reason="watchdog",
+                max_callback_gap_seconds=self._mic_watchdog_callback_gap_seconds,
+            )
+            if not healthy:
+                self._log_mic_watchdog_warning(
+                    "Live microphone watchdog could not verify active capture",
+                    diagnostics=self._active_audio_diagnostics(),
+                )
+            return
+
+        if not Config.MIC_ALWAYS_ON and not self._mic_prewarm.is_active:
+            return
+
+        ensure_idle = getattr(self._mic_prewarm, "ensure_healthy", None)
+        if callable(ensure_idle):
+            healthy = await asyncio.to_thread(ensure_idle, reason="watchdog")
+            if not healthy and Config.MIC_ALWAYS_ON:
+                self._log_mic_watchdog_warning(
+                    "Idle microphone watchdog could not verify prewarm stream",
+                    diagnostics=self._prewarm_diagnostics(),
+                )
+            return
+
+        if Config.MIC_ALWAYS_ON:
+            await asyncio.to_thread(self._mic_prewarm.resume_after_active_capture)
+
     async def _pause_idle_mic_prewarm_for_capture(self) -> None:
         await asyncio.to_thread(self._mic_prewarm.pause_for_active_capture)
 
     def _resume_idle_mic_prewarm_after_capture(self) -> None:
         self._schedule_idle_mic_prewarm()
+        self._stop_mic_watchdog_if_idle()
 
     async def _sync_idle_mic_prewarm_after_settings(self) -> None:
         if self._is_listening or self._is_stopping:
             await asyncio.to_thread(self._mic_prewarm.pause_for_active_capture)
         else:
             await asyncio.to_thread(self._mic_prewarm.resume_after_active_capture)
+        if Config.MIC_ALWAYS_ON or self._is_listening:
+            self._start_mic_watchdog()
+        else:
+            self._stop_mic_watchdog_if_idle()
 
     @staticmethod
     def _trace_id_for(value: str | None) -> str | None:
@@ -1991,6 +2117,17 @@ class ScriberWebController:
                 "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
                 "idlePrewarmActive": bool(self._mic_prewarm.is_active),
                 "prebufferMs": int(getattr(Config, "MIC_PREBUFFER_MS", 0) or 0),
+                "prewarm": self._prewarm_diagnostics(),
+                "activeCapture": self._active_audio_diagnostics(),
+            },
+            "watchdog": {
+                "enabled": self._mic_watchdog_interval_seconds > 0,
+                "intervalSeconds": self._mic_watchdog_interval_seconds,
+                "callbackGapSeconds": self._mic_watchdog_callback_gap_seconds,
+                "taskRunning": bool(
+                    self._mic_watchdog_task is not None
+                    and not self._mic_watchdog_task.done()
+                ),
             },
             "textInjection": {
                 "method": str(getattr(Config, "INJECT_METHOD", "auto") or "auto"),
@@ -3245,6 +3382,7 @@ class ScriberWebController:
             self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
             self._pipeline_task.add_done_callback(lambda task: self._on_pipeline_done(task, session_id=session_id))
             self._is_listening = True
+            self._start_mic_watchdog()
             self._set_status("Preparing microphone...", session_id=session_id)
             self._emit_workflow_event(
                 message=f"Pipeline session started ({live_provider})",
@@ -3628,6 +3766,9 @@ class ScriberWebController:
         if self._toggle_hotkey_poll_task:
             self._toggle_hotkey_poll_task.cancel()
             self._toggle_hotkey_poll_task = None
+        if self._mic_watchdog_task:
+            self._mic_watchdog_task.cancel()
+            self._mic_watchdog_task = None
 
         kb = self._keyboard
         if kb and hasattr(kb, "clear_all_hotkeys"):

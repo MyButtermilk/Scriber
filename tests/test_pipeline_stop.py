@@ -73,3 +73,29 @@ async def test_cleanup_audio_input_forces_stream_close():
 
     assert audio_input.close_stream is True
     assert pipeline.audio_input is None
+
+
+def test_pipeline_delegates_audio_diagnostics_and_health():
+    class _HealthAudioInput:
+        def __init__(self):
+            self.health_calls = []
+
+        def diagnostic_snapshot(self):
+            return {"running": True, "streamActive": False}
+
+        def ensure_stream_health(self, **kwargs):
+            self.health_calls.append(kwargs)
+            return True
+
+    pipeline = ScriberPipeline(service_name="soniox", on_status_change=None)
+    audio_input = _HealthAudioInput()
+    pipeline.audio_input = audio_input
+
+    assert pipeline.audio_diagnostics() == {"running": True, "streamActive": False}
+    assert pipeline.ensure_audio_health(
+        reason="test",
+        max_callback_gap_seconds=3.0,
+    ) is True
+    assert audio_input.health_calls == [
+        {"reason": "test", "max_callback_gap_seconds": 3.0}
+    ]

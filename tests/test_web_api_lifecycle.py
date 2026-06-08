@@ -18,6 +18,7 @@ class _FakeMicPrewarmManager:
         self.stop_calls = 0
         self.quiesce_calls = 0
         self.refresh_resume_calls = 0
+        self.ensure_calls = 0
         type(self).instances.append(self)
 
     @property
@@ -43,6 +44,17 @@ class _FakeMicPrewarmManager:
         self.refresh_resume_calls += 1
         self.active = bool(web_api.Config.MIC_ALWAYS_ON)
         return self.active
+
+    def ensure_healthy(self, *, reason: str = "watchdog") -> bool:
+        self.ensure_calls += 1
+        self.active = bool(web_api.Config.MIC_ALWAYS_ON)
+        return self.active
+
+    def diagnostic_snapshot(self) -> dict:
+        return {
+            "active": self.active,
+            "ensureCalls": self.ensure_calls,
+        }
 
     def attach_active_capture(self, *_args, **_kwargs):
         return None
@@ -262,6 +274,62 @@ async def test_update_settings_toggles_idle_mic_prewarm(monkeypatch, tmp_path):
     assert manager.resume_calls == 2
     assert manager.stop_calls >= 1
     assert manager.active is False
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mic_watchdog_checks_idle_prewarm(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_MIC_WATCHDOG_INTERVAL_SEC", "0")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(web_api, "MicrophonePrewarmManager", _FakeMicPrewarmManager)
+    _FakeMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    await _wait_for_prewarm_task(ctl)
+    manager = _FakeMicPrewarmManager.instances[-1]
+    manager.active = False
+
+    await ctl._run_mic_watchdog_check()
+
+    assert manager.ensure_calls == 1
+    assert manager.active is True
+    assert ctl.get_audio_diagnostics()["microphone"]["prewarm"]["ensureCalls"] == 1
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mic_watchdog_checks_active_pipeline(monkeypatch, tmp_path):
+    class _FakePipeline:
+        def __init__(self):
+            self.health_calls = []
+
+        def ensure_audio_health(self, **kwargs):
+            self.health_calls.append(kwargs)
+            return True
+
+        def audio_diagnostics(self):
+            return {"running": True, "streamActive": True}
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_MIC_WATCHDOG_INTERVAL_SEC", "0")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    pipeline = _FakePipeline()
+    ctl._pipeline = pipeline
+    ctl._is_listening = True
+
+    await ctl._run_mic_watchdog_check()
+
+    assert pipeline.health_calls == [
+        {"reason": "watchdog", "max_callback_gap_seconds": 15.0}
+    ]
+    assert ctl.get_audio_diagnostics()["microphone"]["activeCapture"]["streamActive"] is True
 
     ctl.shutdown()
 

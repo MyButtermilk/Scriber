@@ -182,7 +182,9 @@ interface AudioVisualizerProps {
 }
 
 interface GlossyMicButtonProps {
-  isRecording: boolean;
+  isActive: boolean;
+  disabled?: boolean;
+  label: string;
   audioLevelRef: React.MutableRefObject<number>;
   onToggle: () => void;
 }
@@ -321,7 +323,9 @@ const AudioVisualizer = memo(function AudioVisualizer({
 });
 
 const GlossyMicButton = memo(function GlossyMicButton({
-  isRecording,
+  isActive,
+  disabled = false,
+  label,
   audioLevelRef,
   onToggle,
 }: GlossyMicButtonProps) {
@@ -355,7 +359,7 @@ const GlossyMicButton = memo(function GlossyMicButton({
   }, []);
 
   useEffect(() => {
-    if (!isRecording) {
+    if (!isActive) {
       smoothedGainRef.current = 0;
       agcRef.current = 0.01;
       setSmoothedGain(0);
@@ -394,14 +398,14 @@ const GlossyMicButton = memo(function GlossyMicButton({
       cancelAnimationFrame(rafId);
       clearRippleTimeouts();
     };
-  }, [audioLevelRef, clearRippleTimeouts, isRecording, spawnRipple]);
+  }, [audioLevelRef, clearRippleTimeouts, isActive, spawnRipple]);
 
   const wrapperStyle = {
     "--audio-gain": smoothedGain.toFixed(3),
   } as CSSProperties;
 
   return (
-    <div className={`glossy-mic-wrapper ${isRecording ? "is-recording" : ""}`} style={wrapperStyle}>
+    <div className={`glossy-mic-wrapper ${isActive ? "is-recording" : ""}`} style={wrapperStyle}>
       <div className="glossy-mic-outer-ring">
         <div className="glossy-mic-trench">
           <div className="glossy-mic-pulse-glow" />
@@ -421,7 +425,8 @@ const GlossyMicButton = memo(function GlossyMicButton({
             type="button"
             className="glossy-mic-central-button"
             onClick={onToggle}
-            aria-label={isRecording ? "Stop recording" : "Start recording"}
+            disabled={disabled}
+            aria-label={label}
           >
             <span className="glossy-mic-layer glossy-mic-idle-layer" />
             <span className="glossy-mic-layer glossy-mic-recording-layer" />
@@ -445,6 +450,7 @@ import { useUrlQueryState } from "@/hooks/use-url-query-state";
 import { formatDurationLikeYoutube } from "@/lib/duration";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
+import type { BackendStateResponse } from "@/lib/api-types";
 
 export default function LiveMic() {
   const { toast } = useToast();
@@ -486,6 +492,7 @@ export default function LiveMic() {
   );
   const { refreshNow: refreshMicHistory } = useTranscriptAutoRefresh({ queryKey: transcriptsQueryKey });
   const hasActiveSession = recordingState === "initializing" || recordingState === "recording" || recordingState === "finalizing";
+  const isMicCaptureActive = recordingState === "initializing" || recordingState === "recording";
   const isPreparing = recordingState === "initializing";
   const isTranscribing = recordingState === "finalizing";
 
@@ -691,6 +698,53 @@ export default function LiveMic() {
   // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
   useSharedWebSocket(handleWsMessage);
 
+  useEffect(() => {
+    if (recordingState !== "finalizing") {
+      return;
+    }
+
+    let cancelled = false;
+    const reconcileBackendState = async () => {
+      try {
+        const res = await fetch(apiUrl("/api/state"), { credentials: "include" });
+        if (!res.ok) return;
+        const state = (await res.json()) as BackendStateResponse;
+        if (cancelled) return;
+
+        const nextState = coerceRecordingState(
+          state.recordingState,
+          state.listening ? "recording" : "idle",
+        );
+        if (nextState === "finalizing") {
+          return;
+        }
+
+        activeSessionIdRef.current = typeof state.sessionId === "string" ? state.sessionId : null;
+        setRecordingState(nextState);
+        setIsRecording(nextState === "recording");
+        if (nextState !== "recording") {
+          audioLevelRef.current = 0;
+        }
+        setStatus(state.status || "Stopped");
+        applyInputWarning(state.inputWarning, state.inputWarningCode, state.inputWarningActions);
+        if (state.current?.content) {
+          setFinalText(String(state.current.content));
+          setInterimText("");
+        }
+      } catch {
+        // WebSocket is still authoritative; this only repairs a missed terminal state.
+      }
+    };
+
+    const firstCheck = window.setTimeout(reconcileBackendState, 750);
+    const interval = window.setInterval(reconcileBackendState, 2000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(firstCheck);
+      window.clearInterval(interval);
+    };
+  }, [applyInputWarning, recordingState]);
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -864,13 +918,21 @@ export default function LiveMic() {
           {/* Controls */}
           <div className="flex flex-col items-center justify-center gap-3">
             <GlossyMicButton
-              isRecording={hasActiveSession}
+              isActive={isMicCaptureActive}
+              disabled={isTranscribing}
+              label={
+                isTranscribing
+                  ? "Transcribing recording"
+                  : hasActiveSession
+                    ? "Stop recording"
+                    : "Start recording"
+              }
               audioLevelRef={audioLevelRef}
               onToggle={handleToggle}
             />
 
             <div className="h-5 flex items-center justify-center">
-              <div className={`text-sm font-mono font-medium text-muted-foreground transition-opacity duration-200 ${hasActiveSession ? "opacity-100" : "opacity-0"}`}>
+              <div className={`text-sm font-mono font-medium text-muted-foreground transition-opacity duration-200 ${isMicCaptureActive ? "opacity-100" : "opacity-0"}`}>
                 {formatTime(elapsed)}
               </div>
             </div>

@@ -6,7 +6,7 @@ import contextlib
 import tempfile
 import os
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from loguru import logger
 
@@ -760,6 +760,37 @@ class ScriberPipeline:
             finally:
                 self.audio_input = None
 
+    def audio_diagnostics(self) -> dict[str, Any] | None:
+        audio_input = self.audio_input
+        if not audio_input:
+            return None
+        snapshot = getattr(audio_input, "diagnostic_snapshot", None)
+        if not callable(snapshot):
+            return {"available": False}
+        try:
+            return snapshot()
+        except Exception as exc:
+            return {"available": False, "error": str(exc)}
+
+    def ensure_audio_health(
+        self,
+        *,
+        reason: str = "watchdog",
+        max_callback_gap_seconds: float | None = None,
+    ) -> bool:
+        audio_input = self.audio_input
+        if not audio_input:
+            return False
+        ensure = getattr(audio_input, "ensure_stream_health", None)
+        if not callable(ensure):
+            return True
+        return bool(
+            ensure(
+                reason=reason,
+                max_callback_gap_seconds=max_callback_gap_seconds,
+            )
+        )
+
     def _create_stt_service(self, session: aiohttp.ClientSession, *, for_file: bool = False):
         """Create the appropriate STT service based on configuration.
         
@@ -1062,8 +1093,14 @@ class ScriberPipeline:
                     """Synchronous cleanup that schedules async cleanup."""
                     if self.audio_input:
                         try:
-                            # Stop the audio stream directly (sync operation)
-                            if hasattr(self.audio_input, 'stream') and self.audio_input.stream:
+                            force_stop = getattr(
+                                self.audio_input,
+                                "force_stop_from_external_error",
+                                None,
+                            )
+                            if callable(force_stop):
+                                force_stop(reason="provider_connection_error")
+                            elif hasattr(self.audio_input, "stream") and self.audio_input.stream:
                                 self.audio_input.stream.stop()
                                 self.audio_input._running = False
                         except Exception as e:

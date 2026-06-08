@@ -228,3 +228,28 @@ def test_mic_prewarm_honors_disabled_setting(monkeypatch):
     assert manager.start_if_enabled() is False
     assert manager.is_active is False
     assert _FakeInputStream.instances == []
+
+
+def test_mic_prewarm_watchdog_restarts_inactive_idle_stream(monkeypatch):
+    _install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+
+    manager = MicrophonePrewarmManager()
+
+    assert manager.start_if_enabled() is True
+    first_stream = _FakeInputStream.instances[-1]
+    first_stream.active = False
+
+    assert manager.ensure_healthy(reason="test") is True
+
+    assert len(_FakeInputStream.instances) == 2
+    assert first_stream.closed is True
+    assert _FakeInputStream.instances[-1].active is True
+
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["active"] is True
+    assert snapshot["hasStream"] is True
+
+    manager.stop()

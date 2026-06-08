@@ -8,12 +8,31 @@ import src.microphone as microphone
 from pipecat.frames.frames import EndFrame, StartFrame
 
 
+class _FakeStream:
+    def __init__(self, *, active: bool = False):
+        self.active = active
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.close_calls = 0
+
+    def start(self):
+        self.start_calls += 1
+        self.active = True
+
+    def stop(self):
+        self.stop_calls += 1
+        self.active = False
+
+    def close(self):
+        self.close_calls += 1
+
+
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
 @pytest.mark.asyncio
 async def test_audio_callback_throttles_visualizer_work_to_sixty_hz(monkeypatch):
     mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
     levels: list[float] = []
-    times = iter([100.0, 100.01, 100.02, 100.03, 100.04])
+    times = iter([99.99, 100.0, 100.005, 100.01, 100.015, 100.02, 100.025, 100.03])
 
     monkeypatch.setattr(microphone, "time", types.SimpleNamespace(monotonic=lambda: next(times)))
 
@@ -127,6 +146,70 @@ async def test_microphone_input_adopts_prewarmed_stream(monkeypatch):
 
     assert manager.detached == 1
     assert mic._using_prewarm_stream is False
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+def test_microphone_watchdog_restarts_inactive_direct_stream():
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+    stream = _FakeStream(active=False)
+    mic.stream = stream
+    mic._running = True
+
+    assert mic.ensure_stream_health(reason="test", max_callback_gap_seconds=15.0) is True
+
+    assert stream.start_calls == 1
+    assert stream.active is True
+    assert mic.diagnostic_snapshot()["streamActive"] is True
+
+    mic.force_stop_from_external_error(reason="test_cleanup")
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+def test_microphone_watchdog_restarts_stale_direct_stream(monkeypatch):
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+    stream = _FakeStream(active=True)
+    mic.stream = stream
+    mic._running = True
+    mic._last_callback_at = 100.0
+
+    monkeypatch.setattr(microphone.time, "monotonic", lambda: 120.0)
+
+    assert mic.ensure_stream_health(reason="test", max_callback_gap_seconds=10.0) is True
+
+    assert stream.stop_calls == 1
+    assert stream.start_calls == 1
+    assert stream.active is True
+
+    mic.force_stop_from_external_error(reason="test_cleanup")
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+def test_microphone_external_error_detaches_adopted_prewarm_stream():
+    class _FakePrewarmManager:
+        def __init__(self):
+            self.detached = 0
+
+        def detach_active_capture(self, callback=None):
+            self.detached += 1
+            return True
+
+    manager = _FakePrewarmManager()
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        keep_alive=True,
+        prewarm_manager=manager,
+    )
+    mic._running = True
+    mic._using_prewarm_stream = True
+    mic._prewarm_callback = object()
+
+    mic.force_stop_from_external_error(reason="provider_connection_error")
+
+    assert mic._running is False
+    assert mic._using_prewarm_stream is False
+    assert manager.detached == 1
 
 
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")

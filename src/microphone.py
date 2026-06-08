@@ -131,6 +131,11 @@ class MicrophoneInput(BaseInputTransport):
         self._audio_level_interval = 1.0 / 60.0
         self._stream_claimed = False
         self._last_audio_chunk_sent_notified = False
+        self._callback_count = 0
+        self._last_callback_at = 0.0
+        self._last_status = ""
+        self._last_callback_exception = ""
+        self._last_health_restart_at = 0.0
 
     def _claim_active_stream(self) -> None:
         if self._stream_claimed:
@@ -154,6 +159,11 @@ class MicrophoneInput(BaseInputTransport):
         self._channel_selection_counter = 0
         self._last_audio_level_at = 0.0
         self._last_audio_chunk_sent_notified = False
+        self._callback_count = 0
+        self._last_callback_at = 0.0
+        self._last_status = ""
+        self._last_callback_exception = ""
+        self._last_health_restart_at = 0.0
         self._create_audio_task()
         self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")
 
@@ -325,7 +335,10 @@ class MicrophoneInput(BaseInputTransport):
 
     def _audio_callback(self, indata, frames, time_info, status):
         try:
+            self._callback_count += 1
+            self._last_callback_at = time.monotonic()
             if status:
+                self._last_status = str(status)
                 logger.warning(f"Audio status: {status}")
             if not self._running:
                 return
@@ -426,7 +439,120 @@ class MicrophoneInput(BaseInputTransport):
                     pass
         except Exception as exc:
             # Never raise from PortAudio callback threads.
+            self._last_callback_exception = str(exc)
             logger.debug(f"Audio callback exception ignored: {exc}")
+
+    def diagnostic_snapshot(self) -> dict:
+        stream = self.stream
+        return {
+            "running": bool(self._running),
+            "hasStream": bool(stream),
+            "streamActive": bool(stream and getattr(stream, "active", False)),
+            "usingPrewarmStream": bool(self._using_prewarm_stream),
+            "streamClaimed": bool(self._stream_claimed),
+            "sampleRate": int(self._target_sample_rate),
+            "targetChannels": int(self._target_channels),
+            "captureChannels": int(self._capture_channels),
+            "blockSize": int(self.block_size),
+            "device": str(self.device),
+            "callbackCount": int(self._callback_count),
+            "lastCallbackAgoSeconds": (
+                round(time.monotonic() - self._last_callback_at, 3)
+                if self._last_callback_at > 0
+                else None
+            ),
+            "lastStatus": self._last_status,
+            "lastCallbackException": self._last_callback_exception,
+        }
+
+    def ensure_stream_health(
+        self,
+        *,
+        reason: str = "watchdog",
+        max_callback_gap_seconds: float | None = None,
+        min_restart_interval_seconds: float = 15.0,
+    ) -> bool:
+        if not self._running:
+            return True
+
+        if self._using_prewarm_stream:
+            ensure = getattr(self.prewarm_manager, "ensure_active_capture_healthy", None)
+            if callable(ensure):
+                healthy = bool(
+                    ensure(
+                        self._prewarm_callback,
+                        reason=reason,
+                        max_callback_gap_seconds=max_callback_gap_seconds,
+                        min_restart_interval_seconds=min_restart_interval_seconds,
+                    )
+                )
+                if not healthy:
+                    logger.warning(f"Mic watchdog found unhealthy adopted prewarm stream ({reason})")
+                return healthy
+            return True
+
+        stream = self.stream
+        active = bool(stream and getattr(stream, "active", False))
+        if stream and not active:
+            self._release_active_stream()
+        now = time.monotonic()
+        callback_stale = (
+            max_callback_gap_seconds is not None
+            and self._last_callback_at > 0
+            and now - self._last_callback_at > max_callback_gap_seconds
+        )
+
+        if active and not callback_stale:
+            return True
+        if not stream:
+            logger.warning(f"Mic watchdog found missing capture stream while recording ({reason})")
+            return False
+        if now - self._last_health_restart_at < min_restart_interval_seconds:
+            return active
+
+        self._last_health_restart_at = now
+        try:
+            with get_device_guard_lock():
+                if active and callback_stale:
+                    try:
+                        stream.stop()
+                    except Exception:
+                        pass
+                stream.start()
+                self._claim_active_stream()
+            logger.warning(
+                "Microphone capture stream restarted "
+                f"({reason}, was_active={active}, stale_callbacks={callback_stale})"
+            )
+            return bool(getattr(stream, "active", False))
+        except Exception as exc:
+            self._last_callback_exception = str(exc)
+            if not bool(getattr(stream, "active", False)):
+                self._release_active_stream()
+            logger.warning(f"Microphone capture stream restart failed ({reason}): {exc}")
+            return False
+
+    def force_stop_from_external_error(self, *, reason: str = "external_error") -> None:
+        logger.warning(f"Microphone capture stopped by pipeline error ({reason})")
+        self._running = False
+        if self._using_prewarm_stream:
+            try:
+                if self.prewarm_manager is not None:
+                    self.prewarm_manager.detach_active_capture(self._prewarm_callback)
+            except Exception as exc:
+                logger.debug(f"Could not detach prewarmed microphone stream after pipeline error: {exc}")
+            finally:
+                self._using_prewarm_stream = False
+                self._prewarm_callback = None
+            return
+
+        with get_device_guard_lock():
+            if self.stream:
+                try:
+                    self.stream.stop()
+                except Exception as exc:
+                    logger.debug(f"Microphone stream stop after pipeline error failed: {exc}")
+            self._release_active_stream()
 
     def _prepend_prewarm_audio(self, adopted: dict) -> None:
         frames = adopted.get("prebuffer_frames") or []
