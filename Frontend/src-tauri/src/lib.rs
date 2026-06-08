@@ -287,6 +287,19 @@ pub struct BackendManager {
     state: Mutex<BackendState>,
 }
 
+fn poisoned_backend_status() -> BackendStatus {
+    BackendStatus {
+        base_url: base_url(DEFAULT_PORT),
+        running: false,
+        ready: false,
+        managed: false,
+        pid: None,
+        message: "Backend state lock is poisoned".to_string(),
+        runtime_mode: "tauri-supervised".to_string(),
+        launch_kind: "unknown".to_string(),
+    }
+}
+
 impl BackendManager {
     fn new() -> Self {
         Self {
@@ -331,10 +344,22 @@ impl BackendManager {
     }
 
     fn ensure_started(&self) -> BackendStatus {
+        // Phase 1: snapshot under lock, then release before the blocking health check.
+        let (port, force_managed) = match self.state.lock() {
+            Ok(mut state) => {
+                refresh_child_state(&mut state);
+                (state.port, force_managed_backend())
+            }
+            Err(_) => return poisoned_backend_status(),
+        };
+
+        // Phase 2: blocking TCP health check outside the lock (up to ~1 s).
+        let ready = health_ready(port);
+
+        // Phase 3: relock and decide, guarding against port changes while unlocked.
         if let Ok(mut state) = self.state.lock() {
             refresh_child_state(&mut state);
-            let force_managed = force_managed_backend();
-            if health_ready(state.port) && (!force_managed || state.child.is_some()) {
+            if ready && state.port == port && (!force_managed || state.child.is_some()) {
                 state.message = if state.child.is_some() {
                     "Managed backend is ready".to_string()
                 } else {
@@ -352,26 +377,29 @@ impl BackendManager {
                 }
             }
 
-            let port = select_backend_port(state.port);
-            return start_managed_backend(&mut state, port, "Managed backend process started");
+            let new_port = select_backend_port(state.port);
+            return start_managed_backend(&mut state, new_port, "Managed backend process started");
         }
-        BackendStatus {
-            base_url: base_url(DEFAULT_PORT),
-            running: false,
-            ready: false,
-            managed: false,
-            pid: None,
-            message: "Backend state lock is poisoned".to_string(),
-            runtime_mode: "tauri-supervised".to_string(),
-            launch_kind: "unknown".to_string(),
-        }
+        poisoned_backend_status()
     }
 
     fn status(&self) -> BackendStatus {
+        // Phase 1: snapshot under lock.
+        let (port, force_managed) = match self.state.lock() {
+            Ok(mut state) => {
+                refresh_child_state(&mut state);
+                (state.port, force_managed_backend())
+            }
+            Err(_) => return poisoned_backend_status(),
+        };
+
+        // Phase 2: blocking TCP health check outside the lock (up to ~1 s).
+        let health = health_ready(port);
+
+        // Phase 3: relock and compute status.
         if let Ok(mut state) = self.state.lock() {
             refresh_child_state(&mut state);
-            let force_managed = force_managed_backend();
-            let ready = health_ready(state.port) && (!force_managed || state.child.is_some());
+            let ready = health && state.port == port && (!force_managed || state.child.is_some());
             if ready && state.child.is_none() {
                 state.message = "Attached to existing backend".to_string();
             } else if !ready
@@ -382,25 +410,30 @@ impl BackendManager {
             }
             return status_from_state(&state, ready);
         }
-        BackendStatus {
-            base_url: base_url(DEFAULT_PORT),
-            running: false,
-            ready: false,
-            managed: false,
-            pid: None,
-            message: "Backend state lock is poisoned".to_string(),
-            runtime_mode: "tauri-supervised".to_string(),
-            launch_kind: "unknown".to_string(),
-        }
+        poisoned_backend_status()
     }
 
     fn restart(&self) -> Result<BackendStatus, String> {
+        // Phase 1: snapshot under lock.
+        let port = match self.state.lock() {
+            Ok(mut state) => {
+                refresh_child_state(&mut state);
+                state.port
+            }
+            Err(_) => return Err("Backend state lock is poisoned".to_string()),
+        };
+
+        // Phase 2: blocking TCP health check outside the lock (up to ~1 s).
+        let appears_external = !force_managed_backend() && health_ready(port);
+
+        // Phase 3: relock and act.
         let mut state = self
             .state
             .lock()
             .map_err(|_| "Backend state lock is poisoned".to_string())?;
         refresh_child_state(&mut state);
-        if state.child.is_none() && health_ready(state.port) && !force_managed_backend() {
+        // Guard: only reject if the port hasn't changed and we still have no managed child.
+        if state.child.is_none() && appears_external && state.port == port {
             let message =
                 "Cannot restart backend because the current backend is external".to_string();
             state.message = message.clone();
@@ -408,8 +441,8 @@ impl BackendManager {
         }
 
         terminate_managed_child(&mut state);
-        let port = select_backend_port(state.port);
-        let status = start_managed_backend(&mut state, port, "Managed backend restarted");
+        let new_port = select_backend_port(state.port);
+        let status = start_managed_backend(&mut state, new_port, "Managed backend restarted");
         if status.managed {
             Ok(status)
         } else {
@@ -1060,7 +1093,9 @@ fn start_managed_backend(state: &mut BackendState, port: u16, message: &str) -> 
             state.launch_kind = "none".to_string();
         }
     }
-    status_from_state(state, health_ready(state.port))
+    // A freshly spawned backend is never immediately ready; readiness is confirmed on
+    // the next supervisor tick, outside the lock, via health_ready().
+    status_from_state(state, false)
 }
 
 fn managed_backend_start_timed_out(started_at: Option<Instant>, now: Instant) -> bool {
