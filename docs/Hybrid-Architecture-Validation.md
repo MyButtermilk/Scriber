@@ -5089,8 +5089,10 @@ Implemented improvements:
   messages for no-audio input, corrupt/incomplete media, and unsupported audio
   codecs.
 - Azure MAI keeps MP3 64k preparation through `libmp3lame` rather than FLAC
-  because upload latency is the priority. WAV/PCM is not used as a persisted
-  upload artifact; PCM remains only a stdout pipe for Pipecat file input.
+  because upload latency is the priority. Azure MAI now uploads existing MP3
+  directly, transcodes non-MP3 file inputs to MP3, and encodes live PCM buffers
+  to MP3 before upload. WAV/PCM is not used as a persisted upload artifact; PCM
+  remains only a stdout pipe for Pipecat file input.
 - `scripts/build_tauri_backend_sidecar.ps1 -ValidateSlimMediaTools` now checks
   the expanded practical audio/container set: `libopus`, `libmp3lame`,
   AAC/Opus/MP3/FLAC/ALAC decoding, WebM/Matroska, MP4/M4A/MOV, MP3, WAV, OGG,
@@ -5130,3 +5132,75 @@ Remaining limits:
 - This does not close external release-readiness gates such as physical
   microphone matrix, real Authenticode signing, or published signed updater
   evidence.
+
+## 2026-06-09 - FFmpeg Profile Manifest Gate
+
+Commands:
+
+```powershell
+python -m py_compile src\azure_mai_stt.py src\runtime\ffmpeg_commands.py scripts\ffmpeg\validate_ffmpeg_profile.py
+
+python scripts\ffmpeg\validate_ffmpeg_profile.py --output tmp\ffmpeg-profile-manifest-local.json --profile B
+
+python -m pytest tests/runtime/test_ffmpeg_commands.py tests/test_azure_mai_stt.py tests/test_youtube_download.py tests/perf/test_media_preparation_smoke_script.py tests/test_validate_hybrid_release_readiness.py tests/test_ffmpeg_profile_validator.py tests/test_tauri_stability_smoke_gates.py -q
+
+python scripts\smoke_media_preparation.py --output tmp\media-preparation-smoke-ffmpeg-profile.json --require-ffprobe
+```
+
+Result: implemented and covered by focused media, provider, validator, and
+packaging-gate tests.
+
+Implemented improvements:
+
+- Added `scripts/ffmpeg/validate_ffmpeg_profile.py`, a Profile-B validator for
+  candidate FFmpeg/ffprobe directories.
+- The validator records tool paths, sizes, SHA256 hashes, `ffmpeg -version`,
+  `ffmpeg -buildconf`, `ffprobe -version`, visible encoders, decoders,
+  demuxers, muxers, filters, protocols, required capabilities, warnings, and
+  failures in `ffmpeg-profile-manifest.json`.
+- `libmp3lame` remains a required encoder because Azure MAI upload latency is
+  prioritized. `pcm_s16le` is also required for stdout-only Pipecat file
+  decoding, not as a persisted upload/WAV artifact.
+- Azure MAI file upload preparation is now MP3-first: existing `.mp3` files
+  upload directly; `.wav`, `.flac`, `.webm`, `.m4a`, `.mp4`, and other
+  non-MP3 sources are transcoded to 64k mono MP3 before upload.
+- Azure MAI live buffered PCM is encoded to MP3 through an FFmpeg stdin/stdout
+  pipe and uploaded as `audio/mpeg` with filename `audio.mp3`; the prior
+  in-memory WAV upload path is no longer used for this provider.
+- `scripts/build_tauri_backend_sidecar.ps1 -ValidateSlimMediaTools` now runs
+  the validator automatically and copies `ffmpeg-profile-manifest.json` into
+  `tools\ffmpeg` beside the bundled binaries.
+- The older inline capability check now also requires `pcm_s16le`.
+- Parser requirements remain in `docs/FFmpeg-Footprint-Strategy.md`, but the
+  manifest does not call a non-portable `ffmpeg -parsers` command. Parser
+  coverage is handled through configure/buildconf evidence and functional media
+  smoke fixtures.
+
+Evidence:
+
+- Local profile run against `C:\Program Files\FFmpeg\bin`: `ok=true`, media
+  tools `267.01 MiB`, required MP3/WebM/Opus/stdout-PCM plus `pipe`/raw
+  `s16le` capabilities present.
+- Expected warnings for the broad local reference build: network protocols
+  enabled, `--enable-gpl`/`--enable-version3`, and excluded video/hardware
+  feature flags such as x264/x265/NVENC/OpenCL/Vulkan.
+- Focused media/provider/packaging tests: `64 passed`.
+- Real media-preparation smoke: `ok=true`, `5/5` checks passed; Azure MAI
+  preparation output stayed `.mp3` with `audio/mpeg`.
+- Real local PCM-to-MP3 pipe check produced an MP3 payload with `ID3` header.
+
+Goal coverage:
+
+- Phase 6: makes FFmpeg size work auditable with a structured manifest instead
+  of relying only on a few string checks.
+- Phase 7: adds regression coverage for the manifest validator and its sidecar
+  build integration.
+- Phase 8: preserves the MP3 latency decision while preparing for a smaller
+  validated media-tools build.
+
+Remaining limits:
+
+- This still validates candidate binaries; it does not compile a custom slim
+  FFmpeg artifact.
+- Real installed YouTube/file/provider workflow evidence is still required
+  before replacing Gyan Essentials with a stricter custom Profile-B build.

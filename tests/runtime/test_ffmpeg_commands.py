@@ -6,6 +6,7 @@ import pytest
 
 from src.runtime.ffmpeg_commands import (
     classify_ffmpeg_stderr,
+    mp3_encode_pcm_pipe_args,
     mp3_transcode_args,
     pcm_pipe_decode_args,
     webm_opus_transcode_args,
@@ -61,6 +62,22 @@ def test_mp3_transcode_args_are_encoded_not_wav_pcm(tmp_path: Path) -> None:
     assert "pcm_s16le" not in args
     assert "wav" not in args
     assert str(target) in args
+
+
+def test_mp3_encode_pcm_pipe_args_use_encoded_stdout_not_wav() -> None:
+    args = mp3_encode_pcm_pipe_args(
+        "ffmpeg",
+        input_sample_rate=48000,
+        input_channels=2,
+        bitrate="64k",
+    )
+
+    assert "pipe:0" in args
+    assert "pipe:1" in args
+    assert args[args.index("-f") + 1] == "s16le"
+    assert args[args.index("-c:a") + 1] == "libmp3lame"
+    assert args[args.index("-b:a") + 1] == "64k"
+    assert "wav" not in args
 
 
 def test_pcm_pipe_decode_args_write_raw_stdout_only(tmp_path: Path) -> None:

@@ -54,6 +54,7 @@ Status 2026-06-09:
 - `scripts/prepare_gyan_ffmpeg_essentials.ps1` ist der Standard-Downloader für Windows-Media-Tools. Er lädt Gyan `ffmpeg-release-essentials.zip`, verifiziert die `.sha256` und liefert einen validierten `MediaToolsDir`.
 - `Frontend/src-tauri/tauri.conf.json` ruft den Sidecar-Build standardmäßig mit `-UseGyanFfmpegEssentials -ValidateSlimMediaTools` auf. Direkte `npm run tauri:build -- --bundles nsis`-Builds verwenden dadurch nicht mehr versehentlich einen großen System-/Chocolatey-Full-Build.
 - `.github/workflows/release-windows.yml` bereitet Gyan Essentials vor und übergibt `-MediaToolsDir $env:SCRIBER_RELEASE_MEDIA_TOOLS_DIR -ValidateSlimMediaTools` an `scripts/build_windows.ps1`.
+- `scripts/ffmpeg/validate_ffmpeg_profile.py` schreibt ein strukturiertes `ffmpeg-profile-manifest.json` für Profile-B-Kandidaten. Der Sidecar-Build führt es bei `-ValidateSlimMediaTools` automatisch aus und legt das Manifest neben `ffmpeg.exe` und `ffprobe.exe` in `tools\ffmpeg` ab.
 - `scripts/build_windows.ps1` kann `-MediaToolsDir <path>`, `-ReuseSidecarIfUnchanged` und die PySide6-Pruning-Schalter temporär in Tauri `beforeBundleCommand` injizieren und stellt `tauri.conf.json` danach wieder her.
 
 Realitätscheck gegen den aktuellen Release-Backend-Ordner:
@@ -244,7 +245,8 @@ Validierungsstand 2026-06-09:
 
 - `scripts\prepare_gyan_ffmpeg_essentials.ps1` lief erfolgreich und verifizierte SHA256 `6f58ce889f59c311410f7d2b18895b33c03456463486f3b1ebc93d97a0f54541`.
 - Der vorbereitete Gyan-Essentials-Kandidat misst `ffmpeg.exe` `96.76 MiB` und `ffprobe.exe` `96.56 MiB`; zusammen `193.32 MiB` statt `267.01 MiB` beim bisherigen Full-Build.
-- Capability-Check bestanden: `libopus`, `libmp3lame`, AAC/Opus/MP3-Decoding, WebM/Matroska-, MP4/M4A-, MP3- und WAV-Demuxing sowie WebM-/MP3-Muxing vorhanden.
+- Capability-Check bestanden: `libopus`, `libmp3lame`, `pcm_s16le`, AAC/Opus/MP3/FLAC/ALAC-Decoding, WebM/Matroska-, MP4/M4A-, MP3-, WAV-, OGG-, FLAC- und raw-`s16le`-Demuxing, lokale `file`-/`pipe`-Protokolle sowie WebM-/MP3-Muxing vorhanden.
+- Das neue Profile-B-Manifest-Gate ist gegen den lokalen FFmpeg-Referenzpfad gelaufen und meldete `ok=true`, Media-Tools `267.01 MiB`, Pflichtfunktionen inklusive MP3 und `pcm_s16le` vorhanden; die breite Referenz erzeugt erwartete Warnungen für Netzwerkprotokolle, GPL/version3 und ausgeschlossene Video-/Hardware-Features.
 - `scripts\smoke_media_preparation.py --media-tools-dir <gyan-essentials-bin> --require-ffprobe` meldete `5/5` bestandene Checks.
 - `scripts\build_tauri_backend_sidecar.ps1 -SkipFrontendBuild -BundleMediaTools -UseGyanFfmpegEssentials -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -CopyToTauriRelease` lief erfolgreich, kopierte Essentials in `Frontend\src-tauri\target\release\backend\tools\ffmpeg` und schrieb `preparedMediaTools` in `sidecar-build-metadata.json`.
 - `scripts\smoke_media_preparation.py --media-tools-dir Frontend\src-tauri\target\release\backend\tools\ffmpeg --require-ffprobe` meldete gegen den tatsächlich kopierten Release-Ordner `5/5` bestandene Checks.

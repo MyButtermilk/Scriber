@@ -17,7 +17,8 @@ bundled FFmpeg footprint without losing real media functionality.
 - Do not persist WAV/PCM as an upload artifact. PCM remains allowed only as a
   process pipe for the Pipecat file-input transport.
 - Do not enable FFmpeg network protocols in the minimal production profile.
-  Website extraction belongs to `yt-dlp`; FFmpeg handles only local files.
+  Website extraction belongs to `yt-dlp`; FFmpeg handles only local files plus
+  local stdin/stdout pipes for live PCM-to-MP3 preparation.
 - Avoid GPL/nonfree libraries unless later explicitly approved. `libmp3lame`
   and `libopus` are acceptable candidates for an LGPL-oriented build, but final
   legal review must verify the exact build configuration and notices.
@@ -41,7 +42,7 @@ remove GPL-only features unless a future workflow proves they are required.
 | Upload compression and video extraction | `src/web_api.py` | Builds WebM/Opus output from uploaded audio/video; probes duration with ffprobe. | Local files only. |
 | YouTube/media-site download | `src/youtube_download.py` | `yt-dlp` downloads website content; ffprobe checks whether WebM contains video; ffmpeg normalizes downloaded local files to audio-only WebM/Opus. | Remote URL goes to `yt-dlp`; FFmpeg receives local files only. |
 | File pipeline transport | `src/audio_file_input.py` | ffmpeg decodes a local file to raw PCM on stdout for Pipecat. | Local files only; no persisted WAV. |
-| Azure MAI preparation | `src/azure_mai_stt.py` | unsupported upload formats are transcoded to MP3 64k mono 16 kHz. | Local files only. |
+| Azure MAI preparation | `src/azure_mai_stt.py` | all non-MP3 file inputs are transcoded to MP3 64k mono 16 kHz; live PCM buffers are encoded to MP3 before upload. | Local files only or stdin pipe. |
 | Runtime tool lookup | `src/runtime/media_tools.py` | Resolves explicit env path, `SCRIBER_MEDIA_TOOLS_DIR`, bundled app dirs, then PATH. | Production should resolve bundled tools before PATH. |
 | Shared command builders | `src/runtime/ffmpeg_commands.py` | Centralizes ffmpeg/ffprobe argument arrays and rejects remote URLs. | Local paths only. |
 | Media smoke gate | `scripts/smoke_media_preparation.py` | Exercises upload compression, video extraction, YouTube post-download normalization, Azure MAI MP3 preparation, and ffprobe duration. | Synthetic local fixtures. |
@@ -75,8 +76,19 @@ Used by:
 ffmpeg -hide_banner -loglevel error -nostdin -y -i <local-input> -vn -map 0:a:0 -c:a libmp3lame -b:a 64k -ar 16000 -ac 1 <output.mp3>
 ```
 
-Used by `src/azure_mai_stt.py` only when the source extension is not one of
-Azure MAI's directly accepted `.wav`, `.mp3`, or `.flac` inputs.
+Used by `src/azure_mai_stt.py` for every non-MP3 file input before Azure MAI
+upload. Existing `.mp3` files are uploaded directly. Live PCM buffers are
+encoded to MP3 through an FFmpeg pipe and uploaded as `audio/mpeg`, not WAV.
+
+### Azure MAI live PCM to MP3 pipe
+
+```powershell
+ffmpeg -hide_banner -loglevel error -f s16le -ar <input-sample-rate> -ac <input-channels> -i pipe:0 -vn -map 0:a:0 -c:a libmp3lame -b:a 64k -ar 16000 -ac 1 -f mp3 pipe:1
+```
+
+Used by `src/azure_mai_stt.py` for live buffered Azure MAI audio. This path
+requires the local `pipe` protocol and `s16le` demuxer in addition to
+`libmp3lame`; it avoids a large WAV upload.
 
 Rationale: MP3 64k keeps upload size small. In a local 20-second speech test,
 MP3 64k produced about 157 KB, while FLAC produced about 330 KB. Encoding time
@@ -157,7 +169,8 @@ protocols.
 | yt-dlp YouTube M4A | `.m4a` | `mov` | `aac` | `aac` | resample/downmix | `webm` | `libopus` | optional | yes | required |
 | yt-dlp YouTube WebM/Opus | `.webm` | `matroska` | `opus` | `opus` | optional | `webm` | `libopus` if video present/non-audio-only | video check | yes | required |
 | yt-dlp merged MP4 | `.mp4` | `mov` | `aac` and/or other audio | codec-specific | resample/downmix | `webm` | `libopus` | optional | yes | required |
-| Azure MAI non-native source | `.webm`, `.m4a`, `.mp4` | source-specific | source-specific | source-specific | resample/downmix | `mp3` | `libmp3lame` | no | maybe | required for latency |
+| Azure MAI non-MP3 source | `.wav`, `.flac`, `.webm`, `.m4a`, `.mp4` | source-specific | source-specific | source-specific | resample/downmix | `mp3` | `libmp3lame` | no | maybe | required for latency |
+| Azure MAI live PCM buffer | stdin `s16le` | `s16le` | `pcm_s16le` | none | resample/downmix | stdout `mp3` | `libmp3lame` | no | no | required for latency |
 | No-audio video | `.mp4` | source-specific | none | n/a | n/a | fail | n/a | helpful | maybe | required error |
 | Corrupted input | any | source-specific | source-specific | source-specific | n/a | fail | n/a | helpful | no | required error |
 | Unsupported codec | any | source-specific | missing decoder | source-specific | n/a | fail | n/a | helpful | no | required error |
@@ -171,8 +184,8 @@ Purpose: local file processing only, no direct remote URL support.
 Required:
 
 - programs: `ffmpeg`, `ffprobe`
-- protocols: `file`
-- demuxers: `mp3`, `wav`, `mov`, `matroska`, `ogg`, `flac`
+- protocols: `file`, `pipe`
+- demuxers: `mp3`, `wav`, `mov`, `matroska`, `ogg`, `flac`, `s16le`
 - muxers: `webm`, `mp3`
 - decoders: `mp3`, `aac`, `opus`, `vorbis`, `flac`, `alac`,
   `pcm_s16le`, `pcm_s24le`, `pcm_s32le`, `pcm_f32le`, `pcm_u8`
@@ -232,12 +245,14 @@ matrix before becoming release truth.
   --disable-network \
   --disable-ffplay \
   --enable-protocol=file \
+  --enable-protocol=pipe \
   --enable-demuxer=mp3 \
   --enable-demuxer=wav \
   --enable-demuxer=mov \
   --enable-demuxer=matroska \
   --enable-demuxer=ogg \
   --enable-demuxer=flac \
+  --enable-demuxer=s16le \
   --enable-muxer=webm \
   --enable-muxer=mp3 \
   --enable-decoder=mp3 \
@@ -288,15 +303,20 @@ Recommended implementation order:
 1. Keep current Gyan Essentials as fallback and CI/release baseline.
 2. Add a `scripts/ffmpeg/` custom-build helper or media-autobuild_suite config
    for Profile B.
-3. The custom-build helper must write:
-   - FFmpeg git revision/source URL,
+3. Run the candidate through `scripts/ffmpeg/validate_ffmpeg_profile.py`.
+   The validator writes `ffmpeg-profile-manifest.json` with:
    - configure flags,
    - `ffmpeg -buildconf`,
    - `ffmpeg -version`,
    - `ffprobe -version`,
    - binary sizes,
    - enabled encoders/decoders/demuxers/muxers,
+   - filters and protocols that are visible through portable FFmpeg CLI lists,
+   - required MP3, WebM/Opus and stdout PCM support,
+   - GPL/nonfree/network/excluded-feature warnings,
    - SHA256 for `ffmpeg.exe` and `ffprobe.exe`.
+   A future custom-build helper should additionally record the exact source URL
+   and FFmpeg git revision used to produce the binaries.
 4. Feed the resulting directory through existing
    `scripts/build_tauri_backend_sidecar.ps1 -MediaToolsDir <dir>
    -ValidateSlimMediaTools`.
@@ -313,6 +333,9 @@ Current packaging is suitable:
 
 - `scripts/build_tauri_backend_sidecar.ps1 -BundleMediaTools` copies tools into
   `tools\ffmpeg` inside the PyInstaller onedir sidecar.
+- `-ValidateSlimMediaTools` now also runs
+  `scripts/ffmpeg/validate_ffmpeg_profile.py --profile B` and writes
+  `tools\ffmpeg\ffmpeg-profile-manifest.json` beside the bundled binaries.
 - Tauri bundles `Frontend/src-tauri/target/release/backend/` as app resources.
 - `src/runtime/media_tools.py` resolves explicit env vars first, then
   `SCRIBER_MEDIA_TOOLS_DIR`, bundled app paths, and finally PATH.
@@ -329,10 +352,18 @@ Automated tests now cover:
 
 - shared FFmpeg command shape and URL rejection,
 - user-friendly FFmpeg failure classification,
-- Azure MAI unsupported-input preparation as MP3, not WAV,
-- sidecar slim validation requiring `libopus` and `libmp3lame`,
+- Azure MAI non-MP3 file and live-buffer preparation as MP3, not WAV,
+- sidecar slim validation requiring `libopus`, `libmp3lame`, and `pcm_s16le`,
+- profile manifest validation for encoders, decoders, demuxers, muxers,
+  filters, protocols, sizes, hashes, and licensing-sensitive build flags,
 - media-smoke expectations for WebM/Opus and Azure MAI MP3 preparation,
 - release-readiness media report validation.
+
+Parser coverage note: FFmpeg does not expose a portable parser-list command
+equivalent to `-encoders` or `-demuxers`. Parser requirements stay in this
+strategy and candidate configure lines, but automated acceptance relies on
+configure/buildconf evidence plus functional media-smoke fixtures instead of a
+non-portable `ffmpeg -parsers` command.
 
 Required fixture/manual matrix for a real custom build:
 

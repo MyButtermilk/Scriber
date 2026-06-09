@@ -82,6 +82,45 @@ def mp3_transcode_args(
     ]
 
 
+def mp3_encode_pcm_pipe_args(
+    ffmpeg: str,
+    *,
+    input_sample_rate: int,
+    input_channels: int,
+    bitrate: str = "64k",
+    output_sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE,
+    output_channels: int = DEFAULT_AUDIO_CHANNELS,
+) -> list[str]:
+    return [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "s16le",
+        "-ar",
+        str(int(input_sample_rate)),
+        "-ac",
+        str(int(input_channels)),
+        "-i",
+        "pipe:0",
+        "-vn",
+        "-map",
+        "0:a:0",
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        str(bitrate),
+        "-ar",
+        str(int(output_sample_rate)),
+        "-ac",
+        str(int(output_channels)),
+        "-f",
+        "mp3",
+        "pipe:1",
+    ]
+
+
 def pcm_pipe_decode_args(
     ffmpeg: str,
     source_path: str | Path,

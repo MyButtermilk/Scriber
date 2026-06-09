@@ -574,7 +574,7 @@ function Test-ScriberFfmpegCapabilities {
     param([string]$Path)
 
     $encoders = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-encoders") -Label "ffmpeg encoder list"
-    foreach ($encoder in @("libopus", "libmp3lame")) {
+    foreach ($encoder in @("libopus", "libmp3lame", "pcm_s16le")) {
         Assert-MediaToolOutputContains -Output $encoders -Needle $encoder -Label "encoder"
     }
 
@@ -584,13 +584,49 @@ function Test-ScriberFfmpegCapabilities {
     }
 
     $demuxers = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-demuxers") -Label "ffmpeg demuxer list"
-    foreach ($demuxer in @("matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2", "mp3", "wav", "ogg", "flac")) {
+    foreach ($demuxer in @("matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2", "mp3", "wav", "ogg", "flac", "s16le")) {
         Assert-MediaToolOutputContains -Output $demuxers -Needle $demuxer -Label "demuxer"
     }
 
     $muxers = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-muxers") -Label "ffmpeg muxer list"
     foreach ($muxer in @("webm", "mp3")) {
         Assert-MediaToolOutputContains -Output $muxers -Needle $muxer -Label "muxer"
+    }
+
+    $protocols = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-protocols") -Label "ffmpeg protocol list"
+    foreach ($protocol in @("file", "pipe")) {
+        Assert-MediaToolOutputContains -Output $protocols -Needle $protocol -Label "protocol"
+    }
+}
+
+function Invoke-ScriberFfmpegProfileManifest {
+    param(
+        [string]$FfmpegPath,
+        [string]$FfprobePath,
+        [string]$OutputPath
+    )
+
+    $validator = Join-Path $RepoRoot "scripts\ffmpeg\validate_ffmpeg_profile.py"
+    if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
+        throw "Missing FFmpeg profile validator: $validator"
+    }
+
+    $validatorArgs = @(
+        $validator,
+        "--ffmpeg",
+        $FfmpegPath,
+        "--profile",
+        "B",
+        "--output",
+        $OutputPath
+    )
+    if ($FfprobePath) {
+        $validatorArgs += @("--ffprobe", $FfprobePath)
+    }
+
+    & $PythonPath @validatorArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "FFmpeg profile validation failed. See manifest: $OutputPath"
     }
 }
 
@@ -622,6 +658,7 @@ function Copy-MediaTools {
     }
     $copied += $copiedFfmpeg
 
+    $copiedFfprobe = ""
     if (-not $SkipFfprobe) {
         $ffprobe = Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir
         if (-not $ffprobe) {
@@ -636,6 +673,12 @@ function Copy-MediaTools {
         $copied += $copiedFfprobe
     } else {
         Write-Host "Skipping bundled ffprobe; packaged duration and stream probing will use env/system ffprobe or best-effort fallbacks."
+    }
+
+    if ($ValidateSlimBundle) {
+        $profileManifestPath = Join-Path $toolsTarget "ffmpeg-profile-manifest.json"
+        Invoke-ScriberFfmpegProfileManifest -FfmpegPath $copiedFfmpeg -FfprobePath $copiedFfprobe -OutputPath $profileManifestPath
+        $copied += $profileManifestPath
     }
 
     $ytDlp = Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir $SearchDir

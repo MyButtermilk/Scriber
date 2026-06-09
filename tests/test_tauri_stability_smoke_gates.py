@@ -76,6 +76,7 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
 
     assert "function Test-MediaToolExecutable" in sidecar
     assert "function Test-ScriberFfmpegCapabilities" in sidecar
+    assert "function Invoke-ScriberFfmpegProfileManifest" in sidecar
     assert "function Get-SidecarInputManifest" in sidecar
     assert "function Write-SidecarBuildMetadata" in sidecar
     assert "function Invoke-PySide6Pruning" in sidecar
@@ -92,12 +93,18 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "[switch]$PrunePySide6UnusedPlugins" in sidecar
     assert "[switch]$PrunePySide6SoftwareOpenGl" in sidecar
     assert 'Test-ScriberFfmpegCapabilities -Path $copiedFfmpeg' in sidecar
+    assert "scripts\\ffmpeg\\validate_ffmpeg_profile.py" in sidecar
+    assert "ffmpeg-profile-manifest.json" in sidecar
+    assert "Invoke-ScriberFfmpegProfileManifest" in sidecar
     assert "-encoders" in sidecar
     assert "libopus" in sidecar
     assert "libmp3lame" in sidecar
+    assert "pcm_s16le" in sidecar
     assert "-decoders" in sidecar
     assert "matroska,webm" in sidecar
     assert "mov,mp4,m4a,3gp,3g2,mj2" in sidecar
+    assert "-protocols" in sidecar
+    assert "pipe" in sidecar
     assert "ffprobe was not found on PATH" in sidecar
     assert "ffprobe was not found in MediaToolsDir" in sidecar
     assert "executable failed validation" in sidecar

@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import asyncio
-import io
 import json
 import tempfile
-import wave
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
@@ -28,7 +26,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from src.config import Config
-from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, mp3_transcode_args
+from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, mp3_encode_pcm_pipe_args, mp3_transcode_args
 from src.runtime.media_tools import require_media_tool
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 
@@ -36,7 +34,7 @@ _AZURE_MAI_DEFAULT_MODEL = "mai-transcribe-1.5"
 _AZURE_MAI_API_VERSION = "2025-10-15"
 _AZURE_MAI_DEFAULT_REGION = "northeurope"
 _AZURE_MAI_SUPPORTED_REGIONS = {"eastus", "northeurope", "westus"}
-_AZURE_MAI_ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac"}
+_AZURE_MAI_DIRECT_UPLOAD_EXTENSIONS = {".mp3"}
 _AZURE_MAI_CONTENT_TYPES = {
     ".wav": "audio/wav",
     ".mp3": "audio/mpeg",
@@ -105,16 +103,6 @@ def azure_mai_content_type(path: Path) -> str:
     return _AZURE_MAI_CONTENT_TYPES.get(path.suffix.lower(), "audio/mpeg")
 
 
-def _pcm_to_wav(audio_bytes: bytes, sample_rate: int, channels: int) -> bytes:
-    buf = io.BytesIO()
-    with contextlib.closing(wave.open(buf, "wb")) as wf:
-        wf.setnchannels(max(1, int(channels or 1)))
-        wf.setsampwidth(2)
-        wf.setframerate(max(1, int(sample_rate or 16000)))
-        wf.writeframes(audio_bytes)
-    return buf.getvalue()
-
-
 def _phrase_text(phrase: dict[str, Any]) -> str:
     for key in ("text", "displayText", "display", "lexical"):
         value = str(phrase.get(key) or "").strip()
@@ -170,9 +158,33 @@ async def _transcode_to_mp3(source_path: Path, target_path: Path) -> Path:
     return target_path
 
 
+async def _pcm_to_mp3(audio_bytes: bytes, sample_rate: int, channels: int) -> bytes:
+    ffmpeg = require_media_tool("ffmpeg")
+    proc = await asyncio.create_subprocess_exec(
+        *mp3_encode_pcm_pipe_args(
+            ffmpeg,
+            input_sample_rate=max(1, int(sample_rate or 16000)),
+            input_channels=max(1, int(channels or 1)),
+            bitrate="64k",
+        ),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **hidden_subprocess_kwargs(),
+    )
+    stdout, stderr = await proc.communicate(audio_bytes)
+    if proc.returncode != 0:
+        err = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
+        friendly = classify_ffmpeg_stderr(err)
+        raise RuntimeError(f"ffmpeg MAI PCM encode failed: {friendly or proc.returncode}")
+    if not stdout:
+        raise RuntimeError("ffmpeg MAI PCM encode completed but output audio is empty.")
+    return stdout
+
+
 @contextlib.asynccontextmanager
 async def prepared_azure_mai_audio_file(source_path: Path):
-    if source_path.suffix.lower() in _AZURE_MAI_ALLOWED_EXTENSIONS:
+    if source_path.suffix.lower() in _AZURE_MAI_DIRECT_UPLOAD_EXTENSIONS:
         yield source_path
         return
 
@@ -274,7 +286,7 @@ class AzureMaiTranscribeProcessor(FrameProcessor):
         self._buffer_size = 0
 
     async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
-        wav_bytes = _pcm_to_wav(
+        mp3_bytes = await _pcm_to_mp3(
             audio_bytes=audio_bytes,
             sample_rate=self._sample_rate,
             channels=self._channels,
@@ -285,9 +297,9 @@ class AzureMaiTranscribeProcessor(FrameProcessor):
                 session=session,
                 speech_key=self._speech_key,
                 region=self._region,
-                audio_source=wav_bytes,
-                filename="audio.wav",
-                content_type="audio/wav",
+                audio_source=mp3_bytes,
+                filename="audio.mp3",
+                content_type="audio/mpeg",
                 language=self._language,
                 on_progress=self._on_progress,
                 timeout_secs=900.0,

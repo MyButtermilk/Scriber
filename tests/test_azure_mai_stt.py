@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from src.azure_mai_stt import (
+    AzureMaiTranscribeProcessor,
     azure_mai_content_type,
     azure_mai_language_locales,
     azure_mai_model,
@@ -103,9 +104,14 @@ def test_azure_mai_language_locales_skips_auto():
 
 
 @pytest.mark.asyncio
-async def test_prepared_azure_mai_audio_file_transcodes_unsupported_input_to_encoded_mp3(monkeypatch, tmp_path):
-    source = tmp_path / "source.webm"
-    source.write_bytes(b"webm")
+@pytest.mark.parametrize("suffix", [".webm", ".wav", ".flac"])
+async def test_prepared_azure_mai_audio_file_transcodes_non_mp3_input_to_encoded_mp3(
+    monkeypatch,
+    tmp_path,
+    suffix,
+):
+    source = tmp_path / f"source{suffix}"
+    source.write_bytes(b"source")
 
     async def fake_transcode(source_path: Path, target_path: Path):
         assert source_path == source
@@ -121,3 +127,52 @@ async def test_prepared_azure_mai_audio_file_transcodes_unsupported_input_to_enc
         assert prepared.exists()
 
     assert not prepared.exists()
+
+
+@pytest.mark.asyncio
+async def test_prepared_azure_mai_audio_file_keeps_existing_mp3(monkeypatch, tmp_path):
+    source = tmp_path / "source.mp3"
+    source.write_bytes(b"mp3")
+
+    async def fail_transcode(source_path: Path, target_path: Path):
+        raise AssertionError("existing mp3 should not be transcoded")
+
+    monkeypatch.setattr("src.azure_mai_stt._transcode_to_mp3", fail_transcode)
+
+    async with prepared_azure_mai_audio_file(source) as prepared:
+        assert prepared == source
+        assert azure_mai_content_type(prepared) == "audio/mpeg"
+        assert prepared.exists()
+
+    assert source.exists()
+
+
+@pytest.mark.asyncio
+async def test_azure_mai_live_buffer_uploads_mp3_not_wav(monkeypatch):
+    captured = {}
+
+    async def fake_pcm_to_mp3(audio_bytes: bytes, sample_rate: int, channels: int) -> bytes:
+        assert audio_bytes == b"\x01\x02"
+        assert sample_rate == 16000
+        assert channels == 1
+        return b"mp3-bytes"
+
+    async def fake_transcribe_with_azure_mai(**kwargs):
+        captured.update(kwargs)
+        return {"combinedPhrases": [{"text": "hello"}]}
+
+    monkeypatch.setattr("src.azure_mai_stt._pcm_to_mp3", fake_pcm_to_mp3)
+    monkeypatch.setattr("src.azure_mai_stt.transcribe_with_azure_mai", fake_transcribe_with_azure_mai)
+
+    processor = AzureMaiTranscribeProcessor(
+        speech_key="key",
+        region="northeurope",
+        language="de",
+    )
+
+    text = await processor._transcribe_bytes(b"\x01\x02")
+
+    assert text == "hello"
+    assert captured["audio_source"] == b"mp3-bytes"
+    assert captured["filename"] == "audio.mp3"
+    assert captured["content_type"] == "audio/mpeg"
