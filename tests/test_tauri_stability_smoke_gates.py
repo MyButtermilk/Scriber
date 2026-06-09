@@ -101,6 +101,8 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "Skipping bundled ffprobe" in sidecar
     assert "sidecar-build-metadata.json" in sidecar
     assert "sidecar-cache-save" in sidecar
+    assert '$entry["sha256"] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()' in sidecar
+    assert '$entry["lastWriteTimeUtc"] = $item.LastWriteTimeUtc.ToString("o")' in sidecar
 
 
 def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> None:
@@ -113,6 +115,9 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "[switch]$PrunePySide6Translations" in build
     assert "[switch]$PrunePySide6UnusedPlugins" in build
     assert "[switch]$PrunePySide6SoftwareOpenGl" in build
+    assert "[switch]$FastLocalInstaller" in build
+    assert "[switch]$SkipPythonTests" in build
+    assert "[switch]$SkipFrontendTypeCheck" in build
     assert "function Add-TauriBeforeBundleCommandSwitch" in build
     assert "function Add-TauriBeforeBundleCommandValueSwitch" in build
     assert "function Write-BuildTimingReport" in build
@@ -127,6 +132,13 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "function Set-Utf8NoBomContent" in build
     assert "Set-Utf8NoBomContent -Path $tauriConfigPath -Value $currentTauriConfig" in build
     assert "Set-Utf8NoBomContent -Path $tauriConfigPath -Value $tauriConfigOriginal" in build
+    assert "if ($FastLocalInstaller)" in build
+    assert "$ReuseSidecarIfUnchanged = $true" in build
+    assert "$SkipPythonTests = $true" in build
+    assert "$RunMediaPreparationSmoke = $true" in build
+    assert "$RunRuntimeDependencyFootprint = $true" in build
+    assert "if (-not $SkipChecks -and -not $SkipPythonTests)" in build
+    assert "if (-not $SkipChecks -and -not $SkipFrontendTypeCheck)" in build
 
 
 def test_release_workflow_installs_media_tools_for_standard_build() -> None:

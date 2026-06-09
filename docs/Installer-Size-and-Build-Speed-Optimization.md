@@ -47,7 +47,7 @@ Status 2026-06-09:
 - `scripts/build_windows.ps1 -RunRuntimeDependencyFootprint` leitet neue harte Budgets weiter: `-MaxBackendRuntimeDependencyMB`, `-MaxInternalRuntimeDependencyMB`, `-MaxMediaToolsRuntimeDependencyMB`, `-MaxPySide6RuntimeDependencyMB`, `-MaxGoogleGrpcRuntimeDependencyMB` und `-MaxPillowRuntimeDependencyMB`.
 - `scripts/build_windows.ps1` schreibt am Ende jedes erfolgreichen Builds `release-metadata/build-timing.json`; darin stehen die Windows-Build-Phasen und, falls vorhanden, die Sidecar-Build-Metadaten.
 - `scripts/build_tauri_backend_sidecar.ps1` schreibt `sidecar-build-metadata.json` mit Sidecar-Phasenzeiten, Cache-Status, kopierten Media-Tools und PySide6-Pruning-Evidenz.
-- `scripts/build_tauri_backend_sidecar.ps1 -ReuseSidecarIfUnchanged` aktiviert einen Hash-Cache für lokale Sidecar-Rebuilds. Der Cache-Key berücksichtigt Backend-Quellen, Spec, Requirements, Build-Skripte, Python/PyInstaller-Version, Frontend-Dist, Media-Tool-Metadaten und relevante Build-Flags.
+- `scripts/build_tauri_backend_sidecar.ps1 -ReuseSidecarIfUnchanged` aktiviert einen Hash-Cache für lokale Sidecar-Rebuilds. Der Cache-Key berücksichtigt Backend-Quellen, Spec, Requirements, Build-Skripte, Python/PyInstaller-Version, Frontend-Dist, Media-Tool-Metadaten und relevante Build-Flags. Normale Input-Dateien werden content-basiert über `length + sha256` gehasht; mtimes zählen nur für Tool-Metadaten, damit unveränderte Vite-/Frontend-Artefakte den Sidecar-Cache nicht allein durch neue Schreibzeiten invalidieren.
 - `scripts/build_tauri_backend_sidecar.ps1` unterstützt explizite PySide6-Pruning-Experimente über `-PrunePySide6Translations`, `-PrunePySide6UnusedPlugins` und `-PrunePySide6SoftwareOpenGl`. Diese Schalter sind nicht Standard und müssen mit installierten Live-Mic-Overlay-Smokes bewiesen werden.
 - `scripts/build_windows.ps1` kann `-MediaToolsDir <path>`, `-ReuseSidecarIfUnchanged` und die PySide6-Pruning-Schalter temporär in Tauri `beforeBundleCommand` injizieren und stellt `tauri.conf.json` danach wieder her.
 
@@ -89,14 +89,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -MaxPillowRuntimeDependencyMB 6
 ```
 
-Ergebnis: Build erfolgreich, `release-metadata/size-report.json` meldet `Scriber_0.1.0_x64-setup.exe` mit `186.40 MiB` unter dem `220 MiB` Installer-Budget; der Backend-Resource-Tree liegt bei `515.57 MiB`. `release-metadata/media-preparation-smoke.json` meldet `5/5` bestandene Checks fuer Upload-Kompression, Video-Audio-Extraktion, YouTube-Post-Download-Normalisierung, Azure-MAI-MP3-Vorbereitung und `ffprobe`-Dauerpruefung. `release-metadata/runtime-dependency-footprint.json` meldet keine Budget-Failures, keine fehlenden Required Paths und keine disallowed Paths.
+Ergebnis: Build erfolgreich, `release-metadata/size-report.json` meldet `Scriber_0.1.0_x64-setup.exe` mit `186.41 MiB` unter dem `220 MiB` Installer-Budget; der Backend-Resource-Tree liegt bei `515.56 MiB`. `release-metadata/media-preparation-smoke.json` meldet `5/5` bestandene Checks fuer Upload-Kompression, Video-Audio-Extraktion, YouTube-Post-Download-Normalisierung, Azure-MAI-MP3-Vorbereitung und `ffprobe`-Dauerpruefung. `release-metadata/runtime-dependency-footprint.json` meldet keine Budget-Failures, keine fehlenden Required Paths und keine disallowed Paths.
 
-`release-metadata/build-timing.json` meldet fuer diesen Clean-Release-Pfad `590451 ms` Gesamtzeit. Davon entfallen `584948 ms` auf `Tauri Windows bundle`; im eingebetteten Sidecar-Timing stehen `223361 ms` Gesamtzeit, `177740 ms` PyInstaller, `19066 ms` Copy-to-Tauri-Release und `16171 ms` Cache-Save. Der lokale Cache war in diesem konkreten NSIS-Build ein Miss, weil der Tauri-Build vorher neue Frontend-Artefakte erzeugt hatte; der identische Sidecar-Only-Lauf bleibt unten als Cache-Hit-Evidenz erhalten.
+`release-metadata/build-timing.json` meldet fuer diesen Clean-Release-Pfad `590451 ms` Gesamtzeit. Davon entfallen `584948 ms` auf `Tauri Windows bundle`; im eingebetteten Sidecar-Timing stehen `223361 ms` Gesamtzeit, `177740 ms` PyInstaller, `19066 ms` Copy-to-Tauri-Release und `16171 ms` Cache-Save. Der lokale Cache war in diesem konkreten NSIS-Build ein Miss, weil sich Build-Inputs geaendert hatten; der identische Sidecar-Only-Lauf bleibt unten als Cache-Hit-Evidenz erhalten.
+
+Anschliessende `scripts\build_windows.ps1 -FastLocalInstaller`-Realbuilds liefen ebenfalls erfolgreich durch: Frontend-Typecheck, Tauri/NSIS-Bundle, Media-Preparation-Smoke, Runtime-Dependency-Footprint, Release-Metadata, Updater-Metadata-Validierung und Release-Size-Report waren gruen. Der erste Fast-Local-Lauf war wegen geaenderter Build-Inputs noch ein Sidecar-Cache-Miss und meldete `590299 ms` Gesamtzeit. Der zweite Fast-Local-Lauf traf nach frischem Vite-Build den content-basierten Sidecar-Cache (`cacheHit=true`, Key `71765fa4896f2a2d2e91f83afa9c2ee360494af3109cd9c253d679c86794a12d`) und meldete `364592 ms` Gesamtzeit; der eingebettete Sidecar-Teil lag bei `51072 ms`. Damit ist belegt, dass der Fast-Local-Modus die intended Gates automatisch setzt und kein optionales Paketmodell einfuehrt.
 
 Der Sidecar-Cache wurde real geprüft:
 
 - erster Lauf mit `-ReuseSidecarIfUnchanged -BundleMediaTools -CopyToTauriRelease`: `cacheHit=false`, PyInstaller baute den Sidecar und füllte den Cache.
-- zweiter identischer Lauf: `cacheHit=true`, keine PyInstaller-Phase, `totalDurationMs=42221`; die verbleibenden Phasen waren Import-Preflight, Cache-Key, Cache-Restore, Frozen-Import-Check und Release-Copy.
+- zweiter identischer Lauf nach content-basiertem Cache-Key-Fix: `cacheHit=true`, keine PyInstaller-Phase, gleicher Cache-Key `71765fa4896f2a2d2e91f83afa9c2ee360494af3109cd9c253d679c86794a12d`, `totalDurationMs=40107`; die verbleibenden Phasen waren Import-Preflight, Cache-Key, Cache-Restore, Frozen-Import-Check und Release-Copy.
 
 ## No-Feature-Loss-Entscheidungen
 
@@ -261,7 +263,7 @@ Verhalten:
 
 ### P1: Fast-Local-Build und Full-Release-Build trennen
 
-Status: teilweise umgesetzt.
+Status: umgesetzt.
 
 Das Standard-Release-Artefakt bleibt funktional identisch, aber lokale Iteration wird schneller.
 
@@ -282,7 +284,9 @@ Empfohlene Modi:
 
 Das verbessert Build-Zeit ohne Änderung am Inhalt der installierten Standard-App.
 
-Der schnelle lokale Pfad ist aktuell ein opt-in über `scripts/build_windows.ps1 -ReuseSidecarIfUnchanged`. Full-Release-Builds bleiben clean, solange der Cache nicht explizit aktiviert wird.
+Der schnelle lokale Pfad ist ein expliziter opt-in über `scripts/build_windows.ps1 -FastLocalInstaller`. Der Schalter aktiviert den Sidecar-Cache, überspringt die vollständige Python-Test-Suite und den Tauri-Release-Smoke, behält aber Frontend-Typecheck, Frontend-Produktionsbuild, Media-Preparation-Smoke, Runtime-Dependency-Footprint und harte Standard-Budgets bei. Damit bleibt der lokale Installer ein vollständiger Installer ohne Feature-Split; nur die Iterations-Gates sind schlanker.
+
+`-ReuseSidecarIfUnchanged` bleibt als engerer Schalter erhalten, wenn nur der Sidecar-Cache aktiviert werden soll. Full-Release-Builds bleiben clean, solange `-FastLocalInstaller` oder `-ReuseSidecarIfUnchanged` nicht explizit gesetzt wird.
 
 ### P1: Build-Timing-Metadaten ergänzen
 
@@ -375,7 +379,7 @@ Keine Optimierung ist akzeptiert, wenn eine bestehende Funktion nur noch durch m
 
 1. Component-Size-Budgets und Reporting ergänzen. Status: umgesetzt.
 2. Build-Timing-Metadaten ergänzen. Status: umgesetzt.
-3. Sidecar-Hash-Cache für schnelle lokale Installer-Builds ergänzen. Status: opt-in umgesetzt.
+3. Sidecar-Hash-Cache und expliziten Fast-Local-Installer-Modus ergänzen. Status: umgesetzt.
 4. Schlankes `ffmpeg` plus `ffprobe` hinter den vorhandenen Media-Smoke-Gates testen.
 5. PySide6-Pruning testen, ohne PySide6 selbst zu entfernen. Status: Schalter umgesetzt, installierter Overlay-Smoke noch erforderlich.
 

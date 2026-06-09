@@ -31,6 +31,7 @@ param(
     [switch]$PrunePySide6Translations,
     [switch]$PrunePySide6UnusedPlugins,
     [switch]$PrunePySide6SoftwareOpenGl,
+    [switch]$FastLocalInstaller,
     [switch]$RunRuntimeDependencyFootprint,
     [double]$MaxScipyRuntimeDependencyMB = 0,
     [double]$MaxOnnxRuntimeDependencyMB = 0,
@@ -42,6 +43,8 @@ param(
     [double]$MaxGoogleGrpcRuntimeDependencyMB = 0,
     [double]$MaxPillowRuntimeDependencyMB = 0,
     [switch]$SkipChecks,
+    [switch]$SkipPythonTests,
+    [switch]$SkipFrontendTypeCheck,
     [switch]$SkipSmoke,
     [switch]$RunInstallerSmoke,
     [switch]$RunInstallerCrashSmoke,
@@ -194,6 +197,42 @@ if ($MediaToolsDir) {
     $MediaToolsDir = (Resolve-Path $MediaToolsDir).Path
 }
 
+if ($FastLocalInstaller) {
+    $ReuseSidecarIfUnchanged = $true
+    $SkipPythonTests = $true
+    $SkipSmoke = $true
+    $RunMediaPreparationSmoke = $true
+    $RunRuntimeDependencyFootprint = $true
+
+    if ($MaxScipyRuntimeDependencyMB -le 0) {
+        $MaxScipyRuntimeDependencyMB = 0.001
+    }
+    if ($MaxOnnxRuntimeDependencyMB -le 0) {
+        $MaxOnnxRuntimeDependencyMB = 40
+    }
+    if ($MaxPythonRuntimeDependencyMB -le 0) {
+        $MaxPythonRuntimeDependencyMB = 40
+    }
+    if ($MaxBackendRuntimeDependencyMB -le 0) {
+        $MaxBackendRuntimeDependencyMB = 560
+    }
+    if ($MaxInternalRuntimeDependencyMB -le 0) {
+        $MaxInternalRuntimeDependencyMB = 250
+    }
+    if ($MaxMediaToolsRuntimeDependencyMB -le 0) {
+        $MaxMediaToolsRuntimeDependencyMB = 280
+    }
+    if ($MaxPySide6RuntimeDependencyMB -le 0) {
+        $MaxPySide6RuntimeDependencyMB = 80
+    }
+    if ($MaxGoogleGrpcRuntimeDependencyMB -le 0) {
+        $MaxGoogleGrpcRuntimeDependencyMB = 15
+    }
+    if ($MaxPillowRuntimeDependencyMB -le 0) {
+        $MaxPillowRuntimeDependencyMB = 6
+    }
+}
+
 if (-not (Test-Path (Join-Path $frontendRoot "package.json"))) {
     throw "Frontend package.json was not found under $frontendRoot."
 }
@@ -207,7 +246,7 @@ Invoke-Checked -Label "Version sync" -Command {
     }
 }
 
-if (-not $SkipChecks) {
+if (-not $SkipChecks -and -not $SkipPythonTests) {
     Invoke-Checked -Label "Python tests" -Command {
         Push-Location $RepoRoot
         try {
@@ -216,7 +255,9 @@ if (-not $SkipChecks) {
             Pop-Location
         }
     }
+}
 
+if (-not $SkipChecks -and -not $SkipFrontendTypeCheck) {
     Invoke-Checked -Label "Frontend type check" -Command {
         Push-Location $frontendRoot
         try {

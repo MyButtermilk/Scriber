@@ -121,10 +121,11 @@ function Get-FileHashEntry {
     $entry = [ordered]@{
         path = (Get-RelativePath -Root $Root -Path $item.FullName)
         length = [int64]$item.Length
-        lastWriteTimeUtc = $item.LastWriteTimeUtc.ToString("o")
     }
     if ($HashContent) {
         $entry["sha256"] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    } else {
+        $entry["lastWriteTimeUtc"] = $item.LastWriteTimeUtc.ToString("o")
     }
     return $entry
 }

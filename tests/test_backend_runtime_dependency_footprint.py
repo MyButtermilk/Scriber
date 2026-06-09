@@ -178,6 +178,7 @@ def test_windows_build_and_release_workflow_can_emit_runtime_dependency_footprin
     assert "[double]$MaxPySide6RuntimeDependencyMB = 0" in build
     assert "[double]$MaxGoogleGrpcRuntimeDependencyMB = 0" in build
     assert "[double]$MaxPillowRuntimeDependencyMB = 0" in build
+    assert "[switch]$FastLocalInstaller" in build
     assert "scripts\\analyze_backend_runtime_dependencies.py" in build
     assert "runtime-dependency-footprint.json" in build
     assert "--max-scipy-mb" in build
@@ -189,6 +190,8 @@ def test_windows_build_and_release_workflow_can_emit_runtime_dependency_footprin
     assert "--max-pyside6-mb" in build
     assert "--max-google-grpc-mb" in build
     assert "--max-pillow-mb" in build
+    assert "if ($FastLocalInstaller)" in build
+    assert "$MaxPillowRuntimeDependencyMB = 6" in build
     assert "$runtimeDependencyFootprint[\"path\"] = $runtimeDependencyFootprintPath" in build
     assert "runtimeDependencyFootprint = $runtimeDependencyFootprint" in build
 
