@@ -39,6 +39,7 @@ ROUTE_EXPECTATIONS: dict[str, list[str]] = {
         "ui-debug-sample.log",
         "Debug console sample error",
         "Copy visible",
+        "Delete logs",
         "Support bundle",
         "Auto scroll",
         "Newest first",
@@ -82,6 +83,7 @@ class FrontendSmokeBackend:
         self.session_token_required = False
         self.session_token = "smoke-session-token"
         self.transcript_detail_counts: dict[str, int] = {}
+        self.runtime_logs_deleted = False
 
     @property
     def base_url(self) -> str:
@@ -124,6 +126,7 @@ class FrontendSmokeBackend:
         app.router.add_post("/api/youtube/transcribe", self.youtube_transcribe)
         app.router.add_post("/api/file/transcribe", self.file_transcribe)
         app.router.add_get("/api/runtime/logs", self.runtime_logs)
+        app.router.add_delete("/api/runtime/logs", self.delete_runtime_logs)
         app.router.add_post("/api/runtime/support-bundle", self.support_bundle)
         app.router.add_get("/api/transcripts", self.transcripts)
         app.router.add_get("/api/transcripts/{transcript_id}", self.transcript_detail)
@@ -297,6 +300,17 @@ class FrontendSmokeBackend:
         )
 
     async def runtime_logs(self, request: web.Request) -> web.Response:
+        if self.runtime_logs_deleted:
+            return web.json_response(
+                {
+                    "apiVersion": "1",
+                    "items": [],
+                    "sources": [],
+                    "limit": 900,
+                    "truncated": False,
+                }
+            )
+
         return web.json_response(
             {
                 "apiVersion": "1",
@@ -332,6 +346,19 @@ class FrontendSmokeBackend:
                 "sources": ["ui-debug-sample.log"],
                 "limit": 900,
                 "truncated": False,
+            }
+        )
+
+    async def delete_runtime_logs(self, request: web.Request) -> web.Response:
+        self.runtime_logs_deleted = True
+        return web.json_response(
+            {
+                "apiVersion": "1",
+                "ok": True,
+                "cleared": 1,
+                "failed": 0,
+                "clearedSources": ["ui-debug-sample.log"],
+                "failures": [],
             }
         )
 

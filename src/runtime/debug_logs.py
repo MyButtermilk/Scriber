@@ -83,6 +83,34 @@ def collect_debug_logs(*, limit: int = _DEFAULT_LIMIT) -> dict[str, Any]:
     }
 
 
+def clear_debug_logs() -> dict[str, Any]:
+    cleared: list[str] = []
+    failed: list[dict[str, str]] = []
+
+    for path in _candidate_log_files():
+        source = path.name
+        try:
+            _clear_log_file(path)
+        except OSError as exc:
+            failed.append(
+                {
+                    "source": source,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        else:
+            cleared.append(source)
+
+    return {
+        "apiVersion": REST_API_VERSION,
+        "ok": not failed,
+        "cleared": len(cleared),
+        "failed": len(failed),
+        "clearedSources": sorted(cleared),
+        "failures": failed,
+    }
+
+
 def _clamp_limit(limit: int) -> int:
     if limit <= 0:
         return _DEFAULT_LIMIT
@@ -122,6 +150,11 @@ def _read_tail(path: Path) -> tuple[str, bool]:
         raw = handle.read(_MAX_BYTES_PER_FILE if truncated else size)
     text = raw.decode("utf-8", errors="replace")
     return redact_text(text), truncated
+
+
+def _clear_log_file(path: Path) -> None:
+    with path.open("w", encoding="utf-8"):
+        pass
 
 
 def _parse_log_line(line: str, *, source: str, line_number: int) -> DebugLogEntry | None:

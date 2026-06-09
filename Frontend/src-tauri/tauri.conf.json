@@ -5,7 +5,7 @@
   "identifier": "app.scriber.desktop",
   "build": {
     "beforeDevCommand": "npm run dev:client",
-    "beforeBundleCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build_tauri_backend_sidecar.ps1 -SkipFrontendBuild -InstallPyInstaller -BundleMediaTools -CopyToTauriRelease",
+    "beforeBundleCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build_tauri_backend_sidecar.ps1 -SkipFrontendBuild -InstallPyInstaller -BundleMediaTools -UseGyanFfmpegEssentials -ValidateSlimMediaTools -CopyToTauriRelease",
     "beforeBuildCommand": "npm run build",
     "devUrl": "http://localhost:5000",
     "frontendDist": "../dist/public"

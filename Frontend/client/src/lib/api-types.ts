@@ -107,6 +107,18 @@ export interface RuntimeLogsResponse {
   truncated: boolean;
 }
 
+export interface RuntimeLogsClearResponse {
+  apiVersion: typeof REST_API_VERSION;
+  ok: boolean;
+  cleared: number;
+  failed: number;
+  clearedSources: string[];
+  failures: Array<{
+    source: string;
+    error: string;
+  }>;
+}
+
 export interface ApiMessageResponse {
   message?: string;
 }

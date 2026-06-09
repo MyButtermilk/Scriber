@@ -79,6 +79,11 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "function Get-SidecarInputManifest" in sidecar
     assert "function Write-SidecarBuildMetadata" in sidecar
     assert "function Invoke-PySide6Pruning" in sidecar
+    assert "[switch]$UseGyanFfmpegEssentials" in sidecar
+    assert "scripts\\prepare_gyan_ffmpeg_essentials.ps1" in sidecar
+    assert "prepare-gyan-ffmpeg-essentials" in sidecar
+    assert "$ValidateSlimMediaTools = $true" in sidecar
+    assert "preparedMediaTools = $PreparedMediaTools" in sidecar
     assert 'Test-MediaToolExecutable -Path $copiedFfmpeg -Name "ffmpeg"' in sidecar
     assert 'Test-MediaToolExecutable -Path $copiedFfprobe -Name "ffprobe"' in sidecar
     assert "[switch]$ValidateSlimMediaTools" in sidecar
@@ -103,6 +108,21 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "sidecar-cache-save" in sidecar
     assert '$entry["sha256"] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()' in sidecar
     assert '$entry["lastWriteTimeUtc"] = $item.LastWriteTimeUtc.ToString("o")' in sidecar
+
+
+def test_gyan_essentials_prepare_script_downloads_and_verifies_archive() -> None:
+    script = read_script("scripts/prepare_gyan_ffmpeg_essentials.ps1")
+
+    assert "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" in script
+    assert "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256" in script
+    assert "Invoke-WebRequest" in script
+    assert "Get-FileHash -LiteralPath $archivePath -Algorithm SHA256" in script
+    assert "Gyan FFmpeg essentials SHA256 mismatch" in script
+    assert "Expand-Archive" in script
+    assert "ffmpeg.exe" in script
+    assert "ffprobe.exe" in script
+    assert "mediaToolsDir" in script
+    assert "gyan-release-essentials" in script
 
 
 def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> None:
@@ -137,19 +157,24 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "$SkipPythonTests = $true" in build
     assert "$RunMediaPreparationSmoke = $true" in build
     assert "$RunRuntimeDependencyFootprint = $true" in build
+    assert "$MaxBackendRuntimeDependencyMB = 500" in build
+    assert "$MaxMediaToolsRuntimeDependencyMB = 210" in build
     assert "if (-not $SkipChecks -and -not $SkipPythonTests)" in build
     assert "if (-not $SkipChecks -and -not $SkipFrontendTypeCheck)" in build
 
 
-def test_release_workflow_installs_media_tools_for_standard_build() -> None:
+def test_release_workflow_prepares_gyan_essentials_media_tools_for_standard_build() -> None:
     workflow = read_script(".github/workflows/release-windows.yml")
 
-    assert "Install media tools" in workflow
-    assert "choco install ffmpeg --yes --no-progress" in workflow
-    assert "Get-Command ffmpeg -ErrorAction Stop" in workflow
-    assert "Get-Command ffprobe -ErrorAction Stop" in workflow
-    assert "& $ffmpeg.Source -version" in workflow
-    assert "& $ffprobe.Source -version" in workflow
+    assert "Prepare Gyan FFmpeg Essentials media tools" in workflow
+    assert "scripts\\prepare_gyan_ffmpeg_essentials.ps1" in workflow
+    assert "SCRIBER_RELEASE_MEDIA_TOOLS_DIR" in workflow
+    assert '"-MediaToolsDir"' in workflow
+    assert "$env:SCRIBER_RELEASE_MEDIA_TOOLS_DIR" in workflow
+    assert '"-ValidateSlimMediaTools"' in workflow
+    assert '"500"' in workflow
+    assert '"210"' in workflow
+    assert "choco install ffmpeg" not in workflow
     assert '"-RunMediaPreparationSmoke"' in workflow
 
 

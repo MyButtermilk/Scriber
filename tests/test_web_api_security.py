@@ -263,6 +263,17 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
         assert "secret-value" not in test_entry["message"]
         assert "[REDACTED]" in test_entry["message"]
 
+        clear_logs_unauthorized = await client.delete("/api/runtime/logs")
+        assert clear_logs_unauthorized.status == 401
+
+        clear_logs = await client.delete("/api/runtime/logs", headers={"X-Scriber-Token": "secret"})
+        assert clear_logs.status == 200
+        clear_logs_payload = await clear_logs.json()
+        assert clear_logs_payload["apiVersion"] == "1"
+        assert clear_logs_payload["ok"] is True
+        assert "zz-test-debug.log" in clear_logs_payload["clearedSources"]
+        assert (log_dir / "zz-test-debug.log").read_text(encoding="utf-8") == ""
+
         shutdown_unauthorized = await client.post("/api/runtime/shutdown")
         assert shutdown_unauthorized.status == 401
 

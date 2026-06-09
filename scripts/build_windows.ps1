@@ -214,13 +214,13 @@ if ($FastLocalInstaller) {
         $MaxPythonRuntimeDependencyMB = 40
     }
     if ($MaxBackendRuntimeDependencyMB -le 0) {
-        $MaxBackendRuntimeDependencyMB = 560
+        $MaxBackendRuntimeDependencyMB = 500
     }
     if ($MaxInternalRuntimeDependencyMB -le 0) {
         $MaxInternalRuntimeDependencyMB = 250
     }
     if ($MaxMediaToolsRuntimeDependencyMB -le 0) {
-        $MaxMediaToolsRuntimeDependencyMB = 280
+        $MaxMediaToolsRuntimeDependencyMB = 210
     }
     if ($MaxPySide6RuntimeDependencyMB -le 0) {
         $MaxPySide6RuntimeDependencyMB = 80

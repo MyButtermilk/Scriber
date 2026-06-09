@@ -10,6 +10,7 @@ target\release\backend.
 Typical flow:
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
+  powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -UseGyanFfmpegEssentials -ValidateSlimMediaTools -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -ValidateSlimMediaTools -MediaToolsDir path\to\slim-ffmpeg -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -ReuseSidecarIfUnchanged -CopyToTauriRelease
@@ -26,6 +27,7 @@ param(
     [switch]$SkipFrontendBuild,
     [switch]$InstallPyInstaller,
     [switch]$BundleMediaTools,
+    [switch]$UseGyanFfmpegEssentials,
     [switch]$SkipBundledFfprobe,
     [switch]$ValidateSlimMediaTools,
     [switch]$ReuseSidecarIfUnchanged,
@@ -191,6 +193,7 @@ function Get-SidecarInputManifest {
         [string]$Python,
         [string]$SearchDir,
         [bool]$BundleTools,
+        [bool]$UseGyanEssentials,
         [bool]$SkipFfprobe,
         [bool]$ValidateSlimBundle,
         [bool]$PruneTranslations,
@@ -223,6 +226,7 @@ function Get-SidecarInputManifest {
         pyInstaller = $pyInstallerVersion
         flags = [ordered]@{
             bundleMediaTools = $BundleTools
+            useGyanFfmpegEssentials = $UseGyanEssentials
             skipBundledFfprobe = $SkipFfprobe
             validateSlimMediaTools = $ValidateSlimBundle
             prunePySide6Translations = $PruneTranslations
@@ -329,6 +333,7 @@ function Write-SidecarBuildMetadata {
         [bool]$CacheEnabled,
         [bool]$CacheHit,
         [string]$CacheKey,
+        [object]$PreparedMediaTools,
         [object[]]$MediaToolsCopied,
         [object[]]$PySide6Pruned,
         [string]$CopiedTo
@@ -348,12 +353,14 @@ function Write-SidecarBuildMetadata {
         }
         flags = [ordered]@{
             bundleMediaTools = [bool]$BundleMediaTools
+            useGyanFfmpegEssentials = [bool]$UseGyanFfmpegEssentials
             skipBundledFfprobe = [bool]$SkipBundledFfprobe
             validateSlimMediaTools = [bool]$ValidateSlimMediaTools
             prunePySide6Translations = [bool]$PrunePySide6Translations
             prunePySide6UnusedPlugins = [bool]$PrunePySide6UnusedPlugins
             prunePySide6SoftwareOpenGl = [bool]$PrunePySide6SoftwareOpenGl
         }
+        preparedMediaTools = $PreparedMediaTools
         mediaToolsCopied = $MediaToolsCopied
         pySide6Pruned = $PySide6Pruned
         totalDurationMs = [int64]$script:BuildTimingStarted.ElapsedMilliseconds
@@ -667,6 +674,31 @@ if (-not (Test-Path $SpecPath)) {
     throw "Missing PyInstaller spec: $SpecPath"
 }
 
+$preparedMediaTools = $null
+if ($UseGyanFfmpegEssentials -and -not $MediaToolsDir) {
+    Invoke-TimedStep -Label "prepare-gyan-ffmpeg-essentials" -Command {
+        $prepareScript = Join-Path $RepoRoot "scripts\prepare_gyan_ffmpeg_essentials.ps1"
+        if (-not (Test-Path -LiteralPath $prepareScript -PathType Leaf)) {
+            throw "Missing Gyan FFmpeg essentials prepare script: $prepareScript"
+        }
+        $prepareOutput = & $prepareScript -RepoRoot $RepoRoot
+        $prepareJson = ($prepareOutput | Out-String).Trim()
+        if (-not $prepareJson) {
+            throw "Gyan FFmpeg essentials prepare script produced no JSON output."
+        }
+        $script:PreparedMediaTools = $prepareJson | ConvertFrom-Json
+        if (-not $script:PreparedMediaTools.ok) {
+            throw "Gyan FFmpeg essentials preparation did not report ok=true."
+        }
+        $script:PreparedMediaToolsDir = (Resolve-Path $script:PreparedMediaTools.mediaToolsDir).Path
+    }
+    $preparedMediaTools = $script:PreparedMediaTools
+    $MediaToolsDir = $script:PreparedMediaToolsDir
+    $ValidateSlimMediaTools = $true
+} elseif ($UseGyanFfmpegEssentials -and $MediaToolsDir) {
+    Write-Host "Using explicit MediaToolsDir; skipping Gyan FFmpeg essentials download."
+}
+
 if (-not (Test-PyInstaller -Python $PythonPath)) {
     if (-not $InstallPyInstaller) {
         throw "PyInstaller is not installed for $PythonPath. Re-run with -InstallPyInstaller or install pyinstaller manually."
@@ -711,6 +743,7 @@ if ($cacheEnabled) {
             -Python $PythonPath `
             -SearchDir $MediaToolsDir `
             -BundleTools ([bool]$BundleMediaTools) `
+            -UseGyanEssentials ([bool]$UseGyanFfmpegEssentials) `
             -SkipFfprobe ([bool]$SkipBundledFfprobe) `
             -ValidateSlimBundle ([bool]$ValidateSlimMediaTools) `
             -PruneTranslations ([bool]$PrunePySide6Translations) `
@@ -820,6 +853,7 @@ if ($CopyToTauriRelease) {
         -CacheEnabled $cacheEnabled `
         -CacheHit $cacheHit `
         -CacheKey $cacheKey `
+        -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
         -PySide6Pruned $pySide6Pruned `
         -CopiedTo $copiedTo
@@ -833,6 +867,7 @@ if ($CopyToTauriRelease) {
         -CacheEnabled $cacheEnabled `
         -CacheHit $cacheHit `
         -CacheKey $cacheKey `
+        -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
         -PySide6Pruned $pySide6Pruned `
         -CopiedTo $copiedTo

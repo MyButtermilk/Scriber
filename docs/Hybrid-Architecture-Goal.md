@@ -262,8 +262,11 @@ architecture work. It replaces earlier incomplete goal text.
   Upload-Audioextraktion, YouTube-Post-Download-Normalisierung,
   Azure-MAI-MP3-Vorbereitung und optionale `ffprobe`-Dauerprobe; dieser Gate
   kann nun sowohl gegen den Release-Backend-Ordner als auch gegen eine
-  temporaer installierte NSIS-App laufen. Ein Slim-FFmpeg-Release-Default bleibt
-  aber bis zu realen installierten YouTube-/Datei-/Azure-MAI-Media-Smokes offen.
+  temporaer installierte NSIS-App laufen. Status 2026-06-09: Gyan
+  `release essentials` ist als Standard-Media-Tools-Quelle umgesetzt und wird
+  mit `-ValidateSlimMediaTools` validiert; reale installierte
+  YouTube-/Datei-/Azure-MAI-Media-Smokes bleiben fuer den naechsten
+  vollstaendigen NSIS-Größenbeleg offen.
   Fuer SciPy/ONNXRuntime ist `scripts\analyze_backend_runtime_dependencies.py`
   vorhanden. Der aktuelle Sidecar-Snapshot meldet `33.75 MiB` fuer diese
   Runtime-Gruppe (`0.00 MiB` SciPy/SciPy libs, `33.75 MiB` ONNXRuntime), weil

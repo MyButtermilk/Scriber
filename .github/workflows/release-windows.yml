@@ -44,14 +44,14 @@ jobs:
         working-directory: Frontend
         run: npm ci
 
-      - name: Install media tools
+      - name: Prepare Gyan FFmpeg Essentials media tools
         shell: pwsh
         run: |
-          choco install ffmpeg --yes --no-progress
-          $ffmpeg = Get-Command ffmpeg -ErrorAction Stop
-          $ffprobe = Get-Command ffprobe -ErrorAction Stop
-          & $ffmpeg.Source -version
-          & $ffprobe.Source -version
+          $prepOutput = & scripts\prepare_gyan_ffmpeg_essentials.ps1
+          $prep = ($prepOutput | Out-String | ConvertFrom-Json)
+          "SCRIBER_RELEASE_MEDIA_TOOLS_DIR=$($prep.mediaToolsDir)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & $prep.ffmpeg.path -version
+          & $prep.ffprobe.path -version
 
       - name: Build Windows installer
         shell: pwsh
@@ -74,6 +74,9 @@ jobs:
             "-SkipSmoke",
             "-RunMediaPreparationSmoke",
             "-RunRuntimeDependencyFootprint",
+            "-MediaToolsDir",
+            $env:SCRIBER_RELEASE_MEDIA_TOOLS_DIR,
+            "-ValidateSlimMediaTools",
             "-MaxScipyRuntimeDependencyMB",
             "0.001",
             "-MaxOnnxRuntimeDependencyMB",
@@ -81,11 +84,11 @@ jobs:
             "-MaxPythonRuntimeDependencyMB",
             "40",
             "-MaxBackendRuntimeDependencyMB",
-            "560",
+            "500",
             "-MaxInternalRuntimeDependencyMB",
             "250",
             "-MaxMediaToolsRuntimeDependencyMB",
-            "280",
+            "210",
             "-MaxPySide6RuntimeDependencyMB",
             "80",
             "-MaxGoogleGrpcRuntimeDependencyMB",

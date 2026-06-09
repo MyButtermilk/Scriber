@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   AlertTriangle,
   ArrowDownToLine,
   Bug,
@@ -13,6 +23,7 @@ import {
   RefreshCw,
   Search,
   Terminal,
+  Trash2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,7 +32,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { apiUrl } from "@/lib/backend";
 import { cn } from "@/lib/utils";
-import type { RuntimeLogEntry, RuntimeLogsResponse } from "@/lib/api-types";
+import type { RuntimeLogEntry, RuntimeLogsClearResponse, RuntimeLogsResponse } from "@/lib/api-types";
 
 const LEVELS = ["ALL", "CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "TRACE"] as const;
 const ALL_DATES_VALUE = "all";
@@ -159,13 +170,18 @@ export default function DebugConsole() {
   const [clearedLogKeys, setClearedLogKeys] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [supportBundleLoading, setSupportBundleLoading] = useState(false);
+  const [logFileClearLoading, setLogFileClearLoading] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [error, setError] = useState("");
   const [actionStatus, setActionStatus] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [truncated, setTruncated] = useState(false);
   const logScrollRef = useRef<HTMLElement | null>(null);
+  const logLoadGenerationRef = useRef(0);
 
   const loadLogs = useCallback(async () => {
+    const loadGeneration = logLoadGenerationRef.current + 1;
+    logLoadGenerationRef.current = loadGeneration;
     setLoading(true);
     setError("");
     try {
@@ -174,14 +190,18 @@ export default function DebugConsole() {
         throw new Error((await res.text()) || res.statusText);
       }
       const payload = (await res.json()) as RuntimeLogsResponse;
+      if (loadGeneration !== logLoadGenerationRef.current) return;
       setLogs(payload.items || []);
       setSources(payload.sources || []);
       setTruncated(payload.truncated === true);
       setLastUpdated(new Date());
     } catch (err: any) {
+      if (loadGeneration !== logLoadGenerationRef.current) return;
       setError(String(err?.message || err));
     } finally {
-      setLoading(false);
+      if (loadGeneration === logLoadGenerationRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -268,6 +288,48 @@ export default function DebugConsole() {
     setActionStatus(`Cleared ${displayedLogs.length} visible log entries from this view.`);
   };
 
+  const deleteRuntimeLogs = async () => {
+    if (!logs.length && !sources.length) return;
+
+    setDeleteDialogOpen(false);
+    setLogFileClearLoading(true);
+    setError("");
+    setActionStatus("");
+    try {
+      const res = await fetch(apiUrl("/api/runtime/logs"), {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const bodyText = await res.text();
+      let payload: RuntimeLogsClearResponse | null = null;
+      try {
+        payload = bodyText ? (JSON.parse(bodyText) as RuntimeLogsClearResponse) : null;
+      } catch {
+        payload = null;
+      }
+      if (!res.ok || !payload?.ok) {
+        const failureText = payload?.failures?.length
+          ? payload.failures.map((failure) => `${failure.source}: ${failure.error}`).join("; ")
+          : bodyText || res.statusText;
+        throw new Error(failureText || res.statusText);
+      }
+
+      logLoadGenerationRef.current += 1;
+      setLogs([]);
+      setSources([]);
+      setClearedLogKeys(new Set());
+      setTruncated(false);
+      setLastUpdated(new Date());
+      setLoading(false);
+      setActionStatus(`Deleted ${payload.cleared} runtime log file${payload.cleared === 1 ? "" : "s"}.`);
+    } catch (err: any) {
+      setError(`Delete logs failed: ${String(err?.message || err)}`);
+    } finally {
+      setDeleteDialogOpen(false);
+      setLogFileClearLoading(false);
+    }
+  };
+
   const jumpToLogEdge = () => {
     const scroller = logScrollRef.current;
     if (!scroller) return;
@@ -314,49 +376,66 @@ export default function DebugConsole() {
   };
 
   return (
+    <>
     <div className="flex h-[calc(100vh-1.5rem)] min-h-0 flex-col overflow-hidden">
       <div className="sticky top-0 z-20 shrink-0 border-b border-border/70 bg-background/95 backdrop-blur">
         <header className="border-b border-border/70 px-4 py-3 md:px-6">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="grid min-h-[7rem] gap-3 xl:grid-cols-[minmax(280px,1fr)_minmax(760px,auto)] xl:items-start">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <Terminal className="h-5 w-5 text-foreground" />
                 <h1 className="text-xl font-semibold tracking-tight text-foreground">Debug Console</h1>
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                <span>{filteredLogs.length} of {logs.length} entries</span>
-                <span>{sources.length} sources</span>
-                <span>{dateFilter === ALL_DATES_VALUE ? "All dates" : `Date ${dateFilter}`}</span>
-                {lastUpdated && <span>Updated {lastUpdated.toLocaleTimeString("de-DE")}</span>}
-                {truncated && <span>Tail view</span>}
+              <div className="mt-1 grid min-h-[3.25rem] gap-x-3 gap-y-1 text-sm text-muted-foreground sm:grid-cols-[auto_auto_auto]">
+                <span className="whitespace-nowrap">{filteredLogs.length} of {logs.length} entries</span>
+                <span className="whitespace-nowrap">{sources.length} sources</span>
+                <span className="whitespace-nowrap">{dateFilter === ALL_DATES_VALUE ? "All dates" : `Date ${dateFilter}`}</span>
+                <span className="whitespace-nowrap">
+                  Updated {lastUpdated ? lastUpdated.toLocaleTimeString("de-DE") : "--:--:--"}
+                </span>
+                <span className="whitespace-nowrap">{truncated ? "Tail view" : "Full view"}</span>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={errorCount ? "destructive" : "outline"}>{errorCount} errors</Badge>
-              <Badge variant={warningCount ? "secondary" : "outline"}>{warningCount} warnings</Badge>
-              <Badge variant={debugCount ? "outline" : "secondary"}>{debugCount} debug</Badge>
-              <Button type="button" variant="outline" onClick={clearConsoleView} disabled={!displayedLogs.length}>
-                <Eraser className="h-4 w-4" />
-                Clear view
-              </Button>
-              <Button type="button" variant="outline" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
-                <Clipboard className="h-4 w-4" />
-                Copy visible
-              </Button>
-              <Button type="button" variant="outline" onClick={() => void downloadSupportBundle()} disabled={supportBundleLoading}>
-                <Download className={cn("h-4 w-4", supportBundleLoading && "animate-pulse")} />
-                Support bundle
-              </Button>
-              <Button type="button" variant="outline" onClick={() => void loadLogs()} disabled={loading}>
-                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-                Refresh
-              </Button>
+            <div className="grid gap-2 xl:justify-items-end">
+              <div className="grid w-full grid-cols-3 gap-2 xl:w-auto xl:min-w-[360px]">
+                <Badge className="justify-center" variant={errorCount ? "destructive" : "outline"}>{errorCount} errors</Badge>
+                <Badge className="justify-center" variant={warningCount ? "secondary" : "outline"}>{warningCount} warnings</Badge>
+                <Badge className="justify-center" variant={debugCount ? "outline" : "secondary"}>{debugCount} debug</Badge>
+              </div>
+              <div className="flex w-full flex-nowrap items-center gap-2 overflow-x-auto pb-1 xl:w-auto xl:justify-end">
+                <Button className="shrink-0" type="button" variant="outline" onClick={clearConsoleView} disabled={!displayedLogs.length}>
+                  <Eraser className="h-4 w-4" />
+                  Clear view
+                </Button>
+                <Button
+                  className="shrink-0"
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDeleteDialogOpen(true)}
+                  disabled={logFileClearLoading || (!logs.length && !sources.length)}
+                >
+                  <Trash2 className={cn("h-4 w-4", logFileClearLoading && "animate-pulse")} />
+                  Delete logs
+                </Button>
+                <Button className="shrink-0" type="button" variant="outline" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
+                  <Clipboard className="h-4 w-4" />
+                  Copy visible
+                </Button>
+                <Button className="shrink-0" type="button" variant="outline" onClick={() => void downloadSupportBundle()} disabled={supportBundleLoading}>
+                  <Download className={cn("h-4 w-4", supportBundleLoading && "animate-pulse")} />
+                  Support bundle
+                </Button>
+                <Button className="shrink-0" type="button" variant="outline" onClick={() => void loadLogs()} disabled={loading}>
+                  <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+                  Refresh
+                </Button>
+              </div>
             </div>
           </div>
         </header>
 
         <section className="px-4 py-3 md:px-6">
-          <div className="grid gap-2 xl:grid-cols-[minmax(220px,1fr)_180px_150px_360px_auto]">
+          <div className="grid gap-2 xl:grid-cols-[minmax(220px,1fr)_180px_160px_minmax(560px,auto)_auto]">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -388,44 +467,47 @@ export default function DebugConsole() {
                 aria-label="Filter log date"
               />
             </div>
-            <div className="flex items-center gap-1 rounded-md border border-border/70 bg-background/35 p-1">
-              <Filter className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
-              {LEVELS.map((level) => (
-                <button
-                  key={level}
-                  type="button"
-                  onClick={() => setSelectedLevel(level)}
-                  className={cn(
-                    "h-7 min-w-0 flex-1 rounded px-2 text-xs font-medium transition-colors",
-                    selectedLevel === level
-                      ? "bg-foreground text-background"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                  )}
-                >
-                  {level}
-                </button>
-              ))}
+            <div className="min-w-0 overflow-x-auto rounded-md border border-border/70 bg-background/35 p-1">
+              <div className="flex min-w-max items-center gap-1">
+                <Filter className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
+                {LEVELS.map((level) => (
+                  <button
+                    key={level}
+                    type="button"
+                    onClick={() => setSelectedLevel(level)}
+                    className={cn(
+                      "h-7 min-w-[70px] shrink-0 rounded px-2 text-xs font-medium transition-colors",
+                      selectedLevel === level
+                        ? "bg-foreground text-background"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                    )}
+                  >
+                    {level}
+                  </button>
+                ))}
+              </div>
             </div>
-            <Button type="button" variant="ghost" onClick={resetFilters} disabled={!hasActiveFilters}>
+            <Button className="shrink-0" type="button" variant="ghost" onClick={resetFilters} disabled={!hasActiveFilters}>
               <Eraser className="h-4 w-4" />
               Reset filters
             </Button>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-            <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
+          <div className="mt-3 grid min-h-10 gap-3 text-sm text-muted-foreground xl:grid-cols-[auto_auto_auto_auto_minmax(180px,1fr)] xl:items-center">
+            <label className="flex items-center justify-between gap-2 rounded-md border border-border/70 px-3 py-1.5">
               <span>Auto refresh</span>
               <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="Toggle auto refresh" />
             </label>
-            <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
+            <label className="flex items-center justify-between gap-2 rounded-md border border-border/70 px-3 py-1.5">
               <span>Auto scroll</span>
               <Switch checked={autoScroll} onCheckedChange={setAutoScroll} aria-label="Toggle auto scroll" />
             </label>
-            <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-1.5">
+            <label className="flex items-center justify-between gap-2 rounded-md border border-border/70 px-3 py-1.5">
               <span>Newest first</span>
               <Switch checked={newestFirst} onCheckedChange={setNewestFirst} aria-label="Show newest logs first" />
             </label>
             <Button
+              className="justify-self-start"
               type="button"
               variant="ghost"
               size="sm"
@@ -435,7 +517,9 @@ export default function DebugConsole() {
               <ArrowDownToLine className="h-4 w-4" />
               {newestFirst ? "Top" : "Bottom"}
             </Button>
-            {actionStatus && <span>{actionStatus}</span>}
+            <span className="min-h-5 min-w-0 truncate" aria-live="polite" title={actionStatus}>
+              {actionStatus || "\u00a0"}
+            </span>
           </div>
 
           {error && (
@@ -494,5 +578,23 @@ export default function DebugConsole() {
         </div>
       </section>
     </div>
+    <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete runtime log files?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This clears the backend and shell log files used by the debug console. Support bundles created before this action are not changed.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => void deleteRuntimeLogs()} disabled={logFileClearLoading}>
+            <Trash2 className="h-4 w-4" />
+            Delete logs
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }

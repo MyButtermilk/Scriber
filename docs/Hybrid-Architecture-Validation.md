@@ -455,9 +455,11 @@ Goal coverage:
 
 Remaining limits:
 
-- This does not make a slim FFmpeg binary the standard release default.
+- Superseded on 2026-06-09: Gyan `release essentials` is now wired as the
+  standard media-tools source through `scripts\prepare_gyan_ffmpeg_essentials.ps1`
+  and `-UseGyanFfmpegEssentials -ValidateSlimMediaTools`.
 - Real installed-package YouTube, file-upload, and Azure-MAI media workflow
-  smokes are still required before replacing the current full FFmpeg bundle.
+  smokes are still required before quoting final post-Essentials release sizes.
 
 ## 2026-06-03 - Desktop Smoke Evidence UTF-8 Output
 
@@ -2026,12 +2028,12 @@ Result: passed.
 
 Implemented improvements:
 
-- `.github\workflows\release-windows.yml` now installs `ffmpeg` through
-  Chocolatey before the Windows installer build.
-- The workflow verifies both `ffmpeg` and `ffprobe` with `Get-Command` and
-  `-version` before Tauri invokes the sidecar build.
-- `tests\test_tauri_stability_smoke_gates.py` now guards that the workflow
-  keeps this media-tools prerequisite wired.
+- Superseded on 2026-06-09: `.github\workflows\release-windows.yml` no longer
+  installs `ffmpeg` through Chocolatey for the release build. It prepares Gyan
+  FFmpeg Essentials with SHA256 validation, exports `SCRIBER_RELEASE_MEDIA_TOOLS_DIR`,
+  and passes that path plus `-ValidateSlimMediaTools` to `scripts\build_windows.ps1`.
+- `tests\test_tauri_stability_smoke_gates.py` now guards that the workflow keeps
+  the Gyan Essentials media-tools prerequisite wired.
 
 Evidence:
 
