@@ -39,7 +39,7 @@ ROUTE_EXPECTATIONS: dict[str, list[str]] = {
         "ui-debug-sample.log",
         "Debug console sample error",
         "Copy visible",
-        "Delete logs",
+        "Clear logs",
         "Support bundle",
         "Auto scroll",
         "Newest first",
