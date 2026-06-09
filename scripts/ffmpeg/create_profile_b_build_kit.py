@@ -164,6 +164,23 @@ def build_plan(
         "configureArgsFile": repo_relative(output_dir / "configure-profile-b.args"),
         "configureScript": repo_relative(output_dir / "configure-profile-b.sh"),
         "configureArgs": configure_args,
+        "buildRunner": {
+            "command": [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "scripts/ffmpeg/build_profile_b_msys2.ps1",
+                "-BuildRoot",
+                "build/ffmpeg-profile-b-msys2",
+                "-SourceUrl",
+                source_url,
+                "-GitRef",
+                git_ref,
+                "-InstallDependencies",
+            ],
+        },
         "postBuildValidation": [
             {
                 "name": "profile_manifest",

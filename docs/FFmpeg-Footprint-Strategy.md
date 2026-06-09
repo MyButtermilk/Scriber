@@ -308,7 +308,16 @@ Recommended implementation order:
    - `configure-profile-b.sh`,
    - `profile-b-build-plan.json` with the source URL/ref and post-build
      validator, fixture-smoke, media-smoke, and sidecar-gate commands.
-3. Run the candidate through `scripts/ffmpeg/validate_ffmpeg_profile.py`.
+3. Compile the candidate with
+   `powershell -NoProfile -ExecutionPolicy Bypass -File
+   scripts/ffmpeg/build_profile_b_msys2.ps1 -InstallDependencies`. The runner
+   locates MSYS2/UCRT64, can install required `pacman` packages, clones the
+   configured FFmpeg source ref, runs `configure-profile-b.sh`, writes
+   `profile-b-msys2-build-report.json`, and then runs the manifest,
+   fixture-smoke, and media-preparation gates against the produced `bin`
+   directory. Use `-PlanOnly` to emit the exact commands and required packages
+   before touching the toolchain.
+4. Run the candidate through `scripts/ffmpeg/validate_ffmpeg_profile.py`.
    The validator writes `ffmpeg-profile-manifest.json` with:
    - configure flags,
    - `ffmpeg -buildconf`,
@@ -323,14 +332,14 @@ Recommended implementation order:
    The build-kit plan records the intended FFmpeg source URL and git ref; the
    final produced binary must still retain the exact source/ref in release
    evidence.
-4. Feed the resulting directory through existing
+5. Feed the resulting directory through existing
    `scripts/build_tauri_backend_sidecar.ps1 -MediaToolsDir <dir>
    -ValidateSlimMediaTools`.
-5. Run `scripts/ffmpeg/smoke_profile_b_fixtures.py --media-tools-dir <dir>
+6. Run `scripts/ffmpeg/smoke_profile_b_fixtures.py --media-tools-dir <dir>
    --require-ffprobe`.
-6. Run `scripts/smoke_media_preparation.py --media-tools-dir <dir>
+7. Run `scripts/smoke_media_preparation.py --media-tools-dir <dir>
    --require-ffprobe`.
-7. Run installed-package media smoke before accepting the profile in release.
+8. Run installed-package media smoke before accepting the profile in release.
 
 Do not commit large binaries unless the repository later defines a vendor-binary
 policy.
@@ -366,6 +375,8 @@ Automated tests now cover:
   filters, protocols, sizes, hashes, and licensing-sensitive build flags,
 - Profile B build-kit generation with configure args aligned to the validator
   requirements and no network/GPL/nonfree/video/hardware flags,
+- MSYS2/UCRT64 Profile-B build runner plan, package list, generated build-kit
+  integration, and post-build gate orchestration,
 - Profile B fixture smoke covering MP3 CBR/VBR, WAV PCM variants, MOV/M4A/MP4,
   WebM/Opus, MKV/WebM video audio extraction, OGG/Opus, FLAC, yt-dlp-like
   M4A/WebM/merged MP4, Azure-MAI MP3 preparation, PCM pipe output, no-audio

@@ -5323,3 +5323,65 @@ Remaining limits:
 - A produced binary still needs installed-package media smoke plus real
   installed YouTube/file/provider workflow evidence before replacing Gyan
   Essentials.
+
+## 2026-06-09 - FFmpeg Profile B MSYS2 Build Runner
+
+Commands:
+
+```powershell
+where.exe bash; where.exe pacman; where.exe make; where.exe gcc; where.exe pkg-config
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ffmpeg\build_profile_b_msys2.ps1 -BuildRoot tmp\ffmpeg-profile-b-msys2-plan -PlanOnly
+
+python -m py_compile scripts\ffmpeg\create_profile_b_build_kit.py scripts\ffmpeg\validate_ffmpeg_profile.py scripts\ffmpeg\smoke_profile_b_fixtures.py
+
+python -m pytest tests/test_ffmpeg_profile_msys2_build_runner.py tests/test_ffmpeg_profile_build_kit.py tests/test_ffmpeg_profile_fixture_smoke.py tests/test_ffmpeg_profile_validator.py -q
+```
+
+Result: build runner implemented and covered by plan/parser/static tests. A
+real compile was not run because MSYS2/UCRT64 is not installed on the current
+machine.
+
+Implemented improvements:
+
+- Added `scripts/ffmpeg/build_profile_b_msys2.ps1`, the Windows compile runner
+  for a real Profile-B candidate.
+- The runner locates MSYS2/UCRT64, supports `-InstallDependencies` for the
+  required `pacman` packages, generates the Profile-B build kit, clones or
+  updates the configured FFmpeg source ref, runs `configure-profile-b.sh`, and
+  validates the produced `bin` directory.
+- Post-build validation includes Profile-B manifest with `--require-lgpl`,
+  Profile-B fixture smoke, media-preparation smoke, and optional sidecar
+  candidate packaging with `-RunSidecarGate`.
+- `-PlanOnly` emits the exact package list, build paths, and validation
+  commands to `profile-b-msys2-build-report.json` without requiring MSYS2 or
+  mutating the local toolchain.
+- `scripts/ffmpeg/create_profile_b_build_kit.py` now exposes this runner in
+  its `buildRunner.command` block.
+
+Evidence:
+
+- Toolchain probe found no usable local MSYS2 build stack: `pacman`, `make`,
+  `gcc`, and `pkg-config` were not on PATH, and no `C:\msys64`-style install
+  was found.
+- `build_profile_b_msys2.ps1 -PlanOnly` succeeded and wrote the JSON plan under
+  `tmp\ffmpeg-profile-b-msys2-plan`.
+- Focused runner/build-kit/fixture/validator tests: `13 passed`.
+
+Goal coverage:
+
+- Phase 6: closes the automation gap between generated configure flags and a
+  repeatable Windows custom-FFmpeg compile command.
+- Phase 7: adds regression coverage for the runner's package list, parser
+  validity, PlanOnly JSON, and post-build gate wiring.
+- Phase 8: makes the next size-reduction attempt reproducible instead of
+  relying on manual MSYS2 commands.
+
+Remaining limits:
+
+- No custom Profile-B binary was produced in this run because MSYS2/UCRT64 is
+  absent locally.
+- The next completion step is to run this runner on a machine with MSYS2 or
+  install MSYS2, compile the binary, then run manifest, fixture smoke,
+  media-preparation smoke, sidecar gate, installed-package media smoke, and real
+  installed YouTube/file/provider workflow evidence.
