@@ -5059,3 +5059,74 @@ Remaining limits:
 - This does not close external release-readiness gates such as physical
   microphone matrix, real Authenticode signing, or published signed updater
   evidence.
+
+## 2026-06-09 - FFmpeg Footprint Audit and Encoded Media Strategy
+
+Commands:
+
+```powershell
+python -m pytest tests/runtime/test_ffmpeg_commands.py tests/test_azure_mai_stt.py tests/test_youtube_download.py tests/test_tauri_stability_smoke_gates.py tests/perf/test_media_preparation_smoke_script.py tests/test_validate_hybrid_release_readiness.py -q
+
+python scripts\smoke_media_preparation.py --output tmp\media-preparation-smoke-ffmpeg-footprint.json --require-ffprobe
+
+python -m pytest tests/test_web_api_security.py tests/runtime/test_media_tools.py tests/runtime/test_subprocess_utils.py -q
+```
+
+Result: implemented and covered by focused command-builder, provider,
+packaging-gate, media-smoke, and upload/security tests.
+
+Implemented improvements:
+
+- Added `src/runtime/ffmpeg_commands.py` to centralize FFmpeg and ffprobe
+  command construction for WebM/Opus normalization, Azure-MAI MP3 preparation,
+  PCM stdout decoding, duration probing, and WebM video-stream probing.
+- The shared builders reject URL-like inputs so FFmpeg remains local-file-only;
+  website extraction stays in `yt-dlp`.
+- `src/web_api.py`, `src/youtube_download.py`, `src/audio_file_input.py`, and
+  `src/azure_mai_stt.py` now use the shared argument-array builders instead of
+  duplicating command construction.
+- FFmpeg stderr classification now maps common user-facing failures to clearer
+  messages for no-audio input, corrupt/incomplete media, and unsupported audio
+  codecs.
+- Azure MAI keeps MP3 64k preparation through `libmp3lame` rather than FLAC
+  because upload latency is the priority. WAV/PCM is not used as a persisted
+  upload artifact; PCM remains only a stdout pipe for Pipecat file input.
+- `scripts/build_tauri_backend_sidecar.ps1 -ValidateSlimMediaTools` now checks
+  the expanded practical audio/container set: `libopus`, `libmp3lame`,
+  AAC/Opus/MP3/FLAC/ALAC decoding, WebM/Matroska, MP4/M4A/MOV, MP3, WAV, OGG,
+  and FLAC demuxing, plus WebM and MP3 muxing.
+- Added `docs/FFmpeg-Footprint-Strategy.md` with the repository audit,
+  capability matrix, Profile A/B/C recommendations, configure candidates,
+  packaging integration, licensing notes, measurements, and rollback plan.
+
+Evidence:
+
+- Focused regression run: `55 passed`.
+- Real media preparation smoke: `ok=true`, `5/5` checks passed against local
+  `C:\Program Files\FFmpeg\bin\ffmpeg.EXE` and `ffprobe.EXE`.
+- The media smoke produced WebM outputs for upload/video/YouTube normalization
+  and Azure MAI prepared `.mp3` with `audio/mpeg`; `temporaryFileCleaned=true`.
+- Upload/security/media-tool regression run: `44 passed`.
+- Local reference media-tool size measurement: `ffmpeg.exe=133.58 MiB`,
+  `ffprobe.exe=133.43 MiB`, total `267.01 MiB`.
+- Local 20-second speech estimate: MP3 64k about `157.3 KB` and `88.5 ms`
+  encode time; FLAC about `330.2 KB` and `67.7 ms` encode time. MP3 is kept
+  because upload size dominates latency on slower connections.
+
+Goal coverage:
+
+- Phase 6: makes the media-tool packaging profile smaller and more auditable
+  without removing required app media workflows.
+- Phase 7: strengthens automated media-preparation evidence for the release
+  and installer gates.
+- Phase 8: reduces duplicated FFmpeg command construction and prevents future
+  direct remote-URL FFmpeg usage.
+
+Remaining limits:
+
+- This does not yet provide a compiled custom slim FFmpeg artifact. The next
+  step is to build Profile B and run the documented fixture matrix plus
+  installed-package media smoke.
+- This does not close external release-readiness gates such as physical
+  microphone matrix, real Authenticode signing, or published signed updater
+  evidence.

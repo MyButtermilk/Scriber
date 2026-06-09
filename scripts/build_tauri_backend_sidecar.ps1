@@ -579,12 +579,12 @@ function Test-ScriberFfmpegCapabilities {
     }
 
     $decoders = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-decoders") -Label "ffmpeg decoder list"
-    foreach ($decoder in @("aac", "opus", "mp3")) {
+    foreach ($decoder in @("aac", "opus", "mp3", "flac", "alac")) {
         Assert-MediaToolOutputContains -Output $decoders -Needle $decoder -Label "decoder"
     }
 
     $demuxers = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-demuxers") -Label "ffmpeg demuxer list"
-    foreach ($demuxer in @("matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2", "mp3", "wav")) {
+    foreach ($demuxer in @("matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2", "mp3", "wav", "ogg", "flac")) {
         Assert-MediaToolOutputContains -Output $demuxers -Needle $demuxer -Label "demuxer"
     }
 

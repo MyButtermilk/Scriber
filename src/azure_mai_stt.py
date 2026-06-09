@@ -28,6 +28,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from src.config import Config
+from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, mp3_transcode_args
 from src.runtime.media_tools import require_media_tool
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 
@@ -154,23 +155,7 @@ async def _transcode_to_mp3(source_path: Path, target_path: Path) -> Path:
     ffmpeg = require_media_tool("ffmpeg")
 
     proc = await asyncio.create_subprocess_exec(
-        ffmpeg,
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
-        "-i",
-        str(source_path),
-        "-vn",
-        "-c:a",
-        "libmp3lame",
-        "-b:a",
-        "64k",
-        "-ar",
-        "16000",
-        "-ac",
-        "1",
-        str(target_path),
+        *mp3_transcode_args(ffmpeg, source_path, target_path, bitrate="64k"),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         **hidden_subprocess_kwargs(),
@@ -178,7 +163,8 @@ async def _transcode_to_mp3(source_path: Path, target_path: Path) -> Path:
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
         err = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
-        raise RuntimeError(f"ffmpeg MAI audio transcode failed: {err or proc.returncode}")
+        friendly = classify_ffmpeg_stderr(err)
+        raise RuntimeError(f"ffmpeg MAI audio transcode failed: {friendly or proc.returncode}")
     if not target_path.exists():
         raise RuntimeError("ffmpeg MAI audio transcode completed but output file is missing.")
     return target_path

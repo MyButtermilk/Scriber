@@ -84,6 +84,7 @@ This file is the working guide for agents editing this repository. Keep it accur
 - `performance.md`: current performance analysis.
 - `BUGS.md`, `CODE_REVIEW.md`, `AntigravityBugs.md`: bug/risk review notes.
 - `docs/PRD.md`: broad product/architecture snapshot.
+- `docs/FFmpeg-Footprint-Strategy.md`: media call-site audit, FFmpeg/ffprobe/yt-dlp boundary, minimal capability profiles, configure candidates, licensing notes, and rollback plan.
 - `docs/Performance-Optimization-Proposals.md`: implementation status for performance roadmap.
 - `docs/Mic-Performance-Enhancement.md`: mic latency and prewarming status.
 - `docs/Startup-Latency-Analysis.md`: startup optimization status.

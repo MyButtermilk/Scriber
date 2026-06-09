@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from src.azure_mai_stt import (
     azure_mai_content_type,
     azure_mai_language_locales,
@@ -8,6 +10,7 @@ from src.azure_mai_stt import (
     azure_mai_region,
     azure_mai_transcript_payload_to_text,
     build_azure_mai_definition,
+    prepared_azure_mai_audio_file,
     validate_azure_mai_region,
 )
 
@@ -97,3 +100,24 @@ def test_azure_mai_content_type_by_extension():
 def test_azure_mai_language_locales_skips_auto():
     assert azure_mai_language_locales("auto") == []
     assert azure_mai_language_locales("en") == ["en"]
+
+
+@pytest.mark.asyncio
+async def test_prepared_azure_mai_audio_file_transcodes_unsupported_input_to_encoded_mp3(monkeypatch, tmp_path):
+    source = tmp_path / "source.webm"
+    source.write_bytes(b"webm")
+
+    async def fake_transcode(source_path: Path, target_path: Path):
+        assert source_path == source
+        assert target_path.suffix == ".mp3"
+        target_path.write_bytes(b"mp3")
+        return target_path
+
+    monkeypatch.setattr("src.azure_mai_stt._transcode_to_mp3", fake_transcode)
+
+    async with prepared_azure_mai_audio_file(source) as prepared:
+        assert prepared.suffix == ".mp3"
+        assert azure_mai_content_type(prepared) == "audio/mpeg"
+        assert prepared.exists()
+
+    assert not prepared.exists()

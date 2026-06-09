@@ -7,6 +7,7 @@ from loguru import logger
 from pipecat.frames.frames import InputAudioRawFrame, StartFrame, EndFrame
 from pipecat.transports.base_transport import TransportParams
 
+from src.runtime.ffmpeg_commands import pcm_pipe_decode_args
 from src.runtime.media_tools import require_media_tool
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 
@@ -96,24 +97,12 @@ class FfmpegAudioFileInput(BaseInputTransport):
             ffmpeg = require_media_tool("ffmpeg")
 
             bytes_per_frame = max(1, self._block_size) * int(self._params.audio_in_channels) * 2
-            cmd = [
+            cmd = pcm_pipe_decode_args(
                 ffmpeg,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
                 self._file_path,
-                "-vn",
-                "-ac",
-                str(int(self._params.audio_in_channels)),
-                "-ar",
-                str(int(self._params.audio_in_sample_rate)),
-                "-f",
-                "s16le",
-                "-acodec",
-                "pcm_s16le",
-                "-",
-            ]
+                sample_rate=int(self._params.audio_in_sample_rate),
+                channels=int(self._params.audio_in_channels),
+            )
 
             self._ffmpeg = await asyncio.create_subprocess_exec(
                 *cmd,

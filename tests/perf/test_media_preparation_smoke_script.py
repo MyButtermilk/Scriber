@@ -103,3 +103,4 @@ def test_media_preparation_smoke_script_writes_artifact(tmp_path: Path) -> None:
     assert checks["azure_mai_audio_preparation"]["ok"] is True
     assert checks["file_upload_compression"]["output"]["suffix"] == ".webm"
     assert checks["azure_mai_audio_preparation"]["prepared"]["suffix"] == ".mp3"
+    assert checks["azure_mai_audio_preparation"]["prepared"]["contentType"] == "audio/mpeg"

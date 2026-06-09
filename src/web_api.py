@@ -51,6 +51,7 @@ from src.core.ws_contracts import (
 from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.runtime.paths import app_root, data_dir, downloads_dir, is_frozen, logs_dir, repo_root
+from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args, webm_opus_transcode_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 from src.mic_prewarm import MicrophonePrewarmManager
@@ -649,25 +650,7 @@ async def _transcode_media_to_webm_audio(
 ) -> Path:
     ffmpeg = require_media_tool("ffmpeg")
 
-    cmd = [
-        ffmpeg,
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
-        "-i",
-        str(source_path),
-        "-vn",
-        "-c:a",
-        "libopus",
-        "-b:a",
-        bitrate,
-        "-ar",
-        "16000",
-        "-ac",
-        "1",
-        str(target_path),
-    ]
+    cmd = webm_opus_transcode_args(ffmpeg, source_path, target_path, bitrate=bitrate)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -680,7 +663,8 @@ async def _transcode_media_to_webm_audio(
 
     if proc.returncode != 0:
         err_msg = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
-        raise RuntimeError(f"ffmpeg audio transcode failed: {err_msg or f'exit code {proc.returncode}'}")
+        friendly = classify_ffmpeg_stderr(err_msg)
+        raise RuntimeError(f"ffmpeg audio transcode failed: {friendly or f'exit code {proc.returncode}'}")
 
     if not target_path.exists():
         raise RuntimeError("Audio transcode completed but output file not found.")
@@ -872,16 +856,7 @@ def _probe_media_duration_seconds(file_path: Path) -> float | None:
     if not ffprobe:
         return None
 
-    cmd = [
-        ffprobe,
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(file_path),
-    ]
+    cmd = ffprobe_duration_args(ffprobe, file_path)
     try:
         proc = subprocess.run(
             cmd,

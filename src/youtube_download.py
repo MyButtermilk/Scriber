@@ -7,6 +7,7 @@ from typing import Callable, Optional
 
 from loguru import logger
 
+from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_video_stream_args, webm_opus_transcode_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 
@@ -95,16 +96,7 @@ async def _has_video_stream(path: Path) -> bool:
         return False
 
     proc = await asyncio.create_subprocess_exec(
-        ffprobe,
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=codec_type",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(path),
+        *ffprobe_video_stream_args(ffprobe, path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         **hidden_subprocess_kwargs(),
@@ -125,20 +117,7 @@ async def _extract_audio_track(source_path: Path) -> Path:
     else:
         target_path = source_path.with_suffix(".webm")
     proc = await asyncio.create_subprocess_exec(
-        ffmpeg,
-        "-y",
-        "-i",
-        str(source_path),
-        "-vn",
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        "-c:a",
-        "libopus",
-        "-b:a",
-        "64k",
-        str(target_path),
+        *webm_opus_transcode_args(ffmpeg, source_path, target_path, bitrate="64k"),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         **hidden_subprocess_kwargs(),
@@ -146,8 +125,9 @@ async def _extract_audio_track(source_path: Path) -> Path:
     _stdout_b, stderr_b = await _communicate_or_kill_on_cancel(proc)
     if proc.returncode != 0 or not target_path.exists():
         err_msg = (stderr_b or b"").decode("utf-8", errors="replace").strip()
+        friendly = classify_ffmpeg_stderr(err_msg)
         raise YouTubeDownloadError(
-            f"Failed to extract audio from downloaded video: {err_msg or f'exit code {proc.returncode}'}"
+            f"Failed to extract audio from downloaded video: {friendly or f'exit code {proc.returncode}'}"
         )
     return target_path
 
