@@ -73,7 +73,7 @@ ScriberPipeline: Any | None = None
 _invalidate_mic_device_resolution_cache_impl: Callable[[], None] | None = None
 
 
-def _get_scriber_pipeline_class() -> Any:
+def _create_scriber_pipeline(*args: Any, **kwargs: Any) -> Any:
     """Load the heavy Pipecat-backed pipeline only when transcription needs it."""
     global ScriberPipeline, _invalidate_mic_device_resolution_cache_impl
     if ScriberPipeline is None:
@@ -84,12 +84,7 @@ def _get_scriber_pipeline_class() -> Any:
 
         ScriberPipeline = pipeline_class
         _invalidate_mic_device_resolution_cache_impl = invalidate_cache
-    return ScriberPipeline
-
-
-def _create_scriber_pipeline(*args: Any, **kwargs: Any) -> Any:
-    pipeline_class = _get_scriber_pipeline_class()
-    return pipeline_class(*args, **kwargs)
+    return ScriberPipeline(*args, **kwargs)
 
 
 def invalidate_mic_device_resolution_cache() -> None:

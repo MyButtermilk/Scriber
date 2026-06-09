@@ -4,6 +4,7 @@ import {
   type FrontendReadyRequest,
   type FrontendReadyResponse,
 } from "@/lib/api-types";
+import { responseDetailMessage } from "@/lib/request-errors";
 
 declare global {
   interface Window {
@@ -75,7 +76,12 @@ function appendSessionToken(url: string): string {
   try {
     const parsed = new URL(url, backendBaseUrl || window.location.origin);
     const backend = new URL(backendBaseUrl || window.location.origin);
-    const targetsBackend = parsed.hostname === backend.hostname && parsed.port === backend.port;
+    // URL.port is "" for default ports, so normalize before comparing
+    // (e.g. "http://host" must match "http://host:80").
+    const effectivePort = (u: URL) =>
+      u.port || (u.protocol === "https:" || u.protocol === "wss:" ? "443" : "80");
+    const targetsBackend =
+      parsed.hostname === backend.hostname && effectivePort(parsed) === effectivePort(backend);
     if (targetsBackend && (parsed.pathname === "/ws" || parsed.pathname.startsWith("/api/"))) {
       parsed.searchParams.set("scriberToken", backendSessionToken);
       return parsed.toString();
@@ -199,21 +205,5 @@ export function wsUrl(path: string): string {
 }
 
 async function responseMessage(res: Response, fallback: string): Promise<string> {
-  const textFallback = res.clone();
-  try {
-    const payload = await res.json();
-    if (payload?.message) {
-      return String(payload.message);
-    }
-  } catch {
-    try {
-      const text = await textFallback.text();
-      if (text.trim()) {
-        return text.trim();
-      }
-    } catch {
-      // Ignore and return fallback.
-    }
-  }
-  return fallback;
+  return (await responseDetailMessage(res)) || fallback;
 }

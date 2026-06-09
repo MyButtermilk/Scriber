@@ -22,6 +22,11 @@ from aiohttp import WSMsgType, web
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = REPO_ROOT / "Frontend"
 
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.process_utils import process_creation_flags, terminate_process
+
 
 def find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -123,23 +128,6 @@ def npm_executable() -> str:
     if not npm:
         raise RuntimeError("npm was not found on PATH.")
     return npm
-
-
-def process_creation_flags() -> int:
-    if sys.platform.startswith("win"):
-        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return 0
-
-
-def terminate_process(process: subprocess.Popen[Any]) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=10)
 
 
 def transcript_item(transcript_type: str, index: int) -> dict[str, Any]:
@@ -647,9 +635,9 @@ async def run_browser_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             if cdp:
                 await cdp.close()
             if browser:
-                terminate_process(browser)
+                terminate_process(browser, timeout_sec=10.0)
             if vite:
-                terminate_process(vite)
+                terminate_process(vite, timeout_sec=10.0)
             await backend.close()
 
     return build_result(args, scenarios)

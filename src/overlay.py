@@ -23,6 +23,20 @@ try:
 except ImportError:
     HAS_QT = False
 
+    # Minimal stand-ins so the module-level Qt classes below can still be
+    # defined; they are never instantiated when HAS_QT is False.
+    class QObject:  # type: ignore[no-redef]
+        pass
+
+    class QWidget:  # type: ignore[no-redef]
+        pass
+
+    def Signal(*_args, **_kwargs):  # type: ignore[no-redef]
+        return None
+
+    # Names evaluated in method signatures of the Qt classes below.
+    QColor = QPainter = QRectF = object  # type: ignore[assignment,misc]
+
 # Fallback to tkinter
 try:
     import tkinter as tk

@@ -13,6 +13,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from scripts.process_utils import terminate_process
+
 
 SEGMENTS_BY_REQUIREMENT = {
     "hotkey_to_recording_state": "hotkey_received_to_mic_ready_ms",
@@ -137,17 +143,6 @@ def launch_text_target(args: argparse.Namespace, index: int) -> tuple[dict[str, 
         "pid": proc.pid,
         "title": args.text_target_title,
     }, proc
-
-
-def terminate_process(proc: subprocess.Popen | None, *, timeout_sec: float = 2.0) -> None:
-    if proc is None or proc.poll() is not None:
-        return
-    proc.terminate()
-    try:
-        proc.wait(timeout=timeout_sec)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=timeout_sec)
 
 
 def read_text_target_length(info: dict[str, Any] | None) -> int:

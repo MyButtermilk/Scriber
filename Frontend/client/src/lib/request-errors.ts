@@ -52,8 +52,7 @@ export function friendlyError(error: unknown, fallback = "Request failed."): str
   return fallback;
 }
 
-export async function responseErrorMessage(res: Response): Promise<string> {
-  const fallback = `${res.status}: ${res.statusText || "Request failed"}`;
+export async function responseDetailMessage(res: Response): Promise<string> {
   const contentType = (res.headers.get("content-type") || "").toLowerCase();
 
   if (contentType.includes("application/json")) {
@@ -63,15 +62,19 @@ export async function responseErrorMessage(res: Response): Promise<string> {
       (typeof payload?.error === "string" && payload.error) ||
       "";
     if (message) {
-      return `${res.status}: ${message}`;
+      return message;
     }
   }
 
-  const text = ((await res.text().catch(() => "")) || "").trim();
-  if (text) {
-    return `${res.status}: ${text}`;
+  return ((await res.text().catch(() => "")) || "").trim();
+}
+
+export async function responseErrorMessage(res: Response): Promise<string> {
+  const detail = await responseDetailMessage(res);
+  if (detail) {
+    return `${res.status}: ${detail}`;
   }
-  return fallback;
+  return `${res.status}: ${res.statusText || "Request failed"}`;
 }
 
 export function extractFailureMessage(content: string, step: string): string {

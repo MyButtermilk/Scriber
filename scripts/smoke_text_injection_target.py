@@ -17,6 +17,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from scripts.measure_recording_hot_path_baseline import TEXT_TARGET_WINDOW_FLAG
+from scripts.process_utils import terminate_process
 
 
 def repo_root() -> Path:
@@ -89,17 +90,6 @@ def evaluate_result(
         "capturedChars": len(target_text),
         "targetError": target_error,
     }
-
-
-def terminate_process(proc: subprocess.Popen | None, *, timeout_sec: float = 2.0) -> None:
-    if proc is None or proc.poll() is not None:
-        return
-    proc.terminate()
-    try:
-        proc.wait(timeout=timeout_sec)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=timeout_sec)
 
 
 def launch_target_window(target_path: Path, title: str, settle_sec: float) -> subprocess.Popen:
