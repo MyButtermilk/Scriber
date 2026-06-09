@@ -301,8 +301,13 @@ unless the architecture changes and FFmpeg intentionally receives remote URLs.
 Recommended implementation order:
 
 1. Keep current Gyan Essentials as fallback and CI/release baseline.
-2. Add a `scripts/ffmpeg/` custom-build helper or media-autobuild_suite config
-   for Profile B.
+2. Generate the Profile B build kit with
+   `python scripts/ffmpeg/create_profile_b_build_kit.py --output-dir
+   build/ffmpeg-profile-b`. The helper writes:
+   - `configure-profile-b.args`,
+   - `configure-profile-b.sh`,
+   - `profile-b-build-plan.json` with the source URL/ref and post-build
+     validator/smoke/sidecar-gate commands.
 3. Run the candidate through `scripts/ffmpeg/validate_ffmpeg_profile.py`.
    The validator writes `ffmpeg-profile-manifest.json` with:
    - configure flags,
@@ -315,8 +320,9 @@ Recommended implementation order:
    - required MP3, WebM/Opus and stdout PCM support,
    - GPL/nonfree/network/excluded-feature warnings,
    - SHA256 for `ffmpeg.exe` and `ffprobe.exe`.
-   A future custom-build helper should additionally record the exact source URL
-   and FFmpeg git revision used to produce the binaries.
+   The build-kit plan records the intended FFmpeg source URL and git ref; the
+   final produced binary must still retain the exact source/ref in release
+   evidence.
 4. Feed the resulting directory through existing
    `scripts/build_tauri_backend_sidecar.ps1 -MediaToolsDir <dir>
    -ValidateSlimMediaTools`.
@@ -356,6 +362,8 @@ Automated tests now cover:
 - sidecar slim validation requiring `libopus`, `libmp3lame`, and `pcm_s16le`,
 - profile manifest validation for encoders, decoders, demuxers, muxers,
   filters, protocols, sizes, hashes, and licensing-sensitive build flags,
+- Profile B build-kit generation with configure args aligned to the validator
+  requirements and no network/GPL/nonfree/video/hardware flags,
 - media-smoke expectations for WebM/Opus and Azure MAI MP3 preparation,
 - release-readiness media report validation.
 

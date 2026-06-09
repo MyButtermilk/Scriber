@@ -5126,9 +5126,10 @@ Goal coverage:
 
 Remaining limits:
 
-- This does not yet provide a compiled custom slim FFmpeg artifact. The next
-  step is to build Profile B and run the documented fixture matrix plus
-  installed-package media smoke.
+- This does not yet provide a compiled custom slim FFmpeg artifact. The
+  follow-up is to run the generated Profile-B build kit against an FFmpeg
+  source checkout, then run the documented fixture matrix plus installed-package
+  media smoke.
 - This does not close external release-readiness gates such as physical
   microphone matrix, real Authenticode signing, or published signed updater
   evidence.
@@ -5204,3 +5205,59 @@ Remaining limits:
   FFmpeg artifact.
 - Real installed YouTube/file/provider workflow evidence is still required
   before replacing Gyan Essentials with a stricter custom Profile-B build.
+
+## 2026-06-09 - FFmpeg Profile B Build Kit
+
+Commands:
+
+```powershell
+python -m py_compile scripts\ffmpeg\create_profile_b_build_kit.py
+
+python scripts\ffmpeg\create_profile_b_build_kit.py --output-dir tmp\ffmpeg-profile-b-build-kit --source-url https://git.ffmpeg.org/ffmpeg.git --git-ref n7.0 --print-json
+
+python -m pytest tests/test_ffmpeg_profile_build_kit.py tests/test_ffmpeg_profile_validator.py -q
+```
+
+Result: implemented and covered by focused build-kit and validator tests.
+
+Implemented improvements:
+
+- Added `scripts/ffmpeg/create_profile_b_build_kit.py`, a deterministic
+  Profile-B custom-build helper.
+- The helper writes `configure-profile-b.args`, `configure-profile-b.sh`, and
+  `profile-b-build-plan.json`.
+- The configure profile enables MP3, WebM/Opus, stdout `pcm_s16le`, raw
+  `s16le` input, local `file` and `pipe` protocols, common audio demuxers and
+  decoders, plus the minimal Profile-B parser/demuxer additions for local
+  yt-dlp post-processing.
+- The configure profile excludes direct FFmpeg network protocols, GPL,
+  nonfree, video encoder, and hardware-stack flags.
+- The build plan records the intended FFmpeg source URL/ref and the required
+  post-build gates: Profile-B manifest validation with `--require-lgpl`,
+  media-preparation smoke, and sidecar candidate packaging with
+  `-ValidateSlimMediaTools`.
+
+Evidence:
+
+- Generated build kit under `tmp\ffmpeg-profile-b-build-kit`.
+- Generated configure script contains `--disable-network`,
+  `--enable-protocol=file`, `--enable-protocol=pipe`,
+  `--enable-libmp3lame`, `--enable-libopus`, and raw `s16le` support.
+- Focused tests: `7 passed`.
+
+Goal coverage:
+
+- Phase 6: moves from "documented candidate flags" to a reproducible generated
+  Profile-B build kit that can be run from an FFmpeg source checkout.
+- Phase 7: adds regression coverage so the build-kit flags stay aligned with
+  the Profile-B validator requirements.
+- Phase 8: keeps the custom-build path compatible with the latency-first MP3
+  policy and local-only FFmpeg boundary.
+
+Remaining limits:
+
+- This does not compile FFmpeg locally in the current run.
+- A produced binary still requires real size measurement, Profile-B manifest,
+  media-preparation smoke, sidecar gate, installed-package media smoke, and
+  real installed YouTube/file/provider workflow evidence before it can replace
+  Gyan Essentials.
