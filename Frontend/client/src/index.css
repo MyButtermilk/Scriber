@@ -3017,6 +3017,111 @@ html:has(body[data-scroll-locked]) {
 }
 
 /* ============================================
+   RESPONSIVE APP CONTROL DENSITY
+   ============================================ */
+
+.debug-console-actions {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(2.25rem, 1fr));
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.debug-console-action-button {
+  min-width: 0;
+  width: 100%;
+  padding-inline: 0.55rem;
+}
+
+.debug-console-action-label {
+  display: none;
+}
+
+@media (min-width: 840px) {
+  .debug-console-actions {
+    grid-template-columns: repeat(auto-fit, minmax(8rem, max-content));
+    justify-content: end;
+  }
+
+  .debug-console-action-button {
+    width: auto;
+    min-width: 8rem;
+    padding-inline: 0.75rem;
+  }
+
+  .debug-console-action-label {
+    display: inline;
+  }
+}
+
+@media (min-width: 1280px) {
+  .debug-console-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}
+
+.compact-impact-switch,
+.settings-page .impact-echo-switch {
+  --impact-switch-track-width: 64px;
+  --impact-switch-track-height: 34px;
+  --impact-switch-thumb-size: 26px;
+  --impact-switch-thumb-offset: 3px;
+  --impact-switch-thumb-translate: 28px;
+  flex: 0 0 auto;
+}
+
+.compact-impact-switch .impact-echo-switch__wave,
+.settings-page .impact-echo-switch .impact-echo-switch__wave {
+  width: 92px;
+  height: 92px;
+}
+
+.settings-page .settings-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.settings-page .settings-control-row > :first-child {
+  min-width: 0;
+}
+
+.settings-page .mic-device-dropdown-header,
+.settings-page .language-dropdown-header,
+.settings-page .model-dropdown-header {
+  min-height: 56px;
+  gap: 12px;
+  border-radius: 14px;
+  padding: 14px 18px;
+}
+
+.settings-page .mic-device-dropdown-selected-text,
+.settings-page .language-dropdown-selected-text,
+.settings-page .model-dropdown-selected-text {
+  font-size: 0.98rem;
+}
+
+.settings-page .model-dropdown,
+.settings-page .language-dropdown {
+  width: min(100%, 320px);
+}
+
+@media (max-width: 720px) {
+  .settings-page .settings-control-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-page .model-dropdown,
+  .settings-page .language-dropdown {
+    width: 100%;
+  }
+}
+
+/* ============================================
    NEUMORPHIC TOAST STYLES
    ============================================ */
 

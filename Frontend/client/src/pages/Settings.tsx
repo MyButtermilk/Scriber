@@ -1125,7 +1125,7 @@ export default function Settings() {
         : "Not configured";
 
   return (
-    <div className={`max-w-screen-md mx-auto px-4 py-6 md:py-8 transition-opacity duration-150 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
+    <div className={`settings-page max-w-screen-md mx-auto px-4 py-6 md:py-8 transition-opacity duration-150 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
       {settingsError && (
         <QueryErrorState
           className="mb-4"
@@ -1159,7 +1159,7 @@ export default function Settings() {
 
                 {autostartAvailable && (
                   <>
-                    <div className="flex items-center justify-between">
+                    <div className="settings-control-row">
                       <div className="space-y-0.5">
                         <Label className="text-base">Autostart with Windows</Label>
                         <p className="text-sm text-muted-foreground">Launch Scriber automatically when you log in</p>
@@ -1284,7 +1284,7 @@ export default function Settings() {
                   )}
                 </div>
 
-                <div className="flex items-center justify-between">
+                <div className="settings-control-row">
                   <div className="space-y-0.5">
                     <Label className="text-base">Mic Pre-warming</Label>
                     <p className="text-sm text-muted-foreground">Keep microphone in standby for instant recording start</p>
@@ -1297,12 +1297,12 @@ export default function Settings() {
 
                 <Separator />
 
-                <div className="flex items-center justify-between">
+                <div className="settings-control-row">
                   <div className="space-y-0.5">
                     <Label className="text-base">Transcription Model</Label>
                     <p className="text-sm text-muted-foreground">Select the AI model for live transcription</p>
                   </div>
-                  <div className="space-y-2">
+                  <div className="w-full space-y-2 sm:w-auto">
                     <div className={cn("model-dropdown w-[320px]", isTranscriptionModelDropdownOpen && "is-open")}>
                       <button
                         type="button"
@@ -1616,7 +1616,7 @@ export default function Settings() {
 
                 <Separator />
 
-                <div className="flex items-center justify-between">
+                <div className="settings-control-row">
                   <div className="space-y-0.5">
                     <Label className="text-base">Default Language</Label>
                     <p className="text-sm text-muted-foreground">Fallback language for detection</p>
@@ -1687,7 +1687,7 @@ export default function Settings() {
 
                 <Separator />
 
-                <div className="flex items-center justify-between">
+                <div className="settings-control-row">
                   <div className="space-y-0.5">
                     <Label className="text-base">Summarization Model</Label>
                     <p className="text-sm text-muted-foreground">Select model for summarizing transcripts</p>
@@ -1754,7 +1754,7 @@ export default function Settings() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between">
+                <div className="settings-control-row">
                   <div className="space-y-0.5">
                     <Label className="text-base">Auto-Summarize</Label>
                     <p className="text-sm text-muted-foreground">Automatically summarize transcripts when completed</p>
@@ -1768,7 +1768,7 @@ export default function Settings() {
 
                 <Separator />
 
-                <div className="flex items-center justify-between">
+                <div className="settings-control-row">
                   <div className="space-y-0.5">
                     <Label className="text-base">Global Hotkey</Label>
                     <p className="text-sm text-muted-foreground">Shortcut to start/stop recording</p>
@@ -1884,7 +1884,7 @@ export default function Settings() {
                 <Separator />
 
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
+                  <div className="settings-control-row">
                     <div className="space-y-0.5">
                       <Label className="text-base">Visualizer Bars</Label>
                       <p className="text-sm text-muted-foreground">Number of bars in the audio visualizer ({visualizerBarCount})</p>

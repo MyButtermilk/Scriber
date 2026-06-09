@@ -109,6 +109,34 @@ def test_live_mic_reconciles_active_state_and_websocket_reconnects() -> None:
     assert 'recordingState !== "finalizing"' not in source
 
 
+def test_debug_and_settings_controls_have_responsive_density() -> None:
+    debug_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "DebugConsole.tsx").read_text(
+        encoding="utf-8"
+    )
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+    css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
+
+    assert "debug-console-actions" in debug_source
+    assert "debug-console-action-button" in debug_source
+    assert "debug-console-action-label" in debug_source
+    assert "Download support bundle" in debug_source
+    assert "Support bundle downloaded as ${filename}. Check your Downloads folder." in debug_source
+    assert "was saved by the browser download manager" in debug_source
+    assert 'className="compact-impact-switch"' in debug_source
+
+    assert "settings-page" in settings_source
+    assert "settings-control-row" in settings_source
+    assert "settings-page .impact-echo-switch" in css
+    assert "--impact-switch-track-width: 64px" in css
+    assert ".debug-console-actions" in css
+    assert ".debug-console-action-label" in css
+    assert "grid-template-columns: repeat(5, minmax(2.25rem, 1fr))" in css
+    assert ".settings-page .mic-device-dropdown-header" in css
+    assert "@media (max-width: 720px)" in css
+
+
 def test_transcript_detail_uses_typed_rest_queries() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
         encoding="utf-8"

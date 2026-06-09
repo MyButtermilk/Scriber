@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/backend";
 import { cn } from "@/lib/utils";
 import type { RuntimeLogEntry, RuntimeLogsClearResponse, RuntimeLogsResponse } from "@/lib/api-types";
@@ -157,6 +158,7 @@ function filenameFromDisposition(disposition: string | null) {
 }
 
 export default function DebugConsole() {
+  const { toast } = useToast();
   const defaultDateFilter = useMemo(() => dateInputValue(new Date()), []);
   const [logs, setLogs] = useState<RuntimeLogEntry[]>([]);
   const [sources, setSources] = useState<string[]>([]);
@@ -359,17 +361,28 @@ export default function DebugConsole() {
         throw new Error((await res.text()) || res.statusText);
       }
       const blob = await res.blob();
+      const filename = filenameFromDisposition(res.headers.get("Content-Disposition"));
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = filenameFromDisposition(res.headers.get("Content-Disposition"));
+      link.download = filename;
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      setActionStatus("Support bundle downloaded.");
+      const message = `Support bundle downloaded as ${filename}. Check your Downloads folder.`;
+      setActionStatus(message);
+      toast({
+        title: "Support bundle downloaded",
+        description: `${filename} was saved by the browser download manager.`,
+      });
     } catch (err: any) {
       setError(`Support bundle failed: ${String(err?.message || err)}`);
+      toast({
+        title: "Support bundle failed",
+        description: String(err?.message || err),
+        variant: "destructive",
+      });
     } finally {
       setSupportBundleLoading(false);
     }
@@ -380,7 +393,7 @@ export default function DebugConsole() {
     <div className="flex h-[calc(100vh-1.5rem)] min-h-0 flex-col overflow-hidden">
       <div className="sticky top-0 z-20 shrink-0 border-b border-border/70 bg-background/95 backdrop-blur">
         <header className="border-b border-border/70 px-4 py-3 md:px-6">
-          <div className="grid min-h-[7rem] gap-3 xl:grid-cols-[minmax(280px,1fr)_minmax(760px,auto)] xl:items-start">
+          <div className="grid gap-3 xl:grid-cols-[minmax(260px,1fr)_minmax(0,auto)] xl:items-start">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <Terminal className="h-5 w-5 text-foreground" />
@@ -402,32 +415,35 @@ export default function DebugConsole() {
                 <Badge className="justify-center" variant={warningCount ? "secondary" : "outline"}>{warningCount} warnings</Badge>
                 <Badge className="justify-center" variant={debugCount ? "outline" : "secondary"}>{debugCount} debug</Badge>
               </div>
-              <div className="flex w-full flex-nowrap items-center gap-2 overflow-x-auto pb-1 xl:w-auto xl:justify-end">
-                <Button className="shrink-0" type="button" variant="outline" onClick={clearConsoleView} disabled={!displayedLogs.length}>
+              <div className="debug-console-actions">
+                <Button className="debug-console-action-button" title="Clear view" aria-label="Clear view" type="button" variant="outline" size="sm" onClick={clearConsoleView} disabled={!displayedLogs.length}>
                   <Eraser className="h-4 w-4" />
-                  Clear view
+                  <span className="debug-console-action-label">Clear view</span>
                 </Button>
                 <Button
-                  className="shrink-0"
+                  className="debug-console-action-button"
+                  title="Clear logs"
+                  aria-label="Clear logs"
                   type="button"
                   variant="outline"
+                  size="sm"
                   onClick={() => setDeleteDialogOpen(true)}
                   disabled={logFileClearLoading || (!logs.length && !sources.length)}
                 >
                   <Trash2 className={cn("h-4 w-4", logFileClearLoading && "animate-pulse")} />
-                  Clear logs
+                  <span className="debug-console-action-label">Clear logs</span>
                 </Button>
-                <Button className="shrink-0" type="button" variant="outline" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
+                <Button className="debug-console-action-button" title="Copy visible logs" aria-label="Copy visible logs" type="button" variant="outline" size="sm" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
                   <Clipboard className="h-4 w-4" />
-                  Copy visible
+                  <span className="debug-console-action-label">Copy visible</span>
                 </Button>
-                <Button className="shrink-0" type="button" variant="outline" onClick={() => void downloadSupportBundle()} disabled={supportBundleLoading}>
+                <Button className="debug-console-action-button" title="Download support bundle" aria-label="Download support bundle" type="button" variant="outline" size="sm" onClick={() => void downloadSupportBundle()} disabled={supportBundleLoading}>
                   <Download className={cn("h-4 w-4", supportBundleLoading && "animate-pulse")} />
-                  Support bundle
+                  <span className="debug-console-action-label">Support bundle</span>
                 </Button>
-                <Button className="shrink-0" type="button" variant="outline" onClick={() => void loadLogs()} disabled={loading}>
+                <Button className="debug-console-action-button" title="Refresh logs" aria-label="Refresh logs" type="button" variant="outline" size="sm" onClick={() => void loadLogs()} disabled={loading}>
                   <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-                  Refresh
+                  <span className="debug-console-action-label">Refresh</span>
                 </Button>
               </div>
             </div>
@@ -435,7 +451,7 @@ export default function DebugConsole() {
         </header>
 
         <section className="px-4 py-3 md:px-6">
-          <div className="grid gap-2 xl:grid-cols-[minmax(220px,1fr)_180px_160px_minmax(560px,auto)_auto]">
+          <div className="grid gap-2 2xl:grid-cols-[minmax(220px,1fr)_180px_160px_minmax(520px,auto)_auto]">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -496,15 +512,15 @@ export default function DebugConsole() {
           <div className="mt-3 grid min-h-10 gap-3 text-sm text-muted-foreground xl:grid-cols-[auto_auto_auto_auto_minmax(180px,1fr)] xl:items-center">
             <label className="flex items-center justify-between gap-2 rounded-md border border-border/70 px-3 py-1.5">
               <span>Auto refresh</span>
-              <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="Toggle auto refresh" />
+              <Switch className="compact-impact-switch" checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="Toggle auto refresh" />
             </label>
             <label className="flex items-center justify-between gap-2 rounded-md border border-border/70 px-3 py-1.5">
               <span>Auto scroll</span>
-              <Switch checked={autoScroll} onCheckedChange={setAutoScroll} aria-label="Toggle auto scroll" />
+              <Switch className="compact-impact-switch" checked={autoScroll} onCheckedChange={setAutoScroll} aria-label="Toggle auto scroll" />
             </label>
             <label className="flex items-center justify-between gap-2 rounded-md border border-border/70 px-3 py-1.5">
               <span>Newest first</span>
-              <Switch checked={newestFirst} onCheckedChange={setNewestFirst} aria-label="Show newest logs first" />
+              <Switch className="compact-impact-switch" checked={newestFirst} onCheckedChange={setNewestFirst} aria-label="Show newest logs first" />
             </label>
             <Button
               className="justify-self-start"
