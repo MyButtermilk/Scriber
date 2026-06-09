@@ -95,6 +95,21 @@ Ergebnis: Build erfolgreich, `release-metadata/size-report.json` meldet `Scriber
 
 Anschliessende `scripts\build_windows.ps1 -FastLocalInstaller`-Realbuilds liefen ebenfalls erfolgreich durch: Frontend-Typecheck, Tauri/NSIS-Bundle, Media-Preparation-Smoke, Runtime-Dependency-Footprint, Release-Metadata, Updater-Metadata-Validierung und Release-Size-Report waren gruen. Der erste Fast-Local-Lauf war wegen geaenderter Build-Inputs noch ein Sidecar-Cache-Miss und meldete `590299 ms` Gesamtzeit. Der zweite Fast-Local-Lauf traf nach frischem Vite-Build den content-basierten Sidecar-Cache (`cacheHit=true`, Key `71765fa4896f2a2d2e91f83afa9c2ee360494af3109cd9c253d679c86794a12d`) und meldete `364592 ms` Gesamtzeit; der eingebettete Sidecar-Teil lag bei `51072 ms`. Damit ist belegt, dass der Fast-Local-Modus die intended Gates automatisch setzt und kein optionales Paketmodell einfuehrt.
 
+Installierter Smoke gegen das aktuelle Setup am 2026-06-09:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe `
+  -VerifyFrontend `
+  -VerifyMediaPreparation `
+  -VerifySupportBundle `
+  -VerifyUninstall `
+  -MaxInstalledSizeMB 560 `
+  -OutputPath tmp\installer-smoke-current.json
+```
+
+Ergebnis: `ok=true`, installierte App `528.43 MiB` unter dem `560 MiB` Smoke-Budget, Frontend/WebView-ready verifiziert, installierte Media-Tools `5/5` Checks, Support-Bundle token-geschuetzt und redaction-verifiziert, Silent-Uninstall entfernt App-Artefakte und erhaelt Runtime-Daten-Sentinel. Live-Mic-/visueller PySide6-Overlay-Smoke wurde dabei bewusst nicht beansprucht und bleibt die Voraussetzung fuer jedes PySide6-Pruning im Standardpfad.
+
 Der Sidecar-Cache wurde real geprüft:
 
 - erster Lauf mit `-ReuseSidecarIfUnchanged -BundleMediaTools -CopyToTauriRelease`: `cacheHit=false`, PyInstaller baute den Sidecar und füllte den Cache.
