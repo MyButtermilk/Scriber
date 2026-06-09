@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -124,6 +125,65 @@ async def test_youtube_auto_summary_failure_is_exposed_as_summary_state(monkeypa
     assert "summary provider failed" in rec.summary_error
     assert rec.to_public(include_content=True)["summaryStatus"] == "failed"
     assert save_mock.call_count >= 3
+
+
+@pytest.mark.asyncio
+async def test_late_youtube_download_progress_cannot_overwrite_transcription_step(monkeypatch, tmp_path):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    ctl._downloads_dir = tmp_path / "downloads"
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"RIFF....WAVEfmt ")
+    now = datetime.now()
+    rec = TranscriptRecord(
+        id="late-download-progress",
+        title="Late Download Progress",
+        date="Today",
+        duration="00:10",
+        status="processing",
+        type="youtube",
+        language="auto",
+        step="Queued",
+        source_url="https://youtube.com/watch?v=lateprogress",
+        created_at=now.isoformat(),
+        updated_at=now.isoformat(),
+    )
+    late_download_progress = {}
+
+    async def _download_youtube_audio(*_args, **kwargs):
+        callback = kwargs["on_progress"]
+        late_download_progress["callback"] = callback
+        callback(SimpleNamespace(status="finished", speed=None, eta=None, percent=100.0))
+        return audio_path
+
+    class _LateProgressPipeline:
+        def __init__(self, *, on_transcription):
+            self._on_transcription = on_transcription
+
+        async def transcribe_file_direct(self, _path):
+            late_download_progress["callback"](
+                SimpleNamespace(status="finished", speed=None, eta=None, percent=100.0)
+            )
+            assert rec.step == "Transcribing..."
+            self._on_transcription("Synthetic transcript after late progress.", True)
+
+    def _create_pipeline(*_args, **kwargs):
+        return _LateProgressPipeline(on_transcription=kwargs["on_transcription"])
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+
+    with (
+        patch("src.web_api.download_youtube_audio", new=AsyncMock(side_effect=_download_youtube_audio)),
+        patch("src.web_api.supports_direct_file_upload", return_value=True),
+        patch("src.web_api._create_scriber_pipeline", side_effect=_create_pipeline),
+        patch.object(ctl, "_save_transcript_to_db", new=MagicMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        await ctl._run_youtube_transcription(rec, provider="soniox")
+
+    assert rec.status == "completed"
+    assert rec.step == "Completed"
+    assert "Synthetic transcript after late progress." in rec.content
 
 
 @pytest.mark.asyncio

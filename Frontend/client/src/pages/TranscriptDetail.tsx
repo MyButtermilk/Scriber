@@ -346,6 +346,8 @@ export default function TranscriptDetail() {
   const transcriptQuery = useQuery<TranscriptDetailResponse>({
     queryKey: ["/api/transcripts", id],
     enabled: !!id,
+    staleTime: 0,
+    refetchIntervalInBackground: true,
     refetchInterval: (query) => {
       const data = query.state.data;
       const status = data?.status;

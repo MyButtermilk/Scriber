@@ -29,17 +29,19 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["ok"] is True
-    assert payload["summary"]["routeCount"] == 6
+    assert payload["summary"]["routeCount"] == 7
     assert payload["summary"]["criticalConsoleErrorCount"] == 0
-    assert payload["summary"]["interactionCheckCount"] == 4
+    assert payload["summary"]["interactionCheckCount"] == 5
     assert set(payload["summary"]["interactionChecks"]) == {
         "youtube-thumbnails",
         "file-drag-drop",
         "debug-clear",
+        "transcript-processing-refresh",
         "token-required-browser-state",
     }
     assert "/settings" in payload["summary"]["routes"]
     assert "/debug" in payload["summary"]["routes"]
+    assert "/transcript/youtube-processing-smoke" in payload["summary"]["routes"]
     assert set(payload["summary"]["virtualizedHistoryRoutes"]) == {"/", "/youtube", "/file"}
     debug = next(item for item in payload["scenarios"] if item["route"] == "/debug")
     assert "Copy visible" in debug["expectedText"]

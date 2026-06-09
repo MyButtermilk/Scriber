@@ -108,6 +108,8 @@ def test_transcript_detail_uses_typed_rest_queries() -> None:
     assert "TranscriptHistoryItem" in source
     assert "useQuery<SettingsResponse>" in source
     assert "useQuery<TranscriptDetailResponse>" in source
+    assert "staleTime: 0" in source
+    assert "refetchIntervalInBackground: true" in source
     assert "const data = query.state.data;" in source
     assert "const transcript: TranscriptDetailResponse" in source
     assert "(await rec.json()) as TranscriptHistoryItem" not in source

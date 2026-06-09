@@ -1,4 +1,5 @@
 import asyncio
+import queue
 import types
 
 import numpy as np
@@ -107,7 +108,10 @@ async def test_microphone_input_adopts_prewarmed_stream(monkeypatch):
 
     async def fake_drain_queue():
         while True:
-            item = await mic._queue.get()
+            try:
+                item = await asyncio.to_thread(mic._queue.get, True, 0.1)
+            except queue.Empty:
+                continue
             if item is None:
                 break
             consumed.append(item)
@@ -122,20 +126,20 @@ async def test_microphone_input_adopts_prewarmed_stream(monkeypatch):
     assert mic._using_prewarm_stream is True
     assert ready == [True]
 
-    for _ in range(10):
+    for _ in range(50):
         if consumed:
             break
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
 
     assert consumed == [np.full((512, 1), 250, dtype=np.int16).tobytes()]
 
     assert manager.callback is not None
     data = np.full((512, 1), 1000, dtype=np.int16)
     manager.callback(data, 512, None, None)
-    for _ in range(10):
+    for _ in range(50):
         if len(consumed) >= 2:
             break
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
 
     assert consumed == [
         np.full((512, 1), 250, dtype=np.int16).tobytes(),

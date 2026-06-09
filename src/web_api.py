@@ -2624,6 +2624,7 @@ class ScriberWebController:
     async def _run_youtube_transcription(self, rec: TranscriptRecord, *, provider: str) -> None:
         workflow_started = time.monotonic()
         out_dir = self._downloads_dir / "youtube" / rec.id
+        workflow_phase = {"value": "downloading"}
         rec.step = "Downloading audio..."
         rec.updated_at = datetime.now().isoformat()
         await self._broadcast_history_updated()
@@ -2646,6 +2647,8 @@ class ScriberWebController:
             
             def on_download_progress(progress) -> None:
                 import time
+                if workflow_phase["value"] != "downloading" or rec.status != "processing":
+                    return
                 now = time.time()
                 # Throttle broadcasts to max 4 per second to avoid flooding
                 # BUT always allow "finished" status through to show 100%
@@ -2679,6 +2682,10 @@ class ScriberWebController:
                 timeout_seconds=download_timeout,
                 timeout_label="YouTube download",
             )
+            workflow_phase["value"] = "transcribing"
+            rec.step = "Preparing transcription..."
+            rec.updated_at = datetime.now().isoformat()
+            await self._broadcast_history_updated()
             self._emit_workflow_event(
                 message="YouTube download completed",
                 event="youtube.download.completed",
@@ -2702,6 +2709,8 @@ class ScriberWebController:
                 )
 
             def on_progress(step: str) -> None:
+                if rec.status != "processing":
+                    return
                 rec.step = step
                 rec.updated_at = datetime.now().isoformat()
                 self._loop.call_soon_threadsafe(
@@ -2749,6 +2758,7 @@ class ScriberWebController:
 
             content = rec.content_text()
             logger.info(f"YouTube transcription completed: {len(content)} chars")
+            workflow_phase["value"] = "completed"
             rec.status = "completed"
             rec.step = "Completed"
             rec.updated_at = datetime.now().isoformat()

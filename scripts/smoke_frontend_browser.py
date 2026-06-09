@@ -45,6 +45,11 @@ ROUTE_EXPECTATIONS: dict[str, list[str]] = {
     ],
     "/settings": ["Settings", "Transcription Settings", "API Configuration"],
     "/transcript/mic-00001": ["Synthetic Recording 00002", "Summary", "Transcript"],
+    "/transcript/youtube-processing-smoke": [
+        "Synthetic YouTube Processing",
+        "Synthetic completed summary after YouTube processing.",
+        "Transcript",
+    ],
 }
 
 
@@ -76,6 +81,7 @@ class FrontendSmokeBackend:
         self.websockets: set[web.WebSocketResponse] = set()
         self.session_token_required = False
         self.session_token = "smoke-session-token"
+        self.transcript_detail_counts: dict[str, int] = {}
 
     @property
     def base_url(self) -> str:
@@ -151,6 +157,16 @@ class FrontendSmokeBackend:
         if self.runner:
             await self.runner.cleanup()
             self.runner = None
+
+    async def broadcast_history_updated(self) -> None:
+        stale: list[web.WebSocketResponse] = []
+        for ws in tuple(self.websockets):
+            try:
+                await ws.send_json({"apiVersion": "1", "type": "history_updated"})
+            except Exception:
+                stale.append(ws)
+        for ws in stale:
+            self.websockets.discard(ws)
 
     async def health(self, request: web.Request) -> web.Response:
         return web.json_response(
@@ -365,6 +381,59 @@ class FrontendSmokeBackend:
 
     async def transcript_detail(self, request: web.Request) -> web.Response:
         transcript_id = request.match_info["transcript_id"]
+        if transcript_id == "youtube-processing-smoke":
+            count = self.transcript_detail_counts.get(transcript_id, 0) + 1
+            self.transcript_detail_counts[transcript_id] = count
+            created_at = "2026-06-01T12:00:00Z"
+            if count == 1:
+                asyncio.get_running_loop().call_later(
+                    0.2,
+                    lambda: asyncio.create_task(self.broadcast_history_updated()),
+                )
+                return web.json_response(
+                    {
+                        "id": transcript_id,
+                        "title": "Synthetic YouTube Processing",
+                        "date": "Today, 12:00",
+                        "duration": "04:20",
+                        "status": "processing",
+                        "type": "youtube",
+                        "language": "auto",
+                        "step": "Download complete",
+                        "sourceUrl": "https://www.youtube.com/watch?v=0wEjbSYNUM8",
+                        "channel": "Smoke Channel",
+                        "thumbnailUrl": f"{self.base_url}/synthetic-thumbnail.svg",
+                        "content": "",
+                        "summary": "",
+                        "summaryStatus": "pending",
+                        "summaryError": "",
+                        "summaryUpdatedAt": "",
+                        "createdAt": created_at,
+                        "updatedAt": "2026-06-01T12:00:10Z",
+                    }
+                )
+            return web.json_response(
+                {
+                    "id": transcript_id,
+                    "title": "Synthetic YouTube Processing",
+                    "date": "Today, 12:00",
+                    "duration": "04:20",
+                    "status": "completed",
+                    "type": "youtube",
+                    "language": "auto",
+                    "step": "Completed",
+                    "sourceUrl": "https://www.youtube.com/watch?v=0wEjbSYNUM8",
+                    "channel": "Smoke Channel",
+                    "thumbnailUrl": f"{self.base_url}/synthetic-thumbnail.svg",
+                    "content": "Speaker 1: Synthetic completed YouTube transcript.",
+                    "summary": "Synthetic completed summary after YouTube processing.",
+                    "summaryStatus": "completed",
+                    "summaryError": "",
+                    "summaryUpdatedAt": "2026-06-01T12:00:30Z",
+                    "createdAt": created_at,
+                    "updatedAt": "2026-06-01T12:00:30Z",
+                }
+            )
         kind = transcript_id.split("-", maxsplit=1)[0] if "-" in transcript_id else "mic"
         index = 1
         try:
@@ -747,6 +816,29 @@ async def exercise_debug_console_interaction(cdp: CdpClient, *, timeout_sec: flo
     return {"name": "debug-clear", "ok": True, "initial": initial, "cleared": cleared}
 
 
+async def exercise_transcript_processing_refresh(cdp: CdpClient, *, timeout_sec: float) -> dict[str, Any]:
+    state = await wait_for_interaction_state(
+        cdp,
+        label="transcript-processing-refresh",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  return {
+    ok: text.includes('Synthetic completed summary after YouTube processing.')
+      && !text.includes('Download complete')
+      && !text.includes('Elapsed:'),
+    hasCompletedSummary: text.includes('Synthetic completed summary after YouTube processing.'),
+    hasStaleDownloadStep: text.includes('Download complete'),
+    hasProcessingElapsed: text.includes('Elapsed:'),
+    route: window.location.pathname
+  };
+})()
+""",
+    )
+    return {"name": "transcript-processing-refresh", "ok": True, "state": state}
+
+
 async def inspect_token_required_browser_state(
     cdp: CdpClient,
     *,
@@ -823,6 +915,10 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 elif route == "/debug":
                     interaction_checks.append(
                         await exercise_debug_console_interaction(cdp, timeout_sec=args.page_timeout_sec)
+                    )
+                elif route == "/transcript/youtube-processing-smoke":
+                    interaction_checks.append(
+                        await exercise_transcript_processing_refresh(cdp, timeout_sec=args.page_timeout_sec)
                     )
                 if interaction_checks:
                     scenario["interactionChecks"] = interaction_checks
@@ -929,7 +1025,9 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
                 {"name": "file-drag-drop", "ok": True}
             ] if route == "/file" else [
                 {"name": "debug-clear", "ok": True}
-            ] if route == "/debug" else [],
+            ] if route == "/debug" else [
+                {"name": "transcript-processing-refresh", "ok": True}
+            ] if route == "/transcript/youtube-processing-smoke" else [],
             "validateOnly": True,
         }
         for route in args.routes
