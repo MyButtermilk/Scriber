@@ -37,6 +37,15 @@ def test_latency_metrics_store_persists_and_reads_latest(tmp_path):
     assert first.total_ms == 110.0
 
 
+def test_latency_metrics_store_reuses_thread_local_connection(tmp_path):
+    store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+
+    first = store._connect()
+    second = store._connect()
+
+    assert first is second
+
+
 def test_latency_metrics_store_summary_percentiles(tmp_path):
     store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
     for idx, value in enumerate([100.0, 120.0, 150.0, 200.0, 300.0], start=1):

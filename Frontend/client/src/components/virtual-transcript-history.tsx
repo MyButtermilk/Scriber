@@ -147,13 +147,13 @@ export function VirtualTranscriptHistory<TItem>({
   }, [hasMore, loadNextPage, scrollElement]);
 
   const virtualRows = virtualizer.getVirtualItems();
+  const lastVirtualIndex = virtualRows.length ? virtualRows[virtualRows.length - 1].index : -1;
 
   useEffect(() => {
-    const lastVirtualRow = virtualRows[virtualRows.length - 1];
-    if (lastVirtualRow && lastVirtualRow.index >= rows.length - 3) {
+    if (lastVirtualIndex >= rows.length - 3) {
       loadNextPage();
     }
-  }, [loadNextPage, rows.length, virtualRows]);
+  }, [lastVirtualIndex, loadNextPage, rows.length]);
 
   return (
     <div

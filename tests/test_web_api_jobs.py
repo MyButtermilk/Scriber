@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -114,7 +114,7 @@ async def test_youtube_auto_summary_failure_is_exposed_as_summary_state(monkeypa
         patch("src.web_api.supports_direct_file_upload", return_value=True),
         patch("src.web_api._create_scriber_pipeline", side_effect=_create_pipeline),
         patch("src.summarization.summarize_text", new=AsyncMock(side_effect=_fail_summary)),
-        patch.object(ctl, "_save_transcript_to_db", new=MagicMock()) as save_mock,
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()) as save_mock,
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
     ):
         await ctl._run_youtube_transcription(rec, provider="soniox")
@@ -124,7 +124,7 @@ async def test_youtube_auto_summary_failure_is_exposed_as_summary_state(monkeypa
     assert rec.summary_status == "failed"
     assert "summary provider failed" in rec.summary_error
     assert rec.to_public(include_content=True)["summaryStatus"] == "failed"
-    assert save_mock.call_count >= 3
+    assert save_mock.await_count >= 3
 
 
 @pytest.mark.asyncio
@@ -176,7 +176,7 @@ async def test_late_youtube_download_progress_cannot_overwrite_transcription_ste
         patch("src.web_api.download_youtube_audio", new=AsyncMock(side_effect=_download_youtube_audio)),
         patch("src.web_api.supports_direct_file_upload", return_value=True),
         patch("src.web_api._create_scriber_pipeline", side_effect=_create_pipeline),
-        patch.object(ctl, "_save_transcript_to_db", new=MagicMock()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
     ):
         await ctl._run_youtube_transcription(rec, provider="soniox")
@@ -207,7 +207,7 @@ async def test_file_auto_summary_failure_is_exposed_as_summary_state(monkeypatch
         patch("src.web_api.supports_direct_file_upload", return_value=True),
         patch("src.web_api._create_scriber_pipeline", side_effect=_create_pipeline),
         patch("src.summarization.summarize_text", new=AsyncMock(side_effect=_fail_summary)),
-        patch.object(ctl, "_save_transcript_to_db", new=MagicMock()) as save_mock,
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()) as save_mock,
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
     ):
         await ctl._run_file_transcription(rec, file_path, provider="soniox")
@@ -217,4 +217,4 @@ async def test_file_auto_summary_failure_is_exposed_as_summary_state(monkeypatch
     assert rec.summary_status == "failed"
     assert "summary provider failed" in rec.summary_error
     assert rec.to_public(include_content=True)["summaryStatus"] == "failed"
-    assert save_mock.call_count >= 3
+    assert save_mock.await_count >= 3

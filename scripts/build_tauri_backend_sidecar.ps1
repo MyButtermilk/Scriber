@@ -212,8 +212,7 @@ function Get-SidecarInputManifest {
         "requirements-base.txt",
         "pyloudnorm",
         "scripts\build_tauri_backend_sidecar.ps1",
-        "scripts\check_backend_runtime_imports.py",
-        "Frontend\dist\public"
+        "scripts\check_backend_runtime_imports.py"
     )
     $tools = @()
     if ($BundleTools -or $SearchDir) {

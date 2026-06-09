@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
     BACKEND_SESSION_TOKEN_REQUIRED_EVENT,
     backendSessionToken,
@@ -59,7 +59,16 @@ export type ScriberWebSocketMessage =
     })
     | (BaseWsMessage & { type: "transcript"; text: string; content?: string; isFinal: boolean })
     | (BaseWsMessage & { type: "error"; message: string })
-    | (BaseWsMessage & { type: "history_updated" })
+    | (BaseWsMessage & {
+        type: "history_updated";
+        transcriptId?: string;
+        transcriptType?: "mic" | "file" | "youtube" | string;
+        status?: string;
+        step?: string;
+        summaryStatus?: string;
+        updatedAt?: string;
+        reason?: string;
+    })
     | (BaseWsMessage & { type: "transcribing" })
     | (BaseWsMessage & { type: "session_started"; session: TranscriptSession })
     | (BaseWsMessage & { type: "session_finished"; session: TranscriptSession })
@@ -267,12 +276,12 @@ export function WebSocketProvider({
         return () => window.removeEventListener(BACKEND_SESSION_TOKEN_REQUIRED_EVENT, handleAuthStateChange);
     }, [autoReconnect, clearReconnectTimeout, connect]);
 
-    const value: WebSocketContextValue = {
+    const value: WebSocketContextValue = useMemo(() => ({
         isConnected,
         reconnectCount,
         subscribe,
         send,
-    };
+    }), [isConnected, reconnectCount, subscribe, send]);
 
     return (
         <WebSocketContext.Provider value={value}>

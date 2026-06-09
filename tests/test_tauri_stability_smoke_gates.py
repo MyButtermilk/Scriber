@@ -142,6 +142,19 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert '$entry["lastWriteTimeUtc"] = $item.LastWriteTimeUtc.ToString("o")' in sidecar
 
 
+def test_sidecar_cache_key_excludes_frontend_dist() -> None:
+    sidecar = read_script("scripts/build_tauri_backend_sidecar.ps1")
+
+    manifest_start = sidecar.index("function Get-SidecarInputManifest")
+    manifest_end = sidecar.index("function Copy-DirectoryContents")
+    manifest_block = sidecar[manifest_start:manifest_end]
+
+    assert '"src"' in manifest_block
+    assert '"packaging\\scriber-backend.spec"' in manifest_block
+    assert '"scripts\\check_backend_runtime_imports.py"' in manifest_block
+    assert "Frontend\\dist\\public" not in manifest_block
+
+
 def test_gyan_essentials_prepare_script_downloads_and_verifies_archive() -> None:
     script = read_script("scripts/prepare_gyan_ffmpeg_essentials.ps1")
 

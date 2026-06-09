@@ -126,6 +126,9 @@ _PRIVATE_NETWORK_ACCESS_REQUEST_HEADER = "Access-Control-Request-Private-Network
 _PRIVATE_NETWORK_ACCESS_ALLOW_HEADER = "Access-Control-Allow-Private-Network"
 _YOUTUBE_THUMBNAIL_ALLOWED_HOSTS = {"i.ytimg.com", "img.youtube.com"}
 _YOUTUBE_THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
+_allowed_origins_cache_lock = threading.Lock()
+_allowed_origins_cache_raw: str | None = None
+_allowed_origins_cache: tuple[str, ...] = ()
 _RUST_AUDIO_PROTOTYPE_AVAILABLE = False
 _AUDIO_DIAGNOSTIC_IMPORTS = (
     "pyloudnorm",
@@ -405,16 +408,23 @@ def _frontend_file_for_request(frontend_root: Path, request_path: str) -> Path |
     return root / "index.html"
 
 
-def _parse_allowed_origins() -> list[str]:
+def _parse_allowed_origins() -> tuple[str, ...]:
+    global _allowed_origins_cache_raw, _allowed_origins_cache
     raw = os.getenv(_ALLOWED_ORIGINS_ENV, "")
-    if not raw:
-        return []
-    cleaned: list[str] = []
-    for entry in raw.split(","):
-        val = entry.strip().rstrip("/")
-        if val:
-            cleaned.append(val)
-    return cleaned
+    if raw == _allowed_origins_cache_raw:
+        return _allowed_origins_cache
+    with _allowed_origins_cache_lock:
+        if raw == _allowed_origins_cache_raw:
+            return _allowed_origins_cache
+        cleaned: list[str] = []
+        if raw:
+            for entry in raw.split(","):
+                val = entry.strip().rstrip("/")
+                if val:
+                    cleaned.append(val)
+        _allowed_origins_cache_raw = raw
+        _allowed_origins_cache = tuple(cleaned)
+        return _allowed_origins_cache
 
 
 def _origin_allowed(origin: str) -> bool:
@@ -1256,6 +1266,7 @@ class ScriberWebController:
             self._mic_low_rms_warn_after_secs = 6.0
         self._history_broadcast_last = 0.0
         self._history_broadcast_handle: asyncio.TimerHandle | None = None
+        self._history_broadcast_pending_payload: dict[str, str] | None = None
         self._history_broadcast_interval = 0.25
         self._settings_persist_handle: asyncio.TimerHandle | None = None
         self._settings_persist_task: asyncio.Task | None = None
@@ -1630,6 +1641,9 @@ class ScriberWebController:
         except Exception as exc:  # pragma: no cover - best effort persistence
             logger.warning(f"Failed to mark job running for transcript {transcript_id}: {exc}")
 
+    async def _set_job_running_async(self, transcript_id: str) -> None:
+        await asyncio.to_thread(self._set_job_running, transcript_id)
+
     def _provider_candidates(self) -> list[str]:
         return self._provider_router.candidates()
 
@@ -1707,20 +1721,31 @@ class ScriberWebController:
         except Exception as exc:  # pragma: no cover - best effort persistence
             logger.warning(f"Failed to sync job status for transcript {rec.id}: {exc}")
 
+    async def _sync_job_status_async(self, rec: TranscriptRecord) -> None:
+        await asyncio.to_thread(self._sync_job_status, rec)
+
     def _schedule_youtube_job(self, rec: TranscriptRecord, *, resumed: bool = False) -> None:
         async def _runner() -> None:
-            self._set_job_running(rec.id)
             try:
+                await self._set_job_running_async(rec.id)
                 provider = self._select_available_provider()
+            except asyncio.CancelledError:
+                if rec.status == "processing":
+                    rec.status = "stopped"
+                    rec.step = "Stopped by user"
+                await self._sync_job_status_async(rec)
+                raise
             except Exception as exc:
-                if not self._schedule_retry_if_allowed(rec, exc):
-                    rec.status = "failed"
-                    rec.step = "Failed"
-                    rec.append_final_text(f"[Error] {exc}")
-                self._sync_job_status(rec)
-                rec.updated_at = datetime.now().isoformat()
-                self._save_transcript_to_db(rec)
-                await self._broadcast_history_updated()
+                try:
+                    if not self._schedule_retry_if_allowed(rec, exc):
+                        rec.status = "failed"
+                        rec.step = "Failed"
+                        rec.append_final_text(f"[Error] {exc}")
+                    rec.updated_at = datetime.now().isoformat()
+                    await self._save_transcript_to_db_async(rec)
+                    await self._broadcast_history_updated(record=rec, reason="job_failed")
+                finally:
+                    await self._sync_job_status_async(rec)
                 return
             try:
                 await self._run_youtube_transcription(rec, provider=provider)
@@ -1734,7 +1759,7 @@ class ScriberWebController:
                     rec.step = "Stopped by user"
                 raise
             finally:
-                self._sync_job_status(rec)
+                await self._sync_job_status_async(rec)
 
         task_name = f"youtube_transcribe_{rec.id}" if not resumed else f"youtube_resume_{rec.id}"
         task = asyncio.create_task(_runner(), name=task_name)
@@ -1742,18 +1767,26 @@ class ScriberWebController:
 
     def _schedule_file_job(self, rec: TranscriptRecord, file_path: Path, *, resumed: bool = False) -> None:
         async def _runner() -> None:
-            self._set_job_running(rec.id)
             try:
+                await self._set_job_running_async(rec.id)
                 provider = self._select_available_provider()
+            except asyncio.CancelledError:
+                if rec.status == "processing":
+                    rec.status = "stopped"
+                    rec.step = "Stopped by user"
+                await self._sync_job_status_async(rec)
+                raise
             except Exception as exc:
-                if not self._schedule_retry_if_allowed(rec, exc):
-                    rec.status = "failed"
-                    rec.step = "Failed"
-                    rec.append_final_text(f"[Error] {exc}")
-                self._sync_job_status(rec)
-                rec.updated_at = datetime.now().isoformat()
-                self._save_transcript_to_db(rec)
-                await self._broadcast_history_updated()
+                try:
+                    if not self._schedule_retry_if_allowed(rec, exc):
+                        rec.status = "failed"
+                        rec.step = "Failed"
+                        rec.append_final_text(f"[Error] {exc}")
+                    rec.updated_at = datetime.now().isoformat()
+                    await self._save_transcript_to_db_async(rec)
+                    await self._broadcast_history_updated(record=rec, reason="job_failed")
+                finally:
+                    await self._sync_job_status_async(rec)
                 return
             try:
                 await self._run_file_transcription(rec, file_path, provider=provider)
@@ -1767,7 +1800,7 @@ class ScriberWebController:
                     rec.step = "Stopped by user"
                 raise
             finally:
-                self._sync_job_status(rec)
+                await self._sync_job_status_async(rec)
 
         task_name = f"file_transcribe_{rec.id}" if not resumed else f"file_resume_{rec.id}"
         task = asyncio.create_task(_runner(), name=task_name)
@@ -1808,13 +1841,13 @@ class ScriberWebController:
         )
         return rec
 
-    def _fail_resumed_job(self, rec: TranscriptRecord, message: str) -> None:
+    async def _fail_resumed_job(self, rec: TranscriptRecord, message: str) -> None:
         rec.status = "failed"
         rec.step = "Failed"
         rec.append_final_text(f"[Error] {message}")
         rec.updated_at = datetime.now().isoformat()
-        self._sync_job_status(rec)
-        self._save_transcript_to_db(rec)
+        await self._sync_job_status_async(rec)
+        await self._save_transcript_to_db_async(rec)
 
     @staticmethod
     def _timeout_seconds(env_key: str, default_seconds: float) -> float:
@@ -1862,7 +1895,7 @@ class ScriberWebController:
 
             if job.job_type == JobType.YOUTUBE:
                 if not rec.source_url:
-                    self._fail_resumed_job(rec, "Missing source URL for resumed YouTube job.")
+                    await self._fail_resumed_job(rec, "Missing source URL for resumed YouTube job.")
                     continue
                 rec.step = "Queued (resumed)"
                 rec.updated_at = datetime.now().isoformat()
@@ -1872,11 +1905,11 @@ class ScriberWebController:
 
             file_path_raw = str(job.payload.get("path", "") or "").strip()
             if not file_path_raw:
-                self._fail_resumed_job(rec, "Missing source file path for resumed file transcription.")
+                await self._fail_resumed_job(rec, "Missing source file path for resumed file transcription.")
                 continue
             file_path = Path(file_path_raw)
             if not file_path.exists():
-                self._fail_resumed_job(rec, "Source file is no longer available for resumed file transcription.")
+                await self._fail_resumed_job(rec, "Source file is no longer available for resumed file transcription.")
                 continue
             rec.source_url = str(file_path)
             rec.step = "Queued (resumed)"
@@ -2036,6 +2069,25 @@ class ScriberWebController:
             db.save_transcript(record)
         except Exception as e:
             logger.error(f"Failed to save transcript to database: {e}")
+
+    async def _save_transcript_to_db_async(self, record: TranscriptRecord) -> None:
+        """Persist a transcript without blocking the aiohttp event loop."""
+        try:
+            snapshot = record.to_public(include_content=True)
+            await asyncio.to_thread(db.save_transcript, snapshot)
+        except Exception as e:
+            logger.error(f"Failed to save transcript to database: {e}")
+
+    def _schedule_transcript_save(self, record: TranscriptRecord) -> None:
+        if self._loop.is_closed():
+            self._save_transcript_to_db(record)
+            return
+        try:
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._save_transcript_to_db_async(record))
+            )
+        except RuntimeError:
+            self._save_transcript_to_db(record)
 
     def _add_to_history(self, record: TranscriptRecord) -> None:
         """Insert a transcript into history and index it by ID."""
@@ -2527,9 +2579,11 @@ class ScriberWebController:
                     self._current = None
             if failed_current:
                 self._add_to_history(failed_current)
-                self._save_transcript_to_db(failed_current)
+                self._schedule_transcript_save(failed_current)
                 self._loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(self._broadcast_history_updated())
+                    lambda: asyncio.create_task(
+                        self._broadcast_history_updated(record=failed_current, reason="pipeline_failed")
+                    )
                 )
         finally:
             # Schedule safe cleanup on the event loop
@@ -2537,10 +2591,39 @@ class ScriberWebController:
                 lambda: asyncio.create_task(_safe_cleanup())
             )
 
-    async def _broadcast_history_updated(self, *, force: bool = False) -> None:
+    @staticmethod
+    def _history_update_payload_for_record(
+        record: TranscriptRecord | None,
+        *,
+        reason: str = "",
+    ) -> dict[str, str]:
+        if record is None:
+            return {"reason": reason} if reason else {}
+        payload: dict[str, str] = {
+            "transcriptId": str(record.id or ""),
+            "transcriptType": str(record.type or ""),
+            "status": str(record.status or ""),
+            "step": str(record.step or ""),
+            "summaryStatus": str(record.summary_status or ""),
+            "updatedAt": str(record.updated_at or ""),
+        }
+        if reason:
+            payload["reason"] = reason
+        return {key: value for key, value in payload.items() if value}
+
+    async def _broadcast_history_updated(
+        self,
+        *,
+        force: bool = False,
+        record: TranscriptRecord | None = None,
+        reason: str = "",
+    ) -> None:
         """Broadcast history updates with global throttling to avoid refetch storms."""
         now = time.monotonic()
+        payload = self._history_update_payload_for_record(record, reason=reason)
         if not force and now - self._history_broadcast_last < self._history_broadcast_interval:
+            if payload:
+                self._history_broadcast_pending_payload = payload
             if self._history_broadcast_handle is None:
                 delay = self._history_broadcast_interval - (now - self._history_broadcast_last)
                 self._history_broadcast_handle = self._loop.call_later(
@@ -2552,12 +2635,25 @@ class ScriberWebController:
         if self._history_broadcast_handle is not None:
             self._history_broadcast_handle.cancel()
             self._history_broadcast_handle = None
-        await self.broadcast(history_updated_event())
+        if not payload and self._history_broadcast_pending_payload:
+            payload = self._history_broadcast_pending_payload
+        self._history_broadcast_pending_payload = None
+        await self.broadcast(
+            history_updated_event(
+                transcript_id=payload.get("transcriptId"),
+                transcript_type=payload.get("transcriptType"),
+                status=payload.get("status"),
+                step=payload.get("step"),
+                summary_status=payload.get("summaryStatus"),
+                updated_at=payload.get("updatedAt"),
+                reason=payload.get("reason"),
+            )
+        )
 
-    def _touch_history(self) -> None:
+    def _touch_history(self, record: TranscriptRecord | None = None, *, reason: str = "") -> None:
         """Thread-safe schedule for history update broadcast."""
         self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self._broadcast_history_updated())
+            lambda: asyncio.create_task(self._broadcast_history_updated(record=record, reason=reason))
         )
 
     async def start_youtube_transcription(self, payload: dict[str, Any]) -> TranscriptRecord:
@@ -2595,7 +2691,7 @@ class ScriberWebController:
             outcome="queued",
         )
         self._add_to_history(rec)
-        await self._broadcast_history_updated()
+        await self._broadcast_history_updated(record=rec, reason="job_created")
         self._enqueue_background_job(
             rec,
             job_type=JobType.YOUTUBE,
@@ -2617,7 +2713,7 @@ class ScriberWebController:
         workflow_phase = {"value": "downloading"}
         rec.step = "Downloading audio..."
         rec.updated_at = datetime.now().isoformat()
-        await self._broadcast_history_updated()
+        await self._broadcast_history_updated(record=rec, reason="progress")
         self._emit_workflow_event(
             message="YouTube download started",
             event="youtube.download.started",
@@ -2659,7 +2755,7 @@ class ScriberWebController:
                     rec.step = "Downloading audio..."
                 rec.updated_at = datetime.now().isoformat()
                 self._loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(self._broadcast_history_updated())
+                    lambda: asyncio.create_task(self._broadcast_history_updated(record=rec, reason="progress"))
                 )
             
             download_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC", 300.0)
@@ -2675,7 +2771,7 @@ class ScriberWebController:
             workflow_phase["value"] = "transcribing"
             rec.step = "Preparing transcription..."
             rec.updated_at = datetime.now().isoformat()
-            await self._broadcast_history_updated()
+            await self._broadcast_history_updated(record=rec, reason="progress")
             self._emit_workflow_event(
                 message="YouTube download completed",
                 event="youtube.download.completed",
@@ -2704,12 +2800,12 @@ class ScriberWebController:
                 rec.step = step
                 rec.updated_at = datetime.now().isoformat()
                 self._loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(self._broadcast_history_updated())
+                    lambda: asyncio.create_task(self._broadcast_history_updated(record=rec, reason="progress"))
                 )
 
             rec.step = "Transcribing..."
             rec.updated_at = datetime.now().isoformat()
-            await self._broadcast_history_updated()
+            await self._broadcast_history_updated(record=rec, reason="progress")
             transcribe_started = time.monotonic()
             self._emit_workflow_event(
                 message=f"YouTube transcription started ({provider})",
@@ -2754,8 +2850,8 @@ class ScriberWebController:
             rec.updated_at = datetime.now().isoformat()
             # Persist transcript immediately so a stuck/slow summarization
             # cannot keep the transcript in memory-only state.
-            self._save_transcript_to_db(rec)
-            await self._broadcast_history_updated()
+            await self._save_transcript_to_db_async(rec)
+            await self._broadcast_history_updated(record=rec, reason="transcript_completed")
             logger.debug(f"YouTube record updated: status={rec.status}, step={rec.step}")
             self._emit_workflow_event(
                 message="YouTube transcription completed",
@@ -2776,8 +2872,8 @@ class ScriberWebController:
                 try:
                     from src.summarization import summarize_text
                     rec.mark_summary_pending()
-                    self._save_transcript_to_db(rec)
-                    await self._broadcast_history_updated()
+                    await self._save_transcript_to_db_async(rec)
+                    await self._broadcast_history_updated(record=rec, reason="summary_pending")
                     summarize_started = time.monotonic()
                     self._emit_workflow_event(
                         message=f"Summary generation started ({Config.SUMMARIZATION_MODEL})",
@@ -2796,8 +2892,8 @@ class ScriberWebController:
                         duration=rec.duration,
                     )
                     rec.mark_summary_completed(summary)
-                    self._save_transcript_to_db(rec)
-                    await self._broadcast_history_updated()
+                    await self._save_transcript_to_db_async(rec)
+                    await self._broadcast_history_updated(record=rec, reason="summary_completed")
                     logger.info(f"YouTube auto-summarization completed: {len(rec.summary)} chars")
                     self._emit_workflow_event(
                         message="Summary generation completed",
@@ -2815,8 +2911,8 @@ class ScriberWebController:
                 except Exception as sum_err:
                     logger.warning(f"Auto-summarization failed: {sum_err}")
                     rec.mark_summary_failed(sum_err)
-                    self._save_transcript_to_db(rec)
-                    await self._broadcast_history_updated()
+                    await self._save_transcript_to_db_async(rec)
+                    await self._broadcast_history_updated(record=rec, reason="summary_failed")
                     self._emit_workflow_event(
                         message="Summary generation failed",
                         event="summary.generation.failed",
@@ -2924,10 +3020,10 @@ class ScriberWebController:
                     milestone=True,
                     duration_ms=(time.monotonic() - workflow_started) * 1000,
                     outcome="success",
-                )
+            )
             rec.updated_at = datetime.now().isoformat()
-            self._save_transcript_to_db(rec)  # Persist to database
-            await self._broadcast_history_updated()
+            await self._save_transcript_to_db_async(rec)
+            await self._broadcast_history_updated(record=rec, reason="job_done")
             # Cleanup: delete the downloaded audio file and directory
             try:
                 if out_dir.exists():
@@ -2983,7 +3079,7 @@ class ScriberWebController:
         if file_size:
             rec.channel = file_size  # Reuse channel field for file size display
         self._add_to_history(rec)
-        await self._broadcast_history_updated()
+        await self._broadcast_history_updated(record=rec, reason="job_created")
         self._enqueue_background_job(
             rec,
             job_type=JobType.FILE,
@@ -3002,7 +3098,7 @@ class ScriberWebController:
         workflow_started = time.monotonic()
         rec.step = "Preparing audio..."
         rec.updated_at = datetime.now().isoformat()
-        await self._broadcast_history_updated()
+        await self._broadcast_history_updated(record=rec, reason="progress")
         self._emit_workflow_event(
             message="File transcription started",
             event="pipeline.transcription.started",
@@ -3028,12 +3124,12 @@ class ScriberWebController:
                 rec.step = step
                 rec.updated_at = datetime.now().isoformat()
                 self._loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(self._broadcast_history_updated())
+                    lambda: asyncio.create_task(self._broadcast_history_updated(record=rec, reason="progress"))
                 )
 
             rec.step = "Transcribing..."
             rec.updated_at = datetime.now().isoformat()
-            await self._broadcast_history_updated()
+            await self._broadcast_history_updated(record=rec, reason="progress")
             transcribe_started = time.monotonic()
 
             pipeline = _create_scriber_pipeline(
@@ -3066,8 +3162,8 @@ class ScriberWebController:
             rec.updated_at = datetime.now().isoformat()
             # Persist transcript immediately so a stuck/slow summarization
             # cannot keep the transcript in memory-only state.
-            self._save_transcript_to_db(rec)
-            await self._broadcast_history_updated()
+            await self._save_transcript_to_db_async(rec)
+            await self._broadcast_history_updated(record=rec, reason="transcript_completed")
             self._emit_workflow_event(
                 message="File transcription completed",
                 event="pipeline.transcription.completed",
@@ -3087,8 +3183,8 @@ class ScriberWebController:
                 try:
                     from src.summarization import summarize_text
                     rec.mark_summary_pending()
-                    self._save_transcript_to_db(rec)
-                    await self._broadcast_history_updated()
+                    await self._save_transcript_to_db_async(rec)
+                    await self._broadcast_history_updated(record=rec, reason="summary_pending")
                     summarize_started = time.monotonic()
                     self._emit_workflow_event(
                         message=f"Summary generation started ({Config.SUMMARIZATION_MODEL})",
@@ -3107,8 +3203,8 @@ class ScriberWebController:
                         duration=rec.duration,
                     )
                     rec.mark_summary_completed(summary)
-                    self._save_transcript_to_db(rec)
-                    await self._broadcast_history_updated()
+                    await self._save_transcript_to_db_async(rec)
+                    await self._broadcast_history_updated(record=rec, reason="summary_completed")
                     logger.info(f"File auto-summarization completed: {len(rec.summary)} chars")
                     self._emit_workflow_event(
                         message="Summary generation completed",
@@ -3126,8 +3222,8 @@ class ScriberWebController:
                 except Exception as sum_err:
                     logger.warning(f"Auto-summarization failed: {sum_err}")
                     rec.mark_summary_failed(sum_err)
-                    self._save_transcript_to_db(rec)
-                    await self._broadcast_history_updated()
+                    await self._save_transcript_to_db_async(rec)
+                    await self._broadcast_history_updated(record=rec, reason="summary_failed")
                     self._emit_workflow_event(
                         message="Summary generation failed",
                         event="summary.generation.failed",
@@ -3216,10 +3312,10 @@ class ScriberWebController:
                     milestone=True,
                     duration_ms=(time.monotonic() - workflow_started) * 1000,
                     outcome="success",
-                )
+            )
             rec.updated_at = datetime.now().isoformat()
-            self._save_transcript_to_db(rec)  # Persist to database
-            await self._broadcast_history_updated()
+            await self._save_transcript_to_db_async(rec)
+            await self._broadcast_history_updated(record=rec, reason="job_done")
             # Cleanup: delete the uploaded file and its directory
             try:
                 file_dir = file_path.parent
@@ -3387,8 +3483,8 @@ class ScriberWebController:
                     failed.finish("failed")
                     failed.append_final_text(f"[Error] {exc}")
                     self._add_to_history(failed)
-                    self._save_transcript_to_db(failed)
-                    await self._broadcast_history_updated()
+                    await self._save_transcript_to_db_async(failed)
+                    await self._broadcast_history_updated(record=failed, reason="session_failed")
                 self._emit_workflow_event(
                     message=f"Live mic session failed before start: {exc}",
                     event="api.session.failed",
@@ -3637,13 +3733,13 @@ class ScriberWebController:
                     err_line = f"[Error] {stop_error}"
                     current.append_final_text(err_line)
                 self._add_to_history(current)
-                self._save_transcript_to_db(current)  # Persist to database
+                await self._save_transcript_to_db_async(current)
                 finished_payload = session_finished_event(
                     current.to_public(include_content=True),
                     session_id=session_id,
                 )
                 await self.broadcast(finished_payload)
-                await self._broadcast_history_updated()
+                await self._broadcast_history_updated(record=current, reason="session_finished")
                 duration_ms = None
                 if current._started_at_monotonic is not None:
                     duration_ms = (time.monotonic() - current._started_at_monotonic) * 1000
@@ -4128,7 +4224,7 @@ class ScriberWebController:
             if rec and rec.status == "processing":
                  rec.step = "Stopping..."
                  rec.updated_at = datetime.now().isoformat()
-                 await self._broadcast_history_updated()
+                 await self._broadcast_history_updated(record=rec, reason="cancel_requested")
             return True
             
         # Also check if it's stuck in processing but no task running (e.g. restart)
@@ -4136,9 +4232,9 @@ class ScriberWebController:
             rec.status = "stopped"
             rec.step = "Stopped"
             rec.updated_at = datetime.now().isoformat()
-            self._sync_job_status(rec)
-            self._save_transcript_to_db(rec)
-            await self._broadcast_history_updated()
+            await self._sync_job_status_async(rec)
+            await self._save_transcript_to_db_async(rec)
+            await self._broadcast_history_updated(record=rec, reason="canceled")
             return True
             
         return False
@@ -4303,7 +4399,7 @@ class ScriberWebController:
         query_lower = query.lower().strip() if query else ""
         if query_lower:
             # Use SQLite FTS for scalable search and keep unsaved active sessions visible.
-            live_matches: list[dict[str, Any]] = []
+            live_candidates: list[TranscriptRecord] = []
             for rec in self._history:
                 if rec.status not in ("processing", "recording"):
                     continue
@@ -4315,10 +4411,14 @@ class ScriberWebController:
                     f"{rec._preview or ''}"
                 ).lower()
                 if query_lower in searchable:
-                    if rec.id and db.transcript_exists(rec.id):
-                        continue
-                    live_matches.append(rec.to_public(include_content=include_content))
+                    live_candidates.append(rec)
 
+            persisted_live_ids = db.existing_transcript_ids([rec.id for rec in live_candidates if rec.id])
+            live_matches = [
+                rec.to_public(include_content=include_content)
+                for rec in live_candidates
+                if not rec.id or rec.id not in persisted_live_ids
+            ]
             live_count = len(live_matches)
             if offset < live_count:
                 live_slice = live_matches[offset:offset + limit]
@@ -4361,19 +4461,14 @@ class ScriberWebController:
                 "hasMore": offset + len(items) < total,
             }
 
-        filtered = []
-
+        items: list[dict[str, Any]] = []
+        total = 0
         for rec in self._history:
-            # Type filter
             if transcript_type and rec.type != transcript_type:
                 continue
-
-            filtered.append(rec)
-
-        total = len(filtered)
-        # Apply pagination
-        paginated = filtered[offset:offset + limit]
-        items = [rec.to_public(include_content=include_content) for rec in paginated]
+            if total >= offset and len(items) < limit:
+                items.append(rec.to_public(include_content=include_content))
+            total += 1
 
         return {
             "items": items,
@@ -5035,10 +5130,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Transcript not found"}, status=404)
 
         # Delete from database
-        db.delete_transcript(transcript_id)
+        await asyncio.to_thread(db.delete_transcript, transcript_id)
 
         # Broadcast update to clients
-        await ctl._broadcast_history_updated()
+        await ctl._broadcast_history_updated(record=found, reason="deleted")
         logger.info(f"Deleted transcript: {found.title} ({transcript_id})")
 
         return web.json_response({"success": True, "id": transcript_id})
@@ -5071,39 +5166,39 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         if rec:
             rec.mark_summary_pending()
-            ctl._save_transcript_to_db(rec)
-            await ctl._broadcast_history_updated()
+            await ctl._save_transcript_to_db_async(rec)
+            await ctl._broadcast_history_updated(record=rec, reason="summary_pending")
         else:
-            db.update_transcript_summary_state(transcript_id, status="pending")
+            await asyncio.to_thread(db.update_transcript_summary_state, transcript_id, status="pending")
 
         try:
             model = getattr(Config, "SUMMARIZATION_MODEL", "") or Config.DEFAULT_SUMMARIZATION_MODEL
             summary = await summarize_text(content, model, duration=duration)
             if rec:
                 rec.mark_summary_completed(summary)
-                ctl._save_transcript_to_db(rec)
-                await ctl._broadcast_history_updated()
+                await ctl._save_transcript_to_db_async(rec)
+                await ctl._broadcast_history_updated(record=rec, reason="summary_completed")
                 logger.info(f"Summarized transcript: {rec.title} ({len(summary)} chars)")
             else:
-                db.update_transcript_summary(transcript_id, summary)
+                await asyncio.to_thread(db.update_transcript_summary, transcript_id, summary)
                 logger.info(f"Summarized transcript: {transcript_id} ({len(summary)} chars)")
             return web.json_response({"success": True, "summary": summary})
         except ValueError as exc:
             if rec:
                 rec.mark_summary_failed(exc)
-                ctl._save_transcript_to_db(rec)
-                await ctl._broadcast_history_updated()
+                await ctl._save_transcript_to_db_async(rec)
+                await ctl._broadcast_history_updated(record=rec, reason="summary_failed")
             else:
-                db.update_transcript_summary_state(transcript_id, status="failed", error=str(exc))
+                await asyncio.to_thread(db.update_transcript_summary_state, transcript_id, status="failed", error=str(exc))
             return web.json_response({"message": str(exc)}, status=400)
         except Exception as exc:
             logger.exception("Summarization failed")
             if rec:
                 rec.mark_summary_failed(exc)
-                ctl._save_transcript_to_db(rec)
-                await ctl._broadcast_history_updated()
+                await ctl._save_transcript_to_db_async(rec)
+                await ctl._broadcast_history_updated(record=rec, reason="summary_failed")
             else:
-                db.update_transcript_summary_state(transcript_id, status="failed", error=str(exc))
+                await asyncio.to_thread(db.update_transcript_summary_state, transcript_id, status="failed", error=str(exc))
             return web.json_response({"message": str(exc) or "Summarization failed"}, status=500)
 
     async def stop_transcript(request: web.Request):

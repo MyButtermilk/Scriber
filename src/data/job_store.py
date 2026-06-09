@@ -85,15 +85,34 @@ class JobStore:
     def __init__(self, db_path: Path | None = None):
         self._db_path = db_path or database_path()
         self._lock = threading.Lock()
+        self._thread_local = threading.local()
+        self._connections: list[sqlite3.Connection] = []
+        self._connections_lock = threading.Lock()
         self.init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        conn = getattr(self._thread_local, "conn", None)
+        if conn is None:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._thread_local.conn = conn
+            with self._connections_lock:
+                self._connections.append(conn)
         return conn
+
+    def close(self) -> None:
+        with self._connections_lock:
+            connections = list(self._connections)
+            self._connections.clear()
+        for conn in connections:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._thread_local.conn = None
 
     def init_schema(self) -> None:
         with self._lock:

@@ -16,11 +16,18 @@ export function useTranscriptAutoRefresh({
   type,
   transcriptId,
   queryKey,
-  debounceMs = 250,
+  debounceMs,
   onError,
 }: UseTranscriptAutoRefreshOptions = {}) {
   const queryClient = useQueryClient();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queryScope = queryKey?.[1];
+  const queryType =
+    typeof queryScope === "object" && queryScope !== null && "type" in queryScope
+      ? String((queryScope as { type?: unknown }).type || "")
+      : "";
+  const effectiveType = type || (queryType === "mic" || queryType === "file" || queryType === "youtube" ? queryType : undefined);
+  const effectiveDebounceMs = debounceMs ?? (transcriptId ? 750 : 250);
 
   const refreshNow = useCallback(() => {
     if (transcriptId) {
@@ -42,7 +49,7 @@ export function useTranscriptAutoRefresh({
         if (query.queryKey[0] !== "/api/transcripts") {
           return false;
         }
-        if (!type) {
+        if (!effectiveType) {
           return true;
         }
 
@@ -50,10 +57,10 @@ export function useTranscriptAutoRefresh({
         if (typeof scope !== "object" || scope === null) {
           return false;
         }
-        return (scope as { type?: string }).type === type;
+        return (scope as { type?: string }).type === effectiveType;
       },
     });
-  }, [queryClient, queryKey, transcriptId, type]);
+  }, [effectiveType, queryClient, queryKey, transcriptId]);
 
   const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     if (!msg || typeof msg !== "object") {
@@ -61,20 +68,26 @@ export function useTranscriptAutoRefresh({
     }
 
     if (msg.type === "history_updated") {
+      if (transcriptId && msg.transcriptId && msg.transcriptId !== transcriptId) {
+        return;
+      }
+      if (!transcriptId && effectiveType && msg.transcriptType && msg.transcriptType !== effectiveType) {
+        return;
+      }
       if (refreshTimerRef.current) {
         return;
       }
       refreshTimerRef.current = setTimeout(() => {
         refreshNow();
         refreshTimerRef.current = null;
-      }, debounceMs);
+      }, effectiveDebounceMs);
       return;
     }
 
     if (msg.type === "error" && onError) {
       onError(msg.message || "An error occurred.");
     }
-  }, [debounceMs, onError, refreshNow]);
+  }, [effectiveDebounceMs, effectiveType, onError, refreshNow, transcriptId]);
 
   const { isConnected, send } = useSharedWebSocket(handleWsMessage);
 

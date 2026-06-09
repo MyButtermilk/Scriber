@@ -631,7 +631,7 @@ async def test_on_pipeline_done_persists_failed_live_session():
     with (
         patch.object(ctl, "broadcast", new=AsyncMock()),
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
-        patch.object(ctl, "_save_transcript_to_db", new=MagicMock()) as save_mock,
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()) as save_mock,
         patch("src.web_api.hide_recording_overlay"),
     ):
         ctl._on_pipeline_done(task, session_id=session_id)
@@ -641,7 +641,7 @@ async def test_on_pipeline_done_persists_failed_live_session():
     assert ctl._current is None
     assert ctl._session_id is None
     assert rec in ctl._history
-    save_mock.assert_called_once_with(rec)
+    save_mock.assert_awaited_once_with(rec)
 
 
 class _StopOkPipeline:
@@ -774,7 +774,7 @@ async def test_hotkey_toggle_is_deferred_while_stop_is_in_progress():
     with (
         patch.object(ctl, "broadcast", new=AsyncMock()),
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
-        patch.object(ctl, "_save_transcript_to_db"),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
         patch.object(ctl, "start_listening", new=AsyncMock()) as start_mock,
         patch("src.web_api.show_transcribing_overlay"),
         patch("src.web_api.hide_recording_overlay"),
@@ -807,7 +807,7 @@ async def test_late_mic_ready_is_ignored_while_stop_is_in_progress():
         patch("src.web_api.ScriberPipeline", _LateReadyPipeline),
         patch.object(ctl, "broadcast", new=AsyncMock()),
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
-        patch.object(ctl, "_save_transcript_to_db"),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
         patch.object(ctl, "_get_overlay", return_value=None),
         patch("src.web_api.show_initializing_overlay"),
         patch("src.web_api.show_recording_overlay") as show_recording_mock,

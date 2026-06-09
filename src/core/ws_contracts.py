@@ -90,8 +90,32 @@ def error_event(message: str, *, session_id: str | None = None) -> dict[str, Any
     return _optional_session({"type": "error", "message": str(message)}, session_id)
 
 
-def history_updated_event() -> dict[str, Any]:
-    return version_event_payload({"type": "history_updated"})
+def history_updated_event(
+    *,
+    transcript_id: str | None = None,
+    transcript_type: str | None = None,
+    status: str | None = None,
+    step: str | None = None,
+    summary_status: str | None = None,
+    updated_at: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"type": "history_updated"}
+    if transcript_id:
+        payload["transcriptId"] = str(transcript_id)
+    if transcript_type:
+        payload["transcriptType"] = str(transcript_type)
+    if status:
+        payload["status"] = str(status)
+    if step:
+        payload["step"] = str(step)
+    if summary_status:
+        payload["summaryStatus"] = str(summary_status)
+    if updated_at:
+        payload["updatedAt"] = str(updated_at)
+    if reason:
+        payload["reason"] = str(reason)
+    return version_event_payload(payload)
 
 
 def transcribing_event(*, session_id: str | None = None) -> dict[str, Any]:
@@ -181,7 +205,11 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
         _require_bool(payload, "isFinal", event_type)
     elif event_type == "error":
         _require_string(payload, "message", event_type)
-    elif event_type in {"history_updated", "settings_updated", "transcribing", "nemo_models_updated"}:
+    elif event_type == "history_updated":
+        for field in ("transcriptId", "transcriptType", "status", "step", "summaryStatus", "updatedAt", "reason"):
+            if field in payload and not isinstance(payload.get(field), str):
+                raise WSContractError(f"history_updated event requires string '{field}' when present")
+    elif event_type in {"settings_updated", "transcribing", "nemo_models_updated"}:
         pass
     elif event_type in {"session_started", "session_finished"}:
         if not isinstance(payload.get("session"), dict):

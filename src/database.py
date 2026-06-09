@@ -187,7 +187,7 @@ def init_database() -> None:
 def save_transcript(record: Any) -> None:
     """Save or update a transcript record."""
     try:
-        data = record.to_public(include_content=True)
+        data = dict(record) if isinstance(record, dict) else record.to_public(include_content=True)
         preview = data.get("preview", "") or _compute_preview(data.get("content", ""))
         # Map camelCase to snake_case for database
         with _get_connection() as conn:
@@ -363,6 +363,24 @@ def transcript_exists(transcript_id: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to check transcript existence: {e}")
         return False
+
+
+def existing_transcript_ids(transcript_ids: list[str]) -> set[str]:
+    """Return the subset of transcript IDs that already exists in SQLite."""
+    ids = [value for value in dict.fromkeys(transcript_ids) if value]
+    if not ids:
+        return set()
+    try:
+        placeholders = ", ".join("?" for _ in ids)
+        with _get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM transcripts WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            return {str(row["id"]) for row in rows}
+    except Exception as e:
+        logger.error(f"Failed to check transcript IDs: {e}")
+        return set()
 
 
 def delete_transcript(transcript_id: str) -> bool:

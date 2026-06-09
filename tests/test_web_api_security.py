@@ -36,6 +36,10 @@ def test_origin_allowed_from_env(monkeypatch):
     assert web_api._origin_allowed("http://localhost:3000")
     assert not web_api._origin_allowed("http://localhost:4000")
 
+    monkeypatch.setenv("SCRIBER_ALLOWED_ORIGINS", "https://changed.example")
+    assert web_api._origin_allowed("https://changed.example")
+    assert not web_api._origin_allowed("https://example.com")
+
 
 def test_origin_allowed_wildcard(monkeypatch):
     monkeypatch.setenv("SCRIBER_ALLOWED_ORIGINS", "*")

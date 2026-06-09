@@ -36,6 +36,15 @@ def test_job_store_persists_and_transitions(tmp_path):
     assert completed.status == JobStatus.COMPLETED
 
 
+def test_job_store_reuses_thread_local_connection(tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+
+    first = store._connect()
+    second = store._connect()
+
+    assert first is second
+
+
 def test_job_store_pending_and_retry_windows(tmp_path):
     store = JobStore(db_path=tmp_path / "jobs.db")
 

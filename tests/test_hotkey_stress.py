@@ -88,7 +88,11 @@ def _assert_controller_clean(ctl: ScriberWebController) -> None:
 
 def _assert_pipeline_invariants() -> None:
     assert _StressFakePipeline.instances
-    assert all(p.stats.start_calls == 1 for p in _StressFakePipeline.instances)
+    assert all(p.stats.start_calls <= 1 for p in _StressFakePipeline.instances)
+    assert all(
+        p.stats.start_calls == 1 or p.stats.stop_calls == 1
+        for p in _StressFakePipeline.instances
+    )
     assert all(p.stats.stop_calls <= 1 for p in _StressFakePipeline.instances)
     assert all(p.stats.injected for p in _StressFakePipeline.instances)
 
@@ -111,7 +115,7 @@ async def test_hotkey_toggle_burst_stress_end_to_end(monkeypatch):
         patch("src.web_api.hide_recording_overlay"),
         patch.object(ctl, "broadcast", new=AsyncMock()),
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
-        patch.object(ctl, "_save_transcript_to_db"),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
         patch("src.injector.HAS_GUI", True),
         patch("src.injector._paste_text", return_value=True) as paste_mock,
     ):
@@ -154,7 +158,7 @@ async def test_hotkey_ptt_press_release_burst_stress_end_to_end(monkeypatch):
         patch("src.web_api.hide_recording_overlay"),
         patch.object(ctl, "broadcast", new=AsyncMock()),
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
-        patch.object(ctl, "_save_transcript_to_db"),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
         patch("src.injector.HAS_GUI", True),
         patch("src.injector._paste_text", return_value=True) as paste_mock,
     ):

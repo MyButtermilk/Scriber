@@ -41,6 +41,15 @@ def test_ws_event_builders_match_contract():
         transcript_event("hello", True, session_id="s1"),
         error_event("failed", session_id="s1"),
         history_updated_event(),
+        history_updated_event(
+            transcript_id="t1",
+            transcript_type="youtube",
+            status="processing",
+            step="Transcribing...",
+            summary_status="pending",
+            updated_at="2026-06-09T12:00:00",
+            reason="progress",
+        ),
         transcribing_event(session_id="s1"),
         session_started_event({"id": "s1"}, session_id="s1"),
         session_finished_event({"id": "s1"}, session_id="s1"),
@@ -115,6 +124,8 @@ def test_ws_contract_validation_rejects_invalid_payload():
         )
     with pytest.raises(WSContractError):
         validate_event_payload({"type": "history_updated", "apiVersion": "0"})
+    with pytest.raises(WSContractError):
+        validate_event_payload(version_event_payload({"type": "history_updated", "transcriptId": 123}))
     with pytest.raises(WSContractError):
         validate_event_payload(version_event_payload({"type": "unknown_event"}))
 
