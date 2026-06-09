@@ -110,6 +110,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_instal
 
 Ergebnis: `ok=true`, installierte App `528.43 MiB` unter dem `560 MiB` Smoke-Budget, Frontend/WebView-ready verifiziert, installierte Media-Tools `5/5` Checks, Support-Bundle token-geschuetzt und redaction-verifiziert, Silent-Uninstall entfernt App-Artefakte und erhaelt Runtime-Daten-Sentinel. Live-Mic-/visueller PySide6-Overlay-Smoke wurde dabei bewusst nicht beansprucht und bleibt die Voraussetzung fuer jedes PySide6-Pruning im Standardpfad.
 
+Frontend-Browser-Smoke am 2026-06-09:
+
+```powershell
+python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke-current.json
+```
+
+Ergebnis: `ok=true`, `7` Routen geprueft, `0` kritische Console Errors, `0` Page Errors, `0` unhandled Rejections. Die Interaktionschecks bestanden fuer `youtube-thumbnails` (Suche und URL-Lookup je `1/1` geladene Thumbnails), `file-drag-drop`, `debug-clear`, `transcript-processing-refresh` und `token-required-browser-state`. Damit sind die YouTube-Suche-/URL-UI-Pfade, der File-Drag-and-Drop-Pfad und der YouTube-Processing-Detailpfad gegen einen synthetischen Backend-Vertrag abgedeckt.
+
 Der Sidecar-Cache wurde real geprüft:
 
 - erster Lauf mit `-ReuseSidecarIfUnchanged -BundleMediaTools -CopyToTauriRelease`: `cacheHit=false`, PyInstaller baute den Sidecar und füllte den Cache.
