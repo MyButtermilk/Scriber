@@ -44,6 +44,7 @@ class MicrophonePrewarmManager:
         self._prebuffer_sample_rate = 0
         self._callback_count = 0
         self._last_callback_at = 0.0
+        self._stream_started_at = 0.0
         self._last_status = ""
         self._last_health_restart_at = 0.0
 
@@ -64,6 +65,11 @@ class MicrophonePrewarmManager:
                 "pausedForDeviceRefresh": bool(self._paused_for_device_refresh),
                 "activeCaptureAttached": self._active_capture_callback is not None,
                 "callbackCount": self._callback_count,
+                "streamStartedAgoSeconds": (
+                    round(time.monotonic() - self._stream_started_at, 3)
+                    if self._stream_started_at > 0
+                    else None
+                ),
                 "lastCallbackAgoSeconds": (
                     round(time.monotonic() - self._last_callback_at, 3)
                     if self._last_callback_at > 0
@@ -230,6 +236,7 @@ class MicrophonePrewarmManager:
                         except Exception:
                             pass
                         raise
+                    self._stream_started_at = time.monotonic()
                     self._stream = stream
                     self._stream_signature = {
                         "sample_rate": sample_rate,
@@ -251,7 +258,12 @@ class MicrophonePrewarmManager:
                 self._log_start_error(exc)
                 return False
 
-    def ensure_healthy(self, *, reason: str = "watchdog") -> bool:
+    def ensure_healthy(
+        self,
+        *,
+        reason: str = "watchdog",
+        max_callback_gap_seconds: float | None = None,
+    ) -> bool:
         if not Config.MIC_ALWAYS_ON:
             self.stop(reason=f"{reason}:disabled")
             return False
@@ -260,11 +272,30 @@ class MicrophonePrewarmManager:
             if self._paused_for_active_capture or self._paused_for_device_refresh:
                 return False
             stream = self._stream
-            if stream and getattr(stream, "active", False):
+            active = bool(stream and getattr(stream, "active", False))
+            now = time.monotonic()
+            callback_stale = (
+                max_callback_gap_seconds is not None
+                and (
+                    (
+                        self._last_callback_at > 0
+                        and now - self._last_callback_at > max_callback_gap_seconds
+                    )
+                    or (
+                        self._last_callback_at <= 0
+                        and self._stream_started_at > 0
+                        and now - self._stream_started_at > max_callback_gap_seconds
+                    )
+                )
+            )
+            if active and not callback_stale:
                 return True
             if stream:
-                logger.warning(f"Mic prewarm stream inactive; restarting idle stream ({reason})")
-                self._close_locked(reason=f"{reason}:inactive")
+                stale_note = ", stale callbacks" if callback_stale else ""
+                logger.warning(
+                    f"Mic prewarm stream unhealthy; restarting idle stream ({reason}{stale_note})"
+                )
+                self._close_locked(reason=f"{reason}:unhealthy")
 
         restarted = self.start_if_enabled()
         if restarted:
@@ -291,8 +322,17 @@ class MicrophonePrewarmManager:
             now = time.monotonic()
             callback_stale = (
                 max_callback_gap_seconds is not None
-                and self._last_callback_at > 0
-                and now - self._last_callback_at > max_callback_gap_seconds
+                and (
+                    (
+                        self._last_callback_at > 0
+                        and now - self._last_callback_at > max_callback_gap_seconds
+                    )
+                    or (
+                        self._last_callback_at <= 0
+                        and self._stream_started_at > 0
+                        and now - self._stream_started_at > max_callback_gap_seconds
+                    )
+                )
             )
             if active and not callback_stale:
                 return True
@@ -309,6 +349,10 @@ class MicrophonePrewarmManager:
                 except Exception:
                     pass
                 stream.start()
+                with self._lock:
+                    if stream is self._stream:
+                        self._stream_started_at = time.monotonic()
+                        self._last_callback_at = 0.0
             logger.warning(
                 "Mic prewarm active capture stream restarted "
                 f"({reason}, stale_callbacks={callback_stale})"
@@ -380,6 +424,7 @@ class MicrophonePrewarmManager:
         self._stream = None
         self._stream_signature = {}
         self._active_capture_callback = None
+        self._stream_started_at = 0.0
         self._clear_prebuffer_locked()
         with get_device_guard_lock():
             if stream:

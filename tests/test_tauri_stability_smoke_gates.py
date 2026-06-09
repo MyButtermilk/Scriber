@@ -100,6 +100,10 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "function Get-SidecarInputManifest" in sidecar
     assert "function Write-SidecarBuildMetadata" in sidecar
     assert "function Invoke-PySide6Pruning" in sidecar
+    assert "[switch]$UseProfileBFfmpeg" in sidecar
+    assert "prepare-profile-b-ffmpeg" in sidecar
+    assert "scripts\\ffmpeg\\build_profile_b_msys2.ps1" in sidecar
+    assert 'kind = "profile-b"' in sidecar
     assert "[switch]$UseGyanFfmpegEssentials" in sidecar
     assert "scripts\\prepare_gyan_ffmpeg_essentials.ps1" in sidecar
     assert "prepare-gyan-ffmpeg-essentials" in sidecar
@@ -158,6 +162,7 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
 
     assert "[switch]$SkipBundledFfprobe" in build
     assert "[switch]$ValidateSlimMediaTools" in build
+    assert "[switch]$UseProfileBFfmpeg" in build
     assert '[string]$MediaToolsDir = ""' in build
     assert "[switch]$ReuseSidecarIfUnchanged" in build
     assert "[switch]$PrunePySide6Translations" in build
@@ -171,6 +176,7 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "function Write-BuildTimingReport" in build
     assert 'SwitchName "-SkipBundledFfprobe"' in build
     assert 'SwitchName "-ValidateSlimMediaTools"' in build
+    assert 'SwitchName "-UseProfileBFfmpeg"' in build
     assert 'SwitchName "-MediaToolsDir"' in build
     assert '$commandArgument = if ($Value -match' in build
     assert 'SwitchName "-ReuseSidecarIfUnchanged"' in build
@@ -184,12 +190,23 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "if ($FastLocalInstaller)" in build
     assert "$ReuseSidecarIfUnchanged = $true" in build
     assert "$SkipPythonTests = $true" in build
+    assert "$UseProfileBFfmpeg = $true" in build
+    assert "if ($UseProfileBFfmpeg)" in build
     assert "$RunMediaPreparationSmoke = $true" in build
     assert "$RunRuntimeDependencyFootprint = $true" in build
-    assert "$MaxBackendRuntimeDependencyMB = 500" in build
-    assert "$MaxMediaToolsRuntimeDependencyMB = 210" in build
+    assert "$MaxBackendRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 325 } else { 500 }" in build
+    assert "$MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 10 } else { 210 }" in build
     assert "if (-not $SkipChecks -and -not $SkipPythonTests)" in build
     assert "if (-not $SkipChecks -and -not $SkipFrontendTypeCheck)" in build
+
+
+def test_tauri_before_bundle_uses_profile_b_standard_media_tools() -> None:
+    config = read_script("Frontend/src-tauri/tauri.conf.json")
+
+    assert "-UseProfileBFfmpeg" in config
+    assert "-ValidateSlimMediaTools" in config
+    assert "-ReuseSidecarIfUnchanged" in config
+    assert "-UseGyanFfmpegEssentials" not in config
 
 
 def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> None:

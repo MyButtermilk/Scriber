@@ -10,6 +10,7 @@ target\release\backend.
 Typical flow:
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
+  powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -UseProfileBFfmpeg -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -UseGyanFfmpegEssentials -ValidateSlimMediaTools -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -ValidateSlimMediaTools -MediaToolsDir path\to\slim-ffmpeg -CopyToTauriRelease
@@ -27,6 +28,7 @@ param(
     [switch]$SkipFrontendBuild,
     [switch]$InstallPyInstaller,
     [switch]$BundleMediaTools,
+    [switch]$UseProfileBFfmpeg,
     [switch]$UseGyanFfmpegEssentials,
     [switch]$SkipBundledFfprobe,
     [switch]$ValidateSlimMediaTools,
@@ -193,6 +195,7 @@ function Get-SidecarInputManifest {
         [string]$Python,
         [string]$SearchDir,
         [bool]$BundleTools,
+        [bool]$UseProfileB,
         [bool]$UseGyanEssentials,
         [bool]$SkipFfprobe,
         [bool]$ValidateSlimBundle,
@@ -226,6 +229,7 @@ function Get-SidecarInputManifest {
         pyInstaller = $pyInstallerVersion
         flags = [ordered]@{
             bundleMediaTools = $BundleTools
+            useProfileBFfmpeg = $UseProfileB
             useGyanFfmpegEssentials = $UseGyanEssentials
             skipBundledFfprobe = $SkipFfprobe
             validateSlimMediaTools = $ValidateSlimBundle
@@ -353,6 +357,7 @@ function Write-SidecarBuildMetadata {
         }
         flags = [ordered]@{
             bundleMediaTools = [bool]$BundleMediaTools
+            useProfileBFfmpeg = [bool]$UseProfileBFfmpeg
             useGyanFfmpegEssentials = [bool]$UseGyanFfmpegEssentials
             skipBundledFfprobe = [bool]$SkipBundledFfprobe
             validateSlimMediaTools = [bool]$ValidateSlimMediaTools
@@ -725,8 +730,75 @@ if (-not (Test-Path $SpecPath)) {
     throw "Missing PyInstaller spec: $SpecPath"
 }
 
+if ($UseProfileBFfmpeg -and $UseGyanFfmpegEssentials) {
+    throw "Use either -UseProfileBFfmpeg or -UseGyanFfmpegEssentials, not both."
+}
+
 $preparedMediaTools = $null
-if ($UseGyanFfmpegEssentials -and -not $MediaToolsDir) {
+if ($UseProfileBFfmpeg -and -not $MediaToolsDir) {
+    Invoke-TimedStep -Label "prepare-profile-b-ffmpeg" -Command {
+        $profileBuildScript = Join-Path $RepoRoot "scripts\ffmpeg\build_profile_b_msys2.ps1"
+        if (-not (Test-Path -LiteralPath $profileBuildScript -PathType Leaf)) {
+            throw "Missing Profile B FFmpeg build script: $profileBuildScript"
+        }
+        $profileBuildRoot = Join-Path $RepoRoot "build\ffmpeg-profile-b-msys2"
+        $profileReportPath = Join-Path $profileBuildRoot "profile-b-msys2-build-report.json"
+        $script:PreparedProfileBReportPath = $profileReportPath
+        $script:PreparedProfileBReused = $false
+        $script:PreparedProfileBReport = $null
+        $script:PreparedProfileBMediaToolsDir = ""
+
+        if (Test-Path -LiteralPath $profileReportPath -PathType Leaf) {
+            try {
+                $existingReport = Get-Content -LiteralPath $profileReportPath -Raw | ConvertFrom-Json
+                $existingMediaToolsDir = [string]($existingReport.mediaToolsDir)
+                if (
+                    $existingReport.ok -and
+                    $existingMediaToolsDir -and
+                    (Test-Path -LiteralPath (Join-Path $existingMediaToolsDir "ffmpeg.exe") -PathType Leaf) -and
+                    (Test-Path -LiteralPath (Join-Path $existingMediaToolsDir "ffprobe.exe") -PathType Leaf)
+                ) {
+                    $script:PreparedProfileBReport = $existingReport
+                    $script:PreparedProfileBMediaToolsDir = (Resolve-Path $existingMediaToolsDir).Path
+                    $script:PreparedProfileBReused = $true
+                }
+            } catch {
+                Write-Host "Ignoring unreadable Profile B build report: $profileReportPath"
+            }
+        }
+
+        if (-not $script:PreparedProfileBMediaToolsDir) {
+            & $profileBuildScript -RepoRoot $RepoRoot -BuildRoot $profileBuildRoot -InstallDependencies
+            if ($LASTEXITCODE -ne 0) {
+                throw "FFmpeg Profile B build failed with exit code $LASTEXITCODE."
+            }
+            if (-not (Test-Path -LiteralPath $profileReportPath -PathType Leaf)) {
+                throw "FFmpeg Profile B build did not write report: $profileReportPath"
+            }
+            $buildReport = Get-Content -LiteralPath $profileReportPath -Raw | ConvertFrom-Json
+            if (-not $buildReport.ok) {
+                throw "FFmpeg Profile B build report did not report ok=true."
+            }
+            $script:PreparedProfileBReport = $buildReport
+            $script:PreparedProfileBMediaToolsDir = (Resolve-Path ([string]$buildReport.mediaToolsDir)).Path
+        }
+
+        Test-MediaToolExecutable -Path (Join-Path $script:PreparedProfileBMediaToolsDir "ffmpeg.exe") -Name "Profile B ffmpeg"
+        Test-MediaToolExecutable -Path (Join-Path $script:PreparedProfileBMediaToolsDir "ffprobe.exe") -Name "Profile B ffprobe"
+    }
+    $preparedMediaTools = [ordered]@{
+        ok = $true
+        kind = "profile-b"
+        reused = [bool]$script:PreparedProfileBReused
+        mediaToolsDir = $script:PreparedProfileBMediaToolsDir
+        report = $script:PreparedProfileBReportPath
+    }
+    $MediaToolsDir = $script:PreparedProfileBMediaToolsDir
+    $ValidateSlimMediaTools = $true
+} elseif ($UseProfileBFfmpeg -and $MediaToolsDir) {
+    Write-Host "Using explicit MediaToolsDir; skipping Profile B FFmpeg preparation."
+    $ValidateSlimMediaTools = $true
+} elseif ($UseGyanFfmpegEssentials -and -not $MediaToolsDir) {
     Invoke-TimedStep -Label "prepare-gyan-ffmpeg-essentials" -Command {
         $prepareScript = Join-Path $RepoRoot "scripts\prepare_gyan_ffmpeg_essentials.ps1"
         if (-not (Test-Path -LiteralPath $prepareScript -PathType Leaf)) {
@@ -794,6 +866,7 @@ if ($cacheEnabled) {
             -Python $PythonPath `
             -SearchDir $MediaToolsDir `
             -BundleTools ([bool]$BundleMediaTools) `
+            -UseProfileB ([bool]$UseProfileBFfmpeg) `
             -UseGyanEssentials ([bool]$UseGyanFfmpegEssentials) `
             -SkipFfprobe ([bool]$SkipBundledFfprobe) `
             -ValidateSlimBundle ([bool]$ValidateSlimMediaTools) `

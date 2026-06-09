@@ -9,6 +9,7 @@ import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { useLocation } from "wouter";
 import { motion, useReducedMotion } from "framer-motion";
+import type { BackendStateResponse } from "@/lib/api-types";
 
 const DELETE_GLITCH_DURATION_MS = 1200;
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
@@ -28,6 +29,8 @@ type Transcript = {
 };
 
 type LiveRecordingState = "idle" | "initializing" | "recording" | "finalizing" | "completed" | "failed";
+type WebSocketStateMessage = Extract<ScriberWebSocketMessage, { type: "state" }>;
+type BackendLiveStateSnapshot = BackendStateResponse | WebSocketStateMessage;
 
 function coerceRecordingState(value: unknown, fallback: LiveRecordingState = "idle"): LiveRecordingState {
   switch (value) {
@@ -450,7 +453,6 @@ import { useUrlQueryState } from "@/hooks/use-url-query-state";
 import { formatDurationLikeYoutube } from "@/lib/duration";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
-import type { BackendStateResponse } from "@/lib/api-types";
 
 export default function LiveMic() {
   const { toast } = useToast();
@@ -543,6 +545,30 @@ export default function LiveMic() {
     setInputWarningActions(fallback.map((action) => ({ ...action })));
   }, []);
 
+  const applyBackendStateSnapshot = useCallback((state: BackendLiveStateSnapshot) => {
+    if (typeof state.sessionId === "string" && state.sessionId) {
+      activeSessionIdRef.current = state.sessionId;
+    } else if (!state.listening) {
+      activeSessionIdRef.current = null;
+    }
+
+    const nextState = coerceRecordingState(
+      state.recordingState,
+      state.listening ? "recording" : "idle",
+    );
+    setRecordingState(nextState);
+    setIsRecording(nextState === "recording");
+    if (nextState !== "recording") {
+      audioLevelRef.current = 0;
+    }
+    setStatus(state.status || "Stopped");
+    applyInputWarning(state.inputWarning, state.inputWarningCode, state.inputWarningActions);
+    if (state.current?.content) {
+      setFinalText(String(state.current.content));
+      setInterimText("");
+    }
+  }, [applyInputWarning]);
+
   const handleInputWarningAction = useCallback((action: InputWarningAction) => {
     try {
       const normalizedUri = String(action.uri || "").trim().toLowerCase();
@@ -567,25 +593,7 @@ export default function LiveMic() {
 
     switch (msg.type) {
       case "state":
-        if (msgSessionId) {
-          activeSessionIdRef.current = msgSessionId;
-        } else if (!msg.listening) {
-          activeSessionIdRef.current = null;
-        }
-        {
-          const nextState = coerceRecordingState(msg.recordingState, msg.listening ? "recording" : "idle");
-          setRecordingState(nextState);
-          setIsRecording(nextState === "recording");
-          if (nextState !== "recording") {
-            audioLevelRef.current = 0;
-          }
-        }
-        setStatus(msg.status || "Stopped");
-        applyInputWarning(msg.inputWarning, msg.inputWarningCode, msg.inputWarningActions);
-        if (msg.current?.content) {
-          setFinalText(String(msg.current.content));
-          setInterimText("");
-        }
+        applyBackendStateSnapshot(msg);
         break;
       case "status":
         if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
@@ -693,13 +701,13 @@ export default function LiveMic() {
       default:
         break;
     }
-  }, [applyInputWarning, refreshMicHistory, toast]);
+  }, [applyBackendStateSnapshot, applyInputWarning, refreshMicHistory, toast]);
 
   // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
-  useSharedWebSocket(handleWsMessage);
+  const { isConnected } = useSharedWebSocket(handleWsMessage);
 
   useEffect(() => {
-    if (recordingState !== "finalizing") {
+    if (!hasActiveSession && !isConnected) {
       return;
     }
 
@@ -710,40 +718,22 @@ export default function LiveMic() {
         if (!res.ok) return;
         const state = (await res.json()) as BackendStateResponse;
         if (cancelled) return;
-
-        const nextState = coerceRecordingState(
-          state.recordingState,
-          state.listening ? "recording" : "idle",
-        );
-        if (nextState === "finalizing") {
-          return;
-        }
-
-        activeSessionIdRef.current = typeof state.sessionId === "string" ? state.sessionId : null;
-        setRecordingState(nextState);
-        setIsRecording(nextState === "recording");
-        if (nextState !== "recording") {
-          audioLevelRef.current = 0;
-        }
-        setStatus(state.status || "Stopped");
-        applyInputWarning(state.inputWarning, state.inputWarningCode, state.inputWarningActions);
-        if (state.current?.content) {
-          setFinalText(String(state.current.content));
-          setInterimText("");
-        }
+        applyBackendStateSnapshot(state);
       } catch {
-        // WebSocket is still authoritative; this only repairs a missed terminal state.
+        // WebSocket remains authoritative; this repairs missed terminal states and reconnect gaps.
       }
     };
 
-    const firstCheck = window.setTimeout(reconcileBackendState, 750);
-    const interval = window.setInterval(reconcileBackendState, 2000);
+    const firstCheck = window.setTimeout(reconcileBackendState, hasActiveSession ? 750 : 0);
+    const interval = hasActiveSession ? window.setInterval(reconcileBackendState, 2000) : undefined;
     return () => {
       cancelled = true;
       window.clearTimeout(firstCheck);
-      window.clearInterval(interval);
+      if (interval !== undefined) {
+        window.clearInterval(interval);
+      }
     };
-  }, [applyInputWarning, recordingState]);
+  }, [applyBackendStateSnapshot, hasActiveSession, isConnected]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);

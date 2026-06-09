@@ -1476,7 +1476,11 @@ class ScriberWebController:
 
         ensure_idle = getattr(self._mic_prewarm, "ensure_healthy", None)
         if callable(ensure_idle):
-            healthy = await asyncio.to_thread(ensure_idle, reason="watchdog")
+            healthy = await asyncio.to_thread(
+                ensure_idle,
+                reason="watchdog",
+                max_callback_gap_seconds=self._mic_watchdog_callback_gap_seconds,
+            )
             if not healthy and Config.MIC_ALWAYS_ON:
                 self._log_mic_watchdog_warning(
                     "Idle microphone watchdog could not verify prewarm stream",
@@ -1896,8 +1900,19 @@ class ScriberWebController:
                     f"Recording state transition ({context or 'unknown'}): "
                     f"{event.source.value} -> {event.target.value}"
                 )
+                self._schedule_state_snapshot_broadcast()
         except InvalidTransitionError as exc:
             logger.debug(f"Ignoring invalid recording state transition ({context or 'unknown'}): {exc}")
+
+    def _schedule_state_snapshot_broadcast(self) -> None:
+        if self._loop.is_closed():
+            return
+        try:
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self.broadcast(state_event(self.get_state())))
+            )
+        except RuntimeError:
+            return
 
     def _start_hot_path_tracer(self, session_id: str) -> None:
         tracer = HotPathTracer(session_id)

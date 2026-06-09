@@ -25,6 +25,7 @@ param(
     [double]$MaxInstallerSizeMB = 220,
     [double]$InstallerMaxInstalledSizeMB = 0,
     [string]$MediaToolsDir = "",
+    [switch]$UseProfileBFfmpeg,
     [switch]$SkipBundledFfprobe,
     [switch]$ValidateSlimMediaTools,
     [switch]$ReuseSidecarIfUnchanged,
@@ -204,6 +205,9 @@ $tauriConfigOriginal = $null
 if ($MediaToolsDir) {
     $MediaToolsDir = (Resolve-Path $MediaToolsDir).Path
 }
+if ($UseProfileBFfmpeg) {
+    $ValidateSlimMediaTools = $true
+}
 
 if ($FastLocalInstaller) {
     $ReuseSidecarIfUnchanged = $true
@@ -211,6 +215,10 @@ if ($FastLocalInstaller) {
     $SkipSmoke = $true
     $RunMediaPreparationSmoke = $true
     $RunRuntimeDependencyFootprint = $true
+    if (-not $MediaToolsDir) {
+        $UseProfileBFfmpeg = $true
+        $ValidateSlimMediaTools = $true
+    }
 
     if ($MaxScipyRuntimeDependencyMB -le 0) {
         $MaxScipyRuntimeDependencyMB = 0.001
@@ -222,13 +230,13 @@ if ($FastLocalInstaller) {
         $MaxPythonRuntimeDependencyMB = 40
     }
     if ($MaxBackendRuntimeDependencyMB -le 0) {
-        $MaxBackendRuntimeDependencyMB = 500
+        $MaxBackendRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 325 } else { 500 }
     }
     if ($MaxInternalRuntimeDependencyMB -le 0) {
         $MaxInternalRuntimeDependencyMB = 250
     }
     if ($MaxMediaToolsRuntimeDependencyMB -le 0) {
-        $MaxMediaToolsRuntimeDependencyMB = 210
+        $MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 10 } else { 210 }
     }
     if ($MaxPySide6RuntimeDependencyMB -le 0) {
         $MaxPySide6RuntimeDependencyMB = 80
@@ -300,7 +308,7 @@ try {
         $RequireUpdaterSignatures = $true
     }
 
-    if ($SkipBundledFfprobe -or $ValidateSlimMediaTools -or $MediaToolsDir -or $ReuseSidecarIfUnchanged -or $PrunePySide6Translations -or $PrunePySide6UnusedPlugins -or $PrunePySide6SoftwareOpenGl) {
+    if ($SkipBundledFfprobe -or $ValidateSlimMediaTools -or $MediaToolsDir -or $UseProfileBFfmpeg -or $ReuseSidecarIfUnchanged -or $PrunePySide6Translations -or $PrunePySide6UnusedPlugins -or $PrunePySide6SoftwareOpenGl) {
         if ($null -eq $tauriConfigOriginal) {
             $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
         }
@@ -311,6 +319,9 @@ try {
         }
         if ($ValidateSlimMediaTools) {
             $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-ValidateSlimMediaTools"
+        }
+        if ($UseProfileBFfmpeg) {
+            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-UseProfileBFfmpeg"
         }
         if ($MediaToolsDir) {
             $updatedTauriConfig = Add-TauriBeforeBundleCommandValueSwitch -ConfigText $updatedTauriConfig -SwitchName "-MediaToolsDir" -Value $MediaToolsDir

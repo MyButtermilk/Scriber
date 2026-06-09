@@ -45,7 +45,7 @@ class _FakeMicPrewarmManager:
         self.active = bool(web_api.Config.MIC_ALWAYS_ON)
         return self.active
 
-    def ensure_healthy(self, *, reason: str = "watchdog") -> bool:
+    def ensure_healthy(self, *, reason: str = "watchdog", max_callback_gap_seconds=None) -> bool:
         self.ensure_calls += 1
         self.active = bool(web_api.Config.MIC_ALWAYS_ON)
         return self.active
@@ -330,6 +330,33 @@ async def test_mic_watchdog_checks_active_pipeline(monkeypatch, tmp_path):
         {"reason": "watchdog", "max_callback_gap_seconds": 15.0}
     ]
     assert ctl.get_audio_diagnostics()["microphone"]["activeCapture"]["streamActive"] is True
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recording_state_transition_broadcasts_state_snapshot(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_MIC_WATCHDOG_INTERVAL_SEC", "0")
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    payloads = []
+
+    async def fake_broadcast(payload):
+        payloads.append(payload)
+
+    ctl.broadcast = fake_broadcast
+    ctl._set_recording_state(web_api.RecordingState.INITIALIZING, context="test")
+    for _ in range(10):
+        if payloads:
+            break
+        await asyncio.sleep(0.01)
+
+    assert payloads
+    assert payloads[-1]["type"] == "state"
+    assert payloads[-1]["recordingState"] == "initializing"
+    assert payloads[-1]["listening"] is False
 
     ctl.shutdown()
 

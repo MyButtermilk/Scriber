@@ -188,6 +188,26 @@ def test_microphone_watchdog_restarts_stale_direct_stream(monkeypatch):
 
 
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+def test_microphone_watchdog_restarts_direct_stream_when_callbacks_never_arrive(monkeypatch):
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+    stream = _FakeStream(active=True)
+    mic.stream = stream
+    mic._running = True
+    mic._stream_started_at = 100.0
+    mic._last_callback_at = 0.0
+
+    monkeypatch.setattr(microphone.time, "monotonic", lambda: 120.0)
+
+    assert mic.ensure_stream_health(reason="test", max_callback_gap_seconds=10.0) is True
+
+    assert stream.stop_calls == 1
+    assert stream.start_calls == 1
+    assert stream.active is True
+
+    mic.force_stop_from_external_error(reason="test_cleanup")
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
 def test_microphone_external_error_detaches_adopted_prewarm_stream():
     class _FakePrewarmManager:
         def __init__(self):

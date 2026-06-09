@@ -93,6 +93,22 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert "const isProcessing = isVisiblyProcessing(item);" in source
 
 
+def test_live_mic_reconciles_active_state_and_websocket_reconnects() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "type BackendLiveStateSnapshot" in source
+    assert "const applyBackendStateSnapshot = useCallback" in source
+    assert "applyBackendStateSnapshot(msg);" in source
+    assert "const { isConnected } = useSharedWebSocket(handleWsMessage);" in source
+    assert "if (!hasActiveSession && !isConnected)" in source
+    assert "hasActiveSession ? 750 : 0" in source
+    assert "hasActiveSession ? window.setInterval(reconcileBackendState, 2000) : undefined" in source
+    assert "applyBackendStateSnapshot(state);" in source
+    assert 'recordingState !== "finalizing"' not in source
+
+
 def test_transcript_detail_uses_typed_rest_queries() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
         encoding="utf-8"

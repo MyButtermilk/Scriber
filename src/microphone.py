@@ -140,6 +140,7 @@ class MicrophoneInput(BaseInputTransport):
         self._last_audio_chunk_sent_notified = False
         self._callback_count = 0
         self._last_callback_at = 0.0
+        self._stream_started_at = 0.0
         self._last_status = ""
         self._last_callback_exception = ""
         self._last_health_restart_at = 0.0
@@ -167,6 +168,7 @@ class MicrophoneInput(BaseInputTransport):
         self._last_audio_chunk_sent_notified = False
         self._callback_count = 0
         self._last_callback_at = 0.0
+        self._stream_started_at = 0.0
         self._last_status = ""
         self._last_callback_exception = ""
         self._last_health_restart_at = 0.0
@@ -325,6 +327,7 @@ class MicrophoneInput(BaseInputTransport):
 
                 if not self.stream.active:
                     self.stream.start()
+                self._stream_started_at = time.monotonic()
                 self._claim_active_stream()
             logger.info(f"Microphone stream started (device={'default' if device_index is None else device_index})")
             # Signal that microphone is ready and capturing audio
@@ -472,6 +475,11 @@ class MicrophoneInput(BaseInputTransport):
             "blockSize": int(self.block_size),
             "device": str(self.device),
             "callbackCount": int(self._callback_count),
+            "streamStartedAgoSeconds": (
+                round(time.monotonic() - self._stream_started_at, 3)
+                if self._stream_started_at > 0
+                else None
+            ),
             "lastCallbackAgoSeconds": (
                 round(time.monotonic() - self._last_callback_at, 3)
                 if self._last_callback_at > 0
@@ -514,8 +522,17 @@ class MicrophoneInput(BaseInputTransport):
         now = time.monotonic()
         callback_stale = (
             max_callback_gap_seconds is not None
-            and self._last_callback_at > 0
-            and now - self._last_callback_at > max_callback_gap_seconds
+            and (
+                (
+                    self._last_callback_at > 0
+                    and now - self._last_callback_at > max_callback_gap_seconds
+                )
+                or (
+                    self._last_callback_at <= 0
+                    and self._stream_started_at > 0
+                    and now - self._stream_started_at > max_callback_gap_seconds
+                )
+            )
         )
 
         if active and not callback_stale:
@@ -535,6 +552,8 @@ class MicrophoneInput(BaseInputTransport):
                     except Exception:
                         pass
                 stream.start()
+                self._stream_started_at = time.monotonic()
+                self._last_callback_at = 0.0
                 self._claim_active_stream()
             logger.warning(
                 "Microphone capture stream restarted "
