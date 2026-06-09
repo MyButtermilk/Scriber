@@ -189,6 +189,8 @@ Umgesetzt ist `scripts/analyze_backend_runtime_dependencies.py` als allgemeiner 
 
 ### P0: Slim-FFmpeg und Slim-FFprobe validieren
 
+Status: Gate vorhanden und gegen die aktuellen lokalen Media-Tools ausgefuehrt; kein kleinerer lokaler Slim-Kandidat vorhanden.
+
 Das ist der größte potenzielle Größenhebel ohne Funktionsverlust.
 
 Benötigte Fähigkeiten:
@@ -209,9 +211,15 @@ Pflicht-Gates:
 
 Ein Slim-Media-Build darf nicht akzeptiert werden, nur weil `ffmpeg -version` funktioniert. Die realen Media-Preparation-Hilfspfade müssen mit den tatsächlich gebündelten Binaries bestehen.
 
+Validierungsstand 2026-06-09:
+
+- `scripts\build_tauri_backend_sidecar.ps1 -SkipFrontendBuild -BundleMediaTools -ValidateSlimMediaTools -MediaToolsDir "C:\Program Files\FFmpeg\bin"` lief erfolgreich durch.
+- Die verwendeten lokalen Tools sind identisch mit den gebuendelten Release-Tools: `ffmpeg.exe` `133.58 MiB`, `ffprobe.exe` `133.43 MiB`.
+- Damit ist das Slim-Gate technisch belegt, aber es wurde kein kleinerer No-Feature-Loss-Kandidat gefunden. Der Standard-Installer bleibt deshalb beim vollstaendigen `ffmpeg` plus `ffprobe`, bis ein echter kleinerer Kandidat die Sidecar-Validation, Media-Preparation-Smoke und installierte YouTube-/File-Smokes besteht.
+
 ### P1: PySide6-Daten gezielt reduzieren
 
-Status: Pruning-Schalter implementiert, nicht als Standard aktiviert.
+Status: Pruning-Schalter implementiert, nicht als Standard aktiviert; installierter visueller Overlay-Smoke fehlt weiterhin.
 
 PySide6 bleibt erhalten, aber der gebündelte Qt-Baum enthält wahrscheinlich Dateien, die das Overlay nicht nutzt.
 
@@ -234,6 +242,12 @@ Pflicht-Gates:
 - Overlay verschwindet nach Abschluss
 
 Wenn eine Zielmaschine `opengl32sw.dll` für zuverlässiges Qt-Rendering braucht, bleibt die Datei im Standard-Installer.
+
+Audit 2026-06-09:
+
+- `scripts\build_windows.ps1` und `scripts\build_tauri_backend_sidecar.ps1` koennen PySide6-Translations, ungenutzte Plugins und `opengl32sw.dll` explizit prunen.
+- Vorhandene Live-Recording-Smokes pruefen Start/Stop-/Backend-Stabilitaet, aber sie beweisen nicht visuell, dass das PySide6-Overlay sichtbar ist, die Waveform aktualisiert und das Overlay nach Abschluss verschwindet.
+- Deshalb wird kein PySide6-Pruning als Standard aktiviert. Der naechste sichere Schritt ist ein installierter visueller Overlay-Smoke oder eine manuelle Screenshot-Evidenz auf Zielmaschinen, erst danach darf eines der Pruning-Flags in den Standard-Release-Pfad wandern.
 
 ### P1: Sidecar-Hash-Cache für schnellere lokale Installer-Builds
 
@@ -380,7 +394,7 @@ Keine Optimierung ist akzeptiert, wenn eine bestehende Funktion nur noch durch m
 1. Component-Size-Budgets und Reporting ergänzen. Status: umgesetzt.
 2. Build-Timing-Metadaten ergänzen. Status: umgesetzt.
 3. Sidecar-Hash-Cache und expliziten Fast-Local-Installer-Modus ergänzen. Status: umgesetzt.
-4. Schlankes `ffmpeg` plus `ffprobe` hinter den vorhandenen Media-Smoke-Gates testen.
-5. PySide6-Pruning testen, ohne PySide6 selbst zu entfernen. Status: Schalter umgesetzt, installierter Overlay-Smoke noch erforderlich.
+4. Schlankes `ffmpeg` plus `ffprobe` hinter den vorhandenen Media-Smoke-Gates testen. Status: Gate gegen aktuelle Tools bestanden; kein kleinerer lokaler Kandidat vorhanden.
+5. PySide6-Pruning testen, ohne PySide6 selbst zu entfernen. Status: Schalter umgesetzt; kein Standard-Pruning ohne installierten visuellen Overlay-Smoke.
 
 Diese Reihenfolge verbessert zuerst Messbarkeit, dann Build-Zeit und danach installierte Größe. Sie verhindert, dass blind optimiert oder ein funktionierendes Feature durch einen Fallback ersetzt wird.
