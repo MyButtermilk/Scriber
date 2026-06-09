@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.runtime.ffmpeg_commands import (  # noqa: E402
     ffprobe_duration_args,
+    mp3_encode_pcm_pipe_args,
     mp3_transcode_args,
     pcm_pipe_decode_args,
     webm_opus_transcode_args,
@@ -97,6 +98,21 @@ def write_sine_wav(
             wav_file.writeframesraw(struct.pack("<h", sample))
 
 
+def sine_pcm_s16le_bytes(
+    *,
+    duration_sec: float,
+    sample_rate: int = 16000,
+    frequency_hz: float = 440.0,
+) -> bytes:
+    frame_count = max(1, int(duration_sec * sample_rate))
+    amplitude = 0.25 * 32767
+    chunks = bytearray()
+    for index in range(frame_count):
+        sample = int(amplitude * math.sin(2.0 * math.pi * frequency_hz * index / sample_rate))
+        chunks.extend(struct.pack("<h", sample))
+    return bytes(chunks)
+
+
 def run_command(
     command: list[str],
     *,
@@ -107,7 +123,7 @@ def run_command(
     completed = subprocess.run(
         command,
         input=input_bytes,
-        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+        stdin=None if input_bytes is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout_sec,
@@ -255,6 +271,26 @@ def check_transcode_to_mp3(candidate_ffmpeg: Path, source: Path, target: Path, t
     )
     assert_media_file(target)
     return {"input": file_info(source), "output": file_info(target)}
+
+
+def check_pcm_pipe_to_mp3(candidate_ffmpeg: Path, timeout_sec: float) -> dict[str, Any]:
+    input_bytes = sine_pcm_s16le_bytes(duration_sec=1.0)
+    completed = run_command(
+        mp3_encode_pcm_pipe_args(
+            str(candidate_ffmpeg),
+            input_sample_rate=16000,
+            input_channels=1,
+            bitrate="64k",
+        ),
+        input_bytes=input_bytes,
+        timeout_sec=timeout_sec,
+    )
+    if not completed.stdout:
+        raise AssertionError("PCM-to-MP3 pipe produced no stdout.")
+    return {
+        "inputBytes": len(input_bytes),
+        "stdoutBytes": len(completed.stdout),
+    }
 
 
 def check_pcm_pipe(candidate_ffmpeg: Path, source: Path, timeout_sec: float) -> dict[str, Any]:
@@ -489,6 +525,11 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             checks,
             "webm_opus_to_pcm_pipe",
             lambda: check_pcm_pipe(candidate_ffmpeg, fixtures["webm_opus"], args.timeout_sec),
+        )
+        run_check(
+            checks,
+            "raw_pcm_pipe_to_mp3",
+            lambda: check_pcm_pipe_to_mp3(candidate_ffmpeg, args.timeout_sec),
         )
         run_check(
             checks,

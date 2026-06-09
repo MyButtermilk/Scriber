@@ -45,6 +45,7 @@ def test_validate_requirements_accepts_profile_b_audio_set() -> None:
     assert "libmp3lame" in requirements["encoders"]
     assert "pcm_s16le" in requirements["encoders"]
     assert "s16le" in requirements["demuxers"]
+    assert "s16le" in requirements["muxers"]
     assert "pipe" in requirements["protocols"]
 
 

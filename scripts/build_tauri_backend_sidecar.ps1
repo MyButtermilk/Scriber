@@ -589,7 +589,7 @@ function Test-ScriberFfmpegCapabilities {
     }
 
     $muxers = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-muxers") -Label "ffmpeg muxer list"
-    foreach ($muxer in @("webm", "mp3")) {
+    foreach ($muxer in @("webm", "mp3", "s16le")) {
         Assert-MediaToolOutputContains -Output $muxers -Needle $muxer -Label "muxer"
     }
 
@@ -643,6 +643,14 @@ function Copy-MediaTools {
     New-Item -ItemType Directory -Force -Path $toolsTarget | Out-Null
 
     $copied = @()
+    if ($SearchDir) {
+        foreach ($dll in Get-ChildItem -LiteralPath $SearchDir -Filter "*.dll" -File -ErrorAction SilentlyContinue) {
+            $targetDll = Join-Path $toolsTarget $dll.Name
+            Copy-Item -LiteralPath $dll.FullName -Destination $targetDll -Force
+            $copied += $targetDll
+        }
+    }
+
     $ffmpeg = Resolve-MediaTool -Names @("ffmpeg.exe", "ffmpeg") -SearchDir $SearchDir
     if (-not $ffmpeg) {
         if ($SearchDir) {

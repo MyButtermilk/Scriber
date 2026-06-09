@@ -5320,9 +5320,9 @@ Remaining limits:
   broad fallback builds may decode extra codecs; the strict size/licensing
   boundary is enforced by configure flags, profile manifest warnings/failures,
   and size reports.
-- A produced binary still needs installed-package media smoke plus real
-  installed YouTube/file/provider workflow evidence before replacing Gyan
-  Essentials.
+- Superseded later on 2026-06-09: a produced binary and installed-package media
+  smoke now exist. Real installed YouTube/file/provider workflow evidence is
+  still required before replacing Gyan Essentials.
 
 ## 2026-06-09 - FFmpeg Profile B MSYS2 Build Runner
 
@@ -5385,3 +5385,154 @@ Remaining limits:
   install MSYS2, compile the binary, then run manifest, fixture smoke,
   media-preparation smoke, sidecar gate, installed-package media smoke, and real
   installed YouTube/file/provider workflow evidence.
+
+## 2026-06-09 - FFmpeg Profile B MSYS2 Compile and Sidecar Candidate Gate
+
+Commands:
+
+```powershell
+winget install --id MSYS2.MSYS2 -e --accept-package-agreements --accept-source-agreements --silent
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ffmpeg\build_profile_b_msys2.ps1 `
+  -BuildRoot build\ffmpeg-profile-b-msys2 `
+  -Msys2Root C:\msys64 `
+  -InstallDependencies `
+  -ForceClean
+
+python -m pytest tests/test_ffmpeg_profile_msys2_build_runner.py tests/test_ffmpeg_profile_build_kit.py tests/test_ffmpeg_profile_fixture_smoke.py tests/test_ffmpeg_profile_validator.py tests/runtime/test_ffmpeg_commands.py tests/test_tauri_stability_smoke_gates.py -q
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 `
+  -SkipFrontendBuild `
+  -BundleMediaTools `
+  -ValidateSlimMediaTools `
+  -MediaToolsDir build\ffmpeg-profile-b-msys2\dist\scriber-ffmpeg-profile-b\bin `
+  -CopyToTauriRelease
+```
+
+Result: passed for a real MSYS2/UCRT64 Profile-B FFmpeg candidate with MP3,
+Opus, `ffprobe`, local file/pipe protocols, raw PCM pipe input and raw PCM pipe
+output. This is no longer a plan-only result.
+
+Implemented improvements:
+
+- Fixed `scripts/ffmpeg/build_profile_b_msys2.ps1` for Windows PowerShell by
+  replacing `ProcessStartInfo.ArgumentList` usage with compatible native
+  argument quoting.
+- Changed MSYS2 process output collection to read stdout/stderr asynchronously,
+  avoiding possible deadlocks on noisy `git clone` or `make` stderr output.
+- Corrected the generated FFmpeg configure flags from the CLI-facing `s16le`
+  name to FFmpeg's configure names `pcm_s16le` for raw PCM demuxer and muxer.
+- The Profile-B build now includes raw PCM output muxing, so both
+  `webm_opus_to_pcm_pipe` and `raw_pcm_pipe_to_mp3` work.
+- The MSYS2 runner copies the required adjacent runtime DLLs beside the
+  produced tools: `libmp3lame-0.dll`, `libopus-0.dll`, and
+  `libwinpthread-1.dll`.
+- `scripts/build_tauri_backend_sidecar.ps1` copies adjacent `.dll` files from
+  an explicit `MediaToolsDir` before validating `ffmpeg.exe` and `ffprobe.exe`.
+- `scripts/ffmpeg/smoke_profile_b_fixtures.py` now includes a real
+  raw-PCM-to-MP3 stdout pipe check for the Azure MAI latency path.
+
+Evidence:
+
+- MSYS2 installed at `C:\msys64`; UCRT64 dependencies installed through
+  `pacman`, including GCC, NASM, `mingw-w64-ucrt-x86_64-opus`, and
+  `mingw-w64-ucrt-x86_64-lame`.
+- Profile-B build report:
+  `build\ffmpeg-profile-b-msys2\profile-b-msys2-build-report.json`.
+- Build duration: `323.34 s`, jobs `24`, source
+  `https://git.ffmpeg.org/ffmpeg.git`, ref `n7.0`.
+- `ffmpeg.exe`: `2.55 MiB`, SHA256
+  `f33537a15a696af9f7d8723f09ad3b0eb3dc95834cf41764301b304c43ae1049`.
+- `ffprobe.exe`: `2.43 MiB`, SHA256
+  `aaf9722efbad5bd3cdc53796e1f0b8591df30230d14d109041795edd7e328089`.
+- Runtime DLLs: `libmp3lame-0.dll` `0.31 MiB`, `libopus-0.dll` `0.47 MiB`,
+  `libwinpthread-1.dll` `0.06 MiB`.
+- Profile manifest: `FFmpeg profile B OK`, media tools `4.98 MiB`, LGPL build,
+  no FFmpeg network protocols, no GPL/nonfree flags.
+- Fixture smoke: `26/26` passed, including `webm_opus_to_pcm_pipe` and
+  `raw_pcm_pipe_to_mp3`.
+- Media-preparation smoke: `5/5` passed, including Azure MAI preparation as
+  `audio/mpeg`.
+- Sidecar candidate gate passed and copied the slim tools plus DLLs to
+  `dist\tauri-sidecar\scriber-backend\tools\ffmpeg` and
+  `Frontend\src-tauri\target\release\backend\tools\ffmpeg`.
+- Additional validation against `Frontend\src-tauri\target\release\backend`:
+  Profile-B manifest passed, media-preparation smoke passed `5/5`, and runtime
+  dependency footprint passed with Backend `254.42 MiB`, `_internal`
+  `221.06 MiB`, `tools\ffmpeg` `5.84 MiB` including
+  `ffmpeg-profile-manifest.json`, and PySide6 `71.71 MiB`.
+- Focused tests after script changes: `34 passed`.
+
+Goal coverage:
+
+- Phase 6: proves a real custom FFmpeg/ffprobe candidate can be built,
+  validated, and packaged into the Python sidecar without the previous
+  `267.01 MiB` full media-tool footprint.
+- Phase 7: adds regression coverage for Windows PowerShell process launching,
+  runtime DLL copying, raw PCM input/output profile requirements, and the
+  Profile-B fixture matrix.
+- Phase 8: preserves the latency-prioritized Azure MAI MP3 path while shrinking
+  media tools to about `4.98 MiB`.
+
+Remaining limits:
+
+- Superseded later on 2026-06-09: the NSIS installer and installed-package
+  media smoke with the custom Profile-B `MediaToolsDir` passed.
+- Real installed YouTube/file workflow evidence is still required before
+  replacing Gyan Essentials as the standard release media-tool input.
+
+## 2026-06-09 - FFmpeg Profile B NSIS Installer and Installed Media Smoke
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -FastLocalInstaller `
+  -MediaToolsDir build\ffmpeg-profile-b-msys2\dist\scriber-ffmpeg-profile-b\bin `
+  -ValidateSlimMediaTools `
+  -MaxBackendRuntimeDependencyMB 325 `
+  -MaxMediaToolsRuntimeDependencyMB 10 `
+  -InstallerMaxInstalledSizeMB 360 `
+  -RunInstallerFrontendSmoke `
+  -RunInstallerMediaPreparationSmoke
+```
+
+Result: passed. This proves the custom MP3-capable Profile-B media-tool folder
+can be used through the complete local Windows NSIS build and installed-package
+media/frontend smoke path.
+
+Evidence:
+
+- Installer:
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`.
+- Installer size: `107,963,553` bytes / `102.96 MiB`.
+- Installed package smoke: `ok=true`.
+- Temporary installed app size: `267.28 MiB` under the `360 MiB` gate.
+- Frontend smoke: backend served the bundled root and `6/6` JS/CSS assets,
+  Tauri-origin CORS passed, tokenized `/api/runtime` access passed, and the
+  Tauri WebView posted `/api/runtime/frontend-ready`.
+- Installed media-preparation smoke: `5/5` passed against installed
+  `backend\tools\ffmpeg`, including upload compression, video audio extraction,
+  YouTube post-download normalization, Azure MAI MP3 preparation
+  (`audio/mpeg`), and `ffprobe` duration probing.
+- Runtime dependency footprint: `ok=true`, Backend `254.42 MiB`, `_internal`
+  `221.06 MiB`, `tools\ffmpeg` `5.84 MiB`, PySide6 `71.71 MiB`,
+  Google/gRPC `11.37 MiB`, Pillow `4.99 MiB`, ONNXRuntime `33.75 MiB`, SciPy
+  absent.
+- Build timing: `879675 ms` total; Tauri/NSIS bundle `769993 ms`; embedded
+  sidecar phase `456418 ms` with PyInstaller cache miss; installed package
+  smoke `95403 ms`.
+
+Focused regression tests after the final quoting and script changes:
+
+```powershell
+python -m pytest tests/test_tauri_stability_smoke_gates.py tests/test_ffmpeg_profile_msys2_build_runner.py tests/test_ffmpeg_profile_build_kit.py tests/test_ffmpeg_profile_fixture_smoke.py tests/test_ffmpeg_profile_validator.py -q
+```
+
+Result: `28 passed`.
+
+Remaining limit:
+
+- Real installed YouTube URL and file workflow evidence with
+  download/normalization/transcription/summary is still required before Profile
+  B replaces Gyan Essentials as the standard release media-tool input.

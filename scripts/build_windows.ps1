@@ -159,7 +159,7 @@ function Add-TauriBeforeBundleCommandValueSwitch {
         throw "Cannot enable $SwitchName because beforeBundleCommand does not contain '$copySwitch'."
     }
 
-    $commandArgument = '"' + $Value + '"'
+    $commandArgument = if ($Value -match '\s') { '"' + $Value + '"' } else { $Value }
     $escapedCommandArgument = Convert-ToJsonStringContent -Value $commandArgument
     return $ConfigText.Replace($copySwitch, " $SwitchName $escapedCommandArgument$copySwitch")
 }

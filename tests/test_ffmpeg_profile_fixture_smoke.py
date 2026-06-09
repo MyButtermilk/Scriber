@@ -40,6 +40,7 @@ def test_profile_b_fixture_smoke_covers_documented_matrix() -> None:
 
     assert "webm_opus_transcode_args" in script
     assert "mp3_transcode_args" in script
+    assert "mp3_encode_pcm_pipe_args" in script
     assert "pcm_pipe_decode_args" in script
     assert "ffprobe_duration_args" in script
     assert "--media-tools-dir" in script
@@ -92,7 +93,7 @@ def test_profile_b_fixture_smoke_writes_artifact(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert payload["profile"] == "B"
     assert payload["summary"]["failedChecks"] == 0
-    assert payload["summary"]["passedChecks"] >= 24
+    assert payload["summary"]["passedChecks"] >= 25
 
     checks = {check["name"]: check for check in payload["checks"]}
     assert checks["mp3_cbr_to_webm_opus"]["ok"] is True
@@ -101,5 +102,6 @@ def test_profile_b_fixture_smoke_writes_artifact(tmp_path: Path) -> None:
     assert checks["yt_dlp_merged_mp4_to_webm_opus"]["ok"] is True
     assert checks["azure_mai_webm_opus_to_mp3"]["output"]["suffix"] == ".mp3"
     assert checks["webm_opus_to_pcm_pipe"]["stdoutBytes"] > 0
+    assert checks["raw_pcm_pipe_to_mp3"]["stdoutBytes"] > 0
     assert checks["no_audio_video_fails"]["ok"] is True
     assert checks["corrupted_input_fails"]["ok"] is True

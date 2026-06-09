@@ -32,9 +32,11 @@ def test_profile_b_configure_args_cover_validator_requirements() -> None:
     for decoder in requirements["decoders"]:
         assert f"--enable-decoder={decoder}" in args
     for demuxer in requirements["demuxers"]:
-        assert f"--enable-demuxer={demuxer}" in args
+        configure_demuxer = "pcm_s16le" if demuxer == "s16le" else demuxer
+        assert f"--enable-demuxer={configure_demuxer}" in args
     for muxer in requirements["muxers"]:
-        assert f"--enable-muxer={muxer}" in args
+        configure_muxer = "pcm_s16le" if muxer == "s16le" else muxer
+        assert f"--enable-muxer={configure_muxer}" in args
     for protocol in requirements["protocols"]:
         assert f"--enable-protocol={protocol}" in args
     for filter_name in requirements["filters"]:
@@ -91,7 +93,7 @@ def test_create_profile_b_build_kit_writes_reproducible_artifacts(tmp_path: Path
     assert "--enable-protocol=https" not in args_text
     assert "./configure --prefix=\"$PREFIX_DIR\"" in script_text
     assert "+  --" not in script_text
-    assert "--enable-demuxer=s16le" in script_text
+    assert "--enable-demuxer=pcm_s16le" in script_text
     assert "build_profile_b_msys2.ps1" in json.dumps(plan)
     assert "-InstallDependencies" in json.dumps(plan)
     assert "validate_ffmpeg_profile.py" in json.dumps(plan)

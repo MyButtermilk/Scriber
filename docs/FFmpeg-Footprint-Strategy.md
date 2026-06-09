@@ -31,6 +31,19 @@ The current standard local reference build is very large:
 | `ffprobe.exe` | 133.43 MiB |
 | Total media tools | 267.01 MiB |
 
+Status 2026-06-09: A real MSYS2/UCRT64 Profile-B custom build has been
+compiled and validated. The portable media-tool folder contains `ffmpeg.exe`
+`2.55 MiB`, `ffprobe.exe` `2.43 MiB`, plus `libmp3lame-0.dll` `0.31 MiB`,
+`libopus-0.dll` `0.47 MiB`, and `libwinpthread-1.dll` `0.06 MiB`; total
+validated media-tool size is `4.98 MiB`. The build passed the Profile-B
+manifest gate, `26/26` fixture checks, `5/5` media-preparation checks, and the
+sidecar slim-media validation/copy gate. A full NSIS build with this
+`MediaToolsDir` also passed installed frontend and media-preparation smokes:
+installer `102.96 MiB`, installed app `267.28 MiB`, release backend
+`254.42 MiB`, installed `tools\ffmpeg` `5.84 MiB`. It still needs real
+installed YouTube and file transcription workflow evidence before it becomes
+the standard release input.
+
 The local reference build reports `--enable-gpl`, `--enable-libmp3lame`, and
 `--enable-libopus`, with no `--enable-nonfree`. A production custom build should
 remove GPL-only features unless a future workflow proves they are required.
@@ -101,7 +114,8 @@ ffmpeg -hide_banner -loglevel error -nostdin -i <local-input> -vn -map 0:a:0 -ac
 ```
 
 Used by `src/audio_file_input.py`. This emits raw PCM to stdout only and does
-not create a stored WAV upload artifact.
+not create a stored WAV upload artifact. This path requires the raw
+`s16le`/`pcm_s16le` output muxer in addition to the `pcm_s16le` encoder.
 
 ### Duration probing
 
@@ -186,11 +200,12 @@ Required:
 - programs: `ffmpeg`, `ffprobe`
 - protocols: `file`, `pipe`
 - demuxers: `mp3`, `wav`, `mov`, `matroska`, `ogg`, `flac`, `s16le`
-- muxers: `webm`, `mp3`
+- muxers: `webm`, `mp3`, `s16le`
 - decoders: `mp3`, `aac`, `opus`, `vorbis`, `flac`, `alac`,
   `pcm_s16le`, `pcm_s24le`, `pcm_s32le`, `pcm_f32le`, `pcm_u8`
 - encoders: `libopus`, `libmp3lame`, `pcm_s16le` for stdout/raw support where
   FFmpeg requires encoder registration
+- raw `s16le` output muxing for PCM stdout pipes
 - parsers: `mpegaudio`, `aac`, `opus`, `vorbis`, `flac`
 - filters: `aresample`, `aformat`, `anull`, `pan`
 
@@ -252,9 +267,10 @@ matrix before becoming release truth.
   --enable-demuxer=matroska \
   --enable-demuxer=ogg \
   --enable-demuxer=flac \
-  --enable-demuxer=s16le \
+  --enable-demuxer=pcm_s16le \
   --enable-muxer=webm \
   --enable-muxer=mp3 \
+  --enable-muxer=pcm_s16le \
   --enable-decoder=mp3 \
   --enable-decoder=aac \
   --enable-decoder=opus \
@@ -312,7 +328,9 @@ Recommended implementation order:
    `powershell -NoProfile -ExecutionPolicy Bypass -File
    scripts/ffmpeg/build_profile_b_msys2.ps1 -InstallDependencies`. The runner
    locates MSYS2/UCRT64, can install required `pacman` packages, clones the
-   configured FFmpeg source ref, runs `configure-profile-b.sh`, writes
+   configured FFmpeg source ref, runs `configure-profile-b.sh`, copies the
+   required adjacent UCRT64 runtime DLLs for `libmp3lame`, `libopus`, and
+   `libwinpthread` into the produced `bin` directory, writes
    `profile-b-msys2-build-report.json`, and then runs the manifest,
    fixture-smoke, and media-preparation gates against the produced `bin`
    directory. Use `-PlanOnly` to emit the exact commands and required packages
@@ -350,6 +368,10 @@ Current packaging is suitable:
 
 - `scripts/build_tauri_backend_sidecar.ps1 -BundleMediaTools` copies tools into
   `tools\ffmpeg` inside the PyInstaller onedir sidecar.
+- When an explicit slim `MediaToolsDir` contains adjacent runtime DLLs, the
+  sidecar build copies those DLLs before validating `ffmpeg.exe` and
+  `ffprobe.exe`, so UCRT64 codec DLL dependencies are preserved in the packaged
+  app.
 - `-ValidateSlimMediaTools` now also runs
   `scripts/ffmpeg/validate_ffmpeg_profile.py --profile B` and writes
   `tools\ffmpeg\ffmpeg-profile-manifest.json` beside the bundled binaries.
@@ -379,8 +401,9 @@ Automated tests now cover:
   integration, and post-build gate orchestration,
 - Profile B fixture smoke covering MP3 CBR/VBR, WAV PCM variants, MOV/M4A/MP4,
   WebM/Opus, MKV/WebM video audio extraction, OGG/Opus, FLAC, yt-dlp-like
-  M4A/WebM/merged MP4, Azure-MAI MP3 preparation, PCM pipe output, no-audio
-  failure, corrupted-input failure, and long/unicode-ish paths,
+  M4A/WebM/merged MP4, Azure-MAI MP3 preparation, WebM-to-PCM pipe output,
+  raw-PCM-to-MP3 pipe output, no-audio failure, corrupted-input failure, and
+  long/unicode-ish paths,
 - media-smoke expectations for WebM/Opus and Azure MAI MP3 preparation,
 - release-readiness media report validation.
 
@@ -422,6 +445,89 @@ surfaces. Unsupported-codec behavior remains a diagnostic extension rather
 than a hard pass/fail because broad fallback builds may legitimately decode
 more codecs than the strict Profile-B target.
 
+## Real Profile-B Build Evidence
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ffmpeg\build_profile_b_msys2.ps1 `
+  -BuildRoot build\ffmpeg-profile-b-msys2 `
+  -Msys2Root C:\msys64 `
+  -InstallDependencies `
+  -ForceClean
+```
+
+Result on 2026-06-09:
+
+- `ok=true`, duration `323.34 s`, FFmpeg source `https://git.ffmpeg.org/ffmpeg.git`, ref `n7.0`.
+- `ffmpeg.exe`: `2.55 MiB`, SHA256 `f33537a15a696af9f7d8723f09ad3b0eb3dc95834cf41764301b304c43ae1049`.
+- `ffprobe.exe`: `2.43 MiB`, SHA256 `aaf9722efbad5bd3cdc53796e1f0b8591df30230d14d109041795edd7e328089`.
+- Runtime DLLs copied beside the tools: `libmp3lame-0.dll` `0.31 MiB`, `libopus-0.dll` `0.47 MiB`, `libwinpthread-1.dll` `0.06 MiB`.
+- Manifest gate: `FFmpeg profile B OK`, media tools `4.98 MiB`, LGPL build, no FFmpeg network protocols, MP3/WebM/Opus/raw-PCM pipe requirements present.
+- Fixture smoke: `26/26` passed, including `webm_opus_to_pcm_pipe` and `raw_pcm_pipe_to_mp3`.
+- Media-preparation smoke: `5/5` passed, including Azure MAI preparation as `audio/mpeg`.
+- Sidecar candidate gate:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 `
+  -SkipFrontendBuild `
+  -BundleMediaTools `
+  -ValidateSlimMediaTools `
+  -MediaToolsDir build\ffmpeg-profile-b-msys2\dist\scriber-ffmpeg-profile-b\bin `
+  -CopyToTauriRelease
+```
+
+The sidecar gate passed, copied the three DLLs plus `ffmpeg.exe` and
+`ffprobe.exe` into `dist\tauri-sidecar\scriber-backend\tools\ffmpeg`, validated
+the profile manifest there, and copied the sidecar to
+`Frontend\src-tauri\target\release\backend`.
+
+Additional validation against `Frontend\src-tauri\target\release\backend`:
+Profile-B manifest passed, media-preparation smoke passed `5/5`, and the
+runtime-dependency footprint gate passed with Backend `254.42 MiB`,
+`_internal` `221.06 MiB`, `tools\ffmpeg` `5.84 MiB` including the profile
+manifest, and PySide6 `71.71 MiB`.
+
+Full NSIS candidate build:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -FastLocalInstaller `
+  -MediaToolsDir build\ffmpeg-profile-b-msys2\dist\scriber-ffmpeg-profile-b\bin `
+  -ValidateSlimMediaTools `
+  -MaxBackendRuntimeDependencyMB 325 `
+  -MaxMediaToolsRuntimeDependencyMB 10 `
+  -InstallerMaxInstalledSizeMB 360 `
+  -RunInstallerFrontendSmoke `
+  -RunInstallerMediaPreparationSmoke
+```
+
+Result on 2026-06-09:
+
+- Build `ok=true`; installer
+  `Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe`
+  is `102.96 MiB`.
+- Installed-package smoke `ok=true`; temporary installed app measured
+  `267.28 MiB` under the `360 MiB` gate.
+- Installed frontend smoke passed: backend served the bundled entrypoint,
+  `6/6` JS/CSS assets were verified, Tauri-origin CORS passed, and the WebView
+  posted the tokenized `/api/runtime/frontend-ready` beacon.
+- Installed media-preparation smoke passed `5/5`: upload compression, video
+  audio extraction, YouTube post-download normalization, Azure MAI preparation
+  as `audio/mpeg`/MP3, and `ffprobe` duration probing.
+- Release runtime-footprint gate passed with Backend `254.42 MiB`, `_internal`
+  `221.06 MiB`, `tools\ffmpeg` `5.84 MiB`, PySide6 `71.71 MiB`,
+  Google/gRPC `11.37 MiB`, Pillow `4.99 MiB`, ONNXRuntime `33.75 MiB`, and
+  SciPy `0.00 MiB`.
+- Build timing: `879675 ms` total; `769993 ms` Tauri/NSIS bundle,
+  `456418 ms` sidecar section with PyInstaller cache miss, and `95403 ms`
+  installed-package smoke.
+
+Remaining release evidence before replacing Gyan Essentials:
+
+- run at least one real installed YouTube URL workflow and one file workflow
+  that exercises download/normalization/transcription/summary paths.
+
 ## Measurement Notes
 
 Local 20-second speech estimate, 16 kHz mono:
@@ -458,8 +564,11 @@ If a custom slim build fails real-world media workflows:
 
 ## Recommendation
 
-Use Profile B as the production target: local-media-only FFmpeg, `ffprobe`
-included, `libopus` for WebM/Opus, `libmp3lame` for Azure MAI MP3 64k, common
+Use Profile B as the production target after the remaining real installed
+YouTube/file workflow smokes pass: local-media-only FFmpeg, `ffprobe` included,
+`libopus` for WebM/Opus, `libmp3lame` for Azure MAI MP3 64k, common
 audio/container decoders for MP3/WAV/MOV/MP4/M4A/WebM/MKV/OGG/FLAC, no
 `ffplay`, no FFmpeg network protocols, no video encoders, no hardware stacks,
-and no GPL/nonfree libraries unless later proven necessary.
+and no GPL/nonfree libraries unless later proven necessary. Until those real
+workflow smokes exist, keep Gyan Essentials as the conservative standard
+release fallback.

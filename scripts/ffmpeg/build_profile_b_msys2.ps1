@@ -99,6 +99,24 @@ function New-Msys2Environment {
     return $envBlock
 }
 
+function ConvertTo-NativeArgument {
+    param([AllowNull()][string]$Argument)
+
+    if ($null -eq $Argument) {
+        return '""'
+    }
+    if ($Argument.Length -eq 0) {
+        return '""'
+    }
+
+    $escaped = $Argument -replace '(\\*)"', '$1$1\"'
+    $escaped = $escaped -replace '(\\+)$', '$1$1'
+    if ($escaped -match '[\s"]') {
+        return '"' + $escaped + '"'
+    }
+    return $escaped
+}
+
 function Invoke-Msys2 {
     param(
         [string]$BashPath,
@@ -109,8 +127,7 @@ function Invoke-Msys2 {
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $BashPath
-    $psi.ArgumentList.Add("-lc")
-    $psi.ArgumentList.Add($Command)
+    $psi.Arguments = "$(ConvertTo-NativeArgument "-lc") $(ConvertTo-NativeArgument $Command)"
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -120,9 +137,11 @@ function Invoke-Msys2 {
     }
 
     $process = [System.Diagnostics.Process]::Start($psi)
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
     $process.WaitForExit()
+    $stdout = $stdoutTask.Result
+    $stderr = $stderrTask.Result
 
     if ($process.ExitCode -ne 0) {
         throw "$Label failed with exit code $($process.ExitCode): $stderr"
@@ -158,6 +177,25 @@ function Get-FileInfoPayload {
         sizeMiB = [math]::Round($item.Length / 1MB, 2)
         sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+}
+
+function Copy-ProfileRuntimeDlls {
+    param(
+        [string]$Root,
+        [string]$TargetDir
+    )
+
+    $sourceDir = Join-Path $Root "ucrt64\bin"
+    $copied = @()
+    foreach ($name in @("libmp3lame-0.dll", "libopus-0.dll", "libwinpthread-1.dll")) {
+        $source = Join-Path $sourceDir $name
+        if (Test-Path -LiteralPath $source -PathType Leaf) {
+            $target = Join-Path $TargetDir $name
+            Copy-Item -LiteralPath $source -Destination $target -Force
+            $copied += (Get-FileInfoPayload -Path $target)
+        }
+    }
+    return $copied
 }
 
 function Invoke-PythonGate {
@@ -288,6 +326,7 @@ try {
     if (-not (Test-Path -LiteralPath $ffprobePath -PathType Leaf)) {
         throw "Profile B build did not produce ffprobe.exe at $ffprobePath"
     }
+    $runtimeDlls = Copy-ProfileRuntimeDlls -Root $Msys2Root -TargetDir $mediaToolsDir
 
     Invoke-PythonGate -Label "Profile B manifest" -Arguments @(
         "scripts\ffmpeg\validate_ffmpeg_profile.py",
@@ -345,6 +384,7 @@ try {
         mediaToolsDir = $mediaToolsDir
         ffmpeg = Get-FileInfoPayload -Path $ffmpegPath
         ffprobe = Get-FileInfoPayload -Path $ffprobePath
+        runtimeDlls = $runtimeDlls
         reports = [ordered]@{
             manifest = $ManifestPath
             fixtureSmoke = $FixtureSmokePath
@@ -365,6 +405,8 @@ try {
         sourceUrl = $SourceUrl
         gitRef = $GitRef
         error = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+        position = $_.InvocationInfo.PositionMessage
+        scriptStackTrace = $_.ScriptStackTrace
     }
     Write-Utf8NoBomJson -Path $ReportPath -Payload $payload
     $payload | ConvertTo-Json -Depth 8

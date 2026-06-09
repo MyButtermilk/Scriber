@@ -18,6 +18,9 @@ def test_profile_b_msys2_build_runner_contains_required_packages_and_gates() -> 
     assert "mingw-w64-ucrt-x86_64-gcc" in script
     assert "mingw-w64-ucrt-x86_64-opus" in script
     assert "mingw-w64-ucrt-x86_64-lame" in script
+    assert "Copy-ProfileRuntimeDlls" in script
+    assert "libmp3lame-0.dll" in script
+    assert "libopus-0.dll" in script
     assert "pacman -S --needed --noconfirm" in script
     assert "create_profile_b_build_kit.py" in script
     assert "validate_ffmpeg_profile.py" in script

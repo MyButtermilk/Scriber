@@ -108,6 +108,7 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "ffprobe was not found on PATH" in sidecar
     assert "ffprobe was not found in MediaToolsDir" in sidecar
     assert "executable failed validation" in sidecar
+    assert '-Filter "*.dll"' in sidecar
     assert "[switch]$SkipBundledFfprobe" in sidecar
     assert 'Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe) -ValidateSlimBundle ([bool]$ValidateSlimMediaTools)' in sidecar
     assert "Skipping bundled ffprobe" in sidecar
@@ -151,6 +152,7 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert 'SwitchName "-SkipBundledFfprobe"' in build
     assert 'SwitchName "-ValidateSlimMediaTools"' in build
     assert 'SwitchName "-MediaToolsDir"' in build
+    assert '$commandArgument = if ($Value -match' in build
     assert 'SwitchName "-ReuseSidecarIfUnchanged"' in build
     assert 'SwitchName "-PrunePySide6Translations"' in build
     assert '$ConfigText.Replace($copySwitch, " $SwitchName$copySwitch")' in build
