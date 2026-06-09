@@ -321,9 +321,9 @@ export default function DebugConsole() {
       setTruncated(false);
       setLastUpdated(new Date());
       setLoading(false);
-      setActionStatus(`Deleted ${payload.cleared} runtime log file${payload.cleared === 1 ? "" : "s"}.`);
+      setActionStatus(`Cleared ${payload.cleared} runtime log source${payload.cleared === 1 ? "" : "s"}.`);
     } catch (err: any) {
-      setError(`Delete logs failed: ${String(err?.message || err)}`);
+      setError(`Clear logs failed: ${String(err?.message || err)}`);
     } finally {
       setDeleteDialogOpen(false);
       setLogFileClearLoading(false);
@@ -415,7 +415,7 @@ export default function DebugConsole() {
                   disabled={logFileClearLoading || (!logs.length && !sources.length)}
                 >
                   <Trash2 className={cn("h-4 w-4", logFileClearLoading && "animate-pulse")} />
-                  Delete logs
+                  Clear logs
                 </Button>
                 <Button className="shrink-0" type="button" variant="outline" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
                   <Clipboard className="h-4 w-4" />
@@ -581,16 +581,16 @@ export default function DebugConsole() {
     <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete runtime log files?</AlertDialogTitle>
+          <AlertDialogTitle>Clear runtime logs?</AlertDialogTitle>
           <AlertDialogDescription>
-            This clears the backend and shell log files used by the debug console. Support bundles created before this action are not changed.
+            This clears the backend and shell logs for the debug console and for new support bundles. Existing support bundles are not changed.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction onClick={() => void deleteRuntimeLogs()} disabled={logFileClearLoading}>
             <Trash2 className="h-4 w-4" />
-            Delete logs
+            Clear logs
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

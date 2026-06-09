@@ -4990,3 +4990,72 @@ Remaining limits:
 - This still does not complete typed coverage for every remaining REST
   endpoint. File upload/progress and local-model Settings action routes remain
   follow-up slices.
+
+## 2026-06-09 - Debug Log Clear NUL Padding Fix
+
+Commands:
+
+```powershell
+python -m pytest tests/runtime/test_debug_logs.py tests/runtime/test_support_bundle.py tests/test_web_api_security.py -q
+
+cd Frontend
+npm run check
+```
+
+Result: implemented and covered by focused backend/runtime tests plus
+TypeScript checking.
+
+Observed issue:
+
+- The user-provided support bundle
+  `scriber-support-bundle-1781010423198.zip` showed that one short live mic
+  recording produced only 45 real log entries, but `latest.log` contained
+  11,197 leading NUL bytes and `latest.structured.jsonl` contained 63,669
+  leading NUL bytes before the first real record.
+- This made the Debug Console render pages of visually empty content before the
+  real log text.
+- Root cause: the runtime log clear endpoint truncated active log files while
+  Loguru still held file handles. On Windows, later writes through the old
+  handle can resume at the previous file offset and create a NUL-filled gap.
+
+Implemented improvements:
+
+- Runtime log clearing now records per-file clear offsets in
+  `debug-log-clear-state.json` instead of truncating active log files.
+- `/api/runtime/logs` reads from the clear offset forward, so old entries are
+  hidden without touching active file handles.
+- New support bundles also respect the clear offset, so cleared log content is
+  not reintroduced into newly generated bundles.
+- Log redaction strips NUL bytes before parsing or writing support-bundle text,
+  so already affected logs no longer render as blank pages in the Debug
+  Console.
+- The Debug Console copy was changed from "Delete logs" to "Clear logs" to
+  reflect the safer marker-based behavior.
+
+Evidence:
+
+- `tests/runtime/test_debug_logs.py`: verifies NUL padding is stripped, clear
+  markers hide old entries, and appended post-clear entries remain visible.
+- `tests/runtime/test_support_bundle.py`: verifies support bundles remove NUL
+  bytes and respect the runtime clear marker.
+- `tests/test_web_api_security.py`: verifies the token-protected
+  `/api/runtime/logs` clear endpoint no longer truncates files, hides old
+  entries, and still exposes entries appended after the clear marker.
+- Focused backend run: `42 passed`.
+- Frontend `npm run check`: passed.
+
+Goal coverage:
+
+- Phase 2: hardens crash/log support for the Tauri-managed Python worker.
+- Phase 7: adds regression evidence for the Debug Console and support-bundle
+  diagnostics path.
+- Phase 8: removes a user-visible packaged-app diagnostic defect without
+  weakening log redaction or token protection.
+
+Remaining limits:
+
+- This does not reduce normal DEBUG-level log volume. The inspected recording
+  had moderate real log volume; the visible problem was NUL padding.
+- This does not close external release-readiness gates such as physical
+  microphone matrix, real Authenticode signing, or published signed updater
+  evidence.

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.runtime.log_clear_state import clear_offset_for_path, load_clear_offsets
 from src.runtime.paths import data_dir, logs_dir, repo_root, settings_path, support_bundles_dir
 from src.version import app_version
 
@@ -56,22 +57,27 @@ def redact_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
 
 
 def redact_text(text: str) -> str:
-    redacted = _JSON_SECRET_RE.sub(r'\1"[REDACTED]"', str(text))
+    redacted = str(text).replace("\x00", "")
+    redacted = _JSON_SECRET_RE.sub(r'\1"[REDACTED]"', redacted)
     redacted = _ASSIGNMENT_SECRET_RE.sub(r"\1=[REDACTED]", redacted)
     redacted = _BEARER_RE.sub("Bearer [REDACTED]", redacted)
     redacted = _OPENAI_STYLE_SECRET_RE.sub("[REDACTED]", redacted)
     return redacted
 
 
-def _read_tail(path: Path, *, max_bytes: int = _MAX_LOG_BYTES) -> str:
+def _read_tail(path: Path, *, max_bytes: int = _MAX_LOG_BYTES, start_offset: int = 0) -> str:
     size = path.stat().st_size
+    start_offset = max(0, min(start_offset, size))
+    readable_size = size - start_offset
     with path.open("rb") as handle:
-        if size > max_bytes:
+        if readable_size > max_bytes:
             handle.seek(size - max_bytes)
             data = handle.read(max_bytes)
             data = b"[truncated to last bytes]\n" + data
         else:
-            data = handle.read()
+            if start_offset:
+                handle.seek(start_offset)
+            data = handle.read(readable_size)
     return redact_text(data.decode("utf-8", errors="replace"))
 
 
@@ -170,6 +176,7 @@ def _write_log_files(zf: zipfile.ZipFile) -> None:
     seen: set[Path] = set()
     archive_names: set[str] = set()
     candidates: list[Path] = []
+    clear_offsets = load_clear_offsets()
     for directory in (logs_dir(), data_dir() / "logs", repo_root()):
         if not directory.exists():
             continue
@@ -189,7 +196,7 @@ def _write_log_files(zf: zipfile.ZipFile) -> None:
                 archive_name = f"logs/{path.parent.name}-{suffix}-{path.name}"
                 suffix += 1
             archive_names.add(archive_name)
-            _include_text_file(zf, path, archive_name)
+            zf.writestr(archive_name, _read_tail(path, start_offset=clear_offset_for_path(path, clear_offsets)))
         except OSError:
             continue
 

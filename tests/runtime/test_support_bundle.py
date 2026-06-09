@@ -1,5 +1,7 @@
 import zipfile
 
+from src.runtime import support_bundle
+from src.runtime.log_clear_state import record_clear_state
 from src.runtime.support_bundle import create_support_bundle, redact_mapping, redact_text
 
 
@@ -26,10 +28,13 @@ def test_redaction_helpers_hide_sensitive_values():
 def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path):
     data_dir = tmp_path / "data"
     logs_dir = data_dir / "logs"
+    repo_dir = tmp_path / "repo"
     logs_dir.mkdir(parents=True)
+    repo_dir.mkdir()
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(data_dir))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-abcdefghijklmnop")
     monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "session-secret-value")
+    monkeypatch.setattr(support_bundle, "repo_root", lambda: repo_dir)
 
     (data_dir / "settings.json").write_text(
         '{"language":"en","apiKeys":{"openaiApiKey":"settings-secret-value"}}',
@@ -40,7 +45,7 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
         encoding="utf-8",
     )
     (logs_dir / "latest.log").write_text(
-        "OPENAI_API_KEY=log-secret-value Authorization: Bearer bearer-secret\n",
+        "\x00\x00OPENAI_API_KEY=log-secret-value Authorization: Bearer bearer-secret\n",
         encoding="utf-8",
     )
 
@@ -81,4 +86,34 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     assert "sk-abcdefghijklmnop" not in combined
     assert "bearer-secret" not in combined
     assert "private transcript text" not in combined
+    assert "\x00" not in combined
     assert "[REDACTED]" in combined
+
+
+def test_support_bundle_respects_runtime_log_clear_marker(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    logs_dir = data_dir / "logs"
+    repo_dir = tmp_path / "repo"
+    logs_dir.mkdir(parents=True)
+    repo_dir.mkdir()
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(data_dir))
+    monkeypatch.setattr(support_bundle, "repo_root", lambda: repo_dir)
+
+    log_path = logs_dir / "latest.log"
+    log_path.write_text("before-clear\n", encoding="utf-8")
+    cleared, failed = record_clear_state([log_path])
+    assert cleared == ["latest.log"]
+    assert failed == []
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write("after-clear\n")
+
+    bundle = create_support_bundle(
+        runtime_info={"apiVersion": "1", "runtimeMode": "tauri-supervised", "launchKind": "sidecar", "pid": 123},
+        app_state={"recordingState": "idle"},
+    )
+
+    with zipfile.ZipFile(bundle) as zf:
+        log_text = zf.read("logs/latest.log").decode("utf-8", errors="replace")
+
+    assert "before-clear" not in log_text
+    assert "after-clear" in log_text

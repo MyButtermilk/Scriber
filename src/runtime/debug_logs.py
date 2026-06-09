@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from src.core.rest_contracts import REST_API_VERSION
+from src.runtime.log_clear_state import clear_offset_for_path, load_clear_offsets, record_clear_state
 from src.runtime.paths import data_dir, logs_dir, repo_root
 from src.runtime.support_bundle import redact_text
 
@@ -48,12 +49,13 @@ def collect_debug_logs(*, limit: int = _DEFAULT_LIMIT) -> dict[str, Any]:
     entries: list[DebugLogEntry] = []
     sources: list[str] = []
     truncated = False
+    clear_offsets = load_clear_offsets()
 
     for path in _candidate_log_files():
         source = path.name
         sources.append(source)
         try:
-            text, file_truncated = _read_tail(path)
+            text, file_truncated = _read_tail(path, start_offset=clear_offset_for_path(path, clear_offsets))
         except OSError:
             continue
         truncated = truncated or file_truncated
@@ -84,22 +86,7 @@ def collect_debug_logs(*, limit: int = _DEFAULT_LIMIT) -> dict[str, Any]:
 
 
 def clear_debug_logs() -> dict[str, Any]:
-    cleared: list[str] = []
-    failed: list[dict[str, str]] = []
-
-    for path in _candidate_log_files():
-        source = path.name
-        try:
-            _clear_log_file(path)
-        except OSError as exc:
-            failed.append(
-                {
-                    "source": source,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-            )
-        else:
-            cleared.append(source)
+    cleared, failed = record_clear_state(_candidate_log_files())
 
     return {
         "apiVersion": REST_API_VERSION,
@@ -141,20 +128,19 @@ def _candidate_log_files() -> list[Path]:
     return resolved
 
 
-def _read_tail(path: Path) -> tuple[str, bool]:
+def _read_tail(path: Path, *, start_offset: int = 0) -> tuple[str, bool]:
     size = path.stat().st_size
-    truncated = size > _MAX_BYTES_PER_FILE
+    start_offset = max(0, min(start_offset, size))
+    readable_size = size - start_offset
+    truncated = readable_size > _MAX_BYTES_PER_FILE
     with path.open("rb") as handle:
         if truncated:
             handle.seek(size - _MAX_BYTES_PER_FILE)
-        raw = handle.read(_MAX_BYTES_PER_FILE if truncated else size)
+        elif start_offset:
+            handle.seek(start_offset)
+        raw = handle.read(_MAX_BYTES_PER_FILE if truncated else readable_size)
     text = raw.decode("utf-8", errors="replace")
     return redact_text(text), truncated
-
-
-def _clear_log_file(path: Path) -> None:
-    with path.open("w", encoding="utf-8"):
-        pass
 
 
 def _parse_log_line(line: str, *, source: str, line_number: int) -> DebugLogEntry | None:

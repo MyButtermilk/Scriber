@@ -272,7 +272,21 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
         assert clear_logs_payload["apiVersion"] == "1"
         assert clear_logs_payload["ok"] is True
         assert "zz-test-debug.log" in clear_logs_payload["clearedSources"]
-        assert (log_dir / "zz-test-debug.log").read_text(encoding="utf-8") == ""
+        assert "failed with" in (log_dir / "zz-test-debug.log").read_text(encoding="utf-8")
+        logs_after_clear = await client.get("/api/runtime/logs?limit=10", headers={"X-Scriber-Token": "secret"})
+        assert logs_after_clear.status == 200
+        logs_after_clear_payload = await logs_after_clear.json()
+        assert not any(item["source"] == "zz-test-debug.log" for item in logs_after_clear_payload["items"])
+
+        with (log_dir / "zz-test-debug.log").open("a", encoding="utf-8") as handle:
+            handle.write("... 12:34:57.000 INFO  [web_api    ] [------] [web_api        ] after clear\n")
+        logs_after_append = await client.get("/api/runtime/logs?limit=10", headers={"X-Scriber-Token": "secret"})
+        assert logs_after_append.status == 200
+        logs_after_append_payload = await logs_after_append.json()
+        assert any(
+            item["source"] == "zz-test-debug.log" and "after clear" in item["message"]
+            for item in logs_after_append_payload["items"]
+        )
 
         shutdown_unauthorized = await client.post("/api/runtime/shutdown")
         assert shutdown_unauthorized.status == 401
