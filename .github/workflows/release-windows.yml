@@ -73,7 +73,25 @@ jobs:
             "scripts\build_windows.ps1",
             "-SkipSmoke",
             "-RunMediaPreparationSmoke",
-            "-RunRuntimeDependencyFootprint"
+            "-RunRuntimeDependencyFootprint",
+            "-MaxScipyRuntimeDependencyMB",
+            "0.001",
+            "-MaxOnnxRuntimeDependencyMB",
+            "40",
+            "-MaxPythonRuntimeDependencyMB",
+            "40",
+            "-MaxBackendRuntimeDependencyMB",
+            "560",
+            "-MaxInternalRuntimeDependencyMB",
+            "250",
+            "-MaxMediaToolsRuntimeDependencyMB",
+            "280",
+            "-MaxPySide6RuntimeDependencyMB",
+            "80",
+            "-MaxGoogleGrpcRuntimeDependencyMB",
+            "15",
+            "-MaxPillowRuntimeDependencyMB",
+            "6"
           )
           if ($env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY -and ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)) {
             $buildArgs += "-EnableTauriUpdater"

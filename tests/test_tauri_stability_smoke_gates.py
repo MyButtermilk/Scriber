@@ -76,9 +76,16 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
 
     assert "function Test-MediaToolExecutable" in sidecar
     assert "function Test-ScriberFfmpegCapabilities" in sidecar
+    assert "function Get-SidecarInputManifest" in sidecar
+    assert "function Write-SidecarBuildMetadata" in sidecar
+    assert "function Invoke-PySide6Pruning" in sidecar
     assert 'Test-MediaToolExecutable -Path $copiedFfmpeg -Name "ffmpeg"' in sidecar
     assert 'Test-MediaToolExecutable -Path $copiedFfprobe -Name "ffprobe"' in sidecar
     assert "[switch]$ValidateSlimMediaTools" in sidecar
+    assert "[switch]$ReuseSidecarIfUnchanged" in sidecar
+    assert "[switch]$PrunePySide6Translations" in sidecar
+    assert "[switch]$PrunePySide6UnusedPlugins" in sidecar
+    assert "[switch]$PrunePySide6SoftwareOpenGl" in sidecar
     assert 'Test-ScriberFfmpegCapabilities -Path $copiedFfmpeg' in sidecar
     assert "-encoders" in sidecar
     assert "libopus" in sidecar
@@ -92,6 +99,8 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "[switch]$SkipBundledFfprobe" in sidecar
     assert 'Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe) -ValidateSlimBundle ([bool]$ValidateSlimMediaTools)' in sidecar
     assert "Skipping bundled ffprobe" in sidecar
+    assert "sidecar-build-metadata.json" in sidecar
+    assert "sidecar-cache-save" in sidecar
 
 
 def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> None:
@@ -99,10 +108,21 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
 
     assert "[switch]$SkipBundledFfprobe" in build
     assert "[switch]$ValidateSlimMediaTools" in build
+    assert '[string]$MediaToolsDir = ""' in build
+    assert "[switch]$ReuseSidecarIfUnchanged" in build
+    assert "[switch]$PrunePySide6Translations" in build
+    assert "[switch]$PrunePySide6UnusedPlugins" in build
+    assert "[switch]$PrunePySide6SoftwareOpenGl" in build
     assert "function Add-TauriBeforeBundleCommandSwitch" in build
+    assert "function Add-TauriBeforeBundleCommandValueSwitch" in build
+    assert "function Write-BuildTimingReport" in build
     assert 'SwitchName "-SkipBundledFfprobe"' in build
     assert 'SwitchName "-ValidateSlimMediaTools"' in build
+    assert 'SwitchName "-MediaToolsDir"' in build
+    assert 'SwitchName "-ReuseSidecarIfUnchanged"' in build
+    assert 'SwitchName "-PrunePySide6Translations"' in build
     assert '$ConfigText.Replace($copySwitch, " $SwitchName$copySwitch")' in build
+    assert "build-timing.json" in build
     assert "finally {" in build
     assert "function Set-Utf8NoBomContent" in build
     assert "Set-Utf8NoBomContent -Path $tauriConfigPath -Value $currentTauriConfig" in build

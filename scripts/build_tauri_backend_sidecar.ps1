@@ -12,6 +12,7 @@ Typical flow:
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -ValidateSlimMediaTools -MediaToolsDir path\to\slim-ffmpeg -CopyToTauriRelease
+  powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -ReuseSidecarIfUnchanged -CopyToTauriRelease
   cd Frontend
   npm run tauri:build
 #>
@@ -27,10 +28,17 @@ param(
     [switch]$BundleMediaTools,
     [switch]$SkipBundledFfprobe,
     [switch]$ValidateSlimMediaTools,
+    [switch]$ReuseSidecarIfUnchanged,
+    [string]$SidecarCacheRoot = "",
+    [switch]$PrunePySide6Translations,
+    [switch]$PrunePySide6UnusedPlugins,
+    [switch]$PrunePySide6SoftwareOpenGl,
     [switch]$CopyToTauriRelease
 )
 
 $ErrorActionPreference = "Stop"
+$script:BuildTimingStarted = [System.Diagnostics.Stopwatch]::StartNew()
+$script:BuildTimingPhases = [System.Collections.Generic.List[object]]::new()
 
 function Convert-ToFullPath {
     param([string]$Path)
@@ -49,6 +57,310 @@ function Assert-UnderRoot {
     if (-not $pathFull.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "$Label must stay under repo root. Got: $pathFull"
     }
+}
+
+function Invoke-TimedStep {
+    param(
+        [string]$Label,
+        [scriptblock]$Command
+    )
+
+    $stepWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $ok = $false
+    try {
+        & $Command
+        $ok = $true
+    } finally {
+        $stepWatch.Stop()
+        $script:BuildTimingPhases.Add([ordered]@{
+            label = $Label
+            durationMs = [int64]$stepWatch.ElapsedMilliseconds
+            ok = $ok
+        }) | Out-Null
+    }
+}
+
+function Get-StringSha256 {
+    param([string]$Value)
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha.ComputeHash($bytes)
+        return ([System.BitConverter]::ToString($hashBytes)).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-RelativePath {
+    param(
+        [string]$Root,
+        [string]$Path
+    )
+
+    $rootFull = Convert-ToFullPath -Path $Root
+    if (-not $rootFull.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+        $rootFull += [System.IO.Path]::DirectorySeparatorChar
+    }
+    $pathFull = Convert-ToFullPath -Path $Path
+    $rootUri = [System.Uri]::new($rootFull)
+    $pathUri = [System.Uri]::new($pathFull)
+    $relative = $rootUri.MakeRelativeUri($pathUri).ToString()
+    return ([System.Uri]::UnescapeDataString($relative)).Replace("/", [System.IO.Path]::DirectorySeparatorChar)
+}
+
+function Get-FileHashEntry {
+    param(
+        [string]$Root,
+        [string]$Path,
+        [bool]$HashContent = $true
+    )
+
+    $item = Get-Item -LiteralPath $Path
+    $entry = [ordered]@{
+        path = (Get-RelativePath -Root $Root -Path $item.FullName)
+        length = [int64]$item.Length
+        lastWriteTimeUtc = $item.LastWriteTimeUtc.ToString("o")
+    }
+    if ($HashContent) {
+        $entry["sha256"] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    return $entry
+}
+
+function Get-InputFileEntries {
+    param(
+        [string]$Root,
+        [string[]]$RelativePaths
+    )
+
+    $entries = @()
+    foreach ($relative in $RelativePaths) {
+        $candidate = Join-Path $Root $relative
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            continue
+        }
+        $item = Get-Item -LiteralPath $candidate
+        if ($item.PSIsContainer) {
+            $files = Get-ChildItem -LiteralPath $item.FullName -Recurse -File |
+                Where-Object {
+                    $_.FullName -notmatch "\\__pycache__\\" -and
+                    $_.Extension -notin @(".pyc", ".pyo")
+                } |
+                Sort-Object FullName
+            foreach ($file in $files) {
+                $entries += Get-FileHashEntry -Root $Root -Path $file.FullName
+            }
+        } else {
+            $entries += Get-FileHashEntry -Root $Root -Path $item.FullName
+        }
+    }
+    return $entries
+}
+
+function Get-ToolMetadataEntry {
+    param(
+        [string]$Root,
+        [string]$Path,
+        [string]$Name
+    )
+
+    if (-not $Path) {
+        return [ordered]@{
+            name = $Name
+            path = $null
+            exists = $false
+        }
+    }
+    $item = Get-Item -LiteralPath $Path
+    return [ordered]@{
+        name = $Name
+        path = (Get-RelativePath -Root $Root -Path $item.FullName)
+        resolvedPath = $item.FullName
+        exists = $true
+        length = [int64]$item.Length
+        lastWriteTimeUtc = $item.LastWriteTimeUtc.ToString("o")
+    }
+}
+
+function Get-SidecarInputManifest {
+    param(
+        [string]$Root,
+        [string]$Python,
+        [string]$SearchDir,
+        [bool]$BundleTools,
+        [bool]$SkipFfprobe,
+        [bool]$ValidateSlimBundle,
+        [bool]$PruneTranslations,
+        [bool]$PrunePlugins,
+        [bool]$PruneSoftwareOpenGl
+    )
+
+    $pythonVersion = (& $Python -c "import sys; print(sys.version)" 2>$null) -join "`n"
+    $pyInstallerVersion = (& $Python -c "import PyInstaller; print(PyInstaller.__version__)" 2>$null) -join "`n"
+    $inputPaths = @(
+        "src",
+        "packaging\scriber-backend.spec",
+        "requirements-base.txt",
+        "pyloudnorm",
+        "scripts\build_tauri_backend_sidecar.ps1",
+        "scripts\check_backend_runtime_imports.py",
+        "Frontend\dist\public"
+    )
+    $tools = @()
+    if ($BundleTools -or $SearchDir) {
+        $tools += Get-ToolMetadataEntry -Root $Root -Path (Resolve-MediaTool -Names @("ffmpeg.exe", "ffmpeg") -SearchDir $SearchDir) -Name "ffmpeg"
+        if (-not $SkipFfprobe) {
+            $tools += Get-ToolMetadataEntry -Root $Root -Path (Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir) -Name "ffprobe"
+        }
+        $tools += Get-ToolMetadataEntry -Root $Root -Path (Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir $SearchDir) -Name "yt-dlp"
+    }
+    return [ordered]@{
+        apiVersion = "1"
+        python = $pythonVersion
+        pyInstaller = $pyInstallerVersion
+        flags = [ordered]@{
+            bundleMediaTools = $BundleTools
+            skipBundledFfprobe = $SkipFfprobe
+            validateSlimMediaTools = $ValidateSlimBundle
+            prunePySide6Translations = $PruneTranslations
+            prunePySide6UnusedPlugins = $PrunePlugins
+            prunePySide6SoftwareOpenGl = $PruneSoftwareOpenGl
+        }
+        files = Get-InputFileEntries -Root $Root -RelativePaths $inputPaths
+        tools = $tools
+    }
+}
+
+function Copy-DirectoryContents {
+    param(
+        [string]$SourceDir,
+        [string]$TargetDir,
+        [string]$TargetLabel
+    )
+
+    Assert-UnderRoot -Root $RepoRoot -Path $TargetDir -Label $TargetLabel
+    if (Test-Path -LiteralPath $TargetDir) {
+        Remove-Item -LiteralPath $TargetDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+    Copy-Item -Path (Join-Path $SourceDir "*") -Destination $TargetDir -Recurse -Force
+}
+
+function Remove-SidecarPath {
+    param(
+        [string]$SidecarDir,
+        [string]$RelativePath,
+        [string]$Reason,
+        [System.Collections.Generic.List[object]]$Removed
+    )
+
+    $path = Join-Path $SidecarDir $RelativePath
+    if (-not (Test-Path -LiteralPath $path)) {
+        return
+    }
+    Assert-UnderRoot -Root $SidecarDir -Path $path -Label "PySide6 prune target"
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $files = @(Get-Item -LiteralPath $path)
+    } else {
+        $files = @(Get-ChildItem -LiteralPath $path -Recurse -File -ErrorAction SilentlyContinue)
+    }
+    $bytes = ($files | Measure-Object Length -Sum).Sum
+    Remove-Item -LiteralPath $path -Recurse -Force
+    $Removed.Add([ordered]@{
+        path = $RelativePath
+        reason = $Reason
+        removedFileCount = $files.Count
+        removedBytes = [int64]$bytes
+    }) | Out-Null
+}
+
+function Invoke-PySide6Pruning {
+    param(
+        [string]$SidecarDir,
+        [bool]$PruneTranslations,
+        [bool]$PrunePlugins,
+        [bool]$PruneSoftwareOpenGl
+    )
+
+    $removed = [System.Collections.Generic.List[object]]::new()
+    $pysideRoot = Join-Path $SidecarDir "_internal\PySide6"
+    if (-not (Test-Path -LiteralPath $pysideRoot -PathType Container)) {
+        return @()
+    }
+    if ($PruneTranslations) {
+        Remove-SidecarPath -SidecarDir $SidecarDir -RelativePath "_internal\PySide6\translations" -Reason "Qt translations are not used by the native overlay" -Removed $removed
+    }
+    if ($PrunePlugins) {
+        $pluginsRoot = Join-Path $pysideRoot "plugins"
+        if (Test-Path -LiteralPath $pluginsRoot -PathType Container) {
+            $keep = @(
+                "plugins\platforms\qwindows.dll",
+                "plugins\platforms\qdirect2d.dll",
+                "plugins\styles\qmodernwindowsstyle.dll"
+            )
+            $pluginFiles = Get-ChildItem -LiteralPath $pluginsRoot -Recurse -File
+            foreach ($pluginFile in $pluginFiles) {
+                $relativeToPySide = Get-RelativePath -Root $pysideRoot -Path $pluginFile.FullName
+                if ($keep -contains $relativeToPySide) {
+                    continue
+                }
+                Remove-SidecarPath -SidecarDir $SidecarDir -RelativePath (Join-Path "_internal\PySide6" $relativeToPySide) -Reason "Qt plugin not used by the native overlay" -Removed $removed
+            }
+            foreach ($pluginDir in (Get-ChildItem -LiteralPath $pluginsRoot -Recurse -Directory | Sort-Object FullName -Descending)) {
+                if (-not (Get-ChildItem -LiteralPath $pluginDir.FullName -Force -ErrorAction SilentlyContinue)) {
+                    Remove-Item -LiteralPath $pluginDir.FullName -Force
+                }
+            }
+        }
+    }
+    if ($PruneSoftwareOpenGl) {
+        Remove-SidecarPath -SidecarDir $SidecarDir -RelativePath "_internal\PySide6\opengl32sw.dll" -Reason "Optional Qt software OpenGL fallback" -Removed $removed
+    }
+    return @($removed)
+}
+
+function Write-SidecarBuildMetadata {
+    param(
+        [string]$SidecarDir,
+        [string]$SidecarExe,
+        [bool]$CacheEnabled,
+        [bool]$CacheHit,
+        [string]$CacheKey,
+        [object[]]$MediaToolsCopied,
+        [object[]]$PySide6Pruned,
+        [string]$CopiedTo
+    )
+
+    $script:BuildTimingStarted.Stop()
+    $metadata = [ordered]@{
+        apiVersion = "1"
+        generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+        sidecarDir = $SidecarDir
+        sidecarExe = $SidecarExe
+        copiedToTauriRelease = $CopiedTo
+        cache = [ordered]@{
+            enabled = $CacheEnabled
+            hit = $CacheHit
+            key = $CacheKey
+        }
+        flags = [ordered]@{
+            bundleMediaTools = [bool]$BundleMediaTools
+            skipBundledFfprobe = [bool]$SkipBundledFfprobe
+            validateSlimMediaTools = [bool]$ValidateSlimMediaTools
+            prunePySide6Translations = [bool]$PrunePySide6Translations
+            prunePySide6UnusedPlugins = [bool]$PrunePySide6UnusedPlugins
+            prunePySide6SoftwareOpenGl = [bool]$PrunePySide6SoftwareOpenGl
+        }
+        mediaToolsCopied = $MediaToolsCopied
+        pySide6Pruned = $PySide6Pruned
+        totalDurationMs = [int64]$script:BuildTimingStarted.ElapsedMilliseconds
+        phases = @($script:BuildTimingPhases)
+    }
+    $metadataPath = Join-Path $SidecarDir "sidecar-build-metadata.json"
+    $metadata | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $metadataPath -Encoding utf8
+    return $metadataPath
 }
 
 function Resolve-PythonPath {
@@ -335,8 +647,12 @@ if (-not $DistRoot) {
 if (-not $WorkRoot) {
     $WorkRoot = Join-Path $RepoRoot "build\tauri-sidecar"
 }
+if (-not $SidecarCacheRoot) {
+    $SidecarCacheRoot = Join-Path $RepoRoot "build\tauri-sidecar-cache"
+}
 $DistRoot = Convert-ToFullPath -Path $DistRoot
 $WorkRoot = Convert-ToFullPath -Path $WorkRoot
+$SidecarCacheRoot = Convert-ToFullPath -Path $SidecarCacheRoot
 if ($MediaToolsDir) {
     $MediaToolsDir = (Resolve-Path $MediaToolsDir).Path
 }
@@ -344,6 +660,7 @@ $SpecPath = Join-Path $RepoRoot "packaging\scriber-backend.spec"
 
 Assert-UnderRoot -Root $RepoRoot -Path $DistRoot -Label "DistRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $WorkRoot -Label "WorkRoot"
+Assert-UnderRoot -Root $RepoRoot -Path $SidecarCacheRoot -Label "SidecarCacheRoot"
 
 if (-not (Test-Path $SpecPath)) {
     throw "Missing PyInstaller spec: $SpecPath"
@@ -359,37 +676,80 @@ if (-not (Test-PyInstaller -Python $PythonPath)) {
     }
 }
 
-Invoke-BackendRuntimeImportCheck -Python $PythonPath -Root $RepoRoot
+Invoke-TimedStep -Label "backend-runtime-import-check" -Command {
+    Invoke-BackendRuntimeImportCheck -Python $PythonPath -Root $RepoRoot
+}
 
 if (-not $SkipFrontendBuild) {
-    Push-Location (Join-Path $RepoRoot "Frontend")
-    try {
-        npm run build
-        if ($LASTEXITCODE -ne 0) {
-            throw "Frontend build failed."
+    Invoke-TimedStep -Label "frontend-build" -Command {
+        Push-Location (Join-Path $RepoRoot "Frontend")
+        try {
+            npm run build
+            if ($LASTEXITCODE -ne 0) {
+                throw "Frontend build failed."
+            }
+        } finally {
+            Pop-Location
         }
-    } finally {
-        Pop-Location
     }
 }
 
 New-Item -ItemType Directory -Force -Path $DistRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $WorkRoot | Out-Null
 
-$oldRepoRoot = $env:SCRIBER_REPO_ROOT
-$env:SCRIBER_REPO_ROOT = $RepoRoot
-try {
-    Push-Location $RepoRoot
-    try {
-        & $PythonPath -m PyInstaller --noconfirm --clean --distpath $DistRoot --workpath $WorkRoot $SpecPath
-    } finally {
-        Pop-Location
+$cacheEnabled = [bool]$ReuseSidecarIfUnchanged
+$cacheHit = $false
+$cacheKey = $null
+$cacheDir = $null
+$pySide6Pruned = @()
+
+if ($cacheEnabled) {
+    Invoke-TimedStep -Label "sidecar-cache-key" -Command {
+        $inputManifest = Get-SidecarInputManifest `
+            -Root $RepoRoot `
+            -Python $PythonPath `
+            -SearchDir $MediaToolsDir `
+            -BundleTools ([bool]$BundleMediaTools) `
+            -SkipFfprobe ([bool]$SkipBundledFfprobe) `
+            -ValidateSlimBundle ([bool]$ValidateSlimMediaTools) `
+            -PruneTranslations ([bool]$PrunePySide6Translations) `
+            -PrunePlugins ([bool]$PrunePySide6UnusedPlugins) `
+            -PruneSoftwareOpenGl ([bool]$PrunePySide6SoftwareOpenGl)
+        $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
+        $script:SidecarInputManifest = $inputManifest
+        $script:SidecarInputManifestJson = $inputManifestJson
+        $script:SidecarCacheKey = Get-StringSha256 -Value $inputManifestJson
     }
-} finally {
-    $env:SCRIBER_REPO_ROOT = $oldRepoRoot
+    $cacheKey = $script:SidecarCacheKey
+    $cacheDir = Join-Path $SidecarCacheRoot $cacheKey
+    $cachedSidecarDir = Join-Path $cacheDir "scriber-backend"
+    $cachedSidecarExe = Join-Path $cachedSidecarDir "scriber-backend.exe"
+    if ((Test-Path -LiteralPath $cachedSidecarExe -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $cacheDir "cache-manifest.json") -PathType Leaf)) {
+        Invoke-TimedStep -Label "sidecar-cache-restore" -Command {
+            Copy-DirectoryContents -SourceDir $cachedSidecarDir -TargetDir (Join-Path $DistRoot "scriber-backend") -TargetLabel "Restored sidecar dist target"
+        }
+        $cacheHit = $true
+    }
 }
-if ($LASTEXITCODE -ne 0) {
-    throw "PyInstaller sidecar build failed."
+
+if (-not $cacheHit) {
+    Invoke-TimedStep -Label "pyinstaller-build" -Command {
+        $oldRepoRoot = $env:SCRIBER_REPO_ROOT
+        $env:SCRIBER_REPO_ROOT = $RepoRoot
+        try {
+            Push-Location $RepoRoot
+            try {
+                & $PythonPath -m PyInstaller --noconfirm --clean --distpath $DistRoot --workpath $WorkRoot $SpecPath
+            } finally {
+                Pop-Location
+            }
+        } finally {
+            $env:SCRIBER_REPO_ROOT = $oldRepoRoot
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw "PyInstaller sidecar build failed."
+        }
+    }
 }
 
 $sidecarDir = Join-Path $DistRoot "scriber-backend"
@@ -401,29 +761,91 @@ if (-not (Test-Path $sidecarExe)) {
     throw "Sidecar build completed but executable was not found under $sidecarDir."
 }
 
-Invoke-FrozenBackendRuntimeImportCheck -SidecarExe $sidecarExe -SidecarDir $sidecarDir -LogRoot $WorkRoot
+if (-not $cacheHit -and ($PrunePySide6Translations -or $PrunePySide6UnusedPlugins -or $PrunePySide6SoftwareOpenGl)) {
+    Invoke-TimedStep -Label "pyside6-prune" -Command {
+        $script:PySide6Pruned = Invoke-PySide6Pruning `
+            -SidecarDir $sidecarDir `
+            -PruneTranslations ([bool]$PrunePySide6Translations) `
+            -PrunePlugins ([bool]$PrunePySide6UnusedPlugins) `
+            -PruneSoftwareOpenGl ([bool]$PrunePySide6SoftwareOpenGl)
+    }
+    $pySide6Pruned = @($script:PySide6Pruned)
+}
+
+Invoke-TimedStep -Label "frozen-runtime-import-check" -Command {
+    Invoke-FrozenBackendRuntimeImportCheck -SidecarExe $sidecarExe -SidecarDir $sidecarDir -LogRoot $WorkRoot
+}
 
 $mediaToolsCopied = @()
-if ($BundleMediaTools -or $MediaToolsDir) {
-    $mediaToolsCopied = @(Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe) -ValidateSlimBundle ([bool]$ValidateSlimMediaTools))
+if (-not $cacheHit -and ($BundleMediaTools -or $MediaToolsDir)) {
+    Invoke-TimedStep -Label "media-tools-copy" -Command {
+        $script:MediaToolsCopied = @(Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe) -ValidateSlimBundle ([bool]$ValidateSlimMediaTools))
+    }
+    $mediaToolsCopied = @($script:MediaToolsCopied)
+} elseif ($cacheHit) {
+    $toolsDir = Join-Path $sidecarDir "tools\ffmpeg"
+    if (Test-Path -LiteralPath $toolsDir -PathType Container) {
+        $mediaToolsCopied = @(Get-ChildItem -LiteralPath $toolsDir -File | Select-Object -ExpandProperty FullName)
+    }
+}
+
+if ($cacheEnabled -and -not $cacheHit) {
+    Invoke-TimedStep -Label "sidecar-cache-save" -Command {
+        New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+        Copy-DirectoryContents -SourceDir $sidecarDir -TargetDir (Join-Path $cacheDir "scriber-backend") -TargetLabel "Sidecar cache target"
+        $cacheManifest = [ordered]@{
+            apiVersion = "1"
+            generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+            cacheKey = $cacheKey
+            inputManifest = $script:SidecarInputManifest
+        }
+        $cacheManifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $cacheDir "cache-manifest.json") -Encoding utf8
+    }
 }
 
 $copiedTo = $null
+$metadataPath = $null
+
 if ($CopyToTauriRelease) {
-    $targetDir = Join-Path $RepoRoot "Frontend\src-tauri\target\release\backend"
-    Assert-UnderRoot -Root $RepoRoot -Path $targetDir -Label "Tauri release backend target"
-    if (Test-Path $targetDir) {
-        Remove-Item -LiteralPath $targetDir -Recurse -Force
+    Invoke-TimedStep -Label "copy-to-tauri-release" -Command {
+        $targetDir = Join-Path $RepoRoot "Frontend\src-tauri\target\release\backend"
+        Copy-DirectoryContents -SourceDir $sidecarDir -TargetDir $targetDir -TargetLabel "Tauri release backend target"
+        $script:CopiedToTauriRelease = $targetDir
     }
-    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-    Copy-Item -Path (Join-Path $sidecarDir "*") -Destination $targetDir -Recurse -Force
-    $copiedTo = $targetDir
+    $copiedTo = $script:CopiedToTauriRelease
+    $metadataPath = Write-SidecarBuildMetadata `
+        -SidecarDir $sidecarDir `
+        -SidecarExe $sidecarExe `
+        -CacheEnabled $cacheEnabled `
+        -CacheHit $cacheHit `
+        -CacheKey $cacheKey `
+        -MediaToolsCopied $mediaToolsCopied `
+        -PySide6Pruned $pySide6Pruned `
+        -CopiedTo $copiedTo
+    if (Test-Path -LiteralPath $copiedTo -PathType Container) {
+        Copy-Item -LiteralPath $metadataPath -Destination (Join-Path $copiedTo "sidecar-build-metadata.json") -Force
+    }
+} else {
+    $metadataPath = Write-SidecarBuildMetadata `
+        -SidecarDir $sidecarDir `
+        -SidecarExe $sidecarExe `
+        -CacheEnabled $cacheEnabled `
+        -CacheHit $cacheHit `
+        -CacheKey $cacheKey `
+        -MediaToolsCopied $mediaToolsCopied `
+        -PySide6Pruned $pySide6Pruned `
+        -CopiedTo $copiedTo
 }
 
 [pscustomobject]@{
     ok = $true
     sidecarDir = $sidecarDir
     sidecarExe = $sidecarExe
+    cacheEnabled = $cacheEnabled
+    cacheHit = $cacheHit
+    cacheKey = $cacheKey
     mediaToolsCopied = $mediaToolsCopied
+    pySide6Pruned = $pySide6Pruned
+    sidecarBuildMetadata = $metadataPath
     copiedToTauriRelease = $copiedTo
 } | ConvertTo-Json -Compress

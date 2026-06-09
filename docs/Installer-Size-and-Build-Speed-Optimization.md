@@ -37,6 +37,43 @@ PySide6-Unterbestandteile, die sich für eine gezielte Prüfung eignen:
 | `plugins/` | `5.02 MiB` | Kandidat für selektives Pruning ungenutzter Plugins. |
 | `Qt6Core.dll`, `Qt6Gui.dll`, `Qt6Widgets.dll` | `24.98 MiB` zusammen | Behalten. Das sind Kernabhängigkeiten des Overlays. |
 
+## Umsetzungsstand
+
+Status 2026-06-09:
+
+- `scripts/analyze_backend_runtime_dependencies.py` ist vom reinen SciPy/ONNXRuntime-Gate zu einem Component-Footprint-Gate erweitert. Es reportet und budgetiert jetzt zusätzlich den kompletten Backend-Sidecar, `_internal`, `tools/ffmpeg`, `PySide6` und Google/gRPC.
+- `packaging/scriber-backend.spec` schließt ungenutzte Pillow-AVIF-Unterstützung (`PIL.AvifImagePlugin`, `PIL._avif`) aus. Der Code nutzt Pillow für PNG/ICO-Tray- und Legacy-Fallback-Bildpfade, aber keine AVIF-Dateien; `_internal/PIL/_avif...pyd` lag zuvor bei ca. `7.47 MiB`.
+- `scripts/analyze_backend_runtime_dependencies.py` prüft zusätzlich die Pillow-Komponente und lehnt gebündelte AVIF-Binaries als disallowed ab.
+- `scripts/build_windows.ps1 -RunRuntimeDependencyFootprint` leitet neue harte Budgets weiter: `-MaxBackendRuntimeDependencyMB`, `-MaxInternalRuntimeDependencyMB`, `-MaxMediaToolsRuntimeDependencyMB`, `-MaxPySide6RuntimeDependencyMB`, `-MaxGoogleGrpcRuntimeDependencyMB` und `-MaxPillowRuntimeDependencyMB`.
+- `scripts/build_windows.ps1` schreibt am Ende jedes erfolgreichen Builds `release-metadata/build-timing.json`; darin stehen die Windows-Build-Phasen und, falls vorhanden, die Sidecar-Build-Metadaten.
+- `scripts/build_tauri_backend_sidecar.ps1` schreibt `sidecar-build-metadata.json` mit Sidecar-Phasenzeiten, Cache-Status, kopierten Media-Tools und PySide6-Pruning-Evidenz.
+- `scripts/build_tauri_backend_sidecar.ps1 -ReuseSidecarIfUnchanged` aktiviert einen Hash-Cache für lokale Sidecar-Rebuilds. Der Cache-Key berücksichtigt Backend-Quellen, Spec, Requirements, Build-Skripte, Python/PyInstaller-Version, Frontend-Dist, Media-Tool-Metadaten und relevante Build-Flags.
+- `scripts/build_tauri_backend_sidecar.ps1` unterstützt explizite PySide6-Pruning-Experimente über `-PrunePySide6Translations`, `-PrunePySide6UnusedPlugins` und `-PrunePySide6SoftwareOpenGl`. Diese Schalter sind nicht Standard und müssen mit installierten Live-Mic-Overlay-Smokes bewiesen werden.
+- `scripts/build_windows.ps1` kann `-MediaToolsDir <path>`, `-ReuseSidecarIfUnchanged` und die PySide6-Pruning-Schalter temporär in Tauri `beforeBundleCommand` injizieren und stellt `tauri.conf.json` danach wieder her.
+
+Realitätscheck gegen den aktuellen Release-Backend-Ordner:
+
+```powershell
+python scripts\analyze_backend_runtime_dependencies.py `
+  --sidecar-dir Frontend\src-tauri\target\release\backend `
+  --output tmp\runtime-dependency-footprint-components.json `
+  --max-scipy-mb 0.001 `
+  --max-onnxruntime-mb 40 `
+  --max-media-tools-mb 280 `
+  --max-pyside6-mb 80 `
+  --max-google-grpc-mb 15 `
+  --max-pillow-mb 6 `
+  --max-internal-mb 250 `
+  --max-backend-mb 560
+```
+
+Der Check besteht nach Pillow-AVIF-Pruning mit den aktuellen Messwerten: Backend `515.57 MiB`, `_internal` `221.05 MiB`, Media-Tools `267.01 MiB`, PySide6 `71.71 MiB`, Google/gRPC `11.37 MiB`, Pillow `4.99 MiB`, ONNXRuntime `33.75 MiB`, SciPy `0.00 MiB`.
+
+Der Sidecar-Cache wurde real geprüft:
+
+- erster Lauf mit `-ReuseSidecarIfUnchanged -BundleMediaTools -CopyToTauriRelease`: `cacheHit=false`, PyInstaller baute den Sidecar und füllte den Cache.
+- zweiter identischer Lauf: `cacheHit=true`, keine PyInstaller-Phase, `totalDurationMs=42221`; die verbleibenden Phasen waren Import-Preflight, Cache-Key, Cache-Restore, Frozen-Import-Check und Release-Copy.
+
 ## No-Feature-Loss-Entscheidungen
 
 ### PySide6 bleibt im Standard-Installer
@@ -107,6 +144,8 @@ Akzeptanzregel: Eine Entfernung ist nur gültig, wenn kein moderner Tauri-Workfl
 
 ### P0: Component-Size-Budgets ergänzen
 
+Status: umgesetzt.
+
 Release-Gates sollen Größenregressionen sichtbar und eindeutig bewertbar machen.
 
 Empfohlene Budgets:
@@ -120,12 +159,7 @@ Empfohlene Budgets:
 - `_internal/google` plus `_internal/grpc`
 - `_internal` gesamt
 
-Umsetzungsoptionen:
-
-- `scripts/create_release_size_report.py` um benannte Component-Budgets erweitern.
-- Oder `scripts/analyze_backend_runtime_dependencies.py` von SciPy/ONNXRuntime zu einem allgemeinen Dependency-Footprint-Report ausbauen.
-
-Die zweite Option ist besser, wenn Component-Failures Teil der Release-Readiness sein sollen.
+Umgesetzt ist `scripts/analyze_backend_runtime_dependencies.py` als allgemeiner Component-Footprint-Report für Standard-Release-Komponenten.
 
 ### P0: Slim-FFmpeg und Slim-FFprobe validieren
 
@@ -151,6 +185,8 @@ Ein Slim-Media-Build darf nicht akzeptiert werden, nur weil `ffmpeg -version` fu
 
 ### P1: PySide6-Daten gezielt reduzieren
 
+Status: Pruning-Schalter implementiert, nicht als Standard aktiviert.
+
 PySide6 bleibt erhalten, aber der gebündelte Qt-Baum enthält wahrscheinlich Dateien, die das Overlay nicht nutzt.
 
 Empfohlene Prüfreihenfolge:
@@ -174,6 +210,8 @@ Pflicht-Gates:
 Wenn eine Zielmaschine `opengl32sw.dll` für zuverlässiges Qt-Rendering braucht, bleibt die Datei im Standard-Installer.
 
 ### P1: Sidecar-Hash-Cache für schnellere lokale Installer-Builds
+
+Status: opt-in über `-ReuseSidecarIfUnchanged` implementiert.
 
 Der aktuelle Tauri-Bundle-Pfad ruft `scripts/build_tauri_backend_sidecar.ps1` über `beforeBundleCommand` auf. Das Skript führt PyInstaller mit `--clean` aus. Das ist für saubere Release-Builds sinnvoll, aber für wiederholte lokale Installer-Builds teuer.
 
@@ -199,6 +237,8 @@ Verhalten:
 
 ### P1: Fast-Local-Build und Full-Release-Build trennen
 
+Status: teilweise umgesetzt.
+
 Das Standard-Release-Artefakt bleibt funktional identisch, aber lokale Iteration wird schneller.
 
 Empfohlene Modi:
@@ -218,7 +258,11 @@ Empfohlene Modi:
 
 Das verbessert Build-Zeit ohne Änderung am Inhalt der installierten Standard-App.
 
+Der schnelle lokale Pfad ist aktuell ein opt-in über `scripts/build_windows.ps1 -ReuseSidecarIfUnchanged`. Full-Release-Builds bleiben clean, solange der Cache nicht explizit aktiviert wird.
+
 ### P1: Build-Timing-Metadaten ergänzen
+
+Status: umgesetzt.
 
 Die Windows-Build-Ausgabe soll Phasenzeiten erfassen, damit Build-Speed-Arbeit messbar wird.
 
@@ -235,7 +279,19 @@ Mindestens erfassen:
 - Release-Metadaten
 - Smoke-Tests
 
-Ausgabeziel: `release-metadata/build-timing.json`.
+Ausgabeziel: `release-metadata/build-timing.json`. Sidecar-interne Phasen stehen zusätzlich in `target\release\backend\sidecar-build-metadata.json` und werden in den Windows-Build-Timing-Report eingebettet, wenn vorhanden.
+
+### P1: Pillow-AVIF aus Standard-Sidecar ausschließen
+
+Status: umgesetzt.
+
+Pillow bleibt gebündelt, weil Tray-/Legacy-Fallback-Pfade `Image`, `ImageDraw` und `ImageTk` nutzen. AVIF-Unterstützung wird nicht benötigt und war mit `_internal/PIL/_avif...pyd` ein großer einzelner Binary-Block. `packaging/scriber-backend.spec` schließt `PIL.AvifImagePlugin` und `PIL._avif` aus; der Runtime-Footprint-Gate behandelt AVIF unter `components.pillow.disallowedPaths` als Fehler.
+
+Pflicht-Gates:
+
+- Frozen-Runtime-Import-Check
+- Release-Footprint ohne Pillow-AVIF
+- Tray-/Overlay-Smoke, wenn Legacy-Fallback-Bildpfade geändert werden
 
 ### P2: Google-Package-Daten enger sammeln
 
@@ -293,10 +349,10 @@ Keine Optimierung ist akzeptiert, wenn eine bestehende Funktion nur noch durch m
 
 ## Empfohlener erster Umsetzungsbatch
 
-1. Component-Size-Budgets und Reporting ergänzen.
-2. Build-Timing-Metadaten ergänzen.
-3. Sidecar-Hash-Cache für schnelle lokale Installer-Builds ergänzen.
+1. Component-Size-Budgets und Reporting ergänzen. Status: umgesetzt.
+2. Build-Timing-Metadaten ergänzen. Status: umgesetzt.
+3. Sidecar-Hash-Cache für schnelle lokale Installer-Builds ergänzen. Status: opt-in umgesetzt.
 4. Schlankes `ffmpeg` plus `ffprobe` hinter den vorhandenen Media-Smoke-Gates testen.
-5. PySide6-Pruning testen, ohne PySide6 selbst zu entfernen.
+5. PySide6-Pruning testen, ohne PySide6 selbst zu entfernen. Status: Schalter umgesetzt, installierter Overlay-Smoke noch erforderlich.
 
 Diese Reihenfolge verbessert zuerst Messbarkeit, dann Build-Zeit und danach installierte Größe. Sie verhindert, dass blind optimiert oder ein funktionierendes Feature durch einen Fallback ersetzt wird.

@@ -24,12 +24,23 @@ param(
     [switch]$RequireAuthenticodeTimestamp,
     [double]$MaxInstallerSizeMB = 220,
     [double]$InstallerMaxInstalledSizeMB = 0,
+    [string]$MediaToolsDir = "",
     [switch]$SkipBundledFfprobe,
     [switch]$ValidateSlimMediaTools,
+    [switch]$ReuseSidecarIfUnchanged,
+    [switch]$PrunePySide6Translations,
+    [switch]$PrunePySide6UnusedPlugins,
+    [switch]$PrunePySide6SoftwareOpenGl,
     [switch]$RunRuntimeDependencyFootprint,
     [double]$MaxScipyRuntimeDependencyMB = 0,
     [double]$MaxOnnxRuntimeDependencyMB = 0,
     [double]$MaxPythonRuntimeDependencyMB = 0,
+    [double]$MaxBackendRuntimeDependencyMB = 0,
+    [double]$MaxInternalRuntimeDependencyMB = 0,
+    [double]$MaxMediaToolsRuntimeDependencyMB = 0,
+    [double]$MaxPySide6RuntimeDependencyMB = 0,
+    [double]$MaxGoogleGrpcRuntimeDependencyMB = 0,
+    [double]$MaxPillowRuntimeDependencyMB = 0,
     [switch]$SkipChecks,
     [switch]$SkipSmoke,
     [switch]$RunInstallerSmoke,
@@ -66,6 +77,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$script:BuildTimingStarted = [System.Diagnostics.Stopwatch]::StartNew()
+$script:BuildTimingPhases = [System.Collections.Generic.List[object]]::new()
 
 function Invoke-Checked {
     param(
@@ -73,10 +86,22 @@ function Invoke-Checked {
         [scriptblock]$Command
     )
 
-    Write-Host "==> $Label"
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Label failed with exit code $LASTEXITCODE."
+    $stepWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $ok = $false
+    try {
+        Write-Host "==> $Label"
+        & $Command
+        if ($LASTEXITCODE -ne 0) {
+            throw "$Label failed with exit code $LASTEXITCODE."
+        }
+        $ok = $true
+    } finally {
+        $stepWatch.Stop()
+        $script:BuildTimingPhases.Add([ordered]@{
+            label = $Label
+            durationMs = [int64]$stepWatch.ElapsedMilliseconds
+            ok = $ok
+        }) | Out-Null
     }
 }
 
@@ -108,11 +133,66 @@ function Add-TauriBeforeBundleCommandSwitch {
     return $ConfigText.Replace($copySwitch, " $SwitchName$copySwitch")
 }
 
+function Convert-ToJsonStringContent {
+    param([string]$Value)
+
+    $json = $Value | ConvertTo-Json -Compress
+    return $json.Substring(1, $json.Length - 2)
+}
+
+function Add-TauriBeforeBundleCommandValueSwitch {
+    param(
+        [string]$ConfigText,
+        [string]$SwitchName,
+        [string]$Value
+    )
+
+    if ($ConfigText.Contains($SwitchName)) {
+        return $ConfigText
+    }
+
+    $copySwitch = " -CopyToTauriRelease"
+    if (-not $ConfigText.Contains($copySwitch)) {
+        throw "Cannot enable $SwitchName because beforeBundleCommand does not contain '$copySwitch'."
+    }
+
+    $commandArgument = '"' + $Value + '"'
+    $escapedCommandArgument = Convert-ToJsonStringContent -Value $commandArgument
+    return $ConfigText.Replace($copySwitch, " $SwitchName $escapedCommandArgument$copySwitch")
+}
+
+function Write-BuildTimingReport {
+    param(
+        [string]$MetadataDir,
+        [string]$SidecarMetadataPath
+    )
+
+    New-Item -ItemType Directory -Force -Path $MetadataDir | Out-Null
+    $script:BuildTimingStarted.Stop()
+    $sidecarMetadata = $null
+    if ($SidecarMetadataPath -and (Test-Path -LiteralPath $SidecarMetadataPath -PathType Leaf)) {
+        $sidecarMetadata = Get-Content -LiteralPath $SidecarMetadataPath -Raw | ConvertFrom-Json
+    }
+    $payload = [ordered]@{
+        apiVersion = "1"
+        generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+        totalDurationMs = [int64]$script:BuildTimingStarted.ElapsedMilliseconds
+        phases = @($script:BuildTimingPhases)
+        sidecar = $sidecarMetadata
+    }
+    $path = Join-Path $MetadataDir "build-timing.json"
+    $payload | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $path -Encoding utf8
+    return $path
+}
+
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 $frontendRoot = Join-Path $RepoRoot "Frontend"
 $bundleArg = ($Bundles -join ",")
 $tauriConfigPath = Join-Path $RepoRoot "Frontend\src-tauri\tauri.conf.json"
 $tauriConfigOriginal = $null
+if ($MediaToolsDir) {
+    $MediaToolsDir = (Resolve-Path $MediaToolsDir).Path
+}
 
 if (-not (Test-Path (Join-Path $frontendRoot "package.json"))) {
     throw "Frontend package.json was not found under $frontendRoot."
@@ -171,7 +251,7 @@ try {
         $RequireUpdaterSignatures = $true
     }
 
-    if ($SkipBundledFfprobe -or $ValidateSlimMediaTools) {
+    if ($SkipBundledFfprobe -or $ValidateSlimMediaTools -or $MediaToolsDir -or $ReuseSidecarIfUnchanged -or $PrunePySide6Translations -or $PrunePySide6UnusedPlugins -or $PrunePySide6SoftwareOpenGl) {
         if ($null -eq $tauriConfigOriginal) {
             $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
         }
@@ -182,6 +262,21 @@ try {
         }
         if ($ValidateSlimMediaTools) {
             $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-ValidateSlimMediaTools"
+        }
+        if ($MediaToolsDir) {
+            $updatedTauriConfig = Add-TauriBeforeBundleCommandValueSwitch -ConfigText $updatedTauriConfig -SwitchName "-MediaToolsDir" -Value $MediaToolsDir
+        }
+        if ($ReuseSidecarIfUnchanged) {
+            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-ReuseSidecarIfUnchanged"
+        }
+        if ($PrunePySide6Translations) {
+            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-PrunePySide6Translations"
+        }
+        if ($PrunePySide6UnusedPlugins) {
+            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-PrunePySide6UnusedPlugins"
+        }
+        if ($PrunePySide6SoftwareOpenGl) {
+            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-PrunePySide6SoftwareOpenGl"
         }
         if ($updatedTauriConfig -ne $currentTauriConfig) {
             $currentTauriConfig = $updatedTauriConfig
@@ -215,6 +310,7 @@ try {
     $metadataDir = Join-Path $targetRelease "release-metadata"
     $mediaPreparationSmokePath = Join-Path $metadataDir "media-preparation-smoke.json"
     $runtimeDependencyFootprintPath = Join-Path $metadataDir "runtime-dependency-footprint.json"
+    $buildTimingPath = Join-Path $metadataDir "build-timing.json"
     foreach ($staleReport in @($mediaPreparationSmokePath, $runtimeDependencyFootprintPath)) {
         if (Test-Path -LiteralPath $staleReport -PathType Leaf) {
             Remove-Item -LiteralPath $staleReport -Force
@@ -293,6 +389,24 @@ try {
                 }
                 if ($MaxPythonRuntimeDependencyMB -gt 0) {
                     $footprintArgs += @("--max-total-mb", $MaxPythonRuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                }
+                if ($MaxBackendRuntimeDependencyMB -gt 0) {
+                    $footprintArgs += @("--max-backend-mb", $MaxBackendRuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                }
+                if ($MaxInternalRuntimeDependencyMB -gt 0) {
+                    $footprintArgs += @("--max-internal-mb", $MaxInternalRuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                }
+                if ($MaxMediaToolsRuntimeDependencyMB -gt 0) {
+                    $footprintArgs += @("--max-media-tools-mb", $MaxMediaToolsRuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                }
+                if ($MaxPySide6RuntimeDependencyMB -gt 0) {
+                    $footprintArgs += @("--max-pyside6-mb", $MaxPySide6RuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                }
+                if ($MaxGoogleGrpcRuntimeDependencyMB -gt 0) {
+                    $footprintArgs += @("--max-google-grpc-mb", $MaxGoogleGrpcRuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                }
+                if ($MaxPillowRuntimeDependencyMB -gt 0) {
+                    $footprintArgs += @("--max-pillow-mb", $MaxPillowRuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
                 }
                 python @footprintArgs
                 if (-not (Test-Path -LiteralPath $runtimeDependencyFootprintPath -PathType Leaf)) {
@@ -512,6 +626,9 @@ try {
         }
     }
 
+    $sidecarMetadataPath = Join-Path $targetRelease "backend\sidecar-build-metadata.json"
+    $buildTimingPath = Write-BuildTimingReport -MetadataDir $metadataDir -SidecarMetadataPath $sidecarMetadataPath
+
     [pscustomobject]@{
         ok = $true
         bundles = $Bundles
@@ -520,6 +637,7 @@ try {
         artifacts = $artifacts
         metadataDir = $metadataDir
         sizeReport = Join-Path $metadataDir "size-report.json"
+        buildTiming = $buildTimingPath
         mediaPreparationSmoke = $mediaPreparationSmoke
         runtimeDependencyFootprint = $runtimeDependencyFootprint
     } | ConvertTo-Json -Compress

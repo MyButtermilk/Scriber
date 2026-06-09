@@ -114,6 +114,8 @@ a = Analysis(
         "onnxruntime.quantization",
         "onnxruntime.tools",
         "onnxruntime.transformers",
+        "PIL.AvifImagePlugin",
+        "PIL._avif",
         "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
         "nemo",
         "nemo_toolkit",
