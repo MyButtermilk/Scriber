@@ -69,6 +69,30 @@ python scripts\analyze_backend_runtime_dependencies.py `
 
 Der Check besteht nach Pillow-AVIF-Pruning mit den aktuellen Messwerten: Backend `515.57 MiB`, `_internal` `221.05 MiB`, Media-Tools `267.01 MiB`, PySide6 `71.71 MiB`, Google/gRPC `11.37 MiB`, Pillow `4.99 MiB`, ONNXRuntime `33.75 MiB`, SciPy `0.00 MiB`.
 
+Vollstaendiger NSIS-Realitaetscheck am 2026-06-09:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -SkipChecks `
+  -SkipSmoke `
+  -ReuseSidecarIfUnchanged `
+  -RunMediaPreparationSmoke `
+  -RunRuntimeDependencyFootprint `
+  -MaxScipyRuntimeDependencyMB 0.001 `
+  -MaxOnnxRuntimeDependencyMB 40 `
+  -MaxPythonRuntimeDependencyMB 40 `
+  -MaxBackendRuntimeDependencyMB 560 `
+  -MaxInternalRuntimeDependencyMB 250 `
+  -MaxMediaToolsRuntimeDependencyMB 280 `
+  -MaxPySide6RuntimeDependencyMB 80 `
+  -MaxGoogleGrpcRuntimeDependencyMB 15 `
+  -MaxPillowRuntimeDependencyMB 6
+```
+
+Ergebnis: Build erfolgreich, `release-metadata/size-report.json` meldet `Scriber_0.1.0_x64-setup.exe` mit `186.40 MiB` unter dem `220 MiB` Installer-Budget; der Backend-Resource-Tree liegt bei `515.57 MiB`. `release-metadata/media-preparation-smoke.json` meldet `5/5` bestandene Checks fuer Upload-Kompression, Video-Audio-Extraktion, YouTube-Post-Download-Normalisierung, Azure-MAI-MP3-Vorbereitung und `ffprobe`-Dauerpruefung. `release-metadata/runtime-dependency-footprint.json` meldet keine Budget-Failures, keine fehlenden Required Paths und keine disallowed Paths.
+
+`release-metadata/build-timing.json` meldet fuer diesen Clean-Release-Pfad `590451 ms` Gesamtzeit. Davon entfallen `584948 ms` auf `Tauri Windows bundle`; im eingebetteten Sidecar-Timing stehen `223361 ms` Gesamtzeit, `177740 ms` PyInstaller, `19066 ms` Copy-to-Tauri-Release und `16171 ms` Cache-Save. Der lokale Cache war in diesem konkreten NSIS-Build ein Miss, weil der Tauri-Build vorher neue Frontend-Artefakte erzeugt hatte; der identische Sidecar-Only-Lauf bleibt unten als Cache-Hit-Evidenz erhalten.
+
 Der Sidecar-Cache wurde real geprüft:
 
 - erster Lauf mit `-ReuseSidecarIfUnchanged -BundleMediaTools -CopyToTauriRelease`: `cacheHit=false`, PyInstaller baute den Sidecar und füllte den Cache.
