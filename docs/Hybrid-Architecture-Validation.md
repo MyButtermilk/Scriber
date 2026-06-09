@@ -5478,8 +5478,9 @@ Remaining limits:
 
 - Superseded later on 2026-06-09: the NSIS installer and installed-package
   media smoke with the custom Profile-B `MediaToolsDir` passed.
-- Real installed YouTube/file workflow evidence is still required before
-  replacing Gyan Essentials as the standard release media-tool input.
+- Superseded later on 2026-06-09: real installed YouTube/file workflow
+  evidence passed and Profile B became the GitHub Windows release media-tool
+  input.
 
 ## 2026-06-09 - FFmpeg Profile B NSIS Installer and Installed Media Smoke
 
@@ -5531,8 +5532,91 @@ python -m pytest tests/test_tauri_stability_smoke_gates.py tests/test_ffmpeg_pro
 
 Result: `28 passed`.
 
-Remaining limit:
+Superseded limit:
 
 - Real installed YouTube URL and file workflow evidence with
   download/normalization/transcription/summary is still required before Profile
-  B replaces Gyan Essentials as the standard release media-tool input.
+  B replaces Gyan Essentials as the standard release media-tool input. This is
+  closed by the next validation entry.
+
+## 2026-06-09 - FFmpeg Profile B Real Installed File and YouTube Workflows
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe `
+  -LegacyDataDir "$env:LOCALAPPDATA\Scriber" `
+  -VerifyLegacyDataMigration `
+  -VerifyFrontend `
+  -VerifyMediaPreparation `
+  -VerifyRealMediaWorkflows `
+  -MaxInstalledSizeMB 360 `
+  -RealWorkflowYoutubeUrl "https://www.youtube.com/watch?v=0wEjbSYNUM8" `
+  -RealWorkflowFileTimeoutSec 240 `
+  -RealWorkflowYoutubeTimeoutSec 480 `
+  -RealWorkflowPollSec 3 `
+  -OutputPath tmp\installer-smoke-profile-b-real-workflows.json
+```
+
+Result: passed. This supersedes the remaining limit in the previous Profile-B
+NSIS entry. The MP3-capable Profile-B media-tool folder now has installed
+package evidence beyond synthetic helper-path media smokes.
+
+Evidence:
+
+- Installer smoke report: `tmp\installer-smoke-profile-b-real-workflows.json`.
+- Overall result: `ok=true`.
+- Temporary installed app size: `267.28 MiB` under the `360 MiB` gate.
+- Legacy runtime migration from `%LOCALAPPDATA%\Scriber`: verified.
+- Installed frontend smoke: passed with bundled assets and WebView readiness.
+- Installed media-preparation smoke: `5/5` passed.
+- Real workflow smoke: `2` workflows, `2` passed, `0` failed, total duration
+  `255497.404 ms`.
+- File workflow: passed in `154995.291 ms`; generated speech WAV size
+  `359970` bytes, then Azure MAI preparation transcoded the non-MP3 input to
+  MP3 for upload. Transcript `872a662399a245eb98a9f937733ace8d` completed with
+  `104` transcript chars and a completed `2731`-char summary.
+- YouTube workflow: passed in `100438.047 ms` for
+  `https://www.youtube.com/watch?v=0wEjbSYNUM8`. Download, local
+  normalization, transcription, and summary completed as transcript
+  `d91e14ebf77c4de7843bea1e8d5480b2` with `503` transcript chars and a
+  completed `2568`-char summary.
+
+Implemented improvements:
+
+- Added `scripts/smoke_installed_transcription_workflows.py`, a token-safe
+  installed backend smoke for real file and YouTube transcription jobs. It
+  passes the session token through `SCRIBER_SMOKE_SESSION_TOKEN`, not through
+  CLI arguments, and writes a redaction-safe JSON report.
+- Extended `scripts/smoke_tauri_desktop.ps1`,
+  `scripts/smoke_windows_installer.ps1`, and `scripts/build_windows.ps1` with
+  `-VerifyRealMediaWorkflows` / `-RunInstallerRealMediaWorkflowSmoke`.
+- Updated `.github/workflows/release-windows.yml` so release builds set up
+  MSYS2/UCRT64, build FFmpeg Profile B, validate the build report, and pass
+  the produced `MediaToolsDir` to `scripts\build_windows.ps1` with tighter
+  media-tool and backend budgets.
+
+Regression tests:
+
+```powershell
+python -m py_compile scripts\smoke_installed_transcription_workflows.py
+
+python -m pytest tests/test_tauri_stability_smoke_gates.py tests/perf/test_media_preparation_smoke_script.py -q
+```
+
+Result: `21 passed`.
+
+Goal coverage:
+
+- Phase 6: closes the remaining Profile-B media-tool release evidence with real
+  installed file and YouTube workflows.
+- Phase 7: adds automated wiring so installer smokes and Windows builds can run
+  the same real workflow gate.
+- Phase 8: keeps the latency-prioritized Azure MAI MP3 path while proving the
+  reduced media-tool bundle in installed-package workflows.
+
+Remaining limits:
+
+- Authenticode signing, published updater metadata, and the physical
+  microphone hardware matrix remain external release-readiness gates.

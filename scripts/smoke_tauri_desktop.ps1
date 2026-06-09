@@ -34,6 +34,9 @@ With -VerifyFrontend, it fetches the bundled frontend entrypoint and referenced
 JS/CSS assets from the running backend static fallback, verifies that Tauri
 production origins can call /api/health and tokenized /api/runtime, and waits
 until the actual Tauri WebView reports a tokenized frontend-ready beacon.
+With -VerifyRealMediaWorkflows, it runs real installed backend file and YouTube
+transcription workflows through the token-protected REST API and requires
+completed transcript plus summary evidence.
 
 Build the executable first with:
   cd Frontend
@@ -75,6 +78,14 @@ param(
     [switch]$WaitForManualGlobalHotkey,
     [switch]$VerifySupportBundle,
     [switch]$VerifyFrontend,
+    [switch]$VerifyRealMediaWorkflows,
+    [string]$RealWorkflowYoutubeUrl = "https://www.youtube.com/watch?v=0wEjbSYNUM8",
+    [int]$RealWorkflowFileTimeoutSec = 240,
+    [int]$RealWorkflowYoutubeTimeoutSec = 420,
+    [int]$RealWorkflowPollSec = 3,
+    [switch]$RealWorkflowSkipFile,
+    [switch]$RealWorkflowSkipYoutube,
+    [switch]$RealWorkflowNoSummary,
     [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$GlobalHotkeyDispatchTimeoutSec = 20,
     [int]$BackendStartupTimeoutMs = 3000,
@@ -916,6 +927,73 @@ function Test-SupportBundle {
                 Remove-Item -LiteralPath $snapshot.Path -Force
             }
         }
+    }
+}
+
+function Test-RealMediaWorkflows {
+    param(
+        [int]$Port,
+        [string]$Token,
+        [string]$RuntimeDataDir
+    )
+
+    if (-not $Token) {
+        throw "Real media workflow smoke requires a session token."
+    }
+
+    $outputPath = Join-Path $RuntimeDataDir "installed-real-media-workflows-smoke.json"
+    $workflowArgs = @(
+        "scripts\smoke_installed_transcription_workflows.py",
+        "--base-url",
+        "http://127.0.0.1:$Port",
+        "--token-env",
+        "SCRIBER_SMOKE_SESSION_TOKEN",
+        "--output",
+        $outputPath,
+        "--youtube-url",
+        $RealWorkflowYoutubeUrl,
+        "--file-timeout-sec",
+        $RealWorkflowFileTimeoutSec.ToString(),
+        "--youtube-timeout-sec",
+        $RealWorkflowYoutubeTimeoutSec.ToString(),
+        "--poll-sec",
+        $RealWorkflowPollSec.ToString()
+    )
+    if ($RealWorkflowSkipFile) {
+        $workflowArgs += "--skip-file"
+    }
+    if ($RealWorkflowSkipYoutube) {
+        $workflowArgs += "--skip-youtube"
+    }
+    if ($RealWorkflowNoSummary) {
+        $workflowArgs += "--no-require-summary"
+    }
+
+    $oldSmokeToken = $env:SCRIBER_SMOKE_SESSION_TOKEN
+    $env:SCRIBER_SMOKE_SESSION_TOKEN = $Token
+    Push-Location $RepoRoot
+    try {
+        python @workflowArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "Installed real media workflow smoke failed with exit code $LASTEXITCODE."
+        }
+    } finally {
+        Pop-Location
+        $env:SCRIBER_SMOKE_SESSION_TOKEN = $oldSmokeToken
+    }
+
+    if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+        throw "Installed real media workflow smoke did not write output: $outputPath"
+    }
+    $report = Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json
+    if (-not $report.ok) {
+        throw "Installed real media workflow smoke wrote ok=false: $outputPath"
+    }
+
+    return [pscustomobject]@{
+        verified = $true
+        reportPath = $outputPath
+        report = $report
     }
 }
 
@@ -1836,6 +1914,13 @@ try {
     if ($VerifyFrontend) {
         $frontend = Test-FrontendHttp -Port ([int]$listener.Port) -Token $SessionToken
     }
+    $realMediaWorkflows = $null
+    if ($VerifyRealMediaWorkflows) {
+        $realMediaWorkflows = Test-RealMediaWorkflows `
+            -Port ([int]$listener.Port) `
+            -Token $SessionToken `
+            -RuntimeDataDir $DataDir
+    }
     $liveRecording = Test-LiveRecordingStability `
         -AppProcess $app `
         -BackendPid ([int]$listener.BackendPid) `
@@ -1879,6 +1964,7 @@ try {
         legacyDataMigration = $legacyDataMigration
         frontend = $frontend
         supportBundle = $supportBundle
+        realMediaWorkflows = $realMediaWorkflows
         globalHotkey = $globalHotkey
         startupTimeout = $startupTimeout
         crashRecovery = $crashRecovery

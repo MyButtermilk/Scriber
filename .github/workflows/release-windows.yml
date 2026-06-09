@@ -32,6 +32,12 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+
       - name: Install Python dependencies
         shell: pwsh
         run: |
@@ -44,14 +50,20 @@ jobs:
         working-directory: Frontend
         run: npm ci
 
-      - name: Prepare Gyan FFmpeg Essentials media tools
+      - name: Build FFmpeg Profile B media tools
         shell: pwsh
         run: |
-          $prepOutput = & scripts\prepare_gyan_ffmpeg_essentials.ps1
-          $prep = ($prepOutput | Out-String | ConvertFrom-Json)
-          "SCRIBER_RELEASE_MEDIA_TOOLS_DIR=$($prep.mediaToolsDir)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          & $prep.ffmpeg.path -version
-          & $prep.ffprobe.path -version
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ffmpeg\build_profile_b_msys2.ps1 `
+            -BuildRoot build\ffmpeg-profile-b-msys2 `
+            -Msys2Root C:\msys64 `
+            -InstallDependencies
+          $report = Get-Content -Raw build\ffmpeg-profile-b-msys2\profile-b-msys2-build-report.json | ConvertFrom-Json
+          if (-not $report.ok) {
+            throw "FFmpeg Profile B build did not report ok=true."
+          }
+          "SCRIBER_RELEASE_MEDIA_TOOLS_DIR=$($report.mediaToolsDir)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & $report.ffmpeg.path -version
+          & $report.ffprobe.path -version
 
       - name: Build Windows installer
         shell: pwsh
@@ -84,11 +96,11 @@ jobs:
             "-MaxPythonRuntimeDependencyMB",
             "40",
             "-MaxBackendRuntimeDependencyMB",
-            "500",
+            "325",
             "-MaxInternalRuntimeDependencyMB",
             "250",
             "-MaxMediaToolsRuntimeDependencyMB",
-            "210",
+            "10",
             "-MaxPySide6RuntimeDependencyMB",
             "80",
             "-MaxGoogleGrpcRuntimeDependencyMB",

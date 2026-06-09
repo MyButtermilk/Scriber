@@ -54,6 +54,26 @@ def test_installer_and_build_scripts_forward_idle_cpu_gate() -> None:
     assert '"-MaxIdleCpuPercent", $InstallerMaxIdleCpuPercent.ToString' in build
 
 
+def test_installer_and_build_scripts_forward_real_media_workflow_gate() -> None:
+    desktop = read_script("scripts/smoke_tauri_desktop.ps1")
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+    build = read_script("scripts/build_windows.ps1")
+
+    assert "[switch]$VerifyRealMediaWorkflows" in desktop
+    assert "scripts\\smoke_installed_transcription_workflows.py" in desktop
+    assert "SCRIBER_SMOKE_SESSION_TOKEN" in desktop
+    assert "realMediaWorkflows = $realMediaWorkflows" in desktop
+
+    assert "[switch]$VerifyRealMediaWorkflows" in installer
+    assert '$smokeArgs += "-VerifyRealMediaWorkflows"' in installer
+    assert "realMediaWorkflows = $smoke.realMediaWorkflows" in installer
+
+    assert "[switch]$RunInstallerRealMediaWorkflowSmoke" in build
+    assert "$RunInstallerRealMediaWorkflowSmoke" in build
+    assert '$installerSmokeArgs += "-VerifyRealMediaWorkflows"' in build
+    assert "[string]$InstallerRealWorkflowYoutubeUrl" in build
+
+
 def test_release_build_and_installer_smoke_report_size_budgets() -> None:
     installer = read_script("scripts/smoke_windows_installer.ps1")
     build = read_script("scripts/build_windows.ps1")
@@ -172,18 +192,22 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "if (-not $SkipChecks -and -not $SkipFrontendTypeCheck)" in build
 
 
-def test_release_workflow_prepares_gyan_essentials_media_tools_for_standard_build() -> None:
+def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> None:
     workflow = read_script(".github/workflows/release-windows.yml")
 
-    assert "Prepare Gyan FFmpeg Essentials media tools" in workflow
-    assert "scripts\\prepare_gyan_ffmpeg_essentials.ps1" in workflow
+    assert "Set up MSYS2" in workflow
+    assert "msys2/setup-msys2@v2" in workflow
+    assert "Build FFmpeg Profile B media tools" in workflow
+    assert "scripts\\ffmpeg\\build_profile_b_msys2.ps1" in workflow
+    assert "profile-b-msys2-build-report.json" in workflow
     assert "SCRIBER_RELEASE_MEDIA_TOOLS_DIR" in workflow
     assert '"-MediaToolsDir"' in workflow
     assert "$env:SCRIBER_RELEASE_MEDIA_TOOLS_DIR" in workflow
     assert '"-ValidateSlimMediaTools"' in workflow
-    assert '"500"' in workflow
-    assert '"210"' in workflow
+    assert '"325"' in workflow
+    assert '"10"' in workflow
     assert "choco install ffmpeg" not in workflow
+    assert "prepare_gyan_ffmpeg_essentials.ps1" not in workflow
     assert '"-RunMediaPreparationSmoke"' in workflow
 
 

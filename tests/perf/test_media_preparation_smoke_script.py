@@ -65,6 +65,23 @@ def test_installer_smoke_can_verify_installed_media_preparation_tools() -> None:
     assert "$SkipBundledFfprobe" in build
 
 
+def test_installed_transcription_workflow_smoke_uses_real_backend_jobs_without_cli_token() -> None:
+    script = (REPO_ROOT / "scripts" / "smoke_installed_transcription_workflows.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/api/file/transcribe" in script
+    assert "/api/youtube/transcribe" in script
+    assert "/api/transcripts/" in script
+    assert "Windows SAPI" in script
+    assert "SCRIBER_SMOKE_SESSION_TOKEN" in script
+    assert "--token-env" in script
+    assert "--token\"" not in script
+    assert "X-Scriber-Token" in script
+    assert "DEFAULT_YOUTUBE_URL" in script
+    assert "require_summary" in script
+
+
 def test_media_preparation_smoke_script_writes_artifact(tmp_path: Path) -> None:
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg is not available on PATH")

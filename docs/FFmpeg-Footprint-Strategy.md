@@ -36,13 +36,13 @@ compiled and validated. The portable media-tool folder contains `ffmpeg.exe`
 `2.55 MiB`, `ffprobe.exe` `2.43 MiB`, plus `libmp3lame-0.dll` `0.31 MiB`,
 `libopus-0.dll` `0.47 MiB`, and `libwinpthread-1.dll` `0.06 MiB`; total
 validated media-tool size is `4.98 MiB`. The build passed the Profile-B
-manifest gate, `26/26` fixture checks, `5/5` media-preparation checks, and the
-sidecar slim-media validation/copy gate. A full NSIS build with this
-`MediaToolsDir` also passed installed frontend and media-preparation smokes:
-installer `102.96 MiB`, installed app `267.28 MiB`, release backend
-`254.42 MiB`, installed `tools\ffmpeg` `5.84 MiB`. It still needs real
-installed YouTube and file transcription workflow evidence before it becomes
-the standard release input.
+manifest gate, `26/26` fixture checks, `5/5` media-preparation checks, the
+sidecar slim-media validation/copy gate, a full NSIS installed frontend/media
+smoke, and real installed file plus YouTube transcription workflows with
+completed summaries. The GitHub Windows release workflow now builds Profile B
+through MSYS2 and passes it as `MediaToolsDir` to the installer build. Gyan
+Essentials remains the conservative local/direct-Tauri fallback path, not the
+target release footprint.
 
 The local reference build reports `--enable-gpl`, `--enable-libmp3lame`, and
 `--enable-libopus`, with no `--enable-nonfree`. A production custom build should
@@ -316,7 +316,8 @@ unless the architecture changes and FFmpeg intentionally receives remote URLs.
 
 Recommended implementation order:
 
-1. Keep current Gyan Essentials as fallback and CI/release baseline.
+1. Use Profile B as the CI/release media-tool input. Keep Gyan Essentials as
+   the conservative local/direct-Tauri fallback and rollback path.
 2. Generate the Profile B build kit with
    `python scripts/ffmpeg/create_profile_b_build_kit.py --output-dir
    build/ffmpeg-profile-b`. The helper writes:
@@ -488,7 +489,7 @@ runtime-dependency footprint gate passed with Backend `254.42 MiB`,
 `_internal` `221.06 MiB`, `tools\ffmpeg` `5.84 MiB` including the profile
 manifest, and PySide6 `71.71 MiB`.
 
-Full NSIS candidate build:
+Full NSIS release-candidate build:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
@@ -523,10 +524,40 @@ Result on 2026-06-09:
   `456418 ms` sidecar section with PyInstaller cache miss, and `95403 ms`
   installed-package smoke.
 
-Remaining release evidence before replacing Gyan Essentials:
+Real installed workflow smoke:
 
-- run at least one real installed YouTube URL workflow and one file workflow
-  that exercises download/normalization/transcription/summary paths.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe `
+  -LegacyDataDir "$env:LOCALAPPDATA\Scriber" `
+  -VerifyLegacyDataMigration `
+  -VerifyFrontend `
+  -VerifyMediaPreparation `
+  -VerifyRealMediaWorkflows `
+  -MaxInstalledSizeMB 360 `
+  -RealWorkflowYoutubeUrl "https://www.youtube.com/watch?v=0wEjbSYNUM8" `
+  -RealWorkflowFileTimeoutSec 240 `
+  -RealWorkflowYoutubeTimeoutSec 480 `
+  -RealWorkflowPollSec 3 `
+  -OutputPath tmp\installer-smoke-profile-b-real-workflows.json
+```
+
+Result on 2026-06-09: `ok=true`.
+
+- Installed app size stayed `267.28 MiB` under the `360 MiB` gate.
+- Installed frontend smoke passed and the WebView readiness beacon reached the
+  tokenized backend.
+- Installed media-preparation smoke passed `5/5`.
+- Real file workflow passed in `154995.291 ms`: generated speech WAV uploaded,
+  Azure MAI preparation transcoded the non-MP3 input to MP3, transcript
+  `872a662399a245eb98a9f937733ace8d` completed with `104` content chars and a
+  completed `2731`-char summary.
+- Real YouTube workflow for `https://www.youtube.com/watch?v=0wEjbSYNUM8`
+  passed in `100438.047 ms`: download/normalization/transcription completed as
+  transcript `d91e14ebf77c4de7843bea1e8d5480b2` with `503` content chars and a
+  completed `2568`-char summary.
+- The combined real workflow smoke reported `2` workflows, `2` passed,
+  `0` failed, and total duration `255497.404 ms`.
 
 ## Measurement Notes
 
@@ -554,7 +585,7 @@ matters more as duration grows, so MP3 stays in the production profile.
 
 ## Rollback Plan
 
-If a custom slim build fails real-world media workflows:
+If the custom slim build fails real-world media workflows:
 
 1. Rebuild with Gyan Essentials via `-UseGyanFfmpegEssentials`.
 2. Keep `-ValidateSlimMediaTools` and media smokes enabled for the fallback.
@@ -564,11 +595,9 @@ If a custom slim build fails real-world media workflows:
 
 ## Recommendation
 
-Use Profile B as the production target after the remaining real installed
-YouTube/file workflow smokes pass: local-media-only FFmpeg, `ffprobe` included,
-`libopus` for WebM/Opus, `libmp3lame` for Azure MAI MP3 64k, common
-audio/container decoders for MP3/WAV/MOV/MP4/M4A/WebM/MKV/OGG/FLAC, no
-`ffplay`, no FFmpeg network protocols, no video encoders, no hardware stacks,
-and no GPL/nonfree libraries unless later proven necessary. Until those real
-workflow smokes exist, keep Gyan Essentials as the conservative standard
-release fallback.
+Use Profile B as the production release target: local-media-only FFmpeg,
+`ffprobe` included, `libopus` for WebM/Opus, `libmp3lame` for Azure MAI MP3
+64k, common audio/container decoders for MP3/WAV/MOV/MP4/M4A/WebM/MKV/OGG/FLAC,
+no `ffplay`, no FFmpeg network protocols, no video encoders, no hardware
+stacks, and no GPL/nonfree libraries unless later proven necessary. Keep Gyan
+Essentials available as the conservative rollback/local direct-build path.

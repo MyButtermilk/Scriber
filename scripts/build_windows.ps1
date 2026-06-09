@@ -58,6 +58,14 @@ param(
     [switch]$RunInstallerSupportBundleSmoke,
     [switch]$RunInstallerFrontendSmoke,
     [switch]$RunInstallerMediaPreparationSmoke,
+    [switch]$RunInstallerRealMediaWorkflowSmoke,
+    [string]$InstallerRealWorkflowYoutubeUrl = "https://www.youtube.com/watch?v=0wEjbSYNUM8",
+    [int]$InstallerRealWorkflowFileTimeoutSec = 240,
+    [int]$InstallerRealWorkflowYoutubeTimeoutSec = 420,
+    [int]$InstallerRealWorkflowPollSec = 3,
+    [switch]$InstallerRealWorkflowSkipFile,
+    [switch]$InstallerRealWorkflowSkipYoutube,
+    [switch]$InstallerRealWorkflowNoSummary,
     [string]$InstallerGlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$InstallerGlobalHotkeyDispatchTimeoutSec = 20,
     [switch]$RunInstallerStabilitySmoke,
@@ -569,7 +577,7 @@ try {
         }
     }
 
-    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerFrontendSmoke -or $RunInstallerMediaPreparationSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerFrontendSmoke -or $RunInstallerMediaPreparationSmoke -or $RunInstallerRealMediaWorkflowSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
@@ -620,6 +628,22 @@ try {
                     $installerSmokeArgs += "-VerifyMediaPreparation"
                     if ($SkipBundledFfprobe) {
                         $installerSmokeArgs += "-AllowMissingFfprobeForMediaPreparation"
+                    }
+                }
+                if ($RunInstallerRealMediaWorkflowSmoke) {
+                    $installerSmokeArgs += "-VerifyRealMediaWorkflows"
+                    $installerSmokeArgs += @("-RealWorkflowYoutubeUrl", $InstallerRealWorkflowYoutubeUrl)
+                    $installerSmokeArgs += @("-RealWorkflowFileTimeoutSec", $InstallerRealWorkflowFileTimeoutSec.ToString())
+                    $installerSmokeArgs += @("-RealWorkflowYoutubeTimeoutSec", $InstallerRealWorkflowYoutubeTimeoutSec.ToString())
+                    $installerSmokeArgs += @("-RealWorkflowPollSec", $InstallerRealWorkflowPollSec.ToString())
+                    if ($InstallerRealWorkflowSkipFile) {
+                        $installerSmokeArgs += "-RealWorkflowSkipFile"
+                    }
+                    if ($InstallerRealWorkflowSkipYoutube) {
+                        $installerSmokeArgs += "-RealWorkflowSkipYoutube"
+                    }
+                    if ($InstallerRealWorkflowNoSummary) {
+                        $installerSmokeArgs += "-RealWorkflowNoSummary"
                     }
                 }
                 if ($RunInstallerStabilitySmoke) {

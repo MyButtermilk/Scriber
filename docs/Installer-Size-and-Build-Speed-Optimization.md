@@ -15,15 +15,15 @@ Der letzte Full-FFmpeg-Release-Snapshot zeigte:
   - `_internal`: ca. `228.52 MiB`
   - `scriber-backend.exe`: ca. `27.51 MiB`
 
-Status 2026-06-09: Der Standard-Build-Pfad ist auf Gyan `release essentials` umgestellt. `scripts/prepare_gyan_ffmpeg_essentials.ps1` lädt `ffmpeg-release-essentials.zip`, verifiziert die veröffentlichte `.sha256`, extrahiert den `bin`-Ordner und gibt ihn als `MediaToolsDir` aus. Der lokal vorbereitete und in den Tauri-Release-Backend-Ordner kopierte Essentials-Kandidat misst `ffmpeg.exe` `96.76 MiB` und `ffprobe.exe` `96.56 MiB`, zusammen `193.32 MiB`. Gegenüber dem vorherigen Full-Build-Media-Tool-Paar (`267.01 MiB`) spart das installiert `73.69 MiB`. Der Backend-Resource-Tree misst nach dem Sidecar-Build `441.88 MiB`; der Fast-Local-NSIS-Installer misst `152.98 MiB`, die installierte App im Smoke `454.75 MiB`.
+Status 2026-06-09: Der konservative lokale/direct-Tauri-Fallback ist auf Gyan `release essentials` umgestellt. `scripts/prepare_gyan_ffmpeg_essentials.ps1` lädt `ffmpeg-release-essentials.zip`, verifiziert die veröffentlichte `.sha256`, extrahiert den `bin`-Ordner und gibt ihn als `MediaToolsDir` aus. Der lokal vorbereitete und in den Tauri-Release-Backend-Ordner kopierte Essentials-Kandidat misst `ffmpeg.exe` `96.76 MiB` und `ffprobe.exe` `96.56 MiB`, zusammen `193.32 MiB`. Gegenüber dem vorherigen Full-Build-Media-Tool-Paar (`267.01 MiB`) spart das installiert `73.69 MiB`. Der Backend-Resource-Tree misst nach dem Sidecar-Build `441.88 MiB`; der Fast-Local-NSIS-Installer misst `152.98 MiB`, die installierte App im Smoke `454.75 MiB`.
 
-Neuer bester Kandidat am 2026-06-09: ein echter MSYS2/UCRT64 Custom-FFmpeg Profile-B-Build mit MP3-Latenzpfad. Der Full-Installer-Build mit explizitem `-MediaToolsDir build\ffmpeg-profile-b-msys2\dist\scriber-ffmpeg-profile-b\bin` bestand Frontend-Typecheck, Tauri/NSIS-Bundle, Media-Preparation-Smoke, Runtime-Dependency-Footprint, Release-Metadata, Updater-Metadata-Validierung, Release-Size-Report sowie installierten Frontend- und Media-Smoke. Gemessen wurden Installer `102.96 MiB`, installierte App im Smoke `267.28 MiB`, Backend-Resource-Tree `254.42 MiB` und installierte `tools\ffmpeg` `5.84 MiB` inklusive `ffmpeg.exe`, `ffprobe.exe`, drei Runtime-DLLs und `ffmpeg-profile-manifest.json`. Dieser Kandidat bleibt bis zu realen installierten YouTube-/File-Workflow-Smokes ein Kandidat, nicht der Standard-Release-Pfad.
+Neuer Standard fuer den GitHub-Windows-Release-Workflow am 2026-06-09: ein echter MSYS2/UCRT64 Custom-FFmpeg Profile-B-Build mit MP3-Latenzpfad. Der Full-Installer-Build mit explizitem `-MediaToolsDir build\ffmpeg-profile-b-msys2\dist\scriber-ffmpeg-profile-b\bin` bestand Frontend-Typecheck, Tauri/NSIS-Bundle, Media-Preparation-Smoke, Runtime-Dependency-Footprint, Release-Metadata, Updater-Metadata-Validierung, Release-Size-Report, installierte Frontend- und Media-Smokes sowie reale installierte File- und YouTube-Transkriptionsworkflows mit abgeschlossenen Zusammenfassungen. Gemessen wurden Installer `102.96 MiB`, installierte App im Smoke `267.28 MiB`, Backend-Resource-Tree `254.42 MiB` und installierte `tools\ffmpeg` `5.84 MiB` inklusive `ffmpeg.exe`, `ffprobe.exe`, drei Runtime-DLLs und `ffmpeg-profile-manifest.json`. Gyan Essentials bleibt der konservative lokale/direct-Tauri-Fallback und Rollback-Pfad.
 
 Wichtige gemessene Dependency-Gruppen im installierten Backend:
 
 | Komponente | Installierte Größe | Bewertung |
 | --- | ---: | --- |
-| `tools/ffmpeg` | `193.32 MiB` Gyan-Standard; `5.84 MiB` Profile-B-Kandidat im installierten Smoke | Gyan Essentials ist der aktuelle Standardpfad; Profile B ist der beste No-Feature-Loss-Kandidat, benötigt aber noch reale installierte YouTube-/File-Workflow-Smokes. |
+| `tools/ffmpeg` | `5.84 MiB` Profile B im installierten Smoke; `193.32 MiB` Gyan-Fallback | Profile B ist der Release-Workflow-Standard mit Real-Workflow-Evidenz; Gyan Essentials bleibt konservativer lokaler/direct-Tauri-Fallback. |
 | `_internal/PySide6` | `71.71 MiB` | Wird für das aktuelle hochwertige native Mic-Overlay benötigt. |
 | `_internal/onnxruntime` | `33.75 MiB` | Wird für Pipecat Silero VAD benötigt. |
 | `_internal/numpy.libs` | `19.99 MiB` | Enthält OpenBLAS-Runtime; das ist nicht das entfernte SciPy-Paket. |
@@ -53,9 +53,9 @@ Status 2026-06-09:
 - `scripts/build_tauri_backend_sidecar.ps1` schreibt `sidecar-build-metadata.json` mit Sidecar-Phasenzeiten, Cache-Status, kopierten Media-Tools und PySide6-Pruning-Evidenz.
 - `scripts/build_tauri_backend_sidecar.ps1 -ReuseSidecarIfUnchanged` aktiviert einen Hash-Cache für lokale Sidecar-Rebuilds. Der Cache-Key berücksichtigt Backend-Quellen, Spec, Requirements, Build-Skripte, Python/PyInstaller-Version, Frontend-Dist, Media-Tool-Metadaten und relevante Build-Flags. Normale Input-Dateien werden content-basiert über `length + sha256` gehasht; mtimes zählen nur für Tool-Metadaten, damit unveränderte Vite-/Frontend-Artefakte den Sidecar-Cache nicht allein durch neue Schreibzeiten invalidieren.
 - `scripts/build_tauri_backend_sidecar.ps1` unterstützt explizite PySide6-Pruning-Experimente über `-PrunePySide6Translations`, `-PrunePySide6UnusedPlugins` und `-PrunePySide6SoftwareOpenGl`. Diese Schalter sind nicht Standard und müssen mit installierten Live-Mic-Overlay-Smokes bewiesen werden.
-- `scripts/prepare_gyan_ffmpeg_essentials.ps1` ist der Standard-Downloader für Windows-Media-Tools. Er lädt Gyan `ffmpeg-release-essentials.zip`, verifiziert die `.sha256` und liefert einen validierten `MediaToolsDir`.
-- `Frontend/src-tauri/tauri.conf.json` ruft den Sidecar-Build standardmäßig mit `-UseGyanFfmpegEssentials -ValidateSlimMediaTools` auf. Direkte `npm run tauri:build -- --bundles nsis`-Builds verwenden dadurch nicht mehr versehentlich einen großen System-/Chocolatey-Full-Build.
-- `.github/workflows/release-windows.yml` bereitet Gyan Essentials vor und übergibt `-MediaToolsDir $env:SCRIBER_RELEASE_MEDIA_TOOLS_DIR -ValidateSlimMediaTools` an `scripts/build_windows.ps1`.
+- `scripts/prepare_gyan_ffmpeg_essentials.ps1` bleibt der konservative lokale Fallback-Downloader für Windows-Media-Tools. Er lädt Gyan `ffmpeg-release-essentials.zip`, verifiziert die `.sha256` und liefert einen validierten `MediaToolsDir`.
+- `Frontend/src-tauri/tauri.conf.json` ruft den Sidecar-Build für direkte lokale `npm run tauri:build -- --bundles nsis`-Builds weiterhin mit `-UseGyanFfmpegEssentials -ValidateSlimMediaTools` auf. Dadurch kopieren lokale Direktbuilds nicht versehentlich einen großen System-/Chocolatey-Full-Build.
+- `.github/workflows/release-windows.yml` baut jetzt Profile B reproduzierbar über `scripts/ffmpeg/build_profile_b_msys2.ps1`, exportiert den erzeugten `MediaToolsDir` und übergibt ihn mit `-ValidateSlimMediaTools` an `scripts/build_windows.ps1`.
 - `scripts/ffmpeg/validate_ffmpeg_profile.py` schreibt ein strukturiertes `ffmpeg-profile-manifest.json` für Profile-B-Kandidaten. Der Sidecar-Build führt es bei `-ValidateSlimMediaTools` automatisch aus und legt das Manifest neben `ffmpeg.exe` und `ffprobe.exe` in `tools\ffmpeg` ab.
 - `scripts/ffmpeg/create_profile_b_build_kit.py` erzeugt einen reproduzierbaren Profile-B-Build-Kit mit `configure-profile-b.args`, `configure-profile-b.sh` und `profile-b-build-plan.json`. Der Kit enthält MP3-/Opus-/PCM-/Pipe-Pflichtflags, aber keine Netzwerk-, GPL-, nonfree-, Video-Encoder- oder Hardware-Flags.
 - `scripts/ffmpeg/build_profile_b_msys2.ps1` ist der Windows-Compile-Runner für echte Profile-B-Kandidaten. Er nutzt MSYS2/UCRT64, kann die benötigten `pacman`-Pakete installieren, klont den FFmpeg-Quellstand, führt den Build-Kit aus und startet danach Manifest-, Fixture- und Media-Smoke-Gates. `-PlanOnly` schreibt denselben Ablauf als JSON, ohne eine Toolchain zu verändern.
@@ -237,11 +237,11 @@ Empfohlene Budgets:
 
 Umgesetzt ist `scripts/analyze_backend_runtime_dependencies.py` als allgemeiner Component-Footprint-Report für Standard-Release-Komponenten.
 
-### P0: Gyan Essentials als Standard-Media-Tools validieren
+### P0: Gyan Essentials als Fallback-Media-Tools validieren
 
-Status: umgesetzt und als Standard-Build-Pfad gemessen.
+Status: umgesetzt und als konservativer lokaler/direct-Tauri-Fallback gemessen.
 
-Das ist der größte potenzielle Größenhebel ohne Funktionsverlust.
+Das war der erste konservative Größenhebel ohne Funktionsverlust und bleibt als Rückfallweg nützlich. Der größere Größenhebel ist inzwischen Profile B.
 
 Benötigte Fähigkeiten:
 
@@ -274,15 +274,15 @@ Validierungsstand 2026-06-09:
 - `scripts\build_tauri_backend_sidecar.ps1 -SkipFrontendBuild -BundleMediaTools -UseGyanFfmpegEssentials -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -CopyToTauriRelease` lief erfolgreich, kopierte Essentials in `Frontend\src-tauri\target\release\backend\tools\ffmpeg` und schrieb `preparedMediaTools` in `sidecar-build-metadata.json`.
 - `scripts\smoke_media_preparation.py --media-tools-dir Frontend\src-tauri\target\release\backend\tools\ffmpeg --require-ffprobe` meldete gegen den tatsächlich kopierten Release-Ordner `5/5` bestandene Checks.
 - `scripts\analyze_backend_runtime_dependencies.py --sidecar-dir Frontend\src-tauri\target\release\backend --max-media-tools-mb 210 --max-backend-mb 500 ...` meldete `ok=true`, Backend `441.88 MiB` und Media-Tools `193.32 MiB`.
-- `Frontend/src-tauri/tauri.conf.json` nutzt `-UseGyanFfmpegEssentials -ValidateSlimMediaTools` im Standard-`beforeBundleCommand`; der GitHub-Release-Workflow bereitet dieselben Tools explizit vor und uebergibt `-MediaToolsDir`.
+- `Frontend/src-tauri/tauri.conf.json` nutzt `-UseGyanFfmpegEssentials -ValidateSlimMediaTools` im direkten lokalen `beforeBundleCommand`.
 - Installierter Smoke mit `-VerifyFrontend -VerifyMediaPreparation -VerifySupportBundle -VerifyUninstall -MaxInstalledSizeMB 500` bestand: installierte App `454.75 MiB`, Frontend/WebView-ready, installierte Media-Tools `5/5`, Support-Bundle-Redaction bestanden, Silent-Uninstall entfernt App-Artefakte und erhaelt Runtime-Daten-Sentinel.
-- Noch ausstehend: echte installierte YouTube-/File-Workflow-Smokes mit realen Medien/API-Pfaden; der synthetische Media-Preparation-Smoke ist bestanden.
+- Der GitHub-Release-Workflow verwendet nach der Profile-B-Real-Workflow-Evidenz nicht mehr Gyan als Zielpfad.
 
 ### P0: Custom FFmpeg Profile B mit MP3-Latenzpfad
 
-Status: echter MSYS2/UCRT64-Compile und vollständiger NSIS-/Installed-Media-Smoke bestanden; noch nicht als Standard-Release-Pfad aktiviert.
+Status: echter MSYS2/UCRT64-Compile, vollständiger NSIS-/Installed-Media-Smoke und reale installierte File-/YouTube-Workflow-Smokes bestanden; im GitHub-Windows-Release-Workflow als Standard-Media-Tools aktiviert.
 
-Der Custom-Kandidat ist der groesste Groessenhebel ohne Feature-Verlust, wenn die installierten Real-Workflow-Smokes bestehen. Er behaelt `ffmpeg.exe`, `ffprobe.exe`, MP3-Encoding ueber `libmp3lame`, WebM/Opus ueber `libopus`, lokale `file`-/`pipe`-Protokolle, raw PCM in beide Pipe-Richtungen, common Audio-Container und `ffprobe`-Dauer-/Stream-Probing. Er laesst FFmpeg-Netzwerkprotokolle, `ffplay`, Video-Encoder, Hardware-Stacks, GPL- und nonfree-Flags weg.
+Der Custom-Build ist der groesste Groessenhebel ohne Feature-Verlust. Er behaelt `ffmpeg.exe`, `ffprobe.exe`, MP3-Encoding ueber `libmp3lame`, WebM/Opus ueber `libopus`, lokale `file`-/`pipe`-Protokolle, raw PCM in beide Pipe-Richtungen, common Audio-Container und `ffprobe`-Dauer-/Stream-Probing. Er laesst FFmpeg-Netzwerkprotokolle, `ffplay`, Video-Encoder, Hardware-Stacks, GPL- und nonfree-Flags weg.
 
 Gemessener Stand 2026-06-09:
 
@@ -322,6 +322,8 @@ Zusaetzliche Validierung gegen den tatsaechlich kopierten Tauri-Release-Backend-
 - `python scripts\smoke_media_preparation.py --media-tools-dir Frontend\src-tauri\target\release\backend\tools\ffmpeg --require-ffprobe --output tmp\media-preparation-smoke-profile-b-tauri-target.json`: `5/5` bestanden.
 - `python scripts\analyze_backend_runtime_dependencies.py --sidecar-dir Frontend\src-tauri\target\release\backend --max-media-tools-mb 10 --max-backend-mb 325 ...`: bestanden; Backend `254.42 MiB`, `_internal` `221.06 MiB`, `tools\ffmpeg` `5.84 MiB` inklusive `ffmpeg-profile-manifest.json`, PySide6 `71.71 MiB`.
 - Vollständiger Fast-Local-NSIS-Build mit `-MediaToolsDir build\ffmpeg-profile-b-msys2\dist\scriber-ffmpeg-profile-b\bin`, `-RunInstallerFrontendSmoke` und `-RunInstallerMediaPreparationSmoke`: bestanden; Installer `102.96 MiB`, installierte App `267.28 MiB`, Frontend/WebView-ready, installierte Media-Tools `5/5`, Azure-MAI-Vorbereitung als MP3, `ffprobe`-Dauerprüfung bestanden.
+- Realer installierter Workflow-Smoke mit `-VerifyRealMediaWorkflows`: bestanden; File-Workflow `154995.291 ms` mit Azure-MAI-MP3-Vorbereitung, abgeschlossenem Transcript und `2731` Zeichen Summary; YouTube-Workflow fuer `https://www.youtube.com/watch?v=0wEjbSYNUM8` `100438.047 ms` mit Download/Normalisierung/Transkription und `2568` Zeichen Summary; Gesamt `2/2` Workflows bestanden.
+- `.github/workflows/release-windows.yml` baut Profile B via MSYS2/UCRT64, validiert den Build-Report und uebergibt den erzeugten `MediaToolsDir` mit harten Budgets `325 MiB` Backend und `10 MiB` Media-Tools an `scripts/build_windows.ps1`.
 
 Erwarteter Groesseneffekt gegen die bisherigen Media-Tools:
 
@@ -331,10 +333,10 @@ Erwarteter Groesseneffekt gegen die bisherigen Media-Tools:
 | Gyan Essentials | `193.32 MiB` | ca. `73.69 MiB` | `0 MiB` |
 | Custom Profile B | `4.98 MiB` | ca. `262.03 MiB` | ca. `188.34 MiB` |
 
-Noch nicht akzeptiert als Standard:
+Akzeptanzstand:
 
-- Reale installierte YouTube-URL und File-Workflow-Smokes ausfuehren, inklusive Download/Normalisierung/Transkription/Summary und Thumbnail-Pfad.
-- Danach den Standard-Release-Pfad bewusst von Gyan Essentials auf den Profile-B-`MediaToolsDir` oder einen reproduzierbaren Profile-B-CI-Build umstellen.
+- Profile B ist fuer den GitHub-Windows-Release-Workflow akzeptiert.
+- Direkte lokale Tauri-Builds behalten Gyan Essentials als konservativen Fallback, solange `tauri.conf.json` nicht auf einen lokal reproduzierbaren Profile-B-Build umgestellt wird.
 
 ### P1: PySide6-Daten gezielt reduzieren
 
@@ -513,7 +515,7 @@ Keine Optimierung ist akzeptiert, wenn eine bestehende Funktion nur noch durch m
 1. Component-Size-Budgets und Reporting ergänzen. Status: umgesetzt.
 2. Build-Timing-Metadaten ergänzen. Status: umgesetzt.
 3. Sidecar-Hash-Cache und expliziten Fast-Local-Installer-Modus ergänzen. Status: umgesetzt.
-4. Schlankes `ffmpeg` plus `ffprobe` hinter den vorhandenen Media-Smoke-Gates testen. Status: Gyan Essentials als Standard-Build-Pfad umgesetzt; Profile B als bester Kandidat gebaut, mit NSIS-Installer und installiertem Frontend-/Media-Smoke bestanden; reale installierte YouTube-/File-Workflow-Smokes fehlen noch vor Standardumschaltung.
+4. Schlankes `ffmpeg` plus `ffprobe` hinter den vorhandenen Media-Smoke-Gates testen. Status: Gyan Essentials als Fallback-Build-Pfad umgesetzt; Profile B gebaut, mit NSIS-Installer, installiertem Frontend-/Media-Smoke und realem installiertem File-/YouTube-Workflow-Smoke bestanden; GitHub-Windows-Release-Workflow nutzt Profile B als Standard-Media-Tool-Input.
 5. PySide6-Pruning testen, ohne PySide6 selbst zu entfernen. Status: Schalter umgesetzt; kein Standard-Pruning ohne installierten visuellen Overlay-Smoke.
 
 Diese Reihenfolge verbessert zuerst Messbarkeit, dann Build-Zeit und danach installierte Größe. Sie verhindert, dass blind optimiert oder ein funktionierendes Feature durch einen Fallback ersetzt wird.

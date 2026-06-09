@@ -40,6 +40,9 @@ then waits for the actual Tauri WebView frontend-ready beacon.
 With -VerifyMediaPreparation, the installed desktop smoke runs the media
 preparation helper smoke against the ffmpeg/ffprobe binaries that were actually
 installed with the packaged app.
+With -VerifyRealMediaWorkflows, the installed desktop smoke runs real file and
+YouTube transcription workflows through the installed backend and requires
+completed transcript plus summary evidence.
 #>
 
 param(
@@ -59,6 +62,14 @@ param(
     [switch]$VerifySupportBundle,
     [switch]$VerifyFrontend,
     [switch]$VerifyMediaPreparation,
+    [switch]$VerifyRealMediaWorkflows,
+    [string]$RealWorkflowYoutubeUrl = "https://www.youtube.com/watch?v=0wEjbSYNUM8",
+    [int]$RealWorkflowFileTimeoutSec = 240,
+    [int]$RealWorkflowYoutubeTimeoutSec = 420,
+    [int]$RealWorkflowPollSec = 3,
+    [switch]$RealWorkflowSkipFile,
+    [switch]$RealWorkflowSkipYoutube,
+    [switch]$RealWorkflowNoSummary,
     [switch]$AllowMissingFfprobeForMediaPreparation,
     [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
     [int]$GlobalHotkeyDispatchTimeoutSec = 20,
@@ -462,6 +473,22 @@ function Invoke-InstalledDesktopSmoke {
     if ($VerifyFrontend) {
         $smokeArgs += "-VerifyFrontend"
     }
+    if ($VerifyRealMediaWorkflows) {
+        $smokeArgs += "-VerifyRealMediaWorkflows"
+        $smokeArgs += @("-RealWorkflowYoutubeUrl", $RealWorkflowYoutubeUrl)
+        $smokeArgs += @("-RealWorkflowFileTimeoutSec", $RealWorkflowFileTimeoutSec.ToString())
+        $smokeArgs += @("-RealWorkflowYoutubeTimeoutSec", $RealWorkflowYoutubeTimeoutSec.ToString())
+        $smokeArgs += @("-RealWorkflowPollSec", $RealWorkflowPollSec.ToString())
+        if ($RealWorkflowSkipFile) {
+            $smokeArgs += "-RealWorkflowSkipFile"
+        }
+        if ($RealWorkflowSkipYoutube) {
+            $smokeArgs += "-RealWorkflowSkipYoutube"
+        }
+        if ($RealWorkflowNoSummary) {
+            $smokeArgs += "-RealWorkflowNoSummary"
+        }
+    }
     if ($OccupyDefaultPort) {
         $smokeArgs += "-OccupyDefaultPort"
     }
@@ -657,6 +684,7 @@ try {
         globalHotkey = $smoke.globalHotkey
         supportBundle = $smoke.supportBundle
         frontend = $smoke.frontend
+        realMediaWorkflows = $smoke.realMediaWorkflows
         mediaPreparation = $mediaPreparation
         liveRecording = $smoke.liveRecording
         stability = $smoke.stability
