@@ -94,5 +94,6 @@ def test_create_profile_b_build_kit_writes_reproducible_artifacts(tmp_path: Path
     assert "--enable-demuxer=s16le" in script_text
     assert "validate_ffmpeg_profile.py" in json.dumps(plan)
     assert "--require-lgpl" in json.dumps(plan)
+    assert "smoke_profile_b_fixtures.py" in json.dumps(plan)
     assert "smoke_media_preparation.py" in json.dumps(plan)
     assert "build_tauri_backend_sidecar.ps1" in json.dumps(plan)

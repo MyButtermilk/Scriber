@@ -307,7 +307,7 @@ Recommended implementation order:
    - `configure-profile-b.args`,
    - `configure-profile-b.sh`,
    - `profile-b-build-plan.json` with the source URL/ref and post-build
-     validator/smoke/sidecar-gate commands.
+     validator, fixture-smoke, media-smoke, and sidecar-gate commands.
 3. Run the candidate through `scripts/ffmpeg/validate_ffmpeg_profile.py`.
    The validator writes `ffmpeg-profile-manifest.json` with:
    - configure flags,
@@ -326,9 +326,11 @@ Recommended implementation order:
 4. Feed the resulting directory through existing
    `scripts/build_tauri_backend_sidecar.ps1 -MediaToolsDir <dir>
    -ValidateSlimMediaTools`.
-5. Run `scripts/smoke_media_preparation.py --media-tools-dir <dir>
+5. Run `scripts/ffmpeg/smoke_profile_b_fixtures.py --media-tools-dir <dir>
    --require-ffprobe`.
-6. Run installed-package media smoke before accepting the profile in release.
+6. Run `scripts/smoke_media_preparation.py --media-tools-dir <dir>
+   --require-ffprobe`.
+7. Run installed-package media smoke before accepting the profile in release.
 
 Do not commit large binaries unless the repository later defines a vendor-binary
 policy.
@@ -364,6 +366,10 @@ Automated tests now cover:
   filters, protocols, sizes, hashes, and licensing-sensitive build flags,
 - Profile B build-kit generation with configure args aligned to the validator
   requirements and no network/GPL/nonfree/video/hardware flags,
+- Profile B fixture smoke covering MP3 CBR/VBR, WAV PCM variants, MOV/M4A/MP4,
+  WebM/Opus, MKV/WebM video audio extraction, OGG/Opus, FLAC, yt-dlp-like
+  M4A/WebM/merged MP4, Azure-MAI MP3 preparation, PCM pipe output, no-audio
+  failure, corrupted-input failure, and long/unicode-ish paths,
 - media-smoke expectations for WebM/Opus and Azure MAI MP3 preparation,
 - release-readiness media report validation.
 
@@ -373,7 +379,7 @@ strategy and candidate configure lines, but automated acceptance relies on
 configure/buildconf evidence plus functional media-smoke fixtures instead of a
 non-portable `ffmpeg -parsers` command.
 
-Required fixture/manual matrix for a real custom build:
+Automated Profile-B fixture matrix for a real custom build:
 
 - MP3 CBR
 - MP3 VBR
@@ -392,13 +398,18 @@ Required fixture/manual matrix for a real custom build:
 - yt-dlp merged MP4
 - no-audio video
 - corrupted input
-- unsupported codec
 - filename with spaces
 - filename with German umlauts
 - long Windows path
 - missing ffmpeg
 - missing ffprobe
 - timeout/cancellation
+
+`scripts/ffmpeg/smoke_profile_b_fixtures.py` covers the media-format,
+long-path, no-audio, corrupted-input, missing-tool, and timeout/cancellation
+surfaces. Unsupported-codec behavior remains a diagnostic extension rather
+than a hard pass/fail because broad fallback builds may legitimately decode
+more codecs than the strict Profile-B target.
 
 ## Measurement Notes
 

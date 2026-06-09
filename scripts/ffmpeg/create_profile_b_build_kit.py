@@ -180,6 +180,18 @@ def build_plan(
                 ],
             },
             {
+                "name": "profile_b_fixture_smoke",
+                "command": [
+                    "python",
+                    "scripts/ffmpeg/smoke_profile_b_fixtures.py",
+                    "--media-tools-dir",
+                    media_tools_placeholder,
+                    "--require-ffprobe",
+                    "--output",
+                    "tmp/ffmpeg-profile-b-fixtures.json",
+                ],
+            },
+            {
                 "name": "media_preparation_smoke",
                 "command": [
                     "python",
@@ -212,7 +224,7 @@ def build_plan(
         "notes": [
             "The helper generates a deterministic Profile B build kit; it does not download FFmpeg sources or vendor binaries.",
             "Run configure-profile-b.sh from an FFmpeg source checkout with libopus and libmp3lame development dependencies available.",
-            "Do not accept a produced binary for release until the profile manifest, media-preparation smoke, sidecar gate, and installed-package smokes pass.",
+            "Do not accept a produced binary for release until the profile manifest, Profile B fixture smoke, media-preparation smoke, sidecar gate, and installed-package smokes pass.",
         ],
     }
 

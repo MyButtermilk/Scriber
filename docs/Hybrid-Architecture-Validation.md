@@ -5261,3 +5261,65 @@ Remaining limits:
   media-preparation smoke, sidecar gate, installed-package media smoke, and
   real installed YouTube/file/provider workflow evidence before it can replace
   Gyan Essentials.
+
+## 2026-06-09 - FFmpeg Profile B Fixture Smoke
+
+Commands:
+
+```powershell
+python -m py_compile scripts\ffmpeg\smoke_profile_b_fixtures.py scripts\ffmpeg\create_profile_b_build_kit.py scripts\ffmpeg\validate_ffmpeg_profile.py
+
+python scripts\ffmpeg\smoke_profile_b_fixtures.py --output tmp\ffmpeg-profile-b-fixtures-local.json --require-ffprobe --duration-sec 0.5
+
+python -m pytest tests/test_ffmpeg_profile_fixture_smoke.py tests/test_ffmpeg_profile_build_kit.py tests/test_ffmpeg_profile_validator.py tests/runtime/test_ffmpeg_commands.py tests/test_azure_mai_stt.py -q
+```
+
+Result: implemented and covered by focused fixture-smoke and media/provider
+tests.
+
+Implemented improvements:
+
+- Added `scripts/ffmpeg/smoke_profile_b_fixtures.py`, an automated Profile-B
+  fixture matrix for candidate FFmpeg/ffprobe directories.
+- Fixture generation uses a separate broad generator FFmpeg, while the
+  candidate FFmpeg is used only for the actual Scriber-style transcode/decode
+  checks. This keeps the slim candidate from needing video or fixture creation
+  features.
+- The matrix covers MP3 CBR/VBR, WAV PCM 16-bit, WAV PCM 24-bit, WAV float,
+  MOV AAC, M4A ALAC, MP4 AAC, WebM/Opus, MKV video+audio extraction, OGG/Opus,
+  FLAC, yt-dlp-like M4A, yt-dlp-like WebM/Opus, yt-dlp-like merged MP4,
+  Azure-MAI non-MP3-to-MP3 preparation, WebM-to-PCM stdout, no-audio video
+  failure, corrupted input failure, and long/unicode-ish path handling.
+- The script emits a JSON report with per-check durations, candidate tool
+  paths, fixture generator path, generated-video codec metadata, and summary
+  counts.
+- The Profile-B build-kit plan now includes this fixture smoke as a required
+  post-build validation command before the generic media-preparation smoke and
+  sidecar candidate gate.
+
+Evidence:
+
+- Local run against `C:\Program Files\FFmpeg\bin`: `ok=true`, `25/25` checks
+  passed, including Azure-MAI MP3 outputs and PCM stdout output.
+- Focused tests: `30 passed` for the fixture smoke, build kit, validator,
+  FFmpeg command builders, and Azure MAI MP3 preparation.
+
+Goal coverage:
+
+- Phase 6: turns the documented fixture/manual matrix into a repeatable
+  candidate-binary gate.
+- Phase 7: adds regression coverage for the matrix and for its inclusion in
+  the Profile-B build kit.
+- Phase 8: reduces the risk that a smaller binary passes static capability
+  checks while failing real Scriber media workflows.
+
+Remaining limits:
+
+- This still does not compile a new custom Profile-B FFmpeg binary.
+- Unsupported-codec behavior remains diagnostic rather than hard fail because
+  broad fallback builds may decode extra codecs; the strict size/licensing
+  boundary is enforced by configure flags, profile manifest warnings/failures,
+  and size reports.
+- A produced binary still needs installed-package media smoke plus real
+  installed YouTube/file/provider workflow evidence before replacing Gyan
+  Essentials.
