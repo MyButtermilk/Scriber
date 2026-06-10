@@ -135,6 +135,23 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
                 },
             },
             "microphone": {
+                "nativeDeviceEvents": {
+                    "source": "tauri",
+                    "monitorKind": "wasapi-imm-notification",
+                    "available": True,
+                    "running": True,
+                    "registered": True,
+                    "comInitialized": True,
+                    "callbackAlive": True,
+                    "eventCount": 1,
+                    "ignoredRenderCount": 0,
+                    "debouncedEventCount": 0,
+                    "lastEvent": {
+                        "eventKind": "default_device_changed",
+                        "flow": "capture",
+                        "endpointIdHash": "event-hash",
+                    },
+                },
                 "activeCapture": {
                     "engine": "python",
                     "requestedEngine": "rust-prototype",
@@ -161,6 +178,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
         combined = "\n".join(zf.read(name).decode("utf-8", errors="replace") for name in names)
 
     active = payload["microphone"]["activeCapture"]
+    native_events = payload["microphone"]["nativeDeviceEvents"]
     shell_ipc = payload["textInjection"]["shellIpc"]
     assert "audio-diagnostics.redacted.json" in names
     assert active["engine"] == "python"
@@ -170,6 +188,8 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
     assert active["droppedFrameCount"] == 3
     assert active["sessionToken"] == "[REDACTED]"
     assert "audio-secret-token" not in combined
+    assert native_events["registered"] is True
+    assert native_events["lastEvent"]["endpointIdHash"] == "event-hash"
     assert shell_ipc["lastCommand"] == "injectText"
     assert shell_ipc["lastErrorCode"] == "missingPasteMarker"
     assert shell_ipc["lastResponse"]["payload"]["foregroundBefore"]["titleHash"] == "title-hash"

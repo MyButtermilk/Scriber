@@ -134,6 +134,11 @@ Packaging and scripts:
   `audioProbe`. These diagnostics are not public API, must not expose raw
   endpoint IDs, and must not become an active capture path unless the Rust audio
   prototype passes the documented gates.
+- Native Windows device-event diagnostics are surfaced through
+  `microphone.nativeDeviceEvents` in `/api/runtime/audio-diagnostics`, backed by
+  private shell IPC command `nativeDeviceEventsStatus`. Keep this status
+  redacted: event counters, mode, COM/registration state, post results, hashes,
+  and age/timing values are allowed; raw IMMDevice endpoint IDs are not.
 - Private shell IPC also reserves `audioCaptureStart`, `audioCaptureStop`,
   `audioPrewarmStart`, and `audioPrewarmStop` for the Rust audio prototype. The
   shell may attempt an allowlisted `scriber-audio-sidecar --stdio` handshake.

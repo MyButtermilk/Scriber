@@ -348,12 +348,19 @@ Implementation status on `codex/rust-expansion-plan`:
   native events without changing backend behavior. In
   `SCRIBER_NATIVE_DEVICE_EVENTS=1`, it posts token-protected refresh hints to
   `POST /api/microphones/refresh`.
+- Implemented support-bundle native status reporting beyond backend hints:
+  Tauri maintains a redacted native device event monitor status snapshot and
+  exposes it through private shell IPC command `nativeDeviceEventsStatus`.
+  `/api/runtime/audio-diagnostics` now includes it as
+  `microphone.nativeDeviceEvents`, covering requested/effective mode,
+  COM/registration/running state, callback liveness, event counts by kind,
+  render-ignored and debounced counts, post success/failure counts, last event
+  age, and last redacted post error.
 - Added focused Python tests for render filtering, capture scheduling,
   non-invasive hints, controller forwarding, runtime feature flags, and REST
   contract coverage, plus Rust tests for native mode parsing, event filtering,
-  redaction, hint payloads, and debounce.
-- Still open: installed smoke evidence for COM registration, support-bundle
-  native status reporting beyond backend hint diagnostics, and physical
+  redaction, hint payloads, debounce, and native-status IPC.
+- Still open: installed smoke evidence for COM registration and physical
   dock/USB/default-device matrix coverage.
 
 Acceptance gates:

@@ -216,6 +216,11 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
             "micAlwaysOn": False,
             "idlePrewarmActive": False,
             "prebufferMs": 400,
+            "nativeDeviceEvents": {
+                "shellIpcAvailable": False,
+                "available": False,
+                "reason": "shellIpcUnavailable",
+            },
         },
         "textInjection": {
             "method": "auto",

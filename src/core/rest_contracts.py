@@ -213,6 +213,13 @@ def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
     _require_bool(microphone, "micAlwaysOn", contract)
     _require_bool(microphone, "idlePrewarmActive", contract)
     _require_int(microphone, "prebufferMs", contract)
+    native_device_events = _require_dict(microphone, "nativeDeviceEvents", contract)
+    _require_bool(native_device_events, "shellIpcAvailable", contract)
+    _require_optional_bool(native_device_events, "available", contract)
+    _require_optional_bool(native_device_events, "running", contract)
+    _require_optional_bool(native_device_events, "registered", contract)
+    _require_optional_string(native_device_events, "reason", contract)
+    _require_optional_string(native_device_events, "effectiveMode", contract)
 
     text_injection = _require_dict(payload, "textInjection", contract)
     _require_string(text_injection, "method", contract)

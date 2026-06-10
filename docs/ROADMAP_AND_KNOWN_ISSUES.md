@@ -19,6 +19,10 @@ Desktop runtime:
 Mic and recording:
 
 - DeviceMonitor uses native Windows endpoint events where available.
+- Native device-event status is included in audio diagnostics/support bundles
+  through redacted Tauri shell IPC (`microphone.nativeDeviceEvents`), including
+  COM/registration state, callback liveness, event/debounce counts, post
+  results, and hashed endpoint identifiers.
 - Polling fallback is intentionally slow compared with the old aggressive poll.
 - PortAudio access is guarded and refreshes are recording-aware.
 - Always-on mic prewarm and rolling prebuffer are implemented.

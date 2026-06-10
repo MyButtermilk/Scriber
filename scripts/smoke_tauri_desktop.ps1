@@ -616,6 +616,7 @@ function Read-ZipEntryText {
     $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
     try {
         $entries = @()
+        $entryTexts = @{}
         $combined = New-Object System.Text.StringBuilder
         foreach ($entry in $archive.Entries) {
             $entries += $entry.FullName
@@ -624,13 +625,16 @@ function Read-ZipEntryText {
             }
             $reader = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8, $true)
             try {
-                [void]$combined.AppendLine($reader.ReadToEnd())
+                $text = $reader.ReadToEnd()
+                $entryTexts[$entry.FullName] = $text
+                [void]$combined.AppendLine($text)
             } finally {
                 $reader.Dispose()
             }
         }
         return [pscustomobject]@{
             entries = $entries
+            entryTexts = $entryTexts
             combinedText = $combined.ToString()
         }
     } finally {
@@ -878,7 +882,7 @@ function Test-SupportBundle {
 
         $zip = Read-ZipEntryText -Path $downloadPath
         $entrySet = @($zip.entries)
-        foreach ($required in @("manifest.json", "runtime.json", "state.redacted.json", "environment.redacted.json", "config/env.redacted.txt", "logs/support-bundle-secret-smoke.log")) {
+        foreach ($required in @("manifest.json", "runtime.json", "state.redacted.json", "audio-diagnostics.redacted.json", "environment.redacted.json", "config/env.redacted.txt", "logs/support-bundle-secret-smoke.log")) {
             if ($entrySet -notcontains $required) {
                 throw "Support bundle is missing required entry: $required"
             }
@@ -900,6 +904,13 @@ function Test-SupportBundle {
         if (-not $combined.Contains("[REDACTED]")) {
             throw "Support bundle did not contain any redaction marker."
         }
+        $audioDiagnostics = $zip.entryTexts["audio-diagnostics.redacted.json"] | ConvertFrom-Json
+        if (-not $audioDiagnostics.microphone.nativeDeviceEvents) {
+            throw "Support bundle audio diagnostics are missing microphone.nativeDeviceEvents."
+        }
+        if ($null -eq $audioDiagnostics.microphone.nativeDeviceEvents.shellIpcAvailable) {
+            throw "Support bundle native device-event diagnostics are missing shellIpcAvailable."
+        }
 
         return [pscustomobject]@{
             verified = $true
@@ -913,6 +924,7 @@ function Test-SupportBundle {
                 "manifest.json",
                 "runtime.json",
                 "state.redacted.json",
+                "audio-diagnostics.redacted.json",
                 "environment.redacted.json",
                 "config/env.redacted.txt",
                 $settingsEntry,

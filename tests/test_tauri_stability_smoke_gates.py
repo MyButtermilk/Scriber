@@ -348,6 +348,9 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "Support bundle endpoint allowed an unauthenticated request" in desktop
     assert "support-bundle-secret-smoke.log" in desktop
     assert "Support bundle leaked a secret value" in desktop
+    assert "audio-diagnostics.redacted.json" in desktop
+    assert "microphone.nativeDeviceEvents" in desktop
+    assert "shellIpcAvailable" in desktop
     assert "redactionVerified = $true" in desktop
     assert "$configSnapshots" in desktop
     assert "[System.IO.File]::WriteAllBytes($snapshot.Path" in desktop

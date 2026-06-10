@@ -1576,6 +1576,33 @@ class ScriberWebController:
             )
         return diagnostics
 
+    def _native_device_event_status_diagnostics(self) -> dict[str, Any]:
+        diagnostics: dict[str, Any] = {
+            "requested": True,
+            "shellIpcAvailable": shell_ipc_available(),
+        }
+        if not shell_ipc_available():
+            diagnostics.update({"available": False, "reason": "shellIpcUnavailable"})
+            return diagnostics
+        response = call_shell_ipc("nativeDeviceEventsStatus", {}, timeout_seconds=2.0)
+        response_payload = response.get("payload") if isinstance(response, dict) else None
+        if not isinstance(response_payload, dict):
+            response_payload = {}
+        diagnostics.update(response_payload)
+        diagnostics.update(
+            {
+                "ipcSuccess": bool(response.get("success")) if isinstance(response, dict) else False,
+                "responseErrorCode": response.get("errorCode") if isinstance(response, dict) else "invalidResponse",
+                "responseFallbackReason": response.get("fallbackReason") if isinstance(response, dict) else None,
+            }
+        )
+        if not diagnostics.get("available"):
+            diagnostics.setdefault(
+                "reason",
+                diagnostics.get("responseErrorCode") or "nativeDeviceEventsUnavailable",
+            )
+        return diagnostics
+
     def _native_endpoint_mapping_diagnostics(
         self,
         rust_inventory: dict[str, Any] | None = None,
@@ -2476,6 +2503,7 @@ class ScriberWebController:
                 "deviceMonitor": self._device_monitor.diagnostic_snapshot()
                 if self._device_monitor_enabled
                 else None,
+                "nativeDeviceEvents": self._native_device_event_status_diagnostics(),
                 "nativeEndpointMapping": self._native_endpoint_mapping_diagnostics(
                     rust_inventory=rust_native_endpoint_inventory,
                 ),

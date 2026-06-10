@@ -1633,14 +1633,24 @@ fn start_native_device_event_monitor_for_app(
             "/api/microphones/refresh",
             Some(&body),
         ) {
-            Ok(_) => write_shell_log(&format!(
-                "native device event posted kind={} flow={} role={} endpoint_hash={}",
-                event.event_kind, event.flow, event.role, event.endpoint_id_hash
-            )),
-            Err(err) => write_shell_log(&format!(
-                "native device event post failed kind={} flow={} error={err}",
-                event.event_kind, event.flow
-            )),
+            Ok(_) => {
+                audio_devices::record_native_device_event_post_result(&event, true, None);
+                write_shell_log(&format!(
+                    "native device event posted kind={} flow={} role={} endpoint_hash={}",
+                    event.event_kind, event.flow, event.role, event.endpoint_id_hash
+                ));
+            }
+            Err(err) => {
+                audio_devices::record_native_device_event_post_result(
+                    &event,
+                    false,
+                    Some(err.to_string()),
+                );
+                write_shell_log(&format!(
+                    "native device event post failed kind={} flow={} error={err}",
+                    event.event_kind, event.flow
+                ));
+            }
         }
     };
     let log = |message: String| write_shell_log(&message);

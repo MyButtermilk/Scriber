@@ -637,8 +637,23 @@ async def test_audio_diagnostics_prefers_rust_native_endpoint_inventory_for_mapp
             }
         ],
     )
-    call_mock = MagicMock(
-        return_value={
+    def fake_shell_ipc(command, payload=None, **kwargs):
+        if command == "nativeDeviceEventsStatus":
+            return {
+                "success": True,
+                "payload": {
+                    "source": "tauri",
+                    "monitorKind": "wasapi-imm-notification",
+                    "available": True,
+                    "running": True,
+                    "registered": True,
+                    "effectiveMode": "observe-only",
+                },
+                "errorCode": None,
+                "fallbackReason": None,
+            }
+        assert command == "audioEndpointInventory"
+        return {
             "success": True,
             "payload": {
                 "engine": "rust-prototype",
@@ -657,7 +672,7 @@ async def test_audio_diagnostics_prefers_rust_native_endpoint_inventory_for_mapp
             "errorCode": None,
             "fallbackReason": None,
         }
-    )
+    call_mock = MagicMock(side_effect=fake_shell_ipc)
     monkeypatch.setattr(web_api, "call_shell_ipc", call_mock)
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
@@ -667,12 +682,15 @@ async def test_audio_diagnostics_prefers_rust_native_endpoint_inventory_for_mapp
         ctl.shutdown()
 
     inventory = audio["microphone"]["rustNativeEndpointInventory"]
+    native_events = audio["microphone"]["nativeDeviceEvents"]
     mapping = audio["microphone"]["nativeEndpointMapping"]
-    command, payload = call_mock.call_args.args[:2]
-    assert command == "audioEndpointInventory"
-    assert payload == {}
+    calls = [(call.args[0], call.args[1]) for call in call_mock.call_args_list]
+    assert ("audioEndpointInventory", {}) in calls
+    assert ("nativeDeviceEventsStatus", {}) in calls
     assert inventory["available"] is True
     assert inventory["source"] == "rust-wasapi"
+    assert native_events["registered"] is True
+    assert native_events["effectiveMode"] == "observe-only"
     assert mapping["source"] == "rust-wasapi"
     assert mapping["rustInventoryAvailable"] is True
     assert mapping["mappings"][0]["nativeEndpointIdHash"] == "rust-hash"
@@ -706,8 +724,18 @@ async def test_audio_diagnostics_runs_rust_probe_when_requested(monkeypatch):
     monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
     monkeypatch.setattr(web_api.Config, "MIC_BLOCK_SIZE", 640, raising=False)
     monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
-    call_mock = MagicMock(
-        return_value={
+    def fake_shell_ipc(command, payload=None, **kwargs):
+        if command == "audioEndpointInventory":
+            return {"success": True, "payload": {"available": False}, "errorCode": None, "fallbackReason": None}
+        if command == "nativeDeviceEventsStatus":
+            return {
+                "success": True,
+                "payload": {"available": True, "running": True, "registered": True},
+                "errorCode": None,
+                "fallbackReason": None,
+            }
+        assert command == "audioProbe"
+        return {
             "success": True,
             "payload": {
                 "engine": "rust-prototype",
@@ -722,7 +750,7 @@ async def test_audio_diagnostics_runs_rust_probe_when_requested(monkeypatch):
             "errorCode": None,
             "fallbackReason": None,
         }
-    )
+    call_mock = MagicMock(side_effect=fake_shell_ipc)
     monkeypatch.setattr(web_api, "call_shell_ipc", call_mock)
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
@@ -737,8 +765,9 @@ async def test_audio_diagnostics_runs_rust_probe_when_requested(monkeypatch):
     assert probe["ipcSuccess"] is True
     assert probe["endpointIdHash"] == "redacted-endpoint"
     assert probe["callbackCount"] == 0
-    command, payload = call_mock.call_args.args[:2]
-    assert command == "audioProbe"
+    probe_calls = [call for call in call_mock.call_args_list if call.args[0] == "audioProbe"]
+    assert len(probe_calls) == 1
+    command, payload = probe_calls[0].args[:2]
     assert payload["sampleRate"] == 16000
     assert payload["channels"] == 1
     assert payload["blockSize"] == 640
@@ -779,8 +808,18 @@ async def test_audio_diagnostics_rust_probe_sends_selected_native_endpoint_hash(
         ],
     )
     monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
-    call_mock = MagicMock(
-        return_value={
+    def fake_shell_ipc(command, payload=None, **kwargs):
+        if command == "audioEndpointInventory":
+            return {"success": True, "payload": {"available": False}, "errorCode": None, "fallbackReason": None}
+        if command == "nativeDeviceEventsStatus":
+            return {
+                "success": True,
+                "payload": {"available": True, "running": True, "registered": True},
+                "errorCode": None,
+                "fallbackReason": None,
+            }
+        assert command == "audioProbe"
+        return {
             "success": True,
             "payload": {
                 "engine": "rust-prototype",
@@ -799,7 +838,7 @@ async def test_audio_diagnostics_rust_probe_sends_selected_native_endpoint_hash(
             "errorCode": None,
             "fallbackReason": None,
         }
-    )
+    call_mock = MagicMock(side_effect=fake_shell_ipc)
     monkeypatch.setattr(web_api, "call_shell_ipc", call_mock)
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
@@ -809,8 +848,9 @@ async def test_audio_diagnostics_rust_probe_sends_selected_native_endpoint_hash(
         ctl.shutdown()
 
     probe = audio["microphone"]["rustAudioProbe"]
-    command, payload = call_mock.call_args.args[:2]
-    assert command == "audioProbe"
+    probe_calls = [call for call in call_mock.call_args_list if call.args[0] == "audioProbe"]
+    assert len(probe_calls) == 1
+    command, payload = probe_calls[0].args[:2]
     assert payload["devicePreference"] == "Dock Mic, Windows WASAPI"
     assert payload["portAudioLabel"] == "Dock Mic, Windows WASAPI"
     assert payload["nativeEndpointIdHash"] == "dock-hash"

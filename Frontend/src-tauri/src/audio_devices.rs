@@ -1,7 +1,11 @@
 #![allow(dead_code)]
 
 use serde_json::{json, Value};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use crate::redaction::hash_sensitive_identifier;
 
@@ -68,6 +72,16 @@ pub enum NativeDeviceEventsMode {
     Enabled,
 }
 
+impl NativeDeviceEventsMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            NativeDeviceEventsMode::Auto => "auto",
+            NativeDeviceEventsMode::Disabled => "disabled",
+            NativeDeviceEventsMode::Enabled => "enabled",
+        }
+    }
+}
+
 pub fn native_device_events_mode_from_env(raw: Option<&str>) -> NativeDeviceEventsMode {
     match raw.unwrap_or("auto").trim().to_ascii_lowercase().as_str() {
         "0" | "false" | "no" | "off" | "disabled" => NativeDeviceEventsMode::Disabled,
@@ -127,6 +141,19 @@ impl NativeDeviceEvent {
     }
 }
 
+impl NativeDeviceEventStatusEvent {
+    fn from_event(event: &NativeDeviceEvent) -> Self {
+        Self {
+            event_kind: event.event_kind.clone(),
+            flow: event.flow.clone(),
+            role: event.role.clone(),
+            endpoint_id_hash: event.endpoint_id_hash.clone(),
+            native_timestamp_ms: event.native_timestamp_ms,
+            observed_at_ms: now_ms(),
+        }
+    }
+}
+
 pub struct NativeDeviceEventDebouncer {
     debounce: Duration,
     last_key: Option<String>,
@@ -138,6 +165,77 @@ pub struct NativeDeviceEventMonitorHandle {
     stop_tx: Option<Sender<()>>,
     #[cfg(windows)]
     join_handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug, Clone)]
+struct NativeDeviceEventStatusEvent {
+    event_kind: String,
+    flow: String,
+    role: String,
+    endpoint_id_hash: String,
+    native_timestamp_ms: u64,
+    observed_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct NativeDeviceEventStatus {
+    requested_mode: String,
+    effective_mode: String,
+    platform_supported: bool,
+    available: bool,
+    post_hints: bool,
+    running: bool,
+    registered: bool,
+    com_initialized: bool,
+    callback_alive: bool,
+    started_at_ms: Option<u64>,
+    registered_at_ms: Option<u64>,
+    stopped_at_ms: Option<u64>,
+    event_count: u64,
+    emitted_event_count: u64,
+    ignored_render_count: u64,
+    debounced_event_count: u64,
+    post_attempt_count: u64,
+    post_success_count: u64,
+    post_failure_count: u64,
+    event_counts_by_kind: BTreeMap<String, u64>,
+    last_event: Option<NativeDeviceEventStatusEvent>,
+    last_emitted_event: Option<NativeDeviceEventStatusEvent>,
+    last_post_error: Option<String>,
+    last_error: Option<String>,
+    last_lifecycle_message: Option<String>,
+}
+
+impl Default for NativeDeviceEventStatus {
+    fn default() -> Self {
+        Self {
+            requested_mode: "auto".to_string(),
+            effective_mode: "not-started".to_string(),
+            platform_supported: cfg!(windows),
+            available: false,
+            post_hints: false,
+            running: false,
+            registered: false,
+            com_initialized: false,
+            callback_alive: false,
+            started_at_ms: None,
+            registered_at_ms: None,
+            stopped_at_ms: None,
+            event_count: 0,
+            emitted_event_count: 0,
+            ignored_render_count: 0,
+            debounced_event_count: 0,
+            post_attempt_count: 0,
+            post_success_count: 0,
+            post_failure_count: 0,
+            event_counts_by_kind: BTreeMap::new(),
+            last_event: None,
+            last_emitted_event: None,
+            last_post_error: None,
+            last_error: None,
+            last_lifecycle_message: None,
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -163,6 +261,185 @@ pub fn run_passive_audio_probe(options: PassiveAudioProbeOptions) -> Result<Valu
 
 pub fn collect_native_capture_endpoint_inventory() -> Result<Value, String> {
     collect_native_capture_endpoint_inventory_impl()
+}
+
+pub fn native_device_event_status_payload() -> Value {
+    let now = now_ms();
+    let status = native_device_event_status()
+        .lock()
+        .map(|state| state.clone())
+        .unwrap_or_default();
+    json!({
+        "source": "tauri",
+        "monitorKind": "wasapi-imm-notification",
+        "requestedMode": status.requested_mode,
+        "effectiveMode": status.effective_mode,
+        "platformSupported": status.platform_supported,
+        "available": status.available,
+        "postHints": status.post_hints,
+        "running": status.running,
+        "registered": status.registered,
+        "comInitialized": status.com_initialized,
+        "callbackAlive": status.callback_alive,
+        "startedAtMs": status.started_at_ms,
+        "registeredAtMs": status.registered_at_ms,
+        "stoppedAtMs": status.stopped_at_ms,
+        "eventCount": status.event_count,
+        "emittedEventCount": status.emitted_event_count,
+        "ignoredRenderCount": status.ignored_render_count,
+        "debouncedEventCount": status.debounced_event_count,
+        "postAttemptCount": status.post_attempt_count,
+        "postSuccessCount": status.post_success_count,
+        "postFailureCount": status.post_failure_count,
+        "eventCountsByKind": status.event_counts_by_kind,
+        "lastEvent": status_event_payload(status.last_event.as_ref(), now),
+        "lastEmittedEvent": status_event_payload(status.last_emitted_event.as_ref(), now),
+        "lastPostError": status.last_post_error,
+        "lastError": status.last_error,
+        "lastLifecycleMessage": status.last_lifecycle_message,
+    })
+}
+
+pub fn record_native_device_event_post_result(
+    event: &NativeDeviceEvent,
+    success: bool,
+    error: Option<String>,
+) {
+    update_native_device_event_status(|status| {
+        status.post_attempt_count = status.post_attempt_count.saturating_add(1);
+        if success {
+            status.post_success_count = status.post_success_count.saturating_add(1);
+            status.last_post_error = None;
+        } else {
+            status.post_failure_count = status.post_failure_count.saturating_add(1);
+            status.last_post_error = error.map(|value| bounded_hint_string(value, ""));
+        }
+        status.last_emitted_event = Some(NativeDeviceEventStatusEvent::from_event(event));
+    });
+}
+
+fn native_device_event_status() -> &'static Mutex<NativeDeviceEventStatus> {
+    static STATUS: OnceLock<Mutex<NativeDeviceEventStatus>> = OnceLock::new();
+    STATUS.get_or_init(|| Mutex::new(NativeDeviceEventStatus::default()))
+}
+
+fn status_event_payload(event: Option<&NativeDeviceEventStatusEvent>, now: u64) -> Value {
+    let Some(event) = event else {
+        return Value::Null;
+    };
+    json!({
+        "eventKind": event.event_kind,
+        "flow": event.flow,
+        "role": event.role,
+        "endpointIdHash": event.endpoint_id_hash,
+        "nativeTimestampMs": event.native_timestamp_ms,
+        "observedAtMs": event.observed_at_ms,
+        "ageMs": now.saturating_sub(event.observed_at_ms),
+    })
+}
+
+fn update_native_device_event_status<F>(update: F)
+where
+    F: FnOnce(&mut NativeDeviceEventStatus),
+{
+    if let Ok(mut status) = native_device_event_status().lock() {
+        update(&mut status);
+    }
+}
+
+fn record_native_device_monitor_start(
+    mode: NativeDeviceEventsMode,
+    platform_supported: bool,
+    post_hints: bool,
+) {
+    update_native_device_event_status(|status| {
+        let requested_mode = mode.as_str().to_string();
+        *status = NativeDeviceEventStatus {
+            requested_mode,
+            effective_mode: if !platform_supported {
+                "unsupported-platform".to_string()
+            } else if mode == NativeDeviceEventsMode::Disabled {
+                "disabled".to_string()
+            } else if post_hints {
+                "enabled".to_string()
+            } else {
+                "observe-only".to_string()
+            },
+            platform_supported,
+            available: platform_supported && mode != NativeDeviceEventsMode::Disabled,
+            post_hints,
+            running: platform_supported && mode != NativeDeviceEventsMode::Disabled,
+            started_at_ms: Some(now_ms()),
+            last_lifecycle_message: Some("monitorStartRequested".to_string()),
+            ..NativeDeviceEventStatus::default()
+        };
+    });
+}
+
+fn record_native_device_monitor_com_initialized() {
+    update_native_device_event_status(|status| {
+        status.com_initialized = true;
+        status.last_lifecycle_message = Some("comInitialized".to_string());
+    });
+}
+
+fn record_native_device_monitor_registered() {
+    update_native_device_event_status(|status| {
+        status.running = true;
+        status.registered = true;
+        status.callback_alive = true;
+        status.registered_at_ms = Some(now_ms());
+        status.last_error = None;
+        status.last_lifecycle_message = Some("registered".to_string());
+    });
+}
+
+fn record_native_device_monitor_stopped(message: &str) {
+    update_native_device_event_status(|status| {
+        status.running = false;
+        status.registered = false;
+        status.callback_alive = false;
+        status.stopped_at_ms = Some(now_ms());
+        status.last_lifecycle_message = Some(bounded_hint_string(message.to_string(), ""));
+    });
+}
+
+fn record_native_device_monitor_error(message: &str) {
+    let message = bounded_hint_string(message.to_string(), "");
+    update_native_device_event_status(|status| {
+        status.available = false;
+        status.running = false;
+        status.registered = false;
+        status.callback_alive = false;
+        status.stopped_at_ms = Some(now_ms());
+        status.last_error = Some(message.clone());
+        status.last_lifecycle_message = Some("error".to_string());
+    });
+}
+
+fn record_native_device_monitor_event(event: &NativeDeviceEvent, disposition: &str) {
+    update_native_device_event_status(|status| {
+        let snapshot = NativeDeviceEventStatusEvent::from_event(event);
+        status.event_count = status.event_count.saturating_add(1);
+        *status
+            .event_counts_by_kind
+            .entry(snapshot.event_kind.clone())
+            .or_insert(0) += 1;
+        status.last_event = Some(snapshot.clone());
+        match disposition {
+            "emitted" => {
+                status.emitted_event_count = status.emitted_event_count.saturating_add(1);
+                status.last_emitted_event = Some(snapshot);
+            }
+            "ignoredRender" => {
+                status.ignored_render_count = status.ignored_render_count.saturating_add(1);
+            }
+            "debounced" => {
+                status.debounced_event_count = status.debounced_event_count.saturating_add(1);
+            }
+            _ => {}
+        }
+    });
 }
 
 #[cfg(not(windows))]
@@ -646,6 +923,7 @@ where
     F: FnMut(NativeDeviceEvent) + Send + 'static,
     L: FnMut(String) + Send + 'static,
 {
+    record_native_device_monitor_start(mode, true, mode == NativeDeviceEventsMode::Enabled);
     if mode == NativeDeviceEventsMode::Disabled {
         log("native device event monitor disabled by SCRIBER_NATIVE_DEVICE_EVENTS".to_string());
         return Ok(None);
@@ -659,10 +937,15 @@ where
             if let Err(err) =
                 run_native_device_event_thread(event_tx, event_rx, stop_rx, &mut on_event, &mut log)
             {
+                record_native_device_monitor_error(&err);
                 log(format!("native device event monitor stopped: {err}"));
             }
         })
-        .map_err(|err| format!("could not spawn native device event thread: {err}"))?;
+        .map_err(|err| {
+            let message = format!("could not spawn native device event thread: {err}");
+            record_native_device_monitor_error(&message);
+            message
+        })?;
 
     Ok(Some(NativeDeviceEventMonitorHandle {
         stop_tx: Some(stop_tx),
@@ -680,6 +963,7 @@ where
     F: FnMut(NativeDeviceEvent) + Send + 'static,
     L: FnMut(String) + Send + 'static,
 {
+    record_native_device_monitor_start(_mode, false, false);
     log("native device event monitor unavailable on this platform".to_string());
     Ok(None)
 }
@@ -699,6 +983,7 @@ where
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
         .ok()
         .map_err(|err| format!("COM initialization failed: {err}"))?;
+    record_native_device_monitor_com_initialized();
 
     let result = (|| -> Result<(), String> {
         let enumerator: IMMDeviceEnumerator =
@@ -712,6 +997,7 @@ where
         }
 
         log("native device event monitor registered".to_string());
+        record_native_device_monitor_registered();
         let mut debouncer = NativeDeviceEventDebouncer::new();
         loop {
             if stop_rx.try_recv().is_ok() {
@@ -719,8 +1005,13 @@ where
             }
             match event_rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(event) => {
-                    if debouncer.should_emit(&event, Instant::now()) {
+                    if !event.should_forward() {
+                        record_native_device_monitor_event(&event, "ignoredRender");
+                    } else if debouncer.should_emit(&event, Instant::now()) {
+                        record_native_device_monitor_event(&event, "emitted");
                         on_event(event);
+                    } else {
+                        record_native_device_monitor_event(&event, "debounced");
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -732,6 +1023,7 @@ where
             let _ = enumerator.UnregisterEndpointNotificationCallback(&client);
         }
         log("native device event monitor unregistered".to_string());
+        record_native_device_monitor_stopped("unregistered");
         Ok(())
     })();
 
@@ -1046,6 +1338,41 @@ mod tests {
         assert_eq!(payload["endpoints"][0]["friendlyName"], "Default Mic");
         assert!(payload["endpoints"][0].get("endpointId").is_none());
         assert!(!payload.to_string().contains(raw_endpoint));
+    }
+
+    #[test]
+    fn native_device_event_status_payload_reports_redacted_monitor_state() {
+        let raw_endpoint = r"SWD\MMDEVAPI\{0.0.1.00000000}.{secret-capture-device}";
+        let endpoint_hash = super::hash_endpoint_id(raw_endpoint);
+        super::record_native_device_monitor_start(NativeDeviceEventsMode::Enabled, true, true);
+        super::record_native_device_monitor_com_initialized();
+        super::record_native_device_monitor_registered();
+        let event = NativeDeviceEvent::new(
+            "default_device_changed",
+            "capture",
+            "console",
+            endpoint_hash.clone(),
+        );
+        super::record_native_device_monitor_event(&event, "emitted");
+        super::record_native_device_event_post_result(
+            &event,
+            false,
+            Some("backend unavailable".to_string()),
+        );
+
+        let payload = super::native_device_event_status_payload();
+        let serialized = payload.to_string();
+
+        assert_eq!(payload["source"], "tauri");
+        assert_eq!(payload["monitorKind"], "wasapi-imm-notification");
+        assert_eq!(payload["effectiveMode"], "enabled");
+        assert_eq!(payload["registered"], true);
+        assert_eq!(payload["comInitialized"], true);
+        assert_eq!(payload["eventCount"], 1);
+        assert_eq!(payload["emittedEventCount"], 1);
+        assert_eq!(payload["postFailureCount"], 1);
+        assert_eq!(payload["lastEvent"]["endpointIdHash"], endpoint_hash);
+        assert!(!serialized.contains(raw_endpoint));
     }
 
     #[cfg(windows)]

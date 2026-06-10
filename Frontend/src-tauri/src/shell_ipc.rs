@@ -10,7 +10,8 @@ use std::{
 use uuid::Uuid;
 
 use crate::audio_devices::{
-    collect_native_capture_endpoint_inventory, run_passive_audio_probe, PassiveAudioProbeOptions,
+    collect_native_capture_endpoint_inventory, native_device_event_status_payload,
+    run_passive_audio_probe, PassiveAudioProbeOptions,
 };
 use crate::audio_frame_pipe::{AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VERSION};
 use crate::audio_sidecar_client::{audio_sidecar_executable_available, call_audio_sidecar_command};
@@ -240,6 +241,7 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                     "ping",
                     "capabilities",
                     "injectText",
+                    "nativeDeviceEventsStatus",
                     "audioEndpointInventory",
                     "audioProbe",
                     "audioCaptureStart",
@@ -248,6 +250,7 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                     "audioPrewarmStop",
                 ],
                 "textInjection": true,
+                "nativeDeviceEventsStatus": true,
                 "audioEndpointInventory": true,
                 "audioProbe": true,
                 "audioCapturePrototype": false,
@@ -270,6 +273,14 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                 err.payload,
             ),
         },
+        "nativeDeviceEventsStatus" => response_line(
+            request_id,
+            true,
+            "",
+            "",
+            started,
+            native_device_event_status_payload(),
+        ),
         "audioEndpointInventory" => match collect_native_capture_endpoint_inventory()
             .map_err(|err| ShellCommandError::new("audioEndpointInventoryFailed", err))
         {
@@ -1680,6 +1691,7 @@ mod tests {
 
         assert_eq!(value["success"], true);
         assert_eq!(value["payload"]["textInjection"], true);
+        assert_eq!(value["payload"]["nativeDeviceEventsStatus"], true);
         assert_eq!(value["payload"]["audioEndpointInventory"], true);
         assert_eq!(value["payload"]["audioProbe"], true);
         assert_eq!(value["payload"]["audioCapturePrototype"], false);
@@ -1691,6 +1703,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|command| command == "injectText"));
+        assert!(value["payload"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command == "nativeDeviceEventsStatus"));
         assert!(value["payload"]["commands"]
             .as_array()
             .unwrap()
@@ -1711,6 +1728,27 @@ mod tests {
             .unwrap()
             .iter()
             .any(|command| command == "audioPrewarmStart"));
+    }
+
+    #[test]
+    fn shell_ipc_native_device_event_status_is_available() {
+        let request = json!({
+            "apiVersion": API_VERSION,
+            "requestId": "r-native-events",
+            "command": "nativeDeviceEventsStatus",
+            "token": "secret",
+            "payload": {}
+        })
+        .to_string();
+
+        let response = handle_shell_ipc_request(&request, "secret");
+        let value: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+
+        assert_eq!(value["requestId"], "r-native-events");
+        assert_eq!(value["success"], true);
+        assert_eq!(value["payload"]["source"], "tauri");
+        assert_eq!(value["payload"]["monitorKind"], "wasapi-imm-notification");
+        assert!(value["payload"].get("eventCount").is_some());
     }
 
     #[test]
