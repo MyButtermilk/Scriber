@@ -630,9 +630,14 @@ Missing prerequisites:
      name, hashed native endpoint ID, and current favorite mic label.
    - Do not expose raw IMMDevice IDs as stable public microphone IDs.
 3. Audio support-bundle schema:
-   - Include `engine`, `frameSource`, `nativeEndpointIdHash`, `sampleRate`,
-     `targetChannels`, `captureChannels`, `blockSize`, `prebufferMs`,
-     `droppedFrameCount`, `lastFrameAgeSeconds`, and `restartCount`.
+   - Partly implemented on `codex/rust-expansion-plan`: support bundles now
+     include `audio-diagnostics.redacted.json`, sourced from
+     `/api/runtime/audio-diagnostics`.
+   - Active Python capture diagnostics include `engine`, `requestedEngine`,
+     `frameSource`, `sampleRate`, `targetChannels`, `captureChannels`,
+     `blockSize`, `droppedFrameCount`, and last-callback age.
+   - Still open for the Rust prototype: `nativeEndpointIdHash`, Rust capture
+     restart count, Rust sidecar PID/exit status, and frame-pipe health fields.
 
 Implementation plan:
 

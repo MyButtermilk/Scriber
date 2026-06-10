@@ -4751,6 +4751,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 create_support_bundle,
                 runtime_info=ctl.get_runtime_info(),
                 app_state=ctl.get_state(),
+                audio_diagnostics=ctl.get_audio_diagnostics(),
             )
         except Exception:
             logger.exception("Failed to create support bundle")

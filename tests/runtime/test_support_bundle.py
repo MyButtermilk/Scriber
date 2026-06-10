@@ -1,3 +1,4 @@
+import json
 import zipfile
 
 from src.runtime import support_bundle
@@ -88,6 +89,62 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     assert "private transcript text" not in combined
     assert "\x00" not in combined
     assert "[REDACTED]" in combined
+
+
+def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    logs_dir = data_dir / "logs"
+    repo_dir = tmp_path / "repo"
+    logs_dir.mkdir(parents=True)
+    repo_dir.mkdir()
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(data_dir))
+    monkeypatch.setattr(support_bundle, "repo_root", lambda: repo_dir)
+
+    bundle = create_support_bundle(
+        runtime_info={
+            "apiVersion": "1",
+            "runtimeMode": "tauri-supervised",
+            "launchKind": "sidecar",
+            "pid": 123,
+        },
+        app_state={"recordingState": "idle"},
+        audio_diagnostics={
+            "apiVersion": "1",
+            "microphone": {
+                "activeCapture": {
+                    "engine": "python",
+                    "requestedEngine": "rust-prototype",
+                    "frameSource": "sounddevice",
+                    "engineFallbackReason": "rustPrototypeUnavailable",
+                    "nativeEndpointIdHash": "abc123",
+                    "sampleRate": 16000,
+                    "targetChannels": 1,
+                    "captureChannels": 2,
+                    "blockSize": 512,
+                    "prebufferMs": 400,
+                    "droppedFrameCount": 3,
+                    "lastCallbackAgoSeconds": 0.42,
+                    "restartCount": 1,
+                    "sessionToken": "audio-secret-token",
+                }
+            },
+        },
+    )
+
+    with zipfile.ZipFile(bundle) as zf:
+        names = set(zf.namelist())
+        payload = json.loads(zf.read("audio-diagnostics.redacted.json"))
+        combined = "\n".join(zf.read(name).decode("utf-8", errors="replace") for name in names)
+
+    active = payload["microphone"]["activeCapture"]
+    assert "audio-diagnostics.redacted.json" in names
+    assert active["engine"] == "python"
+    assert active["requestedEngine"] == "rust-prototype"
+    assert active["frameSource"] == "sounddevice"
+    assert active["nativeEndpointIdHash"] == "abc123"
+    assert active["droppedFrameCount"] == 3
+    assert active["sessionToken"] == "[REDACTED]"
+    assert "audio-secret-token" not in combined
 
 
 def test_support_bundle_respects_runtime_log_clear_marker(monkeypatch, tmp_path):
