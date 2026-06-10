@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import queue as _queue
 import threading
@@ -8,6 +9,15 @@ from loguru import logger
 from pipecat.frames.frames import InputAudioRawFrame, StartFrame, EndFrame
 
 from src.device_monitor import get_device_guard_lock, mark_stream_started, mark_stream_stopped
+from src.runtime.audio_frame_pipe import (
+    AUDIO_FRAME_FLAG_END_OF_STREAM,
+    AUDIO_FRAME_HEADER_LEN,
+    AUDIO_FRAME_VERSION,
+    AudioFrameProtocolError,
+    AudioFrameSequenceGuard,
+    decode_audio_frame_header,
+)
+from src.runtime.shell_ipc import call_shell_ipc
 
 try:
     import sounddevice as sd
@@ -291,6 +301,276 @@ class PythonSoundDeviceFrameSource(AudioFrameSource):
             return stream, None
 
 
+def _hash_private_hint(value: str | None) -> str | None:
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _read_exact(reader, byte_count: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = int(byte_count)
+    while remaining > 0:
+        chunk = reader.read(remaining)
+        if not chunk:
+            raise EOFError(f"audio frame pipe closed while reading {byte_count} bytes")
+        chunks.append(bytes(chunk))
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+class _RustPrototypeStreamHandle:
+    def __init__(self) -> None:
+        self.active = False
+
+    def start(self) -> None:
+        self.active = True
+
+    def stop(self) -> None:
+        self.active = False
+
+    def close(self) -> None:
+        self.active = False
+
+
+class RustPrototypeFrameSource(AudioFrameSource):
+    """Opt-in reader for a future Rust WASAPI capture sidecar.
+
+    The Rust capture side is still prototype-only. This class gives Python the
+    stable boundary it needs: start through private shell IPC, read versioned
+    PCM frames from a private binary pipe, and fail before first frame so the
+    caller can fall back to the current sounddevice path.
+    """
+
+    engine = "rust-prototype"
+    name = "rust-frame-pipe"
+
+    def __init__(
+        self,
+        *,
+        sample_rate: int,
+        target_channels: int,
+        block_size: int,
+        device,
+        shell_call=None,
+        reader_factory=None,
+        first_frame_timeout_seconds: float | None = None,
+    ):
+        self.sample_rate = int(sample_rate)
+        self.target_channels = int(target_channels)
+        self.capture_channels = int(target_channels)
+        self.block_size = int(block_size)
+        self.device = device
+        self.fallback_reason = ""
+        self.stream_id = ""
+        self.native_endpoint_id_hash = None
+        self.sidecar_pid = None
+        self.sidecar_exit_status = None
+        self.callback_count = 0
+        self.dropped_frame_count = 0
+        self._shell_call = shell_call or call_shell_ipc
+        self._reader_factory = reader_factory or open
+        self._first_frame_timeout_seconds = (
+            _rust_first_frame_timeout_seconds()
+            if first_frame_timeout_seconds is None
+            else max(0.05, float(first_frame_timeout_seconds))
+        )
+        self._stream = _RustPrototypeStreamHandle()
+        self._frame_pipe = ""
+        self._frame_pipe_hash = None
+        self._closed = False
+        self._callback = None
+        self._reader_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._first_frame_event = threading.Event()
+        self._sequence_guard = AudioFrameSequenceGuard()
+        self._last_callback_at = 0.0
+        self._last_error = ""
+
+    @property
+    def stream(self):
+        if self._closed:
+            return None
+        return self._stream
+
+    @property
+    def is_active(self) -> bool:
+        return bool(self._stream and self._stream.active)
+
+    def open(self, callback):
+        self._callback = callback
+        payload = {
+            "sampleRate": self.sample_rate,
+            "channels": self.target_channels,
+            "blockSize": self.block_size,
+            "devicePreference": str(self.device or "default"),
+            "prebufferMs": 0,
+            "frameProtocol": {
+                "magic": "SAF1",
+                "version": AUDIO_FRAME_VERSION,
+                "headerBytes": AUDIO_FRAME_HEADER_LEN,
+                "sampleFormat": "pcm_i16_le",
+            },
+        }
+        response = self._shell_call("audioCaptureStart", payload, timeout_seconds=2.0)
+        response_payload = response.get("payload") if isinstance(response, dict) else None
+        if not isinstance(response_payload, dict):
+            response_payload = {}
+        if not bool(response.get("success")):
+            error_code = str(response.get("errorCode") or "audioCaptureStartFailed")
+            fallback_reason = str(response.get("fallbackReason") or error_code)
+            self.fallback_reason = error_code
+            raise RuntimeError(f"Rust audio capture start failed: {fallback_reason}")
+
+        self.stream_id = str(response_payload.get("streamId") or "")
+        self._frame_pipe = str(response_payload.get("framePipe") or "")
+        self._frame_pipe_hash = _hash_private_hint(self._frame_pipe)
+        self.native_endpoint_id_hash = response_payload.get("nativeEndpointIdHash")
+        self.sidecar_pid = response_payload.get("sidecarPid")
+        self.capture_channels = max(
+            1,
+            int(response_payload.get("captureChannels") or self.target_channels),
+        )
+        self.target_channels = max(
+            1,
+            int(response_payload.get("channels") or self.target_channels),
+        )
+        returned_rate = int(response_payload.get("sampleRate") or self.sample_rate)
+        sample_format = str(response_payload.get("sampleFormat") or "pcm_i16_le")
+        if returned_rate != self.sample_rate:
+            self.fallback_reason = "rustSampleRateMismatch"
+            raise RuntimeError(
+                f"Rust audio capture returned sample rate {returned_rate}, expected {self.sample_rate}"
+            )
+        if sample_format != "pcm_i16_le":
+            self.fallback_reason = "rustSampleFormatMismatch"
+            raise RuntimeError(
+                f"Rust audio capture returned unsupported sample format {sample_format}"
+            )
+        if not self._frame_pipe:
+            self.fallback_reason = "rustFramePipeMissing"
+            raise RuntimeError("Rust audio capture did not return a frame pipe")
+        return self
+
+    def start(self) -> None:
+        if self._reader_thread and self._reader_thread.is_alive():
+            return
+        if not self._frame_pipe:
+            raise RuntimeError("Rust audio frame pipe is not configured")
+        self._stop_event.clear()
+        self._first_frame_event.clear()
+        self._sequence_guard = AudioFrameSequenceGuard()
+        self._stream.start()
+        self._reader_thread = threading.Thread(
+            target=self._read_frame_pipe,
+            name="scriber-rust-audio-frame-pipe",
+            daemon=True,
+        )
+        self._reader_thread.start()
+        if not self._first_frame_event.wait(self._first_frame_timeout_seconds):
+            self.fallback_reason = "rustFirstFrameTimeout"
+            self.stop(close=True)
+            raise RuntimeError("Rust audio capture did not deliver a first frame in time")
+        if self._last_error and self.callback_count <= 0:
+            error = self._last_error
+            self.stop(close=True)
+            raise RuntimeError(f"Rust audio capture failed before first frame: {error}")
+
+    def stop(self, *, close: bool) -> None:
+        self._stop_event.set()
+        if self.stream_id:
+            try:
+                self._shell_call(
+                    "audioCaptureStop",
+                    {"streamId": self.stream_id},
+                    timeout_seconds=0.75,
+                )
+            except Exception as exc:
+                self._last_error = str(exc)
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=0.5)
+        self._stream.stop()
+        if close:
+            self._stream.close()
+            self._frame_pipe = ""
+            self._closed = True
+
+    def diagnostic_snapshot(self) -> dict:
+        return {
+            "engine": self.engine,
+            "frameSource": self.name,
+            "hasStream": bool(self._frame_pipe_hash or self.stream_id),
+            "streamActive": self.is_active,
+            "sampleRate": self.sample_rate,
+            "targetChannels": self.target_channels,
+            "captureChannels": self.capture_channels,
+            "blockSize": self.block_size,
+            "device": str(self.device),
+            "streamId": self.stream_id or None,
+            "framePipeHash": self._frame_pipe_hash,
+            "nativeEndpointIdHash": self.native_endpoint_id_hash,
+            "sidecarPid": self.sidecar_pid,
+            "sidecarExitStatus": self.sidecar_exit_status,
+            "callbackCount": self.callback_count,
+            "droppedFrameCount": self.dropped_frame_count,
+            "fallbackReason": self.fallback_reason,
+            "lastError": self._last_error,
+            "lastCallbackAgoSeconds": (
+                round(time.monotonic() - self._last_callback_at, 3)
+                if self._last_callback_at > 0
+                else None
+            ),
+        }
+
+    def _read_frame_pipe(self) -> None:
+        try:
+            with self._reader_factory(self._frame_pipe, "rb", buffering=0) as reader:
+                while not self._stop_event.is_set():
+                    header_bytes = _read_exact(reader, AUDIO_FRAME_HEADER_LEN)
+                    header = decode_audio_frame_header(header_bytes)
+                    payload = _read_exact(reader, header.payload_len)
+                    self._sequence_guard.verify_and_advance(header)
+                    if int(header.channels) != int(self.capture_channels):
+                        raise AudioFrameProtocolError(
+                            f"Rust audio frame channel mismatch: expected {self.capture_channels}, got {header.channels}"
+                        )
+                    samples = np.frombuffer(payload, dtype="<i2")
+                    audio = samples.reshape((header.frame_count, header.channels))
+                    callback = self._callback
+                    if callable(callback):
+                        callback(
+                            audio,
+                            header.frame_count,
+                            {
+                                "timestamp_micros": header.timestamp_micros,
+                                "engine": self.engine,
+                            },
+                            None,
+                        )
+                    self.callback_count += 1
+                    self._last_callback_at = time.monotonic()
+                    self._first_frame_event.set()
+                    if header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM:
+                        break
+        except Exception as exc:
+            self._last_error = str(exc)
+            self._first_frame_event.set()
+            if self.callback_count > 0:
+                logger.warning(
+                    f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
+                )
+        finally:
+            self._stream.stop()
+
+
+def _rust_first_frame_timeout_seconds() -> float:
+    raw = os.getenv("SCRIBER_RUST_AUDIO_FIRST_FRAME_TIMEOUT_SEC", "0.5")
+    try:
+        return max(0.05, float(raw))
+    except (TypeError, ValueError):
+        return 0.5
+
+
 class MicrophoneInput(BaseInputTransport):
     def __init__(
         self,
@@ -382,16 +662,69 @@ class MicrophoneInput(BaseInputTransport):
         self._requested_audio_engine = requested
         self._audio_engine_fallback_reason = ""
         if requested == "rust-prototype":
-            # The Rust audio engine is not active yet. Keep the fallback explicit
-            # so diagnostics can distinguish "requested" from "implemented".
-            self._audio_engine_fallback_reason = "rustPrototypeUnavailable"
+            return RustPrototypeFrameSource(
+                sample_rate=self._target_sample_rate,
+                target_channels=self._target_channels,
+                block_size=self.block_size,
+                device=self.device,
+            )
 
+        return self._create_python_frame_source()
+
+    def _create_python_frame_source(self) -> AudioFrameSource:
         return PythonSoundDeviceFrameSource(
             sample_rate=self._target_sample_rate,
             target_channels=self._target_channels,
             block_size=self.block_size,
             device=self.device,
         )
+
+    def _open_and_start_frame_source(self) -> None:
+        source = self._frame_source
+        try:
+            if source is None or source.stream is None:
+                source = self._create_frame_source()
+                self._frame_source = source
+                source.open(self._audio_callback)
+            self._sync_frame_source_state()
+            if not self.stream:
+                raise RuntimeError("Microphone frame source did not expose a stream handle")
+            if not getattr(self.stream, "active", False):
+                if self._source_owns_stream():
+                    source.start()
+                else:
+                    self.stream.start()
+            self._sync_frame_source_state()
+            return
+        except Exception as exc:
+            if getattr(source, "engine", "") != "rust-prototype" or getattr(
+                source, "callback_count", 0
+            ) > 0:
+                raise
+
+            reason = str(getattr(source, "fallback_reason", "") or type(exc).__name__)
+            self._audio_engine_fallback_reason = f"rustPrototypeFallback:{reason}"
+            logger.warning(
+                "Rust audio prototype unavailable before first frame; "
+                f"falling back to Python ({exc})"
+            )
+            try:
+                source.stop(close=True)
+            except Exception:
+                pass
+
+            fallback = self._create_python_frame_source()
+            self._frame_source = fallback
+            fallback.open(self._audio_callback)
+            self._sync_frame_source_state()
+            if not self.stream:
+                raise RuntimeError("Python microphone fallback did not expose a stream handle")
+            if not getattr(self.stream, "active", False):
+                if self._source_owns_stream():
+                    fallback.start()
+                else:
+                    self.stream.start()
+            self._sync_frame_source_state()
 
     def _sync_frame_source_state(self) -> None:
         source = self._frame_source
@@ -480,15 +813,7 @@ class MicrophoneInput(BaseInputTransport):
 
             # Device enumeration/open is guarded against concurrent PortAudio refresh.
             with get_device_guard_lock():
-                if self._frame_source is None or self._frame_source.stream is None:
-                    self._frame_source = self._create_frame_source()
-                    self._frame_source.open(self._audio_callback)
-                    self._sync_frame_source_state()
-                if not self.stream.active:
-                    if self._source_owns_stream():
-                        self._frame_source.start()
-                    else:
-                        self.stream.start()
+                self._open_and_start_frame_source()
                 self._stream_started_at = time.monotonic()
                 self._claim_active_stream()
             device_index = getattr(self._frame_source, "device_index", None)

@@ -618,11 +618,13 @@ Missing prerequisites:
      adoption unchanged, and exposes `engine`, `requestedEngine`,
      `frameSource`, `engineFallbackReason`, `droppedFrameCount`, and a nested
      source diagnostic snapshot.
-   - `SCRIBER_AUDIO_ENGINE=rust-prototype` is still request-only; it records a
-     fallback reason and does not activate Rust capture.
+   - `SCRIBER_AUDIO_ENGINE=rust-prototype` is still request-only. It now tries
+     the prototype frame-pipe reader, then falls back to Python `sounddevice`
+     before the first frame if Rust capture is unavailable or unhealthy.
    - Added Python source contract tests for configured-device open, default
-     fallback, pause/close lifecycle, and device-index parsing. Existing
-     microphone, prewarm, pipeline-stop, and runtime lifecycle tests pass.
+     fallback, pause/close lifecycle, device-index parsing, frame-pipe reading,
+     and Rust-unavailable fallback. Existing microphone, prewarm, pipeline-stop,
+     and runtime lifecycle tests pass.
 2. Native endpoint identity mapping:
    - Implemented on `codex/rust-expansion-plan` as a private diagnostic and
      prototype mapping layer in `src/audio_devices.py`.
@@ -650,13 +652,24 @@ Missing prerequisites:
      health fields.
 4. Audio frame-pipe protocol:
    - Implemented on `codex/rust-expansion-plan` as shared Rust/Python protocol
-     helpers, not yet wired to an active capture sidecar.
+     helpers and a Python `RustPrototypeFrameSource`, not yet wired to an active
+     WASAPI capture sidecar.
    - Rust owns `Frontend/src-tauri/src/audio_frame_pipe.rs`; Python owns
      `src/runtime/audio_frame_pipe.py`.
    - The frame header is fixed-size, little-endian, versioned, and covers magic,
      payload length, sequence, timestamp, frame count, channels, and flags.
    - Tests keep a shared documented header fixture in sync across Rust and
      Python and validate payload length and sequence ordering.
+   - Python reads the binary frame pipe, validates sequence/order/channel count,
+     forwards PCM frames through the existing callback path, and redacts the raw
+     frame-pipe name in diagnostics.
+5. Audio capture control protocol:
+   - Partly implemented as private shell IPC commands `audioCaptureStart` and
+     `audioCaptureStop`.
+   - Current Rust shell implementation validates the start/stop payloads and
+     returns explicit `audioCaptureUnavailable` until a real sidecar exists.
+   - Python treats that explicit failure as a before-first-frame fallback to the
+     existing `sounddevice` engine.
 
 Implementation plan:
 
@@ -681,28 +694,27 @@ Implementation plan:
      callback-based passive observation if needed, and installed physical-device
      evidence.
 3. Add active capture prototype without prewarm:
-   - Implement a Tauri-managed Rust audio sidecar process for crash isolation,
-     not an in-WebView or UI-thread feature.
-   - Use a private named pipe for control and a length-prefixed binary named
-     pipe for PCM frames.
-   - Python starts Rust capture through shell IPC and receives frames through
-     the binary pipe.
-   - If Rust fails before the first frame, fall back to Python capture for that
-     session.
+   - Partly implemented: Python can start a Rust capture attempt through private
+     shell IPC and receive frames through the binary frame-pipe reader.
+   - Still open: implement the Tauri-managed Rust audio sidecar process for
+     crash isolation, not an in-WebView or UI-thread feature.
+   - Still open: create the private binary named pipe and write real WASAPI PCM
+     frames into it.
+   - If Rust fails before the first frame, Python falls back to Python capture
+     for that session.
    - If Rust stalls mid-session, record diagnostics and fail the current engine
      cleanly. Do not silently splice engines mid-utterance unless a later design
      proves transcript safety.
 4. Use a narrow control protocol:
-   - Partly implemented: shared Rust/Python helpers now define and validate the
-     binary PCM frame header.
-   - Still open: shell IPC control request/response for sidecar start, stream id,
-     selected endpoint hash, frame-pipe path, resampler metadata, and fallback
-     reason.
-   - Request must include sample rate, channels, block size, device preference
+   - Partly implemented: shared Rust/Python helpers define and validate the
+     binary PCM frame header, and private shell IPC reserves
+     `audioCaptureStart`/`audioCaptureStop`.
+   - Start request includes sample rate, channels, block size, device preference
      (`default`, `favorite`, `portAudioLabel`, or `nativeEndpointHash`), and
      `prebufferMs`.
-   - Response must include engine, stream id, format, capture channels,
-     native endpoint hash, frame pipe, resampler, and fallback reason.
+   - Still open: successful sidecar response with engine, stream id, format,
+     capture channels, native endpoint hash, frame pipe, resampler metadata, and
+     fallback reason.
    - Each PCM frame uses the shared fixed-size binary header followed by
      `pcm_i16_le`.
 5. Add prewarm parity only after active capture works:

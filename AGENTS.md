@@ -47,7 +47,8 @@ Backend and runtime:
 - `src/pipeline.py`: STT pipeline orchestration, provider factory, analyzer
   cache, mic resolution, async/direct transcription.
 - `src/microphone.py`: engine-neutral `AudioFrameSource` boundary, Python
-  `sounddevice` frame source, channel selection, RMS callback, stream lifecycle.
+  `sounddevice` frame source, opt-in Rust prototype frame-pipe reader, channel
+  selection, RMS callback, stream lifecycle.
 - `src/mic_prewarm.py`: optional idle mic prewarm and rolling prebuffer.
 - `src/device_monitor.py`: microphone hotplug monitor, native Windows endpoint
   callbacks, polling fallback, PortAudio refresh deferral.
@@ -117,6 +118,10 @@ Packaging and scripts:
   `audioProbe`. These diagnostics are not public API, must not expose raw
   endpoint IDs, and must not become an active capture path unless the Rust audio
   prototype passes the documented gates.
+- Private shell IPC also reserves `audioCaptureStart` and `audioCaptureStop` for
+  the Rust audio prototype. Until a real sidecar is implemented,
+  `audioCaptureStart` must fail explicitly and Python must fall back before the
+  first frame.
 - Python owns recording state and provider work.
 
 ### REST and WebSocket Contracts
@@ -146,6 +151,10 @@ Packaging and scripts:
   Python `sounddevice` until a measured Rust prototype is explicitly promoted.
 - The Rust audio frame-pipe protocol is length-prefixed and versioned. Keep the
   Rust and Python header fixtures in sync when changing it.
+- The opt-in Rust prototype may read frame-pipe PCM into Python, but if capture
+  fails before the first frame, the recording falls back to Python `sounddevice`
+  for that session. Do not silently switch engines after frames have been
+  delivered.
 - `SCRIBER_MIC_ALWAYS_ON` is implemented as idle prewarm plus bounded rolling
   prebuffer. Do not reuse Pipecat session state across recordings.
 - `MicrophoneInput` still queues raw callback frames; only visualizer/input RMS

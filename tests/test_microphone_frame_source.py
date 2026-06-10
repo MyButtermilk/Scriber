@@ -1,8 +1,11 @@
 import types
 
+import numpy as np
 import pytest
 
-from src.microphone import PythonSoundDeviceFrameSource
+import src.microphone as microphone
+from src.microphone import PythonSoundDeviceFrameSource, RustPrototypeFrameSource
+from src.runtime.audio_frame_pipe import AudioFrameHeader, encode_audio_frame
 
 
 class _FakeInputStream:
@@ -147,3 +150,116 @@ def test_python_sounddevice_frame_source_device_index_parsing(requested, expecte
     )
 
     assert source._parse_device_index() == expected
+
+
+def test_rust_prototype_frame_source_reads_binary_frame_pipe():
+    audio = np.full((512, 1), 321, dtype=np.int16)
+    frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(audio.tobytes()),
+            sequence=0,
+            timestamp_micros=123_456,
+            frame_count=512,
+            channels=1,
+        ),
+        audio.tobytes(),
+    )
+    calls: list[tuple[np.ndarray, int, dict, object]] = []
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-1",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "endpoint-hash",
+                    "sidecarPid": 1234,
+                },
+            }
+        if command == "audioCaptureStop":
+            return {"success": True, "payload": {"stopped": True}}
+        raise AssertionError(command)
+
+    def reader_factory(_path, *_args, **_kwargs):
+        import io
+
+        return io.BytesIO(frame)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=512,
+        device="default",
+        shell_call=shell_call,
+        reader_factory=reader_factory,
+        first_frame_timeout_seconds=1.0,
+    )
+
+    source.open(lambda *args: calls.append(args))
+    source.start()
+    source.stop(close=True)
+
+    assert commands[0][0] == "audioCaptureStart"
+    assert commands[0][1]["frameProtocol"]["sampleFormat"] == "pcm_i16_le"
+    assert commands[-1][0] == "audioCaptureStop"
+    assert source.engine == "rust-prototype"
+    assert source.name == "rust-frame-pipe"
+    assert source.callback_count == 1
+    assert calls[0][1] == 512
+    np.testing.assert_array_equal(calls[0][0], audio)
+    snapshot = source.diagnostic_snapshot()
+    assert snapshot["framePipeHash"]
+    assert snapshot["nativeEndpointIdHash"] == "endpoint-hash"
+    assert "framePipe" not in snapshot
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+@pytest.mark.asyncio
+async def test_microphone_input_falls_back_to_python_when_rust_capture_unavailable(monkeypatch):
+    _FakeInputStream.instances.clear()
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+
+    fake_sd = types.SimpleNamespace(
+        query_devices=lambda device=None, kind=None: {
+            "name": "Default Mic",
+            "max_input_channels": 1,
+        },
+        InputStream=lambda **kwargs: _FakeInputStream(**kwargs),
+    )
+    monkeypatch.setattr(microphone, "sd", fake_sd)
+    monkeypatch.setattr(
+        microphone,
+        "call_shell_ipc",
+        lambda command, payload=None, **_kwargs: {
+            "success": False,
+            "errorCode": "audioCaptureUnavailable",
+            "fallbackReason": "Rust audio capture sidecar is not implemented",
+            "payload": {},
+        },
+    )
+
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+    mic._create_audio_task = lambda: None
+
+    async def fake_drain_queue():
+        return None
+
+    mic._drain_queue = fake_drain_queue
+
+    await mic.start(microphone.StartFrame())
+
+    snapshot = mic.diagnostic_snapshot()
+    assert snapshot["requestedEngine"] == "rust-prototype"
+    assert snapshot["engine"] == "python"
+    assert snapshot["frameSource"] == "sounddevice"
+    assert snapshot["engineFallbackReason"].startswith("rustPrototypeFallback:")
+    assert _FakeInputStream.instances[-1].active is True
+
+    await mic.stop(microphone.EndFrame())

@@ -10,6 +10,7 @@ use std::{
 use uuid::Uuid;
 
 use crate::audio_devices::{run_passive_audio_probe, PassiveAudioProbeOptions};
+use crate::audio_frame_pipe::{AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VERSION};
 
 const API_VERSION: &str = "1";
 const MAX_REQUEST_BYTES: usize = 512 * 1024;
@@ -31,6 +32,15 @@ struct InjectTextOptions {
     max_clipboard_retries: u32,
     clipboard_retry_delay_ms: u64,
     deadline_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AudioCaptureStartOptions {
+    sample_rate: u32,
+    channels: u16,
+    block_size: u32,
+    device_preference: String,
+    prebuffer_ms: u32,
 }
 
 #[derive(Debug)]
@@ -220,9 +230,18 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             "",
             started,
             json!({
-                "commands": ["ping", "capabilities", "injectText", "audioProbe"],
+                "commands": [
+                    "ping",
+                    "capabilities",
+                    "injectText",
+                    "audioProbe",
+                    "audioCaptureStart",
+                    "audioCaptureStop",
+                ],
                 "textInjection": true,
                 "audioProbe": true,
+                "audioCapturePrototype": false,
+                "audioFrameProtocol": audio_frame_protocol_payload(),
             }),
         ),
         "injectText" => match inject_text(payload) {
@@ -250,6 +269,58 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                 err.payload,
             ),
         },
+        "audioCaptureStart" => match parse_audio_capture_start_options(payload) {
+            Ok(options) => response_line(
+                request_id,
+                false,
+                "audioCaptureUnavailable",
+                "Rust audio capture sidecar is not implemented",
+                started,
+                json!({
+                    "engine": "rust-prototype",
+                    "available": false,
+                    "requestedFormat": {
+                        "sampleRate": options.sample_rate,
+                        "channels": options.channels,
+                        "blockSize": options.block_size,
+                        "devicePreference": options.device_preference,
+                        "prebufferMs": options.prebuffer_ms,
+                    },
+                    "frameProtocol": audio_frame_protocol_payload(),
+                }),
+            ),
+            Err(err) => response_line(
+                request_id,
+                false,
+                err.code,
+                &err.reason,
+                started,
+                err.payload,
+            ),
+        },
+        "audioCaptureStop" => match parse_audio_capture_stop_payload(payload) {
+            Ok(stream_id) => response_line(
+                request_id,
+                true,
+                "",
+                "",
+                started,
+                json!({
+                    "engine": "rust-prototype",
+                    "stopped": false,
+                    "streamId": stream_id,
+                    "reason": "noRustAudioSidecar",
+                }),
+            ),
+            Err(err) => response_line(
+                request_id,
+                false,
+                err.code,
+                &err.reason,
+                started,
+                err.payload,
+            ),
+        },
         _ => response_line(
             request_id,
             false,
@@ -259,6 +330,15 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             json!({}),
         ),
     }
+}
+
+fn audio_frame_protocol_payload() -> Value {
+    json!({
+        "magic": "SAF1",
+        "version": AUDIO_FRAME_VERSION,
+        "headerBytes": AUDIO_FRAME_HEADER_LEN,
+        "sampleFormat": "pcm_i16_le",
+    })
 }
 
 fn parse_audio_probe_options(
@@ -276,6 +356,34 @@ fn parse_audio_probe_options(
         block_size: optional_u64(payload, "blockSize", 512, 16_384) as u32,
         device_preference: bounded_string(payload, "devicePreference", "default", 96),
     })
+}
+
+fn parse_audio_capture_start_options(
+    payload: &Value,
+) -> Result<AudioCaptureStartOptions, ShellCommandError> {
+    let Some(payload) = payload.as_object() else {
+        return Err(ShellCommandError::new(
+            "invalidPayload",
+            "audioCaptureStart payload must be an object",
+        ));
+    };
+    Ok(AudioCaptureStartOptions {
+        sample_rate: optional_u64(payload, "sampleRate", 16_000, 192_000) as u32,
+        channels: optional_u64(payload, "channels", 1, 16) as u16,
+        block_size: optional_u64(payload, "blockSize", 512, 16_384) as u32,
+        device_preference: bounded_string(payload, "devicePreference", "default", 96),
+        prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 2_000) as u32,
+    })
+}
+
+fn parse_audio_capture_stop_payload(payload: &Value) -> Result<String, ShellCommandError> {
+    let Some(payload) = payload.as_object() else {
+        return Err(ShellCommandError::new(
+            "invalidPayload",
+            "audioCaptureStop payload must be an object",
+        ));
+    };
+    Ok(bounded_string(payload, "streamId", "", 96))
 }
 
 fn response_line(
@@ -1326,6 +1434,8 @@ mod tests {
         assert_eq!(value["success"], true);
         assert_eq!(value["payload"]["textInjection"], true);
         assert_eq!(value["payload"]["audioProbe"], true);
+        assert_eq!(value["payload"]["audioCapturePrototype"], false);
+        assert_eq!(value["payload"]["audioFrameProtocol"]["version"], 1);
         assert_eq!(value["payload"]["commands"][0], "ping");
         assert!(value["payload"]["commands"]
             .as_array()
@@ -1337,6 +1447,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|command| command == "audioProbe"));
+        assert!(value["payload"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command == "audioCaptureStart"));
     }
 
     #[test]
@@ -1408,6 +1523,79 @@ mod tests {
         let err = super::parse_audio_probe_options(&json!("bad")).unwrap_err();
 
         assert_eq!(err.code, "invalidPayload");
+    }
+
+    #[test]
+    fn parse_audio_capture_start_options_clamps_payload() {
+        let payload = json!({
+            "sampleRate": 999_999,
+            "channels": 32,
+            "blockSize": 99_999,
+            "devicePreference": "default-capture-device-with-a-longer-than-needed-label",
+            "prebufferMs": 999_999,
+        });
+
+        let options = super::parse_audio_capture_start_options(&payload).unwrap();
+
+        assert_eq!(options.sample_rate, 192_000);
+        assert_eq!(options.channels, 16);
+        assert_eq!(options.block_size, 16_384);
+        assert_eq!(options.prebuffer_ms, 2_000);
+        assert!(options
+            .device_preference
+            .starts_with("default-capture-device"));
+    }
+
+    #[test]
+    fn shell_ipc_audio_capture_start_returns_explicit_unavailable() {
+        let request = json!({
+            "apiVersion": API_VERSION,
+            "requestId": "r-audio-start",
+            "command": "audioCaptureStart",
+            "token": "secret",
+            "payload": {
+                "sampleRate": 16000,
+                "channels": 1,
+                "blockSize": 512,
+                "devicePreference": "default",
+                "prebufferMs": 0,
+            }
+        })
+        .to_string();
+
+        let response = handle_shell_ipc_request(&request, "secret");
+        let value: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+
+        assert_eq!(value["requestId"], "r-audio-start");
+        assert_eq!(value["success"], false);
+        assert_eq!(value["errorCode"], "audioCaptureUnavailable");
+        assert_eq!(value["payload"]["engine"], "rust-prototype");
+        assert_eq!(
+            value["payload"]["frameProtocol"]["sampleFormat"],
+            "pcm_i16_le"
+        );
+    }
+
+    #[test]
+    fn shell_ipc_audio_capture_stop_is_idempotent_until_sidecar_exists() {
+        let request = json!({
+            "apiVersion": API_VERSION,
+            "requestId": "r-audio-stop",
+            "command": "audioCaptureStop",
+            "token": "secret",
+            "payload": {
+                "streamId": "stream-1",
+            }
+        })
+        .to_string();
+
+        let response = handle_shell_ipc_request(&request, "secret");
+        let value: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+
+        assert_eq!(value["requestId"], "r-audio-stop");
+        assert_eq!(value["success"], true);
+        assert_eq!(value["payload"]["stopped"], false);
+        assert_eq!(value["payload"]["reason"], "noRustAudioSidecar");
     }
 
     #[test]
