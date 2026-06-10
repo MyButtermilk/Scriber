@@ -295,6 +295,12 @@ Rust audio sidecar short physical smoke:
 python scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 1 --output tmp\rust-audio-sidecar-smoke.json
 ```
 
+Rust audio synthetic prewarm sidecar smoke:
+
+```powershell
+python scripts\smoke_rust_audio_prewarm_sidecar.py --duration-sec 1 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-smoke.json
+```
+
 Rust audio promotion readiness gate:
 
 ```powershell

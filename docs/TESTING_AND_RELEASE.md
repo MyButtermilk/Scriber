@@ -148,6 +148,25 @@ Installed package smoke also verifies that the bundled
 layout. This is a packaging gate only; it does not promote Rust audio capture to
 the default engine.
 
+Rust audio prewarm sidecar smoke verifies the synthetic prewarm lifecycle only:
+
+- `prewarmStart` returns a `prewarmId`,
+- `prewarmStop` is idempotently routed through the sidecar client,
+- stop-health reports observed and buffered frame counters,
+- no raw native endpoint IDs are required or exposed.
+
+It can be run locally after building the sidecar binary:
+
+```powershell
+python scripts\smoke_rust_audio_prewarm_sidecar.py `
+  --duration-sec 1 `
+  --prebuffer-ms 400 `
+  --output tmp\rust-audio-prewarm-sidecar-smoke.json
+```
+
+This is not WASAPI idle prewarm adoption evidence and does not promote Rust
+audio to the default engine.
+
 Installed media-preparation smoke verifies real helper paths against bundled
 media tools:
 
@@ -279,6 +298,7 @@ Common generated evidence:
 - `release-metadata\media-preparation-smoke.json`
 - `release-metadata\runtime-dependency-footprint.json`
 - `tmp\rust-audio-sidecar-smoke.json`
+- `tmp\rust-audio-prewarm-sidecar-smoke.json`
 - `tmp\frontend-browser-smoke.json`
 - `tmp\installer-smoke\`
 

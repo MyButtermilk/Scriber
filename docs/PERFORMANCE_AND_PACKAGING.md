@@ -920,6 +920,9 @@ Implementation plan:
      start/stop behavior and stop-health reporting, but it does not yet hold a
      real WASAPI idle capture stream or adopt buffered WASAPI audio into active
      capture.
+   - Implemented: `scripts/smoke_rust_audio_prewarm_sidecar.py` records
+     synthetic prewarm lifecycle evidence: `prewarmId`, start/stop timings,
+     observed frame counters, buffered frame counters, and validation errors.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream
@@ -975,6 +978,12 @@ Acceptance gates:
   stop-health metrics. The readiness runner also requires Rust/WASAPI endpoint
   inventory evidence in the physical microphone matrix when this promotion gate
   is enabled.
+- Synthetic Rust prewarm lifecycle smoke via
+  `python scripts\smoke_rust_audio_prewarm_sidecar.py --duration-sec 1
+  --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-smoke.json`
+  proves prewarm sidecar start/stop plumbing and stop-health counters. This is
+  not sufficient for default promotion because it does not prove WASAPI idle
+  stream adoption.
 - Physical mic matrix across built-in, USB, Bluetooth, docked, undocked, and
   Windows default-device changes, with `--require-rust-endpoint-inventory`
   validation for Rust promotion.
