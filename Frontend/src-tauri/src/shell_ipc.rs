@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::audio_devices::{run_passive_audio_probe, PassiveAudioProbeOptions};
 use crate::audio_frame_pipe::{AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VERSION};
+use crate::audio_sidecar_client::{audio_sidecar_executable_available, call_audio_sidecar_command};
 
 const API_VERSION: &str = "1";
 const MAX_REQUEST_BYTES: usize = 512 * 1024;
@@ -241,6 +242,10 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                 "textInjection": true,
                 "audioProbe": true,
                 "audioCapturePrototype": false,
+                "audioSidecar": {
+                    "executableAvailable": audio_sidecar_executable_available(),
+                    "stdioProtocolVersion": "1",
+                },
                 "audioFrameProtocol": audio_frame_protocol_payload(),
             }),
         ),
@@ -270,25 +275,22 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             ),
         },
         "audioCaptureStart" => match parse_audio_capture_start_options(payload) {
-            Ok(options) => response_line(
-                request_id,
-                false,
-                "audioCaptureUnavailable",
-                "Rust audio capture sidecar is not implemented",
-                started,
-                json!({
-                    "engine": "rust-prototype",
-                    "available": false,
-                    "requestedFormat": {
-                        "sampleRate": options.sample_rate,
-                        "channels": options.channels,
-                        "blockSize": options.block_size,
-                        "devicePreference": options.device_preference,
-                        "prebufferMs": options.prebuffer_ms,
-                    },
-                    "frameProtocol": audio_frame_protocol_payload(),
-                }),
-            ),
+            Ok(options) => {
+                let result = call_audio_sidecar_command(
+                    "captureStart",
+                    audio_capture_start_sidecar_payload(&options),
+                );
+                let payload =
+                    audio_capture_shell_payload(&options, result.payload.clone(), &result);
+                response_line(
+                    request_id,
+                    result.success,
+                    result.error_code.as_deref().unwrap_or(""),
+                    result.fallback_reason.as_deref().unwrap_or(""),
+                    started,
+                    payload,
+                )
+            }
             Err(err) => response_line(
                 request_id,
                 false,
@@ -299,19 +301,22 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             ),
         },
         "audioCaptureStop" => match parse_audio_capture_stop_payload(payload) {
-            Ok(stream_id) => response_line(
-                request_id,
-                true,
-                "",
-                "",
-                started,
-                json!({
+            Ok(stream_id) => {
+                let result = call_audio_sidecar_command(
+                    "captureStop",
+                    json!({
+                        "streamId": stream_id,
+                    }),
+                );
+                let payload = json!({
                     "engine": "rust-prototype",
-                    "stopped": false,
-                    "streamId": stream_id,
-                    "reason": "noRustAudioSidecar",
-                }),
-            ),
+                    "stopped": result.payload.get("stopped").and_then(Value::as_bool).unwrap_or(false),
+                    "streamId": result.payload.get("streamId").and_then(Value::as_str).unwrap_or_default(),
+                    "reason": result.payload.get("reason").and_then(Value::as_str).unwrap_or("noRustAudioSidecar"),
+                    "sidecar": sidecar_status_payload(&result),
+                });
+                response_line(request_id, true, "", "", started, payload)
+            }
             Err(err) => response_line(
                 request_id,
                 false,
@@ -330,6 +335,46 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             json!({}),
         ),
     }
+}
+
+fn audio_capture_start_sidecar_payload(options: &AudioCaptureStartOptions) -> Value {
+    json!({
+        "sampleRate": options.sample_rate,
+        "channels": options.channels,
+        "blockSize": options.block_size,
+        "devicePreference": options.device_preference,
+        "prebufferMs": options.prebuffer_ms,
+        "frameProtocol": audio_frame_protocol_payload(),
+    })
+}
+
+fn audio_capture_shell_payload(
+    options: &AudioCaptureStartOptions,
+    sidecar_payload: Value,
+    result: &crate::audio_sidecar_client::AudioSidecarCallResult,
+) -> Value {
+    json!({
+        "engine": "rust-prototype",
+        "available": result.success,
+        "requestedFormat": {
+            "sampleRate": options.sample_rate,
+            "channels": options.channels,
+            "blockSize": options.block_size,
+            "devicePreference": options.device_preference,
+            "prebufferMs": options.prebuffer_ms,
+        },
+        "frameProtocol": audio_frame_protocol_payload(),
+        "sidecar": sidecar_status_payload(result),
+        "sidecarPayload": sidecar_payload,
+    })
+}
+
+fn sidecar_status_payload(result: &crate::audio_sidecar_client::AudioSidecarCallResult) -> Value {
+    json!({
+        "executableAvailable": result.executable_available,
+        "pathHash": result.executable_path_hash,
+        "pid": result.pid,
+    })
 }
 
 fn audio_frame_protocol_payload() -> Value {

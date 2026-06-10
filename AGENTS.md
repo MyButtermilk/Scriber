@@ -77,6 +77,10 @@ Frontend and shell:
 - `Frontend/src-tauri/src/audio_sidecar.rs`: separate Rust audio sidecar
   skeleton with `--self-test` and `--stdio` JSON-lines protocol. It does not
   yet perform WASAPI capture or ship as an installed runtime component.
+- `Frontend/src-tauri/src/audio_sidecar_client.rs`: Tauri-side sidecar lookup
+  and one-shot stdio JSON-lines client. It only uses allowlisted executable
+  names, supports `SCRIBER_AUDIO_SIDECAR_EXE` for prototype runs, and redacts
+  executable paths to hashes in diagnostics.
 - `Frontend/src-tauri/src/audio_frame_pipe.rs`: Rust encoder/validator for the
   future audio sidecar binary frame protocol.
 - `Frontend/src-tauri/src/lib.rs`: Rust supervisor, Tauri commands, tray/menu,
@@ -122,12 +126,13 @@ Packaging and scripts:
   endpoint IDs, and must not become an active capture path unless the Rust audio
   prototype passes the documented gates.
 - Private shell IPC also reserves `audioCaptureStart` and `audioCaptureStop` for
-  the Rust audio prototype. Until a real sidecar is implemented,
-  `audioCaptureStart` must fail explicitly and Python must fall back before the
-  first frame.
+  the Rust audio prototype. The shell may attempt an allowlisted
+  `scriber-audio-sidecar --stdio` handshake, but until WASAPI capture and frame
+  pipe writing are implemented, `audioCaptureStart` must fail explicitly and
+  Python must fall back before the first frame.
 - `scriber-audio-sidecar` is a separate Cargo binary for crash-isolated audio
-  work. Until packaging and lifecycle gates are added, do not depend on it in
-  the standard installed runtime.
+  work. Until packaging, lifecycle, watchdog, and physical-device gates are
+  added, do not depend on it in the standard installed runtime.
 - Python owns recording state and provider work.
 
 ### REST and WebSocket Contracts

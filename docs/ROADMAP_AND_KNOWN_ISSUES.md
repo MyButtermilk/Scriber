@@ -104,6 +104,9 @@ PySide6 footprint:
 Rust audio:
 
 - `SCRIBER_AUDIO_ENGINE=rust-prototype` is request-only.
+- The current branch has frame-source boundaries, diagnostics, shared
+  frame-pipe protocol helpers, a sidecar skeleton, and a Tauri stdio sidecar
+  client, but no active WASAPI frame production yet.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

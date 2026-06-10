@@ -666,8 +666,9 @@ Missing prerequisites:
 5. Audio capture control protocol:
    - Partly implemented as private shell IPC commands `audioCaptureStart` and
      `audioCaptureStop`.
-   - Current Rust shell implementation validates the start/stop payloads and
-     returns explicit `audioCaptureUnavailable` until a real sidecar exists.
+   - Current Rust shell implementation validates the start/stop payloads, calls
+     the Tauri-side sidecar client when an allowlisted sidecar executable is
+     available, and otherwise returns explicit `audioCaptureUnavailable`.
    - Python treats that explicit failure as a before-first-frame fallback to the
      existing `sounddevice` engine.
 6. Rust audio sidecar process skeleton:
@@ -679,6 +680,18 @@ Missing prerequisites:
      `audioCaptureUnavailable` for capture until real WASAPI capture is wired.
    - Still open: packaging into the installed runtime, Tauri lifecycle
      management, long-lived capture sessions, and frame-pipe creation.
+7. Tauri audio sidecar client:
+   - Partly implemented in `Frontend/src-tauri/src/audio_sidecar_client.rs`.
+   - Discovers only allowlisted sidecar executable names, with
+     `SCRIBER_AUDIO_SIDECAR_EXE` available for local prototype runs.
+   - Starts `scriber-audio-sidecar --stdio`, sends JSON-lines command and
+     shutdown messages, validates protocol version and request ID, hides the
+     Windows child console, and redacts executable paths to hashes.
+   - Shell IPC capabilities now report sidecar executable availability and
+     protocol version.
+   - `audioCaptureStart`/`audioCaptureStop` route through the client, but
+     capture still remains unavailable until the sidecar owns real WASAPI
+     capture, frame-pipe creation, and long-lived stream lifecycle.
 
 Implementation plan:
 
@@ -707,8 +720,11 @@ Implementation plan:
      shell IPC and receive frames through the binary frame-pipe reader.
    - Partly implemented: a separate Rust audio sidecar binary exists for crash
      isolation and exposes a JSON-lines control protocol.
-   - Still open: make Tauri manage the sidecar lifecycle for real capture
-     sessions, not as an in-WebView or UI-thread feature.
+   - Partly implemented: Tauri can discover an allowlisted sidecar executable
+     and perform one-shot stdio command handshakes outside the WebView/UI
+     thread.
+   - Still open: make Tauri manage a long-lived sidecar lifecycle for real
+     capture sessions.
    - Still open: create the private binary named pipe and write real WASAPI PCM
      frames into it.
    - If Rust fails before the first frame, Python falls back to Python capture
@@ -722,6 +738,8 @@ Implementation plan:
      `audioCaptureStart`/`audioCaptureStop`.
    - Partly implemented: `scriber-audio-sidecar --stdio` accepts sidecar-local
      `captureStart`/`captureStop` commands using JSON Lines.
+   - Partly implemented: Tauri shell IPC now routes start/stop requests through
+     the sidecar client and returns redacted sidecar status to Python.
    - Start request includes sample rate, channels, block size, device preference
      (`default`, `favorite`, `portAudioLabel`, or `nativeEndpointHash`), and
      `prebufferMs`.

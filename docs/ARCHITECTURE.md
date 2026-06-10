@@ -120,6 +120,13 @@ Rust audio prototype:
   for crash-isolated audio capture work.
 - The sidecar currently exposes `--self-test` and `--stdio` JSON-lines commands
   for `ping`, `capabilities`, `captureStart`, `captureStop`, and `shutdown`.
+- `Frontend/src-tauri/src/audio_sidecar_client.rs` is the Tauri-side client for
+  prototype handshakes. It discovers only allowlisted sidecar executable names,
+  supports `SCRIBER_AUDIO_SIDECAR_EXE` for local prototype runs, starts the
+  sidecar hidden on Windows, validates protocol/request IDs, and reports only
+  redacted path hashes.
+- Private shell IPC routes `audioCaptureStart` and `audioCaptureStop` through
+  the sidecar client when an executable is available.
 - `captureStart` still returns explicit unavailable status until real WASAPI
   capture and frame-pipe writing are implemented.
 - `src/microphone.py` can opt into the Rust prototype through
