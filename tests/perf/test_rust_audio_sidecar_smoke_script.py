@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import types
 from pathlib import Path
 
-from scripts.smoke_rust_audio_sidecar import validate_capture_metrics
+from scripts.smoke_rust_audio_sidecar import (
+    effective_max_frames,
+    observed_duration_sec,
+    validate_capture_metrics,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -58,9 +63,31 @@ def test_rust_audio_sidecar_smoke_plan_only_writes_artifact(tmp_path: Path) -> N
     assert stdout_payload["ok"] is True
     assert stdout_payload["planOnly"] is True
     assert stdout_payload["mode"] == "wasapi"
+    assert stdout_payload["requested"]["maxFrames"] == 0
+    assert stdout_payload["requested"]["effectiveDefaultMaxFrames"] > 0
     assert stdout_payload["requested"]["prebufferMs"] == 0
     assert "--duration-sec 10" in stdout_payload["exampleCommand"]
     assert any("10-minute" in item for item in stdout_payload["requirements"])
+
+
+def test_rust_audio_sidecar_observed_duration_uses_frame_span_not_absolute_timestamp() -> None:
+    assert observed_duration_sec(650_000, 3_650_000) == 3.0
+    assert observed_duration_sec(3_650_000, 650_000) == 0.0
+    assert observed_duration_sec(None, 650_000) is None
+
+
+def test_rust_audio_sidecar_effective_max_frames_scales_with_duration_and_prebuffer() -> None:
+    args = types.SimpleNamespace(
+        max_frames=0,
+        sample_rate=16_000,
+        block_size=160,
+        prebuffer_ms=400,
+    )
+
+    assert effective_max_frames(args, 600) >= 60_090
+
+    args.max_frames = 123
+    assert effective_max_frames(args, 600) == 123
 
 
 def test_rust_audio_sidecar_smoke_validation_accepts_consistent_prebuffer_metrics() -> None:

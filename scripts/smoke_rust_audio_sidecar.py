@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import queue
 import subprocess
@@ -171,7 +172,7 @@ def read_frames(
     last_sequence: int | None = None
     last_timestamp_micros: int | None = None
     last_flags: int | None = None
-    deadline = opened_at + max(0.05, duration_sec)
+    deadline = opened_at + max(5.0, duration_sec + 15.0)
 
     with open_pipe_for_read(pipe_path) as reader:
         while frames_read < max_frames and time.perf_counter() <= deadline:
@@ -204,6 +205,9 @@ def read_frames(
             last_sequence = int(header.sequence)
             last_timestamp_micros = int(header.timestamp_micros)
             last_flags = int(header.flags)
+            observed = observed_duration_sec(first_timestamp_micros, last_timestamp_micros)
+            if observed is not None and observed >= max(0.0, duration_sec):
+                break
 
     return {
         "framesRead": frames_read,
@@ -219,15 +223,23 @@ def read_frames(
         "firstLiveSequence": first_live_sequence,
         "lastSequence": last_sequence,
         "lastTimestampMicros": last_timestamp_micros,
-        "observedDurationSec": (
-            round(last_timestamp_micros / 1_000_000.0, 3)
-            if last_timestamp_micros is not None
-            else None
+        "observedDurationSec": observed_duration_sec(
+            first_timestamp_micros,
+            last_timestamp_micros,
         ),
         "lastFlags": last_flags,
         "sequenceGapCount": len(sequence_gaps),
         "sequenceGaps": sequence_gaps[:10],
     }
+
+
+def observed_duration_sec(
+    first_timestamp_micros: int | None,
+    last_timestamp_micros: int | None,
+) -> float | None:
+    if first_timestamp_micros is None or last_timestamp_micros is None:
+        return None
+    return round(max(0, int(last_timestamp_micros) - int(first_timestamp_micros)) / 1_000_000.0, 3)
 
 
 def redacted_capture_start_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -261,6 +273,7 @@ def run_capture(
         "ok": bool(start_response.get("success")),
         "captureStartResponseMs": round(capture_start_ms, 3),
         "start": redacted_capture_start_payload(start_payload),
+        "effectiveMaxFrames": max_frames,
     }
     if not start_response.get("success"):
         result["errorCode"] = start_response.get("errorCode")
@@ -373,6 +386,18 @@ def base_capture_payload(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def effective_max_frames(args: argparse.Namespace, duration_sec: float) -> int:
+    configured = int(args.max_frames or 0)
+    if configured > 0:
+        return configured
+    sample_rate = max(1, int(args.sample_rate))
+    block_size = max(1, int(args.block_size))
+    prebuffer_ms = clamp_prebuffer_ms(args.prebuffer_ms)
+    live_frames = math.ceil(max(0.05, float(duration_sec)) * sample_rate / block_size)
+    prebuffer_frames = math.ceil(prebuffer_ms * sample_rate / (1000 * block_size))
+    return max(1, live_frames + prebuffer_frames + 50)
+
+
 def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "apiVersion": "1",
@@ -386,6 +411,8 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
             "channels": args.channels,
             "blockSize": args.block_size,
             "maxFrames": args.max_frames,
+            "effectiveDefaultMaxFrames": effective_max_frames(args, args.duration_sec),
+            "effectiveSelectedMaxFrames": effective_max_frames(args, args.selected_duration_sec),
             "prebufferMs": clamp_prebuffer_ms(args.prebuffer_ms),
             "skipSelectedHash": bool(args.skip_selected_hash),
         },
@@ -422,7 +449,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--sample-rate", type=int, default=16000)
     parser.add_argument("--channels", type=int, default=1)
     parser.add_argument("--block-size", type=int, default=160)
-    parser.add_argument("--max-frames", type=int, default=250)
+    parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--prebuffer-ms", type=int, default=0)
     parser.add_argument("--skip-selected-hash", action="store_true")
     parser.add_argument("--plan-only", action="store_true")
@@ -458,6 +485,8 @@ def main(argv: list[str] | None = None) -> int:
             "channels": args.channels,
             "blockSize": args.block_size,
             "maxFrames": args.max_frames,
+            "effectiveDefaultMaxFrames": effective_max_frames(args, args.duration_sec),
+            "effectiveSelectedMaxFrames": effective_max_frames(args, args.selected_duration_sec),
             "prebufferMs": clamp_prebuffer_ms(args.prebuffer_ms),
             "skipSelectedHash": bool(args.skip_selected_hash),
         },
@@ -475,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
             name="default",
             request_payload=first_payload,
             duration_sec=args.duration_sec,
-            max_frames=args.max_frames,
+            max_frames=effective_max_frames(args, args.duration_sec),
         )
         payload["captures"].append(default_capture)
 
@@ -491,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
                     name="selected-native-endpoint-hash",
                     request_payload=selected_payload,
                     duration_sec=args.selected_duration_sec,
-                    max_frames=args.max_frames,
+                    max_frames=effective_max_frames(args, args.selected_duration_sec),
                 )
             )
 

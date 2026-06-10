@@ -798,8 +798,12 @@ Implementation plan:
      600` for the 10-minute physical stability gate.
    - Implemented: the smoke script itself now fails captures when requested
      prebuffer evidence is missing, sequence gaps occur, stop health is invalid,
-     observed frame duration is shorter than requested, or writer counts fall
+     observed frame span is shorter than requested, or writer counts fall
      below the frames observed by the reader.
+   - Implemented: when `--max-frames` is not explicitly set, the smoke script
+     now derives an effective frame cap from duration, sample rate, block size,
+     and requested prebuffer, so long 10-minute gates are not truncated by a
+     short local-smoke default.
    - Implemented: the hybrid release-readiness runner and validator can now
      consume that JSON evidence through `-RunRustAudioSidecarSmoke`,
      `-UseExistingRustAudioSidecarReport`, and
@@ -911,7 +915,7 @@ Acceptance gates:
   `scripts\run_hybrid_release_readiness.ps1 -RunRustAudioSidecarSmoke
   -RequireRustAudioSidecarSmoke`, including default capture, selected native
   endpoint hash capture, requested prebuffer delivery, no prebuffer-after-live
-  interleaving, observed default-capture duration meeting the requested gate,
+  interleaving, observed default-capture frame span meeting the requested gate,
   reader/writer frame-count consistency, no sequence gaps, and valid
   stop-health metrics.
 - Physical mic matrix across built-in, USB, Bluetooth, docked, undocked, and
