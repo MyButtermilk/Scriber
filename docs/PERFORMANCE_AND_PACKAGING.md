@@ -495,6 +495,13 @@ Implementation status on `codex/rust-expansion-plan`:
 - Added strict `SCRIBER_INJECT_METHOD=tauri` in Python `TextInjector`.
   `auto` intentionally still uses the existing Python paste path until installed
   target-app evidence justifies changing the default.
+- Implemented redacted last-attempt diagnostics for Tauri text injection:
+  Shell IPC records `lastErrorCode`, `lastFallbackReason`, and a sanitized
+  `lastResponse`; `TextInjector` overwrites transport-level success when
+  injection validation fails, such as invalid payload or missing `paste`
+  marker. Support bundles include these fields through
+  `audio-diagnostics.redacted.json` without transcript text, raw pipe names,
+  raw foreground titles, or session tokens.
 - Added Rust unit tests for the shell IPC protocol and backend env contract,
   injectText payload validation, retry-limit clamping, request/text budget
   consistency, NUL rejection, and deadline failure payloads, plus Python unit/
@@ -502,9 +509,8 @@ Implementation status on `codex/rust-expansion-plan`:
   forwarding, and response protocol validation.
 - Still open: installed target-app smoke matrix, packaging smoke evidence,
   explicit pipe DACL/current-session security descriptor, real owner HWND or
-  message-only clipboard owner instead of `OpenClipboard(NULL)`, support-bundle
-  surfacing of the latest Tauri injection attempt, and default-path decision
-  based on installed evidence.
+  message-only clipboard owner instead of `OpenClipboard(NULL)`, and
+  default-path decision based on installed evidence.
 
 Tauri injection default blockers:
 

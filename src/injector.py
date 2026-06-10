@@ -20,7 +20,7 @@ from pipecat.frames.frames import (
 )
 
 from src.config import Config
-from src.runtime.shell_ipc import call_shell_ipc
+from src.runtime.shell_ipc import call_shell_ipc, record_command_diagnostic
 
 try:
     if sys.platform.startswith("linux") and "DISPLAY" not in os.environ:
@@ -398,6 +398,12 @@ def _tauri_inject_text(
         logger.warning(
             "Tauri text injection skipped: pre-delay would exceed IPC deadline budget"
         )
+        record_command_diagnostic(
+            "injectText",
+            False,
+            error_code="deadlineBudgetExceeded",
+            fallback_reason="pre-delay would exceed IPC deadline budget",
+        )
         return False
 
     payload = {
@@ -414,25 +420,53 @@ def _tauri_inject_text(
         response = call_shell_ipc("injectText", payload, timeout_seconds=client_timeout_seconds)
     except Exception as exc:
         logger.warning(f"Tauri text injection failed: {type(exc).__name__}")
+        record_command_diagnostic(
+            "injectText",
+            False,
+            error_code="transportException",
+            fallback_reason=f"{type(exc).__name__}: {exc}",
+        )
         return False
     if not response.get("success"):
         error_code = response.get("errorCode") or "unknown"
         fallback_reason = response.get("fallbackReason") or ""
         logger.warning(f"Tauri text injection failed: {error_code} {fallback_reason}".strip())
+        record_command_diagnostic(
+            "injectText",
+            False,
+            error_code=str(error_code),
+            fallback_reason=str(fallback_reason),
+            response=response,
+        )
         return False
 
     response_payload = response.get("payload")
     if not isinstance(response_payload, dict) or response_payload.get("method") != "tauri":
         logger.warning("Tauri text injection failed: invalid shell IPC payload")
+        record_command_diagnostic(
+            "injectText",
+            False,
+            error_code="invalidPayload",
+            fallback_reason="invalid shell IPC payload",
+            response=response,
+        )
         return False
     markers = response_payload.get("markers") if isinstance(response_payload, dict) else None
     if not isinstance(markers, list) or "paste" not in markers:
         logger.warning("Tauri text injection failed: missing paste marker")
+        record_command_diagnostic(
+            "injectText",
+            False,
+            error_code="missingPasteMarker",
+            fallback_reason="missing paste marker",
+            response=response,
+        )
         return False
     if on_marker:
         for marker in markers:
             if marker in {"clipboard_set", "paste"}:
                 on_marker(marker)
+    record_command_diagnostic("injectText", True, response=response)
     return True
 
 

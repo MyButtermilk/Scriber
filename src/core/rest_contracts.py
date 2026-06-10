@@ -228,7 +228,19 @@ def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
     _require_optional_string(shell_ipc, "lastCommand", contract)
     _require_optional_bool(shell_ipc, "lastSuccess", contract)
     _require_optional_string(shell_ipc, "lastError", contract)
+    _require_optional_string(shell_ipc, "lastErrorCode", contract)
+    _require_optional_string(shell_ipc, "lastFallbackReason", contract)
     _require_optional_number(shell_ipc, "lastCommandAgoSeconds", contract)
+    last_response = shell_ipc.get("lastResponse")
+    if last_response is not None:
+        if not isinstance(last_response, dict):
+            raise RESTContractError(f"{contract} requires object-or-null 'lastResponse'")
+        _require_bool(last_response, "success", contract)
+        _require_optional_string(last_response, "errorCode", contract)
+        _require_optional_string(last_response, "fallbackReason", contract)
+        timings = last_response.get("timingsMs")
+        if timings is not None and not isinstance(timings, dict):
+            raise RESTContractError(f"{contract} requires object-or-null 'lastResponse.timingsMs'")
 
     runtime_imports = _require_dict(payload, "runtimeImports", contract)
     if not runtime_imports:

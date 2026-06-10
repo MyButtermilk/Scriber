@@ -19,8 +19,11 @@ DEFAULT_TIMEOUT_SECONDS = 0.75
 _lock = threading.Lock()
 _last_command: str | None = None
 _last_error: str | None = None
+_last_error_code: str | None = None
+_last_fallback_reason: str | None = None
 _last_success: bool | None = None
 _last_command_at: float | None = None
+_last_response_summary: dict[str, Any] | None = None
 
 
 def available() -> bool:
@@ -38,8 +41,11 @@ def diagnostic_snapshot() -> dict[str, Any]:
     with _lock:
         last_command = _last_command
         last_error = _last_error
+        last_error_code = _last_error_code
+        last_fallback_reason = _last_fallback_reason
         last_success = _last_success
         last_command_at = _last_command_at
+        last_response_summary = dict(_last_response_summary) if _last_response_summary else None
     return {
         "available": available(),
         "pipeConfigured": bool(pipe_name),
@@ -49,6 +55,9 @@ def diagnostic_snapshot() -> dict[str, Any]:
         "lastCommand": last_command,
         "lastSuccess": last_success,
         "lastError": last_error,
+        "lastErrorCode": last_error_code,
+        "lastFallbackReason": last_fallback_reason,
+        "lastResponse": last_response_summary,
         "lastCommandAgoSeconds": (
             max(0.0, time.monotonic() - last_command_at)
             if last_command_at is not None
@@ -65,14 +74,26 @@ def call_shell_ipc(
 ) -> dict[str, Any]:
     cleaned_command = (command or "").strip()
     if not cleaned_command:
-        _record_result("", False, "empty command")
+        _record_result(
+            "",
+            False,
+            "empty command",
+            error_code="invalidCommand",
+            fallback_reason="empty command",
+        )
         return _failure("invalidCommand", "empty command")
 
     pipe_name = _configured_pipe_name()
     token = _configured_token()
     api_version = _configured_api_version()
     if not available() or not pipe_name or not token:
-        _record_result(cleaned_command, False, "shell IPC is not available")
+        _record_result(
+            cleaned_command,
+            False,
+            "shell IPC is not available",
+            error_code="unavailable",
+            fallback_reason="shell IPC is not available",
+        )
         return _failure("unavailable", "shell IPC is not available")
 
     request = {
@@ -99,12 +120,27 @@ def call_shell_ipc(
         if not isinstance(response.get("success"), bool):
             raise ValueError("shell IPC response success must be bool")
         success = bool(response.get("success"))
-        error = None if success else str(response.get("errorCode") or "shell IPC failed")
-        _record_result(cleaned_command, success, error)
+        error_code = response.get("errorCode")
+        fallback_reason = response.get("fallbackReason")
+        error = None if success else str(error_code or "shell IPC failed")
+        _record_result(
+            cleaned_command,
+            success,
+            error,
+            error_code=_safe_optional_string(error_code),
+            fallback_reason=_safe_optional_string(fallback_reason),
+            response=response,
+        )
         return response
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
-        _record_result(cleaned_command, False, message)
+        _record_result(
+            cleaned_command,
+            False,
+            message,
+            error_code="transportError",
+            fallback_reason=message,
+        )
         return _failure("transportError", message)
 
 
@@ -138,13 +174,159 @@ def _failure(error_code: str, fallback_reason: str) -> dict[str, Any]:
     }
 
 
-def _record_result(command: str, success: bool, error: str | None) -> None:
-    global _last_command, _last_error, _last_success, _last_command_at
+def record_command_diagnostic(
+    command: str,
+    success: bool,
+    *,
+    error_code: str | None = None,
+    fallback_reason: str | None = None,
+    response: dict[str, Any] | None = None,
+) -> None:
+    error = None if success else " ".join(
+        part for part in (error_code, fallback_reason) if part
+    ) or "command failed"
+    _record_result(
+        command,
+        success,
+        error,
+        error_code=error_code,
+        fallback_reason=fallback_reason,
+        response=response,
+    )
+
+
+def _record_result(
+    command: str,
+    success: bool,
+    error: str | None,
+    *,
+    error_code: str | None = None,
+    fallback_reason: str | None = None,
+    response: dict[str, Any] | None = None,
+) -> None:
+    global _last_command, _last_error, _last_error_code, _last_fallback_reason
+    global _last_success, _last_command_at, _last_response_summary
     with _lock:
         _last_command = command
         _last_error = error
+        _last_error_code = _safe_optional_string(error_code)
+        _last_fallback_reason = _safe_optional_string(fallback_reason)
         _last_success = success
         _last_command_at = time.monotonic()
+        _last_response_summary = _response_summary(
+            command,
+            response,
+            success=success,
+            error_code=error_code,
+            fallback_reason=fallback_reason,
+        )
+
+
+def _response_summary(
+    command: str,
+    response: dict[str, Any] | None,
+    *,
+    success: bool,
+    error_code: str | None = None,
+    fallback_reason: str | None = None,
+) -> dict[str, Any]:
+    response = response if isinstance(response, dict) else {}
+    summary: dict[str, Any] = {
+        "success": bool(success),
+        "errorCode": _safe_optional_string(error_code if error_code is not None else response.get("errorCode")),
+        "fallbackReason": _safe_optional_string(
+            fallback_reason if fallback_reason is not None else response.get("fallbackReason"),
+            max_len=240,
+        ),
+    }
+    timings = _numeric_mapping(response.get("timingsMs"), {"total"})
+    if timings:
+        summary["timingsMs"] = timings
+    if command == "injectText":
+        payload = response.get("payload")
+        summary["payload"] = _inject_text_payload_summary(payload if isinstance(payload, dict) else {})
+    return summary
+
+
+def _inject_text_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key in ("method", "dispatch"):
+        value = _safe_optional_string(payload.get(key), max_len=48)
+        if value is not None:
+            summary[key] = value
+    markers = payload.get("markers")
+    if isinstance(markers, list):
+        summary["markers"] = [
+            str(marker)[:48]
+            for marker in markers
+            if isinstance(marker, str) and marker in {"clipboard_set", "paste"}
+        ]
+    for key in ("restoreScheduled", "foregroundChanged"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            summary[key] = value
+    restore = _restore_summary(payload.get("restore"))
+    if restore:
+        summary["restore"] = restore
+    for key in ("foregroundBefore", "foregroundAfter"):
+        foreground = _foreground_summary(payload.get(key))
+        if foreground:
+            summary[key] = foreground
+    timings = _numeric_mapping(
+        payload.get("timingsMs"),
+        {"clipboardRead", "clipboardSet", "preDelay", "pasteDispatch", "total"},
+    )
+    if timings:
+        summary["timingsMs"] = timings
+    return summary
+
+
+def _restore_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    for key in ("scheduled", "attempted", "succeeded"):
+        item = value.get(key)
+        if isinstance(item, bool) or item is None:
+            summary[key] = item
+    for key in ("skippedReason", "errorCode"):
+        item = _safe_optional_string(value.get(key), max_len=80)
+        if item is not None:
+            summary[key] = item
+    return summary
+
+
+def _foreground_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    available = value.get("available")
+    if isinstance(available, bool):
+        summary["available"] = available
+    for key in ("windowHash", "titleHash", "processIdHash"):
+        item = _safe_optional_string(value.get(key), max_len=32)
+        if item is not None:
+            summary[key] = item
+    return summary
+
+
+def _numeric_mapping(value: Any, allowed_keys: set[str]) -> dict[str, float | None]:
+    if not isinstance(value, dict):
+        return {}
+    summary: dict[str, float | None] = {}
+    for key in allowed_keys:
+        item = value.get(key)
+        if item is None:
+            summary[key] = None
+        elif isinstance(item, (int, float)) and not isinstance(item, bool):
+            summary[key] = float(item)
+    return summary
+
+
+def _safe_optional_string(value: Any, *, max_len: int = 160) -> str | None:
+    if value is None:
+        return None
+    return str(value).replace("\x00", "")[:max_len]
 
 
 def _call_shell_ipc_windows(pipe_name: str, request_line: str, timeout_seconds: float) -> str:
@@ -182,9 +364,13 @@ def _send_request_over_pipe(pipe_name: str, request_line: str) -> str:
 
 
 def _reset_diagnostics_for_tests() -> None:
-    global _last_command, _last_error, _last_success, _last_command_at
+    global _last_command, _last_error, _last_error_code, _last_fallback_reason
+    global _last_success, _last_command_at, _last_response_summary
     with _lock:
         _last_command = None
         _last_error = None
+        _last_error_code = None
+        _last_fallback_reason = None
         _last_success = None
         _last_command_at = None
+        _last_response_summary = None

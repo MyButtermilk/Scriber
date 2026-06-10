@@ -273,6 +273,8 @@ Support bundle smoke verifies:
 - token protection,
 - redaction of dummy secrets in env/settings/logs,
 - required diagnostic ZIP members,
+- redacted audio/text-injection diagnostics, including the latest sanitized
+  Tauri `injectText` attempt when present,
 - restoration of runtime `.env` and `settings.json` after the test.
 
 Other available installed smokes include:

@@ -110,6 +110,30 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
         app_state={"recordingState": "idle"},
         audio_diagnostics={
             "apiVersion": "1",
+            "textInjection": {
+                "method": "tauri",
+                "shellIpc": {
+                    "available": True,
+                    "lastCommand": "injectText",
+                    "lastSuccess": False,
+                    "lastErrorCode": "missingPasteMarker",
+                    "lastFallbackReason": "missing paste marker",
+                    "lastResponse": {
+                        "success": False,
+                        "errorCode": "missingPasteMarker",
+                        "fallbackReason": "missing paste marker",
+                        "payload": {
+                            "method": "tauri",
+                            "markers": ["clipboard_set"],
+                            "foregroundBefore": {
+                                "available": True,
+                                "titleHash": "title-hash",
+                            },
+                            "timingsMs": {"clipboardSet": 2.0},
+                        },
+                    },
+                },
+            },
             "microphone": {
                 "activeCapture": {
                     "engine": "python",
@@ -137,6 +161,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
         combined = "\n".join(zf.read(name).decode("utf-8", errors="replace") for name in names)
 
     active = payload["microphone"]["activeCapture"]
+    shell_ipc = payload["textInjection"]["shellIpc"]
     assert "audio-diagnostics.redacted.json" in names
     assert active["engine"] == "python"
     assert active["requestedEngine"] == "rust-prototype"
@@ -145,6 +170,9 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
     assert active["droppedFrameCount"] == 3
     assert active["sessionToken"] == "[REDACTED]"
     assert "audio-secret-token" not in combined
+    assert shell_ipc["lastCommand"] == "injectText"
+    assert shell_ipc["lastErrorCode"] == "missingPasteMarker"
+    assert shell_ipc["lastResponse"]["payload"]["foregroundBefore"]["titleHash"] == "title-hash"
 
 
 def test_support_bundle_respects_runtime_log_clear_marker(monkeypatch, tmp_path):
