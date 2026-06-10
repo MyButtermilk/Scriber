@@ -150,6 +150,10 @@ Rust audio prototype:
 - The Rust frame reader distinguishes `SAF1` prebuffer frames from live frames
   and rejects prebuffer frames that arrive after live frames. This keeps future
   Rust prewarm adoption testable before Rust becomes the default audio engine.
+- Synthetic and WASAPI sidecar capture can mark the requested leading frames as
+  `SAF1` prebuffer frames and return writer-side prebuffer/live counts on stop.
+  This is promotion evidence for frame ordering; Rust idle always-on prewarm is
+  still not the default owner of microphone standby.
 - Backend restart and shell exit drain the sidecar lifecycle registry before
   restarting the Python backend or exiting the Tauri shell.
 - `src/microphone.py` can opt into the Rust prototype through

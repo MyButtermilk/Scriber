@@ -510,6 +510,15 @@ def validate_rust_audio_capture(
         failures.append(f"Rust audio capture {name} stop.connected must be true")
     if stop.get("framesWritten", 0) <= 0:
         failures.append(f"Rust audio capture {name} stop.framesWritten must be positive")
+    if require_prebuffer:
+        if stop.get("prebufferFramesWritten", 0) <= 0:
+            failures.append(
+                f"Rust audio capture {name} stop.prebufferFramesWritten must be positive when prebufferMs is requested"
+            )
+        if stop.get("liveFramesWritten", 0) <= 0:
+            failures.append(
+                f"Rust audio capture {name} stop.liveFramesWritten must be positive when prebufferMs is requested"
+            )
     if stop.get("writerError") not in (None, ""):
         failures.append(f"Rust audio capture {name} writerError must be empty")
 

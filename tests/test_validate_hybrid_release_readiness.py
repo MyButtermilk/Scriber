@@ -315,6 +315,8 @@ def write_rust_audio_sidecar_report(
                             "stopped": True,
                             "connected": True,
                             "framesWritten": 17,
+                            "prebufferFramesWritten": default_prebuffer_frames,
+                            "liveFramesWritten": 13,
                             "writerError": None,
                         },
                     },
@@ -339,6 +341,8 @@ def write_rust_audio_sidecar_report(
                             "stopped": True,
                             "connected": True,
                             "framesWritten": 7,
+                            "prebufferFramesWritten": selected_prebuffer_frames,
+                            "liveFramesWritten": 5,
                             "writerError": None,
                         },
                     },
@@ -443,7 +447,11 @@ def test_validate_release_readiness_rejects_missing_rust_audio_prebuffer_when_re
     failures = "\n".join(rust_audio_check["failures"])
     assert "totalPrebufferFramesRead must be positive" in failures
     assert "default prebufferFramesRead must be positive" in failures
+    assert "default stop.prebufferFramesWritten must be positive" in failures
     assert "selected-native-endpoint-hash prebufferFramesRead must be positive" in failures
+    assert (
+        "selected-native-endpoint-hash stop.prebufferFramesWritten must be positive" in failures
+    )
 
 
 def test_validate_release_readiness_rejects_missing_required_rust_audio_sidecar_smoke(tmp_path: Path) -> None:

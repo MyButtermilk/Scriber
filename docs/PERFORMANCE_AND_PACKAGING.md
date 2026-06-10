@@ -806,6 +806,10 @@ Implementation plan:
      sidecar prebuffer by default and the readiness validator rejects reports
      where requested prebuffer frames are missing, arrive after live frames, or
      never transition to live frames.
+   - Implemented: the real WASAPI sidecar writer now applies the same requested
+     prebuffer frame boundary as the synthetic harness, sets `SAF1` prebuffer
+     flags on the leading frames, and reports prebuffer/live writer counts in
+     stop-health payloads.
    - If Rust fails before the first frame, Python falls back to Python capture
      for that session.
    - If Rust stalls mid-session, record diagnostics and fail the current engine
@@ -852,6 +856,10 @@ Implementation plan:
      prebuffer frames before live frames when `prebufferMs` is requested, and
      `scripts/smoke_rust_audio_sidecar.py --prebuffer-ms ...` reports
      prebuffer/live frame counts plus any prebuffer-after-live ordering errors.
+   - Partly implemented: WASAPI sidecar capture also flags the requested
+     leading frames as prebuffer and exposes writer-side prebuffer/live counts.
+     This validates frame ordering and promotion evidence, but it is not yet a
+     full idle always-on Rust prewarm stream.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream

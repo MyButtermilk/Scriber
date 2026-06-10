@@ -354,6 +354,8 @@ impl CaptureRequest {
 struct CaptureWriterStats {
     connected: bool,
     frames_written: u64,
+    prebuffer_frames_written: u64,
+    live_frames_written: u64,
     bytes_written: u64,
     error: Option<String>,
 }
@@ -376,6 +378,8 @@ impl CaptureSession {
                 handle.join().unwrap_or_else(|_| CaptureWriterStats {
                     connected: false,
                     frames_written: 0,
+                    prebuffer_frames_written: 0,
+                    live_frames_written: 0,
                     bytes_written: 0,
                     error: Some("writerThreadPanicked".to_string()),
                 })
@@ -390,6 +394,8 @@ impl CaptureSession {
             "source": self.source,
             "connected": stats.connected,
             "framesWritten": stats.frames_written,
+            "prebufferFramesWritten": stats.prebuffer_frames_written,
+            "liveFramesWritten": stats.live_frames_written,
             "bytesWritten": stats.bytes_written,
             "writerError": stats.error,
             "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
@@ -797,7 +803,7 @@ fn run_synthetic_frame_pipe_writer(
     let frame_interval = Duration::from_secs_f64(
         (request.block_size as f64 / f64::from(request.sample_rate)).max(0.001),
     );
-    let prebuffer_frame_target = synthetic_prebuffer_frame_count(&request);
+    let prebuffer_frame_target = requested_prebuffer_frame_count(&request);
     let mut sequence = 0_u64;
     let mut prebuffer_frames_written = 0_u32;
     loop {
@@ -837,6 +843,12 @@ fn run_synthetic_frame_pipe_writer(
         match write_all_to_pipe(pipe_handle, &frame) {
             Ok(bytes) => {
                 stats.frames_written = stats.frames_written.saturating_add(1);
+                if flags & AUDIO_FRAME_FLAG_PREBUFFER != 0 {
+                    stats.prebuffer_frames_written =
+                        stats.prebuffer_frames_written.saturating_add(1);
+                } else {
+                    stats.live_frames_written = stats.live_frames_written.saturating_add(1);
+                }
                 stats.bytes_written = stats.bytes_written.saturating_add(u64::from(bytes));
                 sequence = sequence.saturating_add(1);
             }
@@ -856,7 +868,7 @@ fn run_synthetic_frame_pipe_writer(
     stats
 }
 
-fn synthetic_prebuffer_frame_count(request: &CaptureRequest) -> u32 {
+fn requested_prebuffer_frame_count(request: &CaptureRequest) -> u32 {
     if request.prebuffer_ms == 0 || request.block_size == 0 || request.sample_rate == 0 {
         return 0;
     }
@@ -1086,7 +1098,9 @@ fn pump_wasapi_capture(
     started: Instant,
 ) -> Result<(), String> {
     let mut converter = WasapiPcmConverter::new(mix_format, request);
+    let prebuffer_frame_target = requested_prebuffer_frame_count(request);
     let mut sequence = 0_u64;
+    let mut prebuffer_frames_written = 0_u32;
     loop {
         match stop_rx.try_recv() {
             Ok(()) | Err(TryRecvError::Disconnected) => return Ok(()),
@@ -1114,6 +1128,12 @@ fn pump_wasapi_capture(
             let release_result = unsafe { capture_client.ReleaseBuffer(frames_to_read) };
             release_result.map_err(|err| format!("WASAPI ReleaseBuffer failed: {err}"))?;
             for payload in blocks? {
+                let flags = if prebuffer_frames_written < prebuffer_frame_target {
+                    prebuffer_frames_written = prebuffer_frames_written.saturating_add(1);
+                    AUDIO_FRAME_FLAG_PREBUFFER
+                } else {
+                    0
+                };
                 let timestamp_micros =
                     started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
                 let header = AudioFrameHeader::new(
@@ -1122,13 +1142,19 @@ fn pump_wasapi_capture(
                     timestamp_micros,
                     request.block_size,
                     request.channels,
-                    0,
+                    flags,
                 )
                 .map_err(|err| format!("WASAPI frame header failed: {err}"))?;
                 let frame = encode_audio_frame(&header, &payload)
                     .map_err(|err| format!("WASAPI frame encode failed: {err}"))?;
                 let bytes_written = write_all_to_pipe(pipe_handle, &frame)?;
                 stats.frames_written = stats.frames_written.saturating_add(1);
+                if flags & AUDIO_FRAME_FLAG_PREBUFFER != 0 {
+                    stats.prebuffer_frames_written =
+                        stats.prebuffer_frames_written.saturating_add(1);
+                } else {
+                    stats.live_frames_written = stats.live_frames_written.saturating_add(1);
+                }
                 stats.bytes_written = stats.bytes_written.saturating_add(u64::from(bytes_written));
                 sequence = sequence.saturating_add(1);
             }
@@ -1505,7 +1531,7 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_prebuffer_frame_count_rounds_up_to_whole_blocks() {
+    fn requested_prebuffer_frame_count_rounds_up_to_whole_blocks() {
         let request = CaptureRequest {
             sample_rate: 16_000,
             channels: 1,
@@ -1516,11 +1542,11 @@ mod tests {
             prebuffer_ms: 400,
         };
 
-        assert_eq!(synthetic_prebuffer_frame_count(&request), 13);
+        assert_eq!(requested_prebuffer_frame_count(&request), 13);
 
         let mut disabled = request.clone();
         disabled.prebuffer_ms = 0;
-        assert_eq!(synthetic_prebuffer_frame_count(&disabled), 0);
+        assert_eq!(requested_prebuffer_frame_count(&disabled), 0);
     }
 
     #[test]
@@ -1618,8 +1644,8 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn synthetic_capture_writes_a_valid_named_pipe_frame() {
-        use std::{fs::OpenOptions, io::Read as _};
+    fn synthetic_capture_writes_prebuffer_then_live_frames() {
+        use std::fs::OpenOptions;
 
         let request = CaptureRequest {
             sample_rate: 16_000,
@@ -1628,24 +1654,49 @@ mod tests {
             device_preference: "default".to_string(),
             port_audio_label: "".to_string(),
             native_endpoint_id_hash: "".to_string(),
-            prebuffer_ms: 0,
+            prebuffer_ms: 2,
         };
         let (mut session, payload) = start_synthetic_capture_impl(request).unwrap();
         let pipe_path = payload["framePipe"].as_str().unwrap();
 
         let mut reader = OpenOptions::new().read(true).open(pipe_path).unwrap();
+        let (first_header, first_payload) = read_test_audio_frame(&mut reader);
+        let (second_header, second_payload) = read_test_audio_frame(&mut reader);
+        let stop_payload = session.stop("test");
+
+        assert_eq!(first_header.sequence, 0);
+        assert_eq!(first_header.frame_count, 32);
+        assert_eq!(first_header.channels, 1);
+        assert_eq!(
+            first_header.flags & AUDIO_FRAME_FLAG_PREBUFFER,
+            AUDIO_FRAME_FLAG_PREBUFFER
+        );
+        assert_eq!(first_payload.len(), 64);
+        assert_eq!(second_header.sequence, 1);
+        assert_eq!(second_header.flags & AUDIO_FRAME_FLAG_PREBUFFER, 0);
+        assert_eq!(second_payload.len(), 64);
+        assert_eq!(stop_payload["stopped"], true);
+        assert!(
+            stop_payload["prebufferFramesWritten"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 1
+        );
+        assert!(
+            stop_payload["liveFramesWritten"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 1
+        );
+    }
+
+    #[cfg(windows)]
+    fn read_test_audio_frame<R: std::io::Read>(reader: &mut R) -> (AudioFrameHeader, Vec<u8>) {
         let mut header_bytes = [0_u8; AUDIO_FRAME_HEADER_LEN];
         reader.read_exact(&mut header_bytes).unwrap();
         let header = AudioFrameHeader::decode(&header_bytes).unwrap();
         let mut frame_payload = vec![0_u8; header.payload_len as usize];
         reader.read_exact(&mut frame_payload).unwrap();
-        let stop_payload = session.stop("test");
-
-        assert_eq!(header.sequence, 0);
-        assert_eq!(header.frame_count, 32);
-        assert_eq!(header.channels, 1);
-        assert_eq!(frame_payload.len(), 64);
-        assert_eq!(stop_payload["stopped"], true);
-        assert!(stop_payload["framesWritten"].as_u64().unwrap_or_default() >= 1);
+        (header, frame_payload)
     }
 }
