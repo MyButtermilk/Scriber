@@ -55,7 +55,11 @@ from src.data.latency_metrics_store import LatencyMetricsStore
 from src.runtime.paths import app_root, data_dir, downloads_dir, is_frozen, logs_dir, repo_root
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args, webm_opus_transcode_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
-from src.runtime.shell_ipc import diagnostic_snapshot as shell_ipc_diagnostic_snapshot
+from src.runtime.shell_ipc import (
+    available as shell_ipc_available,
+    call_shell_ipc,
+    diagnostic_snapshot as shell_ipc_diagnostic_snapshot,
+)
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 from src.mic_prewarm import MicrophonePrewarmManager
 from src.runtime.provider_router import ProviderRouter
@@ -112,6 +116,7 @@ _WORKER_VERSION_ENV = "SCRIBER_WORKER_VERSION"
 _RUNTIME_MODE_ENV = "SCRIBER_RUNTIME_MODE"
 _BACKEND_LAUNCH_KIND_ENV = "SCRIBER_BACKEND_LAUNCH_KIND"
 _AUDIO_ENGINE_ENV = "SCRIBER_AUDIO_ENGINE"
+_RUST_AUDIO_PROBE_ENV = "SCRIBER_RUST_AUDIO_PROBE"
 _NATIVE_DEVICE_EVENTS_ENV = "SCRIBER_NATIVE_DEVICE_EVENTS"
 _SETTINGS_PERSIST_DEBOUNCE_ENV = "SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC"
 _WEB_HOST_ENV = "SCRIBER_WEB_HOST"
@@ -305,6 +310,16 @@ def _audio_engine_feature_flags() -> dict[str, Any]:
         "rustAudioRequested": rust_requested,
         "rustAudioAvailable": rust_available,
     }
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return (os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _rust_audio_probe_requested() -> bool:
+    return bool(_audio_engine_feature_flags()["rustAudioRequested"]) or _env_flag_enabled(
+        _RUST_AUDIO_PROBE_ENV
+    )
 
 
 def _native_device_event_feature_flags() -> dict[str, Any]:
@@ -1549,6 +1564,41 @@ class ScriberWebController:
         except Exception as exc:
             return {"available": False, "reason": "mappingFailed", "error": str(exc)}
 
+    def _rust_audio_probe_diagnostics(self) -> dict[str, Any]:
+        requested = _rust_audio_probe_requested()
+        diagnostics: dict[str, Any] = {
+            "requested": requested,
+            "shellIpcAvailable": shell_ipc_available(),
+        }
+        if not requested:
+            diagnostics.update({"available": False, "reason": "notRequested"})
+            return diagnostics
+        if not shell_ipc_available():
+            diagnostics.update({"available": False, "reason": "shellIpcUnavailable"})
+            return diagnostics
+
+        payload = {
+            "sampleRate": int(getattr(Config, "SAMPLE_RATE", 16000) or 16000),
+            "channels": max(1, int(getattr(Config, "CHANNELS", 1) or 1)),
+            "blockSize": max(64, int(getattr(Config, "MIC_BLOCK_SIZE", 512) or 512)),
+            "devicePreference": "default",
+        }
+        response = call_shell_ipc("audioProbe", payload, timeout_seconds=2.0)
+        response_payload = response.get("payload") if isinstance(response, dict) else None
+        if not isinstance(response_payload, dict):
+            response_payload = {}
+        diagnostics.update(response_payload)
+        diagnostics.update(
+            {
+                "ipcSuccess": bool(response.get("success")) if isinstance(response, dict) else False,
+                "responseErrorCode": response.get("errorCode") if isinstance(response, dict) else "invalidResponse",
+                "responseFallbackReason": response.get("fallbackReason") if isinstance(response, dict) else None,
+            }
+        )
+        if not diagnostics.get("available"):
+            diagnostics.setdefault("reason", diagnostics.get("responseErrorCode") or "probeUnavailable")
+        return diagnostics
+
     def _prewarm_diagnostics(self) -> dict[str, Any] | None:
         snapshot = getattr(self._mic_prewarm, "diagnostic_snapshot", None)
         if not callable(snapshot):
@@ -2303,6 +2353,7 @@ class ScriberWebController:
                 if self._device_monitor_enabled
                 else None,
                 "nativeEndpointMapping": self._native_endpoint_mapping_diagnostics(),
+                "rustAudioProbe": self._rust_audio_probe_diagnostics(),
                 "prewarm": self._prewarm_diagnostics(),
                 "activeCapture": self._active_audio_diagnostics(),
             },

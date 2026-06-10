@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-06-09
+Last verified: 2026-06-10
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -73,6 +73,8 @@ Frontend and shell:
 - `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system.
 - `Frontend/src-tauri/src/lib.rs`: Rust supervisor, Tauri commands, tray/menu,
   autostart, global hotkey, single instance, updater/process plugins.
+- `Frontend/src-tauri/src/shell_ipc.rs`: private backend-to-shell named-pipe
+  IPC for opt-in native shell work, including text injection and diagnostics.
 - `Frontend/src-tauri/tauri.conf.json`: Tauri build, CSP, NSIS bundle, backend
   resource mapping, before-bundle sidecar command.
 
@@ -107,6 +109,10 @@ Packaging and scripts:
   injection. `SCRIBER_INJECT_METHOD=tauri` is strict; `auto` must stay on the
   existing Python paste path until installed target-app evidence justifies a
   default change.
+- The same private shell IPC may expose opt-in native diagnostics such as
+  `audioProbe`. These diagnostics are not public API, must not expose raw
+  endpoint IDs, and must not become an active capture path unless the Rust audio
+  prototype passes the documented gates.
 - Python owns recording state and provider work.
 
 ### REST and WebSocket Contracts
@@ -131,6 +137,9 @@ Packaging and scripts:
 - Native endpoint IDs must stay private. Use hashed native endpoint IDs in
   diagnostics and prototype mapping; do not expose raw IMMDevice IDs as public
   microphone IDs or log fields.
+- `SCRIBER_AUDIO_ENGINE=rust-prototype` and `SCRIBER_RUST_AUDIO_PROBE=1` may
+  run a passive WASAPI diagnostics probe. The default capture path remains
+  Python `sounddevice` until a measured Rust prototype is explicitly promoted.
 - `SCRIBER_MIC_ALWAYS_ON` is implemented as idle prewarm plus bounded rolling
   prebuffer. Do not reuse Pipecat session state across recordings.
 - `MicrophoneInput` still queues raw callback frames; only visualizer/input RMS

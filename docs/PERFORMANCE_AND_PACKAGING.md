@@ -656,13 +656,21 @@ Implementation plan:
    - Keep `SCRIBER_AUDIO_ENGINE=python`.
    - Preserve all current tests and installed live-mic smoke behavior.
 2. Add a passive Windows-only WASAPI probe:
-   - Run only when `SCRIBER_AUDIO_ENGINE=rust-prototype` or explicit diagnostics
-     are enabled.
-   - Enumerate capture endpoints and open the selected endpoint without feeding
-     the provider pipeline.
-   - Capture diagnostics only: open success/failure, endpoint hash, mix format,
-     requested format, callback count, last callback age, drop count, and close
-     status.
+   - Implemented on `codex/rust-expansion-plan` as private shell IPC command
+     `audioProbe`.
+   - Runs only when `SCRIBER_AUDIO_ENGINE=rust-prototype` or
+     `SCRIBER_RUST_AUDIO_PROBE=1` is set.
+   - Rust probes the Windows default capture endpoint through WASAPI, activates
+     `IAudioClient`, reads mix format/device period, attempts shared-mode
+     initialization without `Start()`, and returns redacted diagnostics.
+   - `/api/runtime/audio-diagnostics` surfaces this as
+     `microphone.rustAudioProbe`.
+   - The probe does not feed the provider pipeline, does not become an active
+     capture engine, and reports `callbackCount=0`, `droppedFrameCount=0`, and
+     `closeStatus=closed`.
+   - Still open: selected endpoint probing by favorite/native hash, real
+     callback-based passive observation if needed, and installed physical-device
+     evidence.
 3. Add active capture prototype without prewarm:
    - Implement a Tauri-managed Rust audio sidecar process for crash isolation,
      not an in-WebView or UI-thread feature.

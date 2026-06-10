@@ -566,6 +566,88 @@ async def test_audio_diagnostics_include_private_native_endpoint_mapping(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_audio_diagnostics_do_not_run_rust_probe_unless_requested(monkeypatch):
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.delenv("SCRIBER_AUDIO_ENGINE", raising=False)
+    monkeypatch.delenv("SCRIBER_RUST_AUDIO_PROBE", raising=False)
+    monkeypatch.setattr(web_api, "call_shell_ipc", MagicMock())
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    try:
+        audio = ctl.get_audio_diagnostics()
+    finally:
+        ctl.shutdown()
+
+    assert audio["microphone"]["rustAudioProbe"]["requested"] is False
+    assert audio["microphone"]["rustAudioProbe"]["reason"] == "notRequested"
+    web_api.call_shell_ipc.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_audio_diagnostics_skip_rust_probe_without_shell_ipc(monkeypatch):
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_RUST_AUDIO_PROBE", "1")
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: False)
+    monkeypatch.setattr(web_api, "call_shell_ipc", MagicMock())
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    try:
+        audio = ctl.get_audio_diagnostics()
+    finally:
+        ctl.shutdown()
+
+    assert audio["microphone"]["rustAudioProbe"]["requested"] is True
+    assert audio["microphone"]["rustAudioProbe"]["available"] is False
+    assert audio["microphone"]["rustAudioProbe"]["reason"] == "shellIpcUnavailable"
+    web_api.call_shell_ipc.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_audio_diagnostics_runs_rust_probe_when_requested(monkeypatch):
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setattr(web_api.Config, "MIC_BLOCK_SIZE", 640, raising=False)
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    call_mock = MagicMock(
+        return_value={
+            "success": True,
+            "payload": {
+                "engine": "rust-prototype",
+                "probeKind": "wasapi-passive",
+                "available": True,
+                "endpointIdHash": "redacted-endpoint",
+                "mixFormat": {"sampleRate": 48000, "channels": 2},
+                "callbackCount": 0,
+                "droppedFrameCount": 0,
+                "closeStatus": "closed",
+            },
+            "errorCode": None,
+            "fallbackReason": None,
+        }
+    )
+    monkeypatch.setattr(web_api, "call_shell_ipc", call_mock)
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    try:
+        audio = ctl.get_audio_diagnostics()
+    finally:
+        ctl.shutdown()
+
+    probe = audio["microphone"]["rustAudioProbe"]
+    assert probe["requested"] is True
+    assert probe["available"] is True
+    assert probe["ipcSuccess"] is True
+    assert probe["endpointIdHash"] == "redacted-endpoint"
+    assert probe["callbackCount"] == 0
+    command, payload = call_mock.call_args.args[:2]
+    assert command == "audioProbe"
+    assert payload["sampleRate"] == 16000
+    assert payload["channels"] == 1
+    assert payload["blockSize"] == 640
+    assert "endpointId" not in probe
+
+
+@pytest.mark.asyncio
 async def test_runtime_reports_native_device_event_flag(monkeypatch):
     monkeypatch.setenv("SCRIBER_NATIVE_DEVICE_EVENTS", "0")
     loop = asyncio.get_running_loop()

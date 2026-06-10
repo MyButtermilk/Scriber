@@ -5,6 +5,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
 use std::{
+    ffi::c_void,
     sync::mpsc::{self, RecvTimeoutError, Sender},
     thread::{self, JoinHandle},
 };
@@ -15,17 +16,38 @@ use windows::{
     Win32::{
         Foundation::PROPERTYKEY,
         Media::Audio::{
-            eAll, eCapture, eCommunications, eConsole, eRender, EDataFlow, ERole,
+            eAll, eCapture, eCommunications, eConsole, eRender, EDataFlow, ERole, IAudioClient,
             IMMDeviceEnumerator, IMMNotificationClient, IMMNotificationClient_Impl,
-            MMDeviceEnumerator, DEVICE_STATE,
+            MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, DEVICE_STATE, DEVICE_STATE_ACTIVE,
+            WAVEFORMATEX,
         },
         System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
+            COINIT_MULTITHREADED,
         },
     },
 };
 
 const NATIVE_DEVICE_DEBOUNCE: Duration = Duration::from_millis(500);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassiveAudioProbeOptions {
+    pub requested_sample_rate: u32,
+    pub requested_channels: u16,
+    pub block_size: u32,
+    pub device_preference: String,
+}
+
+impl Default for PassiveAudioProbeOptions {
+    fn default() -> Self {
+        Self {
+            requested_sample_rate: 16_000,
+            requested_channels: 1,
+            block_size: 512,
+            device_preference: "default".to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDeviceEventsMode {
@@ -121,6 +143,242 @@ impl Drop for NativeDeviceEventMonitorHandle {
 #[cfg(not(windows))]
 impl Drop for NativeDeviceEventMonitorHandle {
     fn drop(&mut self) {}
+}
+
+pub fn run_passive_audio_probe(options: PassiveAudioProbeOptions) -> Result<Value, String> {
+    run_passive_audio_probe_impl(options)
+}
+
+#[cfg(not(windows))]
+fn run_passive_audio_probe_impl(options: PassiveAudioProbeOptions) -> Result<Value, String> {
+    Ok(passive_audio_probe_payload(
+        &options,
+        false,
+        "unsupportedPlatform",
+        "WASAPI audio probe is only available on Windows",
+        json!({}),
+    ))
+}
+
+#[cfg(windows)]
+fn run_passive_audio_probe_impl(options: PassiveAudioProbeOptions) -> Result<Value, String> {
+    let started = Instant::now();
+    let com_initialized = match unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok() {
+        Ok(()) => true,
+        Err(err) => {
+            return Ok(passive_audio_probe_payload(
+                &options,
+                false,
+                "comInitializationFailed",
+                &format!("{err}"),
+                json!({}),
+            ));
+        }
+    };
+
+    let result = (|| -> Result<Value, String> {
+        let enumerator: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+                .map_err(|err| format!("MMDeviceEnumerator creation failed: {err}"))?;
+        let active_capture_endpoint_count = unsafe {
+            enumerator
+                .EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)
+                .and_then(|collection| collection.GetCount())
+                .ok()
+        };
+        let selection_note = if options
+            .device_preference
+            .trim()
+            .eq_ignore_ascii_case("default")
+        {
+            "default"
+        } else {
+            "fallbackToDefault"
+        };
+
+        let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
+            .map_err(|err| format!("default capture endpoint unavailable: {err}"))?;
+        let endpoint_id = unsafe { device_id_string(&device) };
+        let endpoint_id_hash = hash_endpoint_id(&endpoint_id);
+        let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
+            .map_err(|err| format!("IAudioClient activation failed: {err}"))?;
+
+        let mut default_period_hns = 0i64;
+        let mut minimum_period_hns = 0i64;
+        let device_period = unsafe {
+            client
+                .GetDevicePeriod(Some(&mut default_period_hns), Some(&mut minimum_period_hns))
+                .ok()
+        };
+        let mut stream_initialized = false;
+        let mut buffer_frames: Option<u32> = None;
+        let mix_format_ptr = unsafe { client.GetMixFormat() }
+            .map_err(|err| format!("GetMixFormat failed: {err}"))?;
+        let mix_format = unsafe { *mix_format_ptr };
+        let initialize_result = unsafe {
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                0,
+                1_000_000,
+                0,
+                mix_format_ptr,
+                None,
+            )
+        };
+        let initialize_error = match initialize_result {
+            Ok(()) => {
+                stream_initialized = true;
+                buffer_frames = unsafe { client.GetBufferSize().ok() };
+                None
+            }
+            Err(err) => Some(format!("{err}")),
+        };
+        unsafe {
+            CoTaskMemFree(Some(mix_format_ptr.cast::<c_void>()));
+        }
+
+        let mut payload = passive_audio_probe_payload(
+            &options,
+            true,
+            "",
+            "",
+            json!({
+                "selection": selection_note,
+                "endpointIdHash": endpoint_id_hash,
+                "activeCaptureEndpointCount": active_capture_endpoint_count,
+                "mixFormat": wave_format_payload(&mix_format),
+                "requestedFormat": requested_format_payload(&options),
+                "devicePeriodHns": if device_period.is_some() {
+                    json!({
+                        "default": default_period_hns,
+                        "minimum": minimum_period_hns,
+                    })
+                } else {
+                    Value::Null
+                },
+                "streamInitialized": stream_initialized,
+                "bufferFrames": buffer_frames,
+                "initializeError": initialize_error,
+                "callbackCount": 0,
+                "lastCallbackAgoSeconds": Value::Null,
+                "droppedFrameCount": 0,
+                "closeStatus": "closed",
+                "probeDurationMs": started.elapsed().as_secs_f64() * 1000.0,
+            }),
+        );
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "fallbackReason".to_string(),
+                if selection_note == "fallbackToDefault" {
+                    Value::String("devicePreferenceUnsupported".to_string())
+                } else {
+                    Value::Null
+                },
+            );
+        }
+        Ok(payload)
+    })();
+
+    if com_initialized {
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    match result {
+        Ok(payload) => Ok(payload),
+        Err(err) => Ok(passive_audio_probe_payload(
+            &options,
+            false,
+            "probeFailed",
+            &err,
+            json!({
+                "callbackCount": 0,
+                "lastCallbackAgoSeconds": Value::Null,
+                "droppedFrameCount": 0,
+                "closeStatus": "closed",
+                "probeDurationMs": started.elapsed().as_secs_f64() * 1000.0,
+            }),
+        )),
+    }
+}
+
+fn passive_audio_probe_payload(
+    options: &PassiveAudioProbeOptions,
+    available: bool,
+    error_code: &str,
+    error_message: &str,
+    extra: Value,
+) -> Value {
+    let mut payload = json!({
+        "engine": "rust-prototype",
+        "probeKind": "wasapi-passive",
+        "available": available,
+        "errorCode": if error_code.is_empty() { Value::Null } else { Value::String(error_code.to_string()) },
+        "errorMessage": if error_message.is_empty() { Value::Null } else { Value::String(error_message.to_string()) },
+        "requestedFormat": requested_format_payload(options),
+        "selection": "unavailable",
+        "endpointIdHash": Value::Null,
+        "activeCaptureEndpointCount": Value::Null,
+        "mixFormat": Value::Null,
+        "devicePeriodHns": Value::Null,
+        "streamInitialized": false,
+        "bufferFrames": Value::Null,
+        "initializeError": Value::Null,
+        "callbackCount": 0,
+        "lastCallbackAgoSeconds": Value::Null,
+        "droppedFrameCount": 0,
+        "closeStatus": "closed",
+        "fallbackReason": Value::Null,
+    });
+    if let (Some(target), Some(source)) = (payload.as_object_mut(), extra.as_object()) {
+        for (key, value) in source {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+    payload
+}
+
+fn requested_format_payload(options: &PassiveAudioProbeOptions) -> Value {
+    json!({
+        "sampleRate": options.requested_sample_rate,
+        "channels": options.requested_channels,
+        "blockSize": options.block_size,
+        "devicePreference": bounded_hint_string(options.device_preference.clone(), "default"),
+    })
+}
+
+#[cfg(windows)]
+fn wave_format_payload(format: &WAVEFORMATEX) -> Value {
+    let format_tag = format.wFormatTag;
+    let channels = format.nChannels;
+    let sample_rate = format.nSamplesPerSec;
+    let average_bytes_per_second = format.nAvgBytesPerSec;
+    let block_align = format.nBlockAlign;
+    let bits_per_sample = format.wBitsPerSample;
+    let extra_size = format.cbSize;
+    json!({
+        "formatTag": format_tag,
+        "channels": channels,
+        "sampleRate": sample_rate,
+        "averageBytesPerSecond": average_bytes_per_second,
+        "blockAlign": block_align,
+        "bitsPerSample": bits_per_sample,
+        "extraSize": extra_size,
+    })
+}
+
+#[cfg(windows)]
+unsafe fn device_id_string(device: &windows::Win32::Media::Audio::IMMDevice) -> String {
+    let id = unsafe { device.GetId() }.ok();
+    let Some(id) = id else {
+        return String::new();
+    };
+    let text = unsafe { id.to_string() }.unwrap_or_default();
+    unsafe {
+        CoTaskMemFree(Some(id.as_ptr().cast::<c_void>()));
+    }
+    text
 }
 
 #[cfg(windows)]
@@ -467,6 +725,44 @@ mod tests {
         assert_eq!(body["endpointIdHash"], "abc");
         assert_eq!(body["forcePortAudioRefresh"], true);
         assert_eq!(body["nativeTimestampMs"], 1234);
+    }
+
+    #[test]
+    fn passive_audio_probe_payload_uses_redacted_contract_shape() {
+        let options = super::PassiveAudioProbeOptions {
+            requested_sample_rate: 16_000,
+            requested_channels: 1,
+            block_size: 512,
+            device_preference: "default".to_string(),
+        };
+
+        let payload = super::passive_audio_probe_payload(
+            &options,
+            true,
+            "",
+            "",
+            serde_json::json!({
+                "endpointIdHash": "abc123",
+                "selection": "default",
+            }),
+        );
+
+        assert_eq!(payload["engine"], "rust-prototype");
+        assert_eq!(payload["probeKind"], "wasapi-passive");
+        assert_eq!(payload["available"], true);
+        assert_eq!(payload["endpointIdHash"], "abc123");
+        assert_eq!(payload["requestedFormat"]["sampleRate"], 16_000);
+        assert!(payload.get("endpointId").is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn passive_audio_probe_reports_unsupported_off_windows() {
+        let payload =
+            super::run_passive_audio_probe(super::PassiveAudioProbeOptions::default()).unwrap();
+
+        assert_eq!(payload["available"], false);
+        assert_eq!(payload["errorCode"], "unsupportedPlatform");
     }
 
     #[test]

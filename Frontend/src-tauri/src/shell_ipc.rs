@@ -9,6 +9,8 @@ use std::{
 };
 use uuid::Uuid;
 
+use crate::audio_devices::{run_passive_audio_probe, PassiveAudioProbeOptions};
+
 const API_VERSION: &str = "1";
 const MAX_REQUEST_BYTES: usize = 512 * 1024;
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
@@ -218,11 +220,26 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             "",
             started,
             json!({
-                "commands": ["ping", "capabilities", "injectText"],
+                "commands": ["ping", "capabilities", "injectText", "audioProbe"],
                 "textInjection": true,
+                "audioProbe": true,
             }),
         ),
         "injectText" => match inject_text(payload) {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(err) => response_line(
+                request_id,
+                false,
+                err.code,
+                &err.reason,
+                started,
+                err.payload,
+            ),
+        },
+        "audioProbe" => match parse_audio_probe_options(payload).and_then(|options| {
+            run_passive_audio_probe(options)
+                .map_err(|err| ShellCommandError::new("audioProbeFailed", err))
+        }) {
             Ok(payload) => response_line(request_id, true, "", "", started, payload),
             Err(err) => response_line(
                 request_id,
@@ -242,6 +259,23 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             json!({}),
         ),
     }
+}
+
+fn parse_audio_probe_options(
+    payload: &Value,
+) -> Result<PassiveAudioProbeOptions, ShellCommandError> {
+    let Some(payload) = payload.as_object() else {
+        return Err(ShellCommandError::new(
+            "invalidPayload",
+            "audioProbe payload must be an object",
+        ));
+    };
+    Ok(PassiveAudioProbeOptions {
+        requested_sample_rate: optional_u64(payload, "sampleRate", 16_000, 192_000) as u32,
+        requested_channels: optional_u64(payload, "channels", 1, 16) as u16,
+        block_size: optional_u64(payload, "blockSize", 512, 16_384) as u32,
+        device_preference: bounded_string(payload, "devicePreference", "default", 96),
+    })
 }
 
 fn response_line(
@@ -1291,12 +1325,18 @@ mod tests {
 
         assert_eq!(value["success"], true);
         assert_eq!(value["payload"]["textInjection"], true);
+        assert_eq!(value["payload"]["audioProbe"], true);
         assert_eq!(value["payload"]["commands"][0], "ping");
         assert!(value["payload"]["commands"]
             .as_array()
             .unwrap()
             .iter()
             .any(|command| command == "injectText"));
+        assert!(value["payload"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command == "audioProbe"));
     }
 
     #[test]
@@ -1342,6 +1382,32 @@ mod tests {
         assert_eq!(options.max_clipboard_retries, 50);
         assert_eq!(options.clipboard_retry_delay_ms, 500);
         assert_eq!(options.deadline_ms, 30_000);
+    }
+
+    #[test]
+    fn parse_audio_probe_options_clamps_and_normalizes_payload() {
+        let payload = json!({
+            "sampleRate": 999_999,
+            "channels": 64,
+            "blockSize": 99_999,
+            "devicePreference": "default-capture-device-with-a-longer-than-needed-label",
+        });
+
+        let options = super::parse_audio_probe_options(&payload).unwrap();
+
+        assert_eq!(options.requested_sample_rate, 192_000);
+        assert_eq!(options.requested_channels, 16);
+        assert_eq!(options.block_size, 16_384);
+        assert!(options
+            .device_preference
+            .starts_with("default-capture-device"));
+    }
+
+    #[test]
+    fn parse_audio_probe_options_rejects_non_object_payload() {
+        let err = super::parse_audio_probe_options(&json!("bad")).unwrap_err();
+
+        assert_eq!(err.code, "invalidPayload");
     }
 
     #[test]
