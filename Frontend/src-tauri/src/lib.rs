@@ -1,4 +1,5 @@
 mod audio_devices;
+mod audio_frame_pipe;
 mod shell_ipc;
 
 use serde::Serialize;

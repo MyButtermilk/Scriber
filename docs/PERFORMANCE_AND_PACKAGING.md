@@ -648,6 +648,15 @@ Missing prerequisites:
    - Still open for the Rust prototype: active-capture `nativeEndpointIdHash`,
      Rust capture restart count, Rust sidecar PID/exit status, and frame-pipe
      health fields.
+4. Audio frame-pipe protocol:
+   - Implemented on `codex/rust-expansion-plan` as shared Rust/Python protocol
+     helpers, not yet wired to an active capture sidecar.
+   - Rust owns `Frontend/src-tauri/src/audio_frame_pipe.rs`; Python owns
+     `src/runtime/audio_frame_pipe.py`.
+   - The frame header is fixed-size, little-endian, versioned, and covers magic,
+     payload length, sequence, timestamp, frame count, channels, and flags.
+   - Tests keep a shared documented header fixture in sync across Rust and
+     Python and validate payload length and sequence ordering.
 
 Implementation plan:
 
@@ -684,13 +693,18 @@ Implementation plan:
      cleanly. Do not silently splice engines mid-utterance unless a later design
      proves transcript safety.
 4. Use a narrow control protocol:
-   - Request includes sample rate, channels, block size, device preference
+   - Partly implemented: shared Rust/Python helpers now define and validate the
+     binary PCM frame header.
+   - Still open: shell IPC control request/response for sidecar start, stream id,
+     selected endpoint hash, frame-pipe path, resampler metadata, and fallback
+     reason.
+   - Request must include sample rate, channels, block size, device preference
      (`default`, `favorite`, `portAudioLabel`, or `nativeEndpointHash`), and
      `prebufferMs`.
-   - Response includes engine, stream id, format, capture channels,
+   - Response must include engine, stream id, format, capture channels,
      native endpoint hash, frame pipe, resampler, and fallback reason.
-   - Each PCM frame uses a small binary header: payload length, sequence,
-     timestamp, frame count, channels, flags, then `pcm_i16_le`.
+   - Each PCM frame uses the shared fixed-size binary header followed by
+     `pcm_i16_le`.
 5. Add prewarm parity only after active capture works:
    - Match configured prebuffer duration, frame ordering, adoption into active
      capture, no prebuffer/live-frame interleaving, pause during device refresh,

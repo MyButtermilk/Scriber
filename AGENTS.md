@@ -59,6 +59,8 @@ Backend and runtime:
 - `src/data/job_store.py`: persistent file/YouTube jobs.
 - `src/data/latency_metrics_store.py`: hot-path metrics.
 - `src/core/`: contracts, state machine, circuit breaker, logging, tracing.
+- `src/runtime/audio_frame_pipe.py`: Python decoder/validator for the future
+  Rust audio frame-pipe protocol.
 - `src/overlay.py`: native mic overlay, PySide6 preferred, Tk fallback.
 - `src/tray.py`, `src/main.py`, `src/ui.py`: legacy fallback desktop paths.
 
@@ -71,6 +73,8 @@ Frontend and shell:
 - `Frontend/client/src/lib/backend.ts`: backend URL and Tauri token bridge.
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing TS types.
 - `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system.
+- `Frontend/src-tauri/src/audio_frame_pipe.rs`: Rust encoder/validator for the
+  future audio sidecar binary frame protocol.
 - `Frontend/src-tauri/src/lib.rs`: Rust supervisor, Tauri commands, tray/menu,
   autostart, global hotkey, single instance, updater/process plugins.
 - `Frontend/src-tauri/src/shell_ipc.rs`: private backend-to-shell named-pipe
@@ -140,6 +144,8 @@ Packaging and scripts:
 - `SCRIBER_AUDIO_ENGINE=rust-prototype` and `SCRIBER_RUST_AUDIO_PROBE=1` may
   run a passive WASAPI diagnostics probe. The default capture path remains
   Python `sounddevice` until a measured Rust prototype is explicitly promoted.
+- The Rust audio frame-pipe protocol is length-prefixed and versioned. Keep the
+  Rust and Python header fixtures in sync when changing it.
 - `SCRIBER_MIC_ALWAYS_ON` is implemented as idle prewarm plus bounded rolling
   prebuffer. Do not reuse Pipecat session state across recordings.
 - `MicrophoneInput` still queues raw callback frames; only visualizer/input RMS
