@@ -152,6 +152,9 @@ Rust audio prototype:
 - `src/microphone.py` can opt into the Rust prototype through
   `SCRIBER_AUDIO_ENGINE=rust-prototype`, but falls back to Python `sounddevice`
   before the first frame if the sidecar path is unavailable.
+- The passive Rust WASAPI probe and active Rust capture path share the same
+  redacted SHA-256/16-hex native endpoint hash contract, so selected-device
+  probe evidence is comparable with selected-device capture evidence.
 - The standard installer bundles the sidecar under `audio-sidecar/`, but the
   default recording engine remains Python `sounddevice`.
 

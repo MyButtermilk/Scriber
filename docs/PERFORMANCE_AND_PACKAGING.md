@@ -640,6 +640,10 @@ Missing prerequisites:
      `audioCaptureStart`; the sidecar hashes IMMDevice IDs with the same
      SHA-256/16-hex convention and selects the matching capture endpoint when
      present.
+   - Implemented for the passive Rust/WASAPI probe: `/api/runtime/audio-diagnostics`
+     now sends the selected PortAudio label and redacted native endpoint hash
+     when available, and the Tauri probe uses the same SHA-256/16-hex endpoint
+     hash contract as Python and the active audio sidecar.
    - Still open: replacing best-effort PyCAW inventory with sidecar-provided
      endpoint identity and proving favorite/default behavior on physical
      dock/USB transitions.
@@ -750,12 +754,14 @@ Implementation plan:
      initialization without `Start()`, and returns redacted diagnostics.
    - `/api/runtime/audio-diagnostics` surfaces this as
      `microphone.rustAudioProbe`.
+   - Implemented: the probe can use a selected redacted native endpoint hash
+     instead of probing only the Windows default endpoint, and refuses to report
+     a non-default request as a default success when no native hash is available.
    - The probe does not feed the provider pipeline, does not become an active
      capture engine, and reports `callbackCount=0`, `droppedFrameCount=0`, and
      `closeStatus=closed`.
-   - Still open: selected endpoint probing by favorite/native hash, real
-     callback-based passive observation if needed, and installed physical-device
-     evidence.
+   - Still open: real callback-based passive observation if needed and installed
+     physical-device evidence.
 3. Add active capture prototype without prewarm:
    - Partly implemented: Python can start a Rust capture attempt through private
      shell IPC and receive frames through the binary frame-pipe reader.

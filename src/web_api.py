@@ -19,6 +19,7 @@ from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
 from loguru import logger
 
 from src.audio_devices import (
+    build_input_endpoint_mappings,
     collect_native_capture_endpoint_inventory,
     get_input_hostapi_priorities,
     input_endpoint_mapping_diagnostics,
@@ -1577,11 +1578,16 @@ class ScriberWebController:
             diagnostics.update({"available": False, "reason": "shellIpcUnavailable"})
             return diagnostics
 
+        sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
+        channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
         payload = {
-            "sampleRate": int(getattr(Config, "SAMPLE_RATE", 16000) or 16000),
-            "channels": max(1, int(getattr(Config, "CHANNELS", 1) or 1)),
+            "sampleRate": sample_rate,
+            "channels": channels,
             "blockSize": max(64, int(getattr(Config, "MIC_BLOCK_SIZE", 512) or 512)),
-            "devicePreference": "default",
+            **self._rust_audio_probe_device_selection_payload(
+                sample_rate=sample_rate,
+                channels=channels,
+            ),
         }
         response = call_shell_ipc("audioProbe", payload, timeout_seconds=2.0)
         response_payload = response.get("payload") if isinstance(response, dict) else None
@@ -1598,6 +1604,69 @@ class ScriberWebController:
         if not diagnostics.get("available"):
             diagnostics.setdefault("reason", diagnostics.get("responseErrorCode") or "probeUnavailable")
         return diagnostics
+
+    def _rust_audio_probe_device_selection_payload(self, *, sample_rate: int, channels: int) -> dict[str, Any]:
+        device_preference = str(getattr(Config, "MIC_DEVICE", "default") or "default").strip() or "default"
+        payload: dict[str, Any] = {
+            "devicePreference": device_preference,
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+            "nativeEndpointMatchReason": "notResolved",
+        }
+        try:
+            import sounddevice as sd  # type: ignore
+
+            native_endpoints = collect_native_capture_endpoint_inventory()
+            mappings = build_input_endpoint_mappings(
+                sd,
+                favorite_name=str(getattr(Config, "FAVORITE_MIC", "") or ""),
+                native_endpoints=native_endpoints,
+                sample_rate=sample_rate,
+                channels=channels,
+            )
+            raw_device = device_preference
+            match = None
+            if raw_device and raw_device not in {"default", "None"}:
+                try:
+                    wanted_index = int(raw_device)
+                    match = next(
+                        (mapping for mapping in mappings if mapping.portaudio_index == wanted_index),
+                        None,
+                    )
+                except ValueError:
+                    wanted_normalized = normalize_device_name(raw_device)
+                    match = next(
+                        (
+                            mapping
+                            for mapping in mappings
+                            if mapping.portaudio_name == raw_device
+                            or (
+                                wanted_normalized
+                                and mapping.normalized_name == wanted_normalized
+                            )
+                        ),
+                        None,
+                    )
+            else:
+                match = next((mapping for mapping in mappings if mapping.is_default), None)
+
+            if match is None:
+                payload["nativeEndpointMatchReason"] = (
+                    "nativeEndpointNotFound" if native_endpoints else "nativeInventoryUnavailable"
+                )
+                return payload
+
+            payload.update(
+                {
+                    "portAudioLabel": match.portaudio_name,
+                    "nativeEndpointIdHash": match.native_endpoint_id_hash,
+                    "nativeEndpointMatchReason": match.match_reason,
+                }
+            )
+            return payload
+        except Exception as exc:
+            payload["nativeEndpointMatchReason"] = f"mappingFailed:{type(exc).__name__}"
+            return payload
 
     def _prewarm_diagnostics(self) -> dict[str, Any] | None:
         snapshot = getattr(self._mic_prewarm, "diagnostic_snapshot", None)

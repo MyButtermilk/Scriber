@@ -648,6 +648,81 @@ async def test_audio_diagnostics_runs_rust_probe_when_requested(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_audio_diagnostics_rust_probe_sends_selected_native_endpoint_hash(monkeypatch):
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setattr(web_api.Config, "MIC_DEVICE", "Dock Mic, Windows WASAPI", raising=False)
+    monkeypatch.setattr(web_api.Config, "FAVORITE_MIC", "Dock Mic, Windows WASAPI", raising=False)
+    _install_fake_sounddevice_module(
+        monkeypatch,
+        devices=[
+            {"name": "Built-in Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+            {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+        ],
+        hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
+        default_input=0,
+    )
+    monkeypatch.setattr(
+        web_api,
+        "collect_native_capture_endpoint_inventory",
+        lambda: [
+            {
+                "endpointIdHash": "built-in-hash",
+                "friendlyName": "Built-in Mic",
+                "flow": "capture",
+                "isDefault": True,
+            },
+            {
+                "endpointIdHash": "dock-hash",
+                "friendlyName": "Dock Mic",
+                "flow": "capture",
+                "isDefault": False,
+            },
+        ],
+    )
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    call_mock = MagicMock(
+        return_value={
+            "success": True,
+            "payload": {
+                "engine": "rust-prototype",
+                "probeKind": "wasapi-passive",
+                "available": True,
+                "endpointIdHash": "dock-hash",
+                "selection": "nativeEndpointHash",
+                "endpointSelection": {
+                    "mode": "nativeEndpointHash",
+                    "selectedNativeEndpointIdHash": "dock-hash",
+                },
+                "callbackCount": 0,
+                "droppedFrameCount": 0,
+                "closeStatus": "closed",
+            },
+            "errorCode": None,
+            "fallbackReason": None,
+        }
+    )
+    monkeypatch.setattr(web_api, "call_shell_ipc", call_mock)
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    try:
+        audio = ctl.get_audio_diagnostics()
+    finally:
+        ctl.shutdown()
+
+    probe = audio["microphone"]["rustAudioProbe"]
+    command, payload = call_mock.call_args.args[:2]
+    assert command == "audioProbe"
+    assert payload["devicePreference"] == "Dock Mic, Windows WASAPI"
+    assert payload["portAudioLabel"] == "Dock Mic, Windows WASAPI"
+    assert payload["nativeEndpointIdHash"] == "dock-hash"
+    assert payload["nativeEndpointMatchReason"] in {"name", "normalizedName"}
+    assert probe["endpointSelection"]["mode"] == "nativeEndpointHash"
+    assert "SWD\\MMDEVAPI" not in str(payload)
+    assert "SWD\\MMDEVAPI" not in str(probe)
+
+
+@pytest.mark.asyncio
 async def test_runtime_reports_native_device_event_flag(monkeypatch):
     monkeypatch.setenv("SCRIBER_NATIVE_DEVICE_EVENTS", "0")
     loop = asyncio.get_running_loop()

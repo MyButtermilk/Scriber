@@ -1,6 +1,7 @@
 mod audio_devices;
 mod audio_frame_pipe;
 mod audio_sidecar_client;
+mod redaction;
 mod shell_ipc;
 
 use serde::Serialize;

@@ -113,6 +113,9 @@ Rust audio:
   resource, but it remains opt-in. Python-side Rust diagnostics include
   frame-pipe read counters, sequence/protocol error counts, first-frame read
   timing, reader end reason, and stop-health fields for support bundles.
+  Passive Rust WASAPI probes now use the same redacted native endpoint hash
+  contract as active Rust capture, so selected-device probe evidence is no
+  longer default-only.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

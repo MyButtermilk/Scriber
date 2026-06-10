@@ -3,6 +3,8 @@
 use serde_json::{json, Value};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::redaction::hash_sensitive_identifier;
+
 #[cfg(windows)]
 use std::{
     ffi::c_void,
@@ -36,6 +38,8 @@ pub struct PassiveAudioProbeOptions {
     pub requested_channels: u16,
     pub block_size: u32,
     pub device_preference: String,
+    pub port_audio_label: String,
+    pub native_endpoint_id_hash: String,
 }
 
 impl Default for PassiveAudioProbeOptions {
@@ -45,6 +49,8 @@ impl Default for PassiveAudioProbeOptions {
             requested_channels: 1,
             block_size: 512,
             device_preference: "default".to_string(),
+            port_audio_label: String::new(),
+            native_endpoint_id_hash: String::new(),
         }
     }
 }
@@ -186,20 +192,9 @@ fn run_passive_audio_probe_impl(options: PassiveAudioProbeOptions) -> Result<Val
                 .and_then(|collection| collection.GetCount())
                 .ok()
         };
-        let selection_note = if options
-            .device_preference
-            .trim()
-            .eq_ignore_ascii_case("default")
-        {
-            "default"
-        } else {
-            "fallbackToDefault"
-        };
-
-        let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
-            .map_err(|err| format!("default capture endpoint unavailable: {err}"))?;
-        let endpoint_id = unsafe { device_id_string(&device) };
-        let endpoint_id_hash = hash_endpoint_id(&endpoint_id);
+        let selected = select_passive_probe_device(&enumerator, &options)?;
+        let device = selected.device;
+        let endpoint_id_hash = selected.endpoint_id_hash;
         let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
             .map_err(|err| format!("IAudioClient activation failed: {err}"))?;
 
@@ -243,8 +238,15 @@ fn run_passive_audio_probe_impl(options: PassiveAudioProbeOptions) -> Result<Val
             "",
             "",
             json!({
-                "selection": selection_note,
+                "selection": selected.selection_mode.clone(),
                 "endpointIdHash": endpoint_id_hash,
+                "endpointSelection": passive_endpoint_selection_payload(
+                    &options,
+                    &endpoint_id_hash,
+                    &selected.selection_mode,
+                    selected.used_default_endpoint,
+                    selected.fallback_reason.clone(),
+                ),
                 "activeCaptureEndpointCount": active_capture_endpoint_count,
                 "mixFormat": wave_format_payload(&mix_format),
                 "requestedFormat": requested_format_payload(&options),
@@ -269,11 +271,10 @@ fn run_passive_audio_probe_impl(options: PassiveAudioProbeOptions) -> Result<Val
         if let Some(object) = payload.as_object_mut() {
             object.insert(
                 "fallbackReason".to_string(),
-                if selection_note == "fallbackToDefault" {
-                    Value::String("devicePreferenceUnsupported".to_string())
-                } else {
-                    Value::Null
-                },
+                selected
+                    .fallback_reason
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
             );
         }
         Ok(payload)
@@ -301,6 +302,66 @@ fn run_passive_audio_probe_impl(options: PassiveAudioProbeOptions) -> Result<Val
             }),
         )),
     }
+}
+
+#[cfg(windows)]
+struct PassiveProbeSelectedDevice {
+    device: windows::Win32::Media::Audio::IMMDevice,
+    endpoint_id_hash: String,
+    selection_mode: String,
+    used_default_endpoint: bool,
+    fallback_reason: Option<String>,
+}
+
+#[cfg(windows)]
+fn select_passive_probe_device(
+    enumerator: &IMMDeviceEnumerator,
+    options: &PassiveAudioProbeOptions,
+) -> Result<PassiveProbeSelectedDevice, String> {
+    let requested_hash = options.native_endpoint_id_hash.trim();
+    if !requested_hash.is_empty() {
+        let collection = unsafe { enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) }
+            .map_err(|err| format!("WASAPI probe endpoint enumeration failed: {err}"))?;
+        let count = unsafe { collection.GetCount() }
+            .map_err(|err| format!("WASAPI probe endpoint count failed: {err}"))?;
+        for index in 0..count {
+            let device = unsafe { collection.Item(index) }
+                .map_err(|err| format!("WASAPI probe endpoint item {index} failed: {err}"))?;
+            let endpoint_id = unsafe { device_id_string(&device) };
+            let endpoint_hash = hash_endpoint_id(&endpoint_id);
+            if endpoint_hash == requested_hash {
+                return Ok(PassiveProbeSelectedDevice {
+                    device,
+                    endpoint_id_hash: requested_hash.to_string(),
+                    selection_mode: "nativeEndpointHash".to_string(),
+                    used_default_endpoint: false,
+                    fallback_reason: None,
+                });
+            }
+        }
+        return Err(format!(
+            "requested native WASAPI probe endpoint hash was not found: {requested_hash}"
+        ));
+    }
+
+    if !is_default_device_preference(&options.device_preference) {
+        return Err(
+            "requested non-default WASAPI probe has no native endpoint hash; refusing default fallback"
+                .to_string(),
+        );
+    }
+
+    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
+        .map_err(|err| format!("default capture endpoint unavailable: {err}"))?;
+    let endpoint_id = unsafe { device_id_string(&device) };
+    let endpoint_id_hash = hash_endpoint_id(&endpoint_id);
+    Ok(PassiveProbeSelectedDevice {
+        device,
+        endpoint_id_hash,
+        selection_mode: "default".to_string(),
+        used_default_endpoint: true,
+        fallback_reason: None,
+    })
 }
 
 fn passive_audio_probe_payload(
@@ -345,6 +406,38 @@ fn requested_format_payload(options: &PassiveAudioProbeOptions) -> Value {
         "channels": options.requested_channels,
         "blockSize": options.block_size,
         "devicePreference": bounded_hint_string(options.device_preference.clone(), "default"),
+        "portAudioLabel": bounded_hint_string(options.port_audio_label.clone(), ""),
+        "nativeEndpointIdHash": if options.native_endpoint_id_hash.trim().is_empty() {
+            Value::Null
+        } else {
+            Value::String(options.native_endpoint_id_hash.clone())
+        },
+    })
+}
+
+fn passive_endpoint_selection_payload(
+    options: &PassiveAudioProbeOptions,
+    selected_endpoint_id_hash: &str,
+    mode: &str,
+    used_default_endpoint: bool,
+    fallback_reason: Option<String>,
+) -> Value {
+    json!({
+        "mode": mode,
+        "requestedDevicePreference": options.device_preference,
+        "requestedPortAudioLabel": options.port_audio_label,
+        "requestedNativeEndpointIdHash": if options.native_endpoint_id_hash.trim().is_empty() {
+            Value::Null
+        } else {
+            Value::String(options.native_endpoint_id_hash.clone())
+        },
+        "selectedNativeEndpointIdHash": if selected_endpoint_id_hash.is_empty() {
+            Value::Null
+        } else {
+            Value::String(selected_endpoint_id_hash.to_string())
+        },
+        "usedDefaultEndpoint": used_default_endpoint,
+        "fallbackReason": fallback_reason.map(Value::String).unwrap_or(Value::Null),
     })
 }
 
@@ -608,6 +701,11 @@ fn bounded_hint_string(value: String, default: &str) -> String {
     trimmed.chars().take(128).collect()
 }
 
+fn is_default_device_preference(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized.is_empty() || normalized == "default" || normalized == "none"
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -657,12 +755,7 @@ fn role_to_hint(role: ERole) -> &'static str {
 }
 
 fn hash_endpoint_id(endpoint_id: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in endpoint_id.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
+    hash_sensitive_identifier(endpoint_id)
 }
 
 #[cfg(test)]
@@ -734,6 +827,8 @@ mod tests {
             requested_channels: 1,
             block_size: 512,
             device_preference: "default".to_string(),
+            port_audio_label: "Default Mic, Windows WASAPI".to_string(),
+            native_endpoint_id_hash: "abc123".to_string(),
         };
 
         let payload = super::passive_audio_probe_payload(
@@ -752,6 +847,11 @@ mod tests {
         assert_eq!(payload["available"], true);
         assert_eq!(payload["endpointIdHash"], "abc123");
         assert_eq!(payload["requestedFormat"]["sampleRate"], 16_000);
+        assert_eq!(
+            payload["requestedFormat"]["portAudioLabel"],
+            "Default Mic, Windows WASAPI"
+        );
+        assert_eq!(payload["requestedFormat"]["nativeEndpointIdHash"], "abc123");
         assert!(payload.get("endpointId").is_none());
     }
 
@@ -795,6 +895,11 @@ mod tests {
         assert_eq!(hashed, super::hash_endpoint_id(raw));
         assert_ne!(hashed, raw);
         assert_eq!(hashed.len(), 16);
+        assert_eq!(super::hash_endpoint_id(""), "");
+        assert_eq!(
+            super::hash_endpoint_id(r"SWD\MMDEVAPI\{0.0.1.00000000}.{secret-device-guid}"),
+            "e9a658ee3eff25fd"
+        );
     }
 
     #[cfg(windows)]

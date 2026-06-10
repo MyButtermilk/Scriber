@@ -441,6 +441,8 @@ fn parse_audio_probe_options(
         requested_channels: optional_u64(payload, "channels", 1, 16) as u16,
         block_size: optional_u64(payload, "blockSize", 512, 16_384) as u32,
         device_preference: bounded_string(payload, "devicePreference", "default", 96),
+        port_audio_label: bounded_string(payload, "portAudioLabel", "", 160),
+        native_endpoint_id_hash: bounded_string(payload, "nativeEndpointIdHash", "", 64),
     })
 }
 
@@ -1594,6 +1596,8 @@ mod tests {
             "channels": 64,
             "blockSize": 99_999,
             "devicePreference": "default-capture-device-with-a-longer-than-needed-label",
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
         });
 
         let options = super::parse_audio_probe_options(&payload).unwrap();
@@ -1601,6 +1605,8 @@ mod tests {
         assert_eq!(options.requested_sample_rate, 192_000);
         assert_eq!(options.requested_channels, 16);
         assert_eq!(options.block_size, 16_384);
+        assert_eq!(options.port_audio_label, "Default Mic, Windows WASAPI");
+        assert_eq!(options.native_endpoint_id_hash, "endpoint-hash");
         assert!(options
             .device_preference
             .starts_with("default-capture-device"));
