@@ -117,6 +117,16 @@ def test_tauri_does_not_expose_general_shell_or_opener_plugins() -> None:
     assert "tauri_plugin_opener" not in lib_rs
 
 
+def test_rust_audio_sidecar_is_separate_cargo_binary_not_tauri_external_bin() -> None:
+    cargo = tomllib.loads((TAURI_DIR / "Cargo.toml").read_text(encoding="utf-8"))
+    bins = {item["name"]: item["path"] for item in cargo.get("bin", [])}
+    config = read_json(TAURI_DIR / "tauri.conf.json")
+
+    assert bins["scriber-audio-sidecar"] == "src/audio_sidecar.rs"
+    assert (TAURI_DIR / "src" / "audio_sidecar.rs").is_file()
+    assert "externalBin" not in config.get("bundle", {})
+
+
 def test_tauri_window_menu_is_not_installed() -> None:
     lib_rs = (TAURI_DIR / "src" / "lib.rs").read_text(encoding="utf-8")
 

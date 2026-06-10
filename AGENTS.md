@@ -74,6 +74,9 @@ Frontend and shell:
 - `Frontend/client/src/lib/backend.ts`: backend URL and Tauri token bridge.
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing TS types.
 - `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system.
+- `Frontend/src-tauri/src/audio_sidecar.rs`: separate Rust audio sidecar
+  skeleton with `--self-test` and `--stdio` JSON-lines protocol. It does not
+  yet perform WASAPI capture or ship as an installed runtime component.
 - `Frontend/src-tauri/src/audio_frame_pipe.rs`: Rust encoder/validator for the
   future audio sidecar binary frame protocol.
 - `Frontend/src-tauri/src/lib.rs`: Rust supervisor, Tauri commands, tray/menu,
@@ -122,6 +125,9 @@ Packaging and scripts:
   the Rust audio prototype. Until a real sidecar is implemented,
   `audioCaptureStart` must fail explicitly and Python must fall back before the
   first frame.
+- `scriber-audio-sidecar` is a separate Cargo binary for crash-isolated audio
+  work. Until packaging and lifecycle gates are added, do not depend on it in
+  the standard installed runtime.
 - Python owns recording state and provider work.
 
 ### REST and WebSocket Contracts

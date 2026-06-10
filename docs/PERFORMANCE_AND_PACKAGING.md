@@ -670,6 +670,15 @@ Missing prerequisites:
      returns explicit `audioCaptureUnavailable` until a real sidecar exists.
    - Python treats that explicit failure as a before-first-frame fallback to the
      existing `sounddevice` engine.
+6. Rust audio sidecar process skeleton:
+   - Partly implemented as separate Cargo binary `scriber-audio-sidecar` in
+     `Frontend/src-tauri/src/audio_sidecar.rs`.
+   - The binary supports `--self-test` plus `--stdio` JSON-lines commands:
+     `ping`, `capabilities`, `captureStart`, `captureStop`, and `shutdown`.
+   - The sidecar reports the shared audio frame protocol and returns explicit
+     `audioCaptureUnavailable` for capture until real WASAPI capture is wired.
+   - Still open: packaging into the installed runtime, Tauri lifecycle
+     management, long-lived capture sessions, and frame-pipe creation.
 
 Implementation plan:
 
@@ -696,8 +705,10 @@ Implementation plan:
 3. Add active capture prototype without prewarm:
    - Partly implemented: Python can start a Rust capture attempt through private
      shell IPC and receive frames through the binary frame-pipe reader.
-   - Still open: implement the Tauri-managed Rust audio sidecar process for
-     crash isolation, not an in-WebView or UI-thread feature.
+   - Partly implemented: a separate Rust audio sidecar binary exists for crash
+     isolation and exposes a JSON-lines control protocol.
+   - Still open: make Tauri manage the sidecar lifecycle for real capture
+     sessions, not as an in-WebView or UI-thread feature.
    - Still open: create the private binary named pipe and write real WASAPI PCM
      frames into it.
    - If Rust fails before the first frame, Python falls back to Python capture
@@ -709,6 +720,8 @@ Implementation plan:
    - Partly implemented: shared Rust/Python helpers define and validate the
      binary PCM frame header, and private shell IPC reserves
      `audioCaptureStart`/`audioCaptureStop`.
+   - Partly implemented: `scriber-audio-sidecar --stdio` accepts sidecar-local
+     `captureStart`/`captureStop` commands using JSON Lines.
    - Start request includes sample rate, channels, block size, device preference
      (`default`, `favorite`, `portAudioLabel`, or `nativeEndpointHash`), and
      `prebufferMs`.

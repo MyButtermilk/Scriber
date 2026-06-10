@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-06-09
+Last verified: 2026-06-10
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -113,6 +113,19 @@ health is proven.
 
 Tauri must not become the owner of recording state. Route recording commands
 through backend endpoints.
+
+Rust audio prototype:
+
+- `Frontend/src-tauri/src/audio_sidecar.rs` is a separate Cargo binary reserved
+  for crash-isolated audio capture work.
+- The sidecar currently exposes `--self-test` and `--stdio` JSON-lines commands
+  for `ping`, `capabilities`, `captureStart`, `captureStop`, and `shutdown`.
+- `captureStart` still returns explicit unavailable status until real WASAPI
+  capture and frame-pipe writing are implemented.
+- `src/microphone.py` can opt into the Rust prototype through
+  `SCRIBER_AUDIO_ENGINE=rust-prototype`, but falls back to Python `sounddevice`
+  before the first frame if the sidecar path is unavailable.
+- The standard installed runtime does not yet depend on the audio sidecar.
 
 ## Contracts
 
