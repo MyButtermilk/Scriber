@@ -837,7 +837,7 @@ Implementation plan:
      endpoint-selection details, frame pipe, and resampler metadata.
    - Implemented: stop responses preserve sidecar health fields through Tauri
      shell IPC, and Python stores them in `RustPrototypeFrameSource`
-     diagnostics.
+     diagnostics, including total/prebuffer/live writer frame counts.
    - Implemented: `RustPrototypeFrameSource` records richer fallback reasons and
      frame-pipe reader counters for frames, bytes, sequence errors, protocol
      errors, first-frame read timing, and reader end reason.
@@ -872,9 +872,9 @@ Implementation plan:
    - Partly implemented: the Rust frame source can reopen a fresh sidecar after
      a watchdog-style `stop(close=false)`, and diagnostics include sidecar start
      count, restart count, reader-thread liveness, stop reason, exit status,
-     writer connection state, frames/bytes written, frame-pipe read counters,
-     sequence/protocol error counts, first-frame read timing, and reader end
-     reason.
+     writer connection state, total/prebuffer/live frames written, bytes
+     written, frame-pipe read counters, sequence/protocol error counts,
+     first-frame read timing, and reader end reason.
    - Match stale callback detection, minimum restart interval, restart count,
      graceful close, and fallback-on-next-session policy.
 7. Run A/B measurements before any promotion:

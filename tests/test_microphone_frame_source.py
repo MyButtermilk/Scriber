@@ -205,6 +205,8 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
                     "reason": "captureStop",
                     "connected": True,
                     "framesWritten": 3,
+                    "prebufferFramesWritten": 1,
+                    "liveFramesWritten": 2,
                     "bytesWritten": 3072,
                     "writerError": None,
                     "sidecarUptimeMs": 55,
@@ -252,6 +254,8 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     assert snapshot["sidecarExitStatus"] == 0
     assert snapshot["sidecarConnected"] is True
     assert snapshot["sidecarFramesWritten"] == 3
+    assert snapshot["sidecarPrebufferFramesWritten"] == 1
+    assert snapshot["sidecarLiveFramesWritten"] == 2
     assert snapshot["sidecarBytesWritten"] == 3072
     assert snapshot["sidecarUptimeMs"] == 55
     assert snapshot["sidecarStopReason"] == "captureStop"
@@ -414,6 +418,8 @@ def test_rust_prototype_frame_source_tracks_prebuffer_before_live_frames(monkeyp
                     "reason": "captureStop",
                     "connected": True,
                     "framesWritten": 2,
+                    "prebufferFramesWritten": 1,
+                    "liveFramesWritten": 1,
                     "bytesWritten": len(frames),
                     "writerError": None,
                     "exitStatus": 0,
@@ -455,6 +461,8 @@ def test_rust_prototype_frame_source_tracks_prebuffer_before_live_frames(monkeyp
     assert snapshot["framePipeLiveAudioFramesRead"] == 16
     assert snapshot["framePipePrebufferAfterLiveCount"] == 0
     assert snapshot["framePipeFirstLiveSequence"] == 1
+    assert snapshot["sidecarPrebufferFramesWritten"] == 1
+    assert snapshot["sidecarLiveFramesWritten"] == 1
     np.testing.assert_array_equal(calls[0][0], prebuffer_audio)
     np.testing.assert_array_equal(calls[1][0], live_audio)
 

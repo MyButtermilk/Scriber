@@ -376,6 +376,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.sidecar_uptime_ms = None
         self.sidecar_connected = None
         self.sidecar_frames_written = None
+        self.sidecar_prebuffer_frames_written = None
+        self.sidecar_live_frames_written = None
         self.sidecar_bytes_written = None
         self.sidecar_writer_error = None
         self.sidecar_stop_reason = ""
@@ -557,6 +559,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.sidecar_uptime_ms = payload.get("sidecarUptimeMs")
         self.sidecar_connected = payload.get("connected")
         self.sidecar_frames_written = payload.get("framesWritten")
+        self.sidecar_prebuffer_frames_written = payload.get("prebufferFramesWritten")
+        self.sidecar_live_frames_written = payload.get("liveFramesWritten")
         self.sidecar_bytes_written = payload.get("bytesWritten")
         self.sidecar_writer_error = payload.get("writerError")
         self.sidecar_stop_reason = str(payload.get("reason") or "")
@@ -583,6 +587,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "sidecarUptimeMs": self.sidecar_uptime_ms,
             "sidecarConnected": self.sidecar_connected,
             "sidecarFramesWritten": self.sidecar_frames_written,
+            "sidecarPrebufferFramesWritten": self.sidecar_prebuffer_frames_written,
+            "sidecarLiveFramesWritten": self.sidecar_live_frames_written,
             "sidecarBytesWritten": self.sidecar_bytes_written,
             "sidecarWriterError": self.sidecar_writer_error,
             "sidecarStopReason": self.sidecar_stop_reason,

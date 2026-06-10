@@ -141,9 +141,9 @@ Rust audio prototype:
 - `captureStart` still returns explicit unavailable status by default unless an
   explicit sidecar capture flag is set.
 - `audioCaptureStop` preserves sidecar health fields, including stop reason,
-  writer connection state, frames/bytes written, writer error, uptime, PID, and
-  exit status. Python stores these in nested active-capture diagnostics for
-  support bundles and long-run smokes.
+  writer connection state, total/prebuffer/live frames written, bytes written,
+  writer error, uptime, PID, and exit status. Python stores these in nested
+  active-capture diagnostics for support bundles and long-run smokes.
 - Python Rust-frame diagnostics also record frame-pipe frames/audio frames read,
   bytes read, sequence/protocol error counts, first-frame read timing, reader
   end reason, and last frame metadata without exposing raw pipe paths.
