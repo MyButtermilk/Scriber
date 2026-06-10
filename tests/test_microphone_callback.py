@@ -208,6 +208,64 @@ def test_microphone_watchdog_restarts_direct_stream_when_callbacks_never_arrive(
 
 
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+def test_microphone_watchdog_reopens_inactive_owned_frame_source():
+    class _FakeOwnedFrameSource:
+        engine = "rust-prototype"
+        name = "rust-frame-pipe"
+        target_channels = 1
+        capture_channels = 1
+        fallback_reason = ""
+
+        def __init__(self):
+            self.stream = _FakeStream(active=False)
+            self.stop_calls: list[bool] = []
+            self.start_calls = 0
+
+        def stop(self, *, close: bool):
+            self.stop_calls.append(close)
+            self.stream.active = False
+
+        def start(self):
+            self.start_calls += 1
+            self.stream.active = True
+
+        def diagnostic_snapshot(self):
+            return {
+                "engine": self.engine,
+                "frameSource": self.name,
+                "hasStream": True,
+                "streamActive": self.stream.active,
+            }
+
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+    source = _FakeOwnedFrameSource()
+    mic._frame_source = source
+    mic.stream = source.stream
+    mic._audio_engine = source.engine
+    mic._frame_source_name = source.name
+    mic._running = True
+
+    assert (
+        mic.ensure_stream_health(
+            reason="rust_reader_closed",
+            max_callback_gap_seconds=10.0,
+            min_restart_interval_seconds=0.0,
+        )
+        is True
+    )
+
+    assert source.stop_calls == [False]
+    assert source.start_calls == 1
+    snapshot = mic.diagnostic_snapshot()
+    assert snapshot["engine"] == "rust-prototype"
+    assert snapshot["streamActive"] is True
+    assert snapshot["healthRestartCount"] == 1
+    assert snapshot["lastHealthCheckReason"] == "rust_reader_closed"
+    assert snapshot["lastHealthRestartReason"] == "rust_reader_closed"
+    assert snapshot["lastHealthRestartError"] == ""
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
 def test_microphone_external_error_detaches_adopted_prewarm_stream():
     class _FakePrewarmManager:
         def __init__(self):

@@ -894,6 +894,12 @@ Implementation plan:
      writer connection state, total/prebuffer/live frames written, bytes
      written, frame-pipe read counters, sequence/protocol error counts,
      first-frame read timing, and reader end reason.
+   - Implemented: `MicrophoneInput.ensure_stream_health()` now treats an
+     inactive source-owned frame source during active recording as restartable
+     health failure, calls `stop(close=false)` first to release stale Rust
+     `streamId`/frame-pipe state, and then starts a fresh source. Top-level
+     active-capture diagnostics include health restart count, last health-check
+     reason, last restart reason, and last restart error.
    - Match stale callback detection, minimum restart interval, restart count,
      graceful close, and fallback-on-next-session policy.
 7. Run A/B measurements before any promotion:

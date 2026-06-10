@@ -896,6 +896,10 @@ class MicrophoneInput(BaseInputTransport):
         self._last_status = ""
         self._last_callback_exception = ""
         self._last_health_restart_at = 0.0
+        self._health_restart_count = 0
+        self._last_health_check_reason = ""
+        self._last_health_restart_reason = ""
+        self._last_health_restart_error = ""
 
     def _claim_active_stream(self) -> None:
         if self._stream_claimed:
@@ -1021,6 +1025,10 @@ class MicrophoneInput(BaseInputTransport):
         self._last_status = ""
         self._last_callback_exception = ""
         self._last_health_restart_at = 0.0
+        self._health_restart_count = 0
+        self._last_health_check_reason = ""
+        self._last_health_restart_reason = ""
+        self._last_health_restart_error = ""
         self._create_audio_task()
         self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")
 
@@ -1243,6 +1251,10 @@ class MicrophoneInput(BaseInputTransport):
             ),
             "lastStatus": self._last_status,
             "lastCallbackException": self._last_callback_exception,
+            "healthRestartCount": int(self._health_restart_count),
+            "lastHealthCheckReason": self._last_health_check_reason,
+            "lastHealthRestartReason": self._last_health_restart_reason,
+            "lastHealthRestartError": self._last_health_restart_error,
         }
 
     def ensure_stream_health(
@@ -1254,6 +1266,7 @@ class MicrophoneInput(BaseInputTransport):
     ) -> bool:
         if not self._running:
             return True
+        self._last_health_check_reason = str(reason or "watchdog")
 
         if self._using_prewarm_stream:
             ensure = getattr(self.prewarm_manager, "ensure_active_capture_healthy", None)
@@ -1300,17 +1313,20 @@ class MicrophoneInput(BaseInputTransport):
             return active
 
         self._last_health_restart_at = now
+        source_owns_stream = self._source_owns_stream()
         try:
             with get_device_guard_lock():
-                if active and callback_stale:
+                if source_owns_stream and (callback_stale or not active):
                     try:
-                        if self._source_owns_stream():
-                            self._frame_source.stop(close=False)
-                        else:
-                            stream.stop()
+                        self._frame_source.stop(close=False)
                     except Exception:
                         pass
-                if self._source_owns_stream():
+                elif active and callback_stale:
+                    try:
+                        stream.stop()
+                    except Exception:
+                        pass
+                if source_owns_stream:
                     self._frame_source.start()
                     self._sync_frame_source_state()
                     stream = self.stream
@@ -1319,6 +1335,9 @@ class MicrophoneInput(BaseInputTransport):
                 self._stream_started_at = time.monotonic()
                 self._last_callback_at = 0.0
                 self._claim_active_stream()
+            self._health_restart_count += 1
+            self._last_health_restart_reason = str(reason or "watchdog")
+            self._last_health_restart_error = ""
             logger.warning(
                 "Microphone capture stream restarted "
                 f"({reason}, was_active={active}, stale_callbacks={callback_stale})"
@@ -1326,6 +1345,7 @@ class MicrophoneInput(BaseInputTransport):
             return bool(getattr(stream, "active", False))
         except Exception as exc:
             self._last_callback_exception = str(exc)
+            self._last_health_restart_error = str(exc)
             if not bool(getattr(stream, "active", False)):
                 self._release_active_stream()
             logger.warning(f"Microphone capture stream restart failed ({reason}): {exc}")
