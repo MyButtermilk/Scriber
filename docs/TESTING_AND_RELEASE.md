@@ -224,6 +224,24 @@ Use the top-level release-readiness runner for final external evidence:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 -PlanOnly
 ```
 
+When evaluating whether the Rust audio prototype can be promoted, add the
+physical sidecar smoke as a hard gate:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunRustAudioSidecarSmoke `
+  -RequireRustAudioSidecarSmoke `
+  -RustAudioSidecarDurationSec 600
+```
+
+`-RequireRustAudioSidecarSmoke` validates the generated
+`rust-audio-sidecar-smoke.json` in `validate_hybrid_release_readiness.py`. The
+report must come from real WASAPI capture, include default-device and selected
+native-endpoint-hash runs, read frames without sequence gaps, and preserve
+sidecar stop-health metrics. Without that flag the Rust smoke remains visible in
+the runner plan but optional, so standard Python-capture release builds are not
+blocked by prototype evidence.
+
 The final readiness validator expects evidence for:
 
 - physical microphone hardware matrix,

@@ -254,6 +254,79 @@ def write_runtime_dependency_footprint_report(path: Path, *, ok: bool = True) ->
     )
 
 
+def write_rust_audio_sidecar_report(
+    path: Path,
+    *,
+    ok: bool = True,
+    duration_sec: float = 600,
+    selected_hash_verified: bool = True,
+    sequence_gap_count: int = 0,
+    plan_only: bool = False,
+) -> None:
+    failed_capture_count = 0 if ok else 1
+    path.write_text(
+        json.dumps(
+            {
+                "apiVersion": "1",
+                "ok": ok,
+                "planOnly": plan_only,
+                "mode": "wasapi",
+                "requested": {
+                    "durationSec": duration_sec,
+                    "selectedDurationSec": 10,
+                },
+                "summary": {
+                    "captureCount": 2,
+                    "failedCaptureCount": failed_capture_count,
+                    "totalFramesRead": 24,
+                    "selectedHashVerified": selected_hash_verified,
+                },
+                "captures": [
+                    {
+                        "name": "default",
+                        "ok": True,
+                        "start": {
+                            "nativeEndpointIdHash": "abc123",
+                            "endpointSelection": {"mode": "default"},
+                        },
+                        "frames": {
+                            "framesRead": 17,
+                            "firstFrameReadMs": 10.0,
+                            "sequenceGapCount": sequence_gap_count,
+                        },
+                        "stop": {
+                            "stopped": True,
+                            "connected": True,
+                            "framesWritten": 17,
+                            "writerError": None,
+                        },
+                    },
+                    {
+                        "name": "selected-native-endpoint-hash",
+                        "ok": True,
+                        "start": {
+                            "nativeEndpointIdHash": "abc123",
+                            "endpointSelection": {"mode": "nativeEndpointHash"},
+                        },
+                        "frames": {
+                            "framesRead": 7,
+                            "firstFrameReadMs": 9.0,
+                            "sequenceGapCount": 0,
+                        },
+                        "stop": {
+                            "stopped": True,
+                            "connected": True,
+                            "framesWritten": 7,
+                            "writerError": None,
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_complete_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
     hardware_dir = tmp_path / "hardware"
     write_full_hardware_matrix(hardware_dir)
@@ -294,6 +367,83 @@ def test_validate_release_readiness_accepts_complete_evidence(tmp_path: Path) ->
         "publishedUpdaterManifest",
         "authenticodeSignatures",
     }
+
+
+def test_validate_release_readiness_accepts_required_rust_audio_sidecar_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
+    write_rust_audio_sidecar_report(rust_audio_report)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_sidecar_report=rust_audio_report,
+        require_rust_audio_sidecar_smoke=True,
+        min_rust_audio_duration_sec=600,
+    )
+
+    assert result["ok"] is True
+    rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    assert rust_audio_check["details"]["summary"]["selectedHashVerified"] is True
+
+
+def test_validate_release_readiness_rejects_missing_required_rust_audio_sidecar_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        require_rust_audio_sidecar_smoke=True,
+        min_rust_audio_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    assert "Rust audio sidecar smoke report is required" in rust_audio_check["failures"]
+
+
+def test_validate_release_readiness_rejects_weak_rust_audio_sidecar_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
+    write_rust_audio_sidecar_report(
+        rust_audio_report,
+        duration_sec=1,
+        selected_hash_verified=False,
+        sequence_gap_count=1,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_sidecar_report=rust_audio_report,
+        require_rust_audio_sidecar_smoke=True,
+        min_rust_audio_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    failures = "\n".join(rust_audio_check["failures"])
+    assert "durationSec must be at least 600" in failures
+    assert "selected native endpoint hash capture" in failures
+    assert "sequenceGapCount must be 0" in failures
 
 
 def test_validate_release_readiness_rejects_missing_external_reports(tmp_path: Path) -> None:

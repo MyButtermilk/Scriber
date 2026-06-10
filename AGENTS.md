@@ -291,6 +291,15 @@ Rust audio sidecar short physical smoke:
 python scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 1 --output tmp\rust-audio-sidecar-smoke.json
 ```
 
+Rust audio promotion readiness gate:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunRustAudioSidecarSmoke `
+  -RequireRustAudioSidecarSmoke `
+  -RustAudioSidecarDurationSec 600
+```
+
 ## Editing Guidance
 
 - Keep edits scoped to the feature or bug being addressed.

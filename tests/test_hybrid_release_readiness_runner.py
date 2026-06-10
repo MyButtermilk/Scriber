@@ -82,6 +82,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
         "updaterPublicationVerification",
         "mediaPreparationSmoke",
         "runtimeDependencyFootprint",
+        "rustAudioSidecarSmoke",
         "authenticodeValidation",
         "hybridReleaseReadiness",
     ]
@@ -93,6 +94,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
         "signedTauriUpdaterMetadata",
         "mediaPreparationSmoke",
         "runtimeDependencyFootprint",
+        "rustAudioSidecarSmoke",
         "publishedUpdaterManifest",
         "authenticodeSignatures",
         "hybridReleaseReadinessAggregate",
@@ -114,9 +116,16 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert runtime_evidence["report"].endswith("runtime-dependency-footprint.json")
     assert "analyze_backend_runtime_dependencies.py" in runtime_evidence["producer"]
     assert runtime_evidence["sidecarDir"].endswith("target\\release\\backend")
-    publication_evidence = payload["requiredEvidence"][4]
+    rust_evidence = payload["requiredEvidence"][4]
+    assert rust_evidence["required"] is False
+    assert rust_evidence["report"].endswith("rust-audio-sidecar-smoke.json")
+    assert rust_evidence["producer"] == "not requested"
+    assert rust_evidence["durationSec"] == 600
+    assert rust_evidence["selectedDurationSec"] == 10
+    assert "Optional for standard releases" in rust_evidence["notes"]
+    publication_evidence = payload["requiredEvidence"][5]
     assert "final redirect URL" in publication_evidence["notes"]
-    authenticode_evidence = payload["requiredEvidence"][5]
+    authenticode_evidence = payload["requiredEvidence"][6]
     assert authenticode_evidence["expectedPublisher"] == "Scriber Publisher"
     assert authenticode_evidence["requireTimestamp"] is True
     assert "validate_microphone_hardware_matrix.py" in payload["commands"][0]["command"]
@@ -127,14 +136,55 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert "analyze_backend_runtime_dependencies.py" in payload["commands"][3]["command"]
     assert "--sidecar-dir" in payload["commands"][3]["command"]
     assert "runtime-dependency-footprint.json" in payload["commands"][3]["command"]
-    assert "validate_windows_authenticode.ps1" in payload["commands"][4]["command"]
-    assert "validate_hybrid_release_readiness.py" in payload["commands"][5]["command"]
-    assert "--media-preparation-report" in payload["commands"][5]["command"]
-    assert "media-preparation-smoke.json" in payload["commands"][5]["command"]
-    assert "--runtime-dependency-footprint-report" in payload["commands"][5]["command"]
-    assert "runtime-dependency-footprint.json" in payload["commands"][5]["command"]
-    assert "--require-authenticode-timestamp" in payload["commands"][5]["command"]
+    assert payload["commands"][4]["command"] == "not requested"
+    assert "validate_windows_authenticode.ps1" in payload["commands"][5]["command"]
+    assert "validate_hybrid_release_readiness.py" in payload["commands"][6]["command"]
+    assert "--media-preparation-report" in payload["commands"][6]["command"]
+    assert "media-preparation-smoke.json" in payload["commands"][6]["command"]
+    assert "--runtime-dependency-footprint-report" in payload["commands"][6]["command"]
+    assert "runtime-dependency-footprint.json" in payload["commands"][6]["command"]
+    assert "--require-authenticode-timestamp" in payload["commands"][6]["command"]
     assert written == payload
+
+
+def test_hybrid_release_readiness_runner_plans_required_rust_audio_sidecar_smoke(tmp_path: Path) -> None:
+    sidecar_exe = tmp_path / "scriber-audio-sidecar.exe"
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RunRustAudioSidecarSmoke",
+        "-RequireRustAudioSidecarSmoke",
+        "-RustAudioSidecarDurationSec",
+        "600",
+        "-RustAudioSidecarSelectedDurationSec",
+        "12",
+        "-RustAudioSidecarExe",
+        str(sidecar_exe),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    rust_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "rustAudioSidecarSmoke")
+    assert rust_evidence["required"] is True
+    assert "smoke_rust_audio_sidecar.py" in rust_evidence["producer"]
+    assert rust_evidence["durationSec"] == 600
+    assert rust_evidence["selectedDurationSec"] == 12
+    rust_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioSidecarSmoke")
+    assert "smoke_rust_audio_sidecar.py" in rust_command["command"]
+    assert "--mode wasapi" in rust_command["command"]
+    assert "--duration-sec 600" in rust_command["command"]
+    assert "--selected-duration-sec 12" in rust_command["command"]
+    assert "--sidecar-exe" in rust_command["command"]
+    readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    assert "--rust-audio-sidecar-report" in readiness_command["command"]
+    assert "--require-rust-audio-sidecar-smoke" in readiness_command["command"]
+    assert "--min-rust-audio-duration-sec 600" in readiness_command["command"]
 
 
 def test_hybrid_release_readiness_runner_requires_authenticode_paths_before_backend_work(tmp_path: Path) -> None:
@@ -176,5 +226,6 @@ def test_hybrid_release_readiness_runner_can_reuse_existing_external_reports(tmp
     assert "media-preparation-smoke.json" in payload["commands"][2]["command"]
     assert "reuse" in payload["commands"][3]["command"]
     assert "runtime-dependency-footprint.json" in payload["commands"][3]["command"]
-    assert "reuse" in payload["commands"][4]["command"]
-    assert "authenticode.json" in payload["commands"][4]["command"]
+    assert payload["commands"][4]["command"] == "not requested"
+    assert "reuse" in payload["commands"][5]["command"]
+    assert "authenticode.json" in payload["commands"][5]["command"]

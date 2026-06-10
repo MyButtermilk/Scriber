@@ -783,6 +783,12 @@ Implementation plan:
      first-frame timing, frame counts, sequence gaps, stop health, and sidecar
      writer metrics. Use a short run for local validation and `--duration-sec
      600` for the 10-minute physical stability gate.
+   - Implemented: the hybrid release-readiness runner and validator can now
+     consume that JSON evidence through `-RunRustAudioSidecarSmoke`,
+     `-UseExistingRustAudioSidecarReport`, and
+     `-RequireRustAudioSidecarSmoke`. The Rust smoke is optional for standard
+     Python-capture releases and becomes a hard gate only when evaluating Rust
+     audio promotion.
    - If Rust fails before the first frame, Python falls back to Python capture
      for that session.
    - If Rust stalls mid-session, record diagnostics and fail the current engine
@@ -854,6 +860,10 @@ Acceptance gates:
 - New Python `AudioFrameSource` contract tests, Rust frame-source fallback
   tests, diagnostics schema tests, and support-bundle redaction tests.
 - Installed live-mic smoke with visible waveform and successful transcription.
+- For Rust audio promotion only: 10-minute physical WASAPI sidecar smoke via
+  `scripts\run_hybrid_release_readiness.ps1 -RunRustAudioSidecarSmoke
+  -RequireRustAudioSidecarSmoke`, including default capture, selected native
+  endpoint hash capture, no sequence gaps, and valid stop-health metrics.
 - Physical mic matrix across built-in, USB, Bluetooth, docked, undocked, and
   Windows default-device changes.
 - No feature loss for provider streaming, final transcript injection, overlay,

@@ -46,6 +46,9 @@ def validate_release_readiness(
     runtime_dependency_footprint_report: Path | None = None,
     updater_publication_report: Path | None = None,
     authenticode_report: Path | None = None,
+    rust_audio_sidecar_report: Path | None = None,
+    require_rust_audio_sidecar_smoke: bool = False,
+    min_rust_audio_duration_sec: float = 0.0,
     expected_authenticode_publisher: str = "",
     require_authenticode_timestamp: bool = False,
     platform: str = "windows-x86_64",
@@ -69,6 +72,14 @@ def validate_release_readiness(
             expected_artifact_names=expected_signed_artifact_names,
         ),
     ]
+    if require_rust_audio_sidecar_smoke or rust_audio_sidecar_report is not None:
+        checks.append(
+            validate_rust_audio_sidecar_report(
+                rust_audio_sidecar_report,
+                required=require_rust_audio_sidecar_smoke,
+                min_duration_sec=min_rust_audio_duration_sec,
+            )
+        )
     return {
         "ok": all(check.ok for check in checks),
         "checks": [check.to_public() for check in checks],
@@ -341,6 +352,147 @@ def validate_runtime_dependency_footprint_report(report_path: Path | None) -> Re
     return ReadinessCheck("runtimeDependencyFootprint", not failures, failures, details)
 
 
+def validate_rust_audio_sidecar_report(
+    report_path: Path | None,
+    *,
+    required: bool,
+    min_duration_sec: float,
+) -> ReadinessCheck:
+    failures: list[str] = []
+    details: dict[str, Any] = {
+        "report": str(report_path) if report_path else "",
+        "required": required,
+        "minDurationSec": min_duration_sec,
+    }
+    if report_path is None:
+        if required:
+            failures.append("Rust audio sidecar smoke report is required")
+        return ReadinessCheck("rustAudioSidecarSmoke", not failures, failures, details)
+
+    report = read_json_object(report_path, failures, "Rust audio sidecar smoke report")
+    if not report:
+        return ReadinessCheck("rustAudioSidecarSmoke", False, failures, details)
+
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        failures.append("Rust audio sidecar smoke report summary must be an object")
+        summary = {}
+    requested = report.get("requested")
+    if not isinstance(requested, dict):
+        failures.append("Rust audio sidecar smoke report requested must be an object")
+        requested = {}
+    captures = report.get("captures")
+    if not isinstance(captures, list) or not captures:
+        failures.append("Rust audio sidecar smoke report captures must be a non-empty list")
+        captures = []
+
+    details.update(
+        {
+            "apiVersion": report.get("apiVersion", ""),
+            "mode": report.get("mode", ""),
+            "requested": requested,
+            "summary": summary,
+            "captureCount": len(captures),
+        }
+    )
+    if report.get("ok") is not True:
+        failures.append("Rust audio sidecar smoke report ok must be true")
+    if report.get("planOnly") is True:
+        failures.append("Rust audio sidecar smoke report must not be plan-only evidence")
+    if str(report.get("apiVersion") or "") != "1":
+        failures.append("Rust audio sidecar smoke report apiVersion must be 1")
+    if str(report.get("mode") or "") != "wasapi":
+        failures.append("Rust audio sidecar smoke report mode must be wasapi for physical readiness")
+    duration = requested.get("durationSec")
+    if min_duration_sec > 0 and (
+        not isinstance(duration, (int, float)) or float(duration) < min_duration_sec
+    ):
+        failures.append(
+            f"Rust audio sidecar smoke durationSec must be at least {min_duration_sec:g}"
+        )
+    if summary.get("failedCaptureCount") != 0:
+        failures.append("Rust audio sidecar smoke failedCaptureCount must be 0")
+    if summary.get("totalFramesRead", 0) <= 0:
+        failures.append("Rust audio sidecar smoke totalFramesRead must be positive")
+    if summary.get("selectedHashVerified") is not True:
+        failures.append("Rust audio sidecar smoke must verify selected native endpoint hash capture")
+
+    captures_by_name = {
+        str(capture.get("name") or ""): capture
+        for capture in captures
+        if isinstance(capture, dict)
+    }
+    default_capture = captures_by_name.get("default")
+    selected_capture = captures_by_name.get("selected-native-endpoint-hash")
+    if not isinstance(default_capture, dict):
+        failures.append("Rust audio sidecar smoke is missing default capture")
+    else:
+        failures.extend(validate_rust_audio_capture(default_capture, "default"))
+    if not isinstance(selected_capture, dict):
+        failures.append("Rust audio sidecar smoke is missing selected-native-endpoint-hash capture")
+    else:
+        failures.extend(
+            validate_rust_audio_capture(
+                selected_capture,
+                "selected-native-endpoint-hash",
+                expected_selection_mode="nativeEndpointHash",
+            )
+        )
+
+    return ReadinessCheck("rustAudioSidecarSmoke", not failures, failures, details)
+
+
+def validate_rust_audio_capture(
+    capture: dict[str, Any],
+    name: str,
+    *,
+    expected_selection_mode: str = "",
+) -> list[str]:
+    failures: list[str] = []
+    if capture.get("ok") is not True:
+        failures.append(f"Rust audio capture {name} ok must be true")
+    frames = capture.get("frames")
+    if not isinstance(frames, dict):
+        failures.append(f"Rust audio capture {name} frames must be an object")
+        frames = {}
+    if frames.get("framesRead", 0) <= 0:
+        failures.append(f"Rust audio capture {name} framesRead must be positive")
+    if frames.get("sequenceGapCount") != 0:
+        failures.append(f"Rust audio capture {name} sequenceGapCount must be 0")
+    first_frame_ms = frames.get("firstFrameReadMs")
+    if not isinstance(first_frame_ms, (int, float)) or first_frame_ms < 0:
+        failures.append(f"Rust audio capture {name} firstFrameReadMs must be non-negative")
+
+    stop = capture.get("stop")
+    if not isinstance(stop, dict):
+        failures.append(f"Rust audio capture {name} stop must be an object")
+        stop = {}
+    if stop.get("stopped") is not True:
+        failures.append(f"Rust audio capture {name} stop.stopped must be true")
+    if stop.get("connected") is not True:
+        failures.append(f"Rust audio capture {name} stop.connected must be true")
+    if stop.get("framesWritten", 0) <= 0:
+        failures.append(f"Rust audio capture {name} stop.framesWritten must be positive")
+    if stop.get("writerError") not in (None, ""):
+        failures.append(f"Rust audio capture {name} writerError must be empty")
+
+    start = capture.get("start")
+    if not isinstance(start, dict):
+        failures.append(f"Rust audio capture {name} start must be an object")
+        start = {}
+    if not str(start.get("nativeEndpointIdHash") or ""):
+        failures.append(f"Rust audio capture {name} nativeEndpointIdHash is required")
+    if expected_selection_mode:
+        selection = start.get("endpointSelection")
+        if not isinstance(selection, dict):
+            failures.append(f"Rust audio capture {name} endpointSelection must be an object")
+        elif selection.get("mode") != expected_selection_mode:
+            failures.append(
+                f"Rust audio capture {name} endpointSelection.mode must be {expected_selection_mode}"
+            )
+    return failures
+
+
 def validate_updater_publication_report(report_path: Path | None, *, metadata_path: Path) -> ReadinessCheck:
     failures: list[str] = []
     details: dict[str, Any] = {
@@ -522,6 +674,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--runtime-dependency-footprint-report", default="")
     parser.add_argument("--updater-publication-report", default="")
     parser.add_argument("--authenticode-report", default="")
+    parser.add_argument("--rust-audio-sidecar-report", default="")
+    parser.add_argument("--require-rust-audio-sidecar-smoke", action="store_true")
+    parser.add_argument("--min-rust-audio-duration-sec", type=float, default=0.0)
     parser.add_argument("--expected-authenticode-publisher", default="")
     parser.add_argument("--require-authenticode-timestamp", action="store_true")
     parser.add_argument("--platform", default="windows-x86_64")
@@ -540,6 +695,9 @@ def main(argv: list[str]) -> int:
         runtime_dependency_footprint_report=parse_optional_path(args.runtime_dependency_footprint_report),
         updater_publication_report=parse_optional_path(args.updater_publication_report),
         authenticode_report=parse_optional_path(args.authenticode_report),
+        rust_audio_sidecar_report=parse_optional_path(args.rust_audio_sidecar_report),
+        require_rust_audio_sidecar_smoke=args.require_rust_audio_sidecar_smoke,
+        min_rust_audio_duration_sec=args.min_rust_audio_duration_sec,
         expected_authenticode_publisher=args.expected_authenticode_publisher,
         require_authenticode_timestamp=args.require_authenticode_timestamp,
         platform=args.platform,
