@@ -24,6 +24,7 @@ param(
     [string]$RustAudioSidecarExe = "",
     [double]$RustAudioSidecarDurationSec = 600,
     [double]$RustAudioSidecarSelectedDurationSec = 10,
+    [int]$RustAudioSidecarPrebufferMs = 400,
     [switch]$RequireRustAudioSidecarSmoke,
     [switch]$RunRustAudioSidecarSmoke,
     [switch]$UseExistingRustAudioSidecarReport,
@@ -207,6 +208,8 @@ $rustAudioSidecarArgs = @(
     ([string]$RustAudioSidecarDurationSec),
     "--selected-duration-sec",
     ([string]$RustAudioSidecarSelectedDurationSec),
+    "--prebuffer-ms",
+    ([string]$RustAudioSidecarPrebufferMs),
     "--output",
     $RustAudioSidecarReport
 )
@@ -306,7 +309,8 @@ $requiredEvidence = @(
         report = $RustAudioSidecarReport
         durationSec = $RustAudioSidecarDurationSec
         selectedDurationSec = $RustAudioSidecarSelectedDurationSec
-        notes = "Optional for standard releases. Required when evaluating Rust audio promotion; validates default WASAPI capture and selected native endpoint hash capture with frame-pipe and stop-health metrics."
+        prebufferMs = $RustAudioSidecarPrebufferMs
+        notes = "Optional for standard releases. Required when evaluating Rust audio promotion; validates default WASAPI capture, selected native endpoint hash capture, requested prebuffer delivery, frame-pipe metrics, and stop health."
     },
     [pscustomobject]@{
         name = "publishedUpdaterManifest"
@@ -350,6 +354,7 @@ $plan = [pscustomobject]@{
     rustAudioSidecarReport = $RustAudioSidecarReport
     rustAudioSidecarDurationSec = $RustAudioSidecarDurationSec
     rustAudioSidecarSelectedDurationSec = $RustAudioSidecarSelectedDurationSec
+    rustAudioSidecarPrebufferMs = $RustAudioSidecarPrebufferMs
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
     outputPath = $OutputPath

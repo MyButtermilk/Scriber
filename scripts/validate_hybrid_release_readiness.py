@@ -404,6 +404,8 @@ def validate_rust_audio_sidecar_report(
     if str(report.get("mode") or "") != "wasapi":
         failures.append("Rust audio sidecar smoke report mode must be wasapi for physical readiness")
     duration = requested.get("durationSec")
+    prebuffer_ms = requested.get("prebufferMs", 0)
+    prebuffer_required = isinstance(prebuffer_ms, (int, float)) and float(prebuffer_ms) > 0
     if min_duration_sec > 0 and (
         not isinstance(duration, (int, float)) or float(duration) < min_duration_sec
     ):
@@ -414,6 +416,12 @@ def validate_rust_audio_sidecar_report(
         failures.append("Rust audio sidecar smoke failedCaptureCount must be 0")
     if summary.get("totalFramesRead", 0) <= 0:
         failures.append("Rust audio sidecar smoke totalFramesRead must be positive")
+    if summary.get("totalPrebufferAfterLiveCount", 0) != 0:
+        failures.append("Rust audio sidecar smoke totalPrebufferAfterLiveCount must be 0")
+    if prebuffer_required and summary.get("totalPrebufferFramesRead", 0) <= 0:
+        failures.append(
+            "Rust audio sidecar smoke totalPrebufferFramesRead must be positive when prebufferMs is requested"
+        )
     if summary.get("selectedHashVerified") is not True:
         failures.append("Rust audio sidecar smoke must verify selected native endpoint hash capture")
 
@@ -427,7 +435,13 @@ def validate_rust_audio_sidecar_report(
     if not isinstance(default_capture, dict):
         failures.append("Rust audio sidecar smoke is missing default capture")
     else:
-        failures.extend(validate_rust_audio_capture(default_capture, "default"))
+        failures.extend(
+            validate_rust_audio_capture(
+                default_capture,
+                "default",
+                require_prebuffer=prebuffer_required,
+            )
+        )
     if not isinstance(selected_capture, dict):
         failures.append("Rust audio sidecar smoke is missing selected-native-endpoint-hash capture")
     else:
@@ -436,6 +450,7 @@ def validate_rust_audio_sidecar_report(
                 selected_capture,
                 "selected-native-endpoint-hash",
                 expected_selection_mode="nativeEndpointHash",
+                require_prebuffer=prebuffer_required,
             )
         )
 
@@ -447,6 +462,7 @@ def validate_rust_audio_capture(
     name: str,
     *,
     expected_selection_mode: str = "",
+    require_prebuffer: bool = False,
 ) -> list[str]:
     failures: list[str] = []
     if capture.get("ok") is not True:
@@ -459,6 +475,27 @@ def validate_rust_audio_capture(
         failures.append(f"Rust audio capture {name} framesRead must be positive")
     if frames.get("sequenceGapCount") != 0:
         failures.append(f"Rust audio capture {name} sequenceGapCount must be 0")
+    if frames.get("prebufferAfterLiveCount", 0) != 0:
+        failures.append(f"Rust audio capture {name} prebufferAfterLiveCount must be 0")
+    if require_prebuffer:
+        if frames.get("prebufferFramesRead", 0) <= 0:
+            failures.append(
+                f"Rust audio capture {name} prebufferFramesRead must be positive when prebufferMs is requested"
+            )
+        if frames.get("liveFramesRead", 0) <= 0:
+            failures.append(
+                f"Rust audio capture {name} liveFramesRead must be positive when prebufferMs is requested"
+            )
+        first_live_frame_ms = frames.get("firstLiveFrameReadMs")
+        if not isinstance(first_live_frame_ms, (int, float)) or first_live_frame_ms < 0:
+            failures.append(
+                f"Rust audio capture {name} firstLiveFrameReadMs must be non-negative when prebufferMs is requested"
+            )
+        first_live_sequence = frames.get("firstLiveSequence")
+        if not isinstance(first_live_sequence, int) or first_live_sequence < 0:
+            failures.append(
+                f"Rust audio capture {name} firstLiveSequence must be non-negative when prebufferMs is requested"
+            )
     first_frame_ms = frames.get("firstFrameReadMs")
     if not isinstance(first_frame_ms, (int, float)) or first_frame_ms < 0:
         failures.append(f"Rust audio capture {name} firstFrameReadMs must be non-negative")

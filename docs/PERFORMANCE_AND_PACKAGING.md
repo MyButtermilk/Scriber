@@ -802,6 +802,10 @@ Implementation plan:
      `-RequireRustAudioSidecarSmoke`. The Rust smoke is optional for standard
      Python-capture releases and becomes a hard gate only when evaluating Rust
      audio promotion.
+   - Implemented: promotion smoke orchestration now requests a 400 ms Rust
+     sidecar prebuffer by default and the readiness validator rejects reports
+     where requested prebuffer frames are missing, arrive after live frames, or
+     never transition to live frames.
    - If Rust fails before the first frame, Python falls back to Python capture
      for that session.
    - If Rust stalls mid-session, record diagnostics and fail the current engine
@@ -891,7 +895,8 @@ Acceptance gates:
 - For Rust audio promotion only: 10-minute physical WASAPI sidecar smoke via
   `scripts\run_hybrid_release_readiness.ps1 -RunRustAudioSidecarSmoke
   -RequireRustAudioSidecarSmoke`, including default capture, selected native
-  endpoint hash capture, no sequence gaps, and valid stop-health metrics.
+  endpoint hash capture, requested prebuffer delivery, no prebuffer-after-live
+  interleaving, no sequence gaps, and valid stop-health metrics.
 - Physical mic matrix across built-in, USB, Bluetooth, docked, undocked, and
   Windows default-device changes.
 - No feature loss for provider streaming, final transcript injection, overlay,
