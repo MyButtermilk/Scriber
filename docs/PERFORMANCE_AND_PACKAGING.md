@@ -624,11 +624,18 @@ Missing prerequisites:
      fallback, pause/close lifecycle, and device-index parsing. Existing
      microphone, prewarm, pipeline-stop, and runtime lifecycle tests pass.
 2. Native endpoint identity mapping:
-   - Current user-facing device IDs are Python/PortAudio names.
-   - WASAPI capture needs IMMDevice identity.
-   - Add a private mapping layer for Windows default input, normalized friendly
-     name, hashed native endpoint ID, and current favorite mic label.
-   - Do not expose raw IMMDevice IDs as stable public microphone IDs.
+   - Implemented on `codex/rust-expansion-plan` as a private diagnostic and
+     prototype mapping layer in `src/audio_devices.py`.
+   - Current user-facing device IDs remain Python/PortAudio names.
+   - `hash_native_endpoint_id`, `NativeEndpointEntry`, and
+     `InputEndpointMapping` connect normalized PortAudio names to hashed native
+     endpoint IDs, default-input hash, and current favorite mic label.
+   - `/api/runtime/audio-diagnostics` includes
+     `microphone.nativeEndpointMapping`; `/api/microphones` is unchanged and
+     never exposes raw IMMDevice IDs.
+   - Still open for the Rust/WASAPI prototype: replacing best-effort PyCAW
+     inventory with sidecar-provided endpoint identity and using the mapping for
+     actual capture endpoint selection.
 3. Audio support-bundle schema:
    - Partly implemented on `codex/rust-expansion-plan`: support bundles now
      include `audio-diagnostics.redacted.json`, sourced from
@@ -636,8 +643,11 @@ Missing prerequisites:
    - Active Python capture diagnostics include `engine`, `requestedEngine`,
      `frameSource`, `sampleRate`, `targetChannels`, `captureChannels`,
      `blockSize`, `droppedFrameCount`, and last-callback age.
-   - Still open for the Rust prototype: `nativeEndpointIdHash`, Rust capture
-     restart count, Rust sidecar PID/exit status, and frame-pipe health fields.
+   - Native endpoint mapping diagnostics now include hashed native endpoint
+     candidates when an inventory provider is available.
+   - Still open for the Rust prototype: active-capture `nativeEndpointIdHash`,
+     Rust capture restart count, Rust sidecar PID/exit status, and frame-pipe
+     health fields.
 
 Implementation plan:
 

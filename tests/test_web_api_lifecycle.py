@@ -1,5 +1,7 @@
 import asyncio
 import json
+import sys
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -65,6 +67,31 @@ class _FakeMicPrewarmManager:
     def stop(self) -> None:
         self.stop_calls += 1
         self.active = False
+
+
+def _install_fake_sounddevice_module(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    devices: list[dict[str, object]],
+    hostapis: list[dict[str, object]],
+    default_input: int = 0,
+) -> types.SimpleNamespace:
+    module = types.SimpleNamespace()
+    module.default = types.SimpleNamespace(device=(default_input, None), hostapi=0)
+
+    def query_devices(device=None, kind=None):
+        if device is None and kind is None:
+            return devices
+        idx = default_input if device is None else int(device)
+        if idx < 0 or idx >= len(devices):
+            raise ValueError("invalid device index")
+        return devices[idx]
+
+    module.query_devices = query_devices
+    module.query_hostapis = lambda: hostapis
+    module.check_input_settings = lambda **_kwargs: None
+    monkeypatch.setitem(sys.modules, "sounddevice", module)
+    return module
 
 
 async def _wait_for_prewarm_task(ctl: ScriberWebController) -> None:
@@ -492,6 +519,50 @@ async def test_runtime_reports_rust_audio_as_requested_until_prototype_exists(mo
     assert runtime["featureFlags"]["rustAudioRequested"] is True
     assert runtime["featureFlags"]["rustAudioAvailable"] is False
     assert runtime["featureFlags"]["audioEngine"] == "python"
+
+
+@pytest.mark.asyncio
+async def test_audio_diagnostics_include_private_native_endpoint_mapping(monkeypatch):
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    try:
+        _install_fake_sounddevice_module(
+            monkeypatch,
+            devices=[
+                {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+                {"name": "Dock Mic, MME", "max_input_channels": 1, "hostapi": 0},
+            ],
+            hostapis=[{"name": "MME"}, {"name": "Windows WASAPI"}],
+            default_input=0,
+        )
+        monkeypatch.setattr(web_api.Config, "FAVORITE_MIC", "Mikrofon (2- Dock Mic)", raising=False)
+        monkeypatch.setattr(
+            web_api,
+            "collect_native_capture_endpoint_inventory",
+            lambda: [
+                {
+                    "endpointIdHash": "hashed-native-endpoint",
+                    "friendlyName": "Dock Mic",
+                    "flow": "capture",
+                    "isDefault": True,
+                }
+            ],
+        )
+
+        audio = ctl.get_audio_diagnostics()
+        mapping = audio["microphone"]["nativeEndpointMapping"]
+        microphones = ctl.list_microphones()
+
+        assert mapping["available"] is True
+        assert mapping["nativeInventoryAvailable"] is True
+        assert mapping["source"] == "pycaw"
+        assert mapping["favoriteMicNormalized"] == "dock mic"
+        assert mapping["mappings"][0]["nativeEndpointIdHash"] == "hashed-native-endpoint"
+        assert "endpointId" not in mapping["mappings"][0]
+        assert microphones[1]["deviceId"] == "Dock Mic, Windows WASAPI"
+    finally:
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio

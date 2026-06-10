@@ -19,7 +19,9 @@ from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
 from loguru import logger
 
 from src.audio_devices import (
+    collect_native_capture_endpoint_inventory,
     get_input_hostapi_priorities,
+    input_endpoint_mapping_diagnostics,
     is_input_device_compatible,
     list_unique_input_microphones,
     normalize_device_name,
@@ -1525,6 +1527,28 @@ class ScriberWebController:
         except Exception as exc:
             return {"available": False, "error": str(exc)}
 
+    def _native_endpoint_mapping_diagnostics(self) -> dict[str, Any]:
+        try:
+            import sounddevice as sd  # type: ignore
+        except Exception as exc:
+            return {"available": False, "reason": "sounddeviceUnavailable", "error": str(exc)}
+
+        sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
+        channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
+        try:
+            native_endpoints = collect_native_capture_endpoint_inventory()
+            diagnostics = input_endpoint_mapping_diagnostics(
+                sd,
+                favorite_name=str(getattr(Config, "FAVORITE_MIC", "") or ""),
+                native_endpoints=native_endpoints,
+                sample_rate=sample_rate,
+                channels=channels,
+            )
+            diagnostics["source"] = "pycaw" if native_endpoints else "portaudio-only"
+            return diagnostics
+        except Exception as exc:
+            return {"available": False, "reason": "mappingFailed", "error": str(exc)}
+
     def _prewarm_diagnostics(self) -> dict[str, Any] | None:
         snapshot = getattr(self._mic_prewarm, "diagnostic_snapshot", None)
         if not callable(snapshot):
@@ -2278,6 +2302,7 @@ class ScriberWebController:
                 "deviceMonitor": self._device_monitor.diagnostic_snapshot()
                 if self._device_monitor_enabled
                 else None,
+                "nativeEndpointMapping": self._native_endpoint_mapping_diagnostics(),
                 "prewarm": self._prewarm_diagnostics(),
                 "activeCapture": self._active_audio_diagnostics(),
             },

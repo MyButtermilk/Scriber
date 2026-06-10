@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 import sys
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -40,6 +41,45 @@ class MicrophoneEntry:
     is_default: bool
 
 
+@dataclass(frozen=True)
+class NativeEndpointEntry:
+    endpoint_id_hash: str
+    friendly_name: str
+    normalized_name: str
+    flow: str
+    is_default: bool = False
+
+
+@dataclass(frozen=True)
+class InputEndpointMapping:
+    portaudio_index: int
+    portaudio_name: str
+    normalized_name: str
+    hostapi_index: int | None
+    is_default: bool
+    favorite_mic_label: str
+    favorite_mic_normalized: str
+    native_endpoint_id_hash: str | None
+    native_default_input_endpoint_id_hash: str | None
+    match_confidence: str
+    match_reason: str
+
+    def to_diagnostic_dict(self) -> dict[str, Any]:
+        return {
+            "portAudioIndex": self.portaudio_index,
+            "portAudioName": self.portaudio_name,
+            "normalizedName": self.normalized_name,
+            "hostapiIndex": self.hostapi_index,
+            "isDefault": self.is_default,
+            "favoriteMicLabel": self.favorite_mic_label,
+            "favoriteMicNormalized": self.favorite_mic_normalized,
+            "nativeEndpointIdHash": self.native_endpoint_id_hash,
+            "nativeDefaultInputEndpointIdHash": self.native_default_input_endpoint_id_hash,
+            "matchConfidence": self.match_confidence,
+            "matchReason": self.match_reason,
+        }
+
+
 def normalize_device_name(name: str) -> str:
     """Normalize input-device names for stable matching across reconnects."""
     if not name:
@@ -53,6 +93,25 @@ def normalize_device_name(name: str) -> str:
         normalized = wrapper_match.group(2).strip()
     normalized = _MULTISPACE_RE.sub(" ", normalized)
     return normalized.lower()
+
+
+def hash_native_endpoint_id(endpoint_id: str) -> str:
+    """Return a stable, redacted identifier for a native audio endpoint ID."""
+    raw = str(endpoint_id or "")
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def normalize_endpoint_flow(flow: Any) -> str:
+    raw = str(flow or "").strip().lower()
+    if raw in {"0", "render", "output", "speaker", "speakers"}:
+        return "render"
+    if raw in {"1", "capture", "input", "microphone", "mic"}:
+        return "capture"
+    if raw in {"2", "all"}:
+        return "all"
+    return "unknown"
 
 
 def _to_int(value: Any) -> int | None:
@@ -387,6 +446,281 @@ def list_unique_input_microphones(
         deduped = collect(None)
 
     return sorted(deduped.values(), key=lambda item: item.name.lower())
+
+
+def normalize_native_endpoint_entry(raw: Mapping[str, Any]) -> NativeEndpointEntry | None:
+    """Normalize a private native endpoint record without exposing raw endpoint IDs."""
+    endpoint_id = str(
+        raw.get("endpointId")
+        or raw.get("endpoint_id")
+        or raw.get("id")
+        or raw.get("deviceId")
+        or ""
+    ).strip()
+    endpoint_hash = str(
+        raw.get("endpointIdHash")
+        or raw.get("endpoint_id_hash")
+        or hash_native_endpoint_id(endpoint_id)
+        or ""
+    ).strip()
+    friendly_name = str(
+        raw.get("friendlyName")
+        or raw.get("friendly_name")
+        or raw.get("name")
+        or raw.get("label")
+        or ""
+    ).strip()
+    flow = normalize_endpoint_flow(raw.get("flow") or raw.get("dataFlow") or raw.get("data_flow"))
+    normalized_name = normalize_device_name(friendly_name)
+    if not endpoint_hash or not normalized_name or _looks_virtual_or_output(friendly_name):
+        return None
+    return NativeEndpointEntry(
+        endpoint_id_hash=endpoint_hash,
+        friendly_name=friendly_name,
+        normalized_name=normalized_name,
+        flow=flow,
+        is_default=bool(raw.get("isDefault") or raw.get("is_default")),
+    )
+
+
+def normalize_native_endpoint_inventory(
+    native_endpoints: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] | None,
+) -> list[NativeEndpointEntry]:
+    entries: list[NativeEndpointEntry] = []
+    for raw in native_endpoints or []:
+        try:
+            entry = normalize_native_endpoint_entry(raw)
+        except Exception:
+            entry = None
+        if entry is None:
+            continue
+        if entry.flow == "render":
+            continue
+        entries.append(entry)
+    return entries
+
+
+def _read_object_field(obj: Any, *names: str) -> Any:
+    if isinstance(obj, Mapping):
+        for name in names:
+            if name in obj:
+                return obj.get(name)
+        return None
+
+    for name in names:
+        if not hasattr(obj, name):
+            continue
+        try:
+            value = getattr(obj, name)
+        except Exception:
+            continue
+        if callable(value):
+            try:
+                return value()
+            except TypeError:
+                continue
+            except Exception:
+                continue
+        return value
+    return None
+
+
+def _native_device_id(device: Any) -> str:
+    value = _read_object_field(
+        device,
+        "endpointId",
+        "endpoint_id",
+        "id",
+        "deviceId",
+        "DeviceID",
+        "device_id",
+        "GetId",
+    )
+    return str(value or "").strip()
+
+
+def _native_device_friendly_name(device: Any) -> str:
+    value = _read_object_field(
+        device,
+        "friendlyName",
+        "friendly_name",
+        "FriendlyName",
+        "name",
+        "Name",
+        "label",
+        "Label",
+    )
+    return str(value or "").strip()
+
+
+def _native_device_flow(device: Any, audio_utilities: Any | None = None) -> str:
+    value = _read_object_field(device, "flow", "dataFlow", "data_flow", "DataFlow")
+    if value is not None:
+        return normalize_endpoint_flow(value)
+
+    get_data_flow = (
+        getattr(audio_utilities, "GetEndpointDataFlow", None)
+        if audio_utilities is not None
+        else None
+    )
+    if callable(get_data_flow):
+        try:
+            return normalize_endpoint_flow(get_data_flow(device, outputType=1))
+        except Exception:
+            pass
+        try:
+            return normalize_endpoint_flow(get_data_flow(device))
+        except Exception:
+            pass
+    return "unknown"
+
+
+def collect_native_capture_endpoint_inventory(audio_utilities: Any | None = None) -> list[dict[str, Any]]:
+    """Best-effort native capture endpoint inventory for private diagnostics.
+
+    The function intentionally returns only friendly names, flow hints, and
+    hashed endpoint IDs. It never returns raw IMMDevice IDs.
+    """
+    if audio_utilities is None:
+        try:
+            from pycaw.pycaw import AudioUtilities  # type: ignore
+
+            audio_utilities = AudioUtilities
+        except Exception:
+            return []
+
+    get_all_devices = getattr(audio_utilities, "GetAllDevices", None)
+    if not callable(get_all_devices):
+        return []
+
+    try:
+        raw_devices = list(get_all_devices())
+    except Exception:
+        return []
+
+    default_hash = ""
+    get_microphone = getattr(audio_utilities, "GetMicrophone", None)
+    if callable(get_microphone):
+        try:
+            default_hash = hash_native_endpoint_id(_native_device_id(get_microphone()))
+        except Exception:
+            default_hash = ""
+
+    inventory: list[dict[str, Any]] = []
+    for device in raw_devices:
+        endpoint_id = _native_device_id(device)
+        endpoint_hash = hash_native_endpoint_id(endpoint_id)
+        friendly_name = _native_device_friendly_name(device)
+        if not endpoint_hash or not friendly_name:
+            continue
+        flow = _native_device_flow(device, audio_utilities)
+        if flow == "render":
+            continue
+        inventory.append(
+            {
+                "endpointIdHash": endpoint_hash,
+                "friendlyName": friendly_name,
+                "flow": flow,
+                "isDefault": bool(default_hash and endpoint_hash == default_hash),
+            }
+        )
+    return inventory
+
+
+def build_input_endpoint_mappings(
+    sd: Any,
+    *,
+    favorite_name: str = "",
+    native_endpoints: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] | None = None,
+    sample_rate: int = 16000,
+    channels: int = 1,
+) -> list[InputEndpointMapping]:
+    """Build private PortAudio-to-native endpoint mappings for diagnostics/prototypes.
+
+    This does not change the public microphone API. It is intentionally based on
+    normalized names and hashed native endpoint IDs so a future WASAPI prototype
+    can reason about candidates without persisting raw IMMDevice IDs.
+    """
+    microphones = list_unique_input_microphones(
+        sd,
+        sample_rate=sample_rate,
+        channels=channels,
+    )
+    endpoints = normalize_native_endpoint_inventory(native_endpoints)
+    favorite_label = str(favorite_name or "").strip()
+    favorite_normalized = normalize_device_name(favorite_label)
+    native_default_hash = next(
+        (
+            endpoint.endpoint_id_hash
+            for endpoint in endpoints
+            if endpoint.is_default and endpoint.flow in {"capture", "all", "unknown"}
+        ),
+        None,
+    )
+
+    by_normalized: dict[str, list[NativeEndpointEntry]] = {}
+    for endpoint in endpoints:
+        by_normalized.setdefault(endpoint.normalized_name, []).append(endpoint)
+
+    mappings: list[InputEndpointMapping] = []
+    for microphone in microphones:
+        candidates = list(by_normalized.get(microphone.normalized_name, []))
+        candidates.sort(
+            key=lambda endpoint: (
+                0 if endpoint.flow == "capture" else 1,
+                0 if endpoint.is_default == microphone.is_default else 1,
+                endpoint.friendly_name.lower(),
+            )
+        )
+        matched = candidates[0] if candidates else None
+        if matched is not None:
+            confidence = "name"
+            reason = "normalizedName"
+        else:
+            confidence = "none"
+            reason = "nativeEndpointNotFound" if endpoints else "nativeInventoryUnavailable"
+
+        mappings.append(
+            InputEndpointMapping(
+                portaudio_index=microphone.index,
+                portaudio_name=microphone.name,
+                normalized_name=microphone.normalized_name,
+                hostapi_index=microphone.hostapi_index,
+                is_default=microphone.is_default,
+                favorite_mic_label=favorite_label,
+                favorite_mic_normalized=favorite_normalized,
+                native_endpoint_id_hash=matched.endpoint_id_hash if matched else None,
+                native_default_input_endpoint_id_hash=native_default_hash,
+                match_confidence=confidence,
+                match_reason=reason,
+            )
+        )
+
+    return mappings
+
+
+def input_endpoint_mapping_diagnostics(
+    sd: Any,
+    *,
+    favorite_name: str = "",
+    native_endpoints: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] | None = None,
+    sample_rate: int = 16000,
+    channels: int = 1,
+) -> dict[str, Any]:
+    mappings = build_input_endpoint_mappings(
+        sd,
+        favorite_name=favorite_name,
+        native_endpoints=native_endpoints,
+        sample_rate=sample_rate,
+        channels=channels,
+    )
+    return {
+        "available": True,
+        "nativeInventoryAvailable": bool(native_endpoints),
+        "favoriteMicLabel": str(favorite_name or "").strip(),
+        "favoriteMicNormalized": normalize_device_name(str(favorite_name or "")),
+        "mappings": [mapping.to_diagnostic_dict() for mapping in mappings],
+    }
 
 
 def resolve_input_microphone_device(

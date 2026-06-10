@@ -51,7 +51,8 @@ Backend and runtime:
 - `src/mic_prewarm.py`: optional idle mic prewarm and rolling prebuffer.
 - `src/device_monitor.py`: microphone hotplug monitor, native Windows endpoint
   callbacks, polling fallback, PortAudio refresh deferral.
-- `src/audio_devices.py`: microphone normalization and compatibility filtering.
+- `src/audio_devices.py`: microphone normalization, compatibility filtering, and
+  private PortAudio-to-native endpoint mapping with redacted endpoint hashes.
 - `src/audio_file_input.py`, `src/youtube_download.py`, `src/runtime/media_tools.py`:
   ffmpeg/ffprobe resolution and media preparation.
 - `src/database.py`: SQLite WAL persistence, metadata loading, FTS5 search.
@@ -127,6 +128,9 @@ Packaging and scripts:
   With active native events, polling is only a sparse safety net; faster polling
   is fallback-only when native events are unavailable.
 - Device refresh is recording-aware and can be deferred until idle.
+- Native endpoint IDs must stay private. Use hashed native endpoint IDs in
+  diagnostics and prototype mapping; do not expose raw IMMDevice IDs as public
+  microphone IDs or log fields.
 - `SCRIBER_MIC_ALWAYS_ON` is implemented as idle prewarm plus bounded rolling
   prebuffer. Do not reuse Pipecat session state across recordings.
 - `MicrophoneInput` still queues raw callback frames; only visualizer/input RMS
