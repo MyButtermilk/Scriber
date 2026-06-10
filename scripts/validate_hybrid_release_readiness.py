@@ -55,6 +55,8 @@ def validate_release_readiness(
     require_rust_audio_app_prewarm_smoke: bool = False,
     require_recording_hot_path_comparison: bool = False,
     min_rust_audio_duration_sec: float = 0.0,
+    min_rust_audio_app_prewarm_duration_sec: float = 0.0,
+    min_rust_audio_app_prewarm_prewarm_duration_sec: float = 0.0,
     expected_authenticode_publisher: str = "",
     require_authenticode_timestamp: bool = False,
     platform: str = "windows-x86_64",
@@ -98,6 +100,8 @@ def validate_release_readiness(
             validate_rust_audio_app_prewarm_report(
                 rust_audio_app_prewarm_report,
                 required=require_rust_audio_app_prewarm_smoke,
+                min_duration_sec=min_rust_audio_app_prewarm_duration_sec,
+                min_prewarm_duration_sec=min_rust_audio_app_prewarm_prewarm_duration_sec,
             )
         )
     if require_recording_hot_path_comparison or recording_hot_path_comparison_report is not None:
@@ -662,11 +666,15 @@ def validate_rust_audio_app_prewarm_report(
     report_path: Path | None,
     *,
     required: bool,
+    min_duration_sec: float = 0.0,
+    min_prewarm_duration_sec: float = 0.0,
 ) -> ReadinessCheck:
     failures: list[str] = []
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
         "required": required,
+        "minDurationSec": min_duration_sec,
+        "minPrewarmDurationSec": min_prewarm_duration_sec,
     }
     if report_path is None:
         if required:
@@ -720,6 +728,18 @@ def validate_rust_audio_app_prewarm_report(
         failures.append("Rust audio app prewarm smoke mode must be wasapi for release readiness")
     if requested.get("honorFavoriteMic") is not False:
         failures.append("Rust audio app prewarm smoke must use the stable default endpoint path")
+    duration = numeric_field(requested, "durationSec")
+    if min_duration_sec > 0 and (duration is None or duration < min_duration_sec):
+        failures.append(
+            f"Rust audio app prewarm smoke durationSec must be at least {min_duration_sec:g}"
+        )
+    prewarm_duration = numeric_field(requested, "prewarmDurationSec")
+    if min_prewarm_duration_sec > 0 and (
+        prewarm_duration is None or prewarm_duration < min_prewarm_duration_sec
+    ):
+        failures.append(
+            f"Rust audio app prewarm smoke prewarmDurationSec must be at least {min_prewarm_duration_sec:g}"
+        )
     if manager_start.get("active") is not True:
         failures.append("Rust audio app prewarm smoke managerStart.active must be true")
     if not str(manager_start.get("prewarmIdHash") or ""):
@@ -1161,6 +1181,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--require-rust-audio-app-prewarm-smoke", action="store_true")
     parser.add_argument("--require-recording-hot-path-comparison", action="store_true")
     parser.add_argument("--min-rust-audio-duration-sec", type=float, default=0.0)
+    parser.add_argument("--min-rust-audio-app-prewarm-duration-sec", type=float, default=0.0)
+    parser.add_argument("--min-rust-audio-app-prewarm-prewarm-duration-sec", type=float, default=0.0)
     parser.add_argument("--expected-authenticode-publisher", default="")
     parser.add_argument("--require-authenticode-timestamp", action="store_true")
     parser.add_argument("--platform", default="windows-x86_64")
@@ -1188,6 +1210,8 @@ def main(argv: list[str]) -> int:
         require_rust_audio_app_prewarm_smoke=args.require_rust_audio_app_prewarm_smoke,
         require_recording_hot_path_comparison=args.require_recording_hot_path_comparison,
         min_rust_audio_duration_sec=args.min_rust_audio_duration_sec,
+        min_rust_audio_app_prewarm_duration_sec=args.min_rust_audio_app_prewarm_duration_sec,
+        min_rust_audio_app_prewarm_prewarm_duration_sec=args.min_rust_audio_app_prewarm_prewarm_duration_sec,
         expected_authenticode_publisher=args.expected_authenticode_publisher,
         require_authenticode_timestamp=args.require_authenticode_timestamp,
         platform=args.platform,

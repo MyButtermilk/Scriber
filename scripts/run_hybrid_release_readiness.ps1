@@ -38,6 +38,8 @@ param(
     [double]$RustAudioAppPrewarmDurationSec = 1,
     [double]$RustAudioAppPrewarmPrewarmDurationSec = 1,
     [int]$RustAudioAppPrewarmPrebufferMs = 400,
+    [double]$MinRustAudioAppPrewarmDurationSec = 0,
+    [double]$MinRustAudioAppPrewarmPrewarmDurationSec = 0,
     [switch]$RustAudioAppPrewarmHonorFavoriteMic,
     [switch]$RequireRustAudioSidecarSmoke,
     [switch]$RunRustAudioSidecarSmoke,
@@ -335,6 +337,12 @@ if ($RequireRustAudioAppPrewarmSmoke -or $RunRustAudioAppPrewarmSmoke -or $UseEx
 if ($RequireRustAudioAppPrewarmSmoke) {
     $readinessArgs += "--require-rust-audio-app-prewarm-smoke"
 }
+if ($MinRustAudioAppPrewarmDurationSec -gt 0) {
+    $readinessArgs += @("--min-rust-audio-app-prewarm-duration-sec", ([string]$MinRustAudioAppPrewarmDurationSec))
+}
+if ($MinRustAudioAppPrewarmPrewarmDurationSec -gt 0) {
+    $readinessArgs += @("--min-rust-audio-app-prewarm-prewarm-duration-sec", ([string]$MinRustAudioAppPrewarmPrewarmDurationSec))
+}
 if ($RequireRecordingHotPathComparison -or (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf)) {
     $readinessArgs += @("--recording-hot-path-comparison-report", $RecordingHotPathComparisonReport)
 }
@@ -433,6 +441,8 @@ $requiredEvidence = @(
         durationSec = $RustAudioAppPrewarmDurationSec
         prewarmDurationSec = $RustAudioAppPrewarmPrewarmDurationSec
         prebufferMs = $RustAudioAppPrewarmPrebufferMs
+        minDurationSec = $MinRustAudioAppPrewarmDurationSec
+        minPrewarmDurationSec = $MinRustAudioAppPrewarmPrewarmDurationSec
         honorFavoriteMic = [bool]$RustAudioAppPrewarmHonorFavoriteMic
         notes = "Optional Rust promotion evidence. WASAPI mode validates the app-level RustAudioPrewarmManager to RustPrototypeFrameSource handoff, adopted prebuffer frames before live frames, and idle-prewarm resume after capture. Default release evidence should keep honorFavoriteMic=false."
     },
@@ -498,6 +508,8 @@ $plan = [pscustomobject]@{
     rustAudioAppPrewarmDurationSec = $RustAudioAppPrewarmDurationSec
     rustAudioAppPrewarmPrewarmDurationSec = $RustAudioAppPrewarmPrewarmDurationSec
     rustAudioAppPrewarmPrebufferMs = $RustAudioAppPrewarmPrebufferMs
+    minRustAudioAppPrewarmDurationSec = $MinRustAudioAppPrewarmDurationSec
+    minRustAudioAppPrewarmPrewarmDurationSec = $MinRustAudioAppPrewarmPrewarmDurationSec
     rustAudioAppPrewarmHonorFavoriteMic = [bool]$RustAudioAppPrewarmHonorFavoriteMic
     recordingHotPathComparisonReport = $RecordingHotPathComparisonReport
     updaterPublicationReport = $UpdaterPublicationReport

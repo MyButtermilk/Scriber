@@ -143,7 +143,10 @@ Rust audio:
   path as `default` when Python lacks native endpoint inventory, while
   non-default Rust capture without a native endpoint hash still fails closed.
   The hybrid release-readiness runner can require this app-level smoke via
-  `-RequireRustAudioAppPrewarmSmoke`.
+  `-RequireRustAudioAppPrewarmSmoke`. It can also require explicit app-level
+  Rust Always-On-Mic durations with `-MinRustAudioAppPrewarmDurationSec` and
+  `-MinRustAudioAppPrewarmPrewarmDurationSec`, so the 10-minute active-capture
+  / 30-minute idle-prewarm promotion target is machine-checkable.
   The recording hot-path benchmark now has strict provider/Rust promotion
   flags: `--require-provider-transcript` requires a final STT provider segment,
   and `--require-rust-audio-engine` verifies active `rust-prototype`
@@ -162,10 +165,10 @@ Rust audio:
   capture, no sequence gaps, matching reader/writer frame counts, and no
   prebuffer-after-live frames. A local app-level WASAPI prewarm adoption smoke
   passed on 2026-06-11 with 40 adopted prebuffer blocks, 42 live blocks, no
-  sequence/protocol errors, and successful idle-prewarm resume. Physical
-  Always-On-Mic matrix evidence, real provider-backed Python/Rust comparison
-  artifacts using that gate, and final Rust promotion gates remain open before
-  default promotion.
+  sequence/protocol errors, and successful idle-prewarm resume. Actually
+  running the long physical Always-On-Mic matrix evidence, real provider-backed
+  Python/Rust comparison artifacts using that gate, and final Rust promotion
+  gates remain open before default promotion.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

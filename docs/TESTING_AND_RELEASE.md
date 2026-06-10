@@ -273,6 +273,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RequireRustAudioAppPrewarmSmoke
 ```
 
+For Always-On-Mic promotion evidence, make the app-level smoke a long run and
+require the same durations in final validation:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunRustAudioAppPrewarmSmoke `
+  -RequireRustAudioAppPrewarmSmoke `
+  -RustAudioAppPrewarmDurationSec 600 `
+  -RustAudioAppPrewarmPrewarmDurationSec 1800 `
+  -MinRustAudioAppPrewarmDurationSec 600 `
+  -MinRustAudioAppPrewarmPrewarmDurationSec 1800
+```
+
 The top-level release-readiness runner can also produce and validate the
 lifecycle report when explicit lifecycle evidence is wanted:
 

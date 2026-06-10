@@ -360,6 +360,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RequireRustAudioAppPrewarmSmoke
 ```
 
+Long Always-On-Mic Rust prewarm evidence should require explicit durations:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunRustAudioAppPrewarmSmoke `
+  -RequireRustAudioAppPrewarmSmoke `
+  -RustAudioAppPrewarmDurationSec 600 `
+  -RustAudioAppPrewarmPrewarmDurationSec 1800 `
+  -MinRustAudioAppPrewarmDurationSec 600 `
+  -MinRustAudioAppPrewarmPrewarmDurationSec 1800
+```
+
 These Rust smokes must not be used alone to promote Rust audio to default.
 Longer physical Always-On-Mic matrix runs, device-change evidence, and
 provider-backed transcription smokes are still required.

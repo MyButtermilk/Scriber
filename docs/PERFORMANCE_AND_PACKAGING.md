@@ -984,6 +984,12 @@ Implementation plan:
      WASAPI mode, default-endpoint evidence, positive adopted/prebuffer/live
      frame counts, a native endpoint hash, successful idle-prewarm resume, and
      zero sequence/protocol/prebuffer-ordering errors.
+   - Implemented: final readiness can also require long app-level Rust
+     Always-On-Mic evidence with
+     `-MinRustAudioAppPrewarmDurationSec` and
+     `-MinRustAudioAppPrewarmPrewarmDurationSec`. This makes the 10-minute
+     active-capture / 30-minute idle-prewarm promotion target
+     machine-checkable instead of relying on a short smoke report.
    - Local evidence from 2026-06-10: a direct Windows WASAPI prewarm smoke
      passed with
      `python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 0.5 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-current.json`.
@@ -1030,10 +1036,10 @@ Implementation plan:
      with `SCRIBER_AUDIO_ENGINE=rust-prototype` and the requested Rust capture
      mode, then calls the comparison validator to produce
      `recording-hot-path-python-rust-comparison.json`.
-   - Still open: long-running physical Always-On-Mic evidence with the Rust
-     manager, device-refresh pause/resume matrix evidence, real provider-backed
-     Python/Rust comparison runs using the new gate, and final promotion
-     decision gates.
+   - Still open: actually running the long physical Always-On-Mic evidence with
+     the Rust manager, device-refresh pause/resume matrix evidence, real
+     provider-backed Python/Rust comparison runs using the new gate, and final
+     promotion decision gates.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream

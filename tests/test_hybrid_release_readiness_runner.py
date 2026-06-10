@@ -145,6 +145,8 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert app_prewarm_evidence["report"].endswith("rust-audio-app-prewarm-smoke.json")
     assert app_prewarm_evidence["producer"] == "not requested"
     assert app_prewarm_evidence["mode"] == "wasapi"
+    assert app_prewarm_evidence["minDurationSec"] == 0
+    assert app_prewarm_evidence["minPrewarmDurationSec"] == 0
     assert "app-level RustAudioPrewarmManager" in app_prewarm_evidence["notes"]
     comparison_evidence = payload["requiredEvidence"][7]
     assert comparison_evidence["required"] is False
@@ -278,6 +280,52 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_prewarm_sidec
     assert "--require-rust-endpoint-inventory" not in matrix_command["command"]
     assert "--rust-audio-prewarm-sidecar-report" in readiness_command["command"]
     assert "--require-rust-audio-prewarm-sidecar-smoke" in readiness_command["command"]
+
+
+def test_hybrid_release_readiness_runner_plans_required_long_rust_audio_app_prewarm_smoke(tmp_path: Path) -> None:
+    sidecar_exe = tmp_path / "scriber-audio-sidecar.exe"
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RunRustAudioAppPrewarmSmoke",
+        "-RequireRustAudioAppPrewarmSmoke",
+        "-RustAudioAppPrewarmDurationSec",
+        "600",
+        "-RustAudioAppPrewarmPrewarmDurationSec",
+        "1800",
+        "-MinRustAudioAppPrewarmDurationSec",
+        "600",
+        "-MinRustAudioAppPrewarmPrewarmDurationSec",
+        "1800",
+        "-RustAudioSidecarExe",
+        str(sidecar_exe),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    app_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "rustAudioAppPrewarmSmoke")
+    assert app_evidence["required"] is True
+    assert "smoke_rust_audio_app_prewarm.py" in app_evidence["producer"]
+    assert app_evidence["durationSec"] == 600
+    assert app_evidence["prewarmDurationSec"] == 1800
+    assert app_evidence["minDurationSec"] == 600
+    assert app_evidence["minPrewarmDurationSec"] == 1800
+    app_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioAppPrewarmSmoke")
+    assert "smoke_rust_audio_app_prewarm.py" in app_command["command"]
+    assert "--duration-sec 600" in app_command["command"]
+    assert "--prewarm-duration-sec 1800" in app_command["command"]
+    assert "--sidecar-exe" in app_command["command"]
+    readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    assert "--rust-audio-app-prewarm-report" in readiness_command["command"]
+    assert "--require-rust-audio-app-prewarm-smoke" in readiness_command["command"]
+    assert "--min-rust-audio-app-prewarm-duration-sec 600" in readiness_command["command"]
+    assert "--min-rust-audio-app-prewarm-prewarm-duration-sec 1800" in readiness_command["command"]
 
 
 def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_comparison(tmp_path: Path) -> None:
