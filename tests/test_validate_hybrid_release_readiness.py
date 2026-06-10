@@ -366,6 +366,69 @@ def write_rust_audio_sidecar_report(
     )
 
 
+def write_rust_audio_prewarm_sidecar_report(
+    path: Path,
+    *,
+    ok: bool = True,
+    plan_only: bool = False,
+    prebuffer_ms: int = 400,
+    prewarm_id: str = "prewarm-1",
+    stopped: bool = True,
+    prewarm_error: str | None = None,
+    total_blocks_observed: int = 18,
+    total_audio_frames_observed: int = 2880,
+    buffered_blocks: int = 4,
+    buffered_audio_frames: int = 640,
+    prebuffer_frame_target: int = 40,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "apiVersion": "1",
+                "ok": ok,
+                "planOnly": plan_only,
+                "mode": "synthetic",
+                "sidecar": {
+                    "exe": "C:/Scriber/scriber-audio-sidecar.exe",
+                    "exists": True,
+                    "sha256": "a" * 64,
+                },
+                "requested": {
+                    "durationSec": 1.0,
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "blockSize": 160,
+                    "prebufferMs": prebuffer_ms,
+                },
+                "prewarm": {
+                    "ok": ok,
+                    "prewarmStartResponseMs": 12.0,
+                    "prewarmStopResponseMs": 4.0,
+                    "start": {
+                        "prewarmId": prewarm_id,
+                        "prebufferFrameTarget": prebuffer_frame_target,
+                    },
+                    "stop": {
+                        "prewarmId": prewarm_id,
+                        "stopped": stopped,
+                        "prewarmError": prewarm_error,
+                        "totalBlocksObserved": total_blocks_observed,
+                        "totalAudioFramesObserved": total_audio_frames_observed,
+                        "bufferedBlocks": buffered_blocks,
+                        "bufferedAudioFrames": buffered_audio_frames,
+                    },
+                },
+                "summary": {
+                    "prewarmOk": ok,
+                    "totalBlocksObserved": total_blocks_observed,
+                    "bufferedAudioFrames": buffered_audio_frames,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_complete_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
     hardware_dir = tmp_path / "hardware"
     write_full_hardware_matrix(hardware_dir)
@@ -430,6 +493,80 @@ def test_validate_release_readiness_accepts_required_rust_audio_sidecar_smoke(tm
     assert result["ok"] is True
     rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
     assert rust_audio_check["details"]["summary"]["selectedHashVerified"] is True
+
+
+def test_validate_release_readiness_accepts_required_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    prewarm_report = tmp_path / "rust-audio-prewarm-sidecar-smoke.json"
+    write_rust_audio_prewarm_sidecar_report(prewarm_report)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_prewarm_sidecar_report=prewarm_report,
+        require_rust_audio_prewarm_sidecar_smoke=True,
+    )
+
+    assert result["ok"] is True
+    prewarm_check = next(check for check in result["checks"] if check["name"] == "rustAudioPrewarmSidecarSmoke")
+    assert prewarm_check["details"]["summary"]["prewarmOk"] is True
+
+
+def test_validate_release_readiness_rejects_missing_required_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        require_rust_audio_prewarm_sidecar_smoke=True,
+    )
+
+    assert result["ok"] is False
+    prewarm_check = next(check for check in result["checks"] if check["name"] == "rustAudioPrewarmSidecarSmoke")
+    assert "Rust audio prewarm sidecar smoke report is required" in prewarm_check["failures"]
+
+
+def test_validate_release_readiness_rejects_weak_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    prewarm_report = tmp_path / "rust-audio-prewarm-sidecar-smoke.json"
+    write_rust_audio_prewarm_sidecar_report(
+        prewarm_report,
+        buffered_blocks=0,
+        buffered_audio_frames=0,
+        total_blocks_observed=0,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_prewarm_sidecar_report=prewarm_report,
+        require_rust_audio_prewarm_sidecar_smoke=True,
+    )
+
+    assert result["ok"] is False
+    prewarm_check = next(check for check in result["checks"] if check["name"] == "rustAudioPrewarmSidecarSmoke")
+    failures = "\n".join(prewarm_check["failures"])
+    assert "totalBlocksObserved must be positive" in failures
+    assert "bufferedBlocks must be positive" in failures
+    assert "bufferedAudioFrames must be positive" in failures
 
 
 def test_validate_release_readiness_rejects_missing_rust_audio_prebuffer_when_requested(tmp_path: Path) -> None:

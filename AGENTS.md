@@ -301,6 +301,18 @@ Rust audio synthetic prewarm sidecar smoke:
 python scripts\smoke_rust_audio_prewarm_sidecar.py --duration-sec 1 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-smoke.json
 ```
 
+The same synthetic lifecycle smoke can be included in the hybrid readiness
+runner when explicitly needed:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunRustAudioPrewarmSidecarSmoke `
+  -RequireRustAudioPrewarmSidecarSmoke
+```
+
+This is not physical WASAPI idle-prewarm adoption evidence and must not be used
+alone to promote Rust audio to default.
+
 Rust audio promotion readiness gate:
 
 ```powershell
