@@ -285,6 +285,12 @@ Frontend browser smoke:
 python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
 ```
 
+Rust audio sidecar short physical smoke:
+
+```powershell
+python scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 1 --output tmp\rust-audio-sidecar-smoke.json
+```
+
 ## Editing Guidance
 
 - Keep edits scoped to the feature or bug being addressed.

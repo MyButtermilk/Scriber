@@ -663,7 +663,8 @@ Missing prerequisites:
 4. Audio frame-pipe protocol:
    - Implemented on `codex/rust-expansion-plan` as shared Rust/Python protocol
      helpers, a Python `RustPrototypeFrameSource`, an opt-in sidecar synthetic
-     frame-pipe writer, and an opt-in default-endpoint WASAPI writer.
+     frame-pipe writer, and an opt-in WASAPI writer with default or
+     redacted-hash endpoint selection.
    - Rust owns `Frontend/src-tauri/src/audio_frame_pipe.rs`; Python owns
      `src/runtime/audio_frame_pipe.py`.
    - The frame header is fixed-size, little-endian, versioned, and covers magic,
@@ -677,10 +678,11 @@ Missing prerequisites:
      private Windows named pipe and writes synthetic silence frames in the shared
      `SAF1` protocol. This proves transport and lifecycle plumbing only; it is
      not a microphone capture engine.
-   - With `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1`, the sidecar opens the Windows
-     default capture endpoint through WASAPI shared mode, converts supported
-     float/PCM mix formats to requested `pcm_i16_le` blocks, and writes those
-     frames through the same `SAF1` protocol. This remains a prototype path.
+   - With `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1`, the sidecar opens either the
+     Windows default capture endpoint or a selected endpoint by redacted native
+     endpoint hash through WASAPI shared mode, converts supported float/PCM mix
+     formats to requested `pcm_i16_le` blocks, and writes those frames through
+     the same `SAF1` protocol. This remains a prototype path.
 5. Audio capture control protocol:
    - Partly implemented as private shell IPC commands `audioCaptureStart` and
      `audioCaptureStop`.
@@ -776,6 +778,11 @@ Implementation plan:
    - Still open: prove the long-lived path with physical real-WASAPI sessions,
      favorite restore behavior, dock/USB/default-device transitions, and
      provider-backed transcription smokes.
+   - Implemented: `scripts/smoke_rust_audio_sidecar.py` records reusable JSON
+     evidence for default WASAPI capture, selected native endpoint hash capture,
+     first-frame timing, frame counts, sequence gaps, stop health, and sidecar
+     writer metrics. Use a short run for local validation and `--duration-sec
+     600` for the 10-minute physical stability gate.
    - If Rust fails before the first frame, Python falls back to Python capture
      for that session.
    - If Rust stalls mid-session, record diagnostics and fail the current engine
@@ -829,6 +836,10 @@ Implementation plan:
    - dropped frames,
    - 30-minute idle always-on stability,
    - 10-minute live recording stability.
+   - Partly implemented: the Rust sidecar smoke captures the Rust-side
+     first-frame and frame-pipe metrics needed for the Rust half of this
+     comparison. Provider-backed Python/Rust end-to-end comparisons are still
+     required before promotion.
 8. Promote to default only if physical hardware tests show fewer interruptions
    or a meaningful latency win. Otherwise keep Python as default and retain the
    Rust prototype for future investigation.

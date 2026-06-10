@@ -227,6 +227,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
 The final readiness validator expects evidence for:
 
 - physical microphone hardware matrix,
+- Rust audio sidecar physical smoke when evaluating the Rust prototype,
 - media preparation smoke,
 - runtime dependency footprint,
 - signed updater publication,
@@ -243,6 +244,7 @@ Common generated evidence:
 - `release-metadata\build-timing.json`
 - `release-metadata\media-preparation-smoke.json`
 - `release-metadata\runtime-dependency-footprint.json`
+- `tmp\rust-audio-sidecar-smoke.json`
 - `tmp\frontend-browser-smoke.json`
 - `tmp\installer-smoke\`
 
