@@ -657,9 +657,12 @@ Missing prerequisites:
      writer connection state, frames/bytes written, writer error, reader-thread
      liveness, and sidecar restart count are exposed through the nested
      active-capture source diagnostics.
-   - Still open: durable mid-session failure policy, richer drop accounting
-     before a protocol error, and physical support-bundle evidence from long
-     real-device runs.
+   - Implemented for the Rust prototype: Python reader diagnostics now include
+     frame-pipe frames read, audio frames read, bytes read, sequence/protocol
+     error counters, last frame metadata, first-frame read timing, reader end
+     reason, and callback-drop counts before protocol failure.
+   - Still open: durable mid-session failure policy and physical support-bundle
+     evidence from long real-device runs.
 4. Audio frame-pipe protocol:
    - Implemented on `codex/rust-expansion-plan` as shared Rust/Python protocol
      helpers, a Python `RustPrototypeFrameSource`, an opt-in sidecar synthetic
@@ -814,8 +817,10 @@ Implementation plan:
    - Implemented: stop responses preserve sidecar health fields through Tauri
      shell IPC, and Python stores them in `RustPrototypeFrameSource`
      diagnostics.
-   - Still open: richer fallback reasons, drop counters before protocol failure,
-     and physical packaging/smoke gates.
+   - Implemented: `RustPrototypeFrameSource` records richer fallback reasons and
+     frame-pipe reader counters for frames, bytes, sequence errors, protocol
+     errors, first-frame read timing, and reader end reason.
+   - Still open: physical packaging/smoke gates.
    - Each PCM frame uses the shared fixed-size binary header followed by
      `pcm_i16_le`.
 5. Add prewarm parity only after active capture works:
@@ -825,13 +830,15 @@ Implementation plan:
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream
-     active, callback count, last frame age, last status/error, dropped frames,
-     restart count, endpoint hash, format, prebuffer duration, sidecar PID, and
-     sidecar exit status.
+   active, callback count, last frame age, last status/error, dropped frames,
+   restart count, endpoint hash, format, prebuffer duration, sidecar PID, and
+   sidecar exit status.
    - Partly implemented: the Rust frame source can reopen a fresh sidecar after
      a watchdog-style `stop(close=false)`, and diagnostics include sidecar start
      count, restart count, reader-thread liveness, stop reason, exit status,
-     writer connection state, and frames/bytes written.
+     writer connection state, frames/bytes written, frame-pipe read counters,
+     sequence/protocol error counts, first-frame read timing, and reader end
+     reason.
    - Match stale callback detection, minimum restart interval, restart count,
      graceful close, and fallback-on-next-session policy.
 7. Run A/B measurements before any promotion:

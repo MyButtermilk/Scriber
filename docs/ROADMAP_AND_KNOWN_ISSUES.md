@@ -110,7 +110,9 @@ Rust audio:
   transport harness for plumbing tests and an explicit
   `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` WASAPI capture prototype with redacted
   native-endpoint-hash selection. The sidecar is now bundled as an installed
-  resource, but it remains opt-in.
+  resource, but it remains opt-in. Python-side Rust diagnostics include
+  frame-pipe read counters, sequence/protocol error counts, first-frame read
+  timing, reader end reason, and stop-health fields for support bundles.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

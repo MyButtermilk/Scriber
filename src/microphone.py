@@ -380,6 +380,17 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.sidecar_start_count = 0
         self.callback_count = 0
         self.dropped_frame_count = 0
+        self.frame_pipe_frames_read = 0
+        self.frame_pipe_audio_frames_read = 0
+        self.frame_pipe_payload_bytes_read = 0
+        self.frame_pipe_total_bytes_read = 0
+        self.frame_pipe_sequence_error_count = 0
+        self.frame_pipe_protocol_error_count = 0
+        self.frame_pipe_last_sequence = None
+        self.frame_pipe_last_timestamp_micros = None
+        self.frame_pipe_last_flags = None
+        self.frame_pipe_reader_end_reason = "notStarted"
+        self.frame_pipe_first_frame_read_ms = None
         self._shell_call = shell_call or call_shell_ipc
         self._reader_factory = reader_factory or open
         self._first_frame_timeout_seconds = (
@@ -396,6 +407,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._stop_event = threading.Event()
         self._first_frame_event = threading.Event()
         self._sequence_guard = AudioFrameSequenceGuard()
+        self._reader_started_at = 0.0
         self._last_callback_at = 0.0
         self._last_error = ""
 
@@ -486,6 +498,9 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._stop_event.clear()
         self._first_frame_event.clear()
         self._sequence_guard = AudioFrameSequenceGuard()
+        self._reader_started_at = time.monotonic()
+        self.frame_pipe_reader_end_reason = "running"
+        self.frame_pipe_first_frame_read_ms = None
         self._stream.start()
         self._reader_thread = threading.Thread(
             target=self._read_frame_pipe,
@@ -565,6 +580,17 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "readerThreadAlive": bool(self._reader_thread and self._reader_thread.is_alive()),
             "callbackCount": self.callback_count,
             "droppedFrameCount": self.dropped_frame_count,
+            "framePipeFramesRead": self.frame_pipe_frames_read,
+            "framePipeAudioFramesRead": self.frame_pipe_audio_frames_read,
+            "framePipePayloadBytesRead": self.frame_pipe_payload_bytes_read,
+            "framePipeTotalBytesRead": self.frame_pipe_total_bytes_read,
+            "framePipeSequenceErrorCount": self.frame_pipe_sequence_error_count,
+            "framePipeProtocolErrorCount": self.frame_pipe_protocol_error_count,
+            "framePipeLastSequence": self.frame_pipe_last_sequence,
+            "framePipeLastTimestampMicros": self.frame_pipe_last_timestamp_micros,
+            "framePipeLastFlags": self.frame_pipe_last_flags,
+            "framePipeReaderEndReason": self.frame_pipe_reader_end_reason,
+            "framePipeFirstFrameReadMs": self.frame_pipe_first_frame_read_ms,
             "fallbackReason": self.fallback_reason,
             "lastError": self._last_error,
             "lastCallbackAgoSeconds": (
@@ -579,33 +605,88 @@ class RustPrototypeFrameSource(AudioFrameSource):
             with self._reader_factory(self._frame_pipe, "rb", buffering=0) as reader:
                 while not self._stop_event.is_set():
                     header_bytes = _read_exact(reader, AUDIO_FRAME_HEADER_LEN)
+                    self.frame_pipe_total_bytes_read += len(header_bytes)
                     header = decode_audio_frame_header(header_bytes)
                     payload = _read_exact(reader, header.payload_len)
+                    self.frame_pipe_payload_bytes_read += len(payload)
+                    self.frame_pipe_total_bytes_read += len(payload)
                     self._sequence_guard.verify_and_advance(header)
                     if int(header.channels) != int(self.capture_channels):
                         raise AudioFrameProtocolError(
                             f"Rust audio frame channel mismatch: expected {self.capture_channels}, got {header.channels}"
                         )
+                    self.frame_pipe_frames_read += 1
+                    self.frame_pipe_audio_frames_read += int(header.frame_count)
+                    self.frame_pipe_last_sequence = int(header.sequence)
+                    self.frame_pipe_last_timestamp_micros = int(header.timestamp_micros)
+                    self.frame_pipe_last_flags = int(header.flags)
+                    if self.frame_pipe_first_frame_read_ms is None and self._reader_started_at > 0:
+                        self.frame_pipe_first_frame_read_ms = round(
+                            (time.monotonic() - self._reader_started_at) * 1000.0,
+                            3,
+                        )
                     samples = np.frombuffer(payload, dtype="<i2")
                     audio = samples.reshape((header.frame_count, header.channels))
                     callback = self._callback
                     if callable(callback):
-                        callback(
-                            audio,
-                            header.frame_count,
-                            {
-                                "timestamp_micros": header.timestamp_micros,
-                                "engine": self.engine,
-                            },
-                            None,
-                        )
+                        try:
+                            callback(
+                                audio,
+                                header.frame_count,
+                                {
+                                    "timestamp_micros": header.timestamp_micros,
+                                    "engine": self.engine,
+                                },
+                                None,
+                            )
+                        except Exception:
+                            self.dropped_frame_count += 1
+                            raise
+                    else:
+                        self.dropped_frame_count += 1
                     self.callback_count += 1
                     self._last_callback_at = time.monotonic()
                     self._first_frame_event.set()
                     if header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM:
+                        self.frame_pipe_reader_end_reason = "endOfStream"
                         break
+                if self.frame_pipe_reader_end_reason == "running":
+                    self.frame_pipe_reader_end_reason = "stopRequested"
+        except EOFError as exc:
+            if self._stop_event.is_set():
+                self.frame_pipe_reader_end_reason = "stopRequested"
+            else:
+                self.frame_pipe_reader_end_reason = "pipeClosed"
+                self._last_error = str(exc)
+                if self.callback_count <= 0 and not self.fallback_reason:
+                    self.fallback_reason = "rustFramePipeClosedBeforeFirstFrame"
+                if self.callback_count > 0:
+                    logger.warning(
+                        f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
+                    )
+            self._first_frame_event.set()
+        except AudioFrameProtocolError as exc:
+            message = str(exc)
+            if "sequence out of order" in message:
+                self.frame_pipe_sequence_error_count += 1
+                if not self.fallback_reason:
+                    self.fallback_reason = "rustFramePipeSequenceError"
+            else:
+                self.frame_pipe_protocol_error_count += 1
+                if not self.fallback_reason:
+                    self.fallback_reason = "rustFramePipeProtocolError"
+            self.frame_pipe_reader_end_reason = "protocolError"
+            self._last_error = message
+            self._first_frame_event.set()
+            if self.callback_count > 0:
+                logger.warning(
+                    f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
+                )
         except Exception as exc:
+            self.frame_pipe_reader_end_reason = type(exc).__name__
             self._last_error = str(exc)
+            if self.callback_count <= 0 and not self.fallback_reason:
+                self.fallback_reason = "rustFramePipeReadError"
             self._first_frame_event.set()
             if self.callback_count > 0:
                 logger.warning(

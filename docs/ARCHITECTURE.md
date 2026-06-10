@@ -144,6 +144,9 @@ Rust audio prototype:
   writer connection state, frames/bytes written, writer error, uptime, PID, and
   exit status. Python stores these in nested active-capture diagnostics for
   support bundles and long-run smokes.
+- Python Rust-frame diagnostics also record frame-pipe frames/audio frames read,
+  bytes read, sequence/protocol error counts, first-frame read timing, reader
+  end reason, and last frame metadata without exposing raw pipe paths.
 - Backend restart and shell exit drain the sidecar lifecycle registry before
   restarting the Python backend or exiting the Tauri shell.
 - `src/microphone.py` can opt into the Rust prototype through

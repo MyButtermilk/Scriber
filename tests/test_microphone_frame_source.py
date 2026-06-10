@@ -247,7 +247,102 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     assert snapshot["sidecarBytesWritten"] == 3072
     assert snapshot["sidecarUptimeMs"] == 55
     assert snapshot["sidecarStopReason"] == "captureStop"
+    assert snapshot["framePipeFramesRead"] == 1
+    assert snapshot["framePipeAudioFramesRead"] == 512
+    assert snapshot["framePipePayloadBytesRead"] == len(audio.tobytes())
+    assert snapshot["framePipeTotalBytesRead"] == len(frame)
+    assert snapshot["framePipeSequenceErrorCount"] == 0
+    assert snapshot["framePipeProtocolErrorCount"] == 0
+    assert snapshot["framePipeLastSequence"] == 0
+    assert snapshot["framePipeLastTimestampMicros"] == 123_456
+    assert snapshot["framePipeLastFlags"] == 0
+    assert snapshot["framePipeReaderEndReason"] in {"pipeClosed", "stopRequested"}
+    assert snapshot["framePipeFirstFrameReadMs"] is not None
     assert "framePipe" not in snapshot
+
+
+def test_rust_prototype_frame_source_reports_sequence_error_before_first_frame(monkeypatch):
+    audio = np.zeros((16, 1), dtype=np.int16)
+    frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(audio.tobytes()),
+            sequence=1,
+            timestamp_micros=1,
+            frame_count=16,
+            channels=1,
+        ),
+        audio.tobytes(),
+    )
+    commands: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-1",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "endpoint-hash",
+                },
+            }
+        if command == "audioCaptureStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "reason": "protocolError",
+                    "connected": True,
+                    "framesWritten": 1,
+                    "bytesWritten": len(frame),
+                    "writerError": None,
+                    "exitStatus": 0,
+                },
+            }
+        raise AssertionError(command)
+
+    def reader_factory(_path, *_args, **_kwargs):
+        import io
+
+        return io.BytesIO(frame)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=shell_call,
+        reader_factory=reader_factory,
+        first_frame_timeout_seconds=1.0,
+    )
+
+    source.open(lambda *_args: None)
+    with pytest.raises(RuntimeError, match="failed before first frame"):
+        source.start()
+
+    snapshot = source.diagnostic_snapshot()
+    assert commands[-1][0] == "audioCaptureStop"
+    assert snapshot["callbackCount"] == 0
+    assert snapshot["framePipeFramesRead"] == 0
+    assert snapshot["framePipePayloadBytesRead"] == len(audio.tobytes())
+    assert snapshot["framePipeTotalBytesRead"] == len(frame)
+    assert snapshot["framePipeSequenceErrorCount"] == 1
+    assert snapshot["framePipeProtocolErrorCount"] == 0
+    assert snapshot["framePipeReaderEndReason"] == "protocolError"
+    assert snapshot["fallbackReason"] == "rustFramePipeSequenceError"
+    assert "sequence out of order" in snapshot["lastError"]
 
 
 def test_rust_prototype_frame_source_can_reopen_after_watchdog_pause(monkeypatch):
