@@ -921,10 +921,19 @@ Implementation plan:
      passive Windows idle capture stream, uses the same default/native-endpoint
      selection rules as active Rust capture, and reports redacted endpoint,
      mix-format, observed-block, and buffered-frame counters.
+   - Implemented: within one sidecar process, `captureStart` can take a
+     matching `prewarmId`, stop that prewarm session with reason
+     `adoptedIntoCapture`, snapshot the bounded PCM ringbuffer, and write those
+     frames into the capture frame pipe as leading `AUDIO_FRAME_FLAG_PREBUFFER`
+     frames before live WASAPI or synthetic frames.
    - Implemented: `scripts/smoke_rust_audio_prewarm_sidecar.py` records
      prewarm lifecycle evidence in `--mode synthetic` or `--mode wasapi`:
      `prewarmId`, start/stop timings, observed frame counters, buffered frame
      counters, mode-specific start payloads, and validation errors.
+   - Implemented: `scripts/smoke_rust_audio_sidecar.py
+     --prewarm-before-capture` proves sidecar-local prewarm adoption by
+     starting prewarm, passing its `prewarmId` into `captureStart`, and
+     validating adopted prebuffer frames before live frames.
    - Implemented: the hybrid release-readiness runner and validator can consume
      this report through `-RunRustAudioPrewarmSidecarSmoke`,
      `-UseExistingRustAudioPrewarmSidecarReport`, and
@@ -932,14 +941,24 @@ Implementation plan:
      wasapi` exercises the real passive WASAPI idle stream. This is
      intentionally separate from `-RequireRustAudioSidecarSmoke` because it
      still does not prove buffered idle audio adoption into active capture.
+   - Implemented: the hybrid release-readiness runner can add prewarm adoption
+     evidence to the physical sidecar smoke with
+     `-RustAudioSidecarPrewarmBeforeCapture`; the validator rejects such reports
+     when the default capture does not show positive adopted prewarm blocks.
    - Local evidence from 2026-06-10: a direct Windows WASAPI prewarm smoke
      passed with
      `python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 0.5 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-current.json`.
      It reported `source=wasapi-prewarm`, `wasapiPrewarm=true`, a redacted
      native endpoint hash, `totalBlocksObserved=42`, and
      `bufferedBlocks=40`.
-   - Still open: adopting the bounded WASAPI idle buffer into the following
-     active Rust capture, pausing/resuming the WASAPI prewarm around device
+   - Local evidence from 2026-06-10: a direct Windows WASAPI adoption smoke
+     passed with
+     `python scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 0.5 --prebuffer-ms 400 --prewarm-before-capture --prewarm-duration-sec 0.5 --skip-selected-hash --output tmp\rust-audio-sidecar-adopt-wasapi-current.json`.
+     It reported `totalAdoptedPrewarmBlocks=40`,
+     `prebufferFramesRead=40`, `liveFramesRead=43`,
+     `prebufferAfterLiveCount=0`, and `sequenceGapCount=0`.
+   - Still open: wiring this sidecar-local adoption into the app-wide
+     Always-On-Mic lifecycle, pausing/resuming the WASAPI prewarm around device
      refreshes, and provider-backed end-to-end transcription smokes.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
@@ -993,9 +1012,10 @@ Acceptance gates:
   endpoint hash capture, requested prebuffer delivery, no prebuffer-after-live
   interleaving, observed default-capture frame span meeting the requested gate,
   reader/writer frame-count consistency, no sequence gaps, and valid
-  stop-health metrics. The readiness runner also requires Rust/WASAPI endpoint
-  inventory evidence in the physical microphone matrix when this promotion gate
-  is enabled.
+  stop-health metrics. Add `-RustAudioSidecarPrewarmBeforeCapture` to require
+  sidecar-local prewarm adoption evidence in the default capture. The readiness
+  runner also requires Rust/WASAPI endpoint inventory evidence in the physical
+  microphone matrix when this promotion gate is enabled.
 - Rust prewarm lifecycle smoke via
   `python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 1
   --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-smoke.json`
@@ -1003,8 +1023,8 @@ Acceptance gates:
   `-RequireRustAudioPrewarmSidecarSmoke` proves prewarm sidecar start/stop
   plumbing and stop-health counters. Add `-RustAudioPrewarmSidecarMode wasapi`
   to the runner for the real passive WASAPI idle stream. This is not sufficient
-  for default promotion because it does not prove buffered WASAPI idle audio is
-  adopted into active capture.
+  for default promotion because it does not prove app-wide Always-On-Mic
+  lifecycle integration or provider-backed transcription.
 - Physical mic matrix across built-in, USB, Bluetooth, docked, undocked, and
   Windows default-device changes, with `--require-rust-endpoint-inventory`
   validation for Rust promotion.

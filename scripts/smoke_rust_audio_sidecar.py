@@ -316,6 +316,39 @@ def run_capture(
     return result
 
 
+def start_prewarm_for_capture(
+    client: SidecarClient,
+    *,
+    request_payload: dict[str, Any],
+    duration_sec: float,
+) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    start_response = client.call("prewarmStart", request_payload)
+    prewarm_start_ms = (time.perf_counter() - started_at) * 1000.0
+    start_payload = start_response.get("payload") if isinstance(start_response, dict) else {}
+    if not isinstance(start_payload, dict):
+        start_payload = {}
+
+    result: dict[str, Any] = {
+        "ok": bool(start_response.get("success")),
+        "prewarmStartResponseMs": round(prewarm_start_ms, 3),
+        "start": start_payload,
+        "durationSec": duration_sec,
+    }
+    if not start_response.get("success"):
+        result["errorCode"] = start_response.get("errorCode")
+        result["fallbackReason"] = start_response.get("fallbackReason")
+        return result
+
+    time.sleep(max(0.05, float(duration_sec)))
+    prewarm_id = str(start_payload.get("prewarmId") or "")
+    result["prewarmId"] = prewarm_id
+    if not prewarm_id:
+        result["ok"] = False
+        result["validationErrors"] = ["prewarmStart succeeded without prewarmId"]
+    return result
+
+
 def validate_capture_metrics(
     capture: dict[str, Any],
     *,
@@ -414,6 +447,8 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
             "effectiveDefaultMaxFrames": effective_max_frames(args, args.duration_sec),
             "effectiveSelectedMaxFrames": effective_max_frames(args, args.selected_duration_sec),
             "prebufferMs": clamp_prebuffer_ms(args.prebuffer_ms),
+            "prewarmBeforeCapture": bool(args.prewarm_before_capture),
+            "prewarmDurationSec": args.prewarm_duration_sec,
             "skipSelectedHash": bool(args.skip_selected_hash),
         },
         "requirements": [
@@ -451,6 +486,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--block-size", type=int, default=160)
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--prebuffer-ms", type=int, default=0)
+    parser.add_argument("--prewarm-before-capture", action="store_true")
+    parser.add_argument("--prewarm-duration-sec", type=float, default=0.5)
     parser.add_argument("--skip-selected-hash", action="store_true")
     parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--output", default="")
@@ -488,6 +525,8 @@ def main(argv: list[str] | None = None) -> int:
             "effectiveDefaultMaxFrames": effective_max_frames(args, args.duration_sec),
             "effectiveSelectedMaxFrames": effective_max_frames(args, args.selected_duration_sec),
             "prebufferMs": clamp_prebuffer_ms(args.prebuffer_ms),
+            "prewarmBeforeCapture": bool(args.prewarm_before_capture),
+            "prewarmDurationSec": args.prewarm_duration_sec,
             "skipSelectedHash": bool(args.skip_selected_hash),
         },
         "captures": [],
@@ -499,6 +538,15 @@ def main(argv: list[str] | None = None) -> int:
 
     with SidecarClient(sidecar_exe, args.mode) as client:
         first_payload = base_capture_payload(args)
+        if args.prewarm_before_capture:
+            prewarm_before_capture = start_prewarm_for_capture(
+                client,
+                request_payload=base_capture_payload(args),
+                duration_sec=args.prewarm_duration_sec,
+            )
+            payload["prewarmBeforeCapture"] = prewarm_before_capture
+            if prewarm_before_capture.get("ok"):
+                first_payload["prewarmId"] = prewarm_before_capture["prewarmId"]
         default_capture = run_capture(
             client,
             name="default",
@@ -506,6 +554,13 @@ def main(argv: list[str] | None = None) -> int:
             duration_sec=args.duration_sec,
             max_frames=effective_max_frames(args, args.duration_sec),
         )
+        if args.prewarm_before_capture:
+            adopted = default_capture.get("start", {}).get("adoptedPrewarm", {})
+            if not isinstance(adopted, dict) or adopted.get("adopted") is not True:
+                default_capture["ok"] = False
+                default_capture.setdefault("validationErrors", []).append(
+                    "default capture did not adopt requested prewarm buffer"
+                )
         payload["captures"].append(default_capture)
 
         endpoint_hash = str(default_capture.get("start", {}).get("nativeEndpointIdHash") or "")
@@ -557,6 +612,10 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "totalLiveFramesWritten": sum(
             int(capture.get("stop", {}).get("liveFramesWritten") or 0)
+            for capture in captures
+        ),
+        "totalAdoptedPrewarmBlocks": sum(
+            int(capture.get("start", {}).get("adoptedPrewarm", {}).get("blocks") or 0)
             for capture in captures
         ),
         "selectedHashVerified": bool(

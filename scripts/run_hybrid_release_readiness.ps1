@@ -25,6 +25,8 @@ param(
     [double]$RustAudioSidecarDurationSec = 600,
     [double]$RustAudioSidecarSelectedDurationSec = 10,
     [int]$RustAudioSidecarPrebufferMs = 400,
+    [switch]$RustAudioSidecarPrewarmBeforeCapture,
+    [double]$RustAudioSidecarPrewarmDurationSec = 0.5,
     [string]$RustAudioPrewarmSidecarReport = "",
     [ValidateSet("synthetic", "wasapi")]
     [string]$RustAudioPrewarmSidecarMode = "synthetic",
@@ -230,6 +232,9 @@ $rustAudioSidecarArgs = @(
     "--output",
     $RustAudioSidecarReport
 )
+if ($RustAudioSidecarPrewarmBeforeCapture) {
+    $rustAudioSidecarArgs += @("--prewarm-before-capture", "--prewarm-duration-sec", ([string]$RustAudioSidecarPrewarmDurationSec))
+}
 if ($RustAudioSidecarExe) {
     $rustAudioSidecarArgs += @("--sidecar-exe", $RustAudioSidecarExe)
 }
@@ -349,7 +354,9 @@ $requiredEvidence = @(
         durationSec = $RustAudioSidecarDurationSec
         selectedDurationSec = $RustAudioSidecarSelectedDurationSec
         prebufferMs = $RustAudioSidecarPrebufferMs
-        notes = "Optional for standard releases. Required when evaluating Rust audio promotion; validates default WASAPI capture, selected native endpoint hash capture, requested prebuffer delivery, frame-pipe metrics, and stop health."
+        prewarmBeforeCapture = [bool]$RustAudioSidecarPrewarmBeforeCapture
+        prewarmDurationSec = $RustAudioSidecarPrewarmDurationSec
+        notes = "Optional for standard releases. Required when evaluating Rust audio promotion; validates default WASAPI capture, selected native endpoint hash capture, requested prebuffer delivery, optional prewarm adoption, frame-pipe metrics, and stop health."
     },
     [pscustomobject]@{
         name = "rustAudioPrewarmSidecarSmoke"
@@ -405,6 +412,8 @@ $plan = [pscustomobject]@{
     rustAudioSidecarDurationSec = $RustAudioSidecarDurationSec
     rustAudioSidecarSelectedDurationSec = $RustAudioSidecarSelectedDurationSec
     rustAudioSidecarPrebufferMs = $RustAudioSidecarPrebufferMs
+    rustAudioSidecarPrewarmBeforeCapture = [bool]$RustAudioSidecarPrewarmBeforeCapture
+    rustAudioSidecarPrewarmDurationSec = $RustAudioSidecarPrewarmDurationSec
     rustAudioPrewarmSidecarReport = $RustAudioPrewarmSidecarReport
     rustAudioPrewarmSidecarMode = $RustAudioPrewarmSidecarMode
     rustAudioPrewarmSidecarDurationSec = $RustAudioPrewarmSidecarDurationSec

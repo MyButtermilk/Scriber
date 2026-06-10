@@ -35,6 +35,9 @@ def test_rust_audio_sidecar_smoke_script_documents_capture_contract() -> None:
     assert "totalPrebufferFramesWritten" in script
     assert "totalLiveFramesWritten" in script
     assert "--prebuffer-ms" in script
+    assert "--prewarm-before-capture" in script
+    assert "adoptedPrewarm" in script
+    assert "totalAdoptedPrewarmBlocks" in script
     assert "sequenceGapCount" in script
     assert "selectedHashVerified" in script
 
@@ -66,6 +69,8 @@ def test_rust_audio_sidecar_smoke_plan_only_writes_artifact(tmp_path: Path) -> N
     assert stdout_payload["requested"]["maxFrames"] == 0
     assert stdout_payload["requested"]["effectiveDefaultMaxFrames"] > 0
     assert stdout_payload["requested"]["prebufferMs"] == 0
+    assert stdout_payload["requested"]["prewarmBeforeCapture"] is False
+    assert stdout_payload["requested"]["prewarmDurationSec"] == 0.5
     assert "--duration-sec 10" in stdout_payload["exampleCommand"]
     assert any("10-minute" in item for item in stdout_payload["requirements"])
 

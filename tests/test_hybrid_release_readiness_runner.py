@@ -125,6 +125,8 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert rust_evidence["durationSec"] == 600
     assert rust_evidence["selectedDurationSec"] == 10
     assert rust_evidence["prebufferMs"] == 400
+    assert rust_evidence["prewarmBeforeCapture"] is False
+    assert rust_evidence["prewarmDurationSec"] == 0.5
     assert "Optional for standard releases" in rust_evidence["notes"]
     prewarm_evidence = payload["requiredEvidence"][5]
     assert prewarm_evidence["required"] is False
@@ -176,6 +178,9 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_sidecar_smoke
         "600",
         "-RustAudioSidecarSelectedDurationSec",
         "12",
+        "-RustAudioSidecarPrewarmBeforeCapture",
+        "-RustAudioSidecarPrewarmDurationSec",
+        "0.75",
         "-RustAudioSidecarExe",
         str(sidecar_exe),
     )
@@ -188,12 +193,16 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_sidecar_smoke
     assert rust_evidence["durationSec"] == 600
     assert rust_evidence["selectedDurationSec"] == 12
     assert rust_evidence["prebufferMs"] == 400
+    assert rust_evidence["prewarmBeforeCapture"] is True
+    assert rust_evidence["prewarmDurationSec"] == 0.75
     rust_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioSidecarSmoke")
     assert "smoke_rust_audio_sidecar.py" in rust_command["command"]
     assert "--mode wasapi" in rust_command["command"]
     assert "--duration-sec 600" in rust_command["command"]
     assert "--selected-duration-sec 12" in rust_command["command"]
     assert "--prebuffer-ms 400" in rust_command["command"]
+    assert "--prewarm-before-capture" in rust_command["command"]
+    assert "--prewarm-duration-sec 0.75" in rust_command["command"]
     assert "--sidecar-exe" in rust_command["command"]
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
     matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")

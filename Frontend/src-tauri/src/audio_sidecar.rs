@@ -7,13 +7,16 @@ use audio_frame_pipe::{
 };
 use redaction::hash_sensitive_identifier;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::{
     env,
     ffi::c_void,
     io::{self, BufRead, Write},
     process::ExitCode,
-    sync::mpsc::{self, Sender, TryRecvError},
+    sync::{
+        mpsc::{self, Sender, TryRecvError},
+        Arc, Mutex,
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -342,10 +345,21 @@ impl AudioSidecarState {
     }
 
     fn start_capture(&mut self, request: CaptureRequest) -> Result<Value, String> {
-        let result = if wasapi_capture_enabled() {
-            start_wasapi_capture_impl(request)
+        let adopted_prewarm = if request.prewarm_id.trim().is_empty() {
+            None
         } else {
-            start_synthetic_capture_impl(request)
+            let prewarm_id = request.prewarm_id.clone();
+            let Some(mut prewarm_session) = self.prewarm_sessions.remove(&prewarm_id) else {
+                return Err(format!("requested prewarmId was not found: {prewarm_id}"));
+            };
+            let adopted = prewarm_session.snapshot_buffer();
+            let stop_payload = prewarm_session.stop("adoptedIntoCapture");
+            Some((adopted, stop_payload))
+        };
+        let result = if wasapi_capture_enabled() {
+            start_wasapi_capture_impl(request, adopted_prewarm)
+        } else {
+            start_synthetic_capture_impl(request, adopted_prewarm)
         };
         result.map(|(session, payload)| {
             let stream_id = session.stream_id.clone();
@@ -413,6 +427,7 @@ struct CaptureRequest {
     port_audio_label: String,
     native_endpoint_id_hash: String,
     prebuffer_ms: u32,
+    prewarm_id: String,
 }
 
 impl CaptureRequest {
@@ -425,6 +440,7 @@ impl CaptureRequest {
             port_audio_label: bounded_string(payload, "portAudioLabel", "", 160),
             native_endpoint_id_hash: bounded_string(payload, "nativeEndpointIdHash", "", 64),
             prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 2_000) as u32,
+            prewarm_id: bounded_string(payload, "prewarmId", "", 96),
         }
     }
 
@@ -437,6 +453,7 @@ impl CaptureRequest {
             "portAudioLabel": self.port_audio_label,
             "nativeEndpointIdHash": self.native_endpoint_id_hash,
             "prebufferMs": self.prebuffer_ms,
+            "prewarmId": self.prewarm_id,
         })
     }
 }
@@ -500,7 +517,52 @@ struct PrewarmStats {
     total_audio_frames_observed: u64,
     buffered_blocks: u64,
     buffered_audio_frames: u64,
+    buffered_payload_bytes: u64,
     error: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct PrewarmBuffer {
+    max_blocks: usize,
+    blocks: VecDeque<Vec<u8>>,
+}
+
+impl PrewarmBuffer {
+    fn new(max_blocks: u32) -> Self {
+        Self {
+            max_blocks: max_blocks as usize,
+            blocks: VecDeque::new(),
+        }
+    }
+
+    fn push(&mut self, payload: Vec<u8>) {
+        if self.max_blocks == 0 {
+            return;
+        }
+        while self.blocks.len() >= self.max_blocks {
+            self.blocks.pop_front();
+        }
+        self.blocks.push_back(payload);
+    }
+
+    fn snapshot(&self) -> Vec<Vec<u8>> {
+        self.blocks.iter().cloned().collect()
+    }
+
+    fn block_count(&self) -> u64 {
+        self.blocks.len() as u64
+    }
+
+    fn audio_frame_count(&self, block_size: u32) -> u64 {
+        self.block_count().saturating_mul(u64::from(block_size))
+    }
+
+    fn payload_bytes(&self) -> u64 {
+        self.blocks
+            .iter()
+            .map(|block| block.len() as u64)
+            .sum::<u64>()
+    }
 }
 
 struct PrewarmSession {
@@ -509,9 +571,27 @@ struct PrewarmSession {
     stop_tx: Sender<()>,
     join_handle: Option<JoinHandle<PrewarmStats>>,
     started_at: Instant,
+    buffer: Arc<Mutex<PrewarmBuffer>>,
+    block_size: u32,
 }
 
 impl PrewarmSession {
+    fn snapshot_buffer(&self) -> AdoptedPrewarm {
+        let (blocks, payload_bytes) = self
+            .buffer
+            .lock()
+            .map(|buffer| (buffer.snapshot(), buffer.payload_bytes()))
+            .unwrap_or_else(|_| (Vec::new(), 0));
+        AdoptedPrewarm {
+            prewarm_id: self.prewarm_id.clone(),
+            source: self.source,
+            block_count: blocks.len() as u64,
+            audio_frame_count: (blocks.len() as u64).saturating_mul(u64::from(self.block_size)),
+            payload_bytes,
+            blocks,
+        }
+    }
+
     fn stop(&mut self, reason: &str) -> Value {
         let _ = self.stop_tx.send(());
         let stats = self
@@ -535,9 +615,47 @@ impl PrewarmSession {
             "totalAudioFramesObserved": stats.total_audio_frames_observed,
             "bufferedBlocks": stats.buffered_blocks,
             "bufferedAudioFrames": stats.buffered_audio_frames,
+            "bufferedPayloadBytes": stats.buffered_payload_bytes,
             "prewarmError": stats.error,
             "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         })
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct AdoptedPrewarm {
+    prewarm_id: String,
+    source: &'static str,
+    block_count: u64,
+    audio_frame_count: u64,
+    payload_bytes: u64,
+    blocks: Vec<Vec<u8>>,
+}
+
+impl AdoptedPrewarm {
+    fn to_payload(&self, stop_payload: Value) -> Value {
+        json!({
+            "prewarmId": self.prewarm_id,
+            "source": self.source,
+            "blocks": self.block_count,
+            "audioFrames": self.audio_frame_count,
+            "payloadBytes": self.payload_bytes,
+            "adopted": self.block_count > 0,
+            "stop": stop_payload,
+        })
+    }
+}
+
+fn adopted_prewarm_payload(adopted_prewarm: Option<&(AdoptedPrewarm, Value)>) -> Value {
+    match adopted_prewarm {
+        Some((adopted, stop_payload)) => adopted.to_payload(stop_payload.clone()),
+        None => json!({
+            "adopted": false,
+            "prewarmId": Value::Null,
+            "blocks": 0,
+            "audioFrames": 0,
+            "payloadBytes": 0,
+        }),
     }
 }
 
@@ -559,6 +677,7 @@ fn env_flag_enabled(raw: Option<&str>) -> bool {
 #[cfg(windows)]
 fn start_synthetic_capture_impl(
     request: CaptureRequest,
+    adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
 ) -> Result<(CaptureSession, Value), String> {
     let stream_id = Uuid::new_v4().simple().to_string();
     let pipe_path = format!(r"\\.\pipe\scriber-audio-{stream_id}");
@@ -567,6 +686,10 @@ fn start_synthetic_capture_impl(
     let writer_request = request.clone();
     let writer_pipe_path = pipe_path.clone();
     let pipe_handle_value = pipe_handle as isize;
+    let adopted_blocks = adopted_prewarm
+        .as_ref()
+        .map(|(adopted, _)| adopted.blocks.clone())
+        .unwrap_or_default();
     let join_handle = thread::Builder::new()
         .name("scriber-audio-synthetic-frame-pipe".to_string())
         .spawn(move || {
@@ -575,6 +698,7 @@ fn start_synthetic_capture_impl(
                 writer_pipe_path,
                 writer_request,
                 stop_rx,
+                adopted_blocks,
             )
         })
         .map_err(|err| {
@@ -602,6 +726,7 @@ fn start_synthetic_capture_impl(
         "captureChannels": request.channels,
         "sampleFormat": "pcm_i16_le",
         "nativeEndpointIdHash": Value::Null,
+        "adoptedPrewarm": adopted_prewarm_payload(adopted_prewarm.as_ref()),
         "endpointSelection": endpoint_selection_payload(
             &request,
             Value::Null,
@@ -618,12 +743,16 @@ fn start_synthetic_capture_impl(
 #[cfg(not(windows))]
 fn start_synthetic_capture_impl(
     _request: CaptureRequest,
+    _adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
 ) -> Result<(CaptureSession, Value), String> {
     Err("synthetic frame-pipe capture is only implemented on Windows".to_string())
 }
 
 #[cfg(windows)]
-fn start_wasapi_capture_impl(request: CaptureRequest) -> Result<(CaptureSession, Value), String> {
+fn start_wasapi_capture_impl(
+    request: CaptureRequest,
+    adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
+) -> Result<(CaptureSession, Value), String> {
     let stream_id = Uuid::new_v4().simple().to_string();
     let pipe_path = format!(r"\\.\pipe\scriber-audio-{stream_id}");
     let pipe_handle = create_frame_pipe(&pipe_path)?;
@@ -632,6 +761,10 @@ fn start_wasapi_capture_impl(request: CaptureRequest) -> Result<(CaptureSession,
     let writer_request = request.clone();
     let writer_pipe_path = pipe_path.clone();
     let pipe_handle_value = pipe_handle as isize;
+    let adopted_blocks = adopted_prewarm
+        .as_ref()
+        .map(|(adopted, _)| adopted.blocks.clone())
+        .unwrap_or_default();
     let join_handle = thread::Builder::new()
         .name("scriber-audio-wasapi-frame-pipe".to_string())
         .spawn(move || {
@@ -641,6 +774,7 @@ fn start_wasapi_capture_impl(request: CaptureRequest) -> Result<(CaptureSession,
                 writer_request,
                 stop_rx,
                 ready_tx,
+                adopted_blocks,
             )
         })
         .map_err(|err| {
@@ -684,6 +818,7 @@ fn start_wasapi_capture_impl(request: CaptureRequest) -> Result<(CaptureSession,
         "captureChannels": request.channels,
         "sampleFormat": "pcm_i16_le",
         "nativeEndpointIdHash": ready.endpoint_id_hash,
+        "adoptedPrewarm": adopted_prewarm_payload(adopted_prewarm.as_ref()),
         "endpointSelection": ready.endpoint_selection,
         "requestedFormat": request.to_payload(),
         "audioFrameProtocol": audio_frame_protocol_payload(),
@@ -700,7 +835,10 @@ fn start_wasapi_capture_impl(request: CaptureRequest) -> Result<(CaptureSession,
 }
 
 #[cfg(not(windows))]
-fn start_wasapi_capture_impl(_request: CaptureRequest) -> Result<(CaptureSession, Value), String> {
+fn start_wasapi_capture_impl(
+    _request: CaptureRequest,
+    _adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
+) -> Result<(CaptureSession, Value), String> {
     Err("WASAPI capture is only implemented on Windows".to_string())
 }
 
@@ -899,9 +1037,13 @@ fn start_synthetic_prewarm_impl(
     let prewarm_id = Uuid::new_v4().simple().to_string();
     let (stop_tx, stop_rx) = mpsc::channel();
     let worker_request = request.clone();
+    let buffer = Arc::new(Mutex::new(PrewarmBuffer::new(
+        requested_prebuffer_frame_count(&request),
+    )));
+    let worker_buffer = Arc::clone(&buffer);
     let join_handle = thread::Builder::new()
         .name("scriber-audio-synthetic-prewarm".to_string())
-        .spawn(move || run_synthetic_prewarm_worker(worker_request, stop_rx))
+        .spawn(move || run_synthetic_prewarm_worker(worker_request, stop_rx, worker_buffer))
         .map_err(|err| format!("synthetic prewarm worker thread spawn failed: {err}"))?;
 
     let session = PrewarmSession {
@@ -910,6 +1052,8 @@ fn start_synthetic_prewarm_impl(
         stop_tx,
         join_handle: Some(join_handle),
         started_at: Instant::now(),
+        buffer,
+        block_size: request.block_size,
     };
     let payload = json!({
         "sidecar": SIDECAR_NAME,
@@ -943,9 +1087,13 @@ fn start_wasapi_prewarm_impl(request: CaptureRequest) -> Result<(PrewarmSession,
     let (stop_tx, stop_rx) = mpsc::channel();
     let (ready_tx, ready_rx) = mpsc::channel();
     let worker_request = request.clone();
+    let buffer = Arc::new(Mutex::new(PrewarmBuffer::new(
+        requested_prebuffer_frame_count(&request),
+    )));
+    let worker_buffer = Arc::clone(&buffer);
     let join_handle = thread::Builder::new()
         .name("scriber-audio-wasapi-prewarm".to_string())
-        .spawn(move || run_wasapi_prewarm_worker(worker_request, stop_rx, ready_tx))
+        .spawn(move || run_wasapi_prewarm_worker(worker_request, stop_rx, ready_tx, worker_buffer))
         .map_err(|err| format!("WASAPI prewarm worker thread spawn failed: {err}"))?;
 
     let ready = match ready_rx.recv_timeout(Duration::from_secs(3)) {
@@ -968,6 +1116,8 @@ fn start_wasapi_prewarm_impl(request: CaptureRequest) -> Result<(PrewarmSession,
         stop_tx,
         join_handle: Some(join_handle),
         started_at: Instant::now(),
+        buffer,
+        block_size: request.block_size,
     };
     let payload = json!({
         "sidecar": SIDECAR_NAME,
@@ -1005,29 +1155,37 @@ fn start_wasapi_prewarm_impl(_request: CaptureRequest) -> Result<(PrewarmSession
 fn run_synthetic_prewarm_worker(
     request: CaptureRequest,
     stop_rx: mpsc::Receiver<()>,
+    buffer: Arc<Mutex<PrewarmBuffer>>,
 ) -> PrewarmStats {
     let mut stats = PrewarmStats::default();
     let frame_interval = Duration::from_secs_f64(
         (request.block_size as f64 / f64::from(request.sample_rate)).max(0.001),
     );
     let max_buffered_blocks = u64::from(requested_prebuffer_frame_count(&request));
+    let payload_len = usize::from(request.channels) * request.block_size as usize * 2;
     loop {
         match stop_rx.recv_timeout(frame_interval) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
+        let payload = vec![0_u8; payload_len];
         stats.total_blocks_observed = stats.total_blocks_observed.saturating_add(1);
         stats.total_audio_frames_observed = stats
             .total_audio_frames_observed
             .saturating_add(u64::from(request.block_size));
         if max_buffered_blocks > 0 {
-            stats.buffered_blocks = stats
-                .buffered_blocks
-                .saturating_add(1)
-                .min(max_buffered_blocks);
-            stats.buffered_audio_frames = stats
-                .buffered_blocks
-                .saturating_mul(u64::from(request.block_size));
+            match buffer.lock() {
+                Ok(mut buffer) => {
+                    buffer.push(payload);
+                    stats.buffered_blocks = buffer.block_count();
+                    stats.buffered_audio_frames = buffer.audio_frame_count(request.block_size);
+                    stats.buffered_payload_bytes = buffer.payload_bytes();
+                }
+                Err(_) => {
+                    stats.error = Some("prewarmBufferLockPoisoned".to_string());
+                    break;
+                }
+            }
         }
     }
     stats
@@ -1063,6 +1221,7 @@ fn run_synthetic_frame_pipe_writer(
     _pipe_path: String,
     request: CaptureRequest,
     stop_rx: mpsc::Receiver<()>,
+    adopted_prebuffer_blocks: Vec<Vec<u8>>,
 ) -> CaptureWriterStats {
     let mut stats = CaptureWriterStats::default();
     let started = Instant::now();
@@ -1076,13 +1235,34 @@ fn run_synthetic_frame_pipe_writer(
     }
     stats.connected = true;
 
+    let mut sequence = 0_u64;
+    if let Err(err) = write_adopted_prebuffer_blocks(
+        pipe_handle,
+        &request,
+        &adopted_prebuffer_blocks,
+        started,
+        &mut sequence,
+        &mut stats,
+    ) {
+        stats.error = Some(err);
+        unsafe {
+            FlushFileBuffers(pipe_handle);
+            DisconnectNamedPipe(pipe_handle);
+            CloseHandle(pipe_handle);
+        }
+        return stats;
+    }
+
     let payload_len = usize::from(request.channels) * request.block_size as usize * 2;
     let payload = vec![0_u8; payload_len];
     let frame_interval = Duration::from_secs_f64(
         (request.block_size as f64 / f64::from(request.sample_rate)).max(0.001),
     );
-    let prebuffer_frame_target = requested_prebuffer_frame_count(&request);
-    let mut sequence = 0_u64;
+    let prebuffer_frame_target = if adopted_prebuffer_blocks.is_empty() {
+        requested_prebuffer_frame_count(&request)
+    } else {
+        0
+    };
     let mut prebuffer_frames_written = 0_u32;
     loop {
         match stop_rx.try_recv() {
@@ -1146,6 +1326,37 @@ fn run_synthetic_frame_pipe_writer(
     stats
 }
 
+#[cfg(windows)]
+fn write_adopted_prebuffer_blocks(
+    pipe_handle: HANDLE,
+    request: &CaptureRequest,
+    blocks: &[Vec<u8>],
+    started: Instant,
+    sequence: &mut u64,
+    stats: &mut CaptureWriterStats,
+) -> Result<(), String> {
+    for payload in blocks {
+        let timestamp_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        let header = AudioFrameHeader::new(
+            payload.len() as u32,
+            *sequence,
+            timestamp_micros,
+            request.block_size,
+            request.channels,
+            AUDIO_FRAME_FLAG_PREBUFFER,
+        )
+        .map_err(|err| format!("adopted prewarm frame header failed: {err}"))?;
+        let frame = encode_audio_frame(&header, payload)
+            .map_err(|err| format!("adopted prewarm frame encode failed: {err}"))?;
+        let bytes_written = write_all_to_pipe(pipe_handle, &frame)?;
+        stats.frames_written = stats.frames_written.saturating_add(1);
+        stats.prebuffer_frames_written = stats.prebuffer_frames_written.saturating_add(1);
+        stats.bytes_written = stats.bytes_written.saturating_add(u64::from(bytes_written));
+        *sequence = (*sequence).saturating_add(1);
+    }
+    Ok(())
+}
+
 fn requested_prebuffer_frame_count(request: &CaptureRequest) -> u32 {
     if request.prebuffer_ms == 0 || request.block_size == 0 || request.sample_rate == 0 {
         return 0;
@@ -1166,6 +1377,7 @@ fn run_wasapi_capture_writer(
     request: CaptureRequest,
     stop_rx: mpsc::Receiver<()>,
     ready_tx: Sender<Result<WasapiReady, String>>,
+    adopted_prebuffer_blocks: Vec<Vec<u8>>,
 ) -> CaptureWriterStats {
     let mut stats = CaptureWriterStats::default();
     let mut ready_sent = false;
@@ -1178,6 +1390,7 @@ fn run_wasapi_capture_writer(
         &mut ready_sent,
         &mut stats,
         started,
+        adopted_prebuffer_blocks,
     );
     if let Err(err) = result {
         if !ready_sent {
@@ -1198,11 +1411,18 @@ fn run_wasapi_prewarm_worker(
     request: CaptureRequest,
     stop_rx: mpsc::Receiver<()>,
     ready_tx: Sender<Result<WasapiReady, String>>,
+    buffer: Arc<Mutex<PrewarmBuffer>>,
 ) -> PrewarmStats {
     let mut stats = PrewarmStats::default();
     let mut ready_sent = false;
-    let result =
-        run_wasapi_prewarm_worker_inner(&request, &stop_rx, &ready_tx, &mut ready_sent, &mut stats);
+    let result = run_wasapi_prewarm_worker_inner(
+        &request,
+        &stop_rx,
+        &ready_tx,
+        &mut ready_sent,
+        &mut stats,
+        buffer,
+    );
     if let Err(err) = result {
         if !ready_sent {
             let _ = ready_tx.send(Err(err.clone()));
@@ -1313,6 +1533,7 @@ fn run_wasapi_capture_writer_inner(
     ready_sent: &mut bool,
     stats: &mut CaptureWriterStats,
     started: Instant,
+    adopted_prebuffer_blocks: Vec<Vec<u8>>,
 ) -> Result<(), String> {
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
         .ok()
@@ -1359,6 +1580,15 @@ fn run_wasapi_capture_writer_inner(
 
         wait_for_pipe_client(pipe_handle, stop_rx)?;
         stats.connected = true;
+        let mut sequence = 0_u64;
+        write_adopted_prebuffer_blocks(
+            pipe_handle,
+            request,
+            &adopted_prebuffer_blocks,
+            started,
+            &mut sequence,
+            stats,
+        )?;
         unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
         let capture_result = pump_wasapi_capture(
             pipe_handle,
@@ -1368,6 +1598,8 @@ fn run_wasapi_capture_writer_inner(
             mix_format,
             stats,
             started,
+            sequence,
+            adopted_prebuffer_blocks.is_empty(),
         );
         let stop_result = unsafe { client.Stop() };
         if let Err(err) = stop_result {
@@ -1391,6 +1623,7 @@ fn run_wasapi_prewarm_worker_inner(
     ready_tx: &Sender<Result<WasapiReady, String>>,
     ready_sent: &mut bool,
     stats: &mut PrewarmStats,
+    buffer: Arc<Mutex<PrewarmBuffer>>,
 ) -> Result<(), String> {
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
         .ok()
@@ -1437,7 +1670,7 @@ fn run_wasapi_prewarm_worker_inner(
 
         unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
         let prewarm_result =
-            pump_wasapi_prewarm(request, stop_rx, &capture_client, mix_format, stats);
+            pump_wasapi_prewarm(request, stop_rx, &capture_client, mix_format, stats, buffer);
         let stop_result = unsafe { client.Stop() };
         if let Err(err) = stop_result {
             if prewarm_result.is_ok() {
@@ -1462,10 +1695,16 @@ fn pump_wasapi_capture(
     mix_format: WasapiMixFormat,
     stats: &mut CaptureWriterStats,
     started: Instant,
+    initial_sequence: u64,
+    use_live_prebuffer: bool,
 ) -> Result<(), String> {
     let mut converter = WasapiPcmConverter::new(mix_format, request);
-    let prebuffer_frame_target = requested_prebuffer_frame_count(request);
-    let mut sequence = 0_u64;
+    let prebuffer_frame_target = if use_live_prebuffer {
+        requested_prebuffer_frame_count(request)
+    } else {
+        0
+    };
+    let mut sequence = initial_sequence;
     let mut prebuffer_frames_written = 0_u32;
     loop {
         match stop_rx.try_recv() {
@@ -1537,6 +1776,7 @@ fn pump_wasapi_prewarm(
     capture_client: &IAudioCaptureClient,
     mix_format: WasapiMixFormat,
     stats: &mut PrewarmStats,
+    buffer: Arc<Mutex<PrewarmBuffer>>,
 ) -> Result<(), String> {
     let mut converter = WasapiPcmConverter::new(mix_format, request);
     let max_buffered_blocks = u64::from(requested_prebuffer_frame_count(request));
@@ -1572,15 +1812,21 @@ fn pump_wasapi_prewarm(
                     .total_audio_frames_observed
                     .saturating_add(u64::from(request.block_size));
                 if max_buffered_blocks > 0 {
-                    stats.buffered_blocks = stats
-                        .buffered_blocks
-                        .saturating_add(1)
-                        .min(max_buffered_blocks);
-                    stats.buffered_audio_frames = stats
-                        .buffered_blocks
-                        .saturating_mul(u64::from(request.block_size));
+                    match buffer.lock() {
+                        Ok(mut buffer) => {
+                            buffer.push(payload);
+                            stats.buffered_blocks = buffer.block_count();
+                            stats.buffered_audio_frames =
+                                buffer.audio_frame_count(request.block_size);
+                            stats.buffered_payload_bytes = buffer.payload_bytes();
+                        }
+                        Err(_) => {
+                            return Err("prewarmBufferLockPoisoned".to_string());
+                        }
+                    }
+                } else {
+                    drop(payload);
                 }
-                drop(payload);
             }
             packet_frames = unsafe { capture_client.GetNextPacketSize() }
                 .map_err(|err| format!("WASAPI GetNextPacketSize failed: {err}"))?;
@@ -1955,6 +2201,7 @@ mod tests {
             port_audio_label: "".to_string(),
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 4,
+            prewarm_id: "".to_string(),
         };
 
         let (mut session, payload) = start_synthetic_prewarm_impl(request).unwrap();
@@ -2038,6 +2285,7 @@ mod tests {
             port_audio_label: "".to_string(),
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 400,
+            prewarm_id: "".to_string(),
         };
 
         assert_eq!(requested_prebuffer_frame_count(&request), 13);
@@ -2065,6 +2313,7 @@ mod tests {
             port_audio_label: "Dock Mic, Windows WASAPI".to_string(),
             native_endpoint_id_hash: "endpoint-hash".to_string(),
             prebuffer_ms: 0,
+            prewarm_id: "".to_string(),
         };
 
         let payload = endpoint_selection_payload(
@@ -2122,6 +2371,7 @@ mod tests {
             port_audio_label: "".to_string(),
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 0,
+            prewarm_id: "".to_string(),
         };
         let samples = [
             0.0_f32, 0.1, 0.2, 0.3, 0.4, 0.5, -0.5, -0.4, -0.3, -0.2, -0.1, 0.0,
@@ -2153,8 +2403,9 @@ mod tests {
             port_audio_label: "".to_string(),
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 2,
+            prewarm_id: "".to_string(),
         };
-        let (mut session, payload) = start_synthetic_capture_impl(request).unwrap();
+        let (mut session, payload) = start_synthetic_capture_impl(request, None).unwrap();
         let pipe_path = payload["framePipe"].as_str().unwrap();
 
         let mut reader = OpenOptions::new().read(true).open(pipe_path).unwrap();
@@ -2180,6 +2431,70 @@ mod tests {
                 .unwrap_or_default()
                 >= 1
         );
+        assert!(
+            stop_payload["liveFramesWritten"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 1
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn synthetic_capture_adopts_prewarm_buffer_before_live_frames() {
+        use std::fs::OpenOptions;
+
+        let prewarm_request = CaptureRequest {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size: 16,
+            device_preference: "default".to_string(),
+            port_audio_label: "".to_string(),
+            native_endpoint_id_hash: "".to_string(),
+            prebuffer_ms: 1,
+            prewarm_id: "".to_string(),
+        };
+        let (mut prewarm_session, _) = start_synthetic_prewarm_impl(prewarm_request).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let adopted = prewarm_session.snapshot_buffer();
+        assert_eq!(adopted.block_count, 1);
+        let prewarm_stop = prewarm_session.stop("adoptedIntoCapture");
+
+        let capture_request = CaptureRequest {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size: 16,
+            device_preference: "default".to_string(),
+            port_audio_label: "".to_string(),
+            native_endpoint_id_hash: "".to_string(),
+            prebuffer_ms: 1,
+            prewarm_id: adopted.prewarm_id.clone(),
+        };
+        let (mut capture_session, payload) =
+            start_synthetic_capture_impl(capture_request, Some((adopted, prewarm_stop))).unwrap();
+        let pipe_path = payload["framePipe"].as_str().unwrap();
+
+        let mut reader = OpenOptions::new().read(true).open(pipe_path).unwrap();
+        let (first_header, first_payload) = read_test_audio_frame(&mut reader);
+        let (second_header, second_payload) = read_test_audio_frame(&mut reader);
+        let stop_payload = capture_session.stop("test");
+
+        assert_eq!(payload["adoptedPrewarm"]["adopted"], true);
+        assert_eq!(payload["adoptedPrewarm"]["blocks"], 1);
+        assert_eq!(
+            payload["adoptedPrewarm"]["stop"]["reason"],
+            "adoptedIntoCapture"
+        );
+        assert_eq!(first_header.sequence, 0);
+        assert_eq!(
+            first_header.flags & AUDIO_FRAME_FLAG_PREBUFFER,
+            AUDIO_FRAME_FLAG_PREBUFFER
+        );
+        assert_eq!(first_payload.len(), 32);
+        assert_eq!(second_header.sequence, 1);
+        assert_eq!(second_header.flags & AUDIO_FRAME_FLAG_PREBUFFER, 0);
+        assert_eq!(second_payload.len(), 32);
+        assert_eq!(stop_payload["prebufferFramesWritten"], 1);
         assert!(
             stop_payload["liveFramesWritten"]
                 .as_u64()

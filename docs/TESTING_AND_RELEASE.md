@@ -282,15 +282,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RustAudioSidecarDurationSec 600
 ```
 
+Add sidecar-local prewarm adoption evidence to that physical smoke when testing
+Rust prewarm parity:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunRustAudioSidecarSmoke `
+  -RequireRustAudioSidecarSmoke `
+  -RustAudioSidecarDurationSec 600 `
+  -RustAudioSidecarPrewarmBeforeCapture
+```
+
 `-RequireRustAudioSidecarSmoke` validates the generated
 `rust-audio-sidecar-smoke.json` in `validate_hybrid_release_readiness.py`. The
 report must come from real WASAPI capture, include default-device and selected
 native-endpoint-hash runs, read frames without sequence gaps, and preserve
-sidecar stop-health metrics. It also makes the microphone hardware matrix
-validator require redacted Rust/WASAPI endpoint inventory evidence for every
-physical device scenario. Without that flag the Rust smoke remains visible in
-the runner plan but optional, so standard Python-capture release builds are not
-blocked by prototype evidence.
+sidecar stop-health metrics. When `-RustAudioSidecarPrewarmBeforeCapture` is
+set, the validator also requires positive adopted prewarm blocks in the default
+capture. `-RequireRustAudioSidecarSmoke` also makes the microphone hardware
+matrix validator require redacted Rust/WASAPI endpoint inventory evidence for
+every physical device scenario. Without that flag the Rust smoke remains
+visible in the runner plan but optional, so standard Python-capture release
+builds are not blocked by prototype evidence.
 
 The prewarm sidecar smoke can be added independently with
 `-RunRustAudioPrewarmSidecarSmoke` and
@@ -299,8 +312,9 @@ The prewarm sidecar smoke can be added independently with
 matching `prewarmId`, positive observed and buffered counters, and clean stop
 health. `-RustAudioPrewarmSidecarMode wasapi` makes it use the real passive
 WASAPI idle stream. It is useful lifecycle evidence, but it is not enough for
-default Rust audio promotion without buffered-audio adoption into active capture
-and provider-backed transcription smokes.
+default Rust audio promotion without the sidecar capture adoption smoke,
+app-wide Always-On-Mic lifecycle integration, and provider-backed transcription
+smokes.
 
 The microphone matrix can also be run directly with the same Rust inventory
 gate:

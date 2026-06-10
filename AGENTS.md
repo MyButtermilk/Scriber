@@ -173,12 +173,14 @@ Packaging and scripts:
   `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` may run the sidecar's opt-in WASAPI
   capture prototype, including selected-endpoint capture by redacted native
   endpoint hash, and a passive WASAPI prewarm worker that observes and bounds
-  idle audio frames. The WASAPI prewarm worker does not yet adopt buffered idle
-  audio into active capture. Non-default Rust capture without a native endpoint
-  hash must fail before first frame and let Python fall back to `sounddevice`;
-  it must not silently use the Windows default endpoint. The default capture
-  path remains Python `sounddevice` until a measured Rust prototype is
-  explicitly promoted.
+  idle audio frames. Within a single sidecar session, `captureStart` may adopt
+  a matching `prewarmId` and write those buffered frames before live audio. The
+  app-wide always-on mic lifecycle does not yet keep or adopt Rust prewarm
+  sessions by default. Non-default Rust capture without a native endpoint hash
+  must fail before first frame and let Python fall back to `sounddevice`; it
+  must not silently use the Windows default endpoint. The default capture path
+  remains Python `sounddevice` until a measured Rust prototype is explicitly
+  promoted.
 - The Rust audio frame-pipe protocol is length-prefixed and versioned. Keep the
   Rust and Python header fixtures in sync when changing it.
 - The opt-in Rust prototype may read frame-pipe PCM into Python, but if capture
@@ -309,6 +311,13 @@ Use `--mode wasapi` to exercise the real passive WASAPI prewarm worker:
 python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 1 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-smoke.json
 ```
 
+Use `--prewarm-before-capture` on the sidecar capture smoke to prove buffered
+prewarm frames are adopted into the next capture within one sidecar session:
+
+```powershell
+python scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 1 --prebuffer-ms 400 --prewarm-before-capture --skip-selected-hash --output tmp\rust-audio-sidecar-adopt-wasapi-smoke.json
+```
+
 The same lifecycle smoke can be included in the hybrid readiness runner when
 explicitly needed:
 
@@ -318,9 +327,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RequireRustAudioPrewarmSidecarSmoke
 ```
 
-This is not physical WASAPI idle-prewarm adoption evidence and must not be used
-alone to promote Rust audio to default because buffered idle audio is not yet
-adopted into active capture.
+This is not app-wide Always-On-Mic promotion evidence and must not be used alone
+to promote Rust audio to default because Python still owns the default prewarm
+lifecycle and provider-backed transcription smokes are still required.
 
 Rust audio promotion readiness gate:
 

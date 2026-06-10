@@ -415,6 +415,7 @@ def validate_rust_audio_sidecar_report(
     duration = requested.get("durationSec")
     prebuffer_ms = requested.get("prebufferMs", 0)
     prebuffer_required = isinstance(prebuffer_ms, (int, float)) and float(prebuffer_ms) > 0
+    prewarm_adoption_required = requested.get("prewarmBeforeCapture") is True
     if min_duration_sec > 0 and (
         not isinstance(duration, (int, float)) or float(duration) < min_duration_sec
     ):
@@ -449,6 +450,10 @@ def validate_rust_audio_sidecar_report(
         failures.append(
             "Rust audio sidecar smoke totalLiveFramesWritten must be at least totalLiveFramesRead when prebufferMs is requested"
         )
+    if prewarm_adoption_required and summary.get("totalAdoptedPrewarmBlocks", 0) <= 0:
+        failures.append(
+            "Rust audio sidecar smoke totalAdoptedPrewarmBlocks must be positive when prewarmBeforeCapture is requested"
+        )
     if summary.get("selectedHashVerified") is not True:
         failures.append("Rust audio sidecar smoke must verify selected native endpoint hash capture")
 
@@ -470,6 +475,8 @@ def validate_rust_audio_sidecar_report(
                 min_observed_duration_sec=min_duration_sec,
             )
         )
+        if prewarm_adoption_required:
+            failures.extend(validate_rust_audio_adopted_prewarm(default_capture, "default"))
     if not isinstance(selected_capture, dict):
         failures.append("Rust audio sidecar smoke is missing selected-native-endpoint-hash capture")
     else:
@@ -483,6 +490,28 @@ def validate_rust_audio_sidecar_report(
         )
 
     return ReadinessCheck("rustAudioSidecarSmoke", not failures, failures, details)
+
+
+def validate_rust_audio_adopted_prewarm(capture: dict[str, Any], name: str) -> list[str]:
+    failures: list[str] = []
+    start = capture.get("start")
+    if not isinstance(start, dict):
+        return [f"Rust audio capture {name} start must be an object for prewarm adoption"]
+    adopted = start.get("adoptedPrewarm")
+    if not isinstance(adopted, dict):
+        return [f"Rust audio capture {name} adoptedPrewarm must be an object"]
+    if adopted.get("adopted") is not True:
+        failures.append(f"Rust audio capture {name} adoptedPrewarm.adopted must be true")
+    if int(adopted.get("blocks") or 0) <= 0:
+        failures.append(f"Rust audio capture {name} adoptedPrewarm.blocks must be positive")
+    if int(adopted.get("audioFrames") or 0) <= 0:
+        failures.append(f"Rust audio capture {name} adoptedPrewarm.audioFrames must be positive")
+    stop = adopted.get("stop")
+    if not isinstance(stop, dict):
+        failures.append(f"Rust audio capture {name} adoptedPrewarm.stop must be an object")
+    elif stop.get("reason") != "adoptedIntoCapture":
+        failures.append(f"Rust audio capture {name} adoptedPrewarm.stop.reason must be adoptedIntoCapture")
+    return failures
 
 
 def validate_rust_audio_prewarm_sidecar_report(

@@ -266,6 +266,8 @@ def write_rust_audio_sidecar_report(
     prebuffer_after_live_count: int = 0,
     observed_duration_sec: float | None = None,
     plan_only: bool = False,
+    prewarm_before_capture: bool = False,
+    adopted_prewarm_blocks: int = 4,
 ) -> None:
     failed_capture_count = 0 if ok else 1
     if observed_duration_sec is None:
@@ -287,6 +289,7 @@ def write_rust_audio_sidecar_report(
                     "durationSec": duration_sec,
                     "selectedDurationSec": 10,
                     "prebufferMs": prebuffer_ms,
+                    "prewarmBeforeCapture": prewarm_before_capture,
                 },
                 "summary": {
                     "captureCount": 2,
@@ -298,6 +301,7 @@ def write_rust_audio_sidecar_report(
                     "totalFramesWritten": 24,
                     "totalPrebufferFramesWritten": default_prebuffer_frames + selected_prebuffer_frames,
                     "totalLiveFramesWritten": 18,
+                    "totalAdoptedPrewarmBlocks": adopted_prewarm_blocks if prewarm_before_capture else 0,
                     "selectedHashVerified": selected_hash_verified,
                 },
                 "captures": [
@@ -307,6 +311,20 @@ def write_rust_audio_sidecar_report(
                         "start": {
                             "nativeEndpointIdHash": "abc123",
                             "endpointSelection": {"mode": "default"},
+                            "adoptedPrewarm": {
+                                "adopted": prewarm_before_capture and adopted_prewarm_blocks > 0,
+                                "blocks": adopted_prewarm_blocks if prewarm_before_capture else 0,
+                                "audioFrames": (
+                                    adopted_prewarm_blocks * 160 if prewarm_before_capture else 0
+                                ),
+                                "stop": {
+                                    "reason": (
+                                        "adoptedIntoCapture"
+                                        if prewarm_before_capture and adopted_prewarm_blocks > 0
+                                        else "notAdopted"
+                                    )
+                                },
+                            },
                         },
                         "frames": {
                             "framesRead": 17,
@@ -501,6 +519,64 @@ def test_validate_release_readiness_accepts_required_rust_audio_sidecar_smoke(tm
     assert result["ok"] is True
     rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
     assert rust_audio_check["details"]["summary"]["selectedHashVerified"] is True
+
+
+def test_validate_release_readiness_accepts_required_rust_audio_sidecar_prewarm_adoption(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
+    write_rust_audio_sidecar_report(
+        rust_audio_report,
+        prewarm_before_capture=True,
+        adopted_prewarm_blocks=4,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_sidecar_report=rust_audio_report,
+        require_rust_audio_sidecar_smoke=True,
+        min_rust_audio_duration_sec=600,
+    )
+
+    assert result["ok"] is True
+    rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    assert rust_audio_check["details"]["summary"]["totalAdoptedPrewarmBlocks"] == 4
+
+
+def test_validate_release_readiness_rejects_missing_rust_audio_sidecar_prewarm_adoption(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
+    write_rust_audio_sidecar_report(
+        rust_audio_report,
+        prewarm_before_capture=True,
+        adopted_prewarm_blocks=0,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_sidecar_report=rust_audio_report,
+        require_rust_audio_sidecar_smoke=True,
+        min_rust_audio_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    failures = "\n".join(rust_audio_check["failures"])
+    assert "totalAdoptedPrewarmBlocks must be positive" in failures
+    assert "adoptedPrewarm.adopted must be true" in failures
 
 
 def test_validate_release_readiness_accepts_required_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
