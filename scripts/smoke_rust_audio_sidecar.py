@@ -279,17 +279,64 @@ def run_capture(
             stop_payload = {}
         result["captureStopResponseMs"] = round(stop_ms, 3)
         result["stop"] = stop_payload
-        if not stop_response.get("success"):
-            result["ok"] = False
-            result["stopErrorCode"] = stop_response.get("errorCode")
-            result["stopFallbackReason"] = stop_response.get("fallbackReason")
+    if not stop_response.get("success"):
+        result["ok"] = False
+        result["stopErrorCode"] = stop_response.get("errorCode")
+        result["stopFallbackReason"] = stop_response.get("fallbackReason")
 
-    result["ok"] = bool(
-        result.get("ok")
-        and result.get("frames", {}).get("framesRead", 0) > 0
-        and result.get("stop", {}).get("stopped") is True
+    validation_errors = validate_capture_metrics(
+        result,
+        require_prebuffer=int(request_payload.get("prebufferMs") or 0) > 0,
     )
+    if validation_errors:
+        result["validationErrors"] = validation_errors
+    result["ok"] = bool(result.get("ok") and not validation_errors)
     return result
+
+
+def validate_capture_metrics(
+    capture: dict[str, Any],
+    *,
+    require_prebuffer: bool,
+) -> list[str]:
+    errors: list[str] = []
+    frames = capture.get("frames")
+    if not isinstance(frames, dict):
+        return ["frames must be an object"]
+    stop = capture.get("stop")
+    if not isinstance(stop, dict):
+        stop = {}
+    frames_read = int(frames.get("framesRead") or 0)
+    prebuffer_frames_read = int(frames.get("prebufferFramesRead") or 0)
+    live_frames_read = int(frames.get("liveFramesRead") or 0)
+    prebuffer_after_live_count = int(frames.get("prebufferAfterLiveCount") or 0)
+    frames_written = int(stop.get("framesWritten") or 0)
+    prebuffer_frames_written = int(stop.get("prebufferFramesWritten") or 0)
+    live_frames_written = int(stop.get("liveFramesWritten") or 0)
+
+    if frames_read <= 0:
+        errors.append("framesRead must be positive")
+    if frames.get("sequenceGapCount") != 0:
+        errors.append("sequenceGapCount must be 0")
+    if stop.get("stopped") is not True:
+        errors.append("stop.stopped must be true")
+    if stop.get("writerError") not in (None, ""):
+        errors.append("writerError must be empty")
+
+    if require_prebuffer:
+        if prebuffer_frames_read <= 0:
+            errors.append("prebufferFramesRead must be positive when prebufferMs is requested")
+        if live_frames_read <= 0:
+            errors.append("liveFramesRead must be positive when prebufferMs is requested")
+        if prebuffer_after_live_count != 0:
+            errors.append("prebufferAfterLiveCount must be 0")
+        if frames_written < frames_read:
+            errors.append("framesWritten must be at least framesRead")
+        if prebuffer_frames_written < prebuffer_frames_read:
+            errors.append("prebufferFramesWritten must be at least prebufferFramesRead")
+        if live_frames_written < live_frames_read:
+            errors.append("liveFramesWritten must be at least liveFramesRead")
+    return errors
 
 
 def base_capture_payload(args: argparse.Namespace) -> dict[str, Any]:

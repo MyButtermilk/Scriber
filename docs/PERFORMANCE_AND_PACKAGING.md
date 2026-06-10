@@ -796,6 +796,9 @@ Implementation plan:
      first-frame timing, frame counts, sequence gaps, stop health, and sidecar
      writer metrics. Use a short run for local validation and `--duration-sec
      600` for the 10-minute physical stability gate.
+   - Implemented: the smoke script itself now fails captures when requested
+     prebuffer evidence is missing, sequence gaps occur, stop health is invalid,
+     or writer counts fall below the frames observed by the reader.
    - Implemented: the hybrid release-readiness runner and validator can now
      consume that JSON evidence through `-RunRustAudioSidecarSmoke`,
      `-UseExistingRustAudioSidecarReport`, and

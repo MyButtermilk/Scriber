@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scripts.smoke_rust_audio_sidecar import validate_capture_metrics
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -58,3 +60,51 @@ def test_rust_audio_sidecar_smoke_plan_only_writes_artifact(tmp_path: Path) -> N
     assert stdout_payload["requested"]["prebufferMs"] == 0
     assert "--duration-sec 10" in stdout_payload["exampleCommand"]
     assert any("10-minute" in item for item in stdout_payload["requirements"])
+
+
+def test_rust_audio_sidecar_smoke_validation_accepts_consistent_prebuffer_metrics() -> None:
+    errors = validate_capture_metrics(
+        {
+            "frames": {
+                "framesRead": 10,
+                "prebufferFramesRead": 4,
+                "liveFramesRead": 6,
+                "prebufferAfterLiveCount": 0,
+                "sequenceGapCount": 0,
+            },
+            "stop": {
+                "stopped": True,
+                "framesWritten": 10,
+                "prebufferFramesWritten": 4,
+                "liveFramesWritten": 6,
+                "writerError": None,
+            },
+        },
+        require_prebuffer=True,
+    )
+
+    assert errors == []
+
+
+def test_rust_audio_sidecar_smoke_validation_rejects_inconsistent_writer_metrics() -> None:
+    errors = validate_capture_metrics(
+        {
+            "frames": {
+                "framesRead": 10,
+                "prebufferFramesRead": 4,
+                "liveFramesRead": 6,
+                "prebufferAfterLiveCount": 0,
+                "sequenceGapCount": 0,
+            },
+            "stop": {
+                "stopped": True,
+                "framesWritten": 10,
+                "prebufferFramesWritten": 2,
+                "liveFramesWritten": 6,
+                "writerError": None,
+            },
+        },
+        require_prebuffer=True,
+    )
+
+    assert "prebufferFramesWritten must be at least prebufferFramesRead" in errors
