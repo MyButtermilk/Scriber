@@ -634,9 +634,9 @@ pub fn run() {
                 .set_handle(native_events_handle);
             let shell_ipc_state = app.state::<ShellIpcState>();
             write_shell_log(&format!(
-                "shell IPC state running={} pipe={}",
+                "shell IPC state running={} pipe_hash={}",
                 shell_ipc_state.is_running(),
-                shell_ipc_state.config().pipe_name
+                shell_ipc_state.config().pipe_name_hash()
             ));
             Ok(())
         })

@@ -77,3 +77,60 @@ def test_shell_ipc_call_records_transport_error(monkeypatch):
     assert snapshot["lastCommand"] == "capabilities"
     assert snapshot["lastSuccess"] is False
     assert "JSONDecodeError" in snapshot["lastError"]
+
+
+def test_shell_ipc_call_rejects_request_id_mismatch(monkeypatch):
+    monkeypatch.setattr(shell_ipc.sys, "platform", "win32")
+    monkeypatch.setenv(shell_ipc.SHELL_IPC_PIPE_ENV, r"\\.\pipe\scriber-shell-test")
+    monkeypatch.setenv(shell_ipc.SHELL_IPC_TOKEN_ENV, "secret-token")
+    shell_ipc._reset_diagnostics_for_tests()
+
+    def fake_transport(pipe_name: str, request_line: str, timeout_seconds: float) -> str:
+        return json.dumps(
+            {
+                "apiVersion": "1",
+                "requestId": "wrong",
+                "success": True,
+                "errorCode": None,
+                "fallbackReason": None,
+                "timingsMs": {"total": 1.0},
+                "payload": {},
+            }
+        )
+
+    monkeypatch.setattr(shell_ipc, "_call_shell_ipc_windows", fake_transport)
+
+    response = shell_ipc.call_shell_ipc("ping")
+
+    assert response["success"] is False
+    assert response["errorCode"] == "transportError"
+    assert "requestId mismatch" in response["fallbackReason"]
+
+
+def test_shell_ipc_call_rejects_api_version_mismatch(monkeypatch):
+    monkeypatch.setattr(shell_ipc.sys, "platform", "win32")
+    monkeypatch.setenv(shell_ipc.SHELL_IPC_PIPE_ENV, r"\\.\pipe\scriber-shell-test")
+    monkeypatch.setenv(shell_ipc.SHELL_IPC_TOKEN_ENV, "secret-token")
+    shell_ipc._reset_diagnostics_for_tests()
+
+    def fake_transport(pipe_name: str, request_line: str, timeout_seconds: float) -> str:
+        request = json.loads(request_line)
+        return json.dumps(
+            {
+                "apiVersion": "0",
+                "requestId": request["requestId"],
+                "success": True,
+                "errorCode": None,
+                "fallbackReason": None,
+                "timingsMs": {"total": 1.0},
+                "payload": {},
+            }
+        )
+
+    monkeypatch.setattr(shell_ipc, "_call_shell_ipc_windows", fake_transport)
+
+    response = shell_ipc.call_shell_ipc("ping")
+
+    assert response["success"] is False
+    assert response["errorCode"] == "transportError"
+    assert "apiVersion mismatch" in response["fallbackReason"]

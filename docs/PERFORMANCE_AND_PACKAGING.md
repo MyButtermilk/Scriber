@@ -482,11 +482,52 @@ Implementation status on `codex/rust-expansion-plan`:
   call timeout support and redacted pipe-name hashing.
 - `/api/runtime/audio-diagnostics` now reports `textInjection.shellIpc` status
   without calling the pipe from readiness or startup paths.
+- Added the `injectText` shell IPC command for opt-in Tauri text injection. The
+  Rust side reads and sets `CF_UNICODETEXT`, dispatches Ctrl+V with `SendInput`,
+  returns structured timing data and `clipboard_set`/`paste` markers, hashes
+  foreground-window diagnostics, uses byte-budgeted request limits, rejects
+  embedded NUL text, enforces a request deadline before side effects, and guards
+  clipboard restore with the clipboard sequence number.
+- Added strict `SCRIBER_INJECT_METHOD=tauri` in Python `TextInjector`.
+  `auto` intentionally still uses the existing Python paste path until installed
+  target-app evidence justifies changing the default.
 - Added Rust unit tests for the shell IPC protocol and backend env contract,
-  plus Python unit/contract coverage for shell IPC diagnostics.
-- Still open: `injectText` command, foreground-window diagnostics, marker
-  forwarding into `TextInjector`, strict `SCRIBER_INJECT_METHOD=tauri`, target
-  app smoke matrix, and default-path decision based on installed evidence.
+  injectText payload validation, retry-limit clamping, request/text budget
+  consistency, NUL rejection, and deadline failure payloads, plus Python unit/
+  contract coverage for shell IPC diagnostics, strict Tauri injection marker
+  forwarding, and response protocol validation.
+- Still open: installed target-app smoke matrix, packaging smoke evidence,
+  explicit pipe DACL/current-session security descriptor, real owner HWND or
+  message-only clipboard owner instead of `OpenClipboard(NULL)`, support-bundle
+  surfacing of the latest Tauri injection attempt, and default-path decision
+  based on installed evidence.
+
+Tauri injection default blockers:
+
+- `auto` remains Python paste. `SCRIBER_INJECT_METHOD=tauri` is strict opt-in
+  and fails closed; it must not silently fall back to Python paste.
+- Fallback to Python applies only to a future explicit `auto` routing decision,
+  not to strict `tauri`.
+- No clipboard mutation is acceptable unless the previous text state was
+  captured, restore is explicitly disabled by request, or the command fails
+  before setting the clipboard.
+- Every failure after a successful clipboard set must restore immediately or
+  report `restore.skippedReason` / `restore.errorCode`.
+- Rust must not paste after the Python client deadline. The request includes
+  `deadlineMs`; Rust checks remaining budget before clipboard set and before
+  paste.
+- Normal logs, diagnostics, and support bundles must not contain transcript
+  text, session tokens, raw pipe names, raw foreground titles, or unredacted
+  target identifiers.
+- Manual installed smokes must include: text clipboard, non-text clipboard,
+  clipboard locked by another app, user copies during restore delay, same-text
+  user copy, Notepad, Word, Outlook, browser input, browser contenteditable,
+  Electron, elevated target, elevated Scriber, and Remote Desktop if supported.
+- Support bundles should surface the last Tauri injection fields:
+  `textInjection.method`, `shellIpc.available`, `lastCommand`, `lastErrorCode`,
+  `fallbackReason`, `restoreScheduled`, `restore.succeeded`,
+  `restore.skippedReason`, `foregroundBefore`, `foregroundAfter`,
+  `foregroundChanged`, and `timingsMs`, all redacted.
 
 Acceptance gates:
 
@@ -505,7 +546,8 @@ Acceptance gates:
 Rollback:
 
 - Set `SCRIBER_INJECT_METHOD=paste` or keep `auto` with Rust injection disabled.
-- If shell IPC is unavailable, Python continues using existing injection paths.
+- In strict `tauri`, shell IPC failure stops injection for that attempt. Existing
+  Python paths continue to be used by `auto`, `paste`, `sendinput`, and `type`.
 - Keep Python fallback indefinitely unless a separate deprecation plan proves
   coverage across target apps and privilege levels.
 

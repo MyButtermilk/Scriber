@@ -20,6 +20,7 @@ from pipecat.frames.frames import (
 )
 
 from src.config import Config
+from src.runtime.shell_ipc import call_shell_ipc
 
 try:
     if sys.platform.startswith("linux") and "DISPLAY" not in os.environ:
@@ -385,6 +386,56 @@ def _paste_text(
                 t.start()
 
 
+def _tauri_inject_text(
+    text: str,
+    *,
+    on_marker: Optional[Callable[[str], None]] = None,
+) -> bool:
+    client_timeout_seconds = 2.5
+    deadline_ms = 2000
+    pre_delay_ms = _get_pre_delay_for_window()
+    if pre_delay_ms + 250 >= deadline_ms:
+        logger.warning(
+            "Tauri text injection skipped: pre-delay would exceed IPC deadline budget"
+        )
+        return False
+
+    payload = {
+        "text": text,
+        "restoreClipboard": True,
+        "restoreDelayMs": max(0, int(getattr(Config, "PASTE_RESTORE_DELAY_MS", 1500) or 0)),
+        "preDelayMs": pre_delay_ms,
+        "dispatch": "ctrlV",
+        "maxClipboardRetries": 5,
+        "clipboardRetryDelayMs": 5,
+        "deadlineMs": deadline_ms,
+    }
+    try:
+        response = call_shell_ipc("injectText", payload, timeout_seconds=client_timeout_seconds)
+    except Exception as exc:
+        logger.warning(f"Tauri text injection failed: {type(exc).__name__}")
+        return False
+    if not response.get("success"):
+        error_code = response.get("errorCode") or "unknown"
+        fallback_reason = response.get("fallbackReason") or ""
+        logger.warning(f"Tauri text injection failed: {error_code} {fallback_reason}".strip())
+        return False
+
+    response_payload = response.get("payload")
+    if not isinstance(response_payload, dict) or response_payload.get("method") != "tauri":
+        logger.warning("Tauri text injection failed: invalid shell IPC payload")
+        return False
+    markers = response_payload.get("markers") if isinstance(response_payload, dict) else None
+    if not isinstance(markers, list) or "paste" not in markers:
+        logger.warning("Tauri text injection failed: missing paste marker")
+        return False
+    if on_marker:
+        for marker in markers:
+            if marker in {"clipboard_set", "paste"}:
+                on_marker(marker)
+    return True
+
+
 class TextInjector(FrameProcessor):
     def __init__(
         self,
@@ -459,16 +510,21 @@ class TextInjector(FrameProcessor):
             logger.info("Text injection disabled via SCRIBER_DISABLE_TEXT_INJECTION")
             return
 
-        if not HAS_GUI:
-            logger.info(f"[MOCK INJECT] {text}")
-            return
-
         try:
             method = (getattr(Config, "INJECT_METHOD", "auto") or "auto").lower().strip()
         except Exception:
             method = "auto"
-        if method not in {"auto", "type", "paste", "sendinput"}:
+        if method not in {"auto", "type", "paste", "sendinput", "tauri"}:
             method = "auto"
+
+        if method == "tauri":
+            if _tauri_inject_text(text, on_marker=self._notify_injection_marker):
+                self._notify_injected(text)
+            return
+
+        if not HAS_GUI:
+            logger.info(f"[MOCK INJECT] {len(text)} chars")
+            return
 
         paste_kwargs = {"skip_clipboard_restore": False}
         if self.on_injection_marker:

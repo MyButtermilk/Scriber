@@ -92,6 +92,12 @@ def call_shell_ipc(
         response = json.loads(response_line)
         if not isinstance(response, dict):
             raise ValueError("shell IPC response was not an object")
+        if response.get("apiVersion") != api_version:
+            raise ValueError("shell IPC response apiVersion mismatch")
+        if response.get("requestId") != request["requestId"]:
+            raise ValueError("shell IPC response requestId mismatch")
+        if not isinstance(response.get("success"), bool):
+            raise ValueError("shell IPC response success must be bool")
         success = bool(response.get("success"))
         error = None if success else str(response.get("errorCode") or "shell IPC failed")
         _record_result(cleaned_command, success, error)

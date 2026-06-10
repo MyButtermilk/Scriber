@@ -89,9 +89,10 @@ class Config:
     # Text injection method:
     #   "sendinput" - Windows SendInput API, instant batch injection (~10ms for any length)
     #   "paste" - Clipboard + Ctrl+V, fast and reliable
+    #   "tauri" - Opt-in Tauri shell IPC clipboard + Ctrl+V path
     #   "type" - Character-by-character keystrokes (slowest, most compatible)
-    #   "auto" - Smart selection: SendInput for most apps, paste for Word/Outlook
-    INJECT_METHOD = os.getenv("SCRIBER_INJECT_METHOD", "auto").lower()  # auto | sendinput | paste | type
+    #   "auto" - Current default: Python clipboard paste, with Python fallbacks
+    INJECT_METHOD = os.getenv("SCRIBER_INJECT_METHOD", "auto").lower()  # auto | sendinput | paste | type | tauri
     DISABLE_TEXT_INJECTION = os.getenv("SCRIBER_DISABLE_TEXT_INJECTION", "0") in ("1", "true", "True")
     # Clipboard paste tuning (Windows). Some apps (Word/Outlook) process paste asynchronously.
     PASTE_PRE_DELAY_MS = int(os.getenv("SCRIBER_PASTE_PRE_DELAY_MS", "80"))

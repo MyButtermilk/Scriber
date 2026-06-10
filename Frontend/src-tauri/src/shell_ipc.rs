@@ -5,13 +5,53 @@ use std::{
         Arc,
     },
     thread::{self, JoinHandle},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
 const API_VERSION: &str = "1";
-const MAX_REQUEST_BYTES: usize = 64 * 1024;
+const MAX_REQUEST_BYTES: usize = 512 * 1024;
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
+const MAX_INJECT_TEXT_BYTES: usize = 384 * 1024;
+const DEFAULT_CLIPBOARD_RETRIES: u32 = 5;
+const DEFAULT_CLIPBOARD_RETRY_DELAY_MS: u64 = 5;
+const DEFAULT_RESTORE_DELAY_MS: u64 = 1500;
+const DEFAULT_INJECT_DEADLINE_MS: u64 = 2_000;
+const CLIENT_READ_TIMEOUT_MS: u64 = 750;
+
+#[derive(Debug, Clone)]
+struct InjectTextOptions {
+    text: String,
+    restore_clipboard: bool,
+    restore_delay_ms: u64,
+    pre_delay_ms: u64,
+    dispatch: String,
+    max_clipboard_retries: u32,
+    clipboard_retry_delay_ms: u64,
+    deadline_ms: u64,
+}
+
+#[derive(Debug)]
+struct ShellCommandError {
+    code: &'static str,
+    reason: String,
+    payload: Value,
+}
+
+impl ShellCommandError {
+    fn new(code: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            code,
+            reason: reason.into(),
+            payload: json!({}),
+        }
+    }
+
+    fn with_payload(mut self, payload: Value) -> Self {
+        self.payload = payload;
+        self
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ShellIpcConfig {
@@ -26,6 +66,10 @@ impl ShellIpcConfig {
             pipe_name: format!(r"\\.\pipe\scriber-shell-{id}"),
             token: Uuid::new_v4().simple().to_string(),
         }
+    }
+
+    pub fn pipe_name_hash(&self) -> String {
+        hash_sensitive_identifier(&self.pipe_name)
     }
 }
 
@@ -154,6 +198,7 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
         .get("command")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let payload = request.get("payload").unwrap_or(&Value::Null);
     match command {
         "ping" => response_line(
             request_id,
@@ -173,10 +218,21 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             "",
             started,
             json!({
-                "commands": ["ping", "capabilities"],
-                "textInjection": false,
+                "commands": ["ping", "capabilities", "injectText"],
+                "textInjection": true,
             }),
         ),
+        "injectText" => match inject_text(payload) {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(err) => response_line(
+                request_id,
+                false,
+                err.code,
+                &err.reason,
+                started,
+                err.payload,
+            ),
+        },
         _ => response_line(
             request_id,
             false,
@@ -211,14 +267,741 @@ fn response_line(
     format!("{response}\n")
 }
 
+fn hash_sensitive_identifier(raw: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in raw.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn parse_inject_text_options(payload: &Value) -> Result<InjectTextOptions, ShellCommandError> {
+    let Some(payload) = payload.as_object() else {
+        return Err(ShellCommandError::new(
+            "invalidPayload",
+            "injectText payload must be an object",
+        ));
+    };
+    let text = payload
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ShellCommandError::new("invalidPayload", "injectText requires text"))?
+        .to_string();
+    if text.as_bytes().len() > MAX_INJECT_TEXT_BYTES {
+        return Err(ShellCommandError::new(
+            "payloadTooLarge",
+            "injectText text exceeded size limit",
+        ));
+    }
+    if text.contains('\0') {
+        return Err(ShellCommandError::new(
+            "invalidPayload",
+            "injectText rejects embedded NUL characters",
+        ));
+    }
+
+    let dispatch = bounded_string(payload, "dispatch", "ctrlV", 32);
+    if dispatch != "ctrlV" {
+        return Err(ShellCommandError::new(
+            "unsupportedDispatch",
+            "injectText only supports ctrlV dispatch",
+        ));
+    }
+
+    Ok(InjectTextOptions {
+        text,
+        restore_clipboard: optional_bool(payload, "restoreClipboard", true),
+        restore_delay_ms: optional_u64(payload, "restoreDelayMs", DEFAULT_RESTORE_DELAY_MS, 30_000),
+        pre_delay_ms: optional_u64(payload, "preDelayMs", 0, 5_000),
+        dispatch,
+        max_clipboard_retries: optional_u64(
+            payload,
+            "maxClipboardRetries",
+            u64::from(DEFAULT_CLIPBOARD_RETRIES),
+            50,
+        ) as u32,
+        clipboard_retry_delay_ms: optional_u64(
+            payload,
+            "clipboardRetryDelayMs",
+            DEFAULT_CLIPBOARD_RETRY_DELAY_MS,
+            500,
+        ),
+        deadline_ms: optional_u64(payload, "deadlineMs", DEFAULT_INJECT_DEADLINE_MS, 30_000),
+    })
+}
+
+fn optional_bool(
+    payload: &serde_json::Map<String, Value>,
+    field: &str,
+    default_value: bool,
+) -> bool {
+    payload
+        .get(field)
+        .and_then(Value::as_bool)
+        .unwrap_or(default_value)
+}
+
+fn optional_u64(
+    payload: &serde_json::Map<String, Value>,
+    field: &str,
+    default_value: u64,
+    max_value: u64,
+) -> u64 {
+    payload
+        .get(field)
+        .and_then(Value::as_u64)
+        .unwrap_or(default_value)
+        .min(max_value)
+}
+
+fn bounded_string(
+    payload: &serde_json::Map<String, Value>,
+    field: &str,
+    default_value: &str,
+    max_len: usize,
+) -> String {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or(default_value)
+        .chars()
+        .take(max_len)
+        .collect()
+}
+
+#[cfg(windows)]
+fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
+    let options = parse_inject_text_options(payload)?;
+    let started = Instant::now();
+    let mut markers: Vec<&'static str> = Vec::new();
+    let foreground_before = foreground_snapshot();
+
+    let clipboard_options = ClipboardOptions {
+        retries: options.max_clipboard_retries,
+        retry_delay: Duration::from_millis(options.clipboard_retry_delay_ms),
+    };
+    let (previous_text, clipboard_read_ms) = if options.restore_clipboard {
+        let read_started = Instant::now();
+        match read_clipboard_text(&clipboard_options) {
+            Ok(Some(value)) => (Some(value), Some(elapsed_ms(read_started))),
+            Ok(None) => {
+                let partial_payload = inject_response_payload(
+                    &options,
+                    &markers,
+                    Some(elapsed_ms(read_started)),
+                    None,
+                    None,
+                    elapsed_ms(started),
+                    restore_status("previousClipboardUnavailable", None),
+                    &foreground_before,
+                    &foreground_before,
+                );
+                return Err(ShellCommandError::new(
+                    "clipboardRestoreUnavailable",
+                    "previous clipboard text could not be captured",
+                )
+                .with_payload(partial_payload));
+            }
+            Err(err) => {
+                let partial_payload = inject_response_payload(
+                    &options,
+                    &markers,
+                    Some(elapsed_ms(read_started)),
+                    None,
+                    None,
+                    elapsed_ms(started),
+                    restore_status("clipboardReadFailed", Some(err.code)),
+                    &foreground_before,
+                    &foreground_before,
+                );
+                return Err(err.with_payload(partial_payload));
+            }
+        }
+    } else {
+        (None, None)
+    };
+
+    ensure_deadline_budget(&options, started, 25, "deadlineBeforeSet", || {
+        inject_response_payload(
+            &options,
+            &markers,
+            clipboard_read_ms,
+            None,
+            None,
+            elapsed_ms(started),
+            restore_status("notNeeded", None),
+            &foreground_before,
+            &foreground_before,
+        )
+    })?;
+
+    let set_started = Instant::now();
+    let clipboard_sequence_after_set = set_clipboard_text(&options.text, &clipboard_options)?;
+    let clipboard_set_ms = elapsed_ms(set_started);
+    markers.push("clipboard_set");
+
+    if options.pre_delay_ms > 0 {
+        ensure_deadline_budget(
+            &options,
+            started,
+            options.pre_delay_ms + 50,
+            "deadlineBeforePaste",
+            || {
+                let restore = restore_clipboard_now(
+                    &options.text,
+                    previous_text.as_deref(),
+                    clipboard_sequence_after_set,
+                    &clipboard_options,
+                );
+                inject_response_payload(
+                    &options,
+                    &markers,
+                    clipboard_read_ms,
+                    Some(clipboard_set_ms),
+                    None,
+                    elapsed_ms(started),
+                    restore,
+                    &foreground_before,
+                    &foreground_snapshot(),
+                )
+            },
+        )?;
+    } else {
+        ensure_deadline_budget(&options, started, 50, "deadlineBeforePaste", || {
+            let restore = restore_clipboard_now(
+                &options.text,
+                previous_text.as_deref(),
+                clipboard_sequence_after_set,
+                &clipboard_options,
+            );
+            inject_response_payload(
+                &options,
+                &markers,
+                clipboard_read_ms,
+                Some(clipboard_set_ms),
+                None,
+                elapsed_ms(started),
+                restore,
+                &foreground_before,
+                &foreground_snapshot(),
+            )
+        })?;
+    }
+
+    if options.pre_delay_ms > 0 {
+        thread::sleep(Duration::from_millis(options.pre_delay_ms));
+    }
+
+    ensure_deadline_budget(&options, started, 50, "deadlineBeforePaste", || {
+        let restore = restore_clipboard_now(
+            &options.text,
+            previous_text.as_deref(),
+            clipboard_sequence_after_set,
+            &clipboard_options,
+        );
+        inject_response_payload(
+            &options,
+            &markers,
+            clipboard_read_ms,
+            Some(clipboard_set_ms),
+            None,
+            elapsed_ms(started),
+            restore,
+            &foreground_before,
+            &foreground_snapshot(),
+        )
+    })?;
+
+    let paste_started = Instant::now();
+    if let Err(err) = dispatch_ctrl_v() {
+        let restore = restore_clipboard_now(
+            &options.text,
+            previous_text.as_deref(),
+            clipboard_sequence_after_set,
+            &clipboard_options,
+        );
+        let partial_payload = inject_response_payload(
+            &options,
+            &markers,
+            clipboard_read_ms,
+            Some(clipboard_set_ms),
+            Some(elapsed_ms(paste_started)),
+            elapsed_ms(started),
+            restore,
+            &foreground_before,
+            &foreground_snapshot(),
+        );
+        return Err(err.with_payload(partial_payload));
+    }
+    let paste_dispatch_ms = elapsed_ms(paste_started);
+    markers.push("paste");
+    let foreground_after = foreground_snapshot();
+
+    let restore = if options.restore_clipboard {
+        if let Some(previous_text) = previous_text {
+            schedule_clipboard_restore(
+                options.text.clone(),
+                previous_text,
+                clipboard_options,
+                clipboard_sequence_after_set,
+                options.restore_delay_ms,
+            );
+            restore_status("scheduled", None)
+        } else {
+            restore_status("previousClipboardUnavailable", None)
+        }
+    } else {
+        restore_status("disabled", None)
+    };
+
+    Ok(inject_response_payload(
+        &options,
+        &markers,
+        clipboard_read_ms,
+        Some(clipboard_set_ms),
+        Some(paste_dispatch_ms),
+        elapsed_ms(started),
+        restore,
+        &foreground_before,
+        &foreground_after,
+    ))
+}
+
+#[cfg(not(windows))]
+fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
+    let _ = parse_inject_text_options(payload)?;
+    Err(ShellCommandError::new(
+        "unsupportedPlatform",
+        "injectText is only available on Windows",
+    ))
+}
+
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
+
+fn inject_response_payload(
+    options: &InjectTextOptions,
+    markers: &[&'static str],
+    clipboard_read_ms: Option<f64>,
+    clipboard_set_ms: Option<f64>,
+    paste_dispatch_ms: Option<f64>,
+    total_ms: f64,
+    restore: Value,
+    foreground_before: &Value,
+    foreground_after: &Value,
+) -> Value {
+    json!({
+        "method": "tauri",
+        "dispatch": options.dispatch,
+        "markers": markers,
+        "restore": restore,
+        "restoreScheduled": restore
+            .get("scheduled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "foregroundBefore": foreground_before,
+        "foregroundAfter": foreground_after,
+        "foregroundChanged": foreground_before != foreground_after,
+        "timingsMs": {
+            "clipboardRead": clipboard_read_ms,
+            "clipboardSet": clipboard_set_ms,
+            "preDelay": options.pre_delay_ms as f64,
+            "pasteDispatch": paste_dispatch_ms,
+            "total": total_ms,
+        },
+    })
+}
+
+fn restore_status(skipped_reason: &str, error_code: Option<&str>) -> Value {
+    json!({
+        "scheduled": skipped_reason == "scheduled",
+        "attempted": false,
+        "succeeded": Value::Null,
+        "skippedReason": skipped_reason,
+        "errorCode": error_code,
+    })
+}
+
+fn ensure_deadline_budget<F>(
+    options: &InjectTextOptions,
+    started: Instant,
+    required_ms: u64,
+    code: &'static str,
+    payload: F,
+) -> Result<(), ShellCommandError>
+where
+    F: FnOnce() -> Value,
+{
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let remaining_ms = options.deadline_ms.saturating_sub(elapsed_ms);
+    if remaining_ms < required_ms {
+        return Err(ShellCommandError::new(
+            code,
+            format!(
+                "injectText deadline would be exceeded before side effect (remaining={remaining_ms}ms required={required_ms}ms)"
+            ),
+        )
+        .with_payload(payload()));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[derive(Clone)]
+struct ClipboardOptions {
+    retries: u32,
+    retry_delay: Duration,
+}
+
+#[cfg(windows)]
+fn foreground_snapshot() -> Value {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+    };
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return json!({
+                "available": false,
+                "windowHash": Value::Null,
+                "titleHash": Value::Null,
+                "processIdHash": Value::Null,
+            });
+        }
+
+        let mut pid = 0u32;
+        let _ = GetWindowThreadProcessId(hwnd, &mut pid);
+        let mut title_buffer = [0u16; 512];
+        let title_len = GetWindowTextW(hwnd, title_buffer.as_mut_ptr(), title_buffer.len() as i32)
+            .max(0) as usize;
+        let title_hash = if title_len == 0 {
+            Value::Null
+        } else {
+            let title = String::from_utf16_lossy(&title_buffer[..title_len]);
+            Value::String(hash_sensitive_identifier(&title))
+        };
+
+        json!({
+            "available": true,
+            "windowHash": hash_sensitive_identifier(&format!("{hwnd:p}")),
+            "titleHash": title_hash,
+            "processIdHash": if pid == 0 {
+                Value::Null
+            } else {
+                Value::String(hash_sensitive_identifier(&pid.to_string()))
+            },
+        })
+    }
+}
+
+#[cfg(not(windows))]
+fn foreground_snapshot() -> Value {
+    json!({
+        "available": false,
+        "windowHash": Value::Null,
+        "titleHash": Value::Null,
+        "processIdHash": Value::Null,
+    })
+}
+
+#[cfg(windows)]
+fn read_clipboard_text(options: &ClipboardOptions) -> Result<Option<String>, ShellCommandError> {
+    use std::ptr;
+    use windows_sys::Win32::System::{
+        DataExchange::{
+            CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+        },
+        Memory::{GlobalLock, GlobalSize, GlobalUnlock},
+        Ole::CF_UNICODETEXT,
+    };
+
+    for _ in 0..options.retries.max(1) {
+        if unsafe { OpenClipboard(ptr::null_mut()) } == 0 {
+            thread::sleep(options.retry_delay);
+            continue;
+        }
+        let result = unsafe {
+            if IsClipboardFormatAvailable(CF_UNICODETEXT as u32) == 0 {
+                Ok(None)
+            } else {
+                let handle = GetClipboardData(CF_UNICODETEXT as u32);
+                if handle.is_null() {
+                    Err(ShellCommandError::new(
+                        "clipboardReadFailed",
+                        "GetClipboardData returned null",
+                    ))
+                } else {
+                    let ptr = GlobalLock(handle);
+                    if ptr.is_null() {
+                        Err(ShellCommandError::new(
+                            "clipboardReadFailed",
+                            "GlobalLock failed for clipboard data",
+                        ))
+                    } else {
+                        let byte_len = GlobalSize(handle);
+                        let text = if byte_len < std::mem::size_of::<u16>() {
+                            String::new()
+                        } else {
+                            let max_len = byte_len / std::mem::size_of::<u16>();
+                            let mut len = 0usize;
+                            let chars = ptr.cast::<u16>();
+                            while len < max_len && *chars.add(len) != 0 {
+                                len += 1;
+                            }
+                            let slice = std::slice::from_raw_parts(chars, len);
+                            String::from_utf16_lossy(slice)
+                        };
+                        let _ = GlobalUnlock(handle);
+                        Ok(Some(text))
+                    }
+                }
+            }
+        };
+        unsafe {
+            CloseClipboard();
+        }
+        return result;
+    }
+    Err(ShellCommandError::new(
+        "clipboardBusy",
+        "could not open clipboard for read",
+    ))
+}
+
+#[cfg(windows)]
+fn set_clipboard_text(text: &str, options: &ClipboardOptions) -> Result<u32, ShellCommandError> {
+    use std::{mem, ptr};
+    use windows_sys::Win32::{
+        Foundation::GlobalFree,
+        System::{
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+            Ole::CF_UNICODETEXT,
+        },
+    };
+
+    let mut encoded: Vec<u16> = text.encode_utf16().collect();
+    encoded.push(0);
+    let byte_len = encoded.len() * mem::size_of::<u16>();
+
+    for _ in 0..options.retries.max(1) {
+        if unsafe { OpenClipboard(ptr::null_mut()) } == 0 {
+            thread::sleep(options.retry_delay);
+            continue;
+        }
+        let result = unsafe {
+            let handle = GlobalAlloc(GMEM_MOVEABLE, byte_len);
+            if handle.is_null() {
+                Err(ShellCommandError::new(
+                    "clipboardSetFailed",
+                    "GlobalAlloc failed for clipboard data",
+                ))
+            } else {
+                let locked_ptr = GlobalLock(handle);
+                if locked_ptr.is_null() {
+                    let _ = GlobalFree(handle);
+                    Err(ShellCommandError::new(
+                        "clipboardSetFailed",
+                        "GlobalLock failed for clipboard data",
+                    ))
+                } else {
+                    ptr::copy_nonoverlapping(
+                        encoded.as_ptr().cast::<u8>(),
+                        locked_ptr.cast::<u8>(),
+                        byte_len,
+                    );
+                    let _ = GlobalUnlock(handle);
+                    if EmptyClipboard() == 0 {
+                        let _ = GlobalFree(handle);
+                        Err(ShellCommandError::new(
+                            "clipboardSetFailed",
+                            "EmptyClipboard failed",
+                        ))
+                    } else if SetClipboardData(CF_UNICODETEXT as u32, handle).is_null() {
+                        let _ = GlobalFree(handle);
+                        Err(ShellCommandError::new(
+                            "clipboardSetFailed",
+                            "SetClipboardData failed",
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+        };
+        unsafe {
+            CloseClipboard();
+        }
+        return result.map(|()| clipboard_sequence_number());
+    }
+    Err(ShellCommandError::new(
+        "clipboardBusy",
+        "could not open clipboard for write",
+    ))
+}
+
+#[cfg(windows)]
+fn clipboard_sequence_number() -> u32 {
+    use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
+    unsafe { GetClipboardSequenceNumber() }
+}
+
+#[cfg(windows)]
+fn dispatch_ctrl_v() -> Result<(), ShellCommandError> {
+    use std::mem;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL,
+    };
+
+    const VK_V: VIRTUAL_KEY = 0x56;
+    let inputs = [
+        keyboard_input(VK_CONTROL, 0),
+        keyboard_input(VK_V, 0),
+        keyboard_input(VK_V, KEYEVENTF_KEYUP),
+        keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
+    ];
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            mem::size_of::<INPUT>() as i32,
+        )
+    };
+    if sent != inputs.len() as u32 {
+        return Err(ShellCommandError::new(
+            "pasteDispatchFailed",
+            format!("SendInput sent {sent}/{} events", inputs.len()),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn keyboard_input(
+    virtual_key: windows_sys::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY,
+    flags: windows_sys::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS,
+) -> windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+    };
+
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: virtual_key,
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+#[cfg(windows)]
+fn schedule_clipboard_restore(
+    injected_text: String,
+    previous_text: String,
+    options: ClipboardOptions,
+    expected_sequence: u32,
+    restore_delay_ms: u64,
+) {
+    thread::spawn(move || {
+        if restore_delay_ms > 0 {
+            thread::sleep(Duration::from_millis(restore_delay_ms));
+        }
+        let _ = restore_clipboard_now(
+            &injected_text,
+            Some(&previous_text),
+            expected_sequence,
+            &options,
+        );
+    });
+}
+
+#[cfg(windows)]
+fn restore_clipboard_now(
+    injected_text: &str,
+    previous_text: Option<&str>,
+    expected_sequence: u32,
+    options: &ClipboardOptions,
+) -> Value {
+    let Some(previous_text) = previous_text else {
+        return json!({
+            "scheduled": false,
+            "attempted": false,
+            "succeeded": Value::Null,
+            "skippedReason": "previousClipboardUnavailable",
+            "errorCode": Value::Null,
+        });
+    };
+
+    let current_sequence = clipboard_sequence_number();
+    if current_sequence != expected_sequence {
+        return json!({
+            "scheduled": false,
+            "attempted": false,
+            "succeeded": Value::Null,
+            "skippedReason": "clipboardSequenceChanged",
+            "errorCode": Value::Null,
+        });
+    }
+
+    match read_clipboard_text(options) {
+        Ok(Some(current)) if current == injected_text => {
+            match set_clipboard_text(previous_text, options) {
+                Ok(_) => json!({
+                    "scheduled": false,
+                    "attempted": true,
+                    "succeeded": true,
+                    "skippedReason": Value::Null,
+                    "errorCode": Value::Null,
+                }),
+                Err(err) => json!({
+                    "scheduled": false,
+                    "attempted": true,
+                    "succeeded": false,
+                    "skippedReason": "restoreFailed",
+                    "errorCode": err.code,
+                }),
+            }
+        }
+        Ok(Some(_)) => json!({
+            "scheduled": false,
+            "attempted": false,
+            "succeeded": Value::Null,
+            "skippedReason": "clipboardContentChanged",
+            "errorCode": Value::Null,
+        }),
+        Ok(None) => json!({
+            "scheduled": false,
+            "attempted": false,
+            "succeeded": Value::Null,
+            "skippedReason": "clipboardFormatChanged",
+            "errorCode": Value::Null,
+        }),
+        Err(err) => json!({
+            "scheduled": false,
+            "attempted": false,
+            "succeeded": Value::Null,
+            "skippedReason": "restoreReadFailed",
+            "errorCode": err.code,
+        }),
+    }
+}
+
 #[cfg(windows)]
 fn run_shell_ipc_server<L>(config: ShellIpcConfig, stop: Arc<AtomicBool>, log: &mut L)
 where
     L: FnMut(String),
 {
     log(format!(
-        "shell IPC server starting pipe={}",
-        config.pipe_name
+        "shell IPC server starting pipe_hash={}",
+        config.pipe_name_hash()
     ));
     while !stop.load(Ordering::SeqCst) {
         match serve_one_client(&config) {
@@ -294,17 +1077,56 @@ fn handle_connected_client(
     expected_token: &str,
 ) -> Result<(), String> {
     use std::ptr;
-    use windows_sys::Win32::Storage::FileSystem::ReadFile;
+    use windows_sys::Win32::{
+        Foundation::GetLastError, Storage::FileSystem::ReadFile, System::Pipes::PeekNamedPipe,
+    };
 
     let mut request = Vec::<u8>::new();
+    let read_started = Instant::now();
     loop {
+        if read_started.elapsed() > Duration::from_millis(CLIENT_READ_TIMEOUT_MS) {
+            return write_response(
+                pipe,
+                &response_line(
+                    "",
+                    false,
+                    "readTimeout",
+                    "shell IPC client did not send a complete request in time",
+                    read_started,
+                    json!({}),
+                ),
+            );
+        }
+
+        let mut available = 0u32;
+        let peek_ok = unsafe {
+            PeekNamedPipe(
+                pipe,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                &mut available,
+                ptr::null_mut(),
+            )
+        };
+        if peek_ok == 0 {
+            return Err(format!("PeekNamedPipe failed with {}", unsafe {
+                GetLastError()
+            }));
+        }
+        if available == 0 {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+
         let mut buffer = [0u8; 4096];
         let mut bytes_read = 0u32;
+        let bytes_to_read = available.min(buffer.len() as u32);
         let ok = unsafe {
             ReadFile(
                 pipe,
                 buffer.as_mut_ptr(),
-                buffer.len() as u32,
+                bytes_to_read,
                 &mut bytes_read,
                 ptr::null_mut(),
             )
@@ -411,6 +1233,8 @@ mod tests {
         assert!(config.pipe_name.starts_with(r"\\.\pipe\scriber-shell-"));
         assert!(config.token.len() >= 32);
         assert!(!config.pipe_name.contains(&config.token));
+        assert_ne!(config.pipe_name_hash(), config.pipe_name);
+        assert_eq!(config.pipe_name_hash().len(), 16);
     }
 
     #[test]
@@ -466,8 +1290,98 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
 
         assert_eq!(value["success"], true);
-        assert_eq!(value["payload"]["textInjection"], false);
+        assert_eq!(value["payload"]["textInjection"], true);
         assert_eq!(value["payload"]["commands"][0], "ping");
+        assert!(value["payload"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command == "injectText"));
+    }
+
+    #[test]
+    fn shell_ipc_inject_text_rejects_missing_text_before_os_access() {
+        let request = json!({
+            "apiVersion": API_VERSION,
+            "requestId": "r-inject",
+            "command": "injectText",
+            "token": "secret",
+            "payload": {
+                "restoreClipboard": true,
+            }
+        })
+        .to_string();
+
+        let response = handle_shell_ipc_request(&request, "secret");
+        let value: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+
+        assert_eq!(value["requestId"], "r-inject");
+        assert_eq!(value["success"], false);
+        assert_eq!(value["errorCode"], "invalidPayload");
+    }
+
+    #[test]
+    fn parse_inject_text_options_clamps_retry_and_delay_values() {
+        let payload = json!({
+            "text": "hello",
+            "restoreClipboard": false,
+            "restoreDelayMs": 999_999,
+            "preDelayMs": 999_999,
+            "dispatch": "ctrlV",
+            "maxClipboardRetries": 999,
+            "clipboardRetryDelayMs": 999_999,
+            "deadlineMs": 999_999,
+        });
+
+        let options = super::parse_inject_text_options(&payload).unwrap();
+
+        assert_eq!(options.text, "hello");
+        assert!(!options.restore_clipboard);
+        assert_eq!(options.restore_delay_ms, 30_000);
+        assert_eq!(options.pre_delay_ms, 5_000);
+        assert_eq!(options.max_clipboard_retries, 50);
+        assert_eq!(options.clipboard_retry_delay_ms, 500);
+        assert_eq!(options.deadline_ms, 30_000);
+    }
+
+    #[test]
+    fn parse_inject_text_options_rejects_embedded_nul() {
+        let payload = json!({
+            "text": "hello\u{0}world",
+            "dispatch": "ctrlV",
+        });
+
+        let err = super::parse_inject_text_options(&payload).unwrap_err();
+
+        assert_eq!(err.code, "invalidPayload");
+    }
+
+    #[test]
+    fn inject_text_byte_budget_fits_inside_request_budget_with_overhead() {
+        assert!(super::MAX_INJECT_TEXT_BYTES + 8192 < super::MAX_REQUEST_BYTES);
+    }
+
+    #[test]
+    fn deadline_budget_rejects_side_effect_when_remaining_time_is_too_short() {
+        let payload = json!({
+            "text": "hello",
+            "dispatch": "ctrlV",
+            "deadlineMs": 1,
+        });
+        let options = super::parse_inject_text_options(&payload).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let err = super::ensure_deadline_budget(
+            &options,
+            Instant::now() - std::time::Duration::from_millis(2),
+            25,
+            "deadlineBeforeSet",
+            || json!({"partial": true}),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code, "deadlineBeforeSet");
+        assert_eq!(err.payload["partial"], true);
     }
 
     #[test]
