@@ -115,7 +115,9 @@ Rust audio:
   timing, reader end reason, and stop-health fields for support bundles.
   Passive Rust WASAPI probes now use the same redacted native endpoint hash
   contract as active Rust capture, so selected-device probe evidence is no
-  longer default-only.
+  longer default-only. Rust/WASAPI endpoint inventory is now exposed through
+  private shell IPC and preferred by audio diagnostics for private
+  PortAudio-to-native mapping before PyCAW fallback.
   The Python Rust frame reader also tracks `SAF1` prebuffer/live frame counts
   and rejects prebuffer-after-live interleaving, but Rust-side always-on
   prewarm adoption is still not complete.

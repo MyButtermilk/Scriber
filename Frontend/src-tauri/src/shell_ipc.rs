@@ -9,7 +9,9 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::audio_devices::{run_passive_audio_probe, PassiveAudioProbeOptions};
+use crate::audio_devices::{
+    collect_native_capture_endpoint_inventory, run_passive_audio_probe, PassiveAudioProbeOptions,
+};
 use crate::audio_frame_pipe::{AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VERSION};
 use crate::audio_sidecar_client::{audio_sidecar_executable_available, call_audio_sidecar_command};
 
@@ -237,11 +239,13 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                     "ping",
                     "capabilities",
                     "injectText",
+                    "audioEndpointInventory",
                     "audioProbe",
                     "audioCaptureStart",
                     "audioCaptureStop",
                 ],
                 "textInjection": true,
+                "audioEndpointInventory": true,
                 "audioProbe": true,
                 "audioCapturePrototype": false,
                 "audioSidecar": {
@@ -252,6 +256,19 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             }),
         ),
         "injectText" => match inject_text(payload) {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(err) => response_line(
+                request_id,
+                false,
+                err.code,
+                &err.reason,
+                started,
+                err.payload,
+            ),
+        },
+        "audioEndpointInventory" => match collect_native_capture_endpoint_inventory()
+            .map_err(|err| ShellCommandError::new("audioEndpointInventoryFailed", err))
+        {
             Ok(payload) => response_line(request_id, true, "", "", started, payload),
             Err(err) => response_line(
                 request_id,
@@ -1523,6 +1540,7 @@ mod tests {
 
         assert_eq!(value["success"], true);
         assert_eq!(value["payload"]["textInjection"], true);
+        assert_eq!(value["payload"]["audioEndpointInventory"], true);
         assert_eq!(value["payload"]["audioProbe"], true);
         assert_eq!(value["payload"]["audioCapturePrototype"], false);
         assert_eq!(value["payload"]["audioFrameProtocol"]["version"], 1);
@@ -1532,6 +1550,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|command| command == "injectText"));
+        assert!(value["payload"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command == "audioEndpointInventory"));
         assert!(value["payload"]["commands"]
             .as_array()
             .unwrap()

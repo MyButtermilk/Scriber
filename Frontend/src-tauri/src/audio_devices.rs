@@ -14,7 +14,7 @@ use std::{
 
 #[cfg(windows)]
 use windows::{
-    core::PCWSTR,
+    core::{GUID, PCWSTR},
     Win32::{
         Foundation::PROPERTYKEY,
         Media::Audio::{
@@ -23,14 +23,20 @@ use windows::{
             MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, DEVICE_STATE, DEVICE_STATE_ACTIVE,
             WAVEFORMATEX,
         },
+        System::Com::StructuredStorage::{PropVariantClear, PropVariantToString, PROPVARIANT},
         System::Com::{
             CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-            COINIT_MULTITHREADED,
+            COINIT_MULTITHREADED, STGM_READ,
         },
     },
 };
 
 const NATIVE_DEVICE_DEBOUNCE: Duration = Duration::from_millis(500);
+#[cfg(windows)]
+const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+    pid: 14,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassiveAudioProbeOptions {
@@ -153,6 +159,10 @@ impl Drop for NativeDeviceEventMonitorHandle {
 
 pub fn run_passive_audio_probe(options: PassiveAudioProbeOptions) -> Result<Value, String> {
     run_passive_audio_probe_impl(options)
+}
+
+pub fn collect_native_capture_endpoint_inventory() -> Result<Value, String> {
+    collect_native_capture_endpoint_inventory_impl()
 }
 
 #[cfg(not(windows))]
@@ -302,6 +312,126 @@ fn run_passive_audio_probe_impl(options: PassiveAudioProbeOptions) -> Result<Val
             }),
         )),
     }
+}
+
+#[cfg(not(windows))]
+fn collect_native_capture_endpoint_inventory_impl() -> Result<Value, String> {
+    Ok(native_endpoint_inventory_payload(
+        false,
+        "unsupportedPlatform",
+        "WASAPI endpoint inventory is only available on Windows",
+        Vec::new(),
+        None,
+        0.0,
+    ))
+}
+
+#[cfg(windows)]
+fn collect_native_capture_endpoint_inventory_impl() -> Result<Value, String> {
+    let started = Instant::now();
+    let com_initialized = match unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok() {
+        Ok(()) => true,
+        Err(err) => {
+            return Ok(native_endpoint_inventory_payload(
+                false,
+                "comInitializationFailed",
+                &format!("{err}"),
+                Vec::new(),
+                None,
+                started.elapsed().as_secs_f64() * 1000.0,
+            ));
+        }
+    };
+
+    let result = (|| -> Result<Value, String> {
+        let enumerator: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+                .map_err(|err| format!("MMDeviceEnumerator creation failed: {err}"))?;
+        let default_console_hash = default_capture_endpoint_hash(&enumerator, eConsole);
+        let default_communications_hash =
+            default_capture_endpoint_hash(&enumerator, eCommunications);
+        let collection = unsafe { enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) }
+            .map_err(|err| format!("WASAPI endpoint enumeration failed: {err}"))?;
+        let count = unsafe { collection.GetCount() }
+            .map_err(|err| format!("WASAPI endpoint count failed: {err}"))?;
+        let mut endpoints = Vec::new();
+        for index in 0..count {
+            let device = unsafe { collection.Item(index) }
+                .map_err(|err| format!("WASAPI endpoint item {index} failed: {err}"))?;
+            let endpoint_id = unsafe { device_id_string(&device) };
+            let endpoint_id_hash = hash_endpoint_id(&endpoint_id);
+            if endpoint_id_hash.is_empty() {
+                continue;
+            }
+            let friendly_name = endpoint_friendly_name(&device).unwrap_or_default();
+            if friendly_name.trim().is_empty() {
+                continue;
+            }
+            let mut default_roles = Vec::new();
+            if default_console_hash.as_deref() == Some(endpoint_id_hash.as_str()) {
+                default_roles.push("console");
+            }
+            if default_communications_hash.as_deref() == Some(endpoint_id_hash.as_str()) {
+                default_roles.push("communications");
+            }
+            endpoints.push(json!({
+                "endpointIdHash": endpoint_id_hash,
+                "friendlyName": bounded_hint_string(friendly_name, ""),
+                "flow": "capture",
+                "state": "active",
+                "isDefault": !default_roles.is_empty(),
+                "defaultRoles": default_roles,
+            }));
+        }
+        Ok(native_endpoint_inventory_payload(
+            true,
+            "",
+            "",
+            endpoints,
+            Some(count),
+            started.elapsed().as_secs_f64() * 1000.0,
+        ))
+    })();
+
+    if com_initialized {
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    match result {
+        Ok(payload) => Ok(payload),
+        Err(err) => Ok(native_endpoint_inventory_payload(
+            false,
+            "inventoryFailed",
+            &err,
+            Vec::new(),
+            None,
+            started.elapsed().as_secs_f64() * 1000.0,
+        )),
+    }
+}
+
+fn native_endpoint_inventory_payload(
+    available: bool,
+    error_code: &str,
+    error_message: &str,
+    endpoints: Vec<Value>,
+    active_capture_endpoint_count: Option<u32>,
+    duration_ms: f64,
+) -> Value {
+    json!({
+        "engine": "rust-prototype",
+        "inventoryKind": "wasapi-capture-endpoints",
+        "available": available,
+        "source": "rust-wasapi",
+        "errorCode": if error_code.is_empty() { Value::Null } else { Value::String(error_code.to_string()) },
+        "errorMessage": if error_message.is_empty() { Value::Null } else { Value::String(error_message.to_string()) },
+        "activeCaptureEndpointCount": active_capture_endpoint_count,
+        "endpointCount": endpoints.len(),
+        "endpoints": endpoints,
+        "inventoryDurationMs": duration_ms,
+    })
 }
 
 #[cfg(windows)]
@@ -459,6 +589,38 @@ fn wave_format_payload(format: &WAVEFORMATEX) -> Value {
         "bitsPerSample": bits_per_sample,
         "extraSize": extra_size,
     })
+}
+
+#[cfg(windows)]
+fn default_capture_endpoint_hash(enumerator: &IMMDeviceEnumerator, role: ERole) -> Option<String> {
+    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, role) }.ok()?;
+    let endpoint_id = unsafe { device_id_string(&device) };
+    let endpoint_id_hash = hash_endpoint_id(&endpoint_id);
+    if endpoint_id_hash.is_empty() {
+        None
+    } else {
+        Some(endpoint_id_hash)
+    }
+}
+
+#[cfg(windows)]
+fn endpoint_friendly_name(
+    device: &windows::Win32::Media::Audio::IMMDevice,
+) -> Result<String, String> {
+    let store = unsafe { device.OpenPropertyStore(STGM_READ) }
+        .map_err(|err| format!("OpenPropertyStore failed: {err}"))?;
+    let mut value: PROPVARIANT = unsafe { store.GetValue(&PKEY_DEVICE_FRIENDLY_NAME) }
+        .map_err(|err| format!("friendly-name property unavailable: {err}"))?;
+    let mut buffer = [0u16; 256];
+    let result = unsafe { PropVariantToString(&value, &mut buffer) }
+        .map_err(|err| format!("friendly-name conversion failed: {err}"));
+    let _ = unsafe { PropVariantClear(&mut value) };
+    result?;
+    let end = buffer
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(buffer.len());
+    Ok(String::from_utf16_lossy(&buffer[..end]).trim().to_string())
 }
 
 #[cfg(windows)]
@@ -853,6 +1015,48 @@ mod tests {
         );
         assert_eq!(payload["requestedFormat"]["nativeEndpointIdHash"], "abc123");
         assert!(payload.get("endpointId").is_none());
+    }
+
+    #[test]
+    fn native_endpoint_inventory_payload_is_redacted() {
+        let raw_endpoint = r"SWD\MMDEVAPI\{0.0.1.00000000}.{secret-capture-device}";
+        let endpoint_hash = super::hash_endpoint_id(raw_endpoint);
+
+        let payload = super::native_endpoint_inventory_payload(
+            true,
+            "",
+            "",
+            vec![serde_json::json!({
+                "endpointIdHash": endpoint_hash,
+                "friendlyName": "Default Mic",
+                "flow": "capture",
+                "state": "active",
+                "isDefault": true,
+                "defaultRoles": ["console"],
+            })],
+            Some(1),
+            1.5,
+        );
+
+        assert_eq!(payload["source"], "rust-wasapi");
+        assert_eq!(payload["inventoryKind"], "wasapi-capture-endpoints");
+        assert_eq!(payload["available"], true);
+        assert_eq!(payload["endpointCount"], 1);
+        assert_eq!(payload["endpoints"][0]["endpointIdHash"], endpoint_hash);
+        assert_eq!(payload["endpoints"][0]["friendlyName"], "Default Mic");
+        assert!(payload["endpoints"][0].get("endpointId").is_none());
+        assert!(!payload.to_string().contains(raw_endpoint));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_endpoint_inventory_runtime_payload_never_exposes_raw_ids() {
+        let payload = super::collect_native_capture_endpoint_inventory().unwrap();
+
+        assert_eq!(payload["source"], "rust-wasapi");
+        assert_eq!(payload["inventoryKind"], "wasapi-capture-endpoints");
+        assert!(payload["endpoints"].is_array());
+        assert!(!payload.to_string().contains("SWD\\MMDEVAPI"));
     }
 
     #[cfg(not(windows))]

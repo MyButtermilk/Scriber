@@ -644,9 +644,15 @@ Missing prerequisites:
      now sends the selected PortAudio label and redacted native endpoint hash
      when available, and the Tauri probe uses the same SHA-256/16-hex endpoint
      hash contract as Python and the active audio sidecar.
-   - Still open: replacing best-effort PyCAW inventory with sidecar-provided
-     endpoint identity and proving favorite/default behavior on physical
-     dock/USB transitions.
+   - Implemented: private shell IPC now exposes `audioEndpointInventory`, a
+     Rust/WASAPI capture endpoint inventory that returns friendly names,
+     redacted endpoint hashes, active state, and default roles without raw
+     IMMDevice IDs. `/api/runtime/audio-diagnostics` includes this as
+     `microphone.rustNativeEndpointInventory`, and
+     `microphone.nativeEndpointMapping` prefers that Rust inventory over
+     best-effort PyCAW before falling back to PyCAW or PortAudio-only mapping.
+   - Still open: proving favorite/default behavior on physical dock/USB
+     transitions.
 3. Audio support-bundle schema:
    - Partly implemented on `codex/rust-expansion-plan`: support bundles now
      include `audio-diagnostics.redacted.json`, sourced from

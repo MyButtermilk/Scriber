@@ -131,6 +131,12 @@ Rust audio prototype:
   for selected-device capture; if a non-default request has no native hash, the
   Rust path fails before first frame and Python falls back to `sounddevice`.
   This is still a prototype path, not the default recording engine.
+- Private shell IPC exposes `audioEndpointInventory` for Rust/WASAPI capture
+  endpoint diagnostics. It returns friendly names, redacted endpoint hashes,
+  active state, and default roles without raw IMMDevice IDs. Backend audio
+  diagnostics include this as `microphone.rustNativeEndpointInventory`, and the
+  private PortAudio-to-native mapping prefers that Rust inventory before
+  falling back to PyCAW or PortAudio-only mapping.
 - `Frontend/src-tauri/src/audio_sidecar_client.rs` is the Tauri-side client for
   prototype handshakes. It discovers only allowlisted sidecar executable names,
   supports `SCRIBER_AUDIO_SIDECAR_EXE` for local prototype runs, starts sidecar

@@ -1543,7 +1543,37 @@ class ScriberWebController:
         except Exception as exc:
             return {"available": False, "error": str(exc)}
 
-    def _native_endpoint_mapping_diagnostics(self) -> dict[str, Any]:
+    def _rust_native_endpoint_inventory_diagnostics(self) -> dict[str, Any]:
+        diagnostics: dict[str, Any] = {
+            "requested": True,
+            "shellIpcAvailable": shell_ipc_available(),
+        }
+        if not shell_ipc_available():
+            diagnostics.update({"available": False, "reason": "shellIpcUnavailable"})
+            return diagnostics
+        response = call_shell_ipc("audioEndpointInventory", {}, timeout_seconds=2.0)
+        response_payload = response.get("payload") if isinstance(response, dict) else None
+        if not isinstance(response_payload, dict):
+            response_payload = {}
+        diagnostics.update(response_payload)
+        diagnostics.update(
+            {
+                "ipcSuccess": bool(response.get("success")) if isinstance(response, dict) else False,
+                "responseErrorCode": response.get("errorCode") if isinstance(response, dict) else "invalidResponse",
+                "responseFallbackReason": response.get("fallbackReason") if isinstance(response, dict) else None,
+            }
+        )
+        if not diagnostics.get("available"):
+            diagnostics.setdefault(
+                "reason",
+                diagnostics.get("responseErrorCode") or "nativeEndpointInventoryUnavailable",
+            )
+        return diagnostics
+
+    def _native_endpoint_mapping_diagnostics(
+        self,
+        rust_inventory: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         try:
             import sounddevice as sd  # type: ignore
         except Exception as exc:
@@ -1552,7 +1582,22 @@ class ScriberWebController:
         sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
         channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
         try:
-            native_endpoints = collect_native_capture_endpoint_inventory()
+            native_endpoints: list[dict[str, Any]]
+            inventory_source = "portaudio-only"
+            rust_endpoints = (
+                rust_inventory.get("endpoints")
+                if isinstance(rust_inventory, dict) and rust_inventory.get("available")
+                else None
+            )
+            if isinstance(rust_endpoints, list) and rust_endpoints:
+                native_endpoints = [
+                    endpoint for endpoint in rust_endpoints if isinstance(endpoint, dict)
+                ]
+                inventory_source = "rust-wasapi"
+            else:
+                native_endpoints = collect_native_capture_endpoint_inventory()
+                if native_endpoints:
+                    inventory_source = "pycaw"
             diagnostics = input_endpoint_mapping_diagnostics(
                 sd,
                 favorite_name=str(getattr(Config, "FAVORITE_MIC", "") or ""),
@@ -1560,7 +1605,10 @@ class ScriberWebController:
                 sample_rate=sample_rate,
                 channels=channels,
             )
-            diagnostics["source"] = "pycaw" if native_endpoints else "portaudio-only"
+            diagnostics["source"] = inventory_source
+            diagnostics["rustInventoryAvailable"] = bool(
+                isinstance(rust_inventory, dict) and rust_inventory.get("available")
+            )
             return diagnostics
         except Exception as exc:
             return {"available": False, "reason": "mappingFailed", "error": str(exc)}
@@ -2400,6 +2448,7 @@ class ScriberWebController:
         }
 
     def get_audio_diagnostics(self) -> dict[str, Any]:
+        rust_native_endpoint_inventory = self._rust_native_endpoint_inventory_diagnostics()
         return {
             "apiVersion": _API_VERSION,
             "runtimeMode": os.getenv(_RUNTIME_MODE_ENV, "python-web"),
@@ -2421,7 +2470,10 @@ class ScriberWebController:
                 "deviceMonitor": self._device_monitor.diagnostic_snapshot()
                 if self._device_monitor_enabled
                 else None,
-                "nativeEndpointMapping": self._native_endpoint_mapping_diagnostics(),
+                "nativeEndpointMapping": self._native_endpoint_mapping_diagnostics(
+                    rust_inventory=rust_native_endpoint_inventory,
+                ),
+                "rustNativeEndpointInventory": rust_native_endpoint_inventory,
                 "rustAudioProbe": self._rust_audio_probe_diagnostics(),
                 "prewarm": self._prewarm_diagnostics(),
                 "activeCapture": self._active_audio_diagnostics(),

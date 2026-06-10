@@ -524,6 +524,7 @@ async def test_runtime_reports_rust_audio_as_requested_until_prototype_exists(mo
 @pytest.mark.asyncio
 async def test_audio_diagnostics_include_private_native_endpoint_mapping(monkeypatch):
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: False)
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
     try:
@@ -570,6 +571,7 @@ async def test_audio_diagnostics_do_not_run_rust_probe_unless_requested(monkeypa
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.delenv("SCRIBER_AUDIO_ENGINE", raising=False)
     monkeypatch.delenv("SCRIBER_RUST_AUDIO_PROBE", raising=False)
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: False)
     monkeypatch.setattr(web_api, "call_shell_ipc", MagicMock())
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
@@ -581,6 +583,74 @@ async def test_audio_diagnostics_do_not_run_rust_probe_unless_requested(monkeypa
     assert audio["microphone"]["rustAudioProbe"]["requested"] is False
     assert audio["microphone"]["rustAudioProbe"]["reason"] == "notRequested"
     web_api.call_shell_ipc.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_audio_diagnostics_prefers_rust_native_endpoint_inventory_for_mapping(monkeypatch):
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    _install_fake_sounddevice_module(
+        monkeypatch,
+        devices=[
+            {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+        ],
+        hostapis=[{"name": "Windows WASAPI"}],
+        default_input=0,
+    )
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    monkeypatch.setattr(
+        web_api,
+        "collect_native_capture_endpoint_inventory",
+        lambda: [
+            {
+                "endpointIdHash": "pycaw-hash",
+                "friendlyName": "Dock Mic",
+                "flow": "capture",
+                "isDefault": True,
+            }
+        ],
+    )
+    call_mock = MagicMock(
+        return_value={
+            "success": True,
+            "payload": {
+                "engine": "rust-prototype",
+                "inventoryKind": "wasapi-capture-endpoints",
+                "available": True,
+                "source": "rust-wasapi",
+                "endpoints": [
+                    {
+                        "endpointIdHash": "rust-hash",
+                        "friendlyName": "Dock Mic",
+                        "flow": "capture",
+                        "isDefault": True,
+                    }
+                ],
+            },
+            "errorCode": None,
+            "fallbackReason": None,
+        }
+    )
+    monkeypatch.setattr(web_api, "call_shell_ipc", call_mock)
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    try:
+        audio = ctl.get_audio_diagnostics()
+    finally:
+        ctl.shutdown()
+
+    inventory = audio["microphone"]["rustNativeEndpointInventory"]
+    mapping = audio["microphone"]["nativeEndpointMapping"]
+    command, payload = call_mock.call_args.args[:2]
+    assert command == "audioEndpointInventory"
+    assert payload == {}
+    assert inventory["available"] is True
+    assert inventory["source"] == "rust-wasapi"
+    assert mapping["source"] == "rust-wasapi"
+    assert mapping["rustInventoryAvailable"] is True
+    assert mapping["mappings"][0]["nativeEndpointIdHash"] == "rust-hash"
+    assert "pycaw-hash" not in str(mapping)
+    assert "SWD\\MMDEVAPI" not in str(inventory)
+    assert "endpointId" not in mapping["mappings"][0]
 
 
 @pytest.mark.asyncio
