@@ -284,12 +284,12 @@ impl AudioSidecarState {
         started: Instant,
     ) -> Value {
         let request = CaptureRequest::from_payload(payload);
-        if !synthetic_capture_enabled() {
+        if !wasapi_capture_enabled() && !synthetic_capture_enabled() {
             return response_payload(
                 request_id,
                 false,
                 "audioPrewarmUnavailable",
-                "Rust audio prewarm is disabled; set SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1 for the synthetic prewarm harness",
+                "Rust audio prewarm is disabled; set SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1 for the WASAPI prototype or SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1 for the synthetic prewarm harness",
                 started,
                 json!({
                     "sidecar": SIDECAR_NAME,
@@ -315,7 +315,7 @@ impl AudioSidecarState {
                     "prewarmAvailable": false,
                     "audioFrameProtocol": audio_frame_protocol_payload(),
                     "syntheticPrewarmAvailable": synthetic_capture_enabled(),
-                    "wasapiPrewarmAvailable": false,
+                    "wasapiPrewarmAvailable": wasapi_capture_enabled(),
                 }),
             ),
         }
@@ -358,7 +358,12 @@ impl AudioSidecarState {
     }
 
     fn start_prewarm(&mut self, request: CaptureRequest) -> Result<Value, String> {
-        let (session, payload) = start_synthetic_prewarm_impl(request)?;
+        let result = if wasapi_capture_enabled() {
+            start_wasapi_prewarm_impl(request)
+        } else {
+            start_synthetic_prewarm_impl(request)
+        };
+        let (session, payload) = result?;
         let prewarm_id = session.prewarm_id.clone();
         if let Some(mut old_session) = self.prewarm_sessions.remove(&prewarm_id) {
             let _ = old_session.stop("duplicatePrewarmId");
@@ -932,6 +937,71 @@ fn start_synthetic_prewarm_impl(
     Ok((session, payload))
 }
 
+#[cfg(windows)]
+fn start_wasapi_prewarm_impl(request: CaptureRequest) -> Result<(PrewarmSession, Value), String> {
+    let prewarm_id = Uuid::new_v4().simple().to_string();
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let worker_request = request.clone();
+    let join_handle = thread::Builder::new()
+        .name("scriber-audio-wasapi-prewarm".to_string())
+        .spawn(move || run_wasapi_prewarm_worker(worker_request, stop_rx, ready_tx))
+        .map_err(|err| format!("WASAPI prewarm worker thread spawn failed: {err}"))?;
+
+    let ready = match ready_rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(ready)) => ready,
+        Ok(Err(err)) => {
+            let _ = stop_tx.send(());
+            let _ = join_handle.join();
+            return Err(err);
+        }
+        Err(err) => {
+            let _ = stop_tx.send(());
+            let _ = join_handle.join();
+            return Err(format!("WASAPI prewarm did not become ready: {err}"));
+        }
+    };
+
+    let session = PrewarmSession {
+        prewarm_id: prewarm_id.clone(),
+        source: "wasapi-prewarm",
+        stop_tx,
+        join_handle: Some(join_handle),
+        started_at: Instant::now(),
+    };
+    let payload = json!({
+        "sidecar": SIDECAR_NAME,
+        "prewarmAvailable": true,
+        "syntheticPrewarm": false,
+        "wasapiPrewarm": true,
+        "source": "wasapi-prewarm",
+        "prewarmId": prewarm_id,
+        "sampleRate": request.sample_rate,
+        "channels": request.channels,
+        "captureChannels": request.channels,
+        "sampleFormat": "pcm_i16_le",
+        "nativeEndpointIdHash": ready.endpoint_id_hash,
+        "endpointSelection": ready.endpoint_selection,
+        "requestedFormat": request.to_payload(),
+        "audioFrameProtocol": audio_frame_protocol_payload(),
+        "prebufferFrameTarget": requested_prebuffer_frame_count(&request),
+        "mixFormat": ready.mix_format.to_payload(),
+        "resampler": {
+            "sourceSampleRate": ready.mix_format.sample_rate,
+            "targetSampleRate": request.sample_rate,
+            "sourceChannels": ready.mix_format.channels,
+            "targetChannels": request.channels,
+            "method": "nearest",
+        },
+    });
+    Ok((session, payload))
+}
+
+#[cfg(not(windows))]
+fn start_wasapi_prewarm_impl(_request: CaptureRequest) -> Result<(PrewarmSession, Value), String> {
+    Err("WASAPI prewarm is only implemented on Windows".to_string())
+}
+
 fn run_synthetic_prewarm_worker(
     request: CaptureRequest,
     stop_rx: mpsc::Receiver<()>,
@@ -1124,6 +1194,25 @@ fn run_wasapi_capture_writer(
 }
 
 #[cfg(windows)]
+fn run_wasapi_prewarm_worker(
+    request: CaptureRequest,
+    stop_rx: mpsc::Receiver<()>,
+    ready_tx: Sender<Result<WasapiReady, String>>,
+) -> PrewarmStats {
+    let mut stats = PrewarmStats::default();
+    let mut ready_sent = false;
+    let result =
+        run_wasapi_prewarm_worker_inner(&request, &stop_rx, &ready_tx, &mut ready_sent, &mut stats);
+    if let Err(err) = result {
+        if !ready_sent {
+            let _ = ready_tx.send(Err(err.clone()));
+        }
+        stats.error = Some(err);
+    }
+    stats
+}
+
+#[cfg(windows)]
 struct WasapiSelectedDevice {
     device: IMMDevice,
     endpoint_id_hash: Value,
@@ -1296,6 +1385,75 @@ fn run_wasapi_capture_writer_inner(
 }
 
 #[cfg(windows)]
+fn run_wasapi_prewarm_worker_inner(
+    request: &CaptureRequest,
+    stop_rx: &mpsc::Receiver<()>,
+    ready_tx: &Sender<Result<WasapiReady, String>>,
+    ready_sent: &mut bool,
+    stats: &mut PrewarmStats,
+) -> Result<(), String> {
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+        .ok()
+        .map_err(|err| format!("COM initialization failed for WASAPI prewarm: {err}"))?;
+
+    let result = (|| -> Result<(), String> {
+        let enumerator: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+                .map_err(|err| format!("MMDeviceEnumerator creation failed: {err}"))?;
+        let selected = select_wasapi_capture_device(&enumerator, request)?;
+        let device = selected.device;
+        let endpoint_id_hash = selected.endpoint_id_hash.clone();
+        let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
+            .map_err(|err| format!("IAudioClient activation failed: {err}"))?;
+        let mix_format_ptr = unsafe { client.GetMixFormat() }
+            .map_err(|err| format!("GetMixFormat failed: {err}"))?;
+        let mix_format = unsafe { wasapi_mix_format_from_ptr(mix_format_ptr) };
+        let init_result = unsafe {
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                0,
+                1_000_000,
+                0,
+                mix_format_ptr,
+                None,
+            )
+        };
+        unsafe {
+            CoTaskMemFree(Some(mix_format_ptr.cast::<c_void>()));
+        }
+        let mix_format = mix_format?;
+        init_result.map_err(|err| format!("WASAPI shared-mode Initialize failed: {err}"))?;
+        let capture_client: IAudioCaptureClient = unsafe { client.GetService() }
+            .map_err(|err| format!("IAudioCaptureClient service unavailable: {err}"))?;
+
+        ready_tx
+            .send(Ok(WasapiReady {
+                endpoint_id_hash,
+                endpoint_selection: selected.endpoint_selection,
+                mix_format: mix_format.clone(),
+            }))
+            .map_err(|err| format!("could not report WASAPI prewarm readiness: {err}"))?;
+        *ready_sent = true;
+
+        unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
+        let prewarm_result =
+            pump_wasapi_prewarm(request, stop_rx, &capture_client, mix_format, stats);
+        let stop_result = unsafe { client.Stop() };
+        if let Err(err) = stop_result {
+            if prewarm_result.is_ok() {
+                return Err(format!("WASAPI Stop failed: {err}"));
+            }
+        }
+        prewarm_result
+    })();
+
+    unsafe {
+        CoUninitialize();
+    }
+    result
+}
+
+#[cfg(windows)]
 fn pump_wasapi_capture(
     pipe_handle: HANDLE,
     request: &CaptureRequest,
@@ -1365,6 +1523,64 @@ fn pump_wasapi_capture(
                 }
                 stats.bytes_written = stats.bytes_written.saturating_add(u64::from(bytes_written));
                 sequence = sequence.saturating_add(1);
+            }
+            packet_frames = unsafe { capture_client.GetNextPacketSize() }
+                .map_err(|err| format!("WASAPI GetNextPacketSize failed: {err}"))?;
+        }
+    }
+}
+
+#[cfg(windows)]
+fn pump_wasapi_prewarm(
+    request: &CaptureRequest,
+    stop_rx: &mpsc::Receiver<()>,
+    capture_client: &IAudioCaptureClient,
+    mix_format: WasapiMixFormat,
+    stats: &mut PrewarmStats,
+) -> Result<(), String> {
+    let mut converter = WasapiPcmConverter::new(mix_format, request);
+    let max_buffered_blocks = u64::from(requested_prebuffer_frame_count(request));
+    loop {
+        match stop_rx.try_recv() {
+            Ok(()) | Err(TryRecvError::Disconnected) => return Ok(()),
+            Err(TryRecvError::Empty) => {}
+        }
+
+        let mut packet_frames = unsafe { capture_client.GetNextPacketSize() }
+            .map_err(|err| format!("WASAPI GetNextPacketSize failed: {err}"))?;
+        if packet_frames == 0 {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+
+        while packet_frames > 0 {
+            let mut data_ptr: *mut u8 = null_mut();
+            let mut frames_to_read = 0_u32;
+            let mut flags = 0_u32;
+            unsafe {
+                capture_client
+                    .GetBuffer(&mut data_ptr, &mut frames_to_read, &mut flags, None, None)
+                    .map_err(|err| format!("WASAPI GetBuffer failed: {err}"))?;
+            }
+            let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
+            let blocks = converter.push_packet(data_ptr.cast_const(), frames_to_read, silent);
+            let release_result = unsafe { capture_client.ReleaseBuffer(frames_to_read) };
+            release_result.map_err(|err| format!("WASAPI ReleaseBuffer failed: {err}"))?;
+            for payload in blocks? {
+                stats.total_blocks_observed = stats.total_blocks_observed.saturating_add(1);
+                stats.total_audio_frames_observed = stats
+                    .total_audio_frames_observed
+                    .saturating_add(u64::from(request.block_size));
+                if max_buffered_blocks > 0 {
+                    stats.buffered_blocks = stats
+                        .buffered_blocks
+                        .saturating_add(1)
+                        .min(max_buffered_blocks);
+                    stats.buffered_audio_frames = stats
+                        .buffered_blocks
+                        .saturating_mul(u64::from(request.block_size));
+                }
+                drop(payload);
             }
             packet_frames = unsafe { capture_client.GetNextPacketSize() }
                 .map_err(|err| format!("WASAPI GetNextPacketSize failed: {err}"))?;
@@ -1561,14 +1777,14 @@ fn capabilities_payload() -> Value {
         "wasapiCaptureEnv": WASAPI_CAPTURE_ENV,
         "syntheticFramePipeAvailable": synthetic_capture_enabled(),
         "syntheticFramePipeEnv": SYNTHETIC_CAPTURE_ENV,
-        "prewarmAvailable": synthetic_capture_enabled(),
-        "prewarmUnavailableReason": if synthetic_capture_enabled() {
+        "prewarmAvailable": wasapi_capture_enabled() || synthetic_capture_enabled(),
+        "prewarmUnavailableReason": if wasapi_capture_enabled() || synthetic_capture_enabled() {
             Value::Null
         } else {
             Value::String("rustAudioPrewarmDisabled".to_string())
         },
         "syntheticPrewarmAvailable": synthetic_capture_enabled(),
-        "wasapiPrewarmAvailable": false,
+        "wasapiPrewarmAvailable": wasapi_capture_enabled(),
         "audioFrameProtocol": audio_frame_protocol_payload(),
     })
 }

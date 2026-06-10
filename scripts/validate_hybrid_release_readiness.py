@@ -531,8 +531,9 @@ def validate_rust_audio_prewarm_sidecar_report(
         failures.append("Rust audio prewarm sidecar smoke report must not be plan-only evidence")
     if str(report.get("apiVersion") or "") != "1":
         failures.append("Rust audio prewarm sidecar smoke apiVersion must be 1")
-    if str(report.get("mode") or "") != "synthetic":
-        failures.append("Rust audio prewarm sidecar smoke mode must be synthetic")
+    mode = str(report.get("mode") or "")
+    if mode not in {"synthetic", "wasapi"}:
+        failures.append("Rust audio prewarm sidecar smoke mode must be synthetic or wasapi")
     if prewarm.get("ok") is not True:
         failures.append("Rust audio prewarm sidecar smoke prewarm.ok must be true")
     if summary.get("prewarmOk") is not True:
@@ -542,6 +543,17 @@ def validate_rust_audio_prewarm_sidecar_report(
     if not isinstance(start, dict):
         failures.append("Rust audio prewarm sidecar smoke start must be an object")
         start = {}
+    if mode == "synthetic":
+        if start.get("syntheticPrewarm") is not True:
+            failures.append("Rust audio prewarm sidecar smoke synthetic start.syntheticPrewarm must be true")
+    if mode == "wasapi":
+        if start.get("wasapiPrewarm") is not True:
+            failures.append("Rust audio prewarm sidecar smoke WASAPI start.wasapiPrewarm must be true")
+        if not str(start.get("nativeEndpointIdHash") or ""):
+            failures.append("Rust audio prewarm sidecar smoke WASAPI nativeEndpointIdHash is required")
+        endpoint_selection = start.get("endpointSelection")
+        if not isinstance(endpoint_selection, dict):
+            failures.append("Rust audio prewarm sidecar smoke WASAPI endpointSelection must be an object")
     stop = prewarm.get("stop")
     if not isinstance(stop, dict):
         failures.append("Rust audio prewarm sidecar smoke stop must be an object")

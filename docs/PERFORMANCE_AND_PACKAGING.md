@@ -915,20 +915,32 @@ Implementation plan:
      always-on prewarm stream. This prevents `SCRIBER_AUDIO_ENGINE=rust-prototype`
      plus `SCRIBER_MIC_ALWAYS_ON=1` from silently taking the Python capture path
      before Rust evidence can be collected.
-   - Implemented: a synthetic Rust prewarm sidecar lifecycle harness exists
-     behind private shell IPC. It validates long-lived prewarm session
-     start/stop behavior and stop-health reporting, but it does not yet hold a
-     real WASAPI idle capture stream or adopt buffered WASAPI audio into active
-     capture.
+   - Implemented: a Rust prewarm sidecar lifecycle harness exists behind
+     private shell IPC. Synthetic mode validates long-lived prewarm session
+     start/stop behavior and stop-health reporting. WASAPI mode starts a real
+     passive Windows idle capture stream, uses the same default/native-endpoint
+     selection rules as active Rust capture, and reports redacted endpoint,
+     mix-format, observed-block, and buffered-frame counters.
    - Implemented: `scripts/smoke_rust_audio_prewarm_sidecar.py` records
-     synthetic prewarm lifecycle evidence: `prewarmId`, start/stop timings,
-     observed frame counters, buffered frame counters, and validation errors.
+     prewarm lifecycle evidence in `--mode synthetic` or `--mode wasapi`:
+     `prewarmId`, start/stop timings, observed frame counters, buffered frame
+     counters, mode-specific start payloads, and validation errors.
    - Implemented: the hybrid release-readiness runner and validator can consume
      this report through `-RunRustAudioPrewarmSidecarSmoke`,
      `-UseExistingRustAudioPrewarmSidecarReport`, and
-     `-RequireRustAudioPrewarmSidecarSmoke`. This is intentionally separate
-     from `-RequireRustAudioSidecarSmoke` because it is synthetic lifecycle
-     evidence, not physical WASAPI idle-prewarm adoption.
+     `-RequireRustAudioPrewarmSidecarSmoke`; `-RustAudioPrewarmSidecarMode
+     wasapi` exercises the real passive WASAPI idle stream. This is
+     intentionally separate from `-RequireRustAudioSidecarSmoke` because it
+     still does not prove buffered idle audio adoption into active capture.
+   - Local evidence from 2026-06-10: a direct Windows WASAPI prewarm smoke
+     passed with
+     `python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 0.5 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-current.json`.
+     It reported `source=wasapi-prewarm`, `wasapiPrewarm=true`, a redacted
+     native endpoint hash, `totalBlocksObserved=42`, and
+     `bufferedBlocks=40`.
+   - Still open: adopting the bounded WASAPI idle buffer into the following
+     active Rust capture, pausing/resuming the WASAPI prewarm around device
+     refreshes, and provider-backed end-to-end transcription smokes.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream
@@ -984,13 +996,15 @@ Acceptance gates:
   stop-health metrics. The readiness runner also requires Rust/WASAPI endpoint
   inventory evidence in the physical microphone matrix when this promotion gate
   is enabled.
-- Synthetic Rust prewarm lifecycle smoke via
-  `python scripts\smoke_rust_audio_prewarm_sidecar.py --duration-sec 1
+- Rust prewarm lifecycle smoke via
+  `python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 1
   --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-smoke.json`
   or via the readiness runner flags `-RunRustAudioPrewarmSidecarSmoke` and
   `-RequireRustAudioPrewarmSidecarSmoke` proves prewarm sidecar start/stop
-  plumbing and stop-health counters. This is not sufficient for default
-  promotion because it does not prove WASAPI idle stream adoption.
+  plumbing and stop-health counters. Add `-RustAudioPrewarmSidecarMode wasapi`
+  to the runner for the real passive WASAPI idle stream. This is not sufficient
+  for default promotion because it does not prove buffered WASAPI idle audio is
+  adopted into active capture.
 - Physical mic matrix across built-in, USB, Bluetooth, docked, undocked, and
   Windows default-device changes, with `--require-rust-endpoint-inventory`
   validation for Rust promotion.

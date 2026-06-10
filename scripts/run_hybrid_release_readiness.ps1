@@ -26,6 +26,8 @@ param(
     [double]$RustAudioSidecarSelectedDurationSec = 10,
     [int]$RustAudioSidecarPrebufferMs = 400,
     [string]$RustAudioPrewarmSidecarReport = "",
+    [ValidateSet("synthetic", "wasapi")]
+    [string]$RustAudioPrewarmSidecarMode = "synthetic",
     [double]$RustAudioPrewarmSidecarDurationSec = 1,
     [int]$RustAudioPrewarmSidecarPrebufferMs = 400,
     [switch]$RequireRustAudioSidecarSmoke,
@@ -234,6 +236,8 @@ if ($RustAudioSidecarExe) {
 
 $rustAudioPrewarmSidecarArgs = @(
     "scripts\smoke_rust_audio_prewarm_sidecar.py",
+    "--mode",
+    $RustAudioPrewarmSidecarMode,
     "--duration-sec",
     ([string]$RustAudioPrewarmSidecarDurationSec),
     "--prebuffer-ms",
@@ -353,9 +357,10 @@ $requiredEvidence = @(
         external = $false
         producer = $(if ($UseExistingRustAudioPrewarmSidecarReport) { "existing report" } elseif ($RunRustAudioPrewarmSidecarSmoke) { "scripts\smoke_rust_audio_prewarm_sidecar.py" } else { "not requested" })
         report = $RustAudioPrewarmSidecarReport
+        mode = $RustAudioPrewarmSidecarMode
         durationSec = $RustAudioPrewarmSidecarDurationSec
         prebufferMs = $RustAudioPrewarmSidecarPrebufferMs
-        notes = "Optional synthetic lifecycle evidence only. It validates prewarmStart/prewarmStop routing, prewarmId matching, buffered-frame counters, and stop health; it is not WASAPI idle prewarm adoption evidence."
+        notes = "Optional lifecycle evidence only. Synthetic mode validates plumbing; WASAPI mode starts a real passive idle stream. This still is not buffered audio adoption into active capture."
     },
     [pscustomobject]@{
         name = "publishedUpdaterManifest"
@@ -401,6 +406,7 @@ $plan = [pscustomobject]@{
     rustAudioSidecarSelectedDurationSec = $RustAudioSidecarSelectedDurationSec
     rustAudioSidecarPrebufferMs = $RustAudioSidecarPrebufferMs
     rustAudioPrewarmSidecarReport = $RustAudioPrewarmSidecarReport
+    rustAudioPrewarmSidecarMode = $RustAudioPrewarmSidecarMode
     rustAudioPrewarmSidecarDurationSec = $RustAudioPrewarmSidecarDurationSec
     rustAudioPrewarmSidecarPrebufferMs = $RustAudioPrewarmSidecarPrebufferMs
     updaterPublicationReport = $UpdaterPublicationReport

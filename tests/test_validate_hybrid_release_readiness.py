@@ -370,6 +370,7 @@ def write_rust_audio_prewarm_sidecar_report(
     path: Path,
     *,
     ok: bool = True,
+    mode: str = "synthetic",
     plan_only: bool = False,
     prebuffer_ms: int = 400,
     prewarm_id: str = "prewarm-1",
@@ -387,7 +388,7 @@ def write_rust_audio_prewarm_sidecar_report(
                 "apiVersion": "1",
                 "ok": ok,
                 "planOnly": plan_only,
-                "mode": "synthetic",
+                "mode": mode,
                 "sidecar": {
                     "exe": "C:/Scriber/scriber-audio-sidecar.exe",
                     "exists": True,
@@ -407,6 +408,13 @@ def write_rust_audio_prewarm_sidecar_report(
                     "start": {
                         "prewarmId": prewarm_id,
                         "prebufferFrameTarget": prebuffer_frame_target,
+                        "syntheticPrewarm": mode == "synthetic",
+                        "wasapiPrewarm": mode == "wasapi",
+                        "nativeEndpointIdHash": "abc123" if mode == "wasapi" else None,
+                        "endpointSelection": {
+                            "mode": "default" if mode == "wasapi" else "synthetic",
+                            "selectedNativeEndpointIdHash": "abc123" if mode == "wasapi" else None,
+                        },
                     },
                     "stop": {
                         "prewarmId": prewarm_id,
@@ -516,6 +524,29 @@ def test_validate_release_readiness_accepts_required_rust_audio_prewarm_sidecar_
     assert result["ok"] is True
     prewarm_check = next(check for check in result["checks"] if check["name"] == "rustAudioPrewarmSidecarSmoke")
     assert prewarm_check["details"]["summary"]["prewarmOk"] is True
+
+
+def test_validate_release_readiness_accepts_required_wasapi_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    prewarm_report = tmp_path / "rust-audio-prewarm-sidecar-smoke.json"
+    write_rust_audio_prewarm_sidecar_report(prewarm_report, mode="wasapi")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_prewarm_sidecar_report=prewarm_report,
+        require_rust_audio_prewarm_sidecar_smoke=True,
+    )
+
+    assert result["ok"] is True
+    prewarm_check = next(check for check in result["checks"] if check["name"] == "rustAudioPrewarmSidecarSmoke")
+    assert prewarm_check["details"]["mode"] == "wasapi"
 
 
 def test_validate_release_readiness_rejects_missing_required_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:

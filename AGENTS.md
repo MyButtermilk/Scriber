@@ -169,14 +169,16 @@ Packaging and scripts:
   run a passive WASAPI diagnostics probe. `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`
   may run the sidecar's synthetic frame-pipe transport harness for tests and
   prototype plumbing only. The same synthetic flag may run the sidecar's
-  synthetic prewarm lifecycle harness through private shell IPC; this is not yet
-  real WASAPI idle-stream adoption. `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` may
-  run the sidecar's opt-in WASAPI capture prototype, including selected-endpoint
-  capture by redacted native endpoint hash. Non-default Rust capture without a
-  native endpoint hash must fail before first frame and let Python fall back to
-  `sounddevice`; it must not silently use the Windows default endpoint. The
-  default capture path remains Python `sounddevice` until a measured Rust
-  prototype is explicitly promoted.
+  synthetic prewarm lifecycle harness through private shell IPC.
+  `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` may run the sidecar's opt-in WASAPI
+  capture prototype, including selected-endpoint capture by redacted native
+  endpoint hash, and a passive WASAPI prewarm worker that observes and bounds
+  idle audio frames. The WASAPI prewarm worker does not yet adopt buffered idle
+  audio into active capture. Non-default Rust capture without a native endpoint
+  hash must fail before first frame and let Python fall back to `sounddevice`;
+  it must not silently use the Windows default endpoint. The default capture
+  path remains Python `sounddevice` until a measured Rust prototype is
+  explicitly promoted.
 - The Rust audio frame-pipe protocol is length-prefixed and versioned. Keep the
   Rust and Python header fixtures in sync when changing it.
 - The opt-in Rust prototype may read frame-pipe PCM into Python, but if capture
@@ -295,14 +297,20 @@ Rust audio sidecar short physical smoke:
 python scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 1 --output tmp\rust-audio-sidecar-smoke.json
 ```
 
-Rust audio synthetic prewarm sidecar smoke:
+Rust audio prewarm sidecar smoke:
 
 ```powershell
 python scripts\smoke_rust_audio_prewarm_sidecar.py --duration-sec 1 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-smoke.json
 ```
 
-The same synthetic lifecycle smoke can be included in the hybrid readiness
-runner when explicitly needed:
+Use `--mode wasapi` to exercise the real passive WASAPI prewarm worker:
+
+```powershell
+python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 1 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-smoke.json
+```
+
+The same lifecycle smoke can be included in the hybrid readiness runner when
+explicitly needed:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
@@ -311,7 +319,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
 ```
 
 This is not physical WASAPI idle-prewarm adoption evidence and must not be used
-alone to promote Rust audio to default.
+alone to promote Rust audio to default because buffered idle audio is not yet
+adopted into active capture.
 
 Rust audio promotion readiness gate:
 

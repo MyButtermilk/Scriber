@@ -130,9 +130,10 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert prewarm_evidence["required"] is False
     assert prewarm_evidence["report"].endswith("rust-audio-prewarm-sidecar-smoke.json")
     assert prewarm_evidence["producer"] == "not requested"
+    assert prewarm_evidence["mode"] == "synthetic"
     assert prewarm_evidence["durationSec"] == 1
     assert prewarm_evidence["prebufferMs"] == 400
-    assert "synthetic lifecycle evidence only" in prewarm_evidence["notes"]
+    assert "Optional lifecycle evidence only" in prewarm_evidence["notes"]
     publication_evidence = payload["requiredEvidence"][6]
     assert "final redirect URL" in publication_evidence["notes"]
     authenticode_evidence = payload["requiredEvidence"][7]
@@ -217,6 +218,8 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_prewarm_sidec
         str(tmp_path),
         "-RunRustAudioPrewarmSidecarSmoke",
         "-RequireRustAudioPrewarmSidecarSmoke",
+        "-RustAudioPrewarmSidecarMode",
+        "wasapi",
         "-RustAudioPrewarmSidecarDurationSec",
         "2",
         "-RustAudioPrewarmSidecarPrebufferMs",
@@ -232,10 +235,12 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_prewarm_sidec
     )
     assert prewarm_evidence["required"] is True
     assert "smoke_rust_audio_prewarm_sidecar.py" in prewarm_evidence["producer"]
+    assert prewarm_evidence["mode"] == "wasapi"
     assert prewarm_evidence["durationSec"] == 2
     assert prewarm_evidence["prebufferMs"] == 500
     prewarm_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioPrewarmSidecarSmoke")
     assert "smoke_rust_audio_prewarm_sidecar.py" in prewarm_command["command"]
+    assert "--mode wasapi" in prewarm_command["command"]
     assert "--duration-sec 2" in prewarm_command["command"]
     assert "--prebuffer-ms 500" in prewarm_command["command"]
     assert "--sidecar-exe" in prewarm_command["command"]

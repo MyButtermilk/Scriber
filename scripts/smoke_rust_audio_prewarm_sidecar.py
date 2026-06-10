@@ -138,7 +138,7 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         "apiVersion": "1",
         "ok": True,
         "planOnly": True,
-        "mode": "synthetic",
+        "mode": args.mode,
         "requested": {
             "durationSec": args.duration_sec,
             "sampleRate": args.sample_rate,
@@ -148,13 +148,21 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         },
         "requirements": [
             "Build scriber-audio-sidecar first with cargo build --bin scriber-audio-sidecar.",
-            "The smoke uses SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1 through the shared sidecar client.",
-            "This smoke is synthetic lifecycle evidence only; it is not WASAPI idle prewarm adoption.",
+            (
+                "The synthetic mode uses SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1 "
+                "through the shared sidecar client."
+            ),
+            (
+                "The wasapi mode uses SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1 and starts "
+                "a real passive WASAPI idle capture stream."
+            ),
+            "This smoke does not yet prove buffered WASAPI audio adoption into active capture.",
             "Keep SCRIBER_AUDIO_ENGINE=python as default unless promotion gates pass.",
         ],
         "exampleCommand": (
             "python scripts/smoke_rust_audio_prewarm_sidecar.py "
-            "--duration-sec 2 --prebuffer-ms 400 --output tmp/rust-audio-prewarm-sidecar-smoke.json"
+            "--mode wasapi --duration-sec 2 --prebuffer-ms 400 "
+            "--output tmp/rust-audio-prewarm-sidecar-smoke.json"
         ),
     }
 
@@ -170,9 +178,10 @@ def write_payload(payload: dict[str, Any], output: str = "") -> None:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Smoke-test the opt-in Rust audio synthetic prewarm sidecar lifecycle.",
+        description="Smoke-test the opt-in Rust audio prewarm sidecar lifecycle.",
     )
     parser.add_argument("--sidecar-exe", default="", help="Path to scriber-audio-sidecar(.exe).")
+    parser.add_argument("--mode", choices=["wasapi", "synthetic"], default="synthetic")
     parser.add_argument("--duration-sec", type=float, default=1.0)
     parser.add_argument("--sample-rate", type=int, default=16000)
     parser.add_argument("--channels", type=int, default=1)
@@ -194,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         "apiVersion": "1",
         "ok": False,
         "planOnly": False,
-        "mode": "synthetic",
+        "mode": args.mode,
         "sidecar": {
             "exe": str(sidecar_exe),
             "exists": sidecar_exe.is_file(),
@@ -217,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
         write_payload(payload, args.output)
         return 2
 
-    with SidecarClient(sidecar_exe, "synthetic") as client:
+    with SidecarClient(sidecar_exe, args.mode) as client:
         payload["prewarm"] = run_prewarm(
             client,
             request_payload=base_prewarm_payload(args),

@@ -148,26 +148,41 @@ Installed package smoke also verifies that the bundled
 layout. This is a packaging gate only; it does not promote Rust audio capture to
 the default engine.
 
-Rust audio prewarm sidecar smoke verifies the synthetic prewarm lifecycle only:
+Rust audio prewarm sidecar smoke verifies the prewarm lifecycle:
 
 - `prewarmStart` returns a `prewarmId`,
 - `prewarmStop` is idempotently routed through the sidecar client,
 - stop-health reports observed and buffered frame counters,
-- no raw native endpoint IDs are required or exposed.
+- no raw native endpoint IDs are required or exposed,
+- `--mode synthetic` checks protocol plumbing,
+- `--mode wasapi` starts a real passive WASAPI idle capture stream.
 
-It can be run locally after building the sidecar binary:
+It can be run locally after building the sidecar binary. Synthetic mode remains
+the default for CI-safe plumbing checks:
 
 ```powershell
 python scripts\smoke_rust_audio_prewarm_sidecar.py `
+  --mode synthetic `
   --duration-sec 1 `
   --prebuffer-ms 400 `
   --output tmp\rust-audio-prewarm-sidecar-smoke.json
 ```
 
-This is not WASAPI idle prewarm adoption evidence and does not promote Rust
-audio to the default engine. The top-level release-readiness runner can also
-produce and validate this report when explicit synthetic lifecycle evidence is
-wanted:
+Use WASAPI mode on a Windows machine with a real microphone to exercise the
+passive idle stream:
+
+```powershell
+python scripts\smoke_rust_audio_prewarm_sidecar.py `
+  --mode wasapi `
+  --duration-sec 1 `
+  --prebuffer-ms 400 `
+  --output tmp\rust-audio-prewarm-sidecar-wasapi-smoke.json
+```
+
+This still is not full idle-prewarm adoption evidence because buffered WASAPI
+audio is not yet adopted into active capture. It does not promote Rust audio to
+the default engine. The top-level release-readiness runner can also produce and
+validate this report when explicit lifecycle evidence is wanted:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
@@ -175,9 +190,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RequireRustAudioPrewarmSidecarSmoke
 ```
 
-That gate remains separate from `-RequireRustAudioSidecarSmoke`: it does not
-require Rust/WASAPI endpoint inventory in the physical microphone matrix because
-it is synthetic and does not exercise real Windows endpoint selection.
+Add `-RustAudioPrewarmSidecarMode wasapi` to make that runner gate use the real
+passive WASAPI prewarm worker. The gate remains separate from
+`-RequireRustAudioSidecarSmoke`: it does not by itself require Rust/WASAPI
+endpoint inventory in the physical microphone matrix because it still does not
+prove active-capture adoption.
 
 Installed media-preparation smoke verifies real helper paths against bundled
 media tools:
@@ -275,14 +292,15 @@ physical device scenario. Without that flag the Rust smoke remains visible in
 the runner plan but optional, so standard Python-capture release builds are not
 blocked by prototype evidence.
 
-The synthetic prewarm sidecar smoke can be added independently with
+The prewarm sidecar smoke can be added independently with
 `-RunRustAudioPrewarmSidecarSmoke` and
 `-RequireRustAudioPrewarmSidecarSmoke`. This validates
 `rust-audio-prewarm-sidecar-smoke.json` for prewarm start/stop routing,
 matching `prewarmId`, positive observed and buffered counters, and clean stop
-health. It is useful lifecycle evidence, but it is not enough for default Rust
-audio promotion without physical WASAPI idle-prewarm adoption and transcription
-smokes.
+health. `-RustAudioPrewarmSidecarMode wasapi` makes it use the real passive
+WASAPI idle stream. It is useful lifecycle evidence, but it is not enough for
+default Rust audio promotion without buffered-audio adoption into active capture
+and provider-backed transcription smokes.
 
 The microphone matrix can also be run directly with the same Rust inventory
 gate:
