@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-06-09
+Last verified: 2026-06-10
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -119,6 +119,11 @@ Rust audio:
   The Python Rust frame reader also tracks `SAF1` prebuffer/live frame counts
   and rejects prebuffer-after-live interleaving, but Rust-side always-on
   prewarm adoption is still not complete.
+  A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
+  600.004 seconds observed default capture, selected native-endpoint-hash
+  capture, no sequence gaps, matching reader/writer frame counts, and no
+  prebuffer-after-live frames. Physical device matrix, provider-backed
+  transcription, and Rust prewarm parity remain open before default promotion.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

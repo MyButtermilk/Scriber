@@ -821,6 +821,17 @@ Implementation plan:
    - Implemented: promotion validation now cross-checks reader and writer
      counts so written total/prebuffer/live frames cannot be lower than the
      frames observed through the pipe reader.
+   - Local evidence from 2026-06-10: a direct physical Windows WASAPI smoke
+     passed with
+     `python scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 600 --selected-duration-sec 10 --prebuffer-ms 400 --output tmp\rust-audio-sidecar-wasapi-10min-smoke.json`.
+     The default capture reported `observedDurationSec=600.004`,
+     `sequenceGapCount=0`, `prebufferAfterLiveCount=0`, and matching
+     reader/writer frame counts. The selected native endpoint hash capture
+     reported `observedDurationSec=10.009`, verified the selected hash, and
+     also had no sequence gaps or prebuffer-after-live frames. This is strong
+     sidecar evidence, but it does not replace the remaining physical matrix,
+     provider-backed transcription, always-on prewarm parity, and default
+     promotion gates.
    - If Rust fails before the first frame, Python falls back to Python capture
      for that session.
    - If Rust stalls mid-session, record diagnostics and fail the current engine
