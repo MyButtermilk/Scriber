@@ -611,11 +611,18 @@ Ownership boundary:
 Missing prerequisites:
 
 1. Engine-neutral Python frame-source boundary:
-   - Add an internal `AudioFrameSource` boundary behind `MicrophoneInput`.
-   - Keep current `sounddevice` implementation as
+   - Implemented on `codex/rust-expansion-plan`: `src/microphone.py` now has an
+     internal `AudioFrameSource` boundary and a behavior-preserving
      `PythonSoundDeviceFrameSource`.
-   - First PR must be behavior-preserving and prove existing mic/prewarm tests
-     still pass.
+   - `MicrophoneInput` still defaults to Python `sounddevice`, keeps prewarm
+     adoption unchanged, and exposes `engine`, `requestedEngine`,
+     `frameSource`, `engineFallbackReason`, `droppedFrameCount`, and a nested
+     source diagnostic snapshot.
+   - `SCRIBER_AUDIO_ENGINE=rust-prototype` is still request-only; it records a
+     fallback reason and does not activate Rust capture.
+   - Added Python source contract tests for configured-device open, default
+     fallback, pause/close lifecycle, and device-index parsing. Existing
+     microphone, prewarm, pipeline-stop, and runtime lifecycle tests pass.
 2. Native endpoint identity mapping:
    - Current user-facing device IDs are Python/PortAudio names.
    - WASAPI capture needs IMMDevice identity.

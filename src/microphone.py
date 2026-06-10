@@ -1,4 +1,5 @@
 import asyncio
+import os
 import queue as _queue
 import threading
 import time
@@ -76,6 +77,220 @@ def _determine_capture_channels(output_channels: int, max_channels: int) -> int:
     return safe_output
 
 
+def _requested_audio_engine() -> str:
+    requested = (os.getenv("SCRIBER_AUDIO_ENGINE", "python") or "python").strip().lower()
+    if requested == "rust":
+        return "rust-prototype"
+    if requested not in {"python", "rust-prototype"}:
+        return "python"
+    return requested
+
+
+class AudioFrameSource:
+    """Internal capture boundary for future non-sounddevice engines."""
+
+    engine = "unknown"
+    name = "unknown"
+
+    @property
+    def stream(self):
+        return None
+
+    @property
+    def is_active(self) -> bool:
+        return False
+
+    def open(self, callback):
+        raise NotImplementedError
+
+    def start(self) -> None:
+        raise NotImplementedError
+
+    def stop(self, *, close: bool) -> None:
+        raise NotImplementedError
+
+    def diagnostic_snapshot(self) -> dict:
+        return {
+            "engine": self.engine,
+            "frameSource": self.name,
+            "hasStream": False,
+            "streamActive": False,
+        }
+
+
+class PythonSoundDeviceFrameSource(AudioFrameSource):
+    """Behavior-preserving sounddevice capture source used by MicrophoneInput."""
+
+    engine = "python"
+    name = "sounddevice"
+
+    def __init__(
+        self,
+        *,
+        sample_rate: int,
+        target_channels: int,
+        block_size: int,
+        device,
+        sd_module=None,
+    ):
+        self.sample_rate = int(sample_rate)
+        self.target_channels = int(target_channels)
+        self.capture_channels = int(target_channels)
+        self.block_size = int(block_size)
+        self.device = device
+        self.device_index: int | None = None
+        self.fallback_reason = ""
+        self._sd = sd if sd_module is None else sd_module
+        self._stream = None
+        if self._sd is None:
+            raise RuntimeError("sounddevice is not available")
+
+    @property
+    def stream(self):
+        return self._stream
+
+    @property
+    def is_active(self) -> bool:
+        return bool(self._stream and getattr(self._stream, "active", False))
+
+    def open(self, callback):
+        device_index = self._parse_device_index()
+        device_index = self._configure_channels_for_device(device_index)
+        self._stream, self.device_index = self._open_stream(callback, device_index)
+        return self
+
+    def start(self) -> None:
+        if self._stream and not getattr(self._stream, "active", False):
+            self._stream.start()
+
+    def stop(self, *, close: bool) -> None:
+        if not self._stream:
+            return
+        try:
+            self._stream.stop()
+            if close:
+                self._stream.close()
+                self._stream = None
+        finally:
+            if close:
+                self.device_index = None
+
+    def diagnostic_snapshot(self) -> dict:
+        return {
+            "engine": self.engine,
+            "frameSource": self.name,
+            "hasStream": bool(self._stream),
+            "streamActive": self.is_active,
+            "sampleRate": self.sample_rate,
+            "targetChannels": self.target_channels,
+            "captureChannels": self.capture_channels,
+            "blockSize": self.block_size,
+            "device": str(self.device),
+            "deviceIndex": self.device_index,
+            "fallbackReason": self.fallback_reason,
+        }
+
+    def _parse_device_index(self) -> int | None:
+        if self.device in ("default", "", None):
+            return None
+        try:
+            return int(self.device)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Invalid microphone device id '{self.device}', using default microphone"
+            )
+            self.fallback_reason = "invalidDeviceId"
+            return None
+
+    def _configure_channels_for_device(self, device_index: int | None) -> int | None:
+        try:
+            dev_info = self._sd.query_devices(device=device_index, kind="input")
+            max_channels = int(dev_info.get("max_input_channels", 0))
+            if max_channels == 0:
+                raise ValueError("Device has no input channels")
+            self._apply_channel_limits(max_channels)
+            return device_index
+        except Exception as exc:
+            if device_index is not None:
+                logger.warning(
+                    f"Configured device {self.device} unavailable ({exc}); falling back to default microphone"
+                )
+                self.fallback_reason = "configuredDeviceUnavailable"
+                return self._configure_default_channels(exc)
+
+            logger.warning(f"Could not query default device ({exc}); using 1 channel")
+            self.fallback_reason = "defaultDeviceQueryFailed"
+            self.target_channels = 1
+            self.capture_channels = 1
+            return None
+
+    def _configure_default_channels(self, original_error: Exception) -> None:
+        try:
+            default_info = self._sd.query_devices(device=None, kind="input")
+            max_channels = int(default_info.get("max_input_channels", 1))
+            if max_channels > 0:
+                self._apply_channel_limits(max_channels)
+                logger.info(f"Using default device with {self.target_channels} channel(s)")
+                return None
+        except Exception as exc:
+            logger.warning(f"Could not query default device ({exc}); using 1 channel")
+        self.target_channels = 1
+        self.capture_channels = 1
+        if not self.fallback_reason:
+            self.fallback_reason = f"defaultDeviceQueryFailedAfter:{type(original_error).__name__}"
+        return None
+
+    def _apply_channel_limits(self, max_channels: int) -> None:
+        output_channels = self.target_channels
+        if output_channels <= 0:
+            output_channels = 1
+        if output_channels > max_channels:
+            output_channels = max_channels
+        if self.target_channels != output_channels:
+            logger.info(
+                f"Overriding configured channels {self.target_channels} with device-supported {output_channels}"
+            )
+            self.target_channels = output_channels
+
+        capture_channels = _determine_capture_channels(output_channels, max_channels)
+        self.capture_channels = capture_channels
+        if capture_channels != output_channels:
+            logger.info(
+                f"Using {capture_channels} capture channels for stability, downmixing to {output_channels}"
+            )
+
+    def _open_stream(self, callback, device_index: int | None):
+        try:
+            stream = self._sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=self.capture_channels,
+                blocksize=self.block_size,
+                dtype="int16",
+                callback=callback,
+                device=device_index,
+            )
+            return stream, device_index
+        except Exception as stream_err:
+            if device_index is None:
+                raise
+
+            logger.warning(
+                f"Could not open device {device_index} ({stream_err}); "
+                f"falling back to Windows default microphone"
+            )
+            self.fallback_reason = "configuredDeviceOpenFailed"
+            self._configure_default_channels(stream_err)
+            stream = self._sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=self.capture_channels,
+                blocksize=self.block_size,
+                dtype="int16",
+                callback=callback,
+                device=None,
+            )
+            return stream, None
+
+
 class MicrophoneInput(BaseInputTransport):
     def __init__(
         self,
@@ -114,6 +329,11 @@ class MicrophoneInput(BaseInputTransport):
         self.on_ready = on_ready
         self.on_last_audio_chunk_sent = on_last_audio_chunk_sent
         self.stream = None
+        self._frame_source: AudioFrameSource | None = None
+        self._requested_audio_engine = _requested_audio_engine()
+        self._audio_engine = "python"
+        self._frame_source_name = "sounddevice"
+        self._audio_engine_fallback_reason = ""
         self._using_prewarm_stream = False
         self._prewarm_callback = None
         self._running = False
@@ -156,6 +376,50 @@ class MicrophoneInput(BaseInputTransport):
             return
         mark_stream_stopped()
         self._stream_claimed = False
+
+    def _create_frame_source(self) -> AudioFrameSource:
+        requested = _requested_audio_engine()
+        self._requested_audio_engine = requested
+        self._audio_engine_fallback_reason = ""
+        if requested == "rust-prototype":
+            # The Rust audio engine is not active yet. Keep the fallback explicit
+            # so diagnostics can distinguish "requested" from "implemented".
+            self._audio_engine_fallback_reason = "rustPrototypeUnavailable"
+
+        return PythonSoundDeviceFrameSource(
+            sample_rate=self._target_sample_rate,
+            target_channels=self._target_channels,
+            block_size=self.block_size,
+            device=self.device,
+        )
+
+    def _sync_frame_source_state(self) -> None:
+        source = self._frame_source
+        if source is None:
+            return
+        self.stream = source.stream
+        self._audio_engine = source.engine
+        self._frame_source_name = source.name
+        self._target_channels = int(getattr(source, "target_channels", self._target_channels))
+        self._capture_channels = int(getattr(source, "capture_channels", self._capture_channels))
+        fallback_reason = str(getattr(source, "fallback_reason", "") or "")
+        if fallback_reason:
+            if (
+                self._audio_engine_fallback_reason
+                and self._audio_engine_fallback_reason != fallback_reason
+            ):
+                self._audio_engine_fallback_reason = (
+                    f"{self._audio_engine_fallback_reason};{fallback_reason}"
+                )
+            else:
+                self._audio_engine_fallback_reason = fallback_reason
+
+    def _source_owns_stream(self) -> bool:
+        return bool(
+            self._frame_source is not None
+            and self.stream is not None
+            and self._frame_source.stream is self.stream
+        )
 
     async def start(self, frame: StartFrame):
         """Start audio capture and feed frames into the transport queue."""
@@ -216,119 +480,18 @@ class MicrophoneInput(BaseInputTransport):
 
             # Device enumeration/open is guarded against concurrent PortAudio refresh.
             with get_device_guard_lock():
-                # Define device_index at the outer scope so it's available for logging
-                device_index = None
-                if self.device not in ("default", "", None):
-                    try:
-                        device_index = int(self.device)
-                    except (TypeError, ValueError):
-                        logger.warning(f"Invalid microphone device id '{self.device}', using default microphone")
-                        device_index = None
-                
-                if not self.stream:
-                    # Auto-detect channels supported by the device to avoid PaErrorCode -9998.
-                    # Also validate the device exists and is an input device.
-                    try:
-                        dev_info = sd.query_devices(device=device_index, kind='input')
-                        max_channels = int(dev_info.get('max_input_channels', 0))
-                        
-                        if max_channels == 0:
-                            # Device exists but has no input channels - fall back to default
-                            raise ValueError(f"Device has no input channels")
-                        output_channels = self._target_channels
-                        if output_channels <= 0:
-                            output_channels = 1
-                        if output_channels > max_channels:
-                            output_channels = max_channels
-                        if self._target_channels != output_channels:
-                            logger.info(
-                                f"Overriding configured channels {self._target_channels} with device-supported {output_channels}"
-                            )
-                            self._target_channels = output_channels
-
-                        # Some Windows mic arrays expose silence on channel 0 with mono capture.
-                        # Capture up to 4 channels and downmix/select strongest in callback.
-                        capture_channels = _determine_capture_channels(output_channels, max_channels)
-                        self._capture_channels = capture_channels
-                        if capture_channels != output_channels:
-                            logger.info(
-                                f"Using {capture_channels} capture channels for stability, downmixing to {output_channels}"
-                            )
-
-                    except Exception as e:
-                        if device_index is not None:
-                            # Configured device failed - fall back to system default
-                            logger.warning(f"Configured device {self.device} unavailable ({e}); falling back to default microphone")
-                            device_index = None
-                            # Query default device channels
-                            try:
-                                default_info = sd.query_devices(device=None, kind='input')
-                                max_channels = int(default_info.get('max_input_channels', 1))
-                                if max_channels > 0:
-                                    chosen_channels = self._target_channels
-                                    if chosen_channels <= 0 or chosen_channels > max_channels:
-                                        chosen_channels = max_channels
-                                    self._target_channels = chosen_channels
-                                    self._capture_channels = _determine_capture_channels(chosen_channels, max_channels)
-                                    logger.info(f"Using default device with {chosen_channels} channel(s)")
-                            except Exception as e2:
-                                logger.warning(f"Could not query default device ({e2}); using 1 channel")
-                                self._target_channels = 1
-                                self._capture_channels = 1
-                        else:
-                            logger.warning(f"Could not query default device ({e}); using 1 channel")
-                            self._target_channels = 1
-                            self._capture_channels = 1
-
-                    # Try to open the stream - with fallback to default if configured device fails
-                    try:
-                        self.stream = sd.InputStream(
-                            samplerate=self._target_sample_rate,
-                            channels=self._capture_channels,
-                            blocksize=self.block_size,
-                            dtype="int16",
-                            callback=self._audio_callback,
-                            device=device_index,
-                        )
-                    except Exception as stream_err:
-                        if device_index is not None:
-                            # Configured device failed to open - fall back to system default
-                            logger.warning(
-                                f"Could not open device {device_index} ({stream_err}); "
-                                f"falling back to Windows default microphone"
-                            )
-                            device_index = None
-                            # Re-query default device channels
-                            try:
-                                default_info = sd.query_devices(device=None, kind='input')
-                                max_channels = int(default_info.get('max_input_channels', 1))
-                                if max_channels > 0:
-                                    chosen_channels = self._target_channels
-                                    if chosen_channels <= 0 or chosen_channels > max_channels:
-                                        chosen_channels = max_channels
-                                    self._target_channels = chosen_channels
-                                    self._capture_channels = _determine_capture_channels(chosen_channels, max_channels)
-                            except Exception:
-                                self._target_channels = 1
-                                self._capture_channels = 1
-
-                            # Try default device
-                            self.stream = sd.InputStream(
-                                samplerate=self._target_sample_rate,
-                                channels=self._capture_channels,
-                                blocksize=self.block_size,
-                                dtype="int16",
-                                callback=self._audio_callback,
-                                device=None,  # System default
-                            )
-                        else:
-                            # Already using default, re-raise
-                            raise
-
+                if self._frame_source is None or self._frame_source.stream is None:
+                    self._frame_source = self._create_frame_source()
+                    self._frame_source.open(self._audio_callback)
+                    self._sync_frame_source_state()
                 if not self.stream.active:
-                    self.stream.start()
+                    if self._source_owns_stream():
+                        self._frame_source.start()
+                    else:
+                        self.stream.start()
                 self._stream_started_at = time.monotonic()
                 self._claim_active_stream()
+            device_index = getattr(self._frame_source, "device_index", None)
             logger.info(f"Microphone stream started (device={'default' if device_index is None else device_index})")
             # Signal that microphone is ready and capturing audio
             if self.on_ready:
@@ -463,8 +626,22 @@ class MicrophoneInput(BaseInputTransport):
 
     def diagnostic_snapshot(self) -> dict:
         stream = self.stream
+        source_snapshot = (
+            self._frame_source.diagnostic_snapshot()
+            if self._frame_source is not None
+            else {
+                "engine": self._audio_engine,
+                "frameSource": self._frame_source_name,
+                "hasStream": bool(stream),
+                "streamActive": bool(stream and getattr(stream, "active", False)),
+            }
+        )
         return {
             "running": bool(self._running),
+            "engine": self._audio_engine,
+            "requestedEngine": self._requested_audio_engine,
+            "frameSource": self._frame_source_name,
+            "engineFallbackReason": self._audio_engine_fallback_reason,
             "hasStream": bool(stream),
             "streamActive": bool(stream and getattr(stream, "active", False)),
             "usingPrewarmStream": bool(self._using_prewarm_stream),
@@ -475,6 +652,8 @@ class MicrophoneInput(BaseInputTransport):
             "blockSize": int(self.block_size),
             "device": str(self.device),
             "callbackCount": int(self._callback_count),
+            "droppedFrameCount": int(self._dropped_chunks),
+            "source": source_snapshot,
             "streamStartedAgoSeconds": (
                 round(time.monotonic() - self._stream_started_at, 3)
                 if self._stream_started_at > 0
@@ -548,10 +727,18 @@ class MicrophoneInput(BaseInputTransport):
             with get_device_guard_lock():
                 if active and callback_stale:
                     try:
-                        stream.stop()
+                        if self._source_owns_stream():
+                            self._frame_source.stop(close=False)
+                        else:
+                            stream.stop()
                     except Exception:
                         pass
-                stream.start()
+                if self._source_owns_stream():
+                    self._frame_source.start()
+                    self._sync_frame_source_state()
+                    stream = self.stream
+                else:
+                    stream.start()
                 self._stream_started_at = time.monotonic()
                 self._last_callback_at = 0.0
                 self._claim_active_stream()
@@ -584,7 +771,11 @@ class MicrophoneInput(BaseInputTransport):
         with get_device_guard_lock():
             if self.stream:
                 try:
-                    self.stream.stop()
+                    if self._source_owns_stream():
+                        self._frame_source.stop(close=False)
+                        self._sync_frame_source_state()
+                    else:
+                        self.stream.stop()
                 except Exception as exc:
                     logger.debug(f"Microphone stream stop after pipeline error failed: {exc}")
             self._release_active_stream()
@@ -638,11 +829,15 @@ class MicrophoneInput(BaseInputTransport):
             with get_device_guard_lock():
                 if self.stream:
                     try:
-                        self.stream.stop()
-                        self.stream.close()
+                        if self._source_owns_stream():
+                            self._frame_source.stop(close=True)
+                            self._sync_frame_source_state()
+                        else:
+                            self.stream.stop()
+                            self.stream.close()
+                            self.stream = None
                     except Exception:
                         pass
-                    self.stream = None
                 self._release_active_stream()
             raise  # Re-raise to properly complete cancellation
 
@@ -677,10 +872,14 @@ class MicrophoneInput(BaseInputTransport):
             with get_device_guard_lock():
                 if self.stream:
                     try:
-                        self.stream.stop()  # Stops callbacks, saves CPU, prevents overflow
-                        if should_close_stream:
-                            self.stream.close()
-                            self.stream = None
+                        if self._source_owns_stream():
+                            self._frame_source.stop(close=should_close_stream)
+                            self._sync_frame_source_state()
+                        else:
+                            self.stream.stop()  # Stops callbacks, saves CPU, prevents overflow
+                            if should_close_stream:
+                                self.stream.close()
+                                self.stream = None
                     except Exception:
                         pass
                 self._release_active_stream()

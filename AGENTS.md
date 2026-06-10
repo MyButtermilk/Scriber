@@ -46,8 +46,8 @@ Backend and runtime:
   jobs, transcript history, mic control, uploads, logs, support bundles.
 - `src/pipeline.py`: STT pipeline orchestration, provider factory, analyzer
   cache, mic resolution, async/direct transcription.
-- `src/microphone.py`: `sounddevice` transport, channel selection, RMS callback,
-  stream lifecycle.
+- `src/microphone.py`: engine-neutral `AudioFrameSource` boundary, Python
+  `sounddevice` frame source, channel selection, RMS callback, stream lifecycle.
 - `src/mic_prewarm.py`: optional idle mic prewarm and rolling prebuffer.
 - `src/device_monitor.py`: microphone hotplug monitor, native Windows endpoint
   callbacks, polling fallback, PortAudio refresh deferral.
