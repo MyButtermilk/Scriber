@@ -179,6 +179,11 @@ Rust audio prototype:
 - `src/microphone.py` can opt into the Rust prototype through
   `SCRIBER_AUDIO_ENGINE=rust-prototype`, but falls back to Python `sounddevice`
   before the first frame if the sidecar path is unavailable.
+- `src/mic_prewarm.py` selects a Rust prewarm manager only for
+  `SCRIBER_AUDIO_ENGINE=rust-prototype`. It keeps `audioPrewarmStart` alive
+  during idle, hands the `prewarmId` to the next Rust capture, and records
+  redacted adoption diagnostics. The normal app path still uses the Python
+  `sounddevice` prewarm manager.
 - The passive Rust WASAPI probe and active Rust capture path share the same
   redacted SHA-256/16-hex native endpoint hash contract, so selected-device
   probe evidence is comparable with selected-device capture evidence.

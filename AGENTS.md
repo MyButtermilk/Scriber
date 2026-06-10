@@ -174,9 +174,12 @@ Packaging and scripts:
   capture prototype, including selected-endpoint capture by redacted native
   endpoint hash, and a passive WASAPI prewarm worker that observes and bounds
   idle audio frames. Within a single sidecar session, `captureStart` may adopt
-  a matching `prewarmId` and write those buffered frames before live audio. The
-  app-wide always-on mic lifecycle does not yet keep or adopt Rust prewarm
-  sessions by default. Non-default Rust capture without a native endpoint hash
+  a matching `prewarmId` and write those buffered frames before live audio. When
+  `SCRIBER_AUDIO_ENGINE=rust-prototype` and `SCRIBER_MIC_ALWAYS_ON=1` are both
+  enabled, the backend uses a Rust prewarm manager that keeps `audioPrewarmStart`
+  alive while idle and passes its `prewarmId` to the next Rust capture. The
+  default app path still uses Python `sounddevice` prewarm. Non-default Rust
+  capture without a native endpoint hash
   must fail before first frame and let Python fall back to `sounddevice`; it
   must not silently use the Windows default endpoint. The default capture path
   remains Python `sounddevice` until a measured Rust prototype is explicitly

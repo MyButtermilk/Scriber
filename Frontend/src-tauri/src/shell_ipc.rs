@@ -46,6 +46,7 @@ struct AudioCaptureStartOptions {
     port_audio_label: String,
     native_endpoint_id_hash: String,
     prebuffer_ms: u32,
+    prewarm_id: String,
 }
 
 #[derive(Debug)]
@@ -408,6 +409,7 @@ fn audio_capture_start_sidecar_payload(options: &AudioCaptureStartOptions) -> Va
         "portAudioLabel": options.port_audio_label,
         "nativeEndpointIdHash": options.native_endpoint_id_hash,
         "prebufferMs": options.prebuffer_ms,
+        "prewarmId": options.prewarm_id,
         "frameProtocol": audio_frame_protocol_payload(),
     })
 }
@@ -421,6 +423,7 @@ fn audio_prewarm_start_sidecar_payload(options: &AudioCaptureStartOptions) -> Va
         "portAudioLabel": options.port_audio_label,
         "nativeEndpointIdHash": options.native_endpoint_id_hash,
         "prebufferMs": options.prebuffer_ms,
+        "prewarmId": options.prewarm_id,
         "frameProtocol": audio_frame_protocol_payload(),
     })
 }
@@ -450,6 +453,7 @@ fn audio_capture_shell_payload(
             "portAudioLabel": options.port_audio_label,
             "nativeEndpointIdHash": options.native_endpoint_id_hash,
             "prebufferMs": options.prebuffer_ms,
+            "prewarmId": options.prewarm_id,
             }),
         );
         object.insert("frameProtocol".to_string(), audio_frame_protocol_payload());
@@ -484,6 +488,7 @@ fn audio_prewarm_shell_payload(
             "portAudioLabel": options.port_audio_label,
             "nativeEndpointIdHash": options.native_endpoint_id_hash,
             "prebufferMs": options.prebuffer_ms,
+            "prewarmId": options.prewarm_id,
             }),
         );
         object.insert("frameProtocol".to_string(), audio_frame_protocol_payload());
@@ -604,6 +609,7 @@ fn parse_audio_capture_start_options(
         port_audio_label: bounded_string(payload, "portAudioLabel", "", 160),
         native_endpoint_id_hash: bounded_string(payload, "nativeEndpointIdHash", "", 64),
         prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 2_000) as u32,
+        prewarm_id: bounded_string(payload, "prewarmId", "", 96),
     })
 }
 
@@ -1817,6 +1823,7 @@ mod tests {
                 "blockSize": 512,
                 "devicePreference": "default",
                 "prebufferMs": 0,
+                "prewarmId": "prewarm-adopt-1",
             }
         })
         .to_string();
@@ -1828,6 +1835,10 @@ mod tests {
         assert_eq!(value["success"], false);
         assert_eq!(value["errorCode"], "audioCaptureUnavailable");
         assert_eq!(value["payload"]["engine"], "rust-prototype");
+        assert_eq!(
+            value["payload"]["requestedFormat"]["prewarmId"],
+            "prewarm-adopt-1"
+        );
         assert_eq!(
             value["payload"]["frameProtocol"]["sampleFormat"],
             "pcm_i16_le"
@@ -1882,6 +1893,7 @@ mod tests {
             port_audio_label: "Default Mic, Windows WASAPI".to_string(),
             native_endpoint_id_hash: "endpoint-hash".to_string(),
             prebuffer_ms: 0,
+            prewarm_id: "prewarm-1".to_string(),
         };
         let result = crate::audio_sidecar_client::AudioSidecarCallResult {
             success: true,
@@ -1913,6 +1925,7 @@ mod tests {
             payload["requestedFormat"]["nativeEndpointIdHash"],
             "endpoint-hash"
         );
+        assert_eq!(payload["requestedFormat"]["prewarmId"], "prewarm-1");
         assert_eq!(payload["sidecar"]["pid"], 1234);
         assert_eq!(payload["sidecarPayload"]["streamId"], "stream-1");
     }

@@ -69,6 +69,11 @@ class _FakeMicPrewarmManager:
         self.active = False
 
 
+class _FakeRustMicPrewarmManager(_FakeMicPrewarmManager):
+    engine = "rust-prototype"
+    instances: list["_FakeRustMicPrewarmManager"] = []
+
+
 def _install_fake_sounddevice_module(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -275,6 +280,29 @@ async def test_controller_starts_idle_mic_prewarm_when_enabled(monkeypatch, tmp_
 
     assert manager.stop_calls >= 1
     assert manager.active is False
+
+
+@pytest.mark.asyncio
+async def test_controller_uses_rust_idle_prewarm_manager_for_rust_audio_engine(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    await _wait_for_prewarm_task(ctl)
+    manager = _FakeRustMicPrewarmManager.instances[-1]
+
+    assert manager.resume_calls == 1
+    assert manager.active is True
+    assert getattr(ctl._mic_prewarm, "engine") == "rust-prototype"
+
+    ctl.shutdown()
 
 
 @pytest.mark.asyncio

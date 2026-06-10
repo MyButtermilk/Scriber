@@ -8,9 +8,15 @@ from typing import Any
 
 from loguru import logger
 
-from src.audio_devices import resolve_input_microphone_device
+from src.audio_devices import (
+    build_input_endpoint_mappings,
+    collect_native_capture_endpoint_inventory,
+    resolve_input_microphone_device,
+)
 from src.config import Config
 from src.device_monitor import get_device_guard_lock, mark_stream_started, mark_stream_stopped
+from src.runtime.audio_frame_pipe import AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VERSION
+from src.runtime.shell_ipc import call_shell_ipc
 
 try:
     import sounddevice as sd  # type: ignore
@@ -529,3 +535,389 @@ class MicrophonePrewarmManager:
             self._device_refresh_resume_count += 1
             self._record_transition_locked("device_refresh_resume", "device_refresh")
         return self.start_if_enabled()
+
+
+class RustAudioPrewarmManager:
+    """Owns the opt-in Rust audio idle prewarm session.
+
+    Unlike MicrophonePrewarmManager this does not route Python callbacks. It
+    keeps a Rust sidecar prewarm session alive and hands its prewarmId to the
+    next Rust capture so the sidecar can adopt buffered PCM frames locally.
+    """
+
+    engine = "rust-prototype"
+
+    def __init__(self, *, shell_call=None) -> None:
+        self._lock = threading.RLock()
+        self._shell_call = shell_call or call_shell_ipc
+        self._prewarm_id = ""
+        self._prewarm_payload: dict[str, Any] = {}
+        self._stream_signature: dict[str, Any] = {}
+        self._paused_for_active_capture = False
+        self._paused_for_device_refresh = False
+        self._active_capture_attached = False
+        self._last_error = ""
+        self._last_error_log_at = 0.0
+        self._last_transition = ""
+        self._last_transition_reason = ""
+        self._last_transition_at = 0.0
+        self._stream_started_at = 0.0
+        self._stream_start_count = 0
+        self._stream_close_count = 0
+        self._health_restart_count = 0
+        self._device_refresh_pause_count = 0
+        self._device_refresh_resume_count = 0
+        self._active_capture_pause_count = 0
+        self._active_capture_resume_count = 0
+        self._adoption_count = 0
+        self._last_adopted_prewarm_id_hash: str | None = None
+        self._last_stop_payload: dict[str, Any] = {}
+
+    @property
+    def is_active(self) -> bool:
+        with self._lock:
+            return bool(self._prewarm_id)
+
+    def diagnostic_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "configured": bool(Config.MIC_ALWAYS_ON),
+                "engine": self.engine,
+                "active": bool(self._prewarm_id),
+                "hasStream": bool(self._prewarm_id),
+                "prewarmIdHash": self._hash_hint(self._prewarm_id),
+                "activeCaptureAttached": self._active_capture_attached,
+                "pausedForActiveCapture": self._paused_for_active_capture,
+                "pausedForDeviceRefresh": self._paused_for_device_refresh,
+                "streamStartedAgoSeconds": (
+                    round(time.monotonic() - self._stream_started_at, 3)
+                    if self._stream_started_at > 0
+                    else None
+                ),
+                "streamStartCount": self._stream_start_count,
+                "streamCloseCount": self._stream_close_count,
+                "healthRestartCount": self._health_restart_count,
+                "deviceRefreshPauseCount": self._device_refresh_pause_count,
+                "deviceRefreshResumeCount": self._device_refresh_resume_count,
+                "activeCapturePauseCount": self._active_capture_pause_count,
+                "activeCaptureResumeCount": self._active_capture_resume_count,
+                "adoptionCount": self._adoption_count,
+                "lastAdoptedPrewarmIdHash": self._last_adopted_prewarm_id_hash,
+                "lastError": self._last_error,
+                "lastTransition": self._last_transition,
+                "lastTransitionReason": self._last_transition_reason,
+                "lastTransitionAgoSeconds": (
+                    round(time.monotonic() - self._last_transition_at, 3)
+                    if self._last_transition_at > 0
+                    else None
+                ),
+                "signature": dict(self._stream_signature),
+                "lastStop": dict(self._last_stop_payload),
+                "start": self._redacted_start_payload_locked(),
+            }
+
+    def _record_transition_locked(self, transition: str, reason: str = "") -> None:
+        self._last_transition = transition
+        self._last_transition_reason = reason
+        self._last_transition_at = time.monotonic()
+
+    @staticmethod
+    def _hash_hint(value: str | None) -> str | None:
+        if not value:
+            return None
+        import hashlib
+
+        return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+    def _redacted_start_payload_locked(self) -> dict[str, Any]:
+        payload = dict(self._prewarm_payload)
+        if "prewarmId" in payload:
+            payload["prewarmIdHash"] = self._hash_hint(str(payload.pop("prewarmId") or ""))
+        sidecar_payload = payload.get("sidecarPayload")
+        if isinstance(sidecar_payload, dict) and "prewarmId" in sidecar_payload:
+            sidecar_payload = dict(sidecar_payload)
+            sidecar_payload["prewarmIdHash"] = self._hash_hint(
+                str(sidecar_payload.pop("prewarmId") or "")
+            )
+            payload["sidecarPayload"] = sidecar_payload
+        return payload
+
+    def _log_start_error(self, exc: Exception) -> None:
+        self._last_error = str(exc)
+        now = time.monotonic()
+        if now - self._last_error_log_at < 60.0:
+            logger.debug(f"Rust mic prewarm skipped: {exc}")
+            return
+        self._last_error_log_at = now
+        logger.warning(f"Rust mic prewarm could not start: {exc}")
+
+    def start_if_enabled(self) -> bool:
+        with self._lock:
+            if self._paused_for_active_capture or self._paused_for_device_refresh:
+                return False
+        if not Config.MIC_ALWAYS_ON:
+            self.stop(reason="disabled")
+            return False
+        return self.start()
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._paused_for_active_capture or self._paused_for_device_refresh:
+                return False
+            if self._prewarm_id:
+                return True
+
+        try:
+            payload = self._build_start_payload()
+            response = self._shell_call("audioPrewarmStart", payload, timeout_seconds=2.0)
+            response_payload = response.get("payload") if isinstance(response, dict) else None
+            if not isinstance(response_payload, dict):
+                response_payload = {}
+            if not bool(response.get("success")):
+                error_code = str(response.get("errorCode") or "audioPrewarmStartFailed")
+                fallback_reason = str(response.get("fallbackReason") or error_code)
+                raise RuntimeError(f"{error_code}: {fallback_reason}")
+            prewarm_id = str(response_payload.get("prewarmId") or "").strip()
+            if not prewarm_id:
+                raise RuntimeError("audioPrewarmStart did not return prewarmId")
+
+            with self._lock:
+                self._prewarm_id = prewarm_id
+                self._prewarm_payload = dict(response_payload)
+                self._stream_signature = {
+                    "sample_rate": int(payload["sampleRate"]),
+                    "target_channels": int(payload["channels"]),
+                    "block_size": int(payload["blockSize"]),
+                    "device_preference": str(payload.get("devicePreference") or "default"),
+                    "port_audio_label": str(payload.get("portAudioLabel") or ""),
+                    "native_endpoint_id_hash": str(payload.get("nativeEndpointIdHash") or ""),
+                }
+                self._stream_started_at = time.monotonic()
+                self._stream_start_count += 1
+                self._last_error = ""
+                self._record_transition_locked("started", "start")
+            logger.info("Rust mic prewarm session active")
+            return True
+        except Exception as exc:
+            with self._lock:
+                self._prewarm_id = ""
+                self._prewarm_payload = {}
+                self._stream_signature = {}
+            self._log_start_error(exc)
+            return False
+
+    def _build_start_payload(self) -> dict[str, Any]:
+        sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
+        channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
+        block_size = max(64, int(getattr(Config, "MIC_BLOCK_SIZE", 512) or 512))
+        prebuffer_ms = max(0, min(2000, int(getattr(Config, "MIC_PREBUFFER_MS", 400) or 0)))
+        device_preference = str(getattr(Config, "MIC_DEVICE", "default") or "default")
+        selection = self._device_selection_payload(
+            device_preference,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+        return {
+            "sampleRate": sample_rate,
+            "channels": channels,
+            "blockSize": block_size,
+            "devicePreference": selection.get("devicePreference") or device_preference,
+            "portAudioLabel": selection.get("portAudioLabel") or "",
+            "nativeEndpointIdHash": selection.get("nativeEndpointIdHash") or None,
+            "prebufferMs": prebuffer_ms,
+            "frameProtocol": {
+                "magic": "SAF1",
+                "version": AUDIO_FRAME_VERSION,
+                "headerBytes": AUDIO_FRAME_HEADER_LEN,
+                "sampleFormat": "pcm_i16_le",
+            },
+        }
+
+    def _device_selection_payload(
+        self,
+        device_preference: str,
+        *,
+        sample_rate: int,
+        channels: int,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "devicePreference": str(device_preference or "default"),
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        }
+        if not HAS_SOUNDDEVICE or sd is None:
+            return result
+        try:
+            resolved = resolve_input_microphone_device(
+                sd,
+                device_name=device_preference or "default",
+                favorite_name=getattr(Config, "FAVORITE_MIC", "") or "",
+                sample_rate=sample_rate,
+                channels=channels,
+                logger=logger,
+            )
+            if resolved not in ("", None):
+                result["devicePreference"] = str(resolved)
+        except Exception:
+            pass
+        try:
+            native_endpoints = collect_native_capture_endpoint_inventory()
+            mappings = build_input_endpoint_mappings(
+                sd,
+                native_endpoints=native_endpoints,
+                sample_rate=sample_rate,
+                channels=channels,
+            )
+            raw_device = str(result["devicePreference"] or "default").strip()
+            match = None
+            if raw_device and raw_device not in {"default", "None"}:
+                try:
+                    wanted_index = int(raw_device)
+                    match = next(
+                        (mapping for mapping in mappings if mapping.portaudio_index == wanted_index),
+                        None,
+                    )
+                except (TypeError, ValueError):
+                    match = None
+            if match is None:
+                match = next((mapping for mapping in mappings if mapping.is_default), None)
+            if match is not None:
+                result["portAudioLabel"] = match.portaudio_name
+                result["nativeEndpointIdHash"] = match.native_endpoint_id_hash
+        except Exception:
+            return result
+        return result
+
+    def attach_active_capture(
+        self,
+        _callback: Callable[[Any, int, Any, Any], None] | None = None,
+        *,
+        sample_rate: int,
+        target_channels: int,
+        block_size: int,
+        device: object,
+    ) -> dict[str, Any] | None:
+        if not Config.MIC_ALWAYS_ON:
+            return None
+        with self._lock:
+            if (
+                self._paused_for_device_refresh
+                or self._active_capture_attached
+                or not self._prewarm_id
+            ):
+                return None
+            signature = dict(self._stream_signature)
+            if int(signature.get("sample_rate") or 0) != int(sample_rate):
+                return None
+            if int(signature.get("target_channels") or 0) != int(target_channels):
+                return None
+            if int(signature.get("block_size") or 0) != int(block_size):
+                return None
+
+            prewarm_id = self._prewarm_id
+            self._prewarm_id = ""
+            self._active_capture_attached = True
+            self._paused_for_active_capture = True
+            self._active_capture_pause_count += 1
+            self._adoption_count += 1
+            self._last_adopted_prewarm_id_hash = self._hash_hint(prewarm_id)
+            self._record_transition_locked("adopted_for_capture", "active_capture")
+            return {
+                "engine": self.engine,
+                "prewarmId": prewarm_id,
+                "prewarm_id": prewarm_id,
+                "signature": signature,
+                "start": self._redacted_start_payload_locked(),
+                "device": str(device),
+            }
+
+    def detach_active_capture(
+        self,
+        _callback: Callable[[Any, int, Any, Any], None] | None = None,
+    ) -> bool:
+        with self._lock:
+            self._active_capture_attached = False
+            return bool(self._prewarm_id)
+
+    def pause_for_active_capture(self) -> None:
+        with self._lock:
+            self._paused_for_active_capture = True
+            self._active_capture_attached = False
+            self._active_capture_pause_count += 1
+        self.stop(reason="active_capture")
+
+    def resume_after_active_capture(self) -> bool:
+        with self._lock:
+            self._paused_for_active_capture = False
+            self._active_capture_attached = False
+            self._active_capture_resume_count += 1
+        return self.start_if_enabled()
+
+    def quiesce_for_device_refresh(self) -> None:
+        with self._lock:
+            self._paused_for_device_refresh = bool(self._prewarm_id)
+            if self._paused_for_device_refresh:
+                self._device_refresh_pause_count += 1
+                self._record_transition_locked("device_refresh_pause", "device_refresh")
+        self.stop(reason="device_refresh")
+
+    def resume_after_device_refresh(self) -> bool:
+        with self._lock:
+            should_resume = self._paused_for_device_refresh
+            self._paused_for_device_refresh = False
+        if not should_resume:
+            return False
+        with self._lock:
+            self._device_refresh_resume_count += 1
+            self._record_transition_locked("device_refresh_resume", "device_refresh")
+        return self.start_if_enabled()
+
+    def ensure_healthy(
+        self,
+        *,
+        reason: str = "watchdog",
+        max_callback_gap_seconds: float | None = None,
+    ) -> bool:
+        del max_callback_gap_seconds
+        if not Config.MIC_ALWAYS_ON:
+            self.stop(reason=f"{reason}:disabled")
+            return False
+        with self._lock:
+            if self._paused_for_active_capture or self._paused_for_device_refresh:
+                return False
+            active = bool(self._prewarm_id)
+        if active:
+            return True
+        with self._lock:
+            self._health_restart_count += 1
+            self._record_transition_locked("watchdog_restart", reason)
+        return self.start_if_enabled()
+
+    def stop(self, *, reason: str = "stop") -> None:
+        with self._lock:
+            prewarm_id = self._prewarm_id
+            self._prewarm_id = ""
+            self._prewarm_payload = {}
+            self._stream_signature = {}
+        if not prewarm_id:
+            return
+        try:
+            response = self._shell_call(
+                "audioPrewarmStop",
+                {"prewarmId": prewarm_id},
+                timeout_seconds=1.0,
+            )
+            response_payload = response.get("payload") if isinstance(response, dict) else None
+            if not isinstance(response_payload, dict):
+                response_payload = {}
+            with self._lock:
+                self._last_stop_payload = dict(response_payload)
+                self._stream_close_count += 1
+                self._record_transition_locked("closed", reason)
+            logger.debug(f"Rust mic prewarm session stopped ({reason})")
+        except Exception as exc:
+            with self._lock:
+                self._last_error = str(exc)
+                self._stream_close_count += 1
+                self._record_transition_locked("close_error", reason)
+            logger.debug(f"Rust mic prewarm stop failed ({reason}): {exc}")

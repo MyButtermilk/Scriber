@@ -926,6 +926,12 @@ Implementation plan:
      `adoptedIntoCapture`, snapshot the bounded PCM ringbuffer, and write those
      frames into the capture frame pipe as leading `AUDIO_FRAME_FLAG_PREBUFFER`
      frames before live WASAPI or synthetic frames.
+   - Implemented: the backend now selects a Rust idle-prewarm manager when
+     `SCRIBER_AUDIO_ENGINE=rust-prototype` is requested. With
+     `SCRIBER_MIC_ALWAYS_ON=1`, it keeps a Rust `audioPrewarmStart` session
+     during idle, hands the `prewarmId` to the next Rust `audioCaptureStart`,
+     and lets the sidecar adopt buffered frames locally. The Python
+     `sounddevice` prewarm manager remains the default for normal releases.
    - Implemented: `scripts/smoke_rust_audio_prewarm_sidecar.py` records
      prewarm lifecycle evidence in `--mode synthetic` or `--mode wasapi`:
      `prewarmId`, start/stop timings, observed frame counters, buffered frame
@@ -957,9 +963,9 @@ Implementation plan:
      It reported `totalAdoptedPrewarmBlocks=40`,
      `prebufferFramesRead=40`, `liveFramesRead=43`,
      `prebufferAfterLiveCount=0`, and `sequenceGapCount=0`.
-   - Still open: wiring this sidecar-local adoption into the app-wide
-     Always-On-Mic lifecycle, pausing/resuming the WASAPI prewarm around device
-     refreshes, and provider-backed end-to-end transcription smokes.
+   - Still open: long-running physical Always-On-Mic evidence with the Rust
+     manager, device-refresh pause/resume matrix evidence, provider-backed
+     end-to-end transcription smokes, and release-readiness promotion gates.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream

@@ -126,14 +126,16 @@ Rust audio:
   The Python Rust frame reader also tracks `SAF1` prebuffer/live frame counts
   and rejects prebuffer-after-live interleaving. Always-on startup no longer
   adopts the Python prewarm stream when `SCRIBER_AUDIO_ENGINE=rust-prototype`
-  is requested. A synthetic Rust prewarm sidecar lifecycle harness now exists
-  behind private shell IPC and reports `prewarmId` plus stop-health counters,
-  but Rust-side WASAPI idle prewarm adoption is still not complete.
+  is requested. A Rust prewarm manager now exists behind the same app-wide
+  Always-On-Mic lifecycle for the explicit Rust prototype: it keeps
+  `audioPrewarmStart` alive while idle and passes the `prewarmId` into the next
+  Rust capture for sidecar-local buffered-frame adoption.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no
-  prebuffer-after-live frames. Physical device matrix, provider-backed
-  transcription, and Rust prewarm parity remain open before default promotion.
+  prebuffer-after-live frames. Physical Always-On-Mic matrix evidence,
+  provider-backed transcription, and final Rust promotion gates remain open
+  before default promotion.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

@@ -281,6 +281,7 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
         shell_call=shell_call,
         reader_factory=reader_factory,
         first_frame_timeout_seconds=1.0,
+        prewarm_id="prewarm-1",
     )
 
     source.open(lambda *args: calls.append(args))
@@ -293,6 +294,7 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     assert commands[0][1]["portAudioLabel"] == "Default Mic, Windows WASAPI"
     assert commands[0][1]["nativeEndpointIdHash"] == "endpoint-hash"
     assert commands[0][1]["prebufferMs"] == 400
+    assert commands[0][1]["prewarmId"] == "prewarm-1"
     assert commands[-1][0] == "audioCaptureStop"
     assert source.engine == "rust-prototype"
     assert source.name == "rust-frame-pipe"
@@ -302,6 +304,7 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     assert active_snapshot["framePipeHash"]
     snapshot = source.diagnostic_snapshot()
     assert snapshot["requestedPrebufferMs"] == 400
+    assert snapshot["requestedPrewarmIdHash"]
     assert snapshot["framePipeHash"] is None
     assert snapshot["nativeEndpointIdHash"] == "endpoint-hash"
     assert snapshot["sidecarExitStatus"] == 0
@@ -840,3 +843,68 @@ async def test_rust_prototype_does_not_adopt_python_prewarm_when_always_on(monke
     assert snapshot["engine"] == "rust-prototype"
     assert snapshot["usingPrewarmStream"] is False
     assert snapshot["prewarmAdoptionSkippedReason"] == "engine:rust-prototype"
+
+
+@pytest.mark.asyncio
+async def test_rust_prototype_adopts_rust_prewarm_id_when_always_on(monkeypatch):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setattr(microphone, "HAS_SOUNDDEVICE", True)
+    fake_source = _FakeRustFrameSource()
+    created_prewarm_ids: list[str] = []
+
+    class FakeRustPrewarmManager:
+        engine = "rust-prototype"
+
+        def __init__(self) -> None:
+            self.attach_calls = 0
+            self.pause_calls = 0
+
+        def attach_active_capture(self, *_args, **_kwargs):
+            self.attach_calls += 1
+            return {
+                "engine": "rust-prototype",
+                "prewarmId": "prewarm-rust-1",
+                "signature": {
+                    "sample_rate": 16000,
+                    "target_channels": 1,
+                    "block_size": 512,
+                },
+            }
+
+        def pause_for_active_capture(self) -> None:
+            self.pause_calls += 1
+
+    prewarm = FakeRustPrewarmManager()
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        keep_alive=True,
+        prewarm_manager=prewarm,
+    )
+    mic._create_audio_task = lambda: None
+
+    async def fake_drain_queue():
+        return None
+
+    mic._drain_queue = fake_drain_queue
+
+    def create_frame_source():
+        created_prewarm_ids.append(mic._rust_prewarm_id)
+        return fake_source
+
+    mic._create_frame_source = create_frame_source
+
+    await mic.start(microphone.StartFrame())
+    snapshot = mic.diagnostic_snapshot()
+    await mic.stop(microphone.EndFrame())
+
+    assert prewarm.attach_calls == 1
+    assert prewarm.pause_calls == 0
+    assert created_prewarm_ids == ["prewarm-rust-1"]
+    assert snapshot["requestedEngine"] == "rust-prototype"
+    assert snapshot["engine"] == "rust-prototype"
+    assert snapshot["usingPrewarmStream"] is False
+    assert snapshot["prewarmAdoptionSkippedReason"] == ""
+    assert snapshot["rustPrewarmAdoption"]["prewarmIdHash"]
+    assert "prewarm-rust-1" not in str(snapshot)

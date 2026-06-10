@@ -4,7 +4,7 @@ import numpy as np
 
 from src.config import Config
 from src.device_monitor import get_active_stream_count
-from src.mic_prewarm import MicrophonePrewarmManager
+from src.mic_prewarm import MicrophonePrewarmManager, RustAudioPrewarmManager
 import src.mic_prewarm as mic_prewarm
 
 
@@ -276,3 +276,113 @@ def test_mic_prewarm_watchdog_restarts_idle_stream_when_callbacks_never_arrive(m
     assert _FakeInputStream.instances[-1].active is True
 
     manager.stop()
+
+
+def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
+    monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
+    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
+    monkeypatch.setattr(Config, "MIC_PREBUFFER_MS", 400, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            return {
+                "success": True,
+                "payload": {
+                    "prewarmId": "prewarm-1",
+                    "source": "wasapi-prewarm",
+                    "prebufferFrameTarget": 40,
+                },
+            }
+        if command == "audioPrewarmStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "prewarmId": payload["prewarmId"],
+                    "reason": "prewarmStop",
+                },
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
+
+    assert manager.start_if_enabled() is True
+    assert manager.is_active is True
+    adopted = manager.attach_active_capture(
+        None,
+        sample_rate=16000,
+        target_channels=1,
+        block_size=160,
+        device="default",
+    )
+
+    assert adopted is not None
+    assert adopted["prewarmId"] == "prewarm-1"
+    assert manager.is_active is False
+    assert [command for command, _payload in commands] == ["audioPrewarmStart"]
+    assert commands[0][1]["prebufferMs"] == 400
+    assert commands[0][1]["nativeEndpointIdHash"] == "endpoint-hash"
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["engine"] == "rust-prototype"
+    assert snapshot["activeCaptureAttached"] is True
+    assert snapshot["adoptionCount"] == 1
+    assert snapshot["lastAdoptedPrewarmIdHash"]
+    assert "prewarm-1" not in str(snapshot)
+
+
+def test_rust_audio_prewarm_manager_pause_stops_sidecar_session(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
+    monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
+    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": "prewarm-2"}}
+        if command == "audioPrewarmStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "prewarmId": payload["prewarmId"],
+                    "reason": "active_capture",
+                },
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+
+    assert manager.start_if_enabled() is True
+    manager.pause_for_active_capture()
+
+    assert manager.is_active is False
+    assert [command for command, _payload in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStop",
+    ]
+    assert commands[-1][1]["prewarmId"] == "prewarm-2"

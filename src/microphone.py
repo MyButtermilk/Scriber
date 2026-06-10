@@ -362,6 +362,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
         shell_call=None,
         reader_factory=None,
         first_frame_timeout_seconds: float | None = None,
+        prewarm_id: str = "",
     ):
         self.sample_rate = int(sample_rate)
         self.target_channels = int(target_channels)
@@ -400,6 +401,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.frame_pipe_prebuffer_after_live_count = 0
         self.frame_pipe_first_live_sequence = None
         self.requested_prebuffer_ms = 0
+        self.requested_prewarm_id = str(prewarm_id or "")
+        self.adopted_prewarm: dict | None = None
         self.frame_pipe_reader_end_reason = "notStarted"
         self.frame_pipe_first_frame_read_ms = None
         self._shell_call = shell_call or call_shell_ipc
@@ -448,6 +451,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "portAudioLabel": selection.get("portAudioLabel") or "",
             "nativeEndpointIdHash": selection.get("nativeEndpointIdHash") or None,
             "prebufferMs": self.requested_prebuffer_ms,
+            "prewarmId": self.requested_prewarm_id,
             "frameProtocol": {
                 "magic": "SAF1",
                 "version": AUDIO_FRAME_VERSION,
@@ -470,6 +474,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._frame_pipe = str(response_payload.get("framePipe") or "")
         self._frame_pipe_hash = _hash_private_hint(self._frame_pipe)
         self.native_endpoint_id_hash = response_payload.get("nativeEndpointIdHash")
+        adopted_prewarm = response_payload.get("adoptedPrewarm")
+        self.adopted_prewarm = adopted_prewarm if isinstance(adopted_prewarm, dict) else None
         self.sidecar_pid = response_payload.get("sidecarPid")
         if self.stream_id:
             self.sidecar_start_count += 1
@@ -579,6 +585,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "blockSize": self.block_size,
             "device": str(self.device),
             "requestedPrebufferMs": self.requested_prebuffer_ms,
+            "requestedPrewarmIdHash": _hash_private_hint(self.requested_prewarm_id),
+            "adoptedPrewarm": self._redacted_adopted_prewarm(),
             "streamId": self.stream_id or None,
             "framePipeHash": self._frame_pipe_hash,
             "nativeEndpointIdHash": self.native_endpoint_id_hash,
@@ -622,6 +630,21 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 else None
             ),
         }
+
+    def _redacted_adopted_prewarm(self) -> dict | None:
+        if not isinstance(self.adopted_prewarm, dict):
+            return None
+        payload = dict(self.adopted_prewarm)
+        if "prewarmId" in payload:
+            payload["prewarmIdHash"] = _hash_private_hint(str(payload.pop("prewarmId") or ""))
+        stop_payload = payload.get("stop")
+        if isinstance(stop_payload, dict) and "prewarmId" in stop_payload:
+            stop_payload = dict(stop_payload)
+            stop_payload["prewarmIdHash"] = _hash_private_hint(
+                str(stop_payload.pop("prewarmId") or "")
+            )
+            payload["stop"] = stop_payload
+        return payload
 
     def _read_frame_pipe(self) -> None:
         try:
@@ -868,6 +891,8 @@ class MicrophoneInput(BaseInputTransport):
         self._audio_engine_fallback_reason = ""
         self._using_prewarm_stream = False
         self._prewarm_adoption_skipped_reason = ""
+        self._rust_prewarm_adoption: dict | None = None
+        self._rust_prewarm_id = ""
         self._prewarm_callback = None
         self._running = False
         self._queue = _queue.Queue(maxsize=512)
@@ -924,6 +949,7 @@ class MicrophoneInput(BaseInputTransport):
                 target_channels=self._target_channels,
                 block_size=self.block_size,
                 device=self.device,
+                prewarm_id=self._rust_prewarm_id,
             )
 
         return self._create_python_frame_source()
@@ -1031,6 +1057,8 @@ class MicrophoneInput(BaseInputTransport):
         self._last_health_restart_reason = ""
         self._last_health_restart_error = ""
         self._prewarm_adoption_skipped_reason = ""
+        self._rust_prewarm_adoption = None
+        self._rust_prewarm_id = ""
         self._requested_audio_engine = _requested_audio_engine()
         self._create_audio_task()
         self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")
@@ -1069,15 +1097,42 @@ class MicrophoneInput(BaseInputTransport):
                             except Exception as e:
                                 logger.warning(f"on_ready callback error: {e}")
                         return
+                elif (
+                    self._requested_audio_engine == "rust-prototype"
+                    and getattr(self.prewarm_manager, "engine", "") == "rust-prototype"
+                ):
+                    try:
+                        adopted = self.prewarm_manager.attach_active_capture(
+                            None,
+                            sample_rate=self._target_sample_rate,
+                            target_channels=self._target_channels,
+                            block_size=self.block_size,
+                            device=self.device,
+                        )
+                    except Exception as exc:
+                        logger.debug(f"Could not attach Rust prewarm session: {exc}")
+                        adopted = None
+                    prewarm_id = str(
+                        (adopted or {}).get("prewarmId")
+                        or (adopted or {}).get("prewarm_id")
+                        or ""
+                    )
+                    if prewarm_id:
+                        self._rust_prewarm_adoption = adopted
+                        self._rust_prewarm_id = prewarm_id
+                        logger.info("Rust mic prewarm session will be adopted by capture")
+                    else:
+                        self._prewarm_adoption_skipped_reason = "rustPrewarmUnavailable"
                 else:
                     self._prewarm_adoption_skipped_reason = (
                         f"engine:{self._requested_audio_engine}"
                     )
 
-                try:
-                    self.prewarm_manager.pause_for_active_capture()
-                except Exception as exc:
-                    logger.debug(f"Could not pause idle mic prewarm before fallback capture: {exc}")
+                if not self._rust_prewarm_id:
+                    try:
+                        self.prewarm_manager.pause_for_active_capture()
+                    except Exception as exc:
+                        logger.debug(f"Could not pause idle mic prewarm before fallback capture: {exc}")
                 self._prewarm_callback = None
 
             # Device enumeration/open is guarded against concurrent PortAudio refresh.
@@ -1240,6 +1295,7 @@ class MicrophoneInput(BaseInputTransport):
             "streamActive": bool(stream and getattr(stream, "active", False)),
             "usingPrewarmStream": bool(self._using_prewarm_stream),
             "prewarmAdoptionSkippedReason": self._prewarm_adoption_skipped_reason,
+            "rustPrewarmAdoption": self._redacted_rust_prewarm_adoption(),
             "streamClaimed": bool(self._stream_claimed),
             "sampleRate": int(self._target_sample_rate),
             "targetChannels": int(self._target_channels),
@@ -1266,6 +1322,15 @@ class MicrophoneInput(BaseInputTransport):
             "lastHealthRestartReason": self._last_health_restart_reason,
             "lastHealthRestartError": self._last_health_restart_error,
         }
+
+    def _redacted_rust_prewarm_adoption(self) -> dict | None:
+        if not isinstance(self._rust_prewarm_adoption, dict):
+            return None
+        payload = dict(self._rust_prewarm_adoption)
+        for key in ("prewarmId", "prewarm_id"):
+            if key in payload:
+                payload[f"{key}Hash"] = _hash_private_hint(str(payload.pop(key) or ""))
+        return payload
 
     def ensure_stream_health(
         self,

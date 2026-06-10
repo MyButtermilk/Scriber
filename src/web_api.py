@@ -62,7 +62,7 @@ from src.runtime.shell_ipc import (
     diagnostic_snapshot as shell_ipc_diagnostic_snapshot,
 )
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs
-from src.mic_prewarm import MicrophonePrewarmManager
+from src.mic_prewarm import MicrophonePrewarmManager, RustAudioPrewarmManager
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
 from src.runtime.debug_logs import clear_debug_logs, collect_debug_logs
@@ -361,6 +361,12 @@ def _runtime_feature_flags() -> dict[str, Any]:
         **_audio_engine_feature_flags(),
         **_native_device_event_feature_flags(),
     }
+
+
+def _create_mic_prewarm_manager() -> Any:
+    if _audio_engine_feature_flags()["rustAudioRequested"]:
+        return RustAudioPrewarmManager()
+    return MicrophonePrewarmManager()
 
 
 def _bounded_hint_string(value: Any, *, default: str = "") -> str:
@@ -1286,7 +1292,7 @@ class ScriberWebController:
         self._is_listening = False
         self._is_stopping = False  # Track if stop is in progress
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
-        self._mic_prewarm = MicrophonePrewarmManager()
+        self._mic_prewarm = _create_mic_prewarm_manager()
         self._mic_prewarm_task: Optional[asyncio.Task] = None
         self._mic_watchdog_task: Optional[asyncio.Task] = None
         self._last_mic_watchdog_warning_at = 0.0
