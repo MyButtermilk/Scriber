@@ -179,10 +179,52 @@ python scripts\smoke_rust_audio_prewarm_sidecar.py `
   --output tmp\rust-audio-prewarm-sidecar-wasapi-smoke.json
 ```
 
-This still is not full idle-prewarm adoption evidence because buffered WASAPI
-audio is not yet adopted into active capture. It does not promote Rust audio to
-the default engine. The top-level release-readiness runner can also produce and
-validate this report when explicit lifecycle evidence is wanted:
+This lifecycle-only report does not prove active-capture adoption. Use
+`--prewarm-before-capture` on the Rust sidecar capture smoke when the evidence
+needs to show buffered idle frames flowing into the next capture:
+
+```powershell
+python scripts\smoke_rust_audio_sidecar.py `
+  --mode wasapi `
+  --duration-sec 1 `
+  --prebuffer-ms 400 `
+  --prewarm-before-capture `
+  --skip-selected-hash `
+  --output tmp\rust-audio-sidecar-adopt-wasapi-smoke.json
+```
+
+Use the app-level smoke to verify that Python's `RustAudioPrewarmManager`
+actually hands the adopted `prewarmId` to `RustPrototypeFrameSource`, that the
+sidecar emits prebuffer frames before live frames, and that idle prewarm resumes
+after capture:
+
+```powershell
+python scripts\smoke_rust_audio_app_prewarm.py `
+  --mode wasapi `
+  --duration-sec 1 `
+  --prewarm-duration-sec 1 `
+  --prebuffer-ms 400 `
+  --output tmp\rust-audio-app-prewarm-wasapi-smoke.json
+```
+
+The app-level smoke ignores locally configured favorite microphones by default
+so release evidence uses the stable Windows default endpoint. Add
+`--honor-favorite-mic` only for a targeted selected-device investigation. These
+Rust audio smokes still do not promote Rust audio to the default engine; longer
+physical Always-On-Mic matrix evidence and provider-backed transcription smokes
+remain required.
+
+The hybrid release-readiness runner can produce and validate this app-level
+report when Rust audio promotion evidence is being assembled:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunRustAudioAppPrewarmSmoke `
+  -RequireRustAudioAppPrewarmSmoke
+```
+
+The top-level release-readiness runner can also produce and validate the
+lifecycle report when explicit lifecycle evidence is wanted:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `

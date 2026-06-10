@@ -321,6 +321,18 @@ prewarm frames are adopted into the next capture within one sidecar session:
 python scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 1 --prebuffer-ms 400 --prewarm-before-capture --skip-selected-hash --output tmp\rust-audio-sidecar-adopt-wasapi-smoke.json
 ```
 
+Rust audio app-level prewarm adoption smoke:
+
+```powershell
+python scripts\smoke_rust_audio_app_prewarm.py --mode wasapi --duration-sec 1 --prewarm-duration-sec 1 --prebuffer-ms 400 --output tmp\rust-audio-app-prewarm-wasapi-smoke.json
+```
+
+This verifies the Python `RustAudioPrewarmManager` plus
+`RustPrototypeFrameSource` handoff against the real `scriber-audio-sidecar`.
+By default it ignores user favorite microphones so release evidence exercises
+the stable Windows default endpoint. Use `--honor-favorite-mic` only for a
+targeted selected-device investigation.
+
 The same lifecycle smoke can be included in the hybrid readiness runner when
 explicitly needed:
 
@@ -330,9 +342,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RequireRustAudioPrewarmSidecarSmoke
 ```
 
-This is not app-wide Always-On-Mic promotion evidence and must not be used alone
-to promote Rust audio to default because Python still owns the default prewarm
-lifecycle and provider-backed transcription smokes are still required.
+The app-level Rust prewarm adoption smoke can also be included:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunRustAudioAppPrewarmSmoke `
+  -RequireRustAudioAppPrewarmSmoke
+```
+
+These Rust smokes must not be used alone to promote Rust audio to default.
+Longer physical Always-On-Mic matrix runs, device-change evidence, and
+provider-backed transcription smokes are still required.
 
 Rust audio promotion readiness gate:
 

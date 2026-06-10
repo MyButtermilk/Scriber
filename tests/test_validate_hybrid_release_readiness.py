@@ -455,6 +455,87 @@ def write_rust_audio_prewarm_sidecar_report(
     )
 
 
+def write_rust_audio_app_prewarm_report(
+    path: Path,
+    *,
+    ok: bool = True,
+    mode: str = "wasapi",
+    plan_only: bool = False,
+    honor_favorite_mic: bool = False,
+    adopted_blocks: int = 40,
+    prebuffer_frames: int = 40,
+    live_frames: int = 42,
+    callback_count: int = 82,
+    prebuffer_after_live: int = 0,
+    sequence_errors: int = 0,
+    protocol_errors: int = 0,
+    native_endpoint_hash: str = "abc123",
+    manager_resume_active: bool = True,
+    last_error: str = "",
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "apiVersion": "1",
+                "ok": ok,
+                "planOnly": plan_only,
+                "mode": mode,
+                "requested": {
+                    "durationSec": 1.0,
+                    "prewarmDurationSec": 1.0,
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "blockSize": 160,
+                    "prebufferMs": 400,
+                    "honorFavoriteMic": honor_favorite_mic,
+                },
+                "managerStart": {
+                    "active": True,
+                    "prewarmIdHash": "prewarm-start-hash",
+                },
+                "managerAdoption": {
+                    "prewarmIdHash": "prewarm-start-hash",
+                    "signature": {
+                        "device_preference": "default",
+                        "sample_rate": 16000,
+                        "target_channels": 1,
+                        "block_size": 160,
+                    },
+                },
+                "managerResume": {
+                    "active": manager_resume_active,
+                    "prewarmIdHash": "prewarm-resume-hash",
+                },
+                "sourceFinal": {
+                    "callbackCount": callback_count,
+                    "nativeEndpointIdHash": native_endpoint_hash,
+                    "lastError": last_error,
+                    "adoptedPrewarm": {
+                        "adopted": adopted_blocks > 0,
+                        "blocks": adopted_blocks,
+                        "audioFrames": adopted_blocks * 160,
+                    },
+                    "framePipePrebufferFramesRead": prebuffer_frames,
+                    "framePipeLiveFramesRead": live_frames,
+                    "framePipePrebufferAfterLiveCount": prebuffer_after_live,
+                    "framePipeSequenceErrorCount": sequence_errors,
+                    "framePipeProtocolErrorCount": protocol_errors,
+                },
+                "summary": {
+                    "callbackCount": callback_count,
+                    "adoptedPrewarmBlocks": adopted_blocks,
+                    "prebufferFramesRead": prebuffer_frames,
+                    "liveFramesRead": live_frames,
+                    "prebufferAfterLiveCount": prebuffer_after_live,
+                    "sequenceErrorCount": sequence_errors,
+                    "protocolErrorCount": protocol_errors,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_complete_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
     hardware_dir = tmp_path / "hardware"
     write_full_hardware_matrix(hardware_dir)
@@ -674,6 +755,87 @@ def test_validate_release_readiness_rejects_weak_rust_audio_prewarm_sidecar_smok
     assert "totalBlocksObserved must be positive" in failures
     assert "bufferedBlocks must be positive" in failures
     assert "bufferedAudioFrames must be positive" in failures
+
+
+def test_validate_release_readiness_accepts_required_rust_audio_app_prewarm_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
+    write_rust_audio_app_prewarm_report(app_prewarm_report)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_app_prewarm_report=app_prewarm_report,
+        require_rust_audio_app_prewarm_smoke=True,
+    )
+
+    assert result["ok"] is True
+    app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
+    assert app_check["details"]["summary"]["adoptedPrewarmBlocks"] == 40
+
+
+def test_validate_release_readiness_rejects_missing_required_rust_audio_app_prewarm_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        require_rust_audio_app_prewarm_smoke=True,
+    )
+
+    assert result["ok"] is False
+    app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
+    assert "Rust audio app prewarm smoke report is required" in app_check["failures"]
+
+
+def test_validate_release_readiness_rejects_weak_rust_audio_app_prewarm_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
+    write_rust_audio_app_prewarm_report(
+        app_prewarm_report,
+        adopted_blocks=0,
+        prebuffer_frames=0,
+        live_frames=0,
+        honor_favorite_mic=True,
+        native_endpoint_hash="",
+        manager_resume_active=False,
+        sequence_errors=1,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_app_prewarm_report=app_prewarm_report,
+        require_rust_audio_app_prewarm_smoke=True,
+    )
+
+    assert result["ok"] is False
+    app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
+    failures = "\n".join(app_check["failures"])
+    assert "must use the stable default endpoint path" in failures
+    assert "adoptedPrewarm.blocks must be positive" in failures
+    assert "nativeEndpointIdHash is required" in failures
+    assert "framePipePrebufferFramesRead must be positive" in failures
+    assert "framePipeLiveFramesRead must be positive" in failures
+    assert "framePipeSequenceErrorCount must be 0" in failures
 
 
 def test_validate_release_readiness_rejects_missing_rust_audio_prebuffer_when_requested(tmp_path: Path) -> None:

@@ -747,12 +747,15 @@ class RustPrototypeFrameSource(AudioFrameSource):
                     f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
                 )
         except Exception as exc:
-            self.frame_pipe_reader_end_reason = type(exc).__name__
-            self._last_error = str(exc)
-            if self.callback_count <= 0 and not self.fallback_reason:
-                self.fallback_reason = "rustFramePipeReadError"
+            if self._stop_event.is_set():
+                self.frame_pipe_reader_end_reason = "stopRequested"
+            else:
+                self.frame_pipe_reader_end_reason = type(exc).__name__
+                self._last_error = str(exc)
+                if self.callback_count <= 0 and not self.fallback_reason:
+                    self.fallback_reason = "rustFramePipeReadError"
             self._first_frame_event.set()
-            if self.callback_count > 0:
+            if self.callback_count > 0 and not self._stop_event.is_set():
                 logger.warning(
                     f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
                 )

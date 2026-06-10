@@ -612,7 +612,7 @@ class RustAudioPrewarmManager:
                     else None
                 ),
                 "signature": dict(self._stream_signature),
-                "lastStop": dict(self._last_stop_payload),
+                "lastStop": self._redacted_stop_payload_locked(),
                 "start": self._redacted_start_payload_locked(),
             }
 
@@ -640,6 +640,12 @@ class RustAudioPrewarmManager:
                 str(sidecar_payload.pop("prewarmId") or "")
             )
             payload["sidecarPayload"] = sidecar_payload
+        return payload
+
+    def _redacted_stop_payload_locked(self) -> dict[str, Any]:
+        payload = dict(self._last_stop_payload)
+        if "prewarmId" in payload:
+            payload["prewarmIdHash"] = self._hash_hint(str(payload.pop("prewarmId") or ""))
         return payload
 
     def _log_start_error(self, exc: Exception) -> None:
@@ -745,6 +751,8 @@ class RustAudioPrewarmManager:
             "portAudioLabel": "",
             "nativeEndpointIdHash": None,
         }
+        requested_device = str(device_preference or "default").strip() or "default"
+        default_requested = requested_device in {"default", "None"}
         if not HAS_SOUNDDEVICE or sd is None:
             return result
         try:
@@ -784,7 +792,11 @@ class RustAudioPrewarmManager:
             if match is not None:
                 result["portAudioLabel"] = match.portaudio_name
                 result["nativeEndpointIdHash"] = match.native_endpoint_id_hash
+            if default_requested and not result["nativeEndpointIdHash"]:
+                result["devicePreference"] = "default"
         except Exception:
+            if default_requested:
+                result["devicePreference"] = "default"
             return result
         return result
 

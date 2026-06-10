@@ -951,6 +951,22 @@ Implementation plan:
      evidence to the physical sidecar smoke with
      `-RustAudioSidecarPrewarmBeforeCapture`; the validator rejects such reports
      when the default capture does not show positive adopted prewarm blocks.
+   - Implemented: `scripts/smoke_rust_audio_app_prewarm.py` exercises the
+     app-level Python lifecycle around the real sidecar. It starts
+     `RustAudioPrewarmManager`, waits for idle buffering, attaches
+     `RustPrototypeFrameSource` with the adopted `prewarmId`, validates
+     prebuffer-before-live ordering, resumes idle prewarm after capture, and
+     redacts raw prewarm IDs in the report. The default smoke ignores locally
+     configured favorite microphones so release evidence covers the stable
+     Windows default endpoint; `--honor-favorite-mic` is reserved for targeted
+     selected-device investigations.
+   - Implemented: the hybrid release-readiness runner and validator can consume
+     the app-level report through `-RunRustAudioAppPrewarmSmoke`,
+     `-UseExistingRustAudioAppPrewarmReport`, and
+     `-RequireRustAudioAppPrewarmSmoke`. Required app-level readiness expects
+     WASAPI mode, default-endpoint evidence, positive adopted/prebuffer/live
+     frame counts, a native endpoint hash, successful idle-prewarm resume, and
+     zero sequence/protocol/prebuffer-ordering errors.
    - Local evidence from 2026-06-10: a direct Windows WASAPI prewarm smoke
      passed with
      `python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 0.5 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-current.json`.
@@ -963,6 +979,16 @@ Implementation plan:
      It reported `totalAdoptedPrewarmBlocks=40`,
      `prebufferFramesRead=40`, `liveFramesRead=43`,
      `prebufferAfterLiveCount=0`, and `sequenceGapCount=0`.
+   - Local evidence from 2026-06-11: the app-level Windows WASAPI prewarm
+     adoption smoke passed with
+     `python scripts\smoke_rust_audio_app_prewarm.py --mode wasapi --duration-sec 0.5 --prewarm-duration-sec 0.5 --post-resume-duration-sec 0.1 --output tmp\rust-audio-app-prewarm-wasapi-current.json`.
+     It reported `adoptedPrewarmBlocks=40`, `prebufferFramesRead=40`,
+     `liveFramesRead=42`, `prebufferAfterLiveCount=0`,
+     `sequenceErrorCount=0`, `protocolErrorCount=0`,
+     `framePipeFirstFrameReadMs=10.271`, and successful idle-prewarm resume.
+     A related fix keeps the Rust prewarm manager's default device preference as
+     `default` when Python cannot map the PortAudio default to a native endpoint
+     hash; non-default Rust capture without a native hash still fails closed.
    - Still open: long-running physical Always-On-Mic evidence with the Rust
      manager, device-refresh pause/resume matrix evidence, provider-backed
      end-to-end transcription smokes, and release-readiness promotion gates.

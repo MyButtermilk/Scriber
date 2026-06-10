@@ -129,13 +129,22 @@ Rust audio:
   is requested. A Rust prewarm manager now exists behind the same app-wide
   Always-On-Mic lifecycle for the explicit Rust prototype: it keeps
   `audioPrewarmStart` alive while idle and passes the `prewarmId` into the next
-  Rust capture for sidecar-local buffered-frame adoption.
+  Rust capture for sidecar-local buffered-frame adoption. The app-level smoke
+  `scripts/smoke_rust_audio_app_prewarm.py` now verifies that the Python
+  manager/source lifecycle performs this handoff against the real sidecar and
+  resumes idle prewarm after capture. It also keeps the neutral default-device
+  path as `default` when Python lacks native endpoint inventory, while
+  non-default Rust capture without a native endpoint hash still fails closed.
+  The hybrid release-readiness runner can require this app-level smoke via
+  `-RequireRustAudioAppPrewarmSmoke`.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no
-  prebuffer-after-live frames. Physical Always-On-Mic matrix evidence,
-  provider-backed transcription, and final Rust promotion gates remain open
-  before default promotion.
+  prebuffer-after-live frames. A local app-level WASAPI prewarm adoption smoke
+  passed on 2026-06-11 with 40 adopted prebuffer blocks, 42 live blocks, no
+  sequence/protocol errors, and successful idle-prewarm resume. Physical
+  Always-On-Mic matrix evidence, provider-backed transcription, and final Rust
+  promotion gates remain open before default promotion.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

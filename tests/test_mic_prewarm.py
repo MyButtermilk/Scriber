@@ -344,6 +344,30 @@ def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch)
     assert "prewarm-1" not in str(snapshot)
 
 
+def test_rust_audio_prewarm_manager_keeps_default_when_native_mapping_unavailable(
+    monkeypatch,
+):
+    _install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+    monkeypatch.setattr(
+        mic_prewarm,
+        "collect_native_capture_endpoint_inventory",
+        lambda: [],
+    )
+
+    manager = RustAudioPrewarmManager(shell_call=lambda *_args, **_kwargs: {})
+
+    payload = manager._device_selection_payload(
+        "default",
+        sample_rate=16000,
+        channels=1,
+    )
+
+    assert payload["devicePreference"] == "default"
+    assert payload["nativeEndpointIdHash"] is None
+
+
 def test_rust_audio_prewarm_manager_pause_stops_sidecar_session(monkeypatch):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
     monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
@@ -381,8 +405,11 @@ def test_rust_audio_prewarm_manager_pause_stops_sidecar_session(monkeypatch):
     manager.pause_for_active_capture()
 
     assert manager.is_active is False
+    snapshot = manager.diagnostic_snapshot()
     assert [command for command, _payload in commands] == [
         "audioPrewarmStart",
         "audioPrewarmStop",
     ]
     assert commands[-1][1]["prewarmId"] == "prewarm-2"
+    assert snapshot["lastStop"]["prewarmIdHash"]
+    assert "prewarm-2" not in str(snapshot)
