@@ -652,8 +652,8 @@ Missing prerequisites:
      health fields.
 4. Audio frame-pipe protocol:
    - Implemented on `codex/rust-expansion-plan` as shared Rust/Python protocol
-     helpers and a Python `RustPrototypeFrameSource`, not yet wired to an active
-     WASAPI capture sidecar.
+     helpers, a Python `RustPrototypeFrameSource`, and an opt-in sidecar
+     synthetic frame-pipe writer, not yet wired to active WASAPI capture.
    - Rust owns `Frontend/src-tauri/src/audio_frame_pipe.rs`; Python owns
      `src/runtime/audio_frame_pipe.py`.
    - The frame header is fixed-size, little-endian, versioned, and covers magic,
@@ -663,6 +663,10 @@ Missing prerequisites:
    - Python reads the binary frame pipe, validates sequence/order/channel count,
      forwards PCM frames through the existing callback path, and redacts the raw
      frame-pipe name in diagnostics.
+   - With `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`, the sidecar creates a
+     private Windows named pipe and writes synthetic silence frames in the shared
+     `SAF1` protocol. This proves transport and lifecycle plumbing only; it is
+     not a microphone capture engine.
 5. Audio capture control protocol:
    - Partly implemented as private shell IPC commands `audioCaptureStart` and
      `audioCaptureStop`.
@@ -676,10 +680,11 @@ Missing prerequisites:
      `Frontend/src-tauri/src/audio_sidecar.rs`.
    - The binary supports `--self-test` plus `--stdio` JSON-lines commands:
      `ping`, `capabilities`, `captureStart`, `captureStop`, and `shutdown`.
-   - The sidecar reports the shared audio frame protocol and returns explicit
-     `audioCaptureUnavailable` for capture until real WASAPI capture is wired.
-   - Still open: packaging into the installed runtime, Tauri lifecycle
-     management, long-lived capture sessions, and frame-pipe creation.
+   - The sidecar reports the shared audio frame protocol, returns explicit
+     `audioCaptureUnavailable` by default, and can run an explicit synthetic
+     frame-pipe transport harness through
+     `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`.
+   - Still open: packaging into the installed runtime and real WASAPI capture.
 7. Tauri audio sidecar client:
    - Partly implemented in `Frontend/src-tauri/src/audio_sidecar_client.rs`.
    - Discovers only allowlisted sidecar executable names, with
@@ -692,9 +697,10 @@ Missing prerequisites:
      that registry and send sidecar shutdown.
    - Shell IPC capabilities now report sidecar executable availability and
      protocol version.
-   - `audioCaptureStart`/`audioCaptureStop` route through the client, but
-     capture still remains unavailable until the sidecar owns real WASAPI
-     capture, frame-pipe creation, and long-lived stream lifecycle.
+   - `audioCaptureStart`/`audioCaptureStop` route through the client, expose
+     successful sidecar fields such as `streamId` and `framePipe` at the top
+     level for Python, and keep capture unavailable by default until real WASAPI
+     capture exists.
 
 Implementation plan:
 
@@ -728,9 +734,11 @@ Implementation plan:
    - Partly implemented: Tauri keeps successful sidecar capture processes alive
      by `streamId` and drains them on capture stop, backend restart, and shell
      exit.
+   - Partly implemented: an explicit synthetic sidecar mode creates a private
+     Windows named pipe and writes valid `pcm_i16_le` `SAF1` frames through the
+     same lifecycle path Python will use for real capture.
    - Still open: prove the long-lived path with real WASAPI sessions.
-   - Still open: create the private binary named pipe and write real WASAPI PCM
-     frames into it.
+   - Still open: replace synthetic frames with real WASAPI PCM frames.
    - If Rust fails before the first frame, Python falls back to Python capture
      for that session.
    - If Rust stalls mid-session, record diagnostics and fail the current engine
@@ -745,12 +753,14 @@ Implementation plan:
    - Partly implemented: Tauri shell IPC now routes start/stop requests through
      the sidecar client, retains successful capture sidecars by `streamId`, and
      returns redacted sidecar status to Python.
+   - Partly implemented: the shell payload preserves sidecar response fields at
+     top level so Python can open `framePipe` and associate `streamId`.
    - Start request includes sample rate, channels, block size, device preference
      (`default`, `favorite`, `portAudioLabel`, or `nativeEndpointHash`), and
      `prebufferMs`.
-   - Still open: successful sidecar response with engine, stream id, format,
-     capture channels, native endpoint hash, frame pipe, resampler metadata, and
-     fallback reason.
+   - Still open: successful real-WASAPI sidecar response with engine, stream id,
+     format, capture channels, native endpoint hash, frame pipe, resampler
+     metadata, and fallback reason.
    - Each PCM frame uses the shared fixed-size binary header followed by
      `pcm_i16_le`.
 5. Add prewarm parity only after active capture works:
@@ -791,7 +801,7 @@ Acceptance gates:
   Windows default-device changes.
 - No feature loss for provider streaming, final transcript injection, overlay,
   audio diagnostics, support bundles, and fallback settings.
-- Backend restart and Tauri quit clean up the Rust audio sidecar.
+- Backend restart and Tauri exit clean up the Rust audio sidecar.
 
 Rollback:
 

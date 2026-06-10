@@ -75,8 +75,9 @@ Frontend and shell:
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing TS types.
 - `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system.
 - `Frontend/src-tauri/src/audio_sidecar.rs`: separate Rust audio sidecar
-  skeleton with `--self-test` and `--stdio` JSON-lines protocol. It does not
-  yet perform WASAPI capture or ship as an installed runtime component.
+  skeleton with `--self-test`, `--stdio` JSON-lines protocol, and an explicit
+  `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` frame-pipe transport harness. It
+  does not yet perform WASAPI capture or ship as an installed runtime component.
 - `Frontend/src-tauri/src/audio_sidecar_client.rs`: Tauri-side sidecar lookup,
   stdio JSON-lines client, and prototype process lifecycle registry. It only
   uses allowlisted executable names, supports `SCRIBER_AUDIO_SIDECAR_EXE` for
@@ -128,9 +129,10 @@ Packaging and scripts:
   prototype passes the documented gates.
 - Private shell IPC also reserves `audioCaptureStart` and `audioCaptureStop` for
   the Rust audio prototype. The shell may attempt an allowlisted
-  `scriber-audio-sidecar --stdio` handshake, but until WASAPI capture and frame
-  pipe writing are implemented, `audioCaptureStart` must fail explicitly and
-  Python must fall back before the first frame.
+  `scriber-audio-sidecar --stdio` handshake. Without
+  `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`, `audioCaptureStart` must fail
+  explicitly until real WASAPI capture is implemented, and Python must fall back
+  before the first frame.
 - `scriber-audio-sidecar` is a separate Cargo binary for crash-isolated audio
   work. Until packaging, lifecycle, watchdog, and physical-device gates are
   added, do not depend on it in the standard installed runtime.
@@ -161,8 +163,10 @@ Packaging and scripts:
   diagnostics and prototype mapping; do not expose raw IMMDevice IDs as public
   microphone IDs or log fields.
 - `SCRIBER_AUDIO_ENGINE=rust-prototype` and `SCRIBER_RUST_AUDIO_PROBE=1` may
-  run a passive WASAPI diagnostics probe. The default capture path remains
-  Python `sounddevice` until a measured Rust prototype is explicitly promoted.
+  run a passive WASAPI diagnostics probe. `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`
+  may run the sidecar's synthetic frame-pipe transport harness for tests and
+  prototype plumbing only. The default capture path remains Python `sounddevice`
+  until a measured Rust prototype is explicitly promoted.
 - The Rust audio frame-pipe protocol is length-prefixed and versioned. Keep the
   Rust and Python header fixtures in sync when changing it.
 - The opt-in Rust prototype may read frame-pipe PCM into Python, but if capture

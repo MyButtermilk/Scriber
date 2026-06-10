@@ -120,6 +120,10 @@ Rust audio prototype:
   for crash-isolated audio capture work.
 - The sidecar currently exposes `--self-test` and `--stdio` JSON-lines commands
   for `ping`, `capabilities`, `captureStart`, `captureStop`, and `shutdown`.
+- With explicit `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`, the sidecar can create
+  a private Windows named pipe and write synthetic `pcm_i16_le` frames using the
+  shared `SAF1` frame protocol. This is a transport/lifecycle harness, not a
+  microphone engine.
 - `Frontend/src-tauri/src/audio_sidecar_client.rs` is the Tauri-side client for
   prototype handshakes. It discovers only allowlisted sidecar executable names,
   supports `SCRIBER_AUDIO_SIDECAR_EXE` for local prototype runs, starts sidecar
@@ -127,8 +131,8 @@ Rust audio prototype:
   capture sidecars keyed by `streamId`, and reports only redacted path hashes.
 - Private shell IPC routes `audioCaptureStart` and `audioCaptureStop` through
   the sidecar client when an executable is available.
-- `captureStart` still returns explicit unavailable status until real WASAPI
-  capture and frame-pipe writing are implemented.
+- `captureStart` still returns explicit unavailable status by default until real
+  WASAPI capture is implemented.
 - Backend restart and shell exit drain the sidecar lifecycle registry before
   restarting the Python backend or exiting the Tauri shell.
 - `src/microphone.py` can opt into the Rust prototype through

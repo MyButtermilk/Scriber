@@ -353,20 +353,31 @@ fn audio_capture_shell_payload(
     sidecar_payload: Value,
     result: &crate::audio_sidecar_client::AudioSidecarCallResult,
 ) -> Value {
-    json!({
-        "engine": "rust-prototype",
-        "available": result.success,
-        "requestedFormat": {
+    let original_sidecar_payload = sidecar_payload.clone();
+    let mut payload = match sidecar_payload {
+        Value::Object(map) => Value::Object(map),
+        other => json!({
+            "sidecarPayloadValue": other,
+        }),
+    };
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("engine".to_string(), json!("rust-prototype"));
+        object.insert("available".to_string(), json!(result.success));
+        object.insert(
+            "requestedFormat".to_string(),
+            json!({
             "sampleRate": options.sample_rate,
             "channels": options.channels,
             "blockSize": options.block_size,
             "devicePreference": options.device_preference,
             "prebufferMs": options.prebuffer_ms,
-        },
-        "frameProtocol": audio_frame_protocol_payload(),
-        "sidecar": sidecar_status_payload(result),
-        "sidecarPayload": sidecar_payload,
-    })
+            }),
+        );
+        object.insert("frameProtocol".to_string(), audio_frame_protocol_payload());
+        object.insert("sidecar".to_string(), sidecar_status_payload(result));
+        object.insert("sidecarPayload".to_string(), original_sidecar_payload);
+    }
+    payload
 }
 
 fn sidecar_status_payload(result: &crate::audio_sidecar_client::AudioSidecarCallResult) -> Value {
@@ -1619,6 +1630,41 @@ mod tests {
             value["payload"]["frameProtocol"]["sampleFormat"],
             "pcm_i16_le"
         );
+    }
+
+    #[test]
+    fn audio_capture_shell_payload_exposes_sidecar_stream_contract_top_level() {
+        let options = super::AudioCaptureStartOptions {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size: 512,
+            device_preference: "default".to_string(),
+            prebuffer_ms: 0,
+        };
+        let result = crate::audio_sidecar_client::AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "streamId": "stream-1",
+                "framePipe": r"\\.\pipe\scriber-audio-test",
+                "sampleRate": 16_000,
+                "channels": 1,
+                "captureChannels": 1,
+                "sampleFormat": "pcm_i16_le",
+            }),
+            executable_available: true,
+            executable_path_hash: Some("hash".to_string()),
+            pid: Some(1234),
+        };
+
+        let payload = super::audio_capture_shell_payload(&options, result.payload.clone(), &result);
+
+        assert_eq!(payload["streamId"], "stream-1");
+        assert_eq!(payload["framePipe"], r"\\.\pipe\scriber-audio-test");
+        assert_eq!(payload["sampleFormat"], "pcm_i16_le");
+        assert_eq!(payload["sidecar"]["pid"], 1234);
+        assert_eq!(payload["sidecarPayload"]["streamId"], "stream-1");
     }
 
     #[test]
