@@ -53,6 +53,7 @@ from src.data.latency_metrics_store import LatencyMetricsStore
 from src.runtime.paths import app_root, data_dir, downloads_dir, is_frozen, logs_dir, repo_root
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args, webm_opus_transcode_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
+from src.runtime.shell_ipc import diagnostic_snapshot as shell_ipc_diagnostic_snapshot
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 from src.mic_prewarm import MicrophonePrewarmManager
 from src.runtime.provider_router import ProviderRouter
@@ -2294,6 +2295,7 @@ class ScriberWebController:
                 "disabled": bool(getattr(Config, "DISABLE_TEXT_INJECTION", False)),
                 "pastePreDelayMs": getattr(Config, "PASTE_PRE_DELAY_MS", None),
                 "pasteRestoreDelayMs": getattr(Config, "PASTE_RESTORE_DELAY_MS", None),
+                "shellIpc": shell_ipc_diagnostic_snapshot(),
             },
             "runtimeImports": _audio_diagnostic_import_status(),
         }

@@ -93,7 +93,9 @@ Packaging and scripts:
 - The Rust supervisor validates `/api/health` before attaching to a backend.
 - Managed workers receive `SCRIBER_RUNTIME_MODE=tauri-supervised`,
   `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_SESSION_TOKEN`,
-  `SCRIBER_BACKEND_LAUNCH_KIND`, and writable `SCRIBER_DATA_DIR`.
+  `SCRIBER_BACKEND_LAUNCH_KIND`, optional private shell IPC env
+  `SCRIBER_SHELL_IPC_PIPE`, `SCRIBER_SHELL_IPC_TOKEN`,
+  `SCRIBER_SHELL_IPC_API_VERSION`, and writable `SCRIBER_DATA_DIR`.
 - `/api/health` remains public. Token-protected endpoints must accept the
   session token via `scriberToken` query parameter or `X-Scriber-Token`.
 - `POST /api/runtime/frontend-ready` is the proof that the actual WebView reached

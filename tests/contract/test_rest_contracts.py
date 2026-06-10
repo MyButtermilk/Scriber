@@ -222,6 +222,17 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
             "disabled": False,
             "pastePreDelayMs": 80,
             "pasteRestoreDelayMs": 1500,
+            "shellIpc": {
+                "available": False,
+                "pipeConfigured": False,
+                "tokenConfigured": False,
+                "apiVersion": "1",
+                "pipeNameHash": None,
+                "lastCommand": None,
+                "lastSuccess": None,
+                "lastError": None,
+                "lastCommandAgoSeconds": None,
+            },
         },
         "runtimeImports": {
             "onnxruntime": {

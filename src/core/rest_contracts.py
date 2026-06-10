@@ -37,11 +37,23 @@ def _require_bool(payload: dict[str, Any], field: str, contract: str) -> bool:
     return value
 
 
+def _require_optional_bool(payload: dict[str, Any], field: str, contract: str) -> None:
+    value = payload.get(field)
+    if value is not None and not isinstance(value, bool):
+        raise RESTContractError(f"{contract} requires bool-or-null '{field}'")
+
+
 def _require_number(payload: dict[str, Any], field: str, contract: str) -> float:
     value = payload.get(field)
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise RESTContractError(f"{contract} requires numeric '{field}'")
     return float(value)
+
+
+def _require_optional_number(payload: dict[str, Any], field: str, contract: str) -> None:
+    value = payload.get(field)
+    if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+        raise RESTContractError(f"{contract} requires numeric-or-null '{field}'")
 
 
 def _require_int(payload: dict[str, Any], field: str, contract: str) -> int:
@@ -207,6 +219,16 @@ def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
     _require_bool(text_injection, "disabled", contract)
     _require_optional_int(text_injection, "pastePreDelayMs", contract)
     _require_optional_int(text_injection, "pasteRestoreDelayMs", contract)
+    shell_ipc = _require_dict(text_injection, "shellIpc", contract)
+    _require_bool(shell_ipc, "available", contract)
+    _require_bool(shell_ipc, "pipeConfigured", contract)
+    _require_bool(shell_ipc, "tokenConfigured", contract)
+    _require_string(shell_ipc, "apiVersion", contract)
+    _require_optional_string(shell_ipc, "pipeNameHash", contract)
+    _require_optional_string(shell_ipc, "lastCommand", contract)
+    _require_optional_bool(shell_ipc, "lastSuccess", contract)
+    _require_optional_string(shell_ipc, "lastError", contract)
+    _require_optional_number(shell_ipc, "lastCommandAgoSeconds", contract)
 
     runtime_imports = _require_dict(payload, "runtimeImports", contract)
     if not runtime_imports:

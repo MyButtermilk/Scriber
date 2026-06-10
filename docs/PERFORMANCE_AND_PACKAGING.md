@@ -469,6 +469,25 @@ Implementation plan:
 8. Add packaging gates to ensure Rust injection does not reintroduce visible
    helper windows or new heavy Python dependencies.
 
+Implementation status on `codex/rust-expansion-plan`:
+
+- Implemented the private Tauri shell IPC foundation for Windows:
+  per-process named pipe, per-session token, newline-delimited JSON request/
+  response protocol, `ping` and `capabilities` commands, and explicit
+  `apiVersion=1`.
+- Managed backend workers receive `SCRIBER_SHELL_IPC_PIPE`,
+  `SCRIBER_SHELL_IPC_TOKEN`, and `SCRIBER_SHELL_IPC_API_VERSION` only when the
+  Tauri pipe server is running. The token is not logged.
+- Added the Python `src.runtime.shell_ipc` client/diagnostic module with short
+  call timeout support and redacted pipe-name hashing.
+- `/api/runtime/audio-diagnostics` now reports `textInjection.shellIpc` status
+  without calling the pipe from readiness or startup paths.
+- Added Rust unit tests for the shell IPC protocol and backend env contract,
+  plus Python unit/contract coverage for shell IPC diagnostics.
+- Still open: `injectText` command, foreground-window diagnostics, marker
+  forwarding into `TextInjector`, strict `SCRIBER_INJECT_METHOD=tauri`, target
+  app smoke matrix, and default-path decision based on installed evidence.
+
 Acceptance gates:
 
 - Rust unit tests for clipboard string encoding and option handling.

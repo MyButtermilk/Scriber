@@ -1,4 +1,5 @@
 mod audio_devices;
+mod shell_ipc;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -52,6 +53,9 @@ const BACKEND_START_TIMEOUT_ENV: &str = "SCRIBER_BACKEND_START_TIMEOUT_MS";
 const BACKEND_SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
 const FORCE_MANAGED_BACKEND_ENV: &str = "SCRIBER_FORCE_MANAGED_BACKEND";
 const SESSION_TOKEN_ENV: &str = "SCRIBER_SESSION_TOKEN";
+const SHELL_IPC_PIPE_ENV: &str = "SCRIBER_SHELL_IPC_PIPE";
+const SHELL_IPC_TOKEN_ENV: &str = "SCRIBER_SHELL_IPC_TOKEN";
+const SHELL_IPC_API_VERSION_ENV: &str = "SCRIBER_SHELL_IPC_API_VERSION";
 const DISABLE_HOTKEYS_ENV: &str = "SCRIBER_DISABLE_HOTKEYS";
 const TAURI_GLOBAL_HOTKEY_ENV: &str = "SCRIBER_TAURI_GLOBAL_HOTKEY";
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstance";
@@ -128,6 +132,7 @@ struct BackendState {
     launch_kind: String,
     resource_dir: Option<PathBuf>,
     session_token: String,
+    shell_ipc_config: Option<shell_ipc::ShellIpcConfig>,
 }
 
 #[cfg(windows)]
@@ -197,6 +202,34 @@ impl NativeDeviceEventsState {
         if let Ok(mut state) = self.handle.lock() {
             *state = handle;
         }
+    }
+}
+
+struct ShellIpcState {
+    config: shell_ipc::ShellIpcConfig,
+    handle: Mutex<Option<shell_ipc::ShellIpcServerHandle>>,
+}
+
+impl ShellIpcState {
+    fn new(
+        config: shell_ipc::ShellIpcConfig,
+        handle: Option<shell_ipc::ShellIpcServerHandle>,
+    ) -> Self {
+        Self {
+            config,
+            handle: Mutex::new(handle),
+        }
+    }
+
+    fn config(&self) -> shell_ipc::ShellIpcConfig {
+        self.config.clone()
+    }
+
+    fn is_running(&self) -> bool {
+        self.handle
+            .lock()
+            .map(|handle| handle.is_some())
+            .unwrap_or(false)
     }
 }
 
@@ -321,7 +354,7 @@ fn poisoned_backend_status() -> BackendStatus {
 }
 
 impl BackendManager {
-    fn new() -> Self {
+    fn new(shell_ipc_config: Option<shell_ipc::ShellIpcConfig>) -> Self {
         Self {
             state: Mutex::new(BackendState {
                 base_url: base_url(DEFAULT_PORT),
@@ -333,6 +366,7 @@ impl BackendManager {
                 launch_kind: "none".to_string(),
                 resource_dir: None,
                 session_token: resolve_session_token(),
+                shell_ipc_config,
             }),
         }
     }
@@ -533,7 +567,23 @@ pub fn run() {
             return;
         }
     };
-    let backend_manager = BackendManager::new();
+    let shell_ipc_config = shell_ipc::ShellIpcConfig::new();
+    let shell_ipc_handle =
+        match shell_ipc::start_shell_ipc_server(shell_ipc_config.clone(), |message| {
+            write_shell_log(&message)
+        }) {
+            Ok(handle) => handle,
+            Err(err) => {
+                write_shell_log(&format!("shell IPC server unavailable: {err}"));
+                None
+            }
+        };
+    let backend_shell_ipc_config = if shell_ipc_handle.is_some() {
+        Some(shell_ipc_config.clone())
+    } else {
+        None
+    };
+    let backend_manager = BackendManager::new(backend_shell_ipc_config);
     let early_backend_status = backend_manager.ensure_started();
     write_shell_log(&format!(
         "early backend ensure pid={:?} ready={} launch_kind={} message={}",
@@ -559,6 +609,7 @@ pub fn run() {
         .manage(single_instance_guard)
         .manage(DesktopHotkeyState::new())
         .manage(NativeDeviceEventsState::new())
+        .manage(ShellIpcState::new(shell_ipc_config, shell_ipc_handle))
         .manage(backend_manager)
         .setup(|app| {
             configure_desktop_shell(app)?;
@@ -581,6 +632,12 @@ pub fn run() {
                 start_native_device_event_monitor_for_app(app.handle().clone());
             app.state::<NativeDeviceEventsState>()
                 .set_handle(native_events_handle);
+            let shell_ipc_state = app.state::<ShellIpcState>();
+            write_shell_log(&format!(
+                "shell IPC state running={} pipe={}",
+                shell_ipc_state.is_running(),
+                shell_ipc_state.config().pipe_name
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1098,7 +1155,12 @@ fn select_backend_port(current_port: u16) -> u16 {
 fn start_managed_backend(state: &mut BackendState, port: u16, message: &str) -> BackendStatus {
     state.port = port;
     state.base_url = base_url(port);
-    match spawn_backend(port, state.resource_dir.as_deref(), &state.session_token) {
+    match spawn_backend(
+        port,
+        state.resource_dir.as_deref(),
+        &state.session_token,
+        state.shell_ipc_config.as_ref(),
+    ) {
         Ok((child, launch_kind)) => {
             let (job, job_warning) = attach_child_to_kill_job(&child);
             state.message = match job_warning {
@@ -1155,6 +1217,20 @@ fn resolve_session_token() -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string())
+}
+
+fn shell_ipc_env_pairs(
+    shell_ipc_config: Option<&shell_ipc::ShellIpcConfig>,
+) -> Vec<(&'static str, String)> {
+    shell_ipc_config
+        .map(|config| {
+            vec![
+                (SHELL_IPC_PIPE_ENV, config.pipe_name.clone()),
+                (SHELL_IPC_TOKEN_ENV, config.token.clone()),
+                (SHELL_IPC_API_VERSION_ENV, "1".to_string()),
+            ]
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(windows)]
@@ -1696,6 +1772,7 @@ fn spawn_backend(
     port: u16,
     resource_dir: Option<&Path>,
     session_token: &str,
+    shell_ipc_config: Option<&shell_ipc::ShellIpcConfig>,
 ) -> Result<(Child, String), String> {
     let spec = resolve_backend_command(resource_dir)?;
     let data_dir = scriber_data_dir();
@@ -1740,6 +1817,9 @@ fn spawn_backend(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    for (name, value) in shell_ipc_env_pairs(shell_ipc_config) {
+        command.env(name, value);
+    }
     hide_child_console_window(&mut command);
     match command.spawn() {
         Ok(child) => {
@@ -2168,12 +2248,13 @@ mod tests {
         find_backend_executable_in_dirs, health_response_ready, is_safe_transcript_id,
         is_shell_menu_item, managed_backend_start_timed_out, normalize_global_shortcut,
         normalize_hotkey_mode, parse_loopback_backend_url, recent_transcript_label,
-        resolve_session_token, sanitize_menu_label, should_refresh_hotkey_after_backend_ready,
-        should_show_window_for_tray_click, split_http_response, DesktopHotkeyState,
-        RecentTranscriptMenuEntry, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
-        BACKEND_START_TIMEOUT_ENV, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX,
-        MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
-        SESSION_TOKEN_ENV,
+        resolve_session_token, sanitize_menu_label, shell_ipc, shell_ipc_env_pairs,
+        should_refresh_hotkey_after_backend_ready, should_show_window_for_tray_click,
+        split_http_response, DesktopHotkeyState, RecentTranscriptMenuEntry, AUTOSTART_DEFAULT_ENV,
+        BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, HOTKEY_DISPATCH_DEBOUNCE,
+        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
+        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW, SESSION_TOKEN_ENV,
+        SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
     };
     use std::{
         fs,
@@ -2512,6 +2593,22 @@ mod tests {
         assert!(request.contains("Content-Type: application/json\r\n"));
         assert!(request.contains(&format!("Content-Length: {}\r\n", body.as_bytes().len())));
         assert!(request.ends_with(body));
+    }
+
+    #[test]
+    fn shell_ipc_env_pairs_are_added_only_when_configured() {
+        assert!(shell_ipc_env_pairs(None).is_empty());
+
+        let config = shell_ipc::ShellIpcConfig {
+            pipe_name: r"\\.\pipe\scriber-shell-test".to_string(),
+            token: "secret-token".to_string(),
+        };
+        let pairs = shell_ipc_env_pairs(Some(&config));
+
+        assert_eq!(pairs.len(), 3);
+        assert!(pairs.contains(&(SHELL_IPC_PIPE_ENV, config.pipe_name.clone())));
+        assert!(pairs.contains(&(SHELL_IPC_TOKEN_ENV, config.token.clone())));
+        assert!(pairs.contains(&(SHELL_IPC_API_VERSION_ENV, "1".to_string())));
     }
 
     #[test]

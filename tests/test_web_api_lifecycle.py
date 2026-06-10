@@ -449,6 +449,8 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert audio["microphone"]["configuredDevice"]
     assert audio["microphone"]["prebufferMs"] >= 0
     assert audio["textInjection"]["method"]
+    assert audio["textInjection"]["shellIpc"]["available"] is False
+    assert audio["textInjection"]["shellIpc"]["pipeConfigured"] is False
     assert "onnxruntime" in audio["runtimeImports"]
     assert "pipecat.audio.vad.silero" in audio["runtimeImports"]
 
