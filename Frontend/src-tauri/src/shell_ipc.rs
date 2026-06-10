@@ -243,11 +243,14 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                     "audioProbe",
                     "audioCaptureStart",
                     "audioCaptureStop",
+                    "audioPrewarmStart",
+                    "audioPrewarmStop",
                 ],
                 "textInjection": true,
                 "audioEndpointInventory": true,
                 "audioProbe": true,
                 "audioCapturePrototype": false,
+                "audioPrewarmPrototype": false,
                 "audioSidecar": {
                     "executableAvailable": audio_sidecar_executable_available(),
                     "stdioProtocolVersion": "1",
@@ -339,6 +342,52 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                 err.payload,
             ),
         },
+        "audioPrewarmStart" => match parse_audio_capture_start_options(payload) {
+            Ok(options) => {
+                let result = call_audio_sidecar_command(
+                    "prewarmStart",
+                    audio_prewarm_start_sidecar_payload(&options),
+                );
+                let payload =
+                    audio_prewarm_shell_payload(&options, result.payload.clone(), &result);
+                response_line(
+                    request_id,
+                    result.success,
+                    result.error_code.as_deref().unwrap_or(""),
+                    result.fallback_reason.as_deref().unwrap_or(""),
+                    started,
+                    payload,
+                )
+            }
+            Err(err) => response_line(
+                request_id,
+                false,
+                err.code,
+                &err.reason,
+                started,
+                err.payload,
+            ),
+        },
+        "audioPrewarmStop" => match parse_audio_prewarm_stop_payload(payload) {
+            Ok(prewarm_id) => {
+                let result = call_audio_sidecar_command(
+                    "prewarmStop",
+                    json!({
+                        "prewarmId": prewarm_id,
+                    }),
+                );
+                let payload = audio_prewarm_stop_shell_payload(result.payload.clone(), &result);
+                response_line(request_id, true, "", "", started, payload)
+            }
+            Err(err) => response_line(
+                request_id,
+                false,
+                err.code,
+                &err.reason,
+                started,
+                err.payload,
+            ),
+        },
         _ => response_line(
             request_id,
             false,
@@ -363,7 +412,54 @@ fn audio_capture_start_sidecar_payload(options: &AudioCaptureStartOptions) -> Va
     })
 }
 
+fn audio_prewarm_start_sidecar_payload(options: &AudioCaptureStartOptions) -> Value {
+    json!({
+        "sampleRate": options.sample_rate,
+        "channels": options.channels,
+        "blockSize": options.block_size,
+        "devicePreference": options.device_preference,
+        "portAudioLabel": options.port_audio_label,
+        "nativeEndpointIdHash": options.native_endpoint_id_hash,
+        "prebufferMs": options.prebuffer_ms,
+        "frameProtocol": audio_frame_protocol_payload(),
+    })
+}
+
 fn audio_capture_shell_payload(
+    options: &AudioCaptureStartOptions,
+    sidecar_payload: Value,
+    result: &crate::audio_sidecar_client::AudioSidecarCallResult,
+) -> Value {
+    let original_sidecar_payload = sidecar_payload.clone();
+    let mut payload = match sidecar_payload {
+        Value::Object(map) => Value::Object(map),
+        other => json!({
+            "sidecarPayloadValue": other,
+        }),
+    };
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("engine".to_string(), json!("rust-prototype"));
+        object.insert("available".to_string(), json!(result.success));
+        object.insert(
+            "requestedFormat".to_string(),
+            json!({
+            "sampleRate": options.sample_rate,
+            "channels": options.channels,
+            "blockSize": options.block_size,
+            "devicePreference": options.device_preference,
+            "portAudioLabel": options.port_audio_label,
+            "nativeEndpointIdHash": options.native_endpoint_id_hash,
+            "prebufferMs": options.prebuffer_ms,
+            }),
+        );
+        object.insert("frameProtocol".to_string(), audio_frame_protocol_payload());
+        object.insert("sidecar".to_string(), sidecar_status_payload(result));
+        object.insert("sidecarPayload".to_string(), original_sidecar_payload);
+    }
+    payload
+}
+
+fn audio_prewarm_shell_payload(
     options: &AudioCaptureStartOptions,
     sidecar_payload: Value,
     result: &crate::audio_sidecar_client::AudioSidecarCallResult,
@@ -415,6 +511,34 @@ fn audio_capture_stop_shell_payload(
             .or_insert_with(|| json!(false));
         object
             .entry("streamId".to_string())
+            .or_insert_with(|| json!(""));
+        object
+            .entry("reason".to_string())
+            .or_insert_with(|| json!("noRustAudioSidecar"));
+        object.insert("sidecar".to_string(), sidecar_status_payload(result));
+        object.insert("sidecarPayload".to_string(), original_sidecar_payload);
+    }
+    payload
+}
+
+fn audio_prewarm_stop_shell_payload(
+    sidecar_payload: Value,
+    result: &crate::audio_sidecar_client::AudioSidecarCallResult,
+) -> Value {
+    let original_sidecar_payload = sidecar_payload.clone();
+    let mut payload = match sidecar_payload {
+        Value::Object(map) => Value::Object(map),
+        other => json!({
+            "sidecarPayloadValue": other,
+        }),
+    };
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("engine".to_string(), json!("rust-prototype"));
+        object
+            .entry("stopped".to_string())
+            .or_insert_with(|| json!(false));
+        object
+            .entry("prewarmId".to_string())
             .or_insert_with(|| json!(""));
         object
             .entry("reason".to_string())
@@ -491,6 +615,16 @@ fn parse_audio_capture_stop_payload(payload: &Value) -> Result<String, ShellComm
         ));
     };
     Ok(bounded_string(payload, "streamId", "", 96))
+}
+
+fn parse_audio_prewarm_stop_payload(payload: &Value) -> Result<String, ShellCommandError> {
+    let Some(payload) = payload.as_object() else {
+        return Err(ShellCommandError::new(
+            "invalidPayload",
+            "audioPrewarmStop payload must be an object",
+        ));
+    };
+    Ok(bounded_string(payload, "prewarmId", "", 96))
 }
 
 fn response_line(
@@ -1543,6 +1677,7 @@ mod tests {
         assert_eq!(value["payload"]["audioEndpointInventory"], true);
         assert_eq!(value["payload"]["audioProbe"], true);
         assert_eq!(value["payload"]["audioCapturePrototype"], false);
+        assert_eq!(value["payload"]["audioPrewarmPrototype"], false);
         assert_eq!(value["payload"]["audioFrameProtocol"]["version"], 1);
         assert_eq!(value["payload"]["commands"][0], "ping");
         assert!(value["payload"]["commands"]
@@ -1565,6 +1700,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|command| command == "audioCaptureStart"));
+        assert!(value["payload"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command == "audioPrewarmStart"));
     }
 
     #[test]
@@ -1695,6 +1835,44 @@ mod tests {
     }
 
     #[test]
+    fn shell_ipc_audio_prewarm_start_returns_explicit_status() {
+        let request = json!({
+            "apiVersion": API_VERSION,
+            "requestId": "r-audio-prewarm-start",
+            "command": "audioPrewarmStart",
+            "token": "secret",
+            "payload": {
+                "sampleRate": 16000,
+                "channels": 1,
+                "blockSize": 512,
+                "devicePreference": "default",
+                "prebufferMs": 400,
+            }
+        })
+        .to_string();
+
+        let response = handle_shell_ipc_request(&request, "secret");
+        let value: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+
+        assert_eq!(value["requestId"], "r-audio-prewarm-start");
+        assert_eq!(value["success"], false);
+        assert!(
+            matches!(
+                value["errorCode"].as_str(),
+                Some("audioPrewarmUnavailable" | "unknownCommand")
+            ),
+            "unexpected prewarm start error: {}",
+            value["errorCode"]
+        );
+        assert_eq!(value["payload"]["engine"], "rust-prototype");
+        assert_eq!(value["payload"]["requestedFormat"]["prebufferMs"], 400);
+        assert_eq!(
+            value["payload"]["frameProtocol"]["sampleFormat"],
+            "pcm_i16_le"
+        );
+    }
+
+    #[test]
     fn audio_capture_shell_payload_exposes_sidecar_stream_contract_top_level() {
         let options = super::AudioCaptureStartOptions {
             sample_rate: 16_000,
@@ -1737,6 +1915,41 @@ mod tests {
         );
         assert_eq!(payload["sidecar"]["pid"], 1234);
         assert_eq!(payload["sidecarPayload"]["streamId"], "stream-1");
+    }
+
+    #[test]
+    fn audio_prewarm_stop_shell_payload_preserves_sidecar_health_fields() {
+        let result = crate::audio_sidecar_client::AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "stopped": true,
+                "prewarmId": "prewarm-1",
+                "reason": "prewarmStop",
+                "totalBlocksObserved": 8,
+                "bufferedAudioFrames": 2048,
+                "prewarmError": null,
+                "sidecarUptimeMs": 123,
+                "exitStatus": 0,
+                "sidecarPid": 9876,
+            }),
+            executable_available: true,
+            executable_path_hash: Some("hash".to_string()),
+            pid: Some(9876),
+        };
+
+        let payload = super::audio_prewarm_stop_shell_payload(result.payload.clone(), &result);
+
+        assert_eq!(payload["engine"], "rust-prototype");
+        assert_eq!(payload["stopped"], true);
+        assert_eq!(payload["prewarmId"], "prewarm-1");
+        assert_eq!(payload["totalBlocksObserved"], 8);
+        assert_eq!(payload["bufferedAudioFrames"], 2048);
+        assert_eq!(payload["sidecarUptimeMs"], 123);
+        assert_eq!(payload["exitStatus"], 0);
+        assert_eq!(payload["sidecar"]["pid"], 9876);
+        assert_eq!(payload["sidecarPayload"]["prewarmId"], "prewarm-1");
     }
 
     #[test]

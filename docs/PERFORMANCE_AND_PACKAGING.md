@@ -711,8 +711,8 @@ Missing prerequisites:
      formats to requested `pcm_i16_le` blocks, and writes those frames through
      the same `SAF1` protocol. This remains a prototype path.
 5. Audio capture control protocol:
-   - Partly implemented as private shell IPC commands `audioCaptureStart` and
-     `audioCaptureStop`.
+   - Partly implemented as private shell IPC commands `audioCaptureStart`,
+     `audioCaptureStop`, `audioPrewarmStart`, and `audioPrewarmStop`.
    - Current Rust shell implementation validates the start/stop payloads, calls
      the Tauri-side sidecar client when an allowlisted sidecar executable is
      available, and otherwise returns explicit `audioCaptureUnavailable`.
@@ -722,7 +722,8 @@ Missing prerequisites:
    - Partly implemented as separate Cargo binary `scriber-audio-sidecar` in
      `Frontend/src-tauri/src/audio_sidecar.rs`.
    - The binary supports `--self-test` plus `--stdio` JSON-lines commands:
-     `ping`, `capabilities`, `captureStart`, `captureStop`, and `shutdown`.
+     `ping`, `capabilities`, `captureStart`, `captureStop`, `prewarmStart`,
+     `prewarmStop`, and `shutdown`.
    - The sidecar reports the shared audio frame protocol, returns explicit
      `audioCaptureUnavailable` by default, and can run an explicit synthetic
      frame-pipe transport harness through
@@ -731,6 +732,11 @@ Missing prerequisites:
      prototype can select a specific endpoint by redacted native endpoint hash;
      without a hash, non-default capture requests fail before first frame so
      Python can safely fall back to `sounddevice`.
+   - Implemented: the sidecar also has a synthetic idle prewarm harness behind
+     `prewarmStart`/`prewarmStop`. It keeps a long-lived sidecar process,
+     reports `prewarmId`, counts observed and buffered frames, and returns
+     stop-health fields. It is lifecycle evidence only; WASAPI idle stream
+     adoption is still open.
    - Implemented: `-BundleRustAudioSidecar` builds
      `scriber-audio-sidecar --release`, copies it into
      `Frontend\src-tauri\resources\audio-sidecar`, and the NSIS bundle includes
@@ -746,9 +752,10 @@ Missing prerequisites:
    - Starts `scriber-audio-sidecar --stdio`, sends JSON-lines commands,
      validates protocol version and request ID, hides the Windows child
      console, and redacts executable paths to hashes.
-   - Maintains a lifecycle registry for successful future capture sessions keyed
-     by `streamId`; `audioCaptureStop`, backend restart, and shell exit drain
-     that registry and send sidecar shutdown.
+   - Maintains lifecycle registries for successful capture sessions keyed by
+     `streamId` and synthetic prewarm sessions keyed by `prewarmId`;
+     `audioCaptureStop`, `audioPrewarmStop`, backend restart, and shell exit
+     drain those registries and send sidecar shutdown.
    - Shell IPC capabilities now report sidecar executable availability and
      protocol version.
    - The client searches the installed Tauri resource layout
@@ -757,6 +764,10 @@ Missing prerequisites:
      successful sidecar fields such as `streamId` and `framePipe` at the top
      level for Python, and keep capture unavailable by default unless an
      explicit sidecar capture flag is set.
+   - `audioPrewarmStart`/`audioPrewarmStop` now route through the same client
+     and preserve synthetic prewarm stop-health fields. The commands remain
+     private prototype plumbing and are not yet wired to Python always-on
+     adoption.
 
 Implementation plan:
 
@@ -856,9 +867,11 @@ Implementation plan:
 4. Use a narrow control protocol:
    - Partly implemented: shared Rust/Python helpers define and validate the
      binary PCM frame header, and private shell IPC reserves
-     `audioCaptureStart`/`audioCaptureStop`.
+     `audioCaptureStart`/`audioCaptureStop` plus
+     `audioPrewarmStart`/`audioPrewarmStop`.
    - Partly implemented: `scriber-audio-sidecar --stdio` accepts sidecar-local
-     `captureStart`/`captureStop` commands using JSON Lines.
+     `captureStart`/`captureStop` and `prewarmStart`/`prewarmStop` commands
+     using JSON Lines.
    - Partly implemented: Tauri shell IPC now routes start/stop requests through
      the sidecar client, retains successful capture sidecars by `streamId`, and
      returns redacted sidecar status to Python.
@@ -902,6 +915,11 @@ Implementation plan:
      always-on prewarm stream. This prevents `SCRIBER_AUDIO_ENGINE=rust-prototype`
      plus `SCRIBER_MIC_ALWAYS_ON=1` from silently taking the Python capture path
      before Rust evidence can be collected.
+   - Implemented: a synthetic Rust prewarm sidecar lifecycle harness exists
+     behind private shell IPC. It validates long-lived prewarm session
+     start/stop behavior and stop-health reporting, but it does not yet hold a
+     real WASAPI idle capture stream or adopt buffered WASAPI audio into active
+     capture.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream

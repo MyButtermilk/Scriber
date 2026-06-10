@@ -129,9 +129,10 @@ Packaging and scripts:
   `audioProbe`. These diagnostics are not public API, must not expose raw
   endpoint IDs, and must not become an active capture path unless the Rust audio
   prototype passes the documented gates.
-- Private shell IPC also reserves `audioCaptureStart` and `audioCaptureStop` for
-  the Rust audio prototype. The shell may attempt an allowlisted
-  `scriber-audio-sidecar --stdio` handshake. Without
+- Private shell IPC also reserves `audioCaptureStart`, `audioCaptureStop`,
+  `audioPrewarmStart`, and `audioPrewarmStop` for the Rust audio prototype. The
+  shell may attempt an allowlisted `scriber-audio-sidecar --stdio` handshake.
+  Without
   `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` or
   `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`, `audioCaptureStart` must fail
   explicitly and Python must fall back before the first frame.
@@ -167,10 +168,12 @@ Packaging and scripts:
 - `SCRIBER_AUDIO_ENGINE=rust-prototype` and `SCRIBER_RUST_AUDIO_PROBE=1` may
   run a passive WASAPI diagnostics probe. `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`
   may run the sidecar's synthetic frame-pipe transport harness for tests and
-  prototype plumbing only. `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` may run the
-  sidecar's opt-in WASAPI capture prototype, including selected-endpoint capture
-  by redacted native endpoint hash. Non-default Rust capture without a native
-  endpoint hash must fail before first frame and let Python fall back to
+  prototype plumbing only. The same synthetic flag may run the sidecar's
+  synthetic prewarm lifecycle harness through private shell IPC; this is not yet
+  real WASAPI idle-stream adoption. `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` may
+  run the sidecar's opt-in WASAPI capture prototype, including selected-endpoint
+  capture by redacted native endpoint hash. Non-default Rust capture without a
+  native endpoint hash must fail before first frame and let Python fall back to
   `sounddevice`; it must not silently use the Windows default endpoint. The
   default capture path remains Python `sounddevice` until a measured Rust
   prototype is explicitly promoted.
@@ -182,8 +185,9 @@ Packaging and scripts:
   delivered.
 - Preserve Rust audio stop-health diagnostics across all layers: sidecar stop
   reason, writer connection state, frames/bytes written, writer error, uptime,
-  PID, exit status, reader-thread liveness, and restart counts must stay
-  available in nested active-capture diagnostics.
+  PID, exit status, reader-thread liveness, prewarm session counters, and
+  restart counts must stay available in nested active-capture or prewarm
+  diagnostics.
 - `SCRIBER_MIC_ALWAYS_ON` is implemented as idle prewarm plus bounded rolling
   prebuffer. Do not reuse Pipecat session state across recordings.
 - `MicrophoneInput` still queues raw callback frames; only visualizer/input RMS

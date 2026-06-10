@@ -114,12 +114,14 @@ fn write_json_line(payload: &Value) -> Result<(), ()> {
 
 struct AudioSidecarState {
     capture_sessions: HashMap<String, CaptureSession>,
+    prewarm_sessions: HashMap<String, PrewarmSession>,
 }
 
 impl AudioSidecarState {
     fn new() -> Self {
         Self {
             capture_sessions: HashMap::new(),
+            prewarm_sessions: HashMap::new(),
         }
     }
 
@@ -187,6 +189,8 @@ impl AudioSidecarState {
             }
             "captureStart" => self.handle_capture_start(request_id, payload, started),
             "captureStop" => self.handle_capture_stop(request_id, payload, started),
+            "prewarmStart" => self.handle_prewarm_start(request_id, payload, started),
+            "prewarmStop" => self.handle_prewarm_stop(request_id, payload, started),
             "shutdown" => {
                 self.stop_all_sessions("shutdown");
                 response_payload(
@@ -273,6 +277,70 @@ impl AudioSidecarState {
         response_payload(request_id, true, "", "", started, stop_payload)
     }
 
+    fn handle_prewarm_start(
+        &mut self,
+        request_id: &str,
+        payload: &Value,
+        started: Instant,
+    ) -> Value {
+        let request = CaptureRequest::from_payload(payload);
+        if !synthetic_capture_enabled() {
+            return response_payload(
+                request_id,
+                false,
+                "audioPrewarmUnavailable",
+                "Rust audio prewarm is disabled; set SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1 for the synthetic prewarm harness",
+                started,
+                json!({
+                    "sidecar": SIDECAR_NAME,
+                    "prewarmAvailable": false,
+                    "requestedFormat": request.to_payload(),
+                    "audioFrameProtocol": audio_frame_protocol_payload(),
+                    "syntheticPrewarmAvailable": false,
+                    "wasapiPrewarmAvailable": false,
+                }),
+            );
+        }
+
+        match self.start_prewarm(request) {
+            Ok(payload) => response_payload(request_id, true, "", "", started, payload),
+            Err(reason) => response_payload(
+                request_id,
+                false,
+                "audioPrewarmUnavailable",
+                &reason,
+                started,
+                json!({
+                    "sidecar": SIDECAR_NAME,
+                    "prewarmAvailable": false,
+                    "audioFrameProtocol": audio_frame_protocol_payload(),
+                    "syntheticPrewarmAvailable": synthetic_capture_enabled(),
+                    "wasapiPrewarmAvailable": false,
+                }),
+            ),
+        }
+    }
+
+    fn handle_prewarm_stop(
+        &mut self,
+        request_id: &str,
+        payload: &Value,
+        started: Instant,
+    ) -> Value {
+        let prewarm_id = bounded_string(payload, "prewarmId", "", 96);
+        let stop_payload = if let Some(mut session) = self.prewarm_sessions.remove(&prewarm_id) {
+            session.stop("prewarmStop")
+        } else {
+            json!({
+                "sidecar": SIDECAR_NAME,
+                "stopped": false,
+                "prewarmId": prewarm_id,
+                "reason": "noActivePrewarm",
+            })
+        };
+        response_payload(request_id, true, "", "", started, stop_payload)
+    }
+
     fn start_capture(&mut self, request: CaptureRequest) -> Result<Value, String> {
         let result = if wasapi_capture_enabled() {
             start_wasapi_capture_impl(request)
@@ -289,6 +357,16 @@ impl AudioSidecarState {
         })
     }
 
+    fn start_prewarm(&mut self, request: CaptureRequest) -> Result<Value, String> {
+        let (session, payload) = start_synthetic_prewarm_impl(request)?;
+        let prewarm_id = session.prewarm_id.clone();
+        if let Some(mut old_session) = self.prewarm_sessions.remove(&prewarm_id) {
+            let _ = old_session.stop("duplicatePrewarmId");
+        }
+        self.prewarm_sessions.insert(prewarm_id, session);
+        Ok(payload)
+    }
+
     fn stop_all_sessions(&mut self, reason: &str) {
         let sessions: Vec<CaptureSession> = self
             .capture_sessions
@@ -296,6 +374,14 @@ impl AudioSidecarState {
             .map(|(_, session)| session)
             .collect();
         for mut session in sessions {
+            let _ = session.stop(reason);
+        }
+        let prewarm_sessions: Vec<PrewarmSession> = self
+            .prewarm_sessions
+            .drain()
+            .map(|(_, session)| session)
+            .collect();
+        for mut session in prewarm_sessions {
             let _ = session.stop(reason);
         }
     }
@@ -398,6 +484,53 @@ impl CaptureSession {
             "liveFramesWritten": stats.live_frames_written,
             "bytesWritten": stats.bytes_written,
             "writerError": stats.error,
+            "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct PrewarmStats {
+    total_blocks_observed: u64,
+    total_audio_frames_observed: u64,
+    buffered_blocks: u64,
+    buffered_audio_frames: u64,
+    error: Option<String>,
+}
+
+struct PrewarmSession {
+    prewarm_id: String,
+    source: &'static str,
+    stop_tx: Sender<()>,
+    join_handle: Option<JoinHandle<PrewarmStats>>,
+    started_at: Instant,
+}
+
+impl PrewarmSession {
+    fn stop(&mut self, reason: &str) -> Value {
+        let _ = self.stop_tx.send(());
+        let stats = self
+            .join_handle
+            .take()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| PrewarmStats {
+                    error: Some("prewarmThreadPanicked".to_string()),
+                    ..PrewarmStats::default()
+                })
+            })
+            .unwrap_or_default();
+
+        json!({
+            "sidecar": SIDECAR_NAME,
+            "stopped": true,
+            "prewarmId": self.prewarm_id,
+            "reason": reason,
+            "source": self.source,
+            "totalBlocksObserved": stats.total_blocks_observed,
+            "totalAudioFramesObserved": stats.total_audio_frames_observed,
+            "bufferedBlocks": stats.buffered_blocks,
+            "bufferedAudioFrames": stats.buffered_audio_frames,
+            "prewarmError": stats.error,
             "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         })
     }
@@ -753,6 +886,81 @@ impl WasapiPcmConverter {
 fn f32_to_i16(sample: f32) -> i16 {
     let scaled = sample.clamp(-1.0, 1.0) * i16::MAX as f32;
     scaled.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
+}
+
+fn start_synthetic_prewarm_impl(
+    request: CaptureRequest,
+) -> Result<(PrewarmSession, Value), String> {
+    let prewarm_id = Uuid::new_v4().simple().to_string();
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let worker_request = request.clone();
+    let join_handle = thread::Builder::new()
+        .name("scriber-audio-synthetic-prewarm".to_string())
+        .spawn(move || run_synthetic_prewarm_worker(worker_request, stop_rx))
+        .map_err(|err| format!("synthetic prewarm worker thread spawn failed: {err}"))?;
+
+    let session = PrewarmSession {
+        prewarm_id: prewarm_id.clone(),
+        source: "synthetic-prewarm",
+        stop_tx,
+        join_handle: Some(join_handle),
+        started_at: Instant::now(),
+    };
+    let payload = json!({
+        "sidecar": SIDECAR_NAME,
+        "prewarmAvailable": true,
+        "syntheticPrewarm": true,
+        "wasapiPrewarm": false,
+        "source": "synthetic-prewarm",
+        "prewarmId": prewarm_id,
+        "sampleRate": request.sample_rate,
+        "channels": request.channels,
+        "captureChannels": request.channels,
+        "sampleFormat": "pcm_i16_le",
+        "nativeEndpointIdHash": Value::Null,
+        "endpointSelection": endpoint_selection_payload(
+            &request,
+            Value::Null,
+            "synthetic",
+            false,
+            Value::String("syntheticPrewarmHasNoNativeEndpoint".to_string()),
+        ),
+        "requestedFormat": request.to_payload(),
+        "audioFrameProtocol": audio_frame_protocol_payload(),
+        "prebufferFrameTarget": requested_prebuffer_frame_count(&request),
+    });
+    Ok((session, payload))
+}
+
+fn run_synthetic_prewarm_worker(
+    request: CaptureRequest,
+    stop_rx: mpsc::Receiver<()>,
+) -> PrewarmStats {
+    let mut stats = PrewarmStats::default();
+    let frame_interval = Duration::from_secs_f64(
+        (request.block_size as f64 / f64::from(request.sample_rate)).max(0.001),
+    );
+    let max_buffered_blocks = u64::from(requested_prebuffer_frame_count(&request));
+    loop {
+        match stop_rx.recv_timeout(frame_interval) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        stats.total_blocks_observed = stats.total_blocks_observed.saturating_add(1);
+        stats.total_audio_frames_observed = stats
+            .total_audio_frames_observed
+            .saturating_add(u64::from(request.block_size));
+        if max_buffered_blocks > 0 {
+            stats.buffered_blocks = stats
+                .buffered_blocks
+                .saturating_add(1)
+                .min(max_buffered_blocks);
+            stats.buffered_audio_frames = stats
+                .buffered_blocks
+                .saturating_mul(u64::from(request.block_size));
+        }
+    }
+    stats
 }
 
 #[cfg(windows)]
@@ -1334,7 +1542,15 @@ fn capabilities_payload() -> Value {
     json!({
         "sidecar": SIDECAR_NAME,
         "protocolVersion": SIDECAR_PROTOCOL_VERSION,
-        "commands": ["ping", "capabilities", "captureStart", "captureStop", "shutdown"],
+        "commands": [
+            "ping",
+            "capabilities",
+            "captureStart",
+            "captureStop",
+            "prewarmStart",
+            "prewarmStop",
+            "shutdown"
+        ],
         "captureAvailable": wasapi_capture_enabled() || synthetic_capture_enabled(),
         "captureUnavailableReason": if wasapi_capture_enabled() || synthetic_capture_enabled() {
             Value::Null
@@ -1345,6 +1561,14 @@ fn capabilities_payload() -> Value {
         "wasapiCaptureEnv": WASAPI_CAPTURE_ENV,
         "syntheticFramePipeAvailable": synthetic_capture_enabled(),
         "syntheticFramePipeEnv": SYNTHETIC_CAPTURE_ENV,
+        "prewarmAvailable": synthetic_capture_enabled(),
+        "prewarmUnavailableReason": if synthetic_capture_enabled() {
+            Value::Null
+        } else {
+            Value::String("rustAudioPrewarmDisabled".to_string())
+        },
+        "syntheticPrewarmAvailable": synthetic_capture_enabled(),
+        "wasapiPrewarmAvailable": false,
         "audioFrameProtocol": audio_frame_protocol_payload(),
     })
 }
@@ -1417,6 +1641,7 @@ mod tests {
         assert_eq!(payload["ok"], true);
         assert_eq!(payload["protocolVersion"], SIDECAR_PROTOCOL_VERSION);
         assert_eq!(payload["capabilities"]["captureAvailable"], false);
+        assert_eq!(payload["capabilities"]["prewarmAvailable"], false);
         assert_eq!(
             payload["capabilities"]["syntheticFramePipeEnv"],
             SYNTHETIC_CAPTURE_ENV
@@ -1473,6 +1698,63 @@ mod tests {
             response["payload"]["requestedFormat"]["nativeEndpointIdHash"],
             ""
         );
+    }
+
+    #[test]
+    fn sidecar_prewarm_start_returns_explicit_unavailable_payload() {
+        let request = json!({
+            "protocolVersion": SIDECAR_PROTOCOL_VERSION,
+            "requestId": "r-prewarm",
+            "command": "prewarmStart",
+            "payload": {
+                "sampleRate": 999_999,
+                "channels": 99,
+                "blockSize": 999_999,
+                "devicePreference": "default",
+                "prebufferMs": 999_999,
+            }
+        });
+
+        let response = handle_sidecar_request(&request.to_string());
+
+        assert_eq!(response["success"], false);
+        assert_eq!(response["errorCode"], "audioPrewarmUnavailable");
+        assert_eq!(
+            response["payload"]["requestedFormat"]["sampleRate"],
+            192_000
+        );
+        assert_eq!(response["payload"]["requestedFormat"]["channels"], 16);
+        assert_eq!(response["payload"]["requestedFormat"]["prebufferMs"], 2_000);
+        assert_eq!(response["payload"]["prewarmAvailable"], false);
+        assert_eq!(response["payload"]["wasapiPrewarmAvailable"], false);
+    }
+
+    #[test]
+    fn synthetic_prewarm_session_reports_stop_health() {
+        let request = CaptureRequest {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size: 16,
+            device_preference: "default".to_string(),
+            port_audio_label: "".to_string(),
+            native_endpoint_id_hash: "".to_string(),
+            prebuffer_ms: 4,
+        };
+
+        let (mut session, payload) = start_synthetic_prewarm_impl(request).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let stop = session.stop("test");
+
+        assert_eq!(payload["prewarmAvailable"], true);
+        assert_eq!(payload["syntheticPrewarm"], true);
+        assert_eq!(payload["wasapiPrewarm"], false);
+        assert_eq!(payload["prebufferFrameTarget"], 4);
+        assert_eq!(stop["stopped"], true);
+        assert_eq!(stop["reason"], "test");
+        assert_eq!(stop["source"], "synthetic-prewarm");
+        assert!(stop["totalBlocksObserved"].as_u64().unwrap_or_default() > 0);
+        assert!(stop["bufferedBlocks"].as_u64().unwrap_or_default() <= 4);
+        assert!(stop["sidecarUptimeMs"].as_u64().is_some());
     }
 
     #[test]

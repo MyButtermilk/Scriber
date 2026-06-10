@@ -119,11 +119,17 @@ Rust audio prototype:
 - `Frontend/src-tauri/src/audio_sidecar.rs` is a separate Cargo binary reserved
   for crash-isolated audio capture work.
 - The sidecar currently exposes `--self-test` and `--stdio` JSON-lines commands
-  for `ping`, `capabilities`, `captureStart`, `captureStop`, and `shutdown`.
+  for `ping`, `capabilities`, `captureStart`, `captureStop`, `prewarmStart`,
+  `prewarmStop`, and `shutdown`.
 - With explicit `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`, the sidecar can create
   a private Windows named pipe and write synthetic `pcm_i16_le` frames using the
   shared `SAF1` frame protocol. This is a transport/lifecycle harness, not a
   microphone engine.
+- With the same explicit synthetic flag, the sidecar can also start a synthetic
+  idle prewarm session. It keeps a long-lived sidecar process, tracks observed
+  and buffered frame counts, and returns stop-health data through
+  `prewarmStop`. This validates prewarm lifecycle plumbing only; it does not
+  yet adopt a WASAPI idle stream into active capture.
 - With explicit `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1`, the sidecar can open a
   Windows capture endpoint through WASAPI shared mode, convert supported
   float/PCM mix formats to requested `pcm_i16_le` blocks, and write those blocks
@@ -142,8 +148,9 @@ Rust audio prototype:
   supports `SCRIBER_AUDIO_SIDECAR_EXE` for local prototype runs, starts sidecar
   children hidden on Windows, validates protocol/request IDs, keeps successful
   capture sidecars keyed by `streamId`, and reports only redacted path hashes.
-- Private shell IPC routes `audioCaptureStart` and `audioCaptureStop` through
-  the sidecar client when an executable is available.
+- Private shell IPC routes `audioCaptureStart`, `audioCaptureStop`,
+  `audioPrewarmStart`, and `audioPrewarmStop` through the sidecar client when
+  an executable is available.
 - `captureStart` still returns explicit unavailable status by default unless an
   explicit sidecar capture flag is set.
 - `audioCaptureStop` preserves sidecar health fields, including stop reason,
@@ -166,8 +173,9 @@ Rust audio prototype:
   `SAF1` prebuffer frames and return writer-side prebuffer/live counts on stop.
   This is promotion evidence for frame ordering; Rust idle always-on prewarm is
   still not the default owner of microphone standby.
-- Backend restart and shell exit drain the sidecar lifecycle registry before
-  restarting the Python backend or exiting the Tauri shell.
+- The sidecar client keeps successful capture processes keyed by `streamId` and
+  successful synthetic prewarm processes keyed by `prewarmId`. Backend restart
+  and shell exit drain both registries.
 - `src/microphone.py` can opt into the Rust prototype through
   `SCRIBER_AUDIO_ENGINE=rust-prototype`, but falls back to Python `sounddevice`
   before the first frame if the sidecar path is unavailable.

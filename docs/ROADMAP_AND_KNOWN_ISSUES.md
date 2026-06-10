@@ -126,7 +126,9 @@ Rust audio:
   The Python Rust frame reader also tracks `SAF1` prebuffer/live frame counts
   and rejects prebuffer-after-live interleaving. Always-on startup no longer
   adopts the Python prewarm stream when `SCRIBER_AUDIO_ENGINE=rust-prototype`
-  is requested, but Rust-side idle prewarm adoption is still not complete.
+  is requested. A synthetic Rust prewarm sidecar lifecycle harness now exists
+  behind private shell IPC and reports `prewarmId` plus stop-health counters,
+  but Rust-side WASAPI idle prewarm adoption is still not complete.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no
