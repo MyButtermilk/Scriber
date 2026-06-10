@@ -136,12 +136,13 @@ def test_tauri_window_menu_is_not_installed() -> None:
     assert "install_tray(app)?" in lib_rs
 
 
-def test_tauri_bundle_only_carries_backend_resource_directory() -> None:
+def test_tauri_bundle_only_carries_approved_resource_directories() -> None:
     config = read_json(TAURI_DIR / "tauri.conf.json")
 
     assert "externalBin" not in config.get("bundle", {})
     assert config["bundle"]["resources"] == {
         "target/release/backend/": "backend/",
+        "resources/audio-sidecar/": "audio-sidecar/",
     }
 
 

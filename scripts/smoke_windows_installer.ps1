@@ -245,6 +245,29 @@ function Resolve-InstalledMediaToolsDir {
     throw "Installed ffmpeg.exe was not found under $Root."
 }
 
+function Resolve-InstalledAudioSidecarExe {
+    param([string]$Root)
+
+    $candidates = @(
+        (Join-Path $Root "audio-sidecar\scriber-audio-sidecar.exe"),
+        (Join-Path $Root "resources\audio-sidecar\scriber-audio-sidecar.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return (Resolve-Path $candidate).Path
+        }
+    }
+
+    $audioSidecarExe = Get-ChildItem -LiteralPath $Root -Recurse -File -Filter "scriber-audio-sidecar.exe" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match "\\audio-sidecar\\scriber-audio-sidecar\.exe$" } |
+        Select-Object -First 1
+    if ($audioSidecarExe) {
+        return $audioSidecarExe.FullName
+    }
+
+    throw "Installed scriber-audio-sidecar.exe was not found under $Root."
+}
+
 function Convert-ToRelativePath {
     param(
         [string]$Root,
@@ -620,10 +643,12 @@ New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
 $smoke = $null
 $upgrade = $null
 $mediaPreparation = $null
+$audioSidecarExe = $null
 $cleanupCompleted = $false
 try {
     Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer"
     $appExe = Resolve-InstalledAppExe -Root $InstallDir
+    $audioSidecarExe = Resolve-InstalledAudioSidecarExe -Root $InstallDir
     $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
 
     $smoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
@@ -634,6 +659,7 @@ try {
 
         Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer upgrade"
         $appExe = Resolve-InstalledAppExe -Root $InstallDir
+        $audioSidecarExe = Resolve-InstalledAudioSidecarExe -Root $InstallDir
         $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
         $secondSmoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
         if (-not (Test-Path -LiteralPath $sentinelPath -PathType Leaf)) {
@@ -670,6 +696,7 @@ try {
         installer = $InstallerPath
         installDir = $InstallDir
         appExe = $appExe
+        audioSidecarExe = $audioSidecarExe
         dataDir = $DataDir
         installSize = $installSize
         runtimeMode = $smoke.runtimeMode

@@ -143,7 +143,8 @@ Rust audio prototype:
 - `src/microphone.py` can opt into the Rust prototype through
   `SCRIBER_AUDIO_ENGINE=rust-prototype`, but falls back to Python `sounddevice`
   before the first frame if the sidecar path is unavailable.
-- The standard installed runtime does not yet depend on the audio sidecar.
+- The standard installer bundles the sidecar under `audio-sidecar/`, but the
+  default recording engine remains Python `sounddevice`.
 
 ## Contracts
 

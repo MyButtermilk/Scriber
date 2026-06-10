@@ -572,15 +572,31 @@ fn find_audio_sidecar_executable() -> Option<PathBuf> {
 }
 
 fn audio_sidecar_executable_dirs() -> Vec<PathBuf> {
+    let exe_parent = env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let current_dir = env::current_dir().ok();
+    audio_sidecar_executable_dirs_for(exe_parent.as_deref(), current_dir.as_deref())
+}
+
+fn audio_sidecar_executable_dirs_for(
+    exe_parent: Option<&Path>,
+    current_dir: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Ok(exe) = env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            push_unique_dir(&mut dirs, parent.to_path_buf());
-            push_unique_dir(&mut dirs, parent.join("audio-sidecar"));
-        }
+    if let Some(parent) = exe_parent {
+        push_unique_dir(&mut dirs, parent.to_path_buf());
+        push_unique_dir(&mut dirs, parent.join("audio-sidecar"));
+        push_unique_dir(&mut dirs, parent.join("resources").join("audio-sidecar"));
+        push_unique_dir(&mut dirs, parent.join("resources"));
     }
-    if let Ok(current_dir) = env::current_dir() {
-        push_unique_dir(&mut dirs, current_dir);
+    if let Some(current_dir) = current_dir {
+        push_unique_dir(&mut dirs, current_dir.to_path_buf());
+        push_unique_dir(&mut dirs, current_dir.join("audio-sidecar"));
+        push_unique_dir(
+            &mut dirs,
+            current_dir.join("resources").join("audio-sidecar"),
+        );
     }
     dirs
 }
@@ -675,6 +691,14 @@ mod tests {
             find_audio_sidecar_executable_in_dirs(&[dir.clone()], audio_sidecar_executable_names());
 
         assert_eq!(found, Some(executable));
+    }
+
+    #[test]
+    fn audio_sidecar_executable_dirs_include_installed_resource_dir() {
+        let exe_parent = PathBuf::from(r"C:\Program Files\Scriber");
+        let dirs = audio_sidecar_executable_dirs_for(Some(&exe_parent), None);
+
+        assert!(dirs.contains(&exe_parent.join("resources").join("audio-sidecar")));
     }
 
     #[test]

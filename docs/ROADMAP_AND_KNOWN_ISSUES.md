@@ -109,7 +109,8 @@ Rust audio:
   lifecycle client. It also has an explicit synthetic sidecar frame-pipe
   transport harness for plumbing tests and an explicit
   `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` default-endpoint WASAPI capture
-  prototype.
+  prototype. The sidecar is now bundled as an installed resource, but it remains
+  opt-in.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

@@ -78,7 +78,8 @@ Frontend and shell:
   prototype with `--self-test`, `--stdio` JSON-lines protocol, explicit
   `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` frame-pipe transport harness, and
   explicit `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` default-endpoint WASAPI capture
-  path. It does not yet ship as a standard installed runtime component.
+  path. It is bundled as an installed resource but remains inactive unless the
+  Rust audio prototype is explicitly enabled.
 - `Frontend/src-tauri/src/audio_sidecar_client.rs`: Tauri-side sidecar lookup,
   stdio JSON-lines client, and prototype process lifecycle registry. It only
   uses allowlisted executable names, supports `SCRIBER_AUDIO_SIDECAR_EXE` for
@@ -135,8 +136,8 @@ Packaging and scripts:
   `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`, `audioCaptureStart` must fail
   explicitly and Python must fall back before the first frame.
 - `scriber-audio-sidecar` is a separate Cargo binary for crash-isolated audio
-  work. Until packaging, lifecycle, watchdog, and physical-device gates are
-  added, do not depend on it in the standard installed runtime.
+  work. Until lifecycle, watchdog, and physical-device gates are added, do not
+  depend on it for the standard default capture path.
 - Backend restart and Tauri exit must call the audio sidecar cleanup path before
   backend process changes or shell exit.
 - Python owns recording state and provider work.

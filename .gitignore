@@ -17,3 +17,5 @@ tmp/
 /build/
 /dist/tauri-sidecar/
 /Frontend/src-tauri/target/release/backend/
+/Frontend/src-tauri/resources/audio-sidecar/*
+!/Frontend/src-tauri/resources/audio-sidecar/.gitkeep

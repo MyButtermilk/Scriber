@@ -689,9 +689,12 @@ Missing prerequisites:
      frame-pipe transport harness through
      `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` or an explicit default-endpoint
      WASAPI capture prototype through `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1`.
-   - Still open: packaging into the installed runtime, selected/favorite
-     endpoint capture, prewarm/watchdog parity, long physical-device smokes, and
-     any default promotion decision.
+   - Implemented: `-BundleRustAudioSidecar` builds
+     `scriber-audio-sidecar --release`, copies it into
+     `Frontend\src-tauri\resources\audio-sidecar`, and the NSIS bundle includes
+     that resource.
+   - Still open: selected/favorite endpoint capture, prewarm/watchdog parity,
+     long physical-device smokes, and any default promotion decision.
 7. Tauri audio sidecar client:
    - Partly implemented in `Frontend/src-tauri/src/audio_sidecar_client.rs`.
    - Discovers only allowlisted sidecar executable names, with
@@ -704,6 +707,8 @@ Missing prerequisites:
      that registry and send sidecar shutdown.
    - Shell IPC capabilities now report sidecar executable availability and
      protocol version.
+   - The client searches the installed Tauri resource layout
+     `resources\audio-sidecar` in addition to development/env override paths.
    - `audioCaptureStart`/`audioCaptureStop` route through the client, expose
      successful sidecar fields such as `streamId` and `framePipe` at the top
      level for Python, and keep capture unavailable by default unless an

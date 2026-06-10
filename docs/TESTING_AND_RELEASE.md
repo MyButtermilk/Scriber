@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-06-09
+Last verified: 2026-06-10
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -75,6 +75,9 @@ Performance/packaging:
 - `tests/perf/test_frontend_vendor_chunk_config.py`
 - `tests/test_tauri_security_gates.py`
 - `tests/test_tauri_stability_smoke_gates.py`
+- Tauri bundle resources include both `backend/` and the opt-in
+  `audio-sidecar/` Rust prototype binary. The sidecar is packaged but not used
+  by default.
 
 ## Installer Builds
 
@@ -139,6 +142,11 @@ Installed frontend smoke verifies:
 - Tauri-origin CORS works for `/api/health`,
 - tokenized `/api/runtime` works,
 - the real WebView reports frontend-ready.
+
+Installed package smoke also verifies that the bundled
+`scriber-audio-sidecar.exe` exists under the installed `audio-sidecar/` resource
+layout. This is a packaging gate only; it does not promote Rust audio capture to
+the default engine.
 
 Installed media-preparation smoke verifies real helper paths against bundled
 media tools:

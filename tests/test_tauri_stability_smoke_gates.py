@@ -74,6 +74,15 @@ def test_installer_and_build_scripts_forward_real_media_workflow_gate() -> None:
     assert "[string]$InstallerRealWorkflowYoutubeUrl" in build
 
 
+def test_installer_smoke_requires_packaged_audio_sidecar() -> None:
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+
+    assert "function Resolve-InstalledAudioSidecarExe" in installer
+    assert "resources\\audio-sidecar\\scriber-audio-sidecar.exe" in installer
+    assert "Resolve-InstalledAudioSidecarExe -Root $InstallDir" in installer
+    assert "audioSidecarExe = $audioSidecarExe" in installer
+
+
 def test_release_build_and_installer_smoke_report_size_budgets() -> None:
     installer = read_script("scripts/smoke_windows_installer.ps1")
     build = read_script("scripts/build_windows.ps1")
@@ -116,6 +125,11 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "[switch]$PrunePySide6Translations" in sidecar
     assert "[switch]$PrunePySide6UnusedPlugins" in sidecar
     assert "[switch]$PrunePySide6SoftwareOpenGl" in sidecar
+    assert "[switch]$BundleRustAudioSidecar" in sidecar
+    assert "function Copy-RustAudioSidecarToTauriRelease" in sidecar
+    assert "cargo build --release --bin scriber-audio-sidecar" in sidecar
+    assert "resources\\audio-sidecar" in sidecar
+    assert "audio-sidecar-build-metadata.json" in sidecar
     assert 'Test-ScriberFfmpegCapabilities -Path $copiedFfmpeg' in sidecar
     assert "scripts\\ffmpeg\\validate_ffmpeg_profile.py" in sidecar
     assert "ffmpeg-profile-manifest.json" in sidecar
@@ -138,6 +152,7 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "Skipping bundled ffprobe" in sidecar
     assert "sidecar-build-metadata.json" in sidecar
     assert "sidecar-cache-save" in sidecar
+    assert "rust-audio-sidecar-build" in sidecar
     assert '$entry["sha256"] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()' in sidecar
     assert '$entry["lastWriteTimeUtc"] = $item.LastWriteTimeUtc.ToString("o")' in sidecar
 
@@ -219,6 +234,7 @@ def test_tauri_before_bundle_uses_profile_b_standard_media_tools() -> None:
     assert "-UseProfileBFfmpeg" in config
     assert "-ValidateSlimMediaTools" in config
     assert "-ReuseSidecarIfUnchanged" in config
+    assert "-BundleRustAudioSidecar" in config
     assert "-UseGyanFfmpegEssentials" not in config
 
 

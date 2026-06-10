@@ -11,6 +11,7 @@ Typical flow:
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -UseProfileBFfmpeg -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -CopyToTauriRelease
+  powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -UseProfileBFfmpeg -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -BundleRustAudioSidecar -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -UseGyanFfmpegEssentials -ValidateSlimMediaTools -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -ValidateSlimMediaTools -MediaToolsDir path\to\slim-ffmpeg -CopyToTauriRelease
@@ -37,6 +38,7 @@ param(
     [switch]$PrunePySide6Translations,
     [switch]$PrunePySide6UnusedPlugins,
     [switch]$PrunePySide6SoftwareOpenGl,
+    [switch]$BundleRustAudioSidecar,
     [switch]$CopyToTauriRelease
 )
 
@@ -256,6 +258,60 @@ function Copy-DirectoryContents {
     Copy-Item -Path (Join-Path $SourceDir "*") -Destination $TargetDir -Recurse -Force
 }
 
+function Copy-RustAudioSidecarToTauriRelease {
+    param(
+        [string]$Root
+    )
+
+    $tauriDir = Join-Path $Root "Frontend\src-tauri"
+    $targetDir = Join-Path $tauriDir "resources\audio-sidecar"
+    Assert-UnderRoot -Root $Root -Path $targetDir -Label "Tauri release audio sidecar target"
+
+    Push-Location $tauriDir
+    try {
+        cargo build --release --bin scriber-audio-sidecar
+    } finally {
+        Pop-Location
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Rust audio sidecar build failed."
+    }
+
+    $exeName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "scriber-audio-sidecar.exe" } else { "scriber-audio-sidecar" }
+    $sourceExe = Join-Path $tauriDir "target\release\$exeName"
+    if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+        throw "Rust audio sidecar executable was not found: $sourceExe"
+    }
+
+    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+    Get-ChildItem -LiteralPath $targetDir -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne ".gitkeep" } |
+        Remove-Item -Recurse -Force
+    $targetExe = Join-Path $targetDir $exeName
+    Copy-Item -LiteralPath $sourceExe -Destination $targetExe -Force
+
+    $metadata = [ordered]@{
+        apiVersion = "1"
+        generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+        sourceExe = $sourceExe
+        targetExe = $targetExe
+        sha256 = (Get-FileHash -LiteralPath $targetExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        length = [int64](Get-Item -LiteralPath $targetExe).Length
+        captureDefault = "disabled"
+        optInEnv = "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE"
+    }
+    $metadataPath = Join-Path $targetDir "audio-sidecar-build-metadata.json"
+    $metadata | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $metadataPath -Encoding utf8
+
+    return [ordered]@{
+        targetDir = $targetDir
+        targetExe = $targetExe
+        metadataPath = $metadataPath
+        sha256 = $metadata.sha256
+        length = $metadata.length
+    }
+}
+
 function Remove-SidecarPath {
     param(
         [string]$SidecarDir,
@@ -339,6 +395,7 @@ function Write-SidecarBuildMetadata {
         [object]$PreparedMediaTools,
         [object[]]$MediaToolsCopied,
         [object[]]$PySide6Pruned,
+        [object]$RustAudioSidecarCopied,
         [string]$CopiedTo
     )
 
@@ -363,10 +420,12 @@ function Write-SidecarBuildMetadata {
             prunePySide6Translations = [bool]$PrunePySide6Translations
             prunePySide6UnusedPlugins = [bool]$PrunePySide6UnusedPlugins
             prunePySide6SoftwareOpenGl = [bool]$PrunePySide6SoftwareOpenGl
+            bundleRustAudioSidecar = [bool]$BundleRustAudioSidecar
         }
         preparedMediaTools = $PreparedMediaTools
         mediaToolsCopied = $MediaToolsCopied
         pySide6Pruned = $PySide6Pruned
+        rustAudioSidecarCopied = $RustAudioSidecarCopied
         totalDurationMs = [int64]$script:BuildTimingStarted.ElapsedMilliseconds
         phases = @($script:BuildTimingPhases)
     }
@@ -962,6 +1021,7 @@ if ($cacheEnabled -and -not $cacheHit) {
 
 $copiedTo = $null
 $metadataPath = $null
+$rustAudioSidecarCopied = $null
 
 if ($CopyToTauriRelease) {
     Invoke-TimedStep -Label "copy-to-tauri-release" -Command {
@@ -970,6 +1030,16 @@ if ($CopyToTauriRelease) {
         $script:CopiedToTauriRelease = $targetDir
     }
     $copiedTo = $script:CopiedToTauriRelease
+}
+
+if ($BundleRustAudioSidecar) {
+    Invoke-TimedStep -Label "rust-audio-sidecar-build" -Command {
+        $script:RustAudioSidecarCopied = Copy-RustAudioSidecarToTauriRelease -Root $RepoRoot
+    }
+    $rustAudioSidecarCopied = $script:RustAudioSidecarCopied
+}
+
+if ($CopyToTauriRelease) {
     $metadataPath = Write-SidecarBuildMetadata `
         -SidecarDir $sidecarDir `
         -SidecarExe $sidecarExe `
@@ -979,6 +1049,7 @@ if ($CopyToTauriRelease) {
         -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
         -PySide6Pruned $pySide6Pruned `
+        -RustAudioSidecarCopied $rustAudioSidecarCopied `
         -CopiedTo $copiedTo
     if (Test-Path -LiteralPath $copiedTo -PathType Container) {
         Copy-Item -LiteralPath $metadataPath -Destination (Join-Path $copiedTo "sidecar-build-metadata.json") -Force
@@ -993,6 +1064,7 @@ if ($CopyToTauriRelease) {
         -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
         -PySide6Pruned $pySide6Pruned `
+        -RustAudioSidecarCopied $rustAudioSidecarCopied `
         -CopiedTo $copiedTo
 }
 
@@ -1005,6 +1077,7 @@ if ($CopyToTauriRelease) {
     cacheKey = $cacheKey
     mediaToolsCopied = $mediaToolsCopied
     pySide6Pruned = $pySide6Pruned
+    rustAudioSidecarCopied = $rustAudioSidecarCopied
     sidecarBuildMetadata = $metadataPath
     copiedToTauriRelease = $copiedTo
 } | ConvertTo-Json -Compress
