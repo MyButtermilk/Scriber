@@ -1024,6 +1024,12 @@ Implementation plan:
      `scripts/run_hybrid_release_readiness.ps1` can require this artifact with
      `--require-recording-hot-path-comparison` /
      `-RequireRecordingHotPathComparison`.
+   - Implemented: `scripts/run_recording_hot_path_comparison.ps1` orchestrates
+     the full provider-backed A/B evidence path. It runs
+     `measure_hybrid_baseline.ps1` once with `SCRIBER_AUDIO_ENGINE=python`, once
+     with `SCRIBER_AUDIO_ENGINE=rust-prototype` and the requested Rust capture
+     mode, then calls the comparison validator to produce
+     `recording-hot-path-python-rust-comparison.json`.
    - Still open: long-running physical Always-On-Mic evidence with the Rust
      manager, device-refresh pause/resume matrix evidence, real provider-backed
      Python/Rust comparison runs using the new gate, and final promotion

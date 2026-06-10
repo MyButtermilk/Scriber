@@ -382,9 +382,18 @@ transcript and the active recording diagnostics used `rust-prototype` with the
 Python-vs-Rust provider-backed comparison artifact:
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_recording_hot_path_comparison.ps1 `
+  -RecordingHotPathIterations 3 `
+  -RecordingHotPathSeconds 3 `
+  -RecordingHotPathSpeechPrompt "Scriber provider-backed Rust audio validation"
+```
+
+Manual validator form for pre-existing reports:
+
+```powershell
 python scripts\validate_recording_hot_path_comparison.py `
-  --python-report tmp\hybrid-baseline\python-recording-hot-path.json `
-  --rust-report tmp\hybrid-baseline\rust-recording-hot-path.json `
+  --python-report tmp\hybrid-baseline\python-recording-hot-path-baseline-recording-hot-path-1.json `
+  --rust-report tmp\hybrid-baseline\rust-recording-hot-path-baseline-recording-hot-path-1.json `
   --output tmp\hybrid-baseline\recording-hot-path-python-rust-comparison.json
 ```
 

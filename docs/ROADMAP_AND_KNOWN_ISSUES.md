@@ -154,6 +154,9 @@ Rust audio:
   provider-backed Python and Rust hot-path reports into a required promotion
   artifact, and `run_hybrid_release_readiness.ps1` can gate it with
   `-RequireRecordingHotPathComparison`.
+  `scripts/run_recording_hot_path_comparison.ps1` now orchestrates the Python
+  pass, Rust-prototype pass, and comparison artifact creation for real
+  provider-backed A/B runs.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no

@@ -440,7 +440,7 @@ $requiredEvidence = @(
         name = "recordingHotPathPythonRustComparison"
         required = [bool]$RequireRecordingHotPathComparison
         external = $true
-        producer = "scripts\validate_recording_hot_path_comparison.py over provider-backed Python and Rust reports"
+        producer = "scripts\run_recording_hot_path_comparison.ps1, or scripts\validate_recording_hot_path_comparison.py over existing provider-backed Python and Rust reports"
         report = $RecordingHotPathComparisonReport
         notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires provider transcript evidence in both reports, and requires active rust-frame-pipe capture in the Rust report."
     },

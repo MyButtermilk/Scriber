@@ -240,9 +240,20 @@ default Python engine and once with `SCRIBER_AUDIO_ENGINE=rust-prototype`, then
 turn both provider-backed reports into the required comparison artifact:
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_recording_hot_path_comparison.ps1 `
+  -RecordingHotPathIterations 3 `
+  -RecordingHotPathSeconds 3 `
+  -RecordingHotPathSpeechPrompt "Scriber provider-backed Rust audio validation"
+```
+
+The runner sets `SCRIBER_AUDIO_ENGINE=python` for the first pass, then
+`SCRIBER_AUDIO_ENGINE=rust-prototype` plus the requested Rust capture mode for
+the second pass, and finally calls:
+
+```powershell
 python scripts\validate_recording_hot_path_comparison.py `
-  --python-report tmp\hybrid-baseline\python-recording-hot-path.json `
-  --rust-report tmp\hybrid-baseline\rust-recording-hot-path.json `
+  --python-report tmp\hybrid-baseline\python-recording-hot-path-baseline-recording-hot-path-1.json `
+  --rust-report tmp\hybrid-baseline\rust-recording-hot-path-baseline-recording-hot-path-1.json `
   --output tmp\hybrid-baseline\recording-hot-path-python-rust-comparison.json
 ```
 

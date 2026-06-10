@@ -149,6 +149,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     comparison_evidence = payload["requiredEvidence"][7]
     assert comparison_evidence["required"] is False
     assert comparison_evidence["report"].endswith("recording-hot-path-python-rust-comparison.json")
+    assert "run_recording_hot_path_comparison.ps1" in comparison_evidence["producer"]
     assert "validate_recording_hot_path_comparison.py" in comparison_evidence["producer"]
     assert "provider-backed Python and Rust reports" in comparison_evidence["producer"]
     publication_evidence = payload["requiredEvidence"][8]
@@ -300,6 +301,7 @@ def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_compa
     assert comparison_evidence["required"] is True
     assert comparison_evidence["external"] is True
     assert comparison_evidence["report"].endswith("recording-hot-path-python-rust-comparison.json")
+    assert "run_recording_hot_path_comparison.ps1" in comparison_evidence["producer"]
     assert "validate_recording_hot_path_comparison.py" in comparison_evidence["producer"]
     assert "active rust-frame-pipe capture" in comparison_evidence["notes"]
     comparison_command = next(
