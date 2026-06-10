@@ -1,9 +1,12 @@
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::{
     env,
-    io::{Read, Write},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{Mutex, OnceLock},
+    time::Instant,
 };
 use uuid::Uuid;
 
@@ -15,6 +18,15 @@ const AUDIO_SIDECAR_PROTOCOL_VERSION: &str = "1";
 const AUDIO_SIDECAR_NAME: &str = "scriber-audio-sidecar";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+struct ActiveAudioSidecar {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    path_hash: Option<String>,
+    pid: u32,
+    started_at: Instant,
+}
 
 #[derive(Debug, Clone)]
 pub struct AudioSidecarCallResult {
@@ -32,6 +44,12 @@ pub fn audio_sidecar_executable_available() -> bool {
 }
 
 pub fn call_audio_sidecar_command(command: &str, payload: Value) -> AudioSidecarCallResult {
+    match command {
+        "captureStart" => return start_audio_sidecar_capture(payload),
+        "captureStop" => return stop_audio_sidecar_capture(payload),
+        _ => {}
+    }
+
     let Some(program) = find_audio_sidecar_executable() else {
         return unavailable_result(
             "audioCaptureUnavailable",
@@ -44,73 +62,56 @@ pub fn call_audio_sidecar_command(command: &str, payload: Value) -> AudioSidecar
             None,
         );
     };
-    call_audio_sidecar_command_at(&program, command, payload)
+    call_audio_sidecar_command_once(&program, command, payload)
 }
 
-fn call_audio_sidecar_command_at(
-    program: &Path,
-    command: &str,
-    payload: Value,
-) -> AudioSidecarCallResult {
-    let request_id = Uuid::new_v4().simple().to_string();
-    let request = json!({
-        "protocolVersion": AUDIO_SIDECAR_PROTOCOL_VERSION,
-        "requestId": request_id,
-        "command": command,
-        "payload": payload,
-    });
-    let shutdown = json!({
-        "protocolVersion": AUDIO_SIDECAR_PROTOCOL_VERSION,
-        "requestId": Uuid::new_v4().simple().to_string(),
-        "command": "shutdown",
-        "payload": {},
-    });
-    let path_hash = Some(hash_sensitive_identifier(&program.display().to_string()));
+pub fn shutdown_all_audio_sidecars(reason: &str) -> usize {
+    let mut sessions = active_audio_sidecars().lock().unwrap();
+    let entries: Vec<(String, ActiveAudioSidecar)> = sessions.drain().collect();
+    drop(sessions);
 
-    let mut process = Command::new(program);
-    process
-        .arg("--stdio")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    hide_child_console_window(&mut process);
+    let mut stopped = 0usize;
+    for (stream_id, mut sidecar) in entries {
+        stop_sidecar_process(&stream_id, &mut sidecar, reason);
+        stopped = stopped.saturating_add(1);
+    }
+    stopped
+}
 
-    let mut child = match process.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            return unavailable_result(
-                "audioSidecarSpawnFailed",
-                format!("Rust audio sidecar spawn failed: {err}"),
-                json!({
-                    "sidecar": AUDIO_SIDECAR_NAME,
-                    "sidecarExecutableAvailable": true,
-                }),
-                path_hash,
-                None,
-            )
-        }
+fn active_audio_sidecars() -> &'static Mutex<HashMap<String, ActiveAudioSidecar>> {
+    static ACTIVE_AUDIO_SIDECARS: OnceLock<Mutex<HashMap<String, ActiveAudioSidecar>>> =
+        OnceLock::new();
+    ACTIVE_AUDIO_SIDECARS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn start_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
+    let Some(program) = find_audio_sidecar_executable() else {
+        return unavailable_result(
+            "audioCaptureUnavailable",
+            "Rust audio sidecar executable was not found",
+            json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "sidecarExecutableAvailable": false,
+            }),
+            None,
+            None,
+        );
     };
-    let pid = Some(child.id());
+    start_audio_sidecar_capture_at(&program, payload)
+}
 
-    let write_result = (|| -> Result<(), String> {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "audio sidecar stdin unavailable".to_string())?;
-        writeln!(stdin, "{request}")
-            .map_err(|err| format!("sidecar request write failed: {err}"))?;
-        writeln!(stdin, "{shutdown}")
-            .map_err(|err| format!("sidecar shutdown write failed: {err}"))?;
-        stdin
-            .flush()
-            .map_err(|err| format!("sidecar stdin flush failed: {err}"))?;
-        Ok(())
-    })();
-    drop(child.stdin.take());
+fn start_audio_sidecar_capture_at(program: &Path, payload: Value) -> AudioSidecarCallResult {
+    let path_hash = Some(hash_sensitive_identifier(&program.display().to_string()));
+    let mut sidecar = match spawn_audio_sidecar_process(program, path_hash.clone()) {
+        Ok(sidecar) => sidecar,
+        Err(result) => return result,
+    };
+    let request_id = Uuid::new_v4().simple().to_string();
+    let request = sidecar_request(&request_id, "captureStart", payload);
 
-    if let Err(err) = write_result {
-        let _ = child.kill();
-        let _ = child.wait();
+    if let Err(err) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
+        let _ = sidecar.child.kill();
+        let _ = sidecar.child.wait();
         return unavailable_result(
             "audioSidecarWriteFailed",
             err,
@@ -119,42 +120,353 @@ fn call_audio_sidecar_command_at(
                 "sidecarExecutableAvailable": true,
             }),
             path_hash,
+            Some(sidecar.pid),
+        );
+    }
+
+    let response = match read_sidecar_response_line(&mut sidecar.stdout) {
+        Ok(line) => {
+            parse_sidecar_response(&line, &request_id, path_hash.clone(), Some(sidecar.pid))
+        }
+        Err(result) => {
+            let _ = sidecar.child.kill();
+            let _ = sidecar.child.wait();
+            return with_process_identity(result, path_hash, Some(sidecar.pid));
+        }
+    };
+
+    if !response.success {
+        stop_sidecar_process("", &mut sidecar, "captureStartFailed");
+        return response;
+    }
+
+    let stream_id = response
+        .payload
+        .get("streamId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if stream_id.is_empty() {
+        stop_sidecar_process("", &mut sidecar, "missingStreamId");
+        return unavailable_result(
+            "audioSidecarMissingStreamId",
+            "Rust audio sidecar captureStart succeeded without streamId",
+            response.payload,
+            path_hash,
+            Some(sidecar.pid),
+        );
+    }
+
+    let mut sessions = active_audio_sidecars().lock().unwrap();
+    if let Some(mut old_sidecar) = sessions.remove(&stream_id) {
+        stop_sidecar_process(&stream_id, &mut old_sidecar, "duplicateStreamId");
+    }
+    sessions.insert(stream_id, sidecar);
+    response
+}
+
+fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
+    let stream_id = payload
+        .get("streamId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(96)
+        .collect::<String>();
+    if stream_id.is_empty() {
+        return AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "stopped": false,
+                "streamId": "",
+                "reason": "missingStreamId",
+            }),
+            executable_available: audio_sidecar_executable_available(),
+            executable_path_hash: None,
+            pid: None,
+        };
+    }
+
+    let mut sessions = active_audio_sidecars().lock().unwrap();
+    let Some(mut sidecar) = sessions.remove(&stream_id) else {
+        let executable_available = audio_sidecar_executable_available();
+        let reason = if executable_available {
+            "noActiveCapture"
+        } else {
+            "noRustAudioSidecar"
+        };
+        return AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "stopped": false,
+                "streamId": stream_id,
+                "reason": reason,
+            }),
+            executable_available,
+            executable_path_hash: None,
+            pid: None,
+        };
+    };
+    drop(sessions);
+
+    let request_id = Uuid::new_v4().simple().to_string();
+    let request = sidecar_request(
+        &request_id,
+        "captureStop",
+        json!({
+            "streamId": stream_id,
+        }),
+    );
+    let path_hash = sidecar.path_hash.clone();
+    let pid = Some(sidecar.pid);
+    if let Err(err) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
+        let _ = sidecar.child.kill();
+        let _ = sidecar.child.wait();
+        return unavailable_result(
+            "audioSidecarWriteFailed",
+            err,
+            json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "sidecarExecutableAvailable": true,
+                "streamId": stream_id,
+                "stopped": false,
+            }),
+            path_hash,
             pid,
         );
     }
 
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        if let Err(err) = pipe.read_to_string(&mut stdout) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return unavailable_result(
+    let mut result = match read_sidecar_response_line(&mut sidecar.stdout) {
+        Ok(line) => parse_sidecar_response(&line, &request_id, path_hash.clone(), pid),
+        Err(result) => with_process_identity(result, path_hash.clone(), pid),
+    };
+    let _ = write_sidecar_json_line(&mut sidecar.stdin, &shutdown_request());
+    let _ = sidecar.child.wait();
+    if let Some(object) = result.payload.as_object_mut() {
+        object.insert(
+            "sidecarUptimeMs".to_string(),
+            json!(sidecar
+                .started_at
+                .elapsed()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64),
+        );
+    }
+    result
+}
+
+fn call_audio_sidecar_command_once(
+    program: &Path,
+    command: &str,
+    payload: Value,
+) -> AudioSidecarCallResult {
+    let request_id = Uuid::new_v4().simple().to_string();
+    let request = sidecar_request(&request_id, command, payload);
+    let shutdown = shutdown_request();
+    let path_hash = Some(hash_sensitive_identifier(&program.display().to_string()));
+    let mut sidecar = match spawn_audio_sidecar_process(program, path_hash.clone()) {
+        Ok(sidecar) => sidecar,
+        Err(result) => return result,
+    };
+
+    let write_result = (|| -> Result<(), String> {
+        write_sidecar_json_line(&mut sidecar.stdin, &request)?;
+        write_sidecar_json_line(&mut sidecar.stdin, &shutdown)?;
+        Ok(())
+    })();
+
+    if let Err(err) = write_result {
+        let _ = sidecar.child.kill();
+        let _ = sidecar.child.wait();
+        return unavailable_result(
+            "audioSidecarWriteFailed",
+            err,
+            json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "sidecarExecutableAvailable": true,
+            }),
+            path_hash,
+            Some(sidecar.pid),
+        );
+    }
+
+    let response = match read_sidecar_response_line(&mut sidecar.stdout) {
+        Ok(line) => {
+            parse_sidecar_response(&line, &request_id, path_hash.clone(), Some(sidecar.pid))
+        }
+        Err(result) => with_process_identity(result, path_hash.clone(), Some(sidecar.pid)),
+    };
+    let status = sidecar.child.wait().ok();
+    if response.error_code.as_deref() == Some("audioSidecarEmptyResponse") {
+        return with_exit_status(response, status.as_ref().and_then(|value| value.code()));
+    }
+    response
+}
+
+fn spawn_audio_sidecar_process(
+    program: &Path,
+    path_hash: Option<String>,
+) -> Result<ActiveAudioSidecar, AudioSidecarCallResult> {
+    let mut process = Command::new(program);
+    process
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    hide_child_console_window(&mut process);
+
+    let mut child = process.spawn().map_err(|err| {
+        unavailable_result(
+            "audioSidecarSpawnFailed",
+            format!("Rust audio sidecar spawn failed: {err}"),
+            json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "sidecarExecutableAvailable": true,
+            }),
+            path_hash.clone(),
+            None,
+        )
+    })?;
+    let pid = child.id();
+    let Some(stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(unavailable_result(
+            "audioSidecarPipeUnavailable",
+            "Rust audio sidecar stdin was unavailable",
+            json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "sidecarExecutableAvailable": true,
+            }),
+            path_hash.clone(),
+            Some(pid),
+        ));
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(unavailable_result(
+            "audioSidecarPipeUnavailable",
+            "Rust audio sidecar stdout was unavailable",
+            json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "sidecarExecutableAvailable": true,
+            }),
+            path_hash.clone(),
+            Some(pid),
+        ));
+    };
+    Ok(ActiveAudioSidecar {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        path_hash,
+        pid,
+        started_at: Instant::now(),
+    })
+}
+
+fn sidecar_request(request_id: &str, command: &str, payload: Value) -> Value {
+    json!({
+        "protocolVersion": AUDIO_SIDECAR_PROTOCOL_VERSION,
+        "requestId": request_id,
+        "command": command,
+        "payload": payload,
+    })
+}
+
+fn shutdown_request() -> Value {
+    sidecar_request(&Uuid::new_v4().simple().to_string(), "shutdown", json!({}))
+}
+
+fn write_sidecar_json_line(stdin: &mut ChildStdin, value: &Value) -> Result<(), String> {
+    writeln!(stdin, "{value}").map_err(|err| format!("sidecar request write failed: {err}"))?;
+    stdin
+        .flush()
+        .map_err(|err| format!("sidecar stdin flush failed: {err}"))
+}
+
+fn read_sidecar_response_line(
+    stdout: &mut BufReader<ChildStdout>,
+) -> Result<String, AudioSidecarCallResult> {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes = stdout.read_line(&mut line).map_err(|err| {
+            unavailable_result(
                 "audioSidecarReadFailed",
                 format!("Rust audio sidecar read failed: {err}"),
                 json!({
                     "sidecar": AUDIO_SIDECAR_NAME,
                     "sidecarExecutableAvailable": true,
                 }),
-                path_hash,
-                pid,
-            );
+                None,
+                None,
+            )
+        })?;
+        if bytes == 0 {
+            return Err(unavailable_result(
+                "audioSidecarEmptyResponse",
+                "Rust audio sidecar returned no response",
+                json!({
+                    "sidecar": AUDIO_SIDECAR_NAME,
+                    "sidecarExecutableAvailable": true,
+                }),
+                None,
+                None,
+            ));
+        }
+        if !line.trim().is_empty() {
+            return Ok(line);
         }
     }
-    let status = child.wait().ok();
-    let Some(first_line) = stdout.lines().find(|line| !line.trim().is_empty()) else {
-        return unavailable_result(
-            "audioSidecarEmptyResponse",
-            "Rust audio sidecar returned no response",
-            json!({
-                "sidecar": AUDIO_SIDECAR_NAME,
-                "sidecarExecutableAvailable": true,
-                "exitStatus": status.as_ref().and_then(|value| value.code()),
-            }),
-            path_hash,
-            pid,
+}
+
+fn stop_sidecar_process(stream_id: &str, sidecar: &mut ActiveAudioSidecar, reason: &str) {
+    if !stream_id.is_empty() {
+        let _ = write_sidecar_json_line(
+            &mut sidecar.stdin,
+            &sidecar_request(
+                &Uuid::new_v4().simple().to_string(),
+                "captureStop",
+                json!({
+                    "streamId": stream_id,
+                    "reason": reason,
+                }),
+            ),
         );
-    };
-    parse_sidecar_response(first_line, &request_id, path_hash, pid)
+    }
+    let _ = write_sidecar_json_line(&mut sidecar.stdin, &shutdown_request());
+    let _ = sidecar.child.wait();
+}
+
+fn with_process_identity(
+    mut result: AudioSidecarCallResult,
+    path_hash: Option<String>,
+    pid: Option<u32>,
+) -> AudioSidecarCallResult {
+    result.executable_available = path_hash.is_some();
+    result.executable_path_hash = path_hash;
+    result.pid = pid;
+    result
+}
+
+fn with_exit_status(
+    mut result: AudioSidecarCallResult,
+    exit_status: Option<i32>,
+) -> AudioSidecarCallResult {
+    if let Some(object) = result.payload.as_object_mut() {
+        object.insert("exitStatus".to_string(), json!(exit_status));
+    }
+    result
 }
 
 fn parse_sidecar_response(
@@ -380,6 +692,20 @@ mod tests {
         assert!(!format!("{result:?}").contains(r"C:\secret"));
         assert_eq!(result.executable_available, true);
         assert_eq!(result.pid, Some(123));
+    }
+
+    #[test]
+    fn audio_sidecar_capture_stop_without_stream_id_is_idempotent() {
+        let result = call_audio_sidecar_command("captureStop", json!({}));
+
+        assert!(result.success);
+        assert_eq!(result.payload["stopped"], false);
+        assert_eq!(result.payload["reason"], "missingStreamId");
+    }
+
+    #[test]
+    fn audio_sidecar_shutdown_without_active_sessions_is_noop() {
+        assert_eq!(shutdown_all_audio_sidecars("test"), 0);
     }
 
     #[test]

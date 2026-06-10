@@ -537,6 +537,12 @@ fn ensure_backend_running(manager: tauri::State<'_, BackendManager>) -> BackendS
 
 #[tauri::command]
 fn restart_backend(manager: tauri::State<'_, BackendManager>) -> Result<BackendStatus, String> {
+    let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("backendRestartCommand");
+    if stopped > 0 {
+        write_shell_log(&format!(
+            "stopped {stopped} audio sidecar(s) before backend restart command"
+        ));
+    }
     manager.restart()
 }
 
@@ -595,7 +601,7 @@ pub fn run() {
         early_backend_status.message
     ));
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
@@ -653,8 +659,22 @@ pub fn run() {
             global_hotkey_status,
             refresh_global_hotkey
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Scriber desktop shell");
+        .build(tauri::generate_context!())
+        .expect("failed to build Scriber desktop shell");
+
+    app.run(|_app_handle, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("shellExit");
+            if stopped > 0 {
+                write_shell_log(&format!(
+                    "stopped {stopped} audio sidecar(s) during shell exit"
+                ));
+            }
+        }
+    });
 }
 
 fn configure_desktop_shell<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
@@ -840,7 +860,15 @@ fn handle_shell_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
         MENU_ITEM_SHOW_WINDOW => show_main_window(app),
         MENU_ITEM_RESTART_BACKEND => restart_backend_from_shell(app),
         MENU_ITEM_REFRESH_RECENT => refresh_tray_menu_for_app(app, "manual refresh"),
-        MENU_ITEM_QUIT => app.exit(0),
+        MENU_ITEM_QUIT => {
+            let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("shellQuit");
+            if stopped > 0 {
+                write_shell_log(&format!(
+                    "stopped {stopped} audio sidecar(s) before shell quit"
+                ));
+            }
+            app.exit(0);
+        }
         _ => {}
     }
 }
@@ -863,6 +891,12 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn restart_backend_from_shell<R: Runtime>(app: &AppHandle<R>) {
+    let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("backendRestartMenu");
+    if stopped > 0 {
+        write_shell_log(&format!(
+            "stopped {stopped} audio sidecar(s) before backend restart menu action"
+        ));
+    }
     let manager = app.state::<BackendManager>();
     match manager.restart() {
         Ok(status) => write_shell_log(&format!(
