@@ -107,8 +107,9 @@ Rust audio:
 - The current branch has frame-source boundaries, diagnostics, shared
   frame-pipe protocol helpers, a sidecar skeleton, and a Tauri stdio sidecar
   lifecycle client. It also has an explicit synthetic sidecar frame-pipe
-  transport harness for plumbing tests, but no active WASAPI frame production
-  yet.
+  transport harness for plumbing tests and an explicit
+  `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` default-endpoint WASAPI capture
+  prototype.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

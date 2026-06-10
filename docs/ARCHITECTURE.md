@@ -124,6 +124,11 @@ Rust audio prototype:
   a private Windows named pipe and write synthetic `pcm_i16_le` frames using the
   shared `SAF1` frame protocol. This is a transport/lifecycle harness, not a
   microphone engine.
+- With explicit `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1`, the sidecar can open the
+  Windows default capture endpoint through WASAPI shared mode, convert supported
+  float/PCM mix formats to requested `pcm_i16_le` blocks, and write those blocks
+  to the same `SAF1` frame pipe. This is still a prototype path, not the default
+  recording engine.
 - `Frontend/src-tauri/src/audio_sidecar_client.rs` is the Tauri-side client for
   prototype handshakes. It discovers only allowlisted sidecar executable names,
   supports `SCRIBER_AUDIO_SIDECAR_EXE` for local prototype runs, starts sidecar
@@ -131,8 +136,8 @@ Rust audio prototype:
   capture sidecars keyed by `streamId`, and reports only redacted path hashes.
 - Private shell IPC routes `audioCaptureStart` and `audioCaptureStop` through
   the sidecar client when an executable is available.
-- `captureStart` still returns explicit unavailable status by default until real
-  WASAPI capture is implemented.
+- `captureStart` still returns explicit unavailable status by default unless an
+  explicit sidecar capture flag is set.
 - Backend restart and shell exit drain the sidecar lifecycle registry before
   restarting the Python backend or exiting the Tauri shell.
 - `src/microphone.py` can opt into the Rust prototype through
