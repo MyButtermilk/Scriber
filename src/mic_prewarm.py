@@ -47,6 +47,16 @@ class MicrophonePrewarmManager:
         self._stream_started_at = 0.0
         self._last_status = ""
         self._last_health_restart_at = 0.0
+        self._stream_start_count = 0
+        self._stream_close_count = 0
+        self._health_restart_count = 0
+        self._device_refresh_pause_count = 0
+        self._device_refresh_resume_count = 0
+        self._active_capture_pause_count = 0
+        self._active_capture_resume_count = 0
+        self._last_transition = ""
+        self._last_transition_reason = ""
+        self._last_transition_at = 0.0
 
     @property
     def is_active(self) -> bool:
@@ -76,8 +86,27 @@ class MicrophonePrewarmManager:
                     else None
                 ),
                 "lastStatus": self._last_status,
+                "streamStartCount": self._stream_start_count,
+                "streamCloseCount": self._stream_close_count,
+                "healthRestartCount": self._health_restart_count,
+                "deviceRefreshPauseCount": self._device_refresh_pause_count,
+                "deviceRefreshResumeCount": self._device_refresh_resume_count,
+                "activeCapturePauseCount": self._active_capture_pause_count,
+                "activeCaptureResumeCount": self._active_capture_resume_count,
+                "lastTransition": self._last_transition,
+                "lastTransitionReason": self._last_transition_reason,
+                "lastTransitionAgoSeconds": (
+                    round(time.monotonic() - self._last_transition_at, 3)
+                    if self._last_transition_at > 0
+                    else None
+                ),
                 "signature": dict(self._stream_signature),
             }
+
+    def _record_transition_locked(self, transition: str, reason: str = "") -> None:
+        self._last_transition = transition
+        self._last_transition_reason = reason
+        self._last_transition_at = time.monotonic()
 
     def _claim_stream(self) -> None:
         if self._stream_claimed:
@@ -247,6 +276,8 @@ class MicrophonePrewarmManager:
                     }
                     self._configure_prebuffer_locked(sample_rate=sample_rate)
                     self._claim_stream()
+                    self._stream_start_count += 1
+                    self._record_transition_locked("started", "start")
                 logger.info(
                     "Mic prewarm stream active "
                     f"(device={'default' if device_index is None else device_index}, "
@@ -292,9 +323,22 @@ class MicrophonePrewarmManager:
                 return True
             if stream:
                 stale_note = ", stale callbacks" if callback_stale else ""
+                callback_age = (
+                    round(now - self._last_callback_at, 3)
+                    if self._last_callback_at > 0
+                    else None
+                )
+                started_age = (
+                    round(now - self._stream_started_at, 3)
+                    if self._stream_started_at > 0
+                    else None
+                )
                 logger.warning(
                     f"Mic prewarm stream unhealthy; restarting idle stream ({reason}{stale_note})"
+                    f" active={active} callback_age={callback_age} started_age={started_age}"
                 )
+                self._health_restart_count += 1
+                self._record_transition_locked("watchdog_restart", reason)
                 self._close_locked(reason=f"{reason}:unhealthy")
 
         restarted = self.start_if_enabled()
@@ -336,11 +380,14 @@ class MicrophonePrewarmManager:
             )
             if active and not callback_stale:
                 return True
-            if not stream:
-                return False
-            if now - self._last_health_restart_at < min_restart_interval_seconds:
-                return active
-            self._last_health_restart_at = now
+        if not stream:
+            return False
+        if now - self._last_health_restart_at < min_restart_interval_seconds:
+            return active
+        self._last_health_restart_at = now
+        with self._lock:
+            self._health_restart_count += 1
+            self._record_transition_locked("active_capture_watchdog_restart", reason)
 
         try:
             with get_device_guard_lock():
@@ -438,7 +485,14 @@ class MicrophonePrewarmManager:
                     pass
             self._release_stream()
         if stream:
-            logger.debug(f"Mic prewarm stream closed ({reason})")
+            self._stream_close_count += 1
+            self._record_transition_locked("closed", reason)
+            if reason.startswith("device_refresh"):
+                logger.info(f"Mic prewarm stream paused for device refresh ({reason})")
+            elif reason.endswith(":unhealthy") or "watchdog" in reason:
+                logger.warning(f"Mic prewarm stream closed for recovery ({reason})")
+            else:
+                logger.debug(f"Mic prewarm stream closed ({reason})")
 
     def stop(self, *, reason: str = "stop") -> None:
         with self._lock:
@@ -448,16 +502,21 @@ class MicrophonePrewarmManager:
         with self._lock:
             self._paused_for_active_capture = True
             self._active_capture_callback = None
+            self._active_capture_pause_count += 1
             self._close_locked(reason="active_capture")
 
     def resume_after_active_capture(self) -> bool:
         with self._lock:
             self._paused_for_active_capture = False
+            self._active_capture_resume_count += 1
         return self.start_if_enabled()
 
     def quiesce_for_device_refresh(self) -> None:
         with self._lock:
             self._paused_for_device_refresh = bool(self._stream)
+            if self._paused_for_device_refresh:
+                self._device_refresh_pause_count += 1
+                self._record_transition_locked("device_refresh_pause", "device_refresh")
             self._close_locked(reason="device_refresh")
 
     def resume_after_device_refresh(self) -> bool:
@@ -466,4 +525,7 @@ class MicrophonePrewarmManager:
             self._paused_for_device_refresh = False
         if not should_resume:
             return False
+        with self._lock:
+            self._device_refresh_resume_count += 1
+            self._record_transition_locked("device_refresh_resume", "device_refresh")
         return self.start_if_enabled()

@@ -67,8 +67,8 @@ def test_schedule_refresh_logs_only_new_pending_refresh(monkeypatch):
     monitor._schedule_refresh(reason="manual", immediate=True)
 
     assert logs == [
-        "[DeviceMonitor] refresh scheduled (device_state_changed)",
-        "[DeviceMonitor] refresh scheduled (manual)",
+        "[DeviceMonitor] refresh scheduled (device_state_changed, portaudio)",
+        "[DeviceMonitor] refresh scheduled (manual, portaudio)",
     ]
 
 
@@ -112,6 +112,30 @@ def test_refresh_quiesces_and_resumes_idle_streams(monkeypatch):
     monitor._refresh_devices(trigger="manual", force=True)
 
     assert calls == ["pause", "resume"]
+
+
+def test_poll_refresh_does_not_quiesce_or_refresh_portaudio(monkeypatch):
+    monitor = device_monitor.DeviceMonitor()
+    calls: list[str] = []
+
+    monitor.on_portaudio_refresh_quiesce(
+        lambda: calls.append("pause"),
+        lambda: calls.append("resume"),
+    )
+
+    def fail_refresh():
+        raise AssertionError("poll refresh should not restart PortAudio")
+
+    monkeypatch.setattr(device_monitor, "_refresh_portaudio_cache", fail_refresh)
+    monkeypatch.setattr(
+        device_monitor,
+        "_enumerate_microphones",
+        lambda **_kwargs: [{"deviceId": "default", "label": "Default"}],
+    )
+
+    monitor._refresh_devices(trigger="poll", force=False, refresh_portaudio=False)
+
+    assert calls == []
 
 
 def test_refresh_does_not_resume_idle_stream_when_real_stream_is_active(monkeypatch):
@@ -175,7 +199,13 @@ def test_endpoint_refresh_schedules_capture_endpoint():
         immediate=False,
     )
 
-    assert scheduled == [{"reason": "device_state_changed", "immediate": False}]
+    assert scheduled == [
+        {
+            "reason": "device_state_changed",
+            "immediate": False,
+            "force_portaudio_refresh": True,
+        }
+    ]
 
 
 def test_endpoint_refresh_uses_endpoint_id_hint_when_flow_lookup_is_unavailable():
@@ -196,7 +226,13 @@ def test_endpoint_refresh_uses_endpoint_id_hint_when_flow_lookup_is_unavailable(
         immediate=False,
     )
 
-    assert scheduled == [{"reason": "device_state_changed", "immediate": False}]
+    assert scheduled == [
+        {
+            "reason": "device_state_changed",
+            "immediate": False,
+            "force_portaudio_refresh": True,
+        }
+    ]
 
 
 def test_default_device_refresh_ignores_render_flow():
@@ -215,4 +251,10 @@ def test_default_device_refresh_ignores_render_flow():
         immediate=False,
     )
 
-    assert scheduled == [{"reason": "default_device_changed", "immediate": False}]
+    assert scheduled == [
+        {
+            "reason": "default_device_changed",
+            "immediate": False,
+            "force_portaudio_refresh": True,
+        }
+    ]

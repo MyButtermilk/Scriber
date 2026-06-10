@@ -282,6 +282,7 @@ class DeviceMonitor:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._pending_refresh_at = 0.0
+        self._pending_refresh_requires_portaudio = False
         self._refresh_deferred_until_idle = False
         self._deferred_refresh_trigger = ""
 
@@ -347,11 +348,19 @@ class DeviceMonitor:
         self._thread = None
         logger.info("[DeviceMonitor] stopped")
 
-    def request_refresh(self) -> None:
-        self._schedule_refresh(reason="manual", immediate=False)
+    def request_refresh(self, *, force_portaudio_refresh: bool = False) -> None:
+        self._schedule_refresh(
+            reason="manual",
+            immediate=False,
+            force_portaudio_refresh=force_portaudio_refresh,
+        )
 
-    def refresh_now(self) -> list[dict[str, str]]:
-        self._refresh_devices(trigger="manual", force=False)
+    def refresh_now(self, *, force_portaudio_refresh: bool = True) -> list[dict[str, str]]:
+        self._refresh_devices(
+            trigger="manual",
+            force=False,
+            refresh_portaudio=force_portaudio_refresh,
+        )
         return self.get_devices()
 
     def get_devices(self) -> list[dict[str, str]]:
@@ -364,7 +373,13 @@ class DeviceMonitor:
             self._signature = self._signature_for(current)
         return [dict(item) for item in current]
 
-    def _schedule_refresh(self, *, reason: str, immediate: bool) -> None:
+    def _schedule_refresh(
+        self,
+        *,
+        reason: str,
+        immediate: bool,
+        force_portaudio_refresh: bool = True,
+    ) -> None:
         now = time.monotonic()
         due_at = now if immediate else now + self._debounce_seconds
         scheduled = False
@@ -375,8 +390,11 @@ class DeviceMonitor:
             if current <= 0.0 or due_at < current:
                 self._pending_refresh_at = due_at
                 scheduled = True
+            if force_portaudio_refresh:
+                self._pending_refresh_requires_portaudio = True
         if scheduled:
-            logger.debug(f"[DeviceMonitor] refresh scheduled ({reason})")
+            mode = "portaudio" if force_portaudio_refresh else "non-invasive"
+            logger.debug(f"[DeviceMonitor] refresh scheduled ({reason}, {mode})")
 
     def _defer_refresh_until_idle(self, *, trigger: str) -> None:
         should_log = False
@@ -408,11 +426,19 @@ class DeviceMonitor:
 
     def _schedule_endpoint_refresh(self, *, reason: str, device_id, immediate: bool) -> None:
         if self._endpoint_is_capture_or_unknown(device_id):
-            self._schedule_refresh(reason=reason, immediate=immediate)
+            self._schedule_refresh(
+                reason=reason,
+                immediate=immediate,
+                force_portaudio_refresh=True,
+            )
 
     def _schedule_flow_refresh(self, *, reason: str, flow, immediate: bool) -> None:
         if _flow_is_capture_or_all(flow):
-            self._schedule_refresh(reason=reason, immediate=immediate)
+            self._schedule_refresh(
+                reason=reason,
+                immediate=immediate,
+                force_portaudio_refresh=True,
+            )
 
     def _endpoint_is_capture_or_unknown(self, device_id) -> bool:
         audio_utilities = self._pycaw_audio_utilities
@@ -459,13 +485,22 @@ class DeviceMonitor:
             except Exception as exc:
                 logger.debug(f"[DeviceMonitor] refresh resume callback warning: {exc}")
 
-    def _refresh_devices(self, *, trigger: str, force: bool) -> None:
-        self._quiesce_refresh_streams()
-        _did_refresh, deferred = _refresh_portaudio_cache()
-        if deferred:
-            # Active live stream: remember the refresh and run it once after the stream closes.
-            self._defer_refresh_until_idle(trigger=trigger)
-            return
+    def _refresh_devices(
+        self,
+        *,
+        trigger: str,
+        force: bool,
+        refresh_portaudio: bool = True,
+    ) -> None:
+        if refresh_portaudio:
+            self._quiesce_refresh_streams()
+            _did_refresh, deferred = _refresh_portaudio_cache()
+            if deferred:
+                # Active live stream: remember the refresh and run it once after the stream closes.
+                self._defer_refresh_until_idle(trigger=trigger)
+                return
+        else:
+            logger.debug(f"[DeviceMonitor] non-invasive microphone refresh via {trigger}")
 
         self._clear_deferred_refresh()
         devices = _enumerate_microphones(sample_rate=self._sample_rate, channels=self._channels)
@@ -480,7 +515,8 @@ class DeviceMonitor:
         if changed:
             logger.info(f"[DeviceMonitor] microphone list updated via {trigger}")
             self._notify_callbacks(devices)
-        self._resume_refresh_streams()
+        if refresh_portaudio:
+            self._resume_refresh_streams()
 
     def _run(self) -> None:
         self._setup_native_notifications()
@@ -496,7 +532,13 @@ class DeviceMonitor:
                 if pending_due > 0.0 and now >= pending_due:
                     with self._state_lock:
                         self._pending_refresh_at = 0.0
-                    self._refresh_devices(trigger="event", force=False)
+                        pending_requires_portaudio = self._pending_refresh_requires_portaudio
+                        self._pending_refresh_requires_portaudio = False
+                    self._refresh_devices(
+                        trigger="event",
+                        force=False,
+                        refresh_portaudio=pending_requires_portaudio,
+                    )
 
                 deferred_trigger = self._take_deferred_refresh_trigger_if_idle()
                 if deferred_trigger:
@@ -504,7 +546,7 @@ class DeviceMonitor:
 
                 if now >= next_poll_at:
                     next_poll_at = now + self._poll_seconds
-                    self._refresh_devices(trigger="poll", force=False)
+                    self._refresh_devices(trigger="poll", force=False, refresh_portaudio=False)
         finally:
             self._teardown_native_notifications()
 
