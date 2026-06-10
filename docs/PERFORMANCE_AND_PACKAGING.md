@@ -360,8 +360,12 @@ Implementation status on `codex/rust-expansion-plan`:
   non-invasive hints, controller forwarding, runtime feature flags, and REST
   contract coverage, plus Rust tests for native mode parsing, event filtering,
   redaction, hint payloads, debounce, and native-status IPC.
-- Still open: installed smoke evidence for COM registration and physical
-  dock/USB/default-device matrix coverage.
+- Implemented installed support-bundle smoke coverage for native COM
+  registration: when Tauri shell IPC is available and native events are not
+  disabled or unsupported, `scripts/smoke_tauri_desktop.ps1` now requires
+  `available`, `running`, `registered`, `comInitialized`, and `callbackAlive`
+  to be true, and records the verdict under `nativeDeviceEvents`.
+- Still open: physical dock/USB/default-device matrix coverage.
 
 Acceptance gates:
 

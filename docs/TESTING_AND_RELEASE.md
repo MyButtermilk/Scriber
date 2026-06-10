@@ -274,7 +274,9 @@ Support bundle smoke verifies:
 - redaction of dummy secrets in env/settings/logs,
 - required diagnostic ZIP members,
 - native device-event diagnostics are present and redacted when the Tauri shell
-  IPC is available,
+  IPC is available; on supported Windows runs where native events are not
+  disabled, the smoke requires COM initialization, monitor registration, and
+  callback liveness evidence,
 - redacted audio/text-injection diagnostics, including the latest sanitized
   Tauri `injectText` attempt when present,
 - restoration of runtime `.env` and `settings.json` after the test.

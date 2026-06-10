@@ -351,6 +351,11 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "audio-diagnostics.redacted.json" in desktop
     assert "microphone.nativeDeviceEvents" in desktop
     assert "shellIpcAvailable" in desktop
+    assert "function Test-NativeDeviceEventDiagnostics" in desktop
+    assert "wasapi-imm-notification" in desktop
+    assert "comInitialized" in desktop
+    assert "callbackAlive" in desktop
+    assert "registrationVerified = $true" in desktop
     assert "redactionVerified = $true" in desktop
     assert "$configSnapshots" in desktop
     assert "[System.IO.File]::WriteAllBytes($snapshot.Path" in desktop

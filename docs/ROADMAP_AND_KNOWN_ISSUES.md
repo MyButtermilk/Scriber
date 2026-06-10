@@ -23,6 +23,9 @@ Mic and recording:
   through redacted Tauri shell IPC (`microphone.nativeDeviceEvents`), including
   COM/registration state, callback liveness, event/debounce counts, post
   results, and hashed endpoint identifiers.
+- The installed desktop support-bundle smoke now gates native device-event COM
+  initialization, monitor registration, and callback liveness whenever Tauri
+  shell IPC is available and native events are supported/enabled.
 - Polling fallback is intentionally slow compared with the old aggressive poll.
 - PortAudio access is guarded and refreshes are recording-aware.
 - Always-on mic prewarm and rolling prebuffer are implemented.

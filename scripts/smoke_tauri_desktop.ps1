@@ -642,6 +642,66 @@ function Read-ZipEntryText {
     }
 }
 
+function Test-NativeDeviceEventDiagnostics {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$NativeDeviceEvents
+    )
+
+    if ($null -eq $NativeDeviceEvents.shellIpcAvailable) {
+        throw "Support bundle native device-event diagnostics are missing shellIpcAvailable."
+    }
+    if (-not [bool]$NativeDeviceEvents.shellIpcAvailable) {
+        return [pscustomobject]@{
+            shellIpcAvailable = $false
+            registrationVerified = $false
+            skippedReason = "shellIpcUnavailable"
+        }
+    }
+
+    if ($NativeDeviceEvents.monitorKind -ne "wasapi-imm-notification") {
+        throw "Support bundle native device-event diagnostics reported unexpected monitorKind: $($NativeDeviceEvents.monitorKind)"
+    }
+
+    $platformSupported = $true
+    if ($null -ne $NativeDeviceEvents.platformSupported) {
+        $platformSupported = [bool]$NativeDeviceEvents.platformSupported
+    }
+    $requestedMode = [string]$NativeDeviceEvents.requestedMode
+    $effectiveMode = [string]$NativeDeviceEvents.effectiveMode
+    if ((-not $platformSupported) -or $effectiveMode -eq "unsupported-platform" -or $requestedMode -eq "disabled" -or $effectiveMode -eq "disabled") {
+        return [pscustomobject]@{
+            shellIpcAvailable = $true
+            registrationVerified = $false
+            skippedReason = "nativeDeviceEventsDisabledOrUnsupported"
+            effectiveMode = $effectiveMode
+        }
+    }
+
+    foreach ($required in @("available", "running", "registered", "comInitialized", "callbackAlive")) {
+        if ($null -eq $NativeDeviceEvents.$required) {
+            throw "Support bundle native device-event diagnostics are missing $required."
+        }
+        if (-not [bool]$NativeDeviceEvents.$required) {
+            throw "Support bundle native device-event diagnostics did not prove $required=true."
+        }
+    }
+    foreach ($counter in @("eventCount", "ignoredRenderCount", "debouncedEventCount", "postAttemptCount", "postSuccessCount", "postFailureCount")) {
+        if ($null -eq $NativeDeviceEvents.$counter) {
+            throw "Support bundle native device-event diagnostics are missing $counter."
+        }
+    }
+
+    return [pscustomobject]@{
+        shellIpcAvailable = $true
+        registrationVerified = $true
+        effectiveMode = $effectiveMode
+        registered = [bool]$NativeDeviceEvents.registered
+        comInitialized = [bool]$NativeDeviceEvents.comInitialized
+        callbackAlive = [bool]$NativeDeviceEvents.callbackAlive
+    }
+}
+
 function Resolve-FrontendAssetUrl {
     param(
         [string]$BaseUrl,
@@ -908,9 +968,7 @@ function Test-SupportBundle {
         if (-not $audioDiagnostics.microphone.nativeDeviceEvents) {
             throw "Support bundle audio diagnostics are missing microphone.nativeDeviceEvents."
         }
-        if ($null -eq $audioDiagnostics.microphone.nativeDeviceEvents.shellIpcAvailable) {
-            throw "Support bundle native device-event diagnostics are missing shellIpcAvailable."
-        }
+        $nativeDeviceEvents = Test-NativeDeviceEventDiagnostics -NativeDeviceEvents $audioDiagnostics.microphone.nativeDeviceEvents
 
         return [pscustomobject]@{
             verified = $true
@@ -920,6 +978,7 @@ function Test-SupportBundle {
             downloadBytes = [int64]$downloadItem.Length
             entryCount = [int]$entrySet.Count
             redactionVerified = $true
+            nativeDeviceEvents = $nativeDeviceEvents
             requiredEntries = @(
                 "manifest.json",
                 "runtime.json",
