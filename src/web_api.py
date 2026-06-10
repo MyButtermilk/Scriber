@@ -2189,6 +2189,9 @@ class ScriberWebController:
                 "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
                 "idlePrewarmActive": bool(self._mic_prewarm.is_active),
                 "prebufferMs": int(getattr(Config, "MIC_PREBUFFER_MS", 0) or 0),
+                "deviceMonitor": self._device_monitor.diagnostic_snapshot()
+                if self._device_monitor_enabled
+                else None,
                 "prewarm": self._prewarm_diagnostics(),
                 "activeCapture": self._active_audio_diagnostics(),
             },

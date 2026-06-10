@@ -39,6 +39,8 @@ _WINDOWS_ENDPOINT_FLOW_RE = re.compile(r"\{0\.0\.(\d+)\.", re.IGNORECASE)
 _E_RENDER = 0
 _E_CAPTURE = 1
 _E_ALL = 2
+_NATIVE_EVENT_SAFETY_POLL_SECONDS = 15.0 * 60.0
+_FALLBACK_POLL_SECONDS = 60.0
 
 
 def get_device_guard_lock() -> threading.RLock:
@@ -285,11 +287,21 @@ class DeviceMonitor:
         self._pending_refresh_requires_portaudio = False
         self._refresh_deferred_until_idle = False
         self._deferred_refresh_trigger = ""
+        self._poll_seconds_override = (
+            None if poll_seconds is None else max(1.0, float(poll_seconds))
+        )
+        self._poll_refresh_count = 0
+        self._event_refresh_count = 0
+        self._portaudio_refresh_count = 0
+        self._last_poll_refresh_at = 0.0
+        self._last_event_refresh_at = 0.0
+        self._last_devices_changed_at = 0.0
 
         self._enumerator = None
         self._notification_client = None
         self._com_initialized = False
         self._supports_native_events = False
+        self._native_notifications_active = False
         self._pycaw_audio_utilities = None
         self._pycaw_notification_base = _NoopNotificationClient
         self._comtypes_module = None
@@ -303,13 +315,12 @@ class DeviceMonitor:
                 self._pycaw_notification_base = MMNotificationClient
                 self._supports_native_events = True
             except Exception as exc:
-                logger.info(f"[DeviceMonitor] Native COM monitor unavailable, polling only: {exc}")
+                logger.info(
+                    "[DeviceMonitor] Native COM monitor unavailable; "
+                    f"fallback polling every {_FALLBACK_POLL_SECONDS:.0f}s: {exc}"
+                )
 
-        default_poll_seconds = 60.0 if self._supports_native_events else 10.0
-        self._poll_seconds = max(
-            1.0,
-            float(default_poll_seconds if poll_seconds is None else poll_seconds),
-        )
+        self._poll_seconds = self._current_poll_seconds()
 
     def on_devices_changed(self, callback: Callable[[list[dict[str, str]]], None]) -> None:
         if not callable(callback):
@@ -363,6 +374,34 @@ class DeviceMonitor:
         )
         return self.get_devices()
 
+    def diagnostic_snapshot(self) -> dict[str, object]:
+        now = time.monotonic()
+
+        def ago(timestamp: float) -> float | None:
+            if timestamp <= 0.0:
+                return None
+            return round(max(0.0, now - timestamp), 3)
+
+        with self._state_lock:
+            return {
+                "nativeEventsSupported": bool(self._supports_native_events),
+                "nativeEventsActive": bool(self._native_notifications_active),
+                "pollMode": self._poll_mode(),
+                "pollIntervalSeconds": self._current_poll_seconds(),
+                "pollRefreshCount": self._poll_refresh_count,
+                "eventRefreshCount": self._event_refresh_count,
+                "portAudioRefreshCount": self._portaudio_refresh_count,
+                "lastPollRefreshAgoSeconds": ago(self._last_poll_refresh_at),
+                "lastEventRefreshAgoSeconds": ago(self._last_event_refresh_at),
+                "lastDevicesChangedAgoSeconds": ago(self._last_devices_changed_at),
+                "pendingRefresh": self._pending_refresh_at > 0.0,
+                "pendingRefreshRequiresPortAudio": bool(
+                    self._pending_refresh_requires_portaudio
+                ),
+                "refreshDeferredUntilIdle": bool(self._refresh_deferred_until_idle),
+                "deferredRefreshTrigger": self._deferred_refresh_trigger,
+            }
+
     def get_devices(self) -> list[dict[str, str]]:
         with self._state_lock:
             if self._devices:
@@ -372,6 +411,20 @@ class DeviceMonitor:
             self._devices = current
             self._signature = self._signature_for(current)
         return [dict(item) for item in current]
+
+    def _current_poll_seconds(self) -> float:
+        if self._poll_seconds_override is not None:
+            return self._poll_seconds_override
+        if self._native_notifications_active:
+            return _NATIVE_EVENT_SAFETY_POLL_SECONDS
+        return _FALLBACK_POLL_SECONDS
+
+    def _poll_mode(self) -> str:
+        if self._poll_seconds_override is not None:
+            return "override"
+        if self._native_notifications_active:
+            return "native-event-safety"
+        return "fallback"
 
     def _schedule_refresh(
         self,
@@ -492,6 +545,17 @@ class DeviceMonitor:
         force: bool,
         refresh_portaudio: bool = True,
     ) -> None:
+        now = time.monotonic()
+        with self._state_lock:
+            if trigger == "poll":
+                self._poll_refresh_count += 1
+                self._last_poll_refresh_at = now
+            elif trigger != "startup":
+                self._event_refresh_count += 1
+                self._last_event_refresh_at = now
+            if refresh_portaudio:
+                self._portaudio_refresh_count += 1
+
         if refresh_portaudio:
             self._quiesce_refresh_streams()
             _did_refresh, deferred = _refresh_portaudio_cache()
@@ -499,8 +563,6 @@ class DeviceMonitor:
                 # Active live stream: remember the refresh and run it once after the stream closes.
                 self._defer_refresh_until_idle(trigger=trigger)
                 return
-        else:
-            logger.debug(f"[DeviceMonitor] non-invasive microphone refresh via {trigger}")
 
         self._clear_deferred_refresh()
         devices = _enumerate_microphones(sample_rate=self._sample_rate, channels=self._channels)
@@ -513,6 +575,8 @@ class DeviceMonitor:
             self._signature = signature
 
         if changed:
+            with self._state_lock:
+                self._last_devices_changed_at = now
             logger.info(f"[DeviceMonitor] microphone list updated via {trigger}")
             self._notify_callbacks(devices)
         if refresh_portaudio:
@@ -522,6 +586,7 @@ class DeviceMonitor:
         self._setup_native_notifications()
         try:
             self._refresh_devices(trigger="startup", force=True)
+            self._poll_seconds = self._current_poll_seconds()
             next_poll_at = time.monotonic() + self._poll_seconds
 
             while not self._stop_event.wait(0.1):
@@ -545,12 +610,14 @@ class DeviceMonitor:
                     self._refresh_devices(trigger=deferred_trigger, force=False)
 
                 if now >= next_poll_at:
+                    self._poll_seconds = self._current_poll_seconds()
                     next_poll_at = now + self._poll_seconds
                     self._refresh_devices(trigger="poll", force=False, refresh_portaudio=False)
         finally:
             self._teardown_native_notifications()
 
     def _setup_native_notifications(self) -> None:
+        self._native_notifications_active = False
         if not self._supports_native_events:
             return
         try:
@@ -560,7 +627,10 @@ class DeviceMonitor:
             comtypes.CoInitialize()
             self._com_initialized = True
         except Exception as exc:
-            logger.debug(f"[DeviceMonitor] COM init failed: {exc}")
+            logger.info(
+                "[DeviceMonitor] COM init failed; "
+                f"fallback polling every {self._current_poll_seconds():.0f}s: {exc}"
+            )
             return
 
         base_cls = self._pycaw_notification_base
@@ -606,11 +676,17 @@ class DeviceMonitor:
             self._notification_client = _NotificationClient()
             self._enumerator = self._pycaw_audio_utilities.GetDeviceEnumerator()
             self._enumerator.RegisterEndpointNotificationCallback(self._notification_client)
-            logger.info("[DeviceMonitor] pycaw endpoint callback registered")
+            self._native_notifications_active = True
+            self._poll_seconds = self._current_poll_seconds()
+            logger.info(
+                "[DeviceMonitor] pycaw endpoint callback registered; "
+                f"safety poll every {self._poll_seconds:.0f}s"
+            )
         except Exception as exc:
             logger.warning(f"[DeviceMonitor] Failed to register endpoint callback: {exc}")
             self._notification_client = None
             self._enumerator = None
+            self._poll_seconds = self._current_poll_seconds()
 
     def _teardown_native_notifications(self) -> None:
         if self._enumerator is not None and self._notification_client is not None:
@@ -620,6 +696,7 @@ class DeviceMonitor:
                 logger.debug(f"[DeviceMonitor] endpoint callback unregister warning: {exc}")
         self._notification_client = None
         self._enumerator = None
+        self._native_notifications_active = False
 
         if self._com_initialized and self._comtypes_module is not None:
             try:

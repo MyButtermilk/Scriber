@@ -117,8 +117,9 @@ Packaging and scripts:
 - Keep PortAudio access guarded through the shared device guard lock.
 - Do not enumerate or refresh PortAudio devices while an active stream is being
   torn down unless the existing guarded/deferred path handles it.
-- `DeviceMonitor` should use native Windows endpoint events where available and
-  slow polling fallback otherwise.
+- `DeviceMonitor` should use native Windows endpoint events where available.
+  With active native events, polling is only a sparse safety net; faster polling
+  is fallback-only when native events are unavailable.
 - Device refresh is recording-aware and can be deferred until idle.
 - `SCRIBER_MIC_ALWAYS_ON` is implemented as idle prewarm plus bounded rolling
   prebuffer. Do not reuse Pipecat session state across recordings.

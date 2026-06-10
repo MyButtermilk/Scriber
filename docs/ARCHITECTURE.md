@@ -62,8 +62,9 @@ Key modules:
   selection, audio-level callback throttling.
 - `src/mic_prewarm.py`: idle always-on mic prewarm and rolling raw-audio
   prebuffer.
-- `src/device_monitor.py`: microphone change detection, native Windows endpoint
-  callbacks, polling fallback, refresh deferral.
+- `src/device_monitor.py`: event-first microphone change detection, native
+  Windows endpoint callbacks, sparse polling safety net, PortAudio refresh
+  deferral.
 - `src/database.py`: SQLite WAL persistence, metadata loading, FTS5 search.
 - `src/data/job_store.py`: durable file/YouTube job state.
 - `src/data/latency_metrics_store.py`: hot-path metric persistence.

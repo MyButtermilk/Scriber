@@ -138,6 +138,60 @@ def test_poll_refresh_does_not_quiesce_or_refresh_portaudio(monkeypatch):
     assert calls == []
 
 
+def test_poll_interval_is_sparse_when_native_events_are_active():
+    monitor = device_monitor.DeviceMonitor()
+    monitor._poll_seconds_override = None
+    monitor._native_notifications_active = False
+
+    assert monitor._current_poll_seconds() == device_monitor._FALLBACK_POLL_SECONDS
+    assert monitor._poll_mode() == "fallback"
+
+    monitor._native_notifications_active = True
+
+    assert monitor._current_poll_seconds() == device_monitor._NATIVE_EVENT_SAFETY_POLL_SECONDS
+    assert monitor._poll_mode() == "native-event-safety"
+
+
+def test_explicit_poll_interval_override_wins_over_native_event_mode():
+    monitor = device_monitor.DeviceMonitor(poll_seconds=7.5)
+    monitor._native_notifications_active = True
+
+    assert monitor._current_poll_seconds() == 7.5
+    assert monitor._poll_mode() == "override"
+
+
+def test_non_invasive_poll_is_quiet_when_devices_are_unchanged(monkeypatch):
+    monitor = device_monitor.DeviceMonitor()
+    devices = [{"deviceId": "default", "label": "Default"}]
+    logs: dict[str, list[str]] = {"debug": [], "info": [], "warning": []}
+
+    class _FakeLogger:
+        def debug(self, msg):
+            logs["debug"].append(msg)
+
+        def info(self, msg):
+            logs["info"].append(msg)
+
+        def warning(self, msg):
+            logs["warning"].append(msg)
+
+    monitor._devices = devices
+    monitor._signature = monitor._signature_for(devices)
+    monkeypatch.setattr(device_monitor, "logger", _FakeLogger())
+    monkeypatch.setattr(
+        device_monitor,
+        "_enumerate_microphones",
+        lambda **_kwargs: [dict(item) for item in devices],
+    )
+
+    monitor._refresh_devices(trigger="poll", force=False, refresh_portaudio=False)
+
+    assert logs == {"debug": [], "info": [], "warning": []}
+    diagnostics = monitor.diagnostic_snapshot()
+    assert diagnostics["pollRefreshCount"] == 1
+    assert diagnostics["lastPollRefreshAgoSeconds"] is not None
+
+
 def test_refresh_does_not_resume_idle_stream_when_real_stream_is_active(monkeypatch):
     monitor = device_monitor.DeviceMonitor()
     calls: list[str] = []
