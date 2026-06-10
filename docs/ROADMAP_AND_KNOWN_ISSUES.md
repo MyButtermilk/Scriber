@@ -169,6 +169,11 @@ Rust audio:
   running the long physical Always-On-Mic matrix evidence, real provider-backed
   Python/Rust comparison artifacts using that gate, and final Rust promotion
   gates remain open before default promotion.
+- Active-capture watchdog diagnostics now distinguish missing streams, inactive
+  streams, no-callback-after-start, stale-callback stalls, and restart-throttle
+  suppression. Stale active streams report unhealthy during throttle windows so
+  long physical evidence can show short interruptions instead of silently
+  treating them as healthy.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

@@ -208,6 +208,40 @@ def test_microphone_watchdog_restarts_direct_stream_when_callbacks_never_arrive(
 
 
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+def test_microphone_watchdog_reports_stale_stream_when_restart_is_throttled(monkeypatch):
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+    stream = _FakeStream(active=True)
+    mic.stream = stream
+    mic._running = True
+    mic._last_callback_at = 100.0
+    mic._last_health_restart_at = 119.0
+
+    monkeypatch.setattr(microphone.time, "monotonic", lambda: 120.0)
+
+    assert (
+        mic.ensure_stream_health(
+            reason="test",
+            max_callback_gap_seconds=10.0,
+            min_restart_interval_seconds=15.0,
+        )
+        is False
+    )
+
+    assert stream.stop_calls == 0
+    assert stream.start_calls == 0
+    snapshot = mic.diagnostic_snapshot()
+    assert snapshot["streamActive"] is True
+    assert snapshot["healthRestartCount"] == 0
+    assert snapshot["healthRestartThrottleCount"] == 1
+    assert snapshot["lastHealthCheckReason"] == "test"
+    assert snapshot["lastHealthFailureReason"] == "staleCallbacks"
+    assert snapshot["lastHealthRestartThrottledReason"] == "test:staleCallbacks"
+    assert snapshot["lastHealthRestartThrottleRemainingSeconds"] == pytest.approx(14.0)
+
+    mic.force_stop_from_external_error(reason="test_cleanup")
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
 def test_microphone_watchdog_reopens_inactive_owned_frame_source():
     class _FakeOwnedFrameSource:
         engine = "rust-prototype"

@@ -1058,6 +1058,12 @@ Implementation plan:
      `streamId`/frame-pipe state, and then starts a fresh source. Top-level
      active-capture diagnostics include health restart count, last health-check
      reason, last restart reason, and last restart error.
+   - Implemented: active-capture watchdog diagnostics now also record the
+     concrete health failure reason, restart-throttle count, throttled reason,
+     and remaining throttle interval. A stale active stream no longer reports
+     healthy merely because a restart is still inside the minimum restart
+     interval; it returns unhealthy so the backend emits a diagnostic warning
+     without spam-restarting the stream.
    - Match stale callback detection, minimum restart interval, restart count,
      graceful close, and fallback-on-next-session policy.
 7. Run A/B measurements before any promotion:

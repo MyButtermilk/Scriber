@@ -926,9 +926,13 @@ class MicrophoneInput(BaseInputTransport):
         self._last_callback_exception = ""
         self._last_health_restart_at = 0.0
         self._health_restart_count = 0
+        self._health_restart_throttle_count = 0
         self._last_health_check_reason = ""
+        self._last_health_failure_reason = ""
         self._last_health_restart_reason = ""
         self._last_health_restart_error = ""
+        self._last_health_restart_throttled_reason = ""
+        self._last_health_restart_throttle_remaining_seconds = None
 
     def _claim_active_stream(self) -> None:
         if self._stream_claimed:
@@ -1056,9 +1060,13 @@ class MicrophoneInput(BaseInputTransport):
         self._last_callback_exception = ""
         self._last_health_restart_at = 0.0
         self._health_restart_count = 0
+        self._health_restart_throttle_count = 0
         self._last_health_check_reason = ""
+        self._last_health_failure_reason = ""
         self._last_health_restart_reason = ""
         self._last_health_restart_error = ""
+        self._last_health_restart_throttled_reason = ""
+        self._last_health_restart_throttle_remaining_seconds = None
         self._prewarm_adoption_skipped_reason = ""
         self._rust_prewarm_adoption = None
         self._rust_prewarm_id = ""
@@ -1321,9 +1329,13 @@ class MicrophoneInput(BaseInputTransport):
             "lastStatus": self._last_status,
             "lastCallbackException": self._last_callback_exception,
             "healthRestartCount": int(self._health_restart_count),
+            "healthRestartThrottleCount": int(self._health_restart_throttle_count),
             "lastHealthCheckReason": self._last_health_check_reason,
+            "lastHealthFailureReason": self._last_health_failure_reason,
             "lastHealthRestartReason": self._last_health_restart_reason,
             "lastHealthRestartError": self._last_health_restart_error,
+            "lastHealthRestartThrottledReason": self._last_health_restart_throttled_reason,
+            "lastHealthRestartThrottleRemainingSeconds": self._last_health_restart_throttle_remaining_seconds,
         }
 
     def _redacted_rust_prewarm_adoption(self) -> dict | None:
@@ -1358,6 +1370,7 @@ class MicrophoneInput(BaseInputTransport):
                     )
                 )
                 if not healthy:
+                    self._last_health_failure_reason = "prewarmUnhealthy"
                     logger.warning(f"Mic watchdog found unhealthy adopted prewarm stream ({reason})")
                 return healthy
             return True
@@ -1385,10 +1398,29 @@ class MicrophoneInput(BaseInputTransport):
         if active and not callback_stale:
             return True
         if not stream:
+            self._last_health_failure_reason = "missingStream"
             logger.warning(f"Mic watchdog found missing capture stream while recording ({reason})")
             return False
+        if not active:
+            health_failure_reason = "inactiveStream"
+        elif self._last_callback_at <= 0:
+            health_failure_reason = "noCallbacksAfterStart"
+        else:
+            health_failure_reason = "staleCallbacks"
+        self._last_health_failure_reason = health_failure_reason
         if now - self._last_health_restart_at < min_restart_interval_seconds:
-            return active
+            elapsed = max(0.0, now - self._last_health_restart_at)
+            remaining = max(0.0, float(min_restart_interval_seconds) - elapsed)
+            self._health_restart_throttle_count += 1
+            self._last_health_restart_throttled_reason = (
+                f"{reason or 'watchdog'}:{health_failure_reason}"
+            )
+            self._last_health_restart_throttle_remaining_seconds = round(remaining, 3)
+            logger.debug(
+                "Microphone capture stream restart throttled "
+                f"({reason}, failure={health_failure_reason}, remaining={remaining:.3f}s)"
+            )
+            return False
 
         self._last_health_restart_at = now
         source_owns_stream = self._source_owns_stream()
@@ -1416,9 +1448,12 @@ class MicrophoneInput(BaseInputTransport):
             self._health_restart_count += 1
             self._last_health_restart_reason = str(reason or "watchdog")
             self._last_health_restart_error = ""
+            self._last_health_restart_throttled_reason = ""
+            self._last_health_restart_throttle_remaining_seconds = None
             logger.warning(
                 "Microphone capture stream restarted "
-                f"({reason}, was_active={active}, stale_callbacks={callback_stale})"
+                f"({reason}, failure={health_failure_reason}, was_active={active}, "
+                f"stale_callbacks={callback_stale})"
             )
             return bool(getattr(stream, "active", False))
         except Exception as exc:
