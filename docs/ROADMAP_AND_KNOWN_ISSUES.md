@@ -124,8 +124,9 @@ Rust audio:
   scripts now persist that redacted endpoint inventory as acceptance evidence
   and can fail promotion if it is missing or falls back away from `rust-wasapi`.
   The Python Rust frame reader also tracks `SAF1` prebuffer/live frame counts
-  and rejects prebuffer-after-live interleaving, but Rust-side always-on
-  prewarm adoption is still not complete.
+  and rejects prebuffer-after-live interleaving. Always-on startup no longer
+  adopts the Python prewarm stream when `SCRIBER_AUDIO_ENGINE=rust-prototype`
+  is requested, but Rust-side idle prewarm adoption is still not complete.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no

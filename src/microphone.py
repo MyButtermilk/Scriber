@@ -867,6 +867,7 @@ class MicrophoneInput(BaseInputTransport):
         self._frame_source_name = "sounddevice"
         self._audio_engine_fallback_reason = ""
         self._using_prewarm_stream = False
+        self._prewarm_adoption_skipped_reason = ""
         self._prewarm_callback = None
         self._running = False
         self._queue = _queue.Queue(maxsize=512)
@@ -1029,41 +1030,49 @@ class MicrophoneInput(BaseInputTransport):
         self._last_health_check_reason = ""
         self._last_health_restart_reason = ""
         self._last_health_restart_error = ""
+        self._prewarm_adoption_skipped_reason = ""
+        self._requested_audio_engine = _requested_audio_engine()
         self._create_audio_task()
         self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")
 
         try:
             if self.keep_alive and self.prewarm_manager is not None:
                 adopted = None
-                self._prewarm_callback = self._audio_callback
-                try:
-                    adopted = self.prewarm_manager.attach_active_capture(
-                        self._prewarm_callback,
-                        sample_rate=self._target_sample_rate,
-                        target_channels=self._target_channels,
-                        block_size=self.block_size,
-                        device=self.device,
-                    )
-                except Exception as exc:
-                    logger.debug(f"Could not attach prewarmed microphone stream: {exc}")
+                self._prewarm_adoption_skipped_reason = ""
+                if self._requested_audio_engine == "python":
+                    self._prewarm_callback = self._audio_callback
+                    try:
+                        adopted = self.prewarm_manager.attach_active_capture(
+                            self._prewarm_callback,
+                            sample_rate=self._target_sample_rate,
+                            target_channels=self._target_channels,
+                            block_size=self.block_size,
+                            device=self.device,
+                        )
+                    except Exception as exc:
+                        logger.debug(f"Could not attach prewarmed microphone stream: {exc}")
 
-                if adopted:
-                    self._capture_channels = int(
-                        adopted.get("capture_channels") or self._target_channels
+                    if adopted:
+                        self._capture_channels = int(
+                            adopted.get("capture_channels") or self._target_channels
+                        )
+                        self._using_prewarm_stream = True
+                        self._prepend_prewarm_audio(adopted)
+                        logger.info(
+                            "Microphone prewarm stream adopted "
+                            f"(device={'default' if adopted.get('device_index') is None else adopted.get('device_index')}, "
+                            f"prebuffer={float(adopted.get('prebuffer_ms') or 0.0):.1f} ms)"
+                        )
+                        if self.on_ready:
+                            try:
+                                self.on_ready()
+                            except Exception as e:
+                                logger.warning(f"on_ready callback error: {e}")
+                        return
+                else:
+                    self._prewarm_adoption_skipped_reason = (
+                        f"engine:{self._requested_audio_engine}"
                     )
-                    self._using_prewarm_stream = True
-                    self._prepend_prewarm_audio(adopted)
-                    logger.info(
-                        "Microphone prewarm stream adopted "
-                        f"(device={'default' if adopted.get('device_index') is None else adopted.get('device_index')}, "
-                        f"prebuffer={float(adopted.get('prebuffer_ms') or 0.0):.1f} ms)"
-                    )
-                    if self.on_ready:
-                        try:
-                            self.on_ready()
-                        except Exception as e:
-                            logger.warning(f"on_ready callback error: {e}")
-                    return
 
                 try:
                     self.prewarm_manager.pause_for_active_capture()
@@ -1230,6 +1239,7 @@ class MicrophoneInput(BaseInputTransport):
             "hasStream": bool(stream),
             "streamActive": bool(stream and getattr(stream, "active", False)),
             "usingPrewarmStream": bool(self._using_prewarm_stream),
+            "prewarmAdoptionSkippedReason": self._prewarm_adoption_skipped_reason,
             "streamClaimed": bool(self._stream_claimed),
             "sampleRate": int(self._target_sample_rate),
             "targetChannels": int(self._target_channels),

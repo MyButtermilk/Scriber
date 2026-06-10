@@ -34,6 +34,59 @@ class _FakeInputStream:
         self.closed = True
 
 
+class _FakeStreamHandle:
+    def __init__(self) -> None:
+        self.active = False
+        self.closed = False
+
+    def start(self) -> None:
+        self.active = True
+
+    def stop(self) -> None:
+        self.active = False
+
+    def close(self) -> None:
+        self.closed = True
+        self.active = False
+
+
+class _FakeRustFrameSource:
+    engine = "rust-prototype"
+    name = "fake-rust-frame-source"
+
+    def __init__(self) -> None:
+        self.stream = _FakeStreamHandle()
+        self.target_channels = 1
+        self.capture_channels = 1
+        self.fallback_reason = ""
+        self.callback_count = 0
+        self.open_calls = 0
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def open(self, callback):
+        self.callback = callback
+        self.open_calls += 1
+        return self
+
+    def start(self) -> None:
+        self.start_calls += 1
+        self.stream.start()
+
+    def stop(self, *, close: bool) -> None:
+        self.stop_calls += 1
+        self.stream.stop()
+        if close:
+            self.stream.close()
+
+    def diagnostic_snapshot(self) -> dict:
+        return {
+            "engine": self.engine,
+            "frameSource": self.name,
+            "streamActive": self.stream.active,
+        }
+
+
 def test_python_sounddevice_frame_source_opens_configured_device_with_stable_capture_channels():
     _FakeInputStream.instances.clear()
     fake_sd = types.SimpleNamespace(
@@ -739,3 +792,51 @@ async def test_microphone_input_falls_back_to_python_when_rust_capture_unavailab
     assert _FakeInputStream.instances[-1].active is True
 
     await mic.stop(microphone.EndFrame())
+
+
+@pytest.mark.asyncio
+async def test_rust_prototype_does_not_adopt_python_prewarm_when_always_on(monkeypatch):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setattr(microphone, "HAS_SOUNDDEVICE", True)
+    fake_source = _FakeRustFrameSource()
+
+    class FakePrewarmManager:
+        def __init__(self) -> None:
+            self.attach_calls = 0
+            self.pause_calls = 0
+
+        def attach_active_capture(self, *_args, **_kwargs):
+            self.attach_calls += 1
+            raise AssertionError("Rust prototype must not adopt Python prewarm")
+
+        def pause_for_active_capture(self) -> None:
+            self.pause_calls += 1
+
+    prewarm = FakePrewarmManager()
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        keep_alive=True,
+        prewarm_manager=prewarm,
+    )
+    mic._create_audio_task = lambda: None
+
+    async def fake_drain_queue():
+        return None
+
+    mic._drain_queue = fake_drain_queue
+    mic._create_frame_source = lambda: fake_source
+
+    await mic.start(microphone.StartFrame())
+    snapshot = mic.diagnostic_snapshot()
+    await mic.stop(microphone.EndFrame())
+
+    assert prewarm.attach_calls == 0
+    assert prewarm.pause_calls == 1
+    assert fake_source.open_calls == 1
+    assert fake_source.start_calls == 1
+    assert snapshot["requestedEngine"] == "rust-prototype"
+    assert snapshot["engine"] == "rust-prototype"
+    assert snapshot["usingPrewarmStream"] is False
+    assert snapshot["prewarmAdoptionSkippedReason"] == "engine:rust-prototype"

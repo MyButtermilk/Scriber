@@ -625,10 +625,16 @@ Missing prerequisites:
    - `SCRIBER_AUDIO_ENGINE=rust-prototype` is still request-only. It now tries
      the prototype frame-pipe reader, then falls back to Python `sounddevice`
      before the first frame if Rust capture is unavailable or unhealthy.
+   - Implemented: Python idle prewarm adoption is now engine-scoped. When
+     `SCRIBER_AUDIO_ENGINE=rust-prototype` is requested with always-on mic
+     enabled, the Python prewarm manager is paused instead of adopted, so
+     active capture still exercises the Rust frame-source path. Diagnostics
+     expose `prewarmAdoptionSkippedReason` for this gate.
    - Added Python source contract tests for configured-device open, default
      fallback, pause/close lifecycle, device-index parsing, frame-pipe reading,
-     and Rust-unavailable fallback. Existing microphone, prewarm, pipeline-stop,
-     and runtime lifecycle tests pass.
+     Rust-unavailable fallback, and Rust-requested always-on startup without
+     Python-prewarm adoption. Existing microphone, prewarm, pipeline-stop, and
+     runtime lifecycle tests pass.
 2. Native endpoint identity mapping:
    - Implemented on `codex/rust-expansion-plan` as a private diagnostic and
      prototype mapping layer in `src/audio_devices.py`.
@@ -892,6 +898,10 @@ Implementation plan:
      leading frames as prebuffer and exposes writer-side prebuffer/live counts.
      This validates frame ordering and promotion evidence, but it is not yet a
      full idle always-on Rust prewarm stream.
+   - Implemented: the active Rust prototype no longer adopts the Python
+     always-on prewarm stream. This prevents `SCRIBER_AUDIO_ENGINE=rust-prototype`
+     plus `SCRIBER_MIC_ALWAYS_ON=1` from silently taking the Python capture path
+     before Rust evidence can be collected.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream
