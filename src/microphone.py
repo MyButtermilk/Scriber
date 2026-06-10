@@ -14,6 +14,7 @@ from src.audio_devices import (
     collect_native_capture_endpoint_inventory,
     normalize_device_name,
 )
+from src.config import Config
 from src.runtime.audio_frame_pipe import (
     AUDIO_FRAME_FLAG_END_OF_STREAM,
     AUDIO_FRAME_FLAG_PREBUFFER,
@@ -396,6 +397,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.frame_pipe_live_audio_frames_read = 0
         self.frame_pipe_prebuffer_after_live_count = 0
         self.frame_pipe_first_live_sequence = None
+        self.requested_prebuffer_ms = 0
         self.frame_pipe_reader_end_reason = "notStarted"
         self.frame_pipe_first_frame_read_ms = None
         self._shell_call = shell_call or call_shell_ipc
@@ -435,6 +437,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             sample_rate=self.sample_rate,
             channels=self.target_channels,
         )
+        self.requested_prebuffer_ms = _rust_audio_prebuffer_ms()
         payload = {
             "sampleRate": self.sample_rate,
             "channels": self.target_channels,
@@ -442,7 +445,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "devicePreference": str(self.device or "default"),
             "portAudioLabel": selection.get("portAudioLabel") or "",
             "nativeEndpointIdHash": selection.get("nativeEndpointIdHash") or None,
-            "prebufferMs": 0,
+            "prebufferMs": self.requested_prebuffer_ms,
             "frameProtocol": {
                 "magic": "SAF1",
                 "version": AUDIO_FRAME_VERSION,
@@ -571,6 +574,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "captureChannels": self.capture_channels,
             "blockSize": self.block_size,
             "device": str(self.device),
+            "requestedPrebufferMs": self.requested_prebuffer_ms,
             "streamId": self.stream_id or None,
             "framePipeHash": self._frame_pipe_hash,
             "nativeEndpointIdHash": self.native_endpoint_id_hash,
@@ -733,6 +737,13 @@ def _rust_first_frame_timeout_seconds() -> float:
         return max(0.05, float(raw))
     except (TypeError, ValueError):
         return 0.5
+
+
+def _rust_audio_prebuffer_ms() -> int:
+    try:
+        return max(0, min(2000, int(getattr(Config, "MIC_PREBUFFER_MS", 0) or 0)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _rust_audio_device_selection_payload(device, *, sample_rate: int, channels: int) -> dict:

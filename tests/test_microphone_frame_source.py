@@ -171,6 +171,7 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     )
     calls: list[tuple[np.ndarray, int, dict, object]] = []
     commands: list[tuple[str, dict]] = []
+    monkeypatch.setattr(microphone.Config, "MIC_PREBUFFER_MS", 400, raising=False)
     monkeypatch.setattr(
         microphone,
         "_rust_audio_device_selection_payload",
@@ -236,6 +237,7 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     assert commands[0][1]["frameProtocol"]["sampleFormat"] == "pcm_i16_le"
     assert commands[0][1]["portAudioLabel"] == "Default Mic, Windows WASAPI"
     assert commands[0][1]["nativeEndpointIdHash"] == "endpoint-hash"
+    assert commands[0][1]["prebufferMs"] == 400
     assert commands[-1][0] == "audioCaptureStop"
     assert source.engine == "rust-prototype"
     assert source.name == "rust-frame-pipe"
@@ -244,6 +246,7 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     np.testing.assert_array_equal(calls[0][0], audio)
     assert active_snapshot["framePipeHash"]
     snapshot = source.diagnostic_snapshot()
+    assert snapshot["requestedPrebufferMs"] == 400
     assert snapshot["framePipeHash"] is None
     assert snapshot["nativeEndpointIdHash"] == "endpoint-hash"
     assert snapshot["sidecarExitStatus"] == 0

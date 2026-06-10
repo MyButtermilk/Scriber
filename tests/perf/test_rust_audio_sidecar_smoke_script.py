@@ -22,6 +22,9 @@ def test_rust_audio_sidecar_smoke_script_documents_capture_contract() -> None:
     assert "selected-native-endpoint-hash" in script
     assert "firstFrameReadMs" in script
     assert "framesRead" in script
+    assert "prebufferFramesRead" in script
+    assert "prebufferAfterLiveCount" in script
+    assert "--prebuffer-ms" in script
     assert "sequenceGapCount" in script
     assert "selectedHashVerified" in script
 
@@ -50,5 +53,6 @@ def test_rust_audio_sidecar_smoke_plan_only_writes_artifact(tmp_path: Path) -> N
     assert stdout_payload["ok"] is True
     assert stdout_payload["planOnly"] is True
     assert stdout_payload["mode"] == "wasapi"
+    assert stdout_payload["requested"]["prebufferMs"] == 0
     assert "--duration-sec 10" in stdout_payload["exampleCommand"]
     assert any("10-minute" in item for item in stdout_payload["requirements"])

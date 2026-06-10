@@ -2,7 +2,8 @@ mod audio_frame_pipe;
 mod redaction;
 
 use audio_frame_pipe::{
-    encode_audio_frame, AudioFrameHeader, AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VERSION,
+    encode_audio_frame, AudioFrameHeader, AUDIO_FRAME_FLAG_PREBUFFER, AUDIO_FRAME_HEADER_LEN,
+    AUDIO_FRAME_VERSION,
 };
 use redaction::hash_sensitive_identifier;
 use serde_json::{json, Value};
@@ -796,13 +797,21 @@ fn run_synthetic_frame_pipe_writer(
     let frame_interval = Duration::from_secs_f64(
         (request.block_size as f64 / f64::from(request.sample_rate)).max(0.001),
     );
+    let prebuffer_frame_target = synthetic_prebuffer_frame_count(&request);
     let mut sequence = 0_u64;
+    let mut prebuffer_frames_written = 0_u32;
     loop {
         match stop_rx.try_recv() {
             Ok(()) | Err(TryRecvError::Disconnected) => break,
             Err(TryRecvError::Empty) => {}
         }
 
+        let flags = if prebuffer_frames_written < prebuffer_frame_target {
+            prebuffer_frames_written = prebuffer_frames_written.saturating_add(1);
+            AUDIO_FRAME_FLAG_PREBUFFER
+        } else {
+            0
+        };
         let timestamp_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         let header = match AudioFrameHeader::new(
             payload.len() as u32,
@@ -810,7 +819,7 @@ fn run_synthetic_frame_pipe_writer(
             timestamp_micros,
             request.block_size,
             request.channels,
-            0,
+            flags,
         ) {
             Ok(header) => header,
             Err(err) => {
@@ -845,6 +854,19 @@ fn run_synthetic_frame_pipe_writer(
         CloseHandle(pipe_handle);
     }
     stats
+}
+
+fn synthetic_prebuffer_frame_count(request: &CaptureRequest) -> u32 {
+    if request.prebuffer_ms == 0 || request.block_size == 0 || request.sample_rate == 0 {
+        return 0;
+    }
+    let requested_samples =
+        u64::from(request.sample_rate).saturating_mul(u64::from(request.prebuffer_ms)) / 1000;
+    if requested_samples == 0 {
+        return 0;
+    }
+    let blocks = requested_samples.div_ceil(u64::from(request.block_size));
+    blocks.min(u64::from(u32::MAX)) as u32
 }
 
 #[cfg(windows)]
@@ -1480,6 +1502,25 @@ mod tests {
         assert_eq!(request.channels, 1);
         assert_eq!(request.block_size, 16);
         assert_eq!(request.device_preference, "default");
+    }
+
+    #[test]
+    fn synthetic_prebuffer_frame_count_rounds_up_to_whole_blocks() {
+        let request = CaptureRequest {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size: 512,
+            device_preference: "default".to_string(),
+            port_audio_label: "".to_string(),
+            native_endpoint_id_hash: "".to_string(),
+            prebuffer_ms: 400,
+        };
+
+        assert_eq!(synthetic_prebuffer_frame_count(&request), 13);
+
+        let mut disabled = request.clone();
+        disabled.prebuffer_ms = 0;
+        assert_eq!(synthetic_prebuffer_frame_count(&disabled), 0);
     }
 
     #[test]

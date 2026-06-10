@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.runtime.audio_frame_pipe import (  # noqa: E402
+    AUDIO_FRAME_FLAG_PREBUFFER,
     AUDIO_FRAME_HEADER_LEN,
     AUDIO_FRAME_VERSION,
     decode_audio_frame_header,
@@ -158,11 +159,17 @@ def read_frames(
 ) -> dict[str, Any]:
     opened_at = time.perf_counter()
     frames_read = 0
+    prebuffer_frames_read = 0
+    live_frames_read = 0
+    prebuffer_after_live_count = 0
     bytes_read = 0
     sequence_gaps: list[dict[str, int]] = []
     first_frame_ms: float | None = None
+    first_live_frame_ms: float | None = None
+    first_live_sequence: int | None = None
     last_sequence: int | None = None
     last_timestamp_micros: int | None = None
+    last_flags: int | None = None
     deadline = opened_at + max(0.05, duration_sec)
 
     with open_pipe_for_read(pipe_path) as reader:
@@ -173,6 +180,16 @@ def read_frames(
             now = time.perf_counter()
             if first_frame_ms is None:
                 first_frame_ms = (now - opened_at) * 1000.0
+            is_prebuffer = bool(header.flags & AUDIO_FRAME_FLAG_PREBUFFER)
+            if is_prebuffer:
+                prebuffer_frames_read += 1
+                if live_frames_read > 0:
+                    prebuffer_after_live_count += 1
+            else:
+                live_frames_read += 1
+                if first_live_frame_ms is None:
+                    first_live_frame_ms = (now - opened_at) * 1000.0
+                    first_live_sequence = int(header.sequence)
             if last_sequence is not None and header.sequence != last_sequence + 1:
                 sequence_gaps.append(
                     {
@@ -184,13 +201,22 @@ def read_frames(
             bytes_read += len(header_bytes) + len(payload)
             last_sequence = int(header.sequence)
             last_timestamp_micros = int(header.timestamp_micros)
+            last_flags = int(header.flags)
 
     return {
         "framesRead": frames_read,
+        "prebufferFramesRead": prebuffer_frames_read,
+        "liveFramesRead": live_frames_read,
+        "prebufferAfterLiveCount": prebuffer_after_live_count,
         "bytesRead": bytes_read,
         "firstFrameReadMs": round(first_frame_ms, 3) if first_frame_ms is not None else None,
+        "firstLiveFrameReadMs": (
+            round(first_live_frame_ms, 3) if first_live_frame_ms is not None else None
+        ),
+        "firstLiveSequence": first_live_sequence,
         "lastSequence": last_sequence,
         "lastTimestampMicros": last_timestamp_micros,
+        "lastFlags": last_flags,
         "sequenceGapCount": len(sequence_gaps),
         "sequenceGaps": sequence_gaps[:10],
     }
@@ -201,6 +227,10 @@ def redacted_capture_start_payload(payload: dict[str, Any]) -> dict[str, Any]:
     redacted = {key: value for key, value in payload.items() if key != "framePipe"}
     redacted["framePipeHash"] = hash_hint(frame_pipe)
     return redacted
+
+
+def clamp_prebuffer_ms(value: int) -> int:
+    return max(0, min(2000, int(value)))
 
 
 def run_capture(
@@ -268,7 +298,7 @@ def base_capture_payload(args: argparse.Namespace) -> dict[str, Any]:
         "channels": args.channels,
         "blockSize": args.block_size,
         "devicePreference": "default",
-        "prebufferMs": 0,
+        "prebufferMs": clamp_prebuffer_ms(args.prebuffer_ms),
         "frameProtocol": {
             "magic": "SAF1",
             "version": AUDIO_FRAME_VERSION,
@@ -284,6 +314,16 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         "ok": True,
         "planOnly": True,
         "mode": args.mode,
+        "requested": {
+            "durationSec": args.duration_sec,
+            "selectedDurationSec": args.selected_duration_sec,
+            "sampleRate": args.sample_rate,
+            "channels": args.channels,
+            "blockSize": args.block_size,
+            "maxFrames": args.max_frames,
+            "prebufferMs": clamp_prebuffer_ms(args.prebuffer_ms),
+            "skipSelectedHash": bool(args.skip_selected_hash),
+        },
         "requirements": [
             "Build scriber-audio-sidecar first with cargo build --bin scriber-audio-sidecar.",
             "Run on Windows for WASAPI capture evidence.",
@@ -318,6 +358,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--channels", type=int, default=1)
     parser.add_argument("--block-size", type=int, default=160)
     parser.add_argument("--max-frames", type=int, default=250)
+    parser.add_argument("--prebuffer-ms", type=int, default=0)
     parser.add_argument("--skip-selected-hash", action="store_true")
     parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--output", default="")
@@ -352,6 +393,7 @@ def main(argv: list[str] | None = None) -> int:
             "channels": args.channels,
             "blockSize": args.block_size,
             "maxFrames": args.max_frames,
+            "prebufferMs": clamp_prebuffer_ms(args.prebuffer_ms),
             "skipSelectedHash": bool(args.skip_selected_hash),
         },
         "captures": [],
@@ -399,6 +441,14 @@ def main(argv: list[str] | None = None) -> int:
         "failedCaptureCount": len(failed),
         "totalFramesRead": sum(
             int(capture.get("frames", {}).get("framesRead") or 0) for capture in captures
+        ),
+        "totalPrebufferFramesRead": sum(
+            int(capture.get("frames", {}).get("prebufferFramesRead") or 0)
+            for capture in captures
+        ),
+        "totalPrebufferAfterLiveCount": sum(
+            int(capture.get("frames", {}).get("prebufferAfterLiveCount") or 0)
+            for capture in captures
         ),
         "selectedHashVerified": bool(
             selected

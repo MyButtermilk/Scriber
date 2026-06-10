@@ -841,6 +841,13 @@ Implementation plan:
      `AUDIO_FRAME_FLAG_PREBUFFER` flag, preserves prebuffer frames before live
      frames, exposes prebuffer/live counters, and treats prebuffer-after-live as
      a protocol failure.
+   - Partly implemented: Python now sends the configured bounded
+     `MIC_PREBUFFER_MS` value as `prebufferMs` when starting the Rust prototype
+     frame source, and diagnostics expose the requested value.
+   - Partly implemented: synthetic Rust sidecar capture emits correctly flagged
+     prebuffer frames before live frames when `prebufferMs` is requested, and
+     `scripts/smoke_rust_audio_sidecar.py --prebuffer-ms ...` reports
+     prebuffer/live frame counts plus any prebuffer-after-live ordering errors.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream
