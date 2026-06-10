@@ -371,6 +371,13 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.native_endpoint_id_hash = None
         self.sidecar_pid = None
         self.sidecar_exit_status = None
+        self.sidecar_uptime_ms = None
+        self.sidecar_connected = None
+        self.sidecar_frames_written = None
+        self.sidecar_bytes_written = None
+        self.sidecar_writer_error = None
+        self.sidecar_stop_reason = ""
+        self.sidecar_start_count = 0
         self.callback_count = 0
         self.dropped_frame_count = 0
         self._shell_call = shell_call or call_shell_ipc
@@ -434,11 +441,14 @@ class RustPrototypeFrameSource(AudioFrameSource):
             self.fallback_reason = error_code
             raise RuntimeError(f"Rust audio capture start failed: {fallback_reason}")
 
+        self._last_error = ""
         self.stream_id = str(response_payload.get("streamId") or "")
         self._frame_pipe = str(response_payload.get("framePipe") or "")
         self._frame_pipe_hash = _hash_private_hint(self._frame_pipe)
         self.native_endpoint_id_hash = response_payload.get("nativeEndpointIdHash")
         self.sidecar_pid = response_payload.get("sidecarPid")
+        if self.stream_id:
+            self.sidecar_start_count += 1
         self.capture_channels = max(
             1,
             int(response_payload.get("captureChannels") or self.target_channels),
@@ -468,7 +478,11 @@ class RustPrototypeFrameSource(AudioFrameSource):
         if self._reader_thread and self._reader_thread.is_alive():
             return
         if not self._frame_pipe:
-            raise RuntimeError("Rust audio frame pipe is not configured")
+            if self._closed:
+                raise RuntimeError("Rust audio frame source is closed")
+            if not callable(self._callback):
+                raise RuntimeError("Rust audio frame source callback is not configured")
+            self.open(self._callback)
         self._stop_event.clear()
         self._first_frame_event.clear()
         self._sequence_guard = AudioFrameSequenceGuard()
@@ -492,20 +506,37 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._stop_event.set()
         if self.stream_id:
             try:
-                self._shell_call(
+                response = self._shell_call(
                     "audioCaptureStop",
                     {"streamId": self.stream_id},
                     timeout_seconds=0.75,
                 )
+                response_payload = response.get("payload") if isinstance(response, dict) else None
+                if isinstance(response_payload, dict):
+                    self._record_sidecar_stop(response_payload)
             except Exception as exc:
                 self._last_error = str(exc)
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=0.5)
         self._stream.stop()
+        self.stream_id = ""
+        self._frame_pipe = ""
+        self._frame_pipe_hash = None
+        self.sidecar_pid = None
         if close:
             self._stream.close()
-            self._frame_pipe = ""
             self._closed = True
+
+    def _record_sidecar_stop(self, payload: dict) -> None:
+        self.sidecar_exit_status = payload.get("exitStatus")
+        self.sidecar_uptime_ms = payload.get("sidecarUptimeMs")
+        self.sidecar_connected = payload.get("connected")
+        self.sidecar_frames_written = payload.get("framesWritten")
+        self.sidecar_bytes_written = payload.get("bytesWritten")
+        self.sidecar_writer_error = payload.get("writerError")
+        self.sidecar_stop_reason = str(payload.get("reason") or "")
+        if self.sidecar_writer_error:
+            self._last_error = str(self.sidecar_writer_error)
 
     def diagnostic_snapshot(self) -> dict:
         return {
@@ -523,6 +554,15 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "nativeEndpointIdHash": self.native_endpoint_id_hash,
             "sidecarPid": self.sidecar_pid,
             "sidecarExitStatus": self.sidecar_exit_status,
+            "sidecarUptimeMs": self.sidecar_uptime_ms,
+            "sidecarConnected": self.sidecar_connected,
+            "sidecarFramesWritten": self.sidecar_frames_written,
+            "sidecarBytesWritten": self.sidecar_bytes_written,
+            "sidecarWriterError": self.sidecar_writer_error,
+            "sidecarStopReason": self.sidecar_stop_reason,
+            "sidecarStartCount": self.sidecar_start_count,
+            "sidecarRestartCount": max(0, int(self.sidecar_start_count) - 1),
+            "readerThreadAlive": bool(self._reader_thread and self._reader_thread.is_alive()),
             "callbackCount": self.callback_count,
             "droppedFrameCount": self.dropped_frame_count,
             "fallbackReason": self.fallback_reason,

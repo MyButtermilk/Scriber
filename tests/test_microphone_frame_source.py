@@ -192,7 +192,19 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
                 },
             }
         if command == "audioCaptureStop":
-            return {"success": True, "payload": {"stopped": True}}
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "reason": "captureStop",
+                    "connected": True,
+                    "framesWritten": 3,
+                    "bytesWritten": 3072,
+                    "writerError": None,
+                    "sidecarUptimeMs": 55,
+                    "exitStatus": 0,
+                },
+            }
         raise AssertionError(command)
 
     def reader_factory(_path, *_args, **_kwargs):
@@ -212,6 +224,7 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
 
     source.open(lambda *args: calls.append(args))
     source.start()
+    active_snapshot = source.diagnostic_snapshot()
     source.stop(close=True)
 
     assert commands[0][0] == "audioCaptureStart"
@@ -224,10 +237,100 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     assert source.callback_count == 1
     assert calls[0][1] == 512
     np.testing.assert_array_equal(calls[0][0], audio)
+    assert active_snapshot["framePipeHash"]
     snapshot = source.diagnostic_snapshot()
-    assert snapshot["framePipeHash"]
+    assert snapshot["framePipeHash"] is None
     assert snapshot["nativeEndpointIdHash"] == "endpoint-hash"
+    assert snapshot["sidecarExitStatus"] == 0
+    assert snapshot["sidecarConnected"] is True
+    assert snapshot["sidecarFramesWritten"] == 3
+    assert snapshot["sidecarBytesWritten"] == 3072
+    assert snapshot["sidecarUptimeMs"] == 55
+    assert snapshot["sidecarStopReason"] == "captureStop"
     assert "framePipe" not in snapshot
+
+
+def test_rust_prototype_frame_source_can_reopen_after_watchdog_pause(monkeypatch):
+    audio = np.zeros((16, 1), dtype=np.int16)
+    frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(audio.tobytes()),
+            sequence=0,
+            timestamp_micros=1,
+            frame_count=16,
+            channels=1,
+        ),
+        audio.tobytes(),
+    )
+    commands: list[tuple[str, dict]] = []
+    starts = 0
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
+
+    def shell_call(command, payload=None, **_kwargs):
+        nonlocal starts
+        commands.append((command, payload or {}))
+        if command == "audioCaptureStart":
+            starts += 1
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": f"stream-{starts}",
+                    "framePipe": f"memory-pipe-{starts}",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "endpoint-hash",
+                },
+            }
+        if command == "audioCaptureStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "reason": "watchdog",
+                    "connected": True,
+                    "framesWritten": 1,
+                    "bytesWritten": len(frame),
+                    "writerError": None,
+                    "exitStatus": 0,
+                },
+            }
+        raise AssertionError(command)
+
+    def reader_factory(_path, *_args, **_kwargs):
+        import io
+
+        return io.BytesIO(frame)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=shell_call,
+        reader_factory=reader_factory,
+        first_frame_timeout_seconds=1.0,
+    )
+    source.open(lambda *_args: None)
+    source.start()
+    source.stop(close=False)
+    source.start()
+    source.stop(close=True)
+
+    assert [command for command, _payload in commands].count("audioCaptureStart") == 2
+    assert [command for command, _payload in commands].count("audioCaptureStop") == 2
+    snapshot = source.diagnostic_snapshot()
+    assert snapshot["sidecarStartCount"] == 2
+    assert snapshot["sidecarRestartCount"] == 1
+    assert snapshot["sidecarExitStatus"] == 0
 
 
 def test_rust_audio_device_selection_payload_maps_portaudio_index_to_native_hash(monkeypatch):

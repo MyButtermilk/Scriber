@@ -249,7 +249,7 @@ fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
         Err(result) => with_process_identity(result, path_hash.clone(), pid),
     };
     let _ = write_sidecar_json_line(&mut sidecar.stdin, &shutdown_request());
-    let _ = sidecar.child.wait();
+    let status = sidecar.child.wait().ok();
     if let Some(object) = result.payload.as_object_mut() {
         object.insert(
             "sidecarUptimeMs".to_string(),
@@ -259,6 +259,12 @@ fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
                 .as_millis()
                 .min(u128::from(u64::MAX)) as u64),
         );
+        object.insert(
+            "exitStatus".to_string(),
+            json!(status.as_ref().and_then(|value| value.code())),
+        );
+        object.insert("sidecarPid".to_string(), json!(sidecar.pid));
+        object.insert("sidecarPathHash".to_string(), json!(path_hash));
     }
     result
 }

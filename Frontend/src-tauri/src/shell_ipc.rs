@@ -310,13 +310,7 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                         "streamId": stream_id,
                     }),
                 );
-                let payload = json!({
-                    "engine": "rust-prototype",
-                    "stopped": result.payload.get("stopped").and_then(Value::as_bool).unwrap_or(false),
-                    "streamId": result.payload.get("streamId").and_then(Value::as_str).unwrap_or_default(),
-                    "reason": result.payload.get("reason").and_then(Value::as_str).unwrap_or("noRustAudioSidecar"),
-                    "sidecar": sidecar_status_payload(&result),
-                });
+                let payload = audio_capture_stop_shell_payload(result.payload.clone(), &result);
                 response_line(request_id, true, "", "", started, payload)
             }
             Err(err) => response_line(
@@ -386,11 +380,41 @@ fn audio_capture_shell_payload(
     payload
 }
 
+fn audio_capture_stop_shell_payload(
+    sidecar_payload: Value,
+    result: &crate::audio_sidecar_client::AudioSidecarCallResult,
+) -> Value {
+    let original_sidecar_payload = sidecar_payload.clone();
+    let mut payload = match sidecar_payload {
+        Value::Object(map) => Value::Object(map),
+        other => json!({
+            "sidecarPayloadValue": other,
+        }),
+    };
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("engine".to_string(), json!("rust-prototype"));
+        object
+            .entry("stopped".to_string())
+            .or_insert_with(|| json!(false));
+        object
+            .entry("streamId".to_string())
+            .or_insert_with(|| json!(""));
+        object
+            .entry("reason".to_string())
+            .or_insert_with(|| json!("noRustAudioSidecar"));
+        object.insert("sidecar".to_string(), sidecar_status_payload(result));
+        object.insert("sidecarPayload".to_string(), original_sidecar_payload);
+    }
+    payload
+}
+
 fn sidecar_status_payload(result: &crate::audio_sidecar_client::AudioSidecarCallResult) -> Value {
     json!({
         "executableAvailable": result.executable_available,
         "pathHash": result.executable_path_hash,
         "pid": result.pid,
+        "errorCode": result.error_code,
+        "fallbackReason": result.fallback_reason,
     })
 }
 
@@ -1683,6 +1707,41 @@ mod tests {
             "endpoint-hash"
         );
         assert_eq!(payload["sidecar"]["pid"], 1234);
+        assert_eq!(payload["sidecarPayload"]["streamId"], "stream-1");
+    }
+
+    #[test]
+    fn audio_capture_stop_shell_payload_preserves_sidecar_health_fields() {
+        let result = crate::audio_sidecar_client::AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "stopped": true,
+                "streamId": "stream-1",
+                "reason": "captureStop",
+                "connected": true,
+                "framesWritten": 42,
+                "bytesWritten": 13_440,
+                "writerError": null,
+                "sidecarUptimeMs": 123,
+                "exitStatus": 0,
+                "sidecarPid": 9876,
+            }),
+            executable_available: true,
+            executable_path_hash: Some("hash".to_string()),
+            pid: Some(9876),
+        };
+
+        let payload = super::audio_capture_stop_shell_payload(result.payload.clone(), &result);
+
+        assert_eq!(payload["engine"], "rust-prototype");
+        assert_eq!(payload["stopped"], true);
+        assert_eq!(payload["framesWritten"], 42);
+        assert_eq!(payload["bytesWritten"], 13_440);
+        assert_eq!(payload["sidecarUptimeMs"], 123);
+        assert_eq!(payload["exitStatus"], 0);
+        assert_eq!(payload["sidecar"]["pid"], 9876);
         assert_eq!(payload["sidecarPayload"]["streamId"], "stream-1");
     }
 

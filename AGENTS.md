@@ -180,6 +180,10 @@ Packaging and scripts:
   fails before the first frame, the recording falls back to Python `sounddevice`
   for that session. Do not silently switch engines after frames have been
   delivered.
+- Preserve Rust audio stop-health diagnostics across all layers: sidecar stop
+  reason, writer connection state, frames/bytes written, writer error, uptime,
+  PID, exit status, reader-thread liveness, and restart counts must stay
+  available in nested active-capture diagnostics.
 - `SCRIBER_MIC_ALWAYS_ON` is implemented as idle prewarm plus bounded rolling
   prebuffer. Do not reuse Pipecat session state across recordings.
 - `MicrophoneInput` still queues raw callback frames; only visualizer/input RMS

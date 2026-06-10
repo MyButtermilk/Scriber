@@ -140,6 +140,10 @@ Rust audio prototype:
   the sidecar client when an executable is available.
 - `captureStart` still returns explicit unavailable status by default unless an
   explicit sidecar capture flag is set.
+- `audioCaptureStop` preserves sidecar health fields, including stop reason,
+  writer connection state, frames/bytes written, writer error, uptime, PID, and
+  exit status. Python stores these in nested active-capture diagnostics for
+  support bundles and long-run smokes.
 - Backend restart and shell exit drain the sidecar lifecycle registry before
   restarting the Python backend or exiting the Tauri shell.
 - `src/microphone.py` can opt into the Rust prototype through
