@@ -147,6 +147,9 @@ Rust audio prototype:
 - Python Rust-frame diagnostics also record frame-pipe frames/audio frames read,
   bytes read, sequence/protocol error counts, first-frame read timing, reader
   end reason, and last frame metadata without exposing raw pipe paths.
+- The Rust frame reader distinguishes `SAF1` prebuffer frames from live frames
+  and rejects prebuffer frames that arrive after live frames. This keeps future
+  Rust prewarm adoption testable before Rust becomes the default audio engine.
 - Backend restart and shell exit drain the sidecar lifecycle registry before
   restarting the Python backend or exiting the Tauri shell.
 - `src/microphone.py` can opt into the Rust prototype through

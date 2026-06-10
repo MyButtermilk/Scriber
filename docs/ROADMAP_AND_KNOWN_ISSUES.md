@@ -116,6 +116,9 @@ Rust audio:
   Passive Rust WASAPI probes now use the same redacted native endpoint hash
   contract as active Rust capture, so selected-device probe evidence is no
   longer default-only.
+  The Python Rust frame reader also tracks `SAF1` prebuffer/live frame counts
+  and rejects prebuffer-after-live interleaving, but Rust-side always-on
+  prewarm adoption is still not complete.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

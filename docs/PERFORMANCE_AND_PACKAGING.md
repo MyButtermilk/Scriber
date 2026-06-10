@@ -665,6 +665,10 @@ Missing prerequisites:
      frame-pipe frames read, audio frames read, bytes read, sequence/protocol
      error counters, last frame metadata, first-frame read timing, reader end
      reason, and callback-drop counts before protocol failure.
+   - Implemented for future Rust prewarm parity: Python reader diagnostics now
+     distinguish `SAF1` prebuffer frames from live frames, track prebuffer/live
+     audio-frame counts and first live sequence, and reject prebuffer frames
+     that arrive after live frames.
    - Still open: durable mid-session failure policy and physical support-bundle
      evidence from long real-device runs.
 4. Audio frame-pipe protocol:
@@ -833,6 +837,10 @@ Implementation plan:
    - Match configured prebuffer duration, frame ordering, adoption into active
      capture, no prebuffer/live-frame interleaving, pause during device refresh,
      and resume after active capture.
+   - Partly implemented: the Python Rust frame source understands the
+     `AUDIO_FRAME_FLAG_PREBUFFER` flag, preserves prebuffer frames before live
+     frames, exposes prebuffer/live counters, and treats prebuffer-after-live as
+     a protocol failure.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream

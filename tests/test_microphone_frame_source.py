@@ -1,3 +1,4 @@
+import threading
 import types
 
 import numpy as np
@@ -5,7 +6,11 @@ import pytest
 
 import src.microphone as microphone
 from src.microphone import PythonSoundDeviceFrameSource, RustPrototypeFrameSource
-from src.runtime.audio_frame_pipe import AudioFrameHeader, encode_audio_frame
+from src.runtime.audio_frame_pipe import (
+    AUDIO_FRAME_FLAG_PREBUFFER,
+    AudioFrameHeader,
+    encode_audio_frame,
+)
 
 
 class _FakeInputStream:
@@ -343,6 +348,210 @@ def test_rust_prototype_frame_source_reports_sequence_error_before_first_frame(m
     assert snapshot["framePipeReaderEndReason"] == "protocolError"
     assert snapshot["fallbackReason"] == "rustFramePipeSequenceError"
     assert "sequence out of order" in snapshot["lastError"]
+
+
+def test_rust_prototype_frame_source_tracks_prebuffer_before_live_frames(monkeypatch):
+    prebuffer_audio = np.full((16, 1), 100, dtype=np.int16)
+    live_audio = np.full((16, 1), 200, dtype=np.int16)
+    frames = b"".join(
+        [
+            encode_audio_frame(
+                AudioFrameHeader(
+                    payload_len=len(prebuffer_audio.tobytes()),
+                    sequence=0,
+                    timestamp_micros=1,
+                    frame_count=16,
+                    channels=1,
+                    flags=AUDIO_FRAME_FLAG_PREBUFFER,
+                ),
+                prebuffer_audio.tobytes(),
+            ),
+            encode_audio_frame(
+                AudioFrameHeader(
+                    payload_len=len(live_audio.tobytes()),
+                    sequence=1,
+                    timestamp_micros=2,
+                    frame_count=16,
+                    channels=1,
+                ),
+                live_audio.tobytes(),
+            ),
+        ]
+    )
+    calls: list[tuple[np.ndarray, int, dict, object]] = []
+    got_two_frames = threading.Event()
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
+
+    def shell_call(command, payload=None, **_kwargs):
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-prebuffer",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "endpoint-hash",
+                },
+            }
+        if command == "audioCaptureStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "reason": "captureStop",
+                    "connected": True,
+                    "framesWritten": 2,
+                    "bytesWritten": len(frames),
+                    "writerError": None,
+                    "exitStatus": 0,
+                },
+            }
+        raise AssertionError(command)
+
+    def reader_factory(_path, *_args, **_kwargs):
+        import io
+
+        return io.BytesIO(frames)
+
+    def callback(*args):
+        calls.append(args)
+        if len(calls) >= 2:
+            got_two_frames.set()
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=shell_call,
+        reader_factory=reader_factory,
+        first_frame_timeout_seconds=1.0,
+    )
+
+    source.open(callback)
+    source.start()
+    assert got_two_frames.wait(1.0)
+    source.stop(close=True)
+
+    snapshot = source.diagnostic_snapshot()
+    assert snapshot["callbackCount"] == 2
+    assert snapshot["framePipeFramesRead"] == 2
+    assert snapshot["framePipePrebufferFramesRead"] == 1
+    assert snapshot["framePipePrebufferAudioFramesRead"] == 16
+    assert snapshot["framePipeLiveFramesRead"] == 1
+    assert snapshot["framePipeLiveAudioFramesRead"] == 16
+    assert snapshot["framePipePrebufferAfterLiveCount"] == 0
+    assert snapshot["framePipeFirstLiveSequence"] == 1
+    np.testing.assert_array_equal(calls[0][0], prebuffer_audio)
+    np.testing.assert_array_equal(calls[1][0], live_audio)
+
+
+def test_rust_prototype_frame_source_rejects_prebuffer_after_live_frame(monkeypatch):
+    live_audio = np.full((16, 1), 200, dtype=np.int16)
+    late_prebuffer_audio = np.full((16, 1), 100, dtype=np.int16)
+    frames = b"".join(
+        [
+            encode_audio_frame(
+                AudioFrameHeader(
+                    payload_len=len(live_audio.tobytes()),
+                    sequence=0,
+                    timestamp_micros=1,
+                    frame_count=16,
+                    channels=1,
+                ),
+                live_audio.tobytes(),
+            ),
+            encode_audio_frame(
+                AudioFrameHeader(
+                    payload_len=len(late_prebuffer_audio.tobytes()),
+                    sequence=1,
+                    timestamp_micros=2,
+                    frame_count=16,
+                    channels=1,
+                    flags=AUDIO_FRAME_FLAG_PREBUFFER,
+                ),
+                late_prebuffer_audio.tobytes(),
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
+
+    def shell_call(command, payload=None, **_kwargs):
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-interleaved",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "endpoint-hash",
+                },
+            }
+        if command == "audioCaptureStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "reason": "protocolError",
+                    "connected": True,
+                    "framesWritten": 2,
+                    "bytesWritten": len(frames),
+                    "writerError": None,
+                    "exitStatus": 0,
+                },
+            }
+        raise AssertionError(command)
+
+    def reader_factory(_path, *_args, **_kwargs):
+        import io
+
+        return io.BytesIO(frames)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=shell_call,
+        reader_factory=reader_factory,
+        first_frame_timeout_seconds=1.0,
+    )
+
+    source.open(lambda *_args: None)
+    source.start()
+    if source._reader_thread is not None:
+        source._reader_thread.join(timeout=1.0)
+    snapshot = source.diagnostic_snapshot()
+    source.stop(close=True)
+
+    assert snapshot["callbackCount"] == 1
+    assert snapshot["framePipeLiveFramesRead"] == 1
+    assert snapshot["framePipePrebufferFramesRead"] == 0
+    assert snapshot["framePipePrebufferAfterLiveCount"] == 1
+    assert snapshot["framePipeProtocolErrorCount"] == 1
+    assert snapshot["framePipeReaderEndReason"] == "protocolError"
+    assert snapshot["fallbackReason"] == "rustFramePipePrebufferInterleaving"
+    assert "prebuffer frame arrived after live frame" in snapshot["lastError"]
 
 
 def test_rust_prototype_frame_source_can_reopen_after_watchdog_pause(monkeypatch):

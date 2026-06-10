@@ -16,6 +16,7 @@ from src.audio_devices import (
 )
 from src.runtime.audio_frame_pipe import (
     AUDIO_FRAME_FLAG_END_OF_STREAM,
+    AUDIO_FRAME_FLAG_PREBUFFER,
     AUDIO_FRAME_HEADER_LEN,
     AUDIO_FRAME_VERSION,
     AudioFrameProtocolError,
@@ -389,6 +390,12 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.frame_pipe_last_sequence = None
         self.frame_pipe_last_timestamp_micros = None
         self.frame_pipe_last_flags = None
+        self.frame_pipe_prebuffer_frames_read = 0
+        self.frame_pipe_prebuffer_audio_frames_read = 0
+        self.frame_pipe_live_frames_read = 0
+        self.frame_pipe_live_audio_frames_read = 0
+        self.frame_pipe_prebuffer_after_live_count = 0
+        self.frame_pipe_first_live_sequence = None
         self.frame_pipe_reader_end_reason = "notStarted"
         self.frame_pipe_first_frame_read_ms = None
         self._shell_call = shell_call or call_shell_ipc
@@ -589,6 +596,12 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "framePipeLastSequence": self.frame_pipe_last_sequence,
             "framePipeLastTimestampMicros": self.frame_pipe_last_timestamp_micros,
             "framePipeLastFlags": self.frame_pipe_last_flags,
+            "framePipePrebufferFramesRead": self.frame_pipe_prebuffer_frames_read,
+            "framePipePrebufferAudioFramesRead": self.frame_pipe_prebuffer_audio_frames_read,
+            "framePipeLiveFramesRead": self.frame_pipe_live_frames_read,
+            "framePipeLiveAudioFramesRead": self.frame_pipe_live_audio_frames_read,
+            "framePipePrebufferAfterLiveCount": self.frame_pipe_prebuffer_after_live_count,
+            "framePipeFirstLiveSequence": self.frame_pipe_first_live_sequence,
             "framePipeReaderEndReason": self.frame_pipe_reader_end_reason,
             "framePipeFirstFrameReadMs": self.frame_pipe_first_frame_read_ms,
             "fallbackReason": self.fallback_reason,
@@ -615,11 +628,25 @@ class RustPrototypeFrameSource(AudioFrameSource):
                         raise AudioFrameProtocolError(
                             f"Rust audio frame channel mismatch: expected {self.capture_channels}, got {header.channels}"
                         )
+                    is_prebuffer = bool(header.flags & AUDIO_FRAME_FLAG_PREBUFFER)
+                    if is_prebuffer and self.frame_pipe_live_frames_read > 0:
+                        self.frame_pipe_prebuffer_after_live_count += 1
+                        raise AudioFrameProtocolError(
+                            "Rust audio prebuffer frame arrived after live frame"
+                        )
                     self.frame_pipe_frames_read += 1
                     self.frame_pipe_audio_frames_read += int(header.frame_count)
                     self.frame_pipe_last_sequence = int(header.sequence)
                     self.frame_pipe_last_timestamp_micros = int(header.timestamp_micros)
                     self.frame_pipe_last_flags = int(header.flags)
+                    if is_prebuffer:
+                        self.frame_pipe_prebuffer_frames_read += 1
+                        self.frame_pipe_prebuffer_audio_frames_read += int(header.frame_count)
+                    else:
+                        self.frame_pipe_live_frames_read += 1
+                        self.frame_pipe_live_audio_frames_read += int(header.frame_count)
+                        if self.frame_pipe_first_live_sequence is None:
+                            self.frame_pipe_first_live_sequence = int(header.sequence)
                     if self.frame_pipe_first_frame_read_ms is None and self._reader_started_at > 0:
                         self.frame_pipe_first_frame_read_ms = round(
                             (time.monotonic() - self._reader_started_at) * 1000.0,
@@ -671,6 +698,10 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 self.frame_pipe_sequence_error_count += 1
                 if not self.fallback_reason:
                     self.fallback_reason = "rustFramePipeSequenceError"
+            elif "prebuffer frame arrived after live frame" in message:
+                self.frame_pipe_protocol_error_count += 1
+                if not self.fallback_reason:
+                    self.fallback_reason = "rustFramePipePrebufferInterleaving"
             else:
                 self.frame_pipe_protocol_error_count += 1
                 if not self.fallback_reason:
