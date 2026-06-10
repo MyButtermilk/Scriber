@@ -536,6 +536,38 @@ def write_rust_audio_app_prewarm_report(
     )
 
 
+def write_recording_hot_path_comparison_report(path: Path, *, ok: bool = True, rust_ok: bool = True) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "ok": ok,
+                "failures": [] if ok else ["comparison failed"],
+                "reports": {
+                    "python": {"provider": "azure_mai", "audioEngine": "python", "samples": 1},
+                    "rust": {"provider": "azure_mai", "audioEngine": "rust-prototype", "samples": 1},
+                },
+                "checks": [
+                    {"name": "pythonReportOk", "ok": True, "details": {}},
+                    {"name": "rustReportOk", "ok": True, "details": {}},
+                    {"name": "physicalReports", "ok": True, "details": {}},
+                    {"name": "providerTranscript", "ok": True, "details": {}},
+                    {"name": "rustAudioEngine", "ok": rust_ok, "details": {}},
+                    {"name": "pythonAudioEngine", "ok": True, "details": {}},
+                ],
+                "summary": {
+                    "completeSegmentCount": 3,
+                    "comparedSegmentCount": 11,
+                    "providerTranscript": {"complete": True},
+                    "hotkeyToFirstAudioFrame": {"complete": True},
+                    "stopToTextInjection": {"complete": True},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_complete_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
     hardware_dir = tmp_path / "hardware"
     write_full_hardware_matrix(hardware_dir)
@@ -600,6 +632,78 @@ def test_validate_release_readiness_accepts_required_rust_audio_sidecar_smoke(tm
     assert result["ok"] is True
     rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
     assert rust_audio_check["details"]["summary"]["selectedHashVerified"] is True
+
+
+def test_validate_release_readiness_accepts_required_recording_hot_path_comparison(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
+    write_recording_hot_path_comparison_report(comparison_report)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        recording_hot_path_comparison_report=comparison_report,
+        require_recording_hot_path_comparison=True,
+    )
+
+    assert result["ok"] is True
+    comparison_check = next(
+        check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
+    )
+    assert comparison_check["details"]["summary"]["completeSegmentCount"] == 3
+
+
+def test_validate_release_readiness_rejects_missing_required_recording_hot_path_comparison(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        require_recording_hot_path_comparison=True,
+    )
+
+    assert result["ok"] is False
+    comparison_check = next(
+        check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
+    )
+    assert "Recording hot-path Python/Rust comparison report is required" in comparison_check["failures"]
+
+
+def test_validate_release_readiness_rejects_weak_recording_hot_path_comparison(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
+    write_recording_hot_path_comparison_report(comparison_report, rust_ok=False)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        recording_hot_path_comparison_report=comparison_report,
+        require_recording_hot_path_comparison=True,
+    )
+
+    assert result["ok"] is False
+    comparison_check = next(
+        check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
+    )
+    assert "recording hot-path comparison check failed: rustAudioEngine" in comparison_check["failures"]
 
 
 def test_validate_release_readiness_accepts_required_rust_audio_sidecar_prewarm_adoption(tmp_path: Path) -> None:

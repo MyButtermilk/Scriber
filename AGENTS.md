@@ -379,6 +379,18 @@ audio prototype environment flags. It proves the STT provider emitted a final
 transcript and the active recording diagnostics used `rust-prototype` with the
 `rust-frame-pipe` source, but it does not replace long physical matrix evidence.
 
+Python-vs-Rust provider-backed comparison artifact:
+
+```powershell
+python scripts\validate_recording_hot_path_comparison.py `
+  --python-report tmp\hybrid-baseline\python-recording-hot-path.json `
+  --rust-report tmp\hybrid-baseline\rust-recording-hot-path.json `
+  --output tmp\hybrid-baseline\recording-hot-path-python-rust-comparison.json
+```
+
+Final Rust promotion readiness can require that artifact with
+`-RequireRecordingHotPathComparison` on `scripts\run_hybrid_release_readiness.ps1`.
+
 Rust audio promotion readiness gate:
 
 ```powershell

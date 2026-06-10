@@ -48,6 +48,8 @@ param(
     [switch]$RequireRustAudioAppPrewarmSmoke,
     [switch]$RunRustAudioAppPrewarmSmoke,
     [switch]$UseExistingRustAudioAppPrewarmReport,
+    [string]$RecordingHotPathComparisonReport = "",
+    [switch]$RequireRecordingHotPathComparison,
     [switch]$RequireRustEndpointInventory,
     [string]$UpdaterPublicationUrl = "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
     [string]$UpdaterPublicationReport = "",
@@ -158,6 +160,11 @@ if (-not $RustAudioAppPrewarmReport) {
     $RustAudioAppPrewarmReport = Join-Path $HardwareInputDir "rust-audio-app-prewarm-smoke.json"
 } else {
     $RustAudioAppPrewarmReport = Convert-ToFullPath -Path $RustAudioAppPrewarmReport -Root $RepoRoot
+}
+if (-not $RecordingHotPathComparisonReport) {
+    $RecordingHotPathComparisonReport = Join-Path $HardwareInputDir "recording-hot-path-python-rust-comparison.json"
+} else {
+    $RecordingHotPathComparisonReport = Convert-ToFullPath -Path $RecordingHotPathComparisonReport -Root $RepoRoot
 }
 if (-not $OutputPath) {
     $OutputPath = Join-Path $HardwareInputDir "hybrid-release-readiness.json"
@@ -328,6 +335,12 @@ if ($RequireRustAudioAppPrewarmSmoke -or $RunRustAudioAppPrewarmSmoke -or $UseEx
 if ($RequireRustAudioAppPrewarmSmoke) {
     $readinessArgs += "--require-rust-audio-app-prewarm-smoke"
 }
+if ($RequireRecordingHotPathComparison -or (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf)) {
+    $readinessArgs += @("--recording-hot-path-comparison-report", $RecordingHotPathComparisonReport)
+}
+if ($RequireRecordingHotPathComparison) {
+    $readinessArgs += "--require-recording-hot-path-comparison"
+}
 if ($ExpectedAuthenticodePublisher) {
     $readinessArgs += @("--expected-authenticode-publisher", $ExpectedAuthenticodePublisher)
 }
@@ -424,6 +437,14 @@ $requiredEvidence = @(
         notes = "Optional Rust promotion evidence. WASAPI mode validates the app-level RustAudioPrewarmManager to RustPrototypeFrameSource handoff, adopted prebuffer frames before live frames, and idle-prewarm resume after capture. Default release evidence should keep honorFavoriteMic=false."
     },
     [pscustomobject]@{
+        name = "recordingHotPathPythonRustComparison"
+        required = [bool]$RequireRecordingHotPathComparison
+        external = $true
+        producer = "scripts\validate_recording_hot_path_comparison.py over provider-backed Python and Rust reports"
+        report = $RecordingHotPathComparisonReport
+        notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires provider transcript evidence in both reports, and requires active rust-frame-pipe capture in the Rust report."
+    },
+    [pscustomobject]@{
         name = "publishedUpdaterManifest"
         required = $true
         external = $true
@@ -478,6 +499,7 @@ $plan = [pscustomobject]@{
     rustAudioAppPrewarmPrewarmDurationSec = $RustAudioAppPrewarmPrewarmDurationSec
     rustAudioAppPrewarmPrebufferMs = $RustAudioAppPrewarmPrebufferMs
     rustAudioAppPrewarmHonorFavoriteMic = [bool]$RustAudioAppPrewarmHonorFavoriteMic
+    recordingHotPathComparisonReport = $RecordingHotPathComparisonReport
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
     outputPath = $OutputPath
@@ -493,6 +515,7 @@ $plan = [pscustomobject]@{
     requireRustAudioSidecarSmoke = [bool]$RequireRustAudioSidecarSmoke
     requireRustAudioPrewarmSidecarSmoke = [bool]$RequireRustAudioPrewarmSidecarSmoke
     requireRustAudioAppPrewarmSmoke = [bool]$RequireRustAudioAppPrewarmSmoke
+    requireRecordingHotPathComparison = [bool]$RequireRecordingHotPathComparison
     useExistingUpdaterPublicationReport = [bool]$UseExistingUpdaterPublicationReport
     requiredEvidence = $requiredEvidence
     commands = @(
@@ -523,6 +546,10 @@ $plan = [pscustomobject]@{
         [pscustomobject]@{
             name = "rustAudioAppPrewarmSmoke"
             command = $(if ($UseExistingRustAudioAppPrewarmReport) { "reuse $RustAudioAppPrewarmReport" } elseif ($RunRustAudioAppPrewarmSmoke) { "python " + (Convert-ToDisplayCommand -CommandArgs $rustAudioAppPrewarmArgs) } else { "not requested" })
+        },
+        [pscustomobject]@{
+            name = "recordingHotPathPythonRustComparison"
+            command = $(if (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf) { "reuse $RecordingHotPathComparisonReport" } elseif ($RequireRecordingHotPathComparison) { "required external report: produce with scripts\validate_recording_hot_path_comparison.py" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "authenticodeValidation"
@@ -631,6 +658,7 @@ try {
     rustAudioSidecarReport = $RustAudioSidecarReport
     rustAudioPrewarmSidecarReport = $RustAudioPrewarmSidecarReport
     rustAudioAppPrewarmReport = $RustAudioAppPrewarmReport
+    recordingHotPathComparisonReport = $RecordingHotPathComparisonReport
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
     outputPath = $OutputPath

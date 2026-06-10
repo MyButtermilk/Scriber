@@ -1014,10 +1014,20 @@ Implementation plan:
      baseline runner exposes these as
      `-RequireRecordingHotPathProviderTranscript` and
      `-RequireRecordingHotPathRustAudio`.
+   - Implemented: `scripts/validate_recording_hot_path_comparison.py` builds a
+     machine-checkable Python-vs-Rust provider-backed comparison artifact from
+     two recording hot-path reports. It rejects validate-only evidence by
+     default, requires provider transcript evidence in both reports, requires
+     active `rust-prototype`/`rust-frame-pipe` capture in the Rust report, and
+     records segment deltas such as hotkey-to-first-frame, provider-finalize,
+     and stop-to-text-injection. The final readiness validator and
+     `scripts/run_hybrid_release_readiness.ps1` can require this artifact with
+     `--require-recording-hot-path-comparison` /
+     `-RequireRecordingHotPathComparison`.
    - Still open: long-running physical Always-On-Mic evidence with the Rust
      manager, device-refresh pause/resume matrix evidence, real provider-backed
-     end-to-end transcription runs using the new gate, and release-readiness
-     promotion gates.
+     Python/Rust comparison runs using the new gate, and final promotion
+     decision gates.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream
@@ -1049,8 +1059,9 @@ Implementation plan:
    - Partly implemented: the Rust sidecar smoke captures the Rust-side
      first-frame and frame-pipe metrics needed for the Rust half of this
      comparison. The recording hot-path benchmark now has strict gates for a
-     final provider transcript and active Rust capture diagnostics, but
-     provider-backed Python/Rust end-to-end comparison artifacts are still
+     final provider transcript and active Rust capture diagnostics, and the
+     comparison validator now turns Python/Rust recording reports into a
+     promotion-ready A/B artifact. Real provider-backed A/B artifacts are still
      required before promotion.
 8. Promote to default only if physical hardware tests show fewer interruptions
    or a meaningful latency win. Otherwise keep Python as default and retain the

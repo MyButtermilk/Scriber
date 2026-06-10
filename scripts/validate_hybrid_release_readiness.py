@@ -49,9 +49,11 @@ def validate_release_readiness(
     rust_audio_sidecar_report: Path | None = None,
     rust_audio_prewarm_sidecar_report: Path | None = None,
     rust_audio_app_prewarm_report: Path | None = None,
+    recording_hot_path_comparison_report: Path | None = None,
     require_rust_audio_sidecar_smoke: bool = False,
     require_rust_audio_prewarm_sidecar_smoke: bool = False,
     require_rust_audio_app_prewarm_smoke: bool = False,
+    require_recording_hot_path_comparison: bool = False,
     min_rust_audio_duration_sec: float = 0.0,
     expected_authenticode_publisher: str = "",
     require_authenticode_timestamp: bool = False,
@@ -96,6 +98,13 @@ def validate_release_readiness(
             validate_rust_audio_app_prewarm_report(
                 rust_audio_app_prewarm_report,
                 required=require_rust_audio_app_prewarm_smoke,
+            )
+        )
+    if require_recording_hot_path_comparison or recording_hot_path_comparison_report is not None:
+        checks.append(
+            validate_recording_hot_path_comparison_report(
+                recording_hot_path_comparison_report,
+                required=require_recording_hot_path_comparison,
             )
         )
     return {
@@ -767,6 +776,89 @@ def validate_rust_audio_app_prewarm_report(
     return ReadinessCheck("rustAudioAppPrewarmSmoke", not failures, failures, details)
 
 
+def validate_recording_hot_path_comparison_report(
+    report_path: Path | None,
+    *,
+    required: bool,
+) -> ReadinessCheck:
+    failures: list[str] = []
+    details: dict[str, Any] = {
+        "report": str(report_path) if report_path else "",
+        "required": required,
+    }
+    if report_path is None:
+        if required:
+            failures.append("Recording hot-path Python/Rust comparison report is required")
+        return ReadinessCheck("recordingHotPathPythonRustComparison", not failures, failures, details)
+
+    report = read_json_object(report_path, failures, "recording hot-path Python/Rust comparison report")
+    if not report:
+        return ReadinessCheck("recordingHotPathPythonRustComparison", False, failures, details)
+
+    reports = report.get("reports")
+    if not isinstance(reports, dict):
+        failures.append("recording hot-path comparison reports must be an object")
+        reports = {}
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        failures.append("recording hot-path comparison summary must be an object")
+        summary = {}
+    checks = report.get("checks")
+    if not isinstance(checks, list):
+        failures.append("recording hot-path comparison checks must be a list")
+        checks = []
+    checks_by_name = {
+        str(check.get("name") or ""): check
+        for check in checks
+        if isinstance(check, dict)
+    }
+
+    details.update(
+        {
+            "schemaVersion": report.get("schemaVersion"),
+            "reports": reports,
+            "summary": summary,
+            "checkCount": len(checks),
+        }
+    )
+    if report.get("ok") is not True:
+        failures.append("recording hot-path comparison report ok must be true")
+    if str(report.get("schemaVersion") or "") != "1":
+        failures.append("recording hot-path comparison schemaVersion must be 1")
+    if report.get("failures"):
+        failures.append("recording hot-path comparison failures must be empty")
+
+    python_report = reports.get("python") if isinstance(reports, dict) else {}
+    rust_report = reports.get("rust") if isinstance(reports, dict) else {}
+    if not isinstance(python_report, dict) or python_report.get("audioEngine") != "python":
+        failures.append("recording hot-path comparison Python report must use audioEngine=python")
+    if not isinstance(rust_report, dict) or rust_report.get("audioEngine") != "rust-prototype":
+        failures.append("recording hot-path comparison Rust report must use audioEngine=rust-prototype")
+
+    for check_name in ("physicalReports", "providerTranscript", "rustAudioEngine", "pythonAudioEngine"):
+        check = checks_by_name.get(check_name)
+        if not isinstance(check, dict):
+            failures.append(f"recording hot-path comparison is missing check: {check_name}")
+        elif check.get("ok") is not True:
+            failures.append(f"recording hot-path comparison check failed: {check_name}")
+
+    provider_transcript = summary.get("providerTranscript")
+    if not isinstance(provider_transcript, dict) or provider_transcript.get("complete") is not True:
+        failures.append("recording hot-path comparison providerTranscript segment must be complete")
+    hotkey_to_first_audio = summary.get("hotkeyToFirstAudioFrame")
+    if not isinstance(hotkey_to_first_audio, dict) or hotkey_to_first_audio.get("complete") is not True:
+        failures.append("recording hot-path comparison hotkeyToFirstAudioFrame segment must be complete")
+    stop_to_text = summary.get("stopToTextInjection")
+    if not isinstance(stop_to_text, dict) or stop_to_text.get("complete") is not True:
+        failures.append("recording hot-path comparison stopToTextInjection segment must be complete")
+
+    complete_segments = summary.get("completeSegmentCount")
+    if not isinstance(complete_segments, int) or complete_segments < 3:
+        failures.append("recording hot-path comparison must include at least three complete compared segments")
+
+    return ReadinessCheck("recordingHotPathPythonRustComparison", not failures, failures, details)
+
+
 def validate_rust_audio_capture(
     capture: dict[str, Any],
     name: str,
@@ -1063,9 +1155,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--rust-audio-sidecar-report", default="")
     parser.add_argument("--rust-audio-prewarm-sidecar-report", default="")
     parser.add_argument("--rust-audio-app-prewarm-report", default="")
+    parser.add_argument("--recording-hot-path-comparison-report", default="")
     parser.add_argument("--require-rust-audio-sidecar-smoke", action="store_true")
     parser.add_argument("--require-rust-audio-prewarm-sidecar-smoke", action="store_true")
     parser.add_argument("--require-rust-audio-app-prewarm-smoke", action="store_true")
+    parser.add_argument("--require-recording-hot-path-comparison", action="store_true")
     parser.add_argument("--min-rust-audio-duration-sec", type=float, default=0.0)
     parser.add_argument("--expected-authenticode-publisher", default="")
     parser.add_argument("--require-authenticode-timestamp", action="store_true")
@@ -1088,9 +1182,11 @@ def main(argv: list[str]) -> int:
         rust_audio_sidecar_report=parse_optional_path(args.rust_audio_sidecar_report),
         rust_audio_prewarm_sidecar_report=parse_optional_path(args.rust_audio_prewarm_sidecar_report),
         rust_audio_app_prewarm_report=parse_optional_path(args.rust_audio_app_prewarm_report),
+        recording_hot_path_comparison_report=parse_optional_path(args.recording_hot_path_comparison_report),
         require_rust_audio_sidecar_smoke=args.require_rust_audio_sidecar_smoke,
         require_rust_audio_prewarm_sidecar_smoke=args.require_rust_audio_prewarm_sidecar_smoke,
         require_rust_audio_app_prewarm_smoke=args.require_rust_audio_app_prewarm_smoke,
+        require_recording_hot_path_comparison=args.require_recording_hot_path_comparison,
         min_rust_audio_duration_sec=args.min_rust_audio_duration_sec,
         expected_authenticode_publisher=args.expected_authenticode_publisher,
         require_authenticode_timestamp=args.require_authenticode_timestamp,

@@ -235,6 +235,24 @@ the WASAPI sidecar feature flags used by the current prototype. Add
 `-RecordingHotPathTextTargetFile` when the evidence also needs to prove
 end-to-end text insertion into a target window.
 
+For Rust audio promotion, run the recording hot-path benchmark once with the
+default Python engine and once with `SCRIBER_AUDIO_ENGINE=rust-prototype`, then
+turn both provider-backed reports into the required comparison artifact:
+
+```powershell
+python scripts\validate_recording_hot_path_comparison.py `
+  --python-report tmp\hybrid-baseline\python-recording-hot-path.json `
+  --rust-report tmp\hybrid-baseline\rust-recording-hot-path.json `
+  --output tmp\hybrid-baseline\recording-hot-path-python-rust-comparison.json
+```
+
+The final readiness runner can require that artifact:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RequireRecordingHotPathComparison
+```
+
 The hybrid release-readiness runner can produce and validate this app-level
 report when Rust audio promotion evidence is being assembled:
 

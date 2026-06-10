@@ -150,15 +150,19 @@ Rust audio:
   `rust-frame-pipe` capture diagnostics during recording. The hybrid baseline
   runner exposes those checks as `-RequireRecordingHotPathProviderTranscript`
   and `-RequireRecordingHotPathRustAudio`.
+  `scripts/validate_recording_hot_path_comparison.py` now turns separate
+  provider-backed Python and Rust hot-path reports into a required promotion
+  artifact, and `run_hybrid_release_readiness.ps1` can gate it with
+  `-RequireRecordingHotPathComparison`.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no
   prebuffer-after-live frames. A local app-level WASAPI prewarm adoption smoke
   passed on 2026-06-11 with 40 adopted prebuffer blocks, 42 live blocks, no
   sequence/protocol errors, and successful idle-prewarm resume. Physical
-  Always-On-Mic matrix evidence, real provider-backed transcription artifacts
-  using that gate, and final Rust promotion gates remain open before default
-  promotion.
+  Always-On-Mic matrix evidence, real provider-backed Python/Rust comparison
+  artifacts using that gate, and final Rust promotion gates remain open before
+  default promotion.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 
