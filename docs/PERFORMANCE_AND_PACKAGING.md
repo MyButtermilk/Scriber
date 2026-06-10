@@ -810,6 +810,9 @@ Implementation plan:
      prebuffer frame boundary as the synthetic harness, sets `SAF1` prebuffer
      flags on the leading frames, and reports prebuffer/live writer counts in
      stop-health payloads.
+   - Implemented: promotion validation now cross-checks reader and writer
+     counts so written total/prebuffer/live frames cannot be lower than the
+     frames observed through the pipe reader.
    - If Rust fails before the first frame, Python falls back to Python capture
      for that session.
    - If Rust stalls mid-session, record diagnostics and fail the current engine
@@ -904,7 +907,8 @@ Acceptance gates:
   `scripts\run_hybrid_release_readiness.ps1 -RunRustAudioSidecarSmoke
   -RequireRustAudioSidecarSmoke`, including default capture, selected native
   endpoint hash capture, requested prebuffer delivery, no prebuffer-after-live
-  interleaving, no sequence gaps, and valid stop-health metrics.
+  interleaving, reader/writer frame-count consistency, no sequence gaps, and
+  valid stop-health metrics.
 - Physical mic matrix across built-in, USB, Bluetooth, docked, undocked, and
   Windows default-device changes.
 - No feature loss for provider streaming, final transcript injection, overlay,

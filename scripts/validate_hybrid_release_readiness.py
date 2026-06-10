@@ -416,11 +416,29 @@ def validate_rust_audio_sidecar_report(
         failures.append("Rust audio sidecar smoke failedCaptureCount must be 0")
     if summary.get("totalFramesRead", 0) <= 0:
         failures.append("Rust audio sidecar smoke totalFramesRead must be positive")
+    if prebuffer_required and summary.get("totalFramesWritten", 0) < summary.get(
+        "totalFramesRead", 0
+    ):
+        failures.append(
+            "Rust audio sidecar smoke totalFramesWritten must be at least totalFramesRead when prebufferMs is requested"
+        )
     if summary.get("totalPrebufferAfterLiveCount", 0) != 0:
         failures.append("Rust audio sidecar smoke totalPrebufferAfterLiveCount must be 0")
     if prebuffer_required and summary.get("totalPrebufferFramesRead", 0) <= 0:
         failures.append(
             "Rust audio sidecar smoke totalPrebufferFramesRead must be positive when prebufferMs is requested"
+        )
+    if prebuffer_required and summary.get("totalPrebufferFramesWritten", 0) < summary.get(
+        "totalPrebufferFramesRead", 0
+    ):
+        failures.append(
+            "Rust audio sidecar smoke totalPrebufferFramesWritten must be at least totalPrebufferFramesRead when prebufferMs is requested"
+        )
+    if prebuffer_required and summary.get("totalLiveFramesWritten", 0) < summary.get(
+        "totalLiveFramesRead", 0
+    ):
+        failures.append(
+            "Rust audio sidecar smoke totalLiveFramesWritten must be at least totalLiveFramesRead when prebufferMs is requested"
         )
     if summary.get("selectedHashVerified") is not True:
         failures.append("Rust audio sidecar smoke must verify selected native endpoint hash capture")
@@ -510,14 +528,26 @@ def validate_rust_audio_capture(
         failures.append(f"Rust audio capture {name} stop.connected must be true")
     if stop.get("framesWritten", 0) <= 0:
         failures.append(f"Rust audio capture {name} stop.framesWritten must be positive")
+    if require_prebuffer and stop.get("framesWritten", 0) < frames.get("framesRead", 0):
+        failures.append(
+            f"Rust audio capture {name} stop.framesWritten must be at least framesRead when prebufferMs is requested"
+        )
     if require_prebuffer:
         if stop.get("prebufferFramesWritten", 0) <= 0:
             failures.append(
                 f"Rust audio capture {name} stop.prebufferFramesWritten must be positive when prebufferMs is requested"
             )
+        if stop.get("prebufferFramesWritten", 0) < frames.get("prebufferFramesRead", 0):
+            failures.append(
+                f"Rust audio capture {name} stop.prebufferFramesWritten must be at least prebufferFramesRead when prebufferMs is requested"
+            )
         if stop.get("liveFramesWritten", 0) <= 0:
             failures.append(
                 f"Rust audio capture {name} stop.liveFramesWritten must be positive when prebufferMs is requested"
+            )
+        if stop.get("liveFramesWritten", 0) < frames.get("liveFramesRead", 0):
+            failures.append(
+                f"Rust audio capture {name} stop.liveFramesWritten must be at least liveFramesRead when prebufferMs is requested"
             )
     if stop.get("writerError") not in (None, ""):
         failures.append(f"Rust audio capture {name} writerError must be empty")

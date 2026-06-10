@@ -24,6 +24,8 @@ def test_rust_audio_sidecar_smoke_script_documents_capture_contract() -> None:
     assert "framesRead" in script
     assert "prebufferFramesRead" in script
     assert "prebufferAfterLiveCount" in script
+    assert "totalPrebufferFramesWritten" in script
+    assert "totalLiveFramesWritten" in script
     assert "--prebuffer-ms" in script
     assert "sequenceGapCount" in script
     assert "selectedHashVerified" in script

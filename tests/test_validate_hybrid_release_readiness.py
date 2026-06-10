@@ -290,7 +290,11 @@ def write_rust_audio_sidecar_report(
                     "failedCaptureCount": failed_capture_count,
                     "totalFramesRead": 24,
                     "totalPrebufferFramesRead": default_prebuffer_frames + selected_prebuffer_frames,
+                    "totalLiveFramesRead": 18,
                     "totalPrebufferAfterLiveCount": prebuffer_after_live_count,
+                    "totalFramesWritten": 24,
+                    "totalPrebufferFramesWritten": default_prebuffer_frames + selected_prebuffer_frames,
+                    "totalLiveFramesWritten": 18,
                     "selectedHashVerified": selected_hash_verified,
                 },
                 "captures": [
@@ -452,6 +456,36 @@ def test_validate_release_readiness_rejects_missing_rust_audio_prebuffer_when_re
     assert (
         "selected-native-endpoint-hash stop.prebufferFramesWritten must be positive" in failures
     )
+
+
+def test_validate_release_readiness_rejects_inconsistent_rust_audio_writer_counts(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
+    write_rust_audio_sidecar_report(rust_audio_report)
+    payload = json.loads(rust_audio_report.read_text(encoding="utf-8"))
+    payload["summary"]["totalPrebufferFramesWritten"] = 1
+    payload["captures"][0]["stop"]["prebufferFramesWritten"] = 1
+    rust_audio_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_sidecar_report=rust_audio_report,
+        require_rust_audio_sidecar_smoke=True,
+        min_rust_audio_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    failures = "\n".join(rust_audio_check["failures"])
+    assert "totalPrebufferFramesWritten must be at least totalPrebufferFramesRead" in failures
+    assert "default stop.prebufferFramesWritten must be at least prebufferFramesRead" in failures
 
 
 def test_validate_release_readiness_rejects_missing_required_rust_audio_sidecar_smoke(tmp_path: Path) -> None:

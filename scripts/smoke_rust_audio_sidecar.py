@@ -446,8 +446,23 @@ def main(argv: list[str] | None = None) -> int:
             int(capture.get("frames", {}).get("prebufferFramesRead") or 0)
             for capture in captures
         ),
+        "totalLiveFramesRead": sum(
+            int(capture.get("frames", {}).get("liveFramesRead") or 0)
+            for capture in captures
+        ),
         "totalPrebufferAfterLiveCount": sum(
             int(capture.get("frames", {}).get("prebufferAfterLiveCount") or 0)
+            for capture in captures
+        ),
+        "totalFramesWritten": sum(
+            int(capture.get("stop", {}).get("framesWritten") or 0) for capture in captures
+        ),
+        "totalPrebufferFramesWritten": sum(
+            int(capture.get("stop", {}).get("prebufferFramesWritten") or 0)
+            for capture in captures
+        ),
+        "totalLiveFramesWritten": sum(
+            int(capture.get("stop", {}).get("liveFramesWritten") or 0)
             for capture in captures
         ),
         "selectedHashVerified": bool(
