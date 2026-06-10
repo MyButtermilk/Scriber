@@ -170,6 +170,48 @@ def test_request_microphone_refresh_schedules_device_monitor(monkeypatch, tmp_pa
     assert called["count"] == 1
 
 
+def test_request_microphone_refresh_forwards_native_hint(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_api.DeviceMonitor, "start", lambda self: None)
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "0")
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    loop = asyncio.new_event_loop()
+    ctl = ScriberWebController(loop)
+    captured: list[dict] = []
+
+    def request_native_refresh(hint):
+        captured.append(hint)
+        return {"scheduled": True, "ignored": False, "deviceMonitor": "running"}
+
+    monkeypatch.setattr(ctl._device_monitor, "request_native_refresh", request_native_refresh)
+
+    try:
+        result = ctl.request_microphone_refresh(
+            {
+                "source": "tauri",
+                "eventKind": "device_added",
+                "flow": "1",
+                "role": "console",
+                "endpointIdHash": "abc123",
+                "nativeTimestampMs": 1234.7,
+            }
+        )
+    finally:
+        loop.close()
+
+    assert result == {"scheduled": True, "ignored": False, "deviceMonitor": "running"}
+    assert captured == [
+        {
+            "source": "tauri",
+            "eventKind": "device_added",
+            "flow": "capture",
+            "role": "console",
+            "endpointIdHash": "abc123",
+            "forcePortAudioRefresh": True,
+            "nativeTimestampMs": 1234,
+        }
+    ]
+
+
 def test_loopback_request_detection():
     assert web_api._is_loopback_request(_FakeRequest(peername=("127.0.0.1", 12345)))
     assert web_api._is_loopback_request(_FakeRequest(peername=("::1", 12345)))

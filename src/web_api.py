@@ -109,6 +109,7 @@ _WORKER_VERSION_ENV = "SCRIBER_WORKER_VERSION"
 _RUNTIME_MODE_ENV = "SCRIBER_RUNTIME_MODE"
 _BACKEND_LAUNCH_KIND_ENV = "SCRIBER_BACKEND_LAUNCH_KIND"
 _AUDIO_ENGINE_ENV = "SCRIBER_AUDIO_ENGINE"
+_NATIVE_DEVICE_EVENTS_ENV = "SCRIBER_NATIVE_DEVICE_EVENTS"
 _SETTINGS_PERSIST_DEBOUNCE_ENV = "SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC"
 _WEB_HOST_ENV = "SCRIBER_WEB_HOST"
 _WEB_PORT_ENV = "SCRIBER_WEB_PORT"
@@ -137,6 +138,8 @@ _AUDIO_DIAGNOSTIC_IMPORTS = (
 _AUDIO_DIAGNOSTIC_IMPORT_CACHE: dict[str, dict[str, Any]] | None = None
 _SESSION_TOKEN_HEADER = "X-Scriber-Token"
 _SESSION_TOKEN_QUERY = "scriberToken"
+_NATIVE_DEVICE_EVENT_VALUES = {"auto", "0", "1"}
+_NATIVE_REFRESH_STRING_LIMIT = 128
 
 # Video file extensions that require audio extraction
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
@@ -284,12 +287,14 @@ def _session_token_required() -> bool:
 
 def _audio_engine_feature_flags() -> dict[str, Any]:
     requested = (os.getenv(_AUDIO_ENGINE_ENV, "python") or "python").strip().lower() or "python"
-    if requested not in {"python", "rust"}:
+    if requested == "rust":
+        requested = "rust-prototype"
+    if requested not in {"python", "rust-prototype"}:
         requested = "python"
 
-    rust_requested = requested == "rust"
+    rust_requested = requested == "rust-prototype"
     rust_available = bool(_RUST_AUDIO_PROTOTYPE_AVAILABLE)
-    effective = "rust" if rust_requested and rust_available else "python"
+    effective = "rust-prototype" if rust_requested and rust_available else "python"
 
     return {
         "audioEngine": effective,
@@ -297,6 +302,86 @@ def _audio_engine_feature_flags() -> dict[str, Any]:
         "rustAudioRequested": rust_requested,
         "rustAudioAvailable": rust_available,
     }
+
+
+def _native_device_event_feature_flags() -> dict[str, Any]:
+    requested = (
+        os.getenv(_NATIVE_DEVICE_EVENTS_ENV, "auto") or "auto"
+    ).strip().lower()
+    aliases = {
+        "": "auto",
+        "true": "1",
+        "yes": "1",
+        "on": "1",
+        "enabled": "1",
+        "false": "0",
+        "no": "0",
+        "off": "0",
+        "disabled": "0",
+    }
+    requested = aliases.get(requested, requested)
+    if requested not in _NATIVE_DEVICE_EVENT_VALUES:
+        requested = "auto"
+
+    if requested == "0":
+        effective = "disabled"
+    elif requested == "1":
+        effective = "enabled"
+    else:
+        effective = "auto"
+
+    return {
+        "nativeDeviceEvents": effective,
+        "requestedNativeDeviceEvents": requested,
+        "nativeDeviceEventsRequested": requested != "0",
+    }
+
+
+def _runtime_feature_flags() -> dict[str, Any]:
+    return {
+        **_audio_engine_feature_flags(),
+        **_native_device_event_feature_flags(),
+    }
+
+
+def _bounded_hint_string(value: Any, *, default: str = "") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    return text[:_NATIVE_REFRESH_STRING_LIMIT]
+
+
+def _normalize_microphone_refresh_hint(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not payload:
+        return None
+
+    flow = _bounded_hint_string(payload.get("flow"), default="unknown").lower()
+    flow_aliases = {
+        "0": "render",
+        "1": "capture",
+        "2": "all",
+        "input": "capture",
+        "output": "render",
+    }
+    flow = flow_aliases.get(flow, flow)
+    if flow not in {"capture", "render", "all", "unknown"}:
+        flow = "unknown"
+
+    force_value = payload.get("forcePortAudioRefresh", True)
+    force_portaudio_refresh = bool(force_value) if isinstance(force_value, bool) else True
+
+    hint: dict[str, Any] = {
+        "source": _bounded_hint_string(payload.get("source"), default="native"),
+        "eventKind": _bounded_hint_string(payload.get("eventKind"), default="unknown"),
+        "flow": flow,
+        "role": _bounded_hint_string(payload.get("role"), default="unknown").lower(),
+        "endpointIdHash": _bounded_hint_string(payload.get("endpointIdHash")),
+        "forcePortAudioRefresh": force_portaudio_refresh,
+    }
+    native_timestamp_ms = payload.get("nativeTimestampMs")
+    if isinstance(native_timestamp_ms, (int, float)) and not isinstance(native_timestamp_ms, bool):
+        hint["nativeTimestampMs"] = max(0, int(native_timestamp_ms))
+    return hint
 
 
 def _audio_diagnostic_import_status() -> dict[str, dict[str, Any]]:
@@ -2159,7 +2244,7 @@ class ScriberWebController:
                 "localStt": bool(Config.ONNX_MODEL or Config.NEMO_MODEL),
             },
             "featureFlags": {
-                **_audio_engine_feature_flags(),
+                **_runtime_feature_flags(),
                 "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
                 "sessionTokenRequired": _session_token_required(),
                 "validateWsContracts": bool(self._validate_ws_contracts),
@@ -2176,7 +2261,7 @@ class ScriberWebController:
             "runtimeMode": os.getenv(_RUNTIME_MODE_ENV, "python-web"),
             "pid": os.getpid(),
             "recordingState": self._recording_state_machine.state.value,
-            "featureFlags": _audio_engine_feature_flags(),
+            "featureFlags": _runtime_feature_flags(),
             "provider": {
                 "configured": str(Config.DEFAULT_STT_SERVICE or ""),
                 "active": self._active_provider,
@@ -4268,9 +4353,12 @@ class ScriberWebController:
 
         return devices
 
-    def request_microphone_refresh(self) -> dict[str, Any]:
+    def request_microphone_refresh(self, hint_payload: dict[str, Any] | None = None) -> dict[str, Any]:
         """Schedule a safe microphone refresh from an external device-change hint."""
         if self._device_monitor_enabled:
+            native_hint = _normalize_microphone_refresh_hint(hint_payload)
+            if native_hint is not None:
+                return dict(self._device_monitor.request_native_refresh(native_hint))
             self._device_monitor.request_refresh()
             return {"scheduled": True, "deviceMonitor": "running"}
         return {"scheduled": False, "deviceMonitor": "disabled"}
@@ -4784,7 +4872,16 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def refresh_microphones(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(ctl.request_microphone_refresh())
+        payload: dict[str, Any] | None = None
+        if request.can_read_body:
+            try:
+                raw_payload = await request.json()
+            except Exception:
+                return web.json_response({"message": "Invalid JSON"}, status=400)
+            if not isinstance(raw_payload, dict):
+                return web.json_response({"message": "Expected JSON object"}, status=400)
+            payload = raw_payload
+        return web.json_response(ctl.request_microphone_refresh(payload))
 
     async def transcripts(request: web.Request):
         """List transcripts with optional search, filtering, and pagination.

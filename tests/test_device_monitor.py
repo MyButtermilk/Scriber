@@ -312,3 +312,88 @@ def test_default_device_refresh_ignores_render_flow():
             "force_portaudio_refresh": True,
         }
     ]
+
+
+def test_native_refresh_hint_ignores_render_flow():
+    monitor = device_monitor.DeviceMonitor()
+    scheduled: list[dict[str, object]] = []
+    monitor._schedule_refresh = lambda **kwargs: scheduled.append(kwargs)  # type: ignore[method-assign]
+
+    result = monitor.request_native_refresh(
+        {
+            "source": "tauri",
+            "eventKind": "device_added",
+            "flow": "render",
+            "endpointIdHash": "abc123",
+        }
+    )
+
+    assert scheduled == []
+    assert result == {
+        "scheduled": False,
+        "ignored": True,
+        "reason": "render-flow",
+        "deviceMonitor": "running",
+    }
+    diagnostics = monitor.diagnostic_snapshot()
+    assert diagnostics["nativeHintCount"] == 1
+    assert diagnostics["nativeHintIgnoredCount"] == 1
+    assert diagnostics["lastNativeHint"]["endpointIdHash"] == "abc123"
+
+
+def test_native_refresh_hint_schedules_capture_with_portaudio():
+    monitor = device_monitor.DeviceMonitor()
+    scheduled: list[dict[str, object]] = []
+    monitor._schedule_refresh = lambda **kwargs: scheduled.append(kwargs)  # type: ignore[method-assign]
+
+    result = monitor.request_native_refresh(
+        {
+            "source": "tauri",
+            "eventKind": "default_device_changed",
+            "flow": "capture",
+            "role": "communications",
+            "forcePortAudioRefresh": True,
+        }
+    )
+
+    assert result == {
+        "scheduled": True,
+        "ignored": False,
+        "deviceMonitor": "running",
+        "forcePortAudioRefresh": True,
+    }
+    assert scheduled == [
+        {
+            "reason": "native_default_device_changed",
+            "immediate": False,
+            "force_portaudio_refresh": True,
+        }
+    ]
+    diagnostics = monitor.diagnostic_snapshot()
+    assert diagnostics["nativeHintCount"] == 1
+    assert diagnostics["nativeHintIgnoredCount"] == 0
+    assert diagnostics["nativeHintPortAudioCount"] == 1
+
+
+def test_native_refresh_hint_can_be_non_invasive():
+    monitor = device_monitor.DeviceMonitor()
+    scheduled: list[dict[str, object]] = []
+    monitor._schedule_refresh = lambda **kwargs: scheduled.append(kwargs)  # type: ignore[method-assign]
+
+    monitor.request_native_refresh(
+        {
+            "source": "tauri",
+            "eventKind": "property_value_changed",
+            "flow": "unknown",
+            "forcePortAudioRefresh": False,
+        }
+    )
+
+    assert scheduled == [
+        {
+            "reason": "native_property_value_changed",
+            "immediate": False,
+            "force_portaudio_refresh": False,
+        }
+    ]
+    assert monitor.diagnostic_snapshot()["nativeHintPortAudioCount"] == 0

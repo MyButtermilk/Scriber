@@ -4,7 +4,7 @@ import sys
 import re
 import threading
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from loguru import logger
 
@@ -41,6 +41,7 @@ _E_CAPTURE = 1
 _E_ALL = 2
 _NATIVE_EVENT_SAFETY_POLL_SECONDS = 15.0 * 60.0
 _FALLBACK_POLL_SECONDS = 60.0
+_NATIVE_HINT_STRING_LIMIT = 128
 
 
 def get_device_guard_lock() -> threading.RLock:
@@ -84,6 +85,18 @@ def _flow_is_capture_or_all(flow) -> bool:
     if flow_int is None:
         return True
     return flow_int in (_E_CAPTURE, _E_ALL)
+
+
+def _native_hint_string(value: object, default: str = "") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    return text[:_NATIVE_HINT_STRING_LIMIT]
+
+
+def _native_hint_flow_is_render(flow: object) -> bool:
+    value = _native_hint_string(flow, "unknown").lower()
+    return value in {"0", "render", "output"}
 
 
 def _endpoint_id_flow_hint(device_id) -> int | None:
@@ -293,9 +306,14 @@ class DeviceMonitor:
         self._poll_refresh_count = 0
         self._event_refresh_count = 0
         self._portaudio_refresh_count = 0
+        self._native_hint_count = 0
+        self._native_hint_ignored_count = 0
+        self._native_hint_portaudio_count = 0
         self._last_poll_refresh_at = 0.0
         self._last_event_refresh_at = 0.0
         self._last_devices_changed_at = 0.0
+        self._last_native_hint_at = 0.0
+        self._last_native_hint: dict[str, object] | None = None
 
         self._enumerator = None
         self._notification_client = None
@@ -366,6 +384,60 @@ class DeviceMonitor:
             force_portaudio_refresh=force_portaudio_refresh,
         )
 
+    def request_native_refresh(self, hint: dict[str, Any] | None = None) -> dict[str, object]:
+        """Schedule a refresh from a native shell/device hint.
+
+        The hint is intentionally advisory. Python keeps ownership of PortAudio
+        refresh deferral, microphone list semantics, and callback emission.
+        """
+        raw_hint = dict(hint or {})
+        event_kind = _native_hint_string(raw_hint.get("eventKind"), "unknown")
+        flow = _native_hint_string(raw_hint.get("flow"), "unknown").lower()
+        force_portaudio_refresh = bool(raw_hint.get("forcePortAudioRefresh", True))
+        safe_hint: dict[str, object] = {
+            "source": _native_hint_string(raw_hint.get("source"), "native"),
+            "eventKind": event_kind,
+            "flow": flow,
+            "role": _native_hint_string(raw_hint.get("role"), "unknown").lower(),
+            "endpointIdHash": _native_hint_string(raw_hint.get("endpointIdHash")),
+            "forcePortAudioRefresh": force_portaudio_refresh,
+        }
+        native_timestamp_ms = raw_hint.get("nativeTimestampMs")
+        if isinstance(native_timestamp_ms, (int, float)) and not isinstance(native_timestamp_ms, bool):
+            safe_hint["nativeTimestampMs"] = max(0, int(native_timestamp_ms))
+
+        ignored = _native_hint_flow_is_render(flow)
+        now = time.monotonic()
+        with self._state_lock:
+            self._native_hint_count += 1
+            self._last_native_hint_at = now
+            self._last_native_hint = dict(safe_hint)
+            if ignored:
+                self._native_hint_ignored_count += 1
+            elif force_portaudio_refresh:
+                self._native_hint_portaudio_count += 1
+
+        if ignored:
+            logger.debug(f"[DeviceMonitor] native refresh hint ignored ({event_kind}, render)")
+            return {
+                "scheduled": False,
+                "ignored": True,
+                "reason": "render-flow",
+                "deviceMonitor": "running",
+            }
+
+        self._schedule_refresh(
+            reason=f"native_{event_kind}",
+            immediate=False,
+            force_portaudio_refresh=force_portaudio_refresh,
+        )
+        return {
+            "scheduled": True,
+            "ignored": False,
+            "deviceMonitor": "running",
+            "forcePortAudioRefresh": force_portaudio_refresh,
+        }
+
     def refresh_now(self, *, force_portaudio_refresh: bool = True) -> list[dict[str, str]]:
         self._refresh_devices(
             trigger="manual",
@@ -391,8 +463,13 @@ class DeviceMonitor:
                 "pollRefreshCount": self._poll_refresh_count,
                 "eventRefreshCount": self._event_refresh_count,
                 "portAudioRefreshCount": self._portaudio_refresh_count,
+                "nativeHintCount": self._native_hint_count,
+                "nativeHintIgnoredCount": self._native_hint_ignored_count,
+                "nativeHintPortAudioCount": self._native_hint_portaudio_count,
                 "lastPollRefreshAgoSeconds": ago(self._last_poll_refresh_at),
                 "lastEventRefreshAgoSeconds": ago(self._last_event_refresh_at),
+                "lastNativeHintAgoSeconds": ago(self._last_native_hint_at),
+                "lastNativeHint": dict(self._last_native_hint or {}),
                 "lastDevicesChangedAgoSeconds": ago(self._last_devices_changed_at),
                 "pendingRefresh": self._pending_refresh_at > 0.0,
                 "pendingRefreshRequiresPortAudio": bool(

@@ -433,6 +433,9 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert runtime["featureFlags"]["requestedAudioEngine"] == "python"
     assert runtime["featureFlags"]["rustAudioRequested"] is False
     assert runtime["featureFlags"]["rustAudioAvailable"] is False
+    assert runtime["featureFlags"]["nativeDeviceEvents"] == "auto"
+    assert runtime["featureFlags"]["requestedNativeDeviceEvents"] == "auto"
+    assert runtime["featureFlags"]["nativeDeviceEventsRequested"] is True
     assert runtime["featureFlags"]["sessionTokenRequired"] is False
     assert runtime["startup"]["deviceMonitor"] == "disabled"
 
@@ -477,16 +480,31 @@ async def test_health_and_runtime_do_not_run_audio_import_diagnostics(monkeypatc
 
 @pytest.mark.asyncio
 async def test_runtime_reports_rust_audio_as_requested_until_prototype_exists(monkeypatch):
-    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
 
     runtime = ctl.get_runtime_info()
 
-    assert runtime["featureFlags"]["requestedAudioEngine"] == "rust"
+    assert runtime["featureFlags"]["requestedAudioEngine"] == "rust-prototype"
     assert runtime["featureFlags"]["rustAudioRequested"] is True
     assert runtime["featureFlags"]["rustAudioAvailable"] is False
     assert runtime["featureFlags"]["audioEngine"] == "python"
+
+
+@pytest.mark.asyncio
+async def test_runtime_reports_native_device_event_flag(monkeypatch):
+    monkeypatch.setenv("SCRIBER_NATIVE_DEVICE_EVENTS", "0")
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    runtime = ctl.get_runtime_info()
+    audio = ctl.get_audio_diagnostics()
+
+    assert runtime["featureFlags"]["nativeDeviceEvents"] == "disabled"
+    assert runtime["featureFlags"]["requestedNativeDeviceEvents"] == "0"
+    assert runtime["featureFlags"]["nativeDeviceEventsRequested"] is False
+    assert audio["featureFlags"]["nativeDeviceEvents"] == "disabled"
 
 
 @pytest.mark.asyncio

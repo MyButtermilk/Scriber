@@ -103,7 +103,7 @@ PySide6 footprint:
 
 Rust audio:
 
-- `SCRIBER_AUDIO_ENGINE=rust` is request-only.
+- `SCRIBER_AUDIO_ENGINE=rust-prototype` is request-only.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

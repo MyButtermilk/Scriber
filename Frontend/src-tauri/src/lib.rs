@@ -1,3 +1,5 @@
+mod audio_devices;
+
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
@@ -178,6 +180,24 @@ pub struct SingleInstanceGuard;
 
 struct DesktopHotkeyState {
     inner: Mutex<DesktopHotkeyStateInner>,
+}
+
+struct NativeDeviceEventsState {
+    handle: Mutex<Option<audio_devices::NativeDeviceEventMonitorHandle>>,
+}
+
+impl NativeDeviceEventsState {
+    fn new() -> Self {
+        Self {
+            handle: Mutex::new(None),
+        }
+    }
+
+    fn set_handle(&self, handle: Option<audio_devices::NativeDeviceEventMonitorHandle>) {
+        if let Ok(mut state) = self.handle.lock() {
+            *state = handle;
+        }
+    }
 }
 
 struct DesktopHotkeyStateInner {
@@ -538,6 +558,7 @@ pub fn run() {
         })
         .manage(single_instance_guard)
         .manage(DesktopHotkeyState::new())
+        .manage(NativeDeviceEventsState::new())
         .manage(backend_manager)
         .setup(|app| {
             configure_desktop_shell(app)?;
@@ -556,6 +577,10 @@ pub fn run() {
             if let Err(err) = refresh_global_hotkey_for_app(app.handle()) {
                 write_shell_log(&format!("global hotkey registration skipped: {err}"));
             }
+            let native_events_handle =
+                start_native_device_event_monitor_for_app(app.handle().clone());
+            app.state::<NativeDeviceEventsState>()
+                .set_handle(native_events_handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1471,6 +1496,50 @@ fn start_backend_supervisor(app: AppHandle) {
     });
 }
 
+fn start_native_device_event_monitor_for_app(
+    app: AppHandle,
+) -> Option<audio_devices::NativeDeviceEventMonitorHandle> {
+    let raw_mode = env::var("SCRIBER_NATIVE_DEVICE_EVENTS").ok();
+    let mode = audio_devices::native_device_events_mode_from_env(raw_mode.as_deref());
+    let post_hints = mode == audio_devices::NativeDeviceEventsMode::Enabled;
+    let app_for_event = app.clone();
+    let on_event = move |event: audio_devices::NativeDeviceEvent| {
+        if !post_hints {
+            write_shell_log(&format!(
+                "native device event observed kind={} flow={} role={} endpoint_hash={} (observe-only)",
+                event.event_kind, event.flow, event.role, event.endpoint_id_hash
+            ));
+            return;
+        }
+
+        let access = app_for_event.state::<BackendManager>().access();
+        let body = event.to_backend_hint_body();
+        match request_backend_json_with_body(
+            &access,
+            "POST",
+            "/api/microphones/refresh",
+            Some(&body),
+        ) {
+            Ok(_) => write_shell_log(&format!(
+                "native device event posted kind={} flow={} role={} endpoint_hash={}",
+                event.event_kind, event.flow, event.role, event.endpoint_id_hash
+            )),
+            Err(err) => write_shell_log(&format!(
+                "native device event post failed kind={} flow={} error={err}",
+                event.event_kind, event.flow
+            )),
+        }
+    };
+    let log = |message: String| write_shell_log(&message);
+    match audio_devices::start_native_device_event_monitor(mode, on_event, log) {
+        Ok(handle) => handle,
+        Err(err) => {
+            write_shell_log(&format!("native device event monitor unavailable: {err}"));
+            None
+        }
+    }
+}
+
 fn should_refresh_hotkey_after_backend_ready(
     backend_ready: bool,
     hotkey_refreshed_after_ready: bool,
@@ -1535,6 +1604,15 @@ fn post_backend_path(access: &BackendAccess, path: &str) -> Result<Value, String
 }
 
 fn request_backend_json(access: &BackendAccess, method: &str, path: &str) -> Result<Value, String> {
+    request_backend_json_with_body(access, method, path, None)
+}
+
+fn request_backend_json_with_body(
+    access: &BackendAccess,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value, String> {
     let (host, port) = parse_loopback_backend_url(&access.base_url)?;
     let addr = SocketAddr::from((host, port));
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500))
@@ -1542,14 +1620,8 @@ fn request_backend_json(access: &BackendAccess, method: &str, path: &str) -> Res
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
-    let token_header = if access.session_token.is_empty() {
-        String::new()
-    } else {
-        format!("X-Scriber-Token: {}\r\n", access.session_token)
-    };
-    let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {DEFAULT_HOST}:{port}\r\n{token_header}Content-Length: 0\r\nConnection: close\r\n\r\n"
-    );
+    let body_text = body.map(Value::to_string).unwrap_or_default();
+    let request = build_backend_http_request(method, path, port, &access.session_token, &body_text);
     stream
         .write_all(request.as_bytes())
         .map_err(|err| format!("could not write backend request: {err}"))?;
@@ -1563,6 +1635,29 @@ fn request_backend_json(access: &BackendAccess, method: &str, path: &str) -> Res
     }
     serde_json::from_str::<Value>(body)
         .map_err(|err| format!("backend returned invalid JSON: {err}"))
+}
+
+fn build_backend_http_request(
+    method: &str,
+    path: &str,
+    port: u16,
+    session_token: &str,
+    body: &str,
+) -> String {
+    let token_header = if session_token.is_empty() {
+        String::new()
+    } else {
+        format!("X-Scriber-Token: {session_token}\r\n")
+    };
+    let content_type_header = if body.is_empty() {
+        String::new()
+    } else {
+        "Content-Type: application/json\r\n".to_string()
+    };
+    format!(
+        "{method} {path} HTTP/1.1\r\nHost: {DEFAULT_HOST}:{port}\r\n{token_header}{content_type_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.as_bytes().len()
+    )
 }
 
 fn split_http_response(response: &str) -> Result<(&str, &str), String> {
@@ -2068,12 +2163,12 @@ fn health_response_ready(response: &str) -> bool {
 mod tests {
     use super::{
         acquire_single_instance_guard, autostart_command_for_exe, autostart_commands_match,
-        backend_executable_names, backend_start_timeout, desktop_autostart_default_enabled,
-        env_flag_enabled, find_backend_executable, find_backend_executable_in_dirs,
-        health_response_ready, is_safe_transcript_id, is_shell_menu_item,
-        managed_backend_start_timed_out, normalize_global_shortcut, normalize_hotkey_mode,
-        parse_loopback_backend_url, recent_transcript_label, resolve_session_token,
-        sanitize_menu_label, should_refresh_hotkey_after_backend_ready,
+        backend_executable_names, backend_start_timeout, build_backend_http_request,
+        desktop_autostart_default_enabled, env_flag_enabled, find_backend_executable,
+        find_backend_executable_in_dirs, health_response_ready, is_safe_transcript_id,
+        is_shell_menu_item, managed_backend_start_timed_out, normalize_global_shortcut,
+        normalize_hotkey_mode, parse_loopback_backend_url, recent_transcript_label,
+        resolve_session_token, sanitize_menu_label, should_refresh_hotkey_after_backend_ready,
         should_show_window_for_tray_click, split_http_response, DesktopHotkeyState,
         RecentTranscriptMenuEntry, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
         BACKEND_START_TIMEOUT_ENV, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX,
@@ -2394,6 +2489,29 @@ mod tests {
 
         assert_eq!(status, "HTTP/1.1 200 OK");
         assert_eq!(body, "{\"ok\":true}");
+    }
+
+    #[test]
+    fn backend_http_request_without_body_uses_zero_content_length() {
+        let request = build_backend_http_request("POST", "/api/live-mic/toggle", 8765, "", "");
+
+        assert!(request.starts_with("POST /api/live-mic/toggle HTTP/1.1\r\n"));
+        assert!(request.contains("Host: 127.0.0.1:8765\r\n"));
+        assert!(request.contains("Content-Length: 0\r\n"));
+        assert!(!request.contains("Content-Type: application/json\r\n"));
+        assert!(request.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn backend_http_request_with_json_body_includes_token_and_length() {
+        let body = r#"{"source":"tauri","flow":"capture"}"#;
+        let request =
+            build_backend_http_request("POST", "/api/microphones/refresh", 8765, "secret", body);
+
+        assert!(request.contains("X-Scriber-Token: secret\r\n"));
+        assert!(request.contains("Content-Type: application/json\r\n"));
+        assert!(request.contains(&format!("Content-Length: {}\r\n", body.as_bytes().len())));
+        assert!(request.ends_with(body));
     }
 
     #[test]
