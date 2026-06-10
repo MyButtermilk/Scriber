@@ -37,9 +37,9 @@ use windows::{
     core::GUID,
     Win32::{
         Media::Audio::{
-            eCapture, eConsole, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator,
-            MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, WAVEFORMATEX,
-            WAVEFORMATEXTENSIBLE, WAVE_FORMAT_PCM,
+            eCapture, eConsole, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
+            MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
+            DEVICE_STATE_ACTIVE, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVE_FORMAT_PCM,
         },
         System::Com::{
             CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
@@ -316,6 +316,8 @@ struct CaptureRequest {
     channels: u16,
     block_size: u32,
     device_preference: String,
+    port_audio_label: String,
+    native_endpoint_id_hash: String,
     prebuffer_ms: u32,
 }
 
@@ -326,6 +328,8 @@ impl CaptureRequest {
             channels: optional_u64(payload, "channels", 1, 16).max(1) as u16,
             block_size: optional_u64(payload, "blockSize", 512, 16_384).max(16) as u32,
             device_preference: bounded_string(payload, "devicePreference", "default", 96),
+            port_audio_label: bounded_string(payload, "portAudioLabel", "", 160),
+            native_endpoint_id_hash: bounded_string(payload, "nativeEndpointIdHash", "", 64),
             prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 2_000) as u32,
         }
     }
@@ -336,6 +340,8 @@ impl CaptureRequest {
             "channels": self.channels,
             "blockSize": self.block_size,
             "devicePreference": self.device_preference,
+            "portAudioLabel": self.port_audio_label,
+            "nativeEndpointIdHash": self.native_endpoint_id_hash,
             "prebufferMs": self.prebuffer_ms,
         })
     }
@@ -449,6 +455,13 @@ fn start_synthetic_capture_impl(
         "captureChannels": request.channels,
         "sampleFormat": "pcm_i16_le",
         "nativeEndpointIdHash": Value::Null,
+        "endpointSelection": endpoint_selection_payload(
+            &request,
+            Value::Null,
+            "synthetic",
+            false,
+            Value::String("syntheticCaptureHasNoNativeEndpoint".to_string()),
+        ),
         "requestedFormat": request.to_payload(),
         "audioFrameProtocol": audio_frame_protocol_payload(),
     });
@@ -524,6 +537,7 @@ fn start_wasapi_capture_impl(request: CaptureRequest) -> Result<(CaptureSession,
         "captureChannels": request.channels,
         "sampleFormat": "pcm_i16_le",
         "nativeEndpointIdHash": ready.endpoint_id_hash,
+        "endpointSelection": ready.endpoint_selection,
         "requestedFormat": request.to_payload(),
         "audioFrameProtocol": audio_frame_protocol_payload(),
         "mixFormat": ready.mix_format.to_payload(),
@@ -547,6 +561,7 @@ fn start_wasapi_capture_impl(_request: CaptureRequest) -> Result<(CaptureSession
 #[derive(Debug, Clone)]
 struct WasapiReady {
     endpoint_id_hash: Value,
+    endpoint_selection: Value,
     mix_format: WasapiMixFormat,
 }
 
@@ -865,6 +880,98 @@ fn run_wasapi_capture_writer(
 }
 
 #[cfg(windows)]
+struct WasapiSelectedDevice {
+    device: IMMDevice,
+    endpoint_id_hash: Value,
+    endpoint_selection: Value,
+}
+
+#[cfg(windows)]
+fn select_wasapi_capture_device(
+    enumerator: &IMMDeviceEnumerator,
+    request: &CaptureRequest,
+) -> Result<WasapiSelectedDevice, String> {
+    let requested_hash = request.native_endpoint_id_hash.trim();
+    if !requested_hash.is_empty() {
+        let collection = unsafe { enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) }
+            .map_err(|err| format!("WASAPI capture endpoint enumeration failed: {err}"))?;
+        let count = unsafe { collection.GetCount() }
+            .map_err(|err| format!("WASAPI capture endpoint count failed: {err}"))?;
+        for index in 0..count {
+            let device = unsafe { collection.Item(index) }
+                .map_err(|err| format!("WASAPI capture endpoint item {index} failed: {err}"))?;
+            let endpoint_hash = unsafe { wasapi_endpoint_id_hash_string(&device) };
+            if endpoint_hash.as_deref() == Some(requested_hash) {
+                let endpoint_id_hash = Value::String(requested_hash.to_string());
+                return Ok(WasapiSelectedDevice {
+                    device,
+                    endpoint_selection: endpoint_selection_payload(
+                        request,
+                        endpoint_id_hash.clone(),
+                        "nativeEndpointHash",
+                        false,
+                        Value::Null,
+                    ),
+                    endpoint_id_hash,
+                });
+            }
+        }
+        return Err(format!(
+            "requested native WASAPI capture endpoint hash was not found: {requested_hash}"
+        ));
+    }
+
+    if !is_default_device_preference(&request.device_preference) {
+        return Err(
+            "requested non-default WASAPI capture has no native endpoint hash; refusing default fallback"
+                .to_string(),
+        );
+    }
+
+    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
+        .map_err(|err| format!("default WASAPI capture endpoint unavailable: {err}"))?;
+    let endpoint_id_hash = unsafe { wasapi_endpoint_id_hash(&device) };
+    Ok(WasapiSelectedDevice {
+        device,
+        endpoint_selection: endpoint_selection_payload(
+            request,
+            endpoint_id_hash.clone(),
+            "default",
+            true,
+            Value::Null,
+        ),
+        endpoint_id_hash,
+    })
+}
+
+fn is_default_device_preference(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized.is_empty() || normalized == "default" || normalized == "none"
+}
+
+fn endpoint_selection_payload(
+    request: &CaptureRequest,
+    selected_endpoint_id_hash: Value,
+    mode: &str,
+    used_default_endpoint: bool,
+    fallback_reason: Value,
+) -> Value {
+    json!({
+        "mode": mode,
+        "requestedDevicePreference": request.device_preference,
+        "requestedPortAudioLabel": request.port_audio_label,
+        "requestedNativeEndpointIdHash": if request.native_endpoint_id_hash.is_empty() {
+            Value::Null
+        } else {
+            Value::String(request.native_endpoint_id_hash.clone())
+        },
+        "selectedNativeEndpointIdHash": selected_endpoint_id_hash,
+        "usedDefaultEndpoint": used_default_endpoint,
+        "fallbackReason": fallback_reason,
+    })
+}
+
+#[cfg(windows)]
 fn run_wasapi_capture_writer_inner(
     pipe_handle: HANDLE,
     request: &CaptureRequest,
@@ -882,9 +989,9 @@ fn run_wasapi_capture_writer_inner(
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|err| format!("MMDeviceEnumerator creation failed: {err}"))?;
-        let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
-            .map_err(|err| format!("default WASAPI capture endpoint unavailable: {err}"))?;
-        let endpoint_id_hash = unsafe { wasapi_endpoint_id_hash(&device) };
+        let selected = select_wasapi_capture_device(&enumerator, request)?;
+        let device = selected.device;
+        let endpoint_id_hash = selected.endpoint_id_hash.clone();
         let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
             .map_err(|err| format!("IAudioClient activation failed: {err}"))?;
         let mix_format_ptr = unsafe { client.GetMixFormat() }
@@ -911,6 +1018,7 @@ fn run_wasapi_capture_writer_inner(
         ready_tx
             .send(Ok(WasapiReady {
                 endpoint_id_hash,
+                endpoint_selection: selected.endpoint_selection,
                 mix_format: mix_format.clone(),
             }))
             .map_err(|err| format!("could not report WASAPI readiness: {err}"))?;
@@ -1008,27 +1116,145 @@ fn pump_wasapi_capture(
 
 #[cfg(windows)]
 unsafe fn wasapi_endpoint_id_hash(device: &windows::Win32::Media::Audio::IMMDevice) -> Value {
+    match unsafe { wasapi_endpoint_id_hash_string(device) } {
+        Some(hash) => Value::String(hash),
+        None => Value::Null,
+    }
+}
+
+#[cfg(windows)]
+unsafe fn wasapi_endpoint_id_hash_string(
+    device: &windows::Win32::Media::Audio::IMMDevice,
+) -> Option<String> {
     let id = unsafe { device.GetId() }.ok();
-    let Some(id) = id else {
-        return Value::Null;
-    };
+    let id = id?;
     let text = unsafe { id.to_string() }.unwrap_or_default();
     unsafe {
         CoTaskMemFree(Some(id.as_ptr().cast::<c_void>()));
     }
     if text.is_empty() {
-        Value::Null
+        None
     } else {
-        Value::String(hash_sensitive_identifier(&text))
+        Some(hash_sensitive_identifier(&text))
     }
 }
 
 fn hash_sensitive_identifier(value: &str) -> String {
-    use std::hash::{Hash, Hasher};
+    let digest = sha256_digest(value.as_bytes());
+    bytes_to_hex(&digest[..8])
+}
 
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn sha256_digest(input: &[u8]) -> [u8; 32] {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let mut h = [
+        0x6a09e667_u32,
+        0xbb67ae85,
+        0x3c6ef372,
+        0xa54ff53a,
+        0x510e527f,
+        0x9b05688c,
+        0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let bit_len = (input.len() as u64).wrapping_mul(8);
+    let mut message = input.to_vec();
+    message.push(0x80);
+    while message.len() % 64 != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in message.chunks_exact(64) {
+        let mut w = [0_u32; 64];
+        for (index, word) in w.iter_mut().take(16).enumerate() {
+            let offset = index * 4;
+            *word = u32::from_be_bytes([
+                chunk[offset],
+                chunk[offset + 1],
+                chunk[offset + 2],
+                chunk[offset + 3],
+            ]);
+        }
+        for index in 16..64 {
+            let s0 = w[index - 15].rotate_right(7)
+                ^ w[index - 15].rotate_right(18)
+                ^ (w[index - 15] >> 3);
+            let s1 = w[index - 2].rotate_right(17)
+                ^ w[index - 2].rotate_right(19)
+                ^ (w[index - 2] >> 10);
+            w[index] = w[index - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[index - 7])
+                .wrapping_add(s1);
+        }
+
+        let mut a = h[0];
+        let mut b = h[1];
+        let mut c = h[2];
+        let mut d = h[3];
+        let mut e = h[4];
+        let mut f = h[5];
+        let mut g = h[6];
+        let mut hh = h[7];
+
+        for index in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[index])
+                .wrapping_add(w[index]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(hh);
+    }
+
+    let mut digest = [0_u8; 32];
+    for (index, word) in h.iter().enumerate() {
+        digest[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    digest
 }
 
 #[cfg(windows)]
@@ -1311,6 +1537,10 @@ mod tests {
         assert_eq!(response["payload"]["requestedFormat"]["channels"], 16);
         assert_eq!(response["payload"]["requestedFormat"]["prebufferMs"], 2_000);
         assert_eq!(response["payload"]["audioFrameProtocol"]["version"], 1);
+        assert_eq!(
+            response["payload"]["requestedFormat"]["nativeEndpointIdHash"],
+            ""
+        );
     }
 
     #[test]
@@ -1344,6 +1574,7 @@ mod tests {
         assert_eq!(request.channels, 16);
         assert_eq!(request.block_size, 16_384);
         assert_eq!(request.prebuffer_ms, 2_000);
+        assert_eq!(request.native_endpoint_id_hash, "");
         assert!(request
             .device_preference
             .starts_with("default-capture-device"));
@@ -1365,6 +1596,44 @@ mod tests {
         assert_eq!(request.channels, 1);
         assert_eq!(request.block_size, 16);
         assert_eq!(request.device_preference, "default");
+    }
+
+    #[test]
+    fn native_endpoint_hash_matches_python_fixture() {
+        let raw = r"SWD\MMDEVAPI\{0.0.1.00000000}.{secret-device-guid}";
+
+        assert_eq!(hash_sensitive_identifier(raw), "e9a658ee3eff25fd");
+        assert!(!hash_sensitive_identifier(raw).contains("secret-device-guid"));
+    }
+
+    #[test]
+    fn endpoint_selection_payload_redacts_requested_selection() {
+        let request = CaptureRequest {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size: 512,
+            device_preference: "7".to_string(),
+            port_audio_label: "Dock Mic, Windows WASAPI".to_string(),
+            native_endpoint_id_hash: "endpoint-hash".to_string(),
+            prebuffer_ms: 0,
+        };
+
+        let payload = endpoint_selection_payload(
+            &request,
+            Value::String("endpoint-hash".to_string()),
+            "nativeEndpointHash",
+            false,
+            Value::Null,
+        );
+
+        assert_eq!(payload["requestedDevicePreference"], "7");
+        assert_eq!(
+            payload["requestedPortAudioLabel"],
+            "Dock Mic, Windows WASAPI"
+        );
+        assert_eq!(payload["requestedNativeEndpointIdHash"], "endpoint-hash");
+        assert_eq!(payload["selectedNativeEndpointIdHash"], "endpoint-hash");
+        assert_eq!(payload["usedDefaultEndpoint"], false);
     }
 
     #[test]
@@ -1401,6 +1670,8 @@ mod tests {
             channels: 1,
             block_size: 4,
             device_preference: "default".to_string(),
+            port_audio_label: "".to_string(),
+            native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 0,
         };
         let samples = [
@@ -1430,6 +1701,8 @@ mod tests {
             channels: 1,
             block_size: 32,
             device_preference: "default".to_string(),
+            port_audio_label: "".to_string(),
+            native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 0,
         };
         let (mut session, payload) = start_synthetic_capture_impl(request).unwrap();

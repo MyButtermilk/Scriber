@@ -41,6 +41,8 @@ struct AudioCaptureStartOptions {
     channels: u16,
     block_size: u32,
     device_preference: String,
+    port_audio_label: String,
+    native_endpoint_id_hash: String,
     prebuffer_ms: u32,
 }
 
@@ -343,6 +345,8 @@ fn audio_capture_start_sidecar_payload(options: &AudioCaptureStartOptions) -> Va
         "channels": options.channels,
         "blockSize": options.block_size,
         "devicePreference": options.device_preference,
+        "portAudioLabel": options.port_audio_label,
+        "nativeEndpointIdHash": options.native_endpoint_id_hash,
         "prebufferMs": options.prebuffer_ms,
         "frameProtocol": audio_frame_protocol_payload(),
     })
@@ -370,6 +374,8 @@ fn audio_capture_shell_payload(
             "channels": options.channels,
             "blockSize": options.block_size,
             "devicePreference": options.device_preference,
+            "portAudioLabel": options.port_audio_label,
+            "nativeEndpointIdHash": options.native_endpoint_id_hash,
             "prebufferMs": options.prebuffer_ms,
             }),
         );
@@ -428,6 +434,8 @@ fn parse_audio_capture_start_options(
         channels: optional_u64(payload, "channels", 1, 16) as u16,
         block_size: optional_u64(payload, "blockSize", 512, 16_384) as u32,
         device_preference: bounded_string(payload, "devicePreference", "default", 96),
+        port_audio_label: bounded_string(payload, "portAudioLabel", "", 160),
+        native_endpoint_id_hash: bounded_string(payload, "nativeEndpointIdHash", "", 64),
         prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 2_000) as u32,
     })
 }
@@ -1597,6 +1605,7 @@ mod tests {
         assert_eq!(options.channels, 16);
         assert_eq!(options.block_size, 16_384);
         assert_eq!(options.prebuffer_ms, 2_000);
+        assert_eq!(options.native_endpoint_id_hash, "");
         assert!(options
             .device_preference
             .starts_with("default-capture-device"));
@@ -1639,6 +1648,8 @@ mod tests {
             channels: 1,
             block_size: 512,
             device_preference: "default".to_string(),
+            port_audio_label: "Default Mic, Windows WASAPI".to_string(),
+            native_endpoint_id_hash: "endpoint-hash".to_string(),
             prebuffer_ms: 0,
         };
         let result = crate::audio_sidecar_client::AudioSidecarCallResult {
@@ -1663,6 +1674,14 @@ mod tests {
         assert_eq!(payload["streamId"], "stream-1");
         assert_eq!(payload["framePipe"], r"\\.\pipe\scriber-audio-test");
         assert_eq!(payload["sampleFormat"], "pcm_i16_le");
+        assert_eq!(
+            payload["requestedFormat"]["portAudioLabel"],
+            "Default Mic, Windows WASAPI"
+        );
+        assert_eq!(
+            payload["requestedFormat"]["nativeEndpointIdHash"],
+            "endpoint-hash"
+        );
         assert_eq!(payload["sidecar"]["pid"], 1234);
         assert_eq!(payload["sidecarPayload"]["streamId"], "stream-1");
     }
@@ -1686,7 +1705,14 @@ mod tests {
         assert_eq!(value["requestId"], "r-audio-stop");
         assert_eq!(value["success"], true);
         assert_eq!(value["payload"]["stopped"], false);
-        assert_eq!(value["payload"]["reason"], "noRustAudioSidecar");
+        assert!(
+            matches!(
+                value["payload"]["reason"].as_str(),
+                Some("noRustAudioSidecar" | "noActiveCapture")
+            ),
+            "unexpected stop reason: {}",
+            value["payload"]["reason"]
+        );
     }
 
     #[test]

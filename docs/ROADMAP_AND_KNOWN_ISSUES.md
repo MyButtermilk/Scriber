@@ -108,9 +108,9 @@ Rust audio:
   frame-pipe protocol helpers, a sidecar skeleton, and a Tauri stdio sidecar
   lifecycle client. It also has an explicit synthetic sidecar frame-pipe
   transport harness for plumbing tests and an explicit
-  `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` default-endpoint WASAPI capture
-  prototype. The sidecar is now bundled as an installed resource, but it remains
-  opt-in.
+  `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` WASAPI capture prototype with redacted
+  native-endpoint-hash selection. The sidecar is now bundled as an installed
+  resource, but it remains opt-in.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

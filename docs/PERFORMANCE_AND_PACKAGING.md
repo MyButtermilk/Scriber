@@ -635,9 +635,14 @@ Missing prerequisites:
    - `/api/runtime/audio-diagnostics` includes
      `microphone.nativeEndpointMapping`; `/api/microphones` is unchanged and
      never exposes raw IMMDevice IDs.
-   - Still open for the Rust/WASAPI prototype: replacing best-effort PyCAW
-     inventory with sidecar-provided endpoint identity and using the mapping for
-     actual capture endpoint selection.
+   - Implemented for the Rust/WASAPI prototype: Python can pass a redacted
+     `nativeEndpointIdHash` derived from the private mapping into
+     `audioCaptureStart`; the sidecar hashes IMMDevice IDs with the same
+     SHA-256/16-hex convention and selects the matching capture endpoint when
+     present.
+   - Still open: replacing best-effort PyCAW inventory with sidecar-provided
+     endpoint identity and proving favorite/default behavior on physical
+     dock/USB transitions.
 3. Audio support-bundle schema:
    - Partly implemented on `codex/rust-expansion-plan`: support bundles now
      include `audio-diagnostics.redacted.json`, sourced from
@@ -687,13 +692,18 @@ Missing prerequisites:
    - The sidecar reports the shared audio frame protocol, returns explicit
      `audioCaptureUnavailable` by default, and can run an explicit synthetic
      frame-pipe transport harness through
-     `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` or an explicit default-endpoint
-     WASAPI capture prototype through `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1`.
+     `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` or an explicit WASAPI capture
+     prototype through `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1`. The WASAPI
+     prototype can select a specific endpoint by redacted native endpoint hash;
+     without a hash, non-default capture requests fail before first frame so
+     Python can safely fall back to `sounddevice`.
    - Implemented: `-BundleRustAudioSidecar` builds
      `scriber-audio-sidecar --release`, copies it into
      `Frontend\src-tauri\resources\audio-sidecar`, and the NSIS bundle includes
      that resource.
-   - Still open: selected/favorite endpoint capture, prewarm/watchdog parity,
+   - Implemented: selected endpoint capture by redacted native endpoint hash,
+     plus endpoint-selection diagnostics in sidecar responses.
+   - Still open: physical favorite/dock/USB smokes, prewarm/watchdog parity,
      long physical-device smokes, and any default promotion decision.
 7. Tauri audio sidecar client:
    - Partly implemented in `Frontend/src-tauri/src/audio_sidecar_client.rs`.
@@ -750,12 +760,17 @@ Implementation plan:
      Windows named pipe and writes valid `pcm_i16_le` `SAF1` frames through the
      same lifecycle path Python will use for real capture.
    - Partly implemented: an explicit
-     `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` sidecar mode opens the default
-     capture endpoint through WASAPI shared mode and writes real PCM frames into
+     `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` sidecar mode opens the requested
+     native endpoint when a redacted hash is available, otherwise the Windows
+     default endpoint for true default requests, and writes real PCM frames into
      that same frame-pipe lifecycle.
+   - Partly implemented: Python now sends redacted native endpoint hints for
+     the selected PortAudio device; the sidecar selects the matching WASAPI
+     capture endpoint by hash and refuses unsafe non-default fallback when no
+     hash is available.
    - Still open: prove the long-lived path with physical real-WASAPI sessions,
-     selected/favorite endpoint mapping, dock/USB/default-device transitions,
-     and provider-backed transcription smokes.
+     favorite restore behavior, dock/USB/default-device transitions, and
+     provider-backed transcription smokes.
    - If Rust fails before the first frame, Python falls back to Python capture
      for that session.
    - If Rust stalls mid-session, record diagnostics and fail the current engine
@@ -775,11 +790,11 @@ Implementation plan:
    - Start request includes sample rate, channels, block size, device preference
      (`default`, `favorite`, `portAudioLabel`, or `nativeEndpointHash`), and
      `prebufferMs`.
-   - Implemented for the opt-in default-endpoint WASAPI prototype: successful
-     sidecar responses include stream id, format, capture channels, hashed
-     native endpoint id, frame pipe, and resampler metadata.
-   - Still open: selected/favorite endpoint capture, richer fallback reasons,
-     restart/drop counters in support-bundle diagnostics, and packaging gates.
+   - Implemented for the opt-in WASAPI prototype: successful sidecar responses
+     include stream id, format, capture channels, hashed native endpoint id,
+     endpoint-selection details, frame pipe, and resampler metadata.
+   - Still open: richer fallback reasons, restart/drop counters in
+     support-bundle diagnostics, and physical packaging/smoke gates.
    - Each PCM frame uses the shared fixed-size binary header followed by
      `pcm_i16_le`.
 5. Add prewarm parity only after active capture works:

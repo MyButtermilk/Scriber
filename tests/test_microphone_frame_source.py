@@ -152,7 +152,7 @@ def test_python_sounddevice_frame_source_device_index_parsing(requested, expecte
     assert source._parse_device_index() == expected
 
 
-def test_rust_prototype_frame_source_reads_binary_frame_pipe():
+def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     audio = np.full((512, 1), 321, dtype=np.int16)
     frame = encode_audio_frame(
         AudioFrameHeader(
@@ -166,6 +166,14 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe():
     )
     calls: list[tuple[np.ndarray, int, dict, object]] = []
     commands: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
 
     def shell_call(command, payload=None, **_kwargs):
         commands.append((command, payload or {}))
@@ -208,6 +216,8 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe():
 
     assert commands[0][0] == "audioCaptureStart"
     assert commands[0][1]["frameProtocol"]["sampleFormat"] == "pcm_i16_le"
+    assert commands[0][1]["portAudioLabel"] == "Default Mic, Windows WASAPI"
+    assert commands[0][1]["nativeEndpointIdHash"] == "endpoint-hash"
     assert commands[-1][0] == "audioCaptureStop"
     assert source.engine == "rust-prototype"
     assert source.name == "rust-frame-pipe"
@@ -218,6 +228,54 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe():
     assert snapshot["framePipeHash"]
     assert snapshot["nativeEndpointIdHash"] == "endpoint-hash"
     assert "framePipe" not in snapshot
+
+
+def test_rust_audio_device_selection_payload_maps_portaudio_index_to_native_hash(monkeypatch):
+    devices = [
+        {"name": "Built-in Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
+        {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 2, "hostapi": 1},
+    ]
+    fake_sd = types.SimpleNamespace(
+        default=types.SimpleNamespace(device=(0, None), hostapi=1),
+        query_hostapis=lambda: [{"name": "MME"}, {"name": "Windows WASAPI"}],
+        query_devices=lambda device=None, kind=None: (
+            devices
+            if device is None and kind is None
+            else devices[0 if device is None else int(device)]
+        ),
+        check_input_settings=lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(microphone, "HAS_SOUNDDEVICE", True)
+    monkeypatch.setattr(microphone, "sd", fake_sd)
+    monkeypatch.setattr(
+        microphone,
+        "collect_native_capture_endpoint_inventory",
+        lambda: [
+            {
+                "endpointId": r"SWD\MMDEVAPI\{0.0.1.00000000}.{built-in}",
+                "friendlyName": "Built-in Mic",
+                "flow": "capture",
+                "isDefault": True,
+            },
+            {
+                "endpointId": r"SWD\MMDEVAPI\{0.0.1.00000000}.{dock}",
+                "friendlyName": "Dock Mic",
+                "flow": "capture",
+                "isDefault": False,
+            },
+        ],
+    )
+
+    payload = microphone._rust_audio_device_selection_payload(
+        "1",
+        sample_rate=16000,
+        channels=1,
+    )
+
+    assert payload["portAudioLabel"] == "Dock Mic, Windows WASAPI"
+    assert payload["nativeEndpointIdHash"]
+    assert payload["nativeEndpointMatchConfidence"] == "name"
+    assert "SWD" not in str(payload)
 
 
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")

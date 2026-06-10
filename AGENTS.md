@@ -168,9 +168,12 @@ Packaging and scripts:
   run a passive WASAPI diagnostics probe. `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`
   may run the sidecar's synthetic frame-pipe transport harness for tests and
   prototype plumbing only. `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` may run the
-  sidecar's opt-in default-endpoint WASAPI capture prototype. The default
-  capture path remains Python `sounddevice` until a measured Rust prototype is
-  explicitly promoted.
+  sidecar's opt-in WASAPI capture prototype, including selected-endpoint capture
+  by redacted native endpoint hash. Non-default Rust capture without a native
+  endpoint hash must fail before first frame and let Python fall back to
+  `sounddevice`; it must not silently use the Windows default endpoint. The
+  default capture path remains Python `sounddevice` until a measured Rust
+  prototype is explicitly promoted.
 - The Rust audio frame-pipe protocol is length-prefixed and versioned. Keep the
   Rust and Python header fixtures in sync when changing it.
 - The opt-in Rust prototype may read frame-pipe PCM into Python, but if capture

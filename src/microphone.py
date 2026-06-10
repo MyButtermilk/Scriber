@@ -9,6 +9,11 @@ from loguru import logger
 from pipecat.frames.frames import InputAudioRawFrame, StartFrame, EndFrame
 
 from src.device_monitor import get_device_guard_lock, mark_stream_started, mark_stream_stopped
+from src.audio_devices import (
+    build_input_endpoint_mappings,
+    collect_native_capture_endpoint_inventory,
+    normalize_device_name,
+)
 from src.runtime.audio_frame_pipe import (
     AUDIO_FRAME_FLAG_END_OF_STREAM,
     AUDIO_FRAME_HEADER_LEN,
@@ -399,11 +404,18 @@ class RustPrototypeFrameSource(AudioFrameSource):
 
     def open(self, callback):
         self._callback = callback
+        selection = _rust_audio_device_selection_payload(
+            self.device,
+            sample_rate=self.sample_rate,
+            channels=self.target_channels,
+        )
         payload = {
             "sampleRate": self.sample_rate,
             "channels": self.target_channels,
             "blockSize": self.block_size,
             "devicePreference": str(self.device or "default"),
+            "portAudioLabel": selection.get("portAudioLabel") or "",
+            "nativeEndpointIdHash": selection.get("nativeEndpointIdHash") or None,
             "prebufferMs": 0,
             "frameProtocol": {
                 "magic": "SAF1",
@@ -569,6 +581,77 @@ def _rust_first_frame_timeout_seconds() -> float:
         return max(0.05, float(raw))
     except (TypeError, ValueError):
         return 0.5
+
+
+def _rust_audio_device_selection_payload(device, *, sample_rate: int, channels: int) -> dict:
+    """Return redacted native endpoint hints for the opt-in Rust audio prototype."""
+
+    result = {
+        "devicePreference": str(device or "default"),
+        "portAudioLabel": "",
+        "nativeEndpointIdHash": None,
+        "nativeDefaultInputEndpointIdHash": None,
+        "nativeEndpointMatchConfidence": "none",
+        "nativeEndpointMatchReason": "notResolved",
+    }
+    if not HAS_SOUNDDEVICE or sd is None:
+        result["nativeEndpointMatchReason"] = "sounddeviceUnavailable"
+        return result
+
+    try:
+        native_endpoints = collect_native_capture_endpoint_inventory()
+        mappings = build_input_endpoint_mappings(
+            sd,
+            native_endpoints=native_endpoints,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+    except Exception as exc:
+        result["nativeEndpointMatchReason"] = f"mappingFailed:{type(exc).__name__}"
+        return result
+
+    raw_device = str(device or "default").strip()
+    match = None
+    if raw_device and raw_device not in {"default", "None"}:
+        try:
+            wanted_index = int(raw_device)
+            match = next(
+                (mapping for mapping in mappings if mapping.portaudio_index == wanted_index),
+                None,
+            )
+        except ValueError:
+            wanted_normalized = normalize_device_name(raw_device)
+            match = next(
+                (
+                    mapping
+                    for mapping in mappings
+                    if mapping.portaudio_name == raw_device
+                    or (
+                        wanted_normalized
+                        and mapping.normalized_name == wanted_normalized
+                    )
+                ),
+                None,
+            )
+    else:
+        match = next((mapping for mapping in mappings if mapping.is_default), None)
+
+    if match is None:
+        result["nativeEndpointMatchReason"] = (
+            "nativeEndpointNotFound" if native_endpoints else "nativeInventoryUnavailable"
+        )
+        return result
+
+    result.update(
+        {
+            "portAudioLabel": match.portaudio_name,
+            "nativeEndpointIdHash": match.native_endpoint_id_hash,
+            "nativeDefaultInputEndpointIdHash": match.native_default_input_endpoint_id_hash,
+            "nativeEndpointMatchConfidence": match.match_confidence,
+            "nativeEndpointMatchReason": match.match_reason,
+        }
+    )
+    return result
 
 
 class MicrophoneInput(BaseInputTransport):
