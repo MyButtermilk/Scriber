@@ -23,6 +23,7 @@ def test_rust_audio_sidecar_smoke_script_documents_capture_contract() -> None:
     assert "nativeEndpointIdHash" in script
     assert "selected-native-endpoint-hash" in script
     assert "firstFrameReadMs" in script
+    assert "observedDurationSec" in script
     assert "framesRead" in script
     assert "prebufferFramesRead" in script
     assert "prebufferAfterLiveCount" in script
@@ -70,6 +71,7 @@ def test_rust_audio_sidecar_smoke_validation_accepts_consistent_prebuffer_metric
                 "prebufferFramesRead": 4,
                 "liveFramesRead": 6,
                 "prebufferAfterLiveCount": 0,
+                "observedDurationSec": 10.0,
                 "sequenceGapCount": 0,
             },
             "stop": {
@@ -81,6 +83,7 @@ def test_rust_audio_sidecar_smoke_validation_accepts_consistent_prebuffer_metric
             },
         },
         require_prebuffer=True,
+        min_observed_duration_sec=10.0,
     )
 
     assert errors == []
@@ -94,6 +97,7 @@ def test_rust_audio_sidecar_smoke_validation_rejects_inconsistent_writer_metrics
                 "prebufferFramesRead": 4,
                 "liveFramesRead": 6,
                 "prebufferAfterLiveCount": 0,
+                "observedDurationSec": 10.0,
                 "sequenceGapCount": 0,
             },
             "stop": {
@@ -105,6 +109,33 @@ def test_rust_audio_sidecar_smoke_validation_rejects_inconsistent_writer_metrics
             },
         },
         require_prebuffer=True,
+        min_observed_duration_sec=10.0,
     )
 
     assert "prebufferFramesWritten must be at least prebufferFramesRead" in errors
+
+
+def test_rust_audio_sidecar_smoke_validation_rejects_short_observed_duration() -> None:
+    errors = validate_capture_metrics(
+        {
+            "frames": {
+                "framesRead": 10,
+                "prebufferFramesRead": 4,
+                "liveFramesRead": 6,
+                "prebufferAfterLiveCount": 0,
+                "observedDurationSec": 3.0,
+                "sequenceGapCount": 0,
+            },
+            "stop": {
+                "stopped": True,
+                "framesWritten": 10,
+                "prebufferFramesWritten": 4,
+                "liveFramesWritten": 6,
+                "writerError": None,
+            },
+        },
+        require_prebuffer=True,
+        min_observed_duration_sec=10.0,
+    )
+
+    assert "observedDurationSec must be at least 10" in errors

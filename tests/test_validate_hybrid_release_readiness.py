@@ -264,9 +264,12 @@ def write_rust_audio_sidecar_report(
     prebuffer_ms: int = 400,
     prebuffer_frames_read: int = 4,
     prebuffer_after_live_count: int = 0,
+    observed_duration_sec: float | None = None,
     plan_only: bool = False,
 ) -> None:
     failed_capture_count = 0 if ok else 1
+    if observed_duration_sec is None:
+        observed_duration_sec = duration_sec
     default_prebuffer_frames = prebuffer_frames_read if prebuffer_ms > 0 else 0
     selected_prebuffer_frames = (
         max(1, prebuffer_frames_read // 2)
@@ -311,8 +314,11 @@ def write_rust_audio_sidecar_report(
                             "liveFramesRead": 13,
                             "prebufferAfterLiveCount": prebuffer_after_live_count,
                             "firstFrameReadMs": 10.0,
+                            "firstTimestampMicros": 1000,
                             "firstLiveFrameReadMs": 42.0,
                             "firstLiveSequence": default_prebuffer_frames,
+                            "lastTimestampMicros": int(float(observed_duration_sec) * 1_000_000),
+                            "observedDurationSec": observed_duration_sec,
                             "sequenceGapCount": sequence_gap_count,
                         },
                         "stop": {
@@ -337,8 +343,11 @@ def write_rust_audio_sidecar_report(
                             "liveFramesRead": 5,
                             "prebufferAfterLiveCount": 0,
                             "firstFrameReadMs": 9.0,
+                            "firstTimestampMicros": 1000,
                             "firstLiveFrameReadMs": 30.0,
                             "firstLiveSequence": selected_prebuffer_frames,
+                            "lastTimestampMicros": 10_000_000,
+                            "observedDurationSec": 10.0,
                             "sequenceGapCount": 0,
                         },
                         "stop": {
@@ -486,6 +495,35 @@ def test_validate_release_readiness_rejects_inconsistent_rust_audio_writer_count
     failures = "\n".join(rust_audio_check["failures"])
     assert "totalPrebufferFramesWritten must be at least totalPrebufferFramesRead" in failures
     assert "default stop.prebufferFramesWritten must be at least prebufferFramesRead" in failures
+
+
+def test_validate_release_readiness_rejects_short_rust_audio_observed_duration(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
+    write_rust_audio_sidecar_report(
+        rust_audio_report,
+        duration_sec=600,
+        observed_duration_sec=3.0,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_sidecar_report=rust_audio_report,
+        require_rust_audio_sidecar_smoke=True,
+        min_rust_audio_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    failures = "\n".join(rust_audio_check["failures"])
+    assert "default observedDurationSec must be at least 600" in failures
 
 
 def test_validate_release_readiness_rejects_missing_required_rust_audio_sidecar_smoke(tmp_path: Path) -> None:

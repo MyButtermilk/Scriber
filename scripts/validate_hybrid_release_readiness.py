@@ -458,6 +458,7 @@ def validate_rust_audio_sidecar_report(
                 default_capture,
                 "default",
                 require_prebuffer=prebuffer_required,
+                min_observed_duration_sec=min_duration_sec,
             )
         )
     if not isinstance(selected_capture, dict):
@@ -481,6 +482,7 @@ def validate_rust_audio_capture(
     *,
     expected_selection_mode: str = "",
     require_prebuffer: bool = False,
+    min_observed_duration_sec: float = 0.0,
 ) -> list[str]:
     failures: list[str] = []
     if capture.get("ok") is not True:
@@ -517,6 +519,14 @@ def validate_rust_audio_capture(
     first_frame_ms = frames.get("firstFrameReadMs")
     if not isinstance(first_frame_ms, (int, float)) or first_frame_ms < 0:
         failures.append(f"Rust audio capture {name} firstFrameReadMs must be non-negative")
+    observed_duration = frames.get("observedDurationSec")
+    if min_observed_duration_sec > 0 and (
+        not isinstance(observed_duration, (int, float))
+        or float(observed_duration) < min_observed_duration_sec
+    ):
+        failures.append(
+            f"Rust audio capture {name} observedDurationSec must be at least {min_observed_duration_sec:g}"
+        )
 
     stop = capture.get("stop")
     if not isinstance(stop, dict):

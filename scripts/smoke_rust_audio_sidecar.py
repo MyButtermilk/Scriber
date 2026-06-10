@@ -165,6 +165,7 @@ def read_frames(
     bytes_read = 0
     sequence_gaps: list[dict[str, int]] = []
     first_frame_ms: float | None = None
+    first_timestamp_micros: int | None = None
     first_live_frame_ms: float | None = None
     first_live_sequence: int | None = None
     last_sequence: int | None = None
@@ -180,6 +181,7 @@ def read_frames(
             now = time.perf_counter()
             if first_frame_ms is None:
                 first_frame_ms = (now - opened_at) * 1000.0
+                first_timestamp_micros = int(header.timestamp_micros)
             is_prebuffer = bool(header.flags & AUDIO_FRAME_FLAG_PREBUFFER)
             if is_prebuffer:
                 prebuffer_frames_read += 1
@@ -210,12 +212,18 @@ def read_frames(
         "prebufferAfterLiveCount": prebuffer_after_live_count,
         "bytesRead": bytes_read,
         "firstFrameReadMs": round(first_frame_ms, 3) if first_frame_ms is not None else None,
+        "firstTimestampMicros": first_timestamp_micros,
         "firstLiveFrameReadMs": (
             round(first_live_frame_ms, 3) if first_live_frame_ms is not None else None
         ),
         "firstLiveSequence": first_live_sequence,
         "lastSequence": last_sequence,
         "lastTimestampMicros": last_timestamp_micros,
+        "observedDurationSec": (
+            round(last_timestamp_micros / 1_000_000.0, 3)
+            if last_timestamp_micros is not None
+            else None
+        ),
         "lastFlags": last_flags,
         "sequenceGapCount": len(sequence_gaps),
         "sequenceGaps": sequence_gaps[:10],
@@ -287,6 +295,7 @@ def run_capture(
     validation_errors = validate_capture_metrics(
         result,
         require_prebuffer=int(request_payload.get("prebufferMs") or 0) > 0,
+        min_observed_duration_sec=duration_sec,
     )
     if validation_errors:
         result["validationErrors"] = validation_errors
@@ -298,6 +307,7 @@ def validate_capture_metrics(
     capture: dict[str, Any],
     *,
     require_prebuffer: bool,
+    min_observed_duration_sec: float = 0.0,
 ) -> list[str]:
     errors: list[str] = []
     frames = capture.get("frames")
@@ -322,6 +332,14 @@ def validate_capture_metrics(
         errors.append("stop.stopped must be true")
     if stop.get("writerError") not in (None, ""):
         errors.append("writerError must be empty")
+    observed_duration = frames.get("observedDurationSec")
+    if min_observed_duration_sec > 0 and (
+        not isinstance(observed_duration, (int, float))
+        or float(observed_duration) < float(min_observed_duration_sec)
+    ):
+        errors.append(
+            f"observedDurationSec must be at least {float(min_observed_duration_sec):g}"
+        )
 
     if require_prebuffer:
         if prebuffer_frames_read <= 0:
