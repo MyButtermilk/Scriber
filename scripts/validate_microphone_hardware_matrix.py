@@ -34,21 +34,35 @@ def validate_matrix(
     *,
     input_dir: Path,
     scenarios: list[str] | None = None,
+    require_rust_endpoint_inventory: bool = False,
 ) -> dict[str, Any]:
     selected = scenarios or list(DEFAULT_SCENARIOS)
-    results = [validate_scenario_artifact(input_dir, scenario) for scenario in selected]
+    results = [
+        validate_scenario_artifact(
+            input_dir,
+            scenario,
+            require_rust_endpoint_inventory=require_rust_endpoint_inventory,
+        )
+        for scenario in selected
+    ]
     ok = bool(results) and all(result.ok for result in results)
     return {
         "ok": ok,
         "inputDir": str(input_dir),
         "requiredScenarios": selected,
+        "requireRustEndpointInventory": bool(require_rust_endpoint_inventory),
         "passedCount": sum(1 for result in results if result.ok),
         "failedCount": sum(1 for result in results if not result.ok),
         "scenarios": [result.to_public() for result in results],
     }
 
 
-def validate_scenario_artifact(input_dir: Path, scenario: str) -> ScenarioValidation:
+def validate_scenario_artifact(
+    input_dir: Path,
+    scenario: str,
+    *,
+    require_rust_endpoint_inventory: bool = False,
+) -> ScenarioValidation:
     path = input_dir / f"microphone-hardware-{scenario}.json"
     failures: list[str] = []
     if not path.is_file():
@@ -107,6 +121,8 @@ def validate_scenario_artifact(input_dir: Path, scenario: str) -> ScenarioValida
 
     failures.extend(_validate_required_expectations(scenario, expectations))
     failures.extend(_validate_change_evidence(scenario, expectations, change, settings_after))
+    if require_rust_endpoint_inventory:
+        failures.extend(_validate_rust_inventory_evidence(scenario, expectations, result))
 
     return ScenarioValidation(
         scenario=scenario,
@@ -114,6 +130,45 @@ def validate_scenario_artifact(input_dir: Path, scenario: str) -> ScenarioValida
         ok=not failures,
         failures=failures,
     )
+
+
+def _validate_rust_inventory_evidence(
+    scenario: str,
+    expectations: dict[str, Any],
+    result: dict[str, Any],
+) -> list[str]:
+    failures: list[str] = []
+    rust_change = result.get("rustNativeEndpointInventoryChange")
+    if not isinstance(rust_change, dict):
+        return ["result.rustNativeEndpointInventoryChange must be present"]
+    if rust_change.get("availableAfter") is not True:
+        failures.append("rust endpoint inventory must be available after the hardware action")
+    if rust_change.get("sourceAfter") != "rust-wasapi":
+        failures.append("rust endpoint inventory sourceAfter must be rust-wasapi")
+    after = rust_change.get("after")
+    if not isinstance(after, list) or not after:
+        failures.append("rust endpoint inventory after snapshot must contain endpoints")
+        after = []
+    for endpoint in after:
+        if not isinstance(endpoint, dict):
+            failures.append("rust endpoint inventory endpoints must be objects")
+            continue
+        if not str(endpoint.get("endpointIdHash") or "").strip():
+            failures.append("rust endpoint inventory endpointIdHash must be present")
+        if "endpointId" in endpoint:
+            failures.append("rust endpoint inventory must not expose raw endpointId")
+
+    if scenario.endswith("-add") or scenario == "dock-connect":
+        expected = str(expectations.get("expectAdded") or "")
+        if not _rust_endpoints_contain(rust_change.get("added"), expected):
+            failures.append("rust inventory added endpoints must contain the expected hardware label")
+    if scenario.endswith("-remove") or scenario in {"dock-disconnect", "favorite-fallback"}:
+        expected = str(expectations.get("expectRemoved") or "")
+        if not _rust_endpoints_contain(rust_change.get("removed"), expected):
+            failures.append("rust inventory removed endpoints must contain the expected hardware label")
+    if scenario == "default-mic-change" and rust_change.get("defaultChanged") is not True:
+        failures.append("rust inventory defaultChanged must be true")
+    return failures
 
 
 def _validate_required_expectations(scenario: str, expectations: dict[str, Any]) -> list[str]:
@@ -174,6 +229,19 @@ def _devices_contain(raw_devices: Any, expected: str) -> bool:
     return False
 
 
+def _rust_endpoints_contain(raw_endpoints: Any, expected: str) -> bool:
+    if _is_placeholder_or_empty(expected) or not isinstance(raw_endpoints, list):
+        return False
+    needle = expected.casefold()
+    for item in raw_endpoints:
+        if not isinstance(item, dict):
+            continue
+        haystack = f"{item.get('friendlyName') or ''} {item.get('endpointIdHash') or ''}".casefold()
+        if needle in haystack:
+            return True
+    return False
+
+
 def _is_placeholder_or_empty(value: str) -> bool:
     stripped = (value or "").strip()
     return not stripped or stripped.startswith("<") or stripped.endswith(">")
@@ -185,6 +253,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--input-dir", default="tmp/hybrid-baseline")
     parser.add_argument("--scenario", action="append", choices=DEFAULT_SCENARIOS)
+    parser.add_argument("--require-rust-endpoint-inventory", action="store_true")
     parser.add_argument("--output", default="")
     return parser.parse_args(argv)
 
@@ -202,6 +271,7 @@ def main(argv: list[str]) -> int:
     payload = validate_matrix(
         input_dir=Path(args.input_dir).expanduser().resolve(),
         scenarios=args.scenario,
+        require_rust_endpoint_inventory=bool(args.require_rust_endpoint_inventory),
     )
     write_output(payload, args.output)
     print(json.dumps(payload, separators=(",", ":")))

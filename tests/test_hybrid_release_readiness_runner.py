@@ -185,6 +185,10 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_sidecar_smoke
     assert "--prebuffer-ms 400" in rust_command["command"]
     assert "--sidecar-exe" in rust_command["command"]
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
+    matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "microphoneMatrixValidation")
+    assert matrix_evidence["requireRustEndpointInventory"] is True
+    assert "--require-rust-endpoint-inventory" in matrix_command["command"]
     assert "--rust-audio-sidecar-report" in readiness_command["command"]
     assert "--require-rust-audio-sidecar-smoke" in readiness_command["command"]
     assert "--min-rust-audio-duration-sec 600" in readiness_command["command"]

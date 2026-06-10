@@ -28,6 +28,7 @@ param(
     [switch]$RequireRustAudioSidecarSmoke,
     [switch]$RunRustAudioSidecarSmoke,
     [switch]$UseExistingRustAudioSidecarReport,
+    [switch]$RequireRustEndpointInventory,
     [string]$UpdaterPublicationUrl = "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
     [string]$UpdaterPublicationReport = "",
     [int]$UpdaterPublicationAttempts = 6,
@@ -153,6 +154,9 @@ $matrixArgs = @(
     "--output",
     $MatrixValidationOutput
 )
+if ($RequireRustEndpointInventory -or $RequireRustAudioSidecarSmoke) {
+    $matrixArgs += "--require-rust-endpoint-inventory"
+}
 $updaterArgs = @(
     "scripts\verify_tauri_updater_publication.py",
     "--url",
@@ -271,7 +275,8 @@ $requiredEvidence = @(
         inputDir = $HardwareInputDir
         expectedArtifacts = @($hardwareArtifacts | ForEach-Object { Join-Path $HardwareInputDir $_ })
         output = $MatrixValidationOutput
-        notes = "Requires physical USB, dock, Bluetooth, Windows default-device, and favorite-mic fallback actions on the target Windows machine."
+        requireRustEndpointInventory = [bool]($RequireRustEndpointInventory -or $RequireRustAudioSidecarSmoke)
+        notes = "Requires physical USB, dock, Bluetooth, Windows default-device, and favorite-mic fallback actions on the target Windows machine. Rust audio promotion also requires Rust/WASAPI endpoint inventory evidence in each artifact."
     },
     [pscustomobject]@{
         name = "signedTauriUpdaterMetadata"

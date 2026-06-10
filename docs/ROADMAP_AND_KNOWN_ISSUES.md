@@ -87,6 +87,9 @@ Signing/updater:
 Physical hardware evidence:
 
 - Scripts exist for a microphone hardware matrix.
+- Matrix artifacts now capture redacted Rust/WASAPI endpoint inventory
+  before/after each physical action, and validation can require that evidence
+  with `-RequireRustEndpointInventory` or the Rust audio release-readiness gate.
 - Final release-readiness still needs real physical runs for USB, Bluetooth,
   dock connect/disconnect, Windows default changes, and favorite fallback.
 
@@ -117,7 +120,9 @@ Rust audio:
   contract as active Rust capture, so selected-device probe evidence is no
   longer default-only. Rust/WASAPI endpoint inventory is now exposed through
   private shell IPC and preferred by audio diagnostics for private
-  PortAudio-to-native mapping before PyCAW fallback.
+  PortAudio-to-native mapping before PyCAW fallback. The hardware matrix
+  scripts now persist that redacted endpoint inventory as acceptance evidence
+  and can fail promotion if it is missing or falls back away from `rust-wasapi`.
   The Python Rust frame reader also tracks `SAF1` prebuffer/live frame counts
   and rejects prebuffer-after-live interleaving, but Rust-side always-on
   prewarm adoption is still not complete.

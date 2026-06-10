@@ -225,7 +225,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
 ```
 
 When evaluating whether the Rust audio prototype can be promoted, add the
-physical sidecar smoke as a hard gate:
+physical sidecar smoke and Rust endpoint inventory evidence as hard gates:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
@@ -238,14 +238,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
 `rust-audio-sidecar-smoke.json` in `validate_hybrid_release_readiness.py`. The
 report must come from real WASAPI capture, include default-device and selected
 native-endpoint-hash runs, read frames without sequence gaps, and preserve
-sidecar stop-health metrics. Without that flag the Rust smoke remains visible in
+sidecar stop-health metrics. It also makes the microphone hardware matrix
+validator require redacted Rust/WASAPI endpoint inventory evidence for every
+physical device scenario. Without that flag the Rust smoke remains visible in
 the runner plan but optional, so standard Python-capture release builds are not
 blocked by prototype evidence.
+
+The microphone matrix can also be run directly with the same Rust inventory
+gate:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_microphone_hardware_matrix.ps1 `
+  -RequireRustEndpointInventory
+```
+
+That direct gate captures before/after audio diagnostics, validates
+`rustNativeEndpointInventoryChange`, requires the `rust-wasapi` inventory
+source, checks expected added/removed/default-change labels, and rejects raw
+IMMDevice endpoint IDs in the artifact.
 
 The final readiness validator expects evidence for:
 
 - physical microphone hardware matrix,
-- Rust audio sidecar physical smoke when evaluating the Rust prototype,
+- Rust audio sidecar physical smoke and Rust endpoint inventory evidence when
+  evaluating the Rust prototype,
 - media preparation smoke,
 - runtime dependency footprint,
 - signed updater publication,

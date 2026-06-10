@@ -9,6 +9,7 @@ import scripts.smoke_microphone_hardware_matrix as matrix_smoke
 from scripts.smoke_microphone_hardware_matrix import (
     Device,
     evaluate_expectations,
+    summarize_rust_inventory_change,
     summarize_change,
 )
 
@@ -99,6 +100,35 @@ def test_prompted_physical_run_records_operator_completion(monkeypatch, tmp_path
         def get_settings(self) -> dict[str, object]:
             return {}
 
+        def get_audio_diagnostics(self) -> dict[str, object]:
+            return {
+                "microphone": {
+                    "rustNativeEndpointInventory": {
+                        "available": True,
+                        "source": "rust-wasapi",
+                        "endpoints": [
+                            {
+                                "endpointIdHash": "built-in-hash",
+                                "endpointId": r"SWD\MMDEVAPI\{raw-built-in}",
+                                "friendlyName": "Built-in Mic",
+                                "flow": "capture",
+                                "isDefault": True,
+                                "defaultRoles": ["console"],
+                            }
+                        ],
+                    },
+                    "nativeEndpointMapping": {
+                        "mappings": [
+                            {
+                                "deviceIndex": 1,
+                                "endpointId": r"SWD\MMDEVAPI\{raw-mapping}",
+                                "endpointIdHash": "mapping-hash",
+                            }
+                        ]
+                    },
+                }
+            }
+
     def fake_wait_for_condition(**_kwargs: object) -> tuple[list[Device], dict[str, object], list[str]]:
         return [Device("USB Mic", "USB Mic")], {}, []
 
@@ -122,6 +152,14 @@ def test_prompted_physical_run_records_operator_completion(monkeypatch, tmp_path
     assert prompted == [True]
     assert payload["planOnly"] is False
     assert payload["assumeCompleted"] is True
+    rust_change = payload["result"]["rustNativeEndpointInventoryChange"]
+    assert rust_change["availableAfter"] is True
+    assert rust_change["sourceAfter"] == "rust-wasapi"
+    assert rust_change["after"][0]["endpointIdHash"] == "built-in-hash"
+    assert "endpointId" not in rust_change["after"][0]
+    after_diagnostics = payload["result"]["audioDiagnosticsAfter"]
+    assert "endpointId" not in after_diagnostics["rustNativeEndpointInventory"]["endpoints"][0]
+    assert "endpointId" not in after_diagnostics["nativeEndpointMapping"]["mappings"][0]
 
 
 def test_change_summary_tracks_added_removed_and_default_change() -> None:
@@ -141,6 +179,66 @@ def test_change_summary_tracks_added_removed_and_default_change() -> None:
     assert change["added"] == [{"deviceId": "USB Mic", "label": "USB Mic (Default)"}]
     assert change["removed"] == [{"deviceId": "Dock Mic", "label": "Dock Mic"}]
     assert change["defaultChanged"] is True
+
+
+def test_rust_inventory_summary_tracks_hash_changes_without_raw_ids() -> None:
+    before = {
+        "microphone": {
+            "rustNativeEndpointInventory": {
+                "available": True,
+                "source": "rust-wasapi",
+                "endpoints": [
+                    {
+                        "endpointIdHash": "built-in-hash",
+                        "friendlyName": "Built-in Mic",
+                        "flow": "capture",
+                        "isDefault": True,
+                        "defaultRoles": ["console"],
+                    }
+                ],
+            }
+        }
+    }
+    after = {
+        "microphone": {
+            "rustNativeEndpointInventory": {
+                "available": True,
+                "source": "rust-wasapi",
+                "endpoints": [
+                    {
+                        "endpointIdHash": "built-in-hash",
+                        "friendlyName": "Built-in Mic",
+                        "flow": "capture",
+                        "isDefault": False,
+                        "defaultRoles": [],
+                    },
+                    {
+                        "endpointIdHash": "usb-hash",
+                        "friendlyName": "USB Mic",
+                        "flow": "capture",
+                        "isDefault": True,
+                        "defaultRoles": ["console"],
+                    },
+                ],
+            }
+        }
+    }
+
+    change = summarize_rust_inventory_change(before, after)
+
+    assert change["availableBefore"] is True
+    assert change["availableAfter"] is True
+    assert change["added"] == [
+        {
+            "endpointIdHash": "usb-hash",
+            "friendlyName": "USB Mic",
+            "flow": "capture",
+            "isDefault": True,
+            "defaultRoles": ["console"],
+        }
+    ]
+    assert change["defaultChanged"] is True
+    assert "endpointId" not in change["added"][0]
 
 
 def test_expectation_evaluator_accepts_hardware_matrix_success() -> None:

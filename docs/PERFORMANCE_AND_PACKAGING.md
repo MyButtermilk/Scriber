@@ -364,7 +364,11 @@ Acceptance gates:
   active streams are running.
 - Installed smoke proves backend and frontend still start without COM errors.
 - Physical hardware matrix covers USB mic add/remove, dock connect/disconnect,
-  Windows default input changes, and favorite mic restore.
+  Windows default input changes, and favorite mic restore. For Rust audio
+  promotion, run `scripts\run_microphone_hardware_matrix.ps1` or the hybrid
+  readiness runner with `-RequireRustEndpointInventory` so every physical
+  artifact also captures and validates Rust/WASAPI endpoint inventory changes
+  without raw IMMDevice IDs.
 - Always-on mic light must not blink during idle safety periods unless an actual
   capture endpoint event occurred.
 - Support bundle clearly reports whether Rust events or Python fallback handled
@@ -940,9 +944,12 @@ Acceptance gates:
   endpoint hash capture, requested prebuffer delivery, no prebuffer-after-live
   interleaving, observed default-capture frame span meeting the requested gate,
   reader/writer frame-count consistency, no sequence gaps, and valid
-  stop-health metrics.
+  stop-health metrics. The readiness runner also requires Rust/WASAPI endpoint
+  inventory evidence in the physical microphone matrix when this promotion gate
+  is enabled.
 - Physical mic matrix across built-in, USB, Bluetooth, docked, undocked, and
-  Windows default-device changes.
+  Windows default-device changes, with `--require-rust-endpoint-inventory`
+  validation for Rust promotion.
 - No feature loss for provider streaming, final transcript injection, overlay,
   audio diagnostics, support bundles, and fallback settings.
 - Backend restart and Tauri exit clean up the Rust audio sidecar.

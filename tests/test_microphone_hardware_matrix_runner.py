@@ -104,6 +104,32 @@ def test_microphone_matrix_runner_plan_only_writes_redacted_plan(tmp_path: Path)
     assert written == payload
 
 
+def test_microphone_matrix_runner_plan_only_can_require_rust_endpoint_inventory(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-OutputDir",
+        str(tmp_path),
+        "-UsbLabel",
+        "USB Mic",
+        "-DockLabel",
+        "Dock Mic",
+        "-BluetoothLabel",
+        "Bluetooth Headset",
+        "-FavoriteLabel",
+        "Favorite Mic",
+        "-RequireRustEndpointInventory",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert "--require-rust-endpoint-inventory" in payload["validationCommand"]
+
+
 def test_microphone_matrix_runner_plan_only_reports_missing_labels(tmp_path: Path) -> None:
     result = run_powershell(
         "-NoProfile",

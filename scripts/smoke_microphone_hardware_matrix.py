@@ -106,6 +106,9 @@ class HttpClient:
     def get_settings(self) -> dict[str, Any]:
         return self.request_json("GET", "/api/settings")
 
+    def get_audio_diagnostics(self) -> dict[str, Any]:
+        return self.request_json("GET", "/api/runtime/audio-diagnostics")
+
 
 def normalize_devices(raw_devices: list[Any]) -> list[Device]:
     devices: list[Device] = []
@@ -151,6 +154,110 @@ def summarize_change(before: list[Device], after: list[Device]) -> dict[str, Any
             and after_default
             and before_default.device_id != after_default.device_id
         ),
+    }
+
+
+def _rust_inventory_payload(audio_diagnostics: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(audio_diagnostics, dict):
+        return {}
+    microphone = audio_diagnostics.get("microphone")
+    if not isinstance(microphone, dict):
+        return {}
+    inventory = microphone.get("rustNativeEndpointInventory")
+    return inventory if isinstance(inventory, dict) else {}
+
+
+def rust_inventory_signature(audio_diagnostics: dict[str, Any] | None) -> list[dict[str, Any]]:
+    inventory = _rust_inventory_payload(audio_diagnostics)
+    endpoints = inventory.get("endpoints")
+    if not isinstance(endpoints, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict):
+            continue
+        endpoint_hash = str(endpoint.get("endpointIdHash") or "").strip()
+        friendly_name = str(endpoint.get("friendlyName") or "").strip()
+        if not endpoint_hash or not friendly_name:
+            continue
+        default_roles = endpoint.get("defaultRoles")
+        if not isinstance(default_roles, list):
+            default_roles = []
+        result.append(
+            {
+                "endpointIdHash": endpoint_hash,
+                "friendlyName": friendly_name,
+                "flow": str(endpoint.get("flow") or ""),
+                "isDefault": bool(endpoint.get("isDefault")),
+                "defaultRoles": [
+                    str(role) for role in default_roles if str(role or "").strip()
+                ],
+            }
+        )
+    return result
+
+
+def rust_inventory_snapshot(audio_diagnostics: dict[str, Any] | None) -> dict[str, Any]:
+    inventory = _rust_inventory_payload(audio_diagnostics)
+    if not inventory:
+        return {}
+    snapshot: dict[str, Any] = {
+        "available": bool(inventory.get("available")),
+        "source": inventory.get("source"),
+        "endpoints": rust_inventory_signature(audio_diagnostics),
+    }
+    error = str(inventory.get("error") or "").strip()
+    if error:
+        snapshot["error"] = error
+    return snapshot
+
+
+def omit_raw_endpoint_ids(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: omit_raw_endpoint_ids(item)
+            for key, item in value.items()
+            if key != "endpointId"
+        }
+    if isinstance(value, list):
+        return [omit_raw_endpoint_ids(item) for item in value]
+    return value
+
+
+def summarize_rust_inventory_change(
+    before_audio: dict[str, Any] | None,
+    after_audio: dict[str, Any] | None,
+) -> dict[str, Any]:
+    before_inventory = _rust_inventory_payload(before_audio)
+    after_inventory = _rust_inventory_payload(after_audio)
+    before = rust_inventory_signature(before_audio)
+    after = rust_inventory_signature(after_audio)
+    before_hashes = {str(endpoint["endpointIdHash"]) for endpoint in before}
+    after_hashes = {str(endpoint["endpointIdHash"]) for endpoint in after}
+    before_default = sorted(
+        str(endpoint["endpointIdHash"]) for endpoint in before if endpoint.get("isDefault")
+    )
+    after_default = sorted(
+        str(endpoint["endpointIdHash"]) for endpoint in after if endpoint.get("isDefault")
+    )
+    return {
+        "availableBefore": bool(before_inventory.get("available")),
+        "availableAfter": bool(after_inventory.get("available")),
+        "sourceBefore": before_inventory.get("source"),
+        "sourceAfter": after_inventory.get("source"),
+        "beforeCount": len(before),
+        "afterCount": len(after),
+        "before": before,
+        "after": after,
+        "added": [
+            endpoint for endpoint in after if endpoint["endpointIdHash"] not in before_hashes
+        ],
+        "removed": [
+            endpoint
+            for endpoint in before
+            if endpoint["endpointIdHash"] not in after_hashes
+        ],
+        "defaultChanged": before_default != after_default,
     }
 
 
@@ -255,6 +362,13 @@ def write_output(payload: dict[str, Any], path: str) -> None:
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def safe_audio_diagnostics(client: HttpClient) -> dict[str, Any]:
+    try:
+        return client.get_audio_diagnostics()
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
+
+
 def flag_args(flags: dict[str, Any]) -> list[str]:
     args: list[str] = []
     if flags.get("expectAdded"):
@@ -335,6 +449,7 @@ def main(argv: list[str]) -> int:
     client = HttpClient(args.base_url, token=args.token)
     before = client.get_microphones()
     settings_before = client.get_settings()
+    audio_before = safe_audio_diagnostics(client)
     instruction = args.instruction or "Perform the planned hardware action, wait until Windows settles, then press Enter."
     if not args.assume_completed:
         print(instruction)
@@ -351,6 +466,7 @@ def main(argv: list[str]) -> int:
         expect_default_changed=args.expect_default_changed,
         expect_favorite_fallback=args.expect_favorite_fallback,
     )
+    audio_after = safe_audio_diagnostics(client)
     result = {
         "before": device_signature(before),
         "after": device_signature(after),
@@ -365,6 +481,26 @@ def main(argv: list[str]) -> int:
             "favoriteMicAvailable": settings_after.get("favoriteMicAvailable"),
         },
         "change": summarize_change(before, after),
+        "rustNativeEndpointInventoryChange": summarize_rust_inventory_change(
+            audio_before,
+            audio_after,
+        ),
+        "audioDiagnosticsBefore": {
+            "rustNativeEndpointInventory": rust_inventory_snapshot(audio_before),
+            "nativeEndpointMapping": omit_raw_endpoint_ids(
+                audio_before.get("microphone", {}).get("nativeEndpointMapping")
+                if isinstance(audio_before.get("microphone"), dict)
+                else None
+            ),
+        },
+        "audioDiagnosticsAfter": {
+            "rustNativeEndpointInventory": rust_inventory_snapshot(audio_after),
+            "nativeEndpointMapping": omit_raw_endpoint_ids(
+                audio_after.get("microphone", {}).get("nativeEndpointMapping")
+                if isinstance(audio_after.get("microphone"), dict)
+                else None
+            ),
+        },
         "expectations": {
             "expectAdded": args.expect_added,
             "expectRemoved": args.expect_removed,

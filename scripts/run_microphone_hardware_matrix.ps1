@@ -22,6 +22,7 @@ param(
     [string]$FavoriteLabel = "",
     [switch]$AssumeCompleted,
     [switch]$PlanOnly,
+    [switch]$RequireRustEndpointInventory,
     [switch]$SkipValidation
 )
 
@@ -181,6 +182,16 @@ function New-Plan {
             command = ("python " + (Convert-ToDisplayCommand -CommandArgs $args))
         }
     }
+    $validationArgs = @(
+        "scripts\validate_microphone_hardware_matrix.py",
+        "--input-dir",
+        $OutputDir,
+        "--output",
+        (Join-Path $OutputDir "microphone-hardware-matrix-validation.json")
+    )
+    if ($RequireRustEndpointInventory) {
+        $validationArgs += "--require-rust-endpoint-inventory"
+    }
     return [pscustomobject]@{
         ok = $true
         planOnly = [bool]$PlanOnly
@@ -191,7 +202,7 @@ function New-Plan {
         readyForPhysicalRun = ($missingLabelParameters.Count -eq 0)
         missingLabelParameters = $missingLabelParameters
         scenarios = @($entries)
-        validationCommand = "python scripts\validate_microphone_hardware_matrix.py --input-dir `"$OutputDir`" --output `"$((Join-Path $OutputDir "microphone-hardware-matrix-validation.json"))`""
+        validationCommand = ("python " + (Convert-ToDisplayCommand -CommandArgs $validationArgs))
     }
 }
 
@@ -228,7 +239,17 @@ try {
 
     if (-not $SkipValidation) {
         $validationOutput = Join-Path $OutputDir "microphone-hardware-matrix-validation.json"
-        python scripts\validate_microphone_hardware_matrix.py --input-dir $OutputDir --output $validationOutput
+        $validationArgs = @(
+            "scripts\validate_microphone_hardware_matrix.py",
+            "--input-dir",
+            $OutputDir,
+            "--output",
+            $validationOutput
+        )
+        if ($RequireRustEndpointInventory) {
+            $validationArgs += "--require-rust-endpoint-inventory"
+        }
+        python @validationArgs
         if ($LASTEXITCODE -ne 0) {
             throw "Microphone hardware matrix validation failed with exit code $LASTEXITCODE."
         }

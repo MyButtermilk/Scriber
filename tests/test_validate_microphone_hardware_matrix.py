@@ -18,6 +18,7 @@ def write_artifact(
     *,
     expectations: dict[str, object],
     change: dict[str, object],
+    rust_change: dict[str, object] | None = None,
     settings_after: dict[str, object] | None = None,
     ok: bool = True,
     plan_only: bool = False,
@@ -37,6 +38,7 @@ def write_artifact(
             "settingsBefore": {},
             "settingsAfter": settings_after or {},
             "change": change,
+            "rustNativeEndpointInventoryChange": rust_change,
             "expectations": expectations,
             "failures": [],
         },
@@ -135,6 +137,67 @@ def test_validate_matrix_rejects_plan_only_and_placeholder_expectation(tmp_path:
     failures = result["scenarios"][0]["failures"]
     assert "plan-only artifact is not physical hardware evidence" in failures
     assert "expectAdded must be a real label substring" in failures
+
+
+def test_validate_matrix_accepts_required_rust_endpoint_inventory(tmp_path: Path) -> None:
+    write_artifact(
+        tmp_path,
+        "usb-add",
+        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
+        rust_change={
+            "availableAfter": True,
+            "sourceAfter": "rust-wasapi",
+            "after": [
+                {
+                    "endpointIdHash": "usb-hash",
+                    "friendlyName": "USB Mic",
+                    "flow": "capture",
+                    "isDefault": True,
+                    "defaultRoles": ["console"],
+                }
+            ],
+            "added": [
+                {
+                    "endpointIdHash": "usb-hash",
+                    "friendlyName": "USB Mic",
+                    "flow": "capture",
+                    "isDefault": True,
+                    "defaultRoles": ["console"],
+                }
+            ],
+            "removed": [],
+            "defaultChanged": False,
+        },
+    )
+
+    result = validate_matrix(
+        input_dir=tmp_path,
+        scenarios=["usb-add"],
+        require_rust_endpoint_inventory=True,
+    )
+
+    assert result["ok"] is True
+    assert result["requireRustEndpointInventory"] is True
+
+
+def test_validate_matrix_rejects_missing_required_rust_endpoint_inventory(tmp_path: Path) -> None:
+    write_artifact(
+        tmp_path,
+        "usb-add",
+        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
+    )
+
+    result = validate_matrix(
+        input_dir=tmp_path,
+        scenarios=["usb-add"],
+        require_rust_endpoint_inventory=True,
+    )
+
+    assert result["ok"] is False
+    failures = result["scenarios"][0]["failures"]
+    assert "result.rustNativeEndpointInventoryChange must be present" in failures
 
 
 def test_validate_matrix_cli_writes_summary(tmp_path: Path) -> None:
