@@ -48,6 +48,8 @@ param(
     [double]$RecordingHotPathTextTargetSettleSec = 1.0,
     [double]$RecordingHotPathTextTargetTimeoutSec = 5.0,
     [switch]$RequireRecordingHotPathTextTarget,
+    [switch]$RequireRecordingHotPathProviderTranscript,
+    [switch]$RequireRecordingHotPathRustAudio,
     [switch]$Hidden,
     [switch]$SkipUiVisibleWait,
     [switch]$SkipUploadExportBenchmark,
@@ -792,6 +794,12 @@ function Invoke-RecordingHotPathBenchmark {
     if ($RequireRecordingHotPathTextTarget) {
         $recordingArgs += @("--require-text-target")
     }
+    if ($RequireRecordingHotPathProviderTranscript) {
+        $recordingArgs += @("--require-provider-transcript")
+    }
+    if ($RequireRecordingHotPathRustAudio) {
+        $recordingArgs += @("--require-rust-audio-engine")
+    }
     if ($RecordingHotPathSpeechPrompt) {
         $recordingArgs += @(
             "--speech-prompt-text", $RecordingHotPathSpeechPrompt,
@@ -1177,6 +1185,20 @@ $requirements = @(
         -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "stop_to_text_injection") `
         -Evidence "/api/metrics/hot-path segment stop_requested_to_first_paste_ms" `
         -Notes $(Get-RecordingHotPathRequirementNotes)
+    if ($RequireRecordingHotPathProviderTranscript) {
+        New-Requirement `
+            -Name "provider_transcript" `
+            -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "provider_transcript") `
+            -Evidence "/api/metrics/hot-path segment hotkey_received_to_first_final_token_ms" `
+            -Notes $(Get-RecordingHotPathRequirementNotes)
+    }
+    if ($RequireRecordingHotPathRustAudio) {
+        New-Requirement `
+            -Name "rust_audio_engine" `
+            -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "rust_audio_engine") `
+            -Evidence "/api/runtime/audio-diagnostics microphone.activeCapture engine/frameSource during recording" `
+            -Notes $(Get-RecordingHotPathRequirementNotes)
+    }
     if ($RequireRecordingHotPathTextTarget) {
         New-Requirement `
             -Name "text_target_persistence" `
@@ -1271,6 +1293,8 @@ $result = [pscustomobject]@{
         recordingHotPathTextTargetSettleSec = $RecordingHotPathTextTargetSettleSec
         recordingHotPathTextTargetTimeoutSec = $RecordingHotPathTextTargetTimeoutSec
         requireRecordingHotPathTextTarget = [bool]$RequireRecordingHotPathTextTarget
+        requireRecordingHotPathProviderTranscript = [bool]$RequireRecordingHotPathProviderTranscript
+        requireRecordingHotPathRustAudio = [bool]$RequireRecordingHotPathRustAudio
         failOnPerformanceBudget = [bool]$FailOnPerformanceBudget
         maxUiVisibleP95Ms = $MaxUiVisibleP95Ms
         maxBackendReadyP95Ms = $MaxBackendReadyP95Ms

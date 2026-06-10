@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-06-10
+Last verified: 2026-06-11
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -353,6 +353,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
 These Rust smokes must not be used alone to promote Rust audio to default.
 Longer physical Always-On-Mic matrix runs, device-change evidence, and
 provider-backed transcription smokes are still required.
+
+Provider-backed Rust recording hot-path evidence:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -RecordHotPathSamples `
+  -RequireRecordingHotPathProviderTranscript `
+  -RequireRecordingHotPathRustAudio `
+  -RecordingHotPathSpeechPrompt "Scriber provider-backed Rust audio validation"
+```
+
+This requires real provider credentials, microphone access, and explicit Rust
+audio prototype environment flags. It proves the STT provider emitted a final
+transcript and the active recording diagnostics used `rust-prototype` with the
+`rust-frame-pipe` source, but it does not replace long physical matrix evidence.
 
 Rust audio promotion readiness gate:
 

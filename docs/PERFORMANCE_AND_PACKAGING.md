@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-06-10
+Last verified: 2026-06-11
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -989,9 +989,18 @@ Implementation plan:
      A related fix keeps the Rust prewarm manager's default device preference as
      `default` when Python cannot map the PortAudio default to a native endpoint
      hash; non-default Rust capture without a native hash still fails closed.
+   - Implemented: the recording hot-path benchmark can now be run as a strict
+     provider-backed Rust evidence gate. `--require-provider-transcript`
+     requires a final STT provider transcript, and `--require-rust-audio-engine`
+     verifies that `/api/runtime/audio-diagnostics` saw an active
+     `rust-prototype` `rust-frame-pipe` capture during recording. The hybrid
+     baseline runner exposes these as
+     `-RequireRecordingHotPathProviderTranscript` and
+     `-RequireRecordingHotPathRustAudio`.
    - Still open: long-running physical Always-On-Mic evidence with the Rust
-     manager, device-refresh pause/resume matrix evidence, provider-backed
-     end-to-end transcription smokes, and release-readiness promotion gates.
+     manager, device-refresh pause/resume matrix evidence, real provider-backed
+     end-to-end transcription runs using the new gate, and release-readiness
+     promotion gates.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream
@@ -1022,7 +1031,9 @@ Implementation plan:
    - 10-minute live recording stability.
    - Partly implemented: the Rust sidecar smoke captures the Rust-side
      first-frame and frame-pipe metrics needed for the Rust half of this
-     comparison. Provider-backed Python/Rust end-to-end comparisons are still
+     comparison. The recording hot-path benchmark now has strict gates for a
+     final provider transcript and active Rust capture diagnostics, but
+     provider-backed Python/Rust end-to-end comparison artifacts are still
      required before promotion.
 8. Promote to default only if physical hardware tests show fewer interruptions
    or a meaningful latency win. Otherwise keep Python as default and retain the

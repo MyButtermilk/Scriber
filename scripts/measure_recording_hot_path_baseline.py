@@ -36,6 +36,8 @@ PROVIDER_FINAL_TO_CLIPBOARD_SET_SEGMENT = "provider_final_received_to_clipboard_
 CLIPBOARD_SET_TO_PASTE_SEGMENT = "clipboard_set_to_paste_ms"
 PASTE_TO_FIRST_PASTE_SEGMENT = "paste_to_first_paste_ms"
 TEXT_TARGET_WINDOW_FLAG = "--_text-target-window"
+RUST_AUDIO_ACTIVE_ENGINE = "rust-prototype"
+RUST_AUDIO_FRAME_SOURCE = "rust-frame-pipe"
 
 
 def percentile(values: list[float], pct: float) -> float:
@@ -419,6 +421,16 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
         if not session_id:
             raise RuntimeError("Backend did not expose a live session id.")
 
+        try:
+            sample["audioDiagnosticsDuringRecording"] = client.get(
+                "/api/runtime/audio-diagnostics"
+            )
+        except Exception as exc:
+            sample["audioDiagnosticsDuringRecording"] = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
         record_started_at = time.monotonic()
         if args.speech_prompt_text:
             time.sleep(min(args.speech_prompt_delay_sec, args.record_seconds))
@@ -467,7 +479,95 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
     return sample
 
 
-def build_summary(samples: list[dict[str, Any]], *, require_text_target: bool = False) -> dict[str, Any]:
+def provider_transcript_requirement(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    transcript_values = [
+        float((sample.get("segments") or {}).get(PROVIDER_TRANSCRIPT_SEGMENT))
+        for sample in samples
+        if PROVIDER_TRANSCRIPT_SEGMENT in (sample.get("segments") or {})
+    ]
+    audible_values = [
+        float((sample.get("segments") or {}).get(AUDIBLE_AUDIO_SEGMENT))
+        for sample in samples
+        if AUDIBLE_AUDIO_SEGMENT in (sample.get("segments") or {})
+    ]
+    status = "measured" if transcript_values else "missing_audible_audio"
+    if not transcript_values and audible_values:
+        status = "missing_provider_transcript"
+    return {
+        "status": status,
+        "segment": PROVIDER_TRANSCRIPT_SEGMENT,
+        "providerTranscriptSamples": len(transcript_values),
+        "providerTranscriptDurations": summarize(transcript_values),
+        "audibleAudioSamples": len(audible_values),
+        "audibleAudioDurations": summarize(audible_values),
+    }
+
+
+def rust_audio_requirement(
+    samples: list[dict[str, Any]],
+    audio_diagnostics: dict[str, Any] | None,
+) -> dict[str, Any]:
+    feature_flags = (audio_diagnostics or {}).get("featureFlags") or {}
+    requested = str(feature_flags.get("requestedAudioEngine") or "")
+    effective = str(feature_flags.get("audioEngine") or "")
+    rust_requested = feature_flags.get("rustAudioRequested") is True
+    rust_available = feature_flags.get("rustAudioAvailable") is True
+
+    active_captures: list[dict[str, Any]] = []
+    matching_samples = 0
+    for sample in samples:
+        during = sample.get("audioDiagnosticsDuringRecording")
+        if not isinstance(during, dict):
+            continue
+        active = ((during.get("microphone") or {}).get("activeCapture") or {})
+        if not isinstance(active, dict) or not active:
+            continue
+        active_captures.append(
+            {
+                "engine": active.get("engine"),
+                "frameSource": active.get("frameSource"),
+                "callbackCount": active.get("callbackCount"),
+                "nativeEndpointIdHash": active.get("nativeEndpointIdHash"),
+                "requestedPrewarmIdHash": active.get("requestedPrewarmIdHash"),
+                "adoptedPrewarm": active.get("adoptedPrewarm"),
+            }
+        )
+        if (
+            active.get("engine") == RUST_AUDIO_ACTIVE_ENGINE
+            and active.get("frameSource") == RUST_AUDIO_FRAME_SOURCE
+        ):
+            matching_samples += 1
+
+    status = "measured"
+    if matching_samples <= 0:
+        if not rust_requested:
+            status = "not_requested"
+        elif not rust_available or effective != RUST_AUDIO_ACTIVE_ENGINE:
+            status = "unavailable"
+        else:
+            status = "missing_active_rust_capture"
+
+    return {
+        "status": status,
+        "segment": "audioDiagnosticsDuringRecording.microphone.activeCapture",
+        "requestedAudioEngine": requested,
+        "audioEngine": effective,
+        "rustAudioRequested": rust_requested,
+        "rustAudioAvailable": rust_available,
+        "matchingSamples": matching_samples,
+        "activeCaptureSamples": len(active_captures),
+        "activeCaptures": active_captures[:5],
+    }
+
+
+def build_summary(
+    samples: list[dict[str, Any]],
+    *,
+    require_text_target: bool = False,
+    require_provider_transcript: bool = False,
+    require_rust_audio_engine: bool = False,
+    audio_diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     requirements: dict[str, Any] = {}
     for requirement, segment_name in SEGMENTS_BY_REQUIREMENT.items():
         values, details = requirement_values(samples, requirement, segment_name)
@@ -500,6 +600,12 @@ def build_summary(samples: list[dict[str, Any]], *, require_text_target: bool = 
             "durations": target_summary["captureElapsedDurations"],
         }
 
+    if require_provider_transcript:
+        requirements["provider_transcript"] = provider_transcript_requirement(samples)
+
+    if require_rust_audio_engine:
+        requirements["rust_audio_engine"] = rust_audio_requirement(samples, audio_diagnostics)
+
     return {
         "iterations": len(samples),
         "successfulSamples": sum(1 for sample in samples if sample.get("ok")),
@@ -520,7 +626,18 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "error": f"{type(exc).__name__}: {exc}",
         }
     samples = [run_one_iteration(client, args, index) for index in range(1, args.iterations + 1)]
-    summary = build_summary(samples, require_text_target=args.require_text_target)
+    summary = build_summary(
+        samples,
+        require_text_target=args.require_text_target,
+        require_provider_transcript=args.require_provider_transcript,
+        require_rust_audio_engine=args.require_rust_audio_engine,
+        audio_diagnostics=audio_diagnostics,
+    )
+    strict_requirements = (
+        args.require_text_target
+        or args.require_provider_transcript
+        or args.require_rust_audio_engine
+    )
     return {
         "schemaVersion": 1,
         "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -531,13 +648,21 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "pid": health.get("pid"),
         },
         "audioDiagnostics": audio_diagnostics,
-        "ok": summary["successfulSamples"] > 0,
+        "ok": summary["successfulSamples"] > 0
+        and (summary["complete"] if strict_requirements else True),
         "summary": summary,
         "samples": samples,
     }
 
 
 def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
+    validate_audio_engine = RUST_AUDIO_ACTIVE_ENGINE if args.require_rust_audio_engine else "python"
+    validate_rust_flags = {
+        "audioEngine": validate_audio_engine,
+        "requestedAudioEngine": validate_audio_engine,
+        "rustAudioRequested": bool(args.require_rust_audio_engine),
+        "rustAudioAvailable": bool(args.require_rust_audio_engine),
+    }
     sample = {
         "iteration": 1,
         "ok": True,
@@ -553,6 +678,18 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
         },
         "validateOnly": True,
     }
+    if args.require_rust_audio_engine:
+        sample["audioDiagnosticsDuringRecording"] = {
+            "featureFlags": dict(validate_rust_flags),
+            "microphone": {
+                "activeCapture": {
+                    "engine": RUST_AUDIO_ACTIVE_ENGINE,
+                    "frameSource": RUST_AUDIO_FRAME_SOURCE,
+                    "callbackCount": 12,
+                    "nativeEndpointIdHash": "validate-endpoint",
+                },
+            },
+        }
     if args.text_target_file or args.require_text_target:
         sample["textTarget"] = {
             "path": args.text_target_file or "validate-target.txt",
@@ -572,10 +709,7 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             "runtimeMode": "validate",
             "pid": 0,
             "featureFlags": {
-                "audioEngine": "python",
-                "requestedAudioEngine": "python",
-                "rustAudioRequested": False,
-                "rustAudioAvailable": False,
+                **validate_rust_flags,
             },
             "provider": {
                 "configured": "validate",
@@ -601,7 +735,13 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             },
         },
         "ok": True,
-        "summary": build_summary([sample], require_text_target=args.require_text_target),
+        "summary": build_summary(
+            [sample],
+            require_text_target=args.require_text_target,
+            require_provider_transcript=args.require_provider_transcript,
+            require_rust_audio_engine=args.require_rust_audio_engine,
+            audio_diagnostics={"featureFlags": dict(validate_rust_flags)},
+        ),
         "samples": [sample],
     }
 
@@ -621,6 +761,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--text-target-settle-sec", type=float, default=1.0)
     parser.add_argument("--text-target-timeout-sec", type=float, default=5.0)
     parser.add_argument("--require-text-target", action="store_true")
+    parser.add_argument("--require-provider-transcript", action="store_true")
+    parser.add_argument("--require-rust-audio-engine", action="store_true")
     parser.add_argument("--speech-prompt-text", default="")
     parser.add_argument("--speech-prompt-delay-sec", type=float, default=0.5)
     parser.add_argument("--validate-only", action="store_true")

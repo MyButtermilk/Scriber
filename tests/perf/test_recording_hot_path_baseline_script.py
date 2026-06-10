@@ -79,6 +79,41 @@ def test_recording_hot_path_baseline_validate_only_can_require_text_target(tmp_p
     assert target_requirement["capturedSamples"] == 1
 
 
+def test_recording_hot_path_validate_only_can_require_provider_and_rust_audio(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[2]
+    output_path = tmp_path / "recording-hot-path-baseline-strict-rust.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/measure_recording_hot_path_baseline.py",
+            "--validate-only",
+            "--require-provider-transcript",
+            "--require-rust-audio-engine",
+            "--output",
+            str(output_path),
+        ],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    provider_requirement = payload["summary"]["requirements"]["provider_transcript"]
+    rust_requirement = payload["summary"]["requirements"]["rust_audio_engine"]
+
+    assert payload["ok"] is True
+    assert payload["summary"]["complete"] is True
+    assert payload["audioDiagnostics"]["featureFlags"]["audioEngine"] == "rust-prototype"
+    assert provider_requirement["status"] == "measured"
+    assert provider_requirement["providerTranscriptSamples"] == 1
+    assert rust_requirement["status"] == "measured"
+    assert rust_requirement["matchingSamples"] == 1
+    assert rust_requirement["activeCaptures"][0]["frameSource"] == "rust-frame-pipe"
+
+
 def test_recording_hot_path_text_target_path_is_unique_per_iteration(tmp_path: Path):
     target = tmp_path / "capture.txt"
 
@@ -276,6 +311,108 @@ def test_recording_hot_path_summary_reports_missing_provider_transcript_after_au
     assert stop_requirement["providerTranscriptSamples"] == 0
 
 
+def test_recording_hot_path_provider_requirement_rejects_audible_audio_without_provider_final():
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "hotkey_received_to_first_audible_audio_frame_ms": 210.0,
+                    "stop_requested_to_session_finished_ms": 90.0,
+                },
+            }
+        ],
+        require_provider_transcript=True,
+    )
+
+    provider_requirement = summary["requirements"]["provider_transcript"]
+    assert summary["complete"] is False
+    assert provider_requirement["status"] == "missing_provider_transcript"
+    assert provider_requirement["audibleAudioSamples"] == 1
+    assert provider_requirement["providerTranscriptSamples"] == 0
+
+
+def test_recording_hot_path_rust_audio_requirement_checks_active_capture_diagnostics():
+    audio_diagnostics = {
+        "featureFlags": {
+            "requestedAudioEngine": "rust-prototype",
+            "audioEngine": "rust-prototype",
+            "rustAudioRequested": True,
+            "rustAudioAvailable": True,
+        }
+    }
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_first_paste_ms": 82.5,
+                },
+                "audioDiagnosticsDuringRecording": {
+                    "microphone": {
+                        "activeCapture": {
+                            "engine": "rust-prototype",
+                            "frameSource": "rust-frame-pipe",
+                            "callbackCount": 9,
+                            "nativeEndpointIdHash": "redacted",
+                        }
+                    }
+                },
+            }
+        ],
+        require_rust_audio_engine=True,
+        audio_diagnostics=audio_diagnostics,
+    )
+
+    rust_requirement = summary["requirements"]["rust_audio_engine"]
+    assert summary["complete"] is True
+    assert rust_requirement["status"] == "measured"
+    assert rust_requirement["matchingSamples"] == 1
+    assert rust_requirement["activeCaptures"][0]["nativeEndpointIdHash"] == "redacted"
+
+
+def test_recording_hot_path_rust_audio_requirement_rejects_python_capture_fallback():
+    audio_diagnostics = {
+        "featureFlags": {
+            "requestedAudioEngine": "rust-prototype",
+            "audioEngine": "rust-prototype",
+            "rustAudioRequested": True,
+            "rustAudioAvailable": True,
+        }
+    }
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_first_paste_ms": 82.5,
+                },
+                "audioDiagnosticsDuringRecording": {
+                    "microphone": {
+                        "activeCapture": {
+                            "engine": "python",
+                            "frameSource": "sounddevice",
+                        }
+                    }
+                },
+            }
+        ],
+        require_rust_audio_engine=True,
+        audio_diagnostics=audio_diagnostics,
+    )
+
+    rust_requirement = summary["requirements"]["rust_audio_engine"]
+    assert summary["complete"] is False
+    assert rust_requirement["status"] == "missing_active_rust_capture"
+    assert rust_requirement["matchingSamples"] == 0
+
+
 def test_recording_hot_path_summary_reports_missing_injection_after_transcript():
     summary = build_summary(
         [
@@ -314,7 +451,13 @@ def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
     assert "--text-target-file" in script
     assert "--text-target-timeout-sec" in script
     assert "--require-text-target" in script
+    assert "--require-provider-transcript" in script
+    assert "--require-rust-audio-engine" in script
     assert "RequireRecordingHotPathTextTarget requires RecordingHotPathTextTargetFile" in script
+    assert "RequireRecordingHotPathProviderTranscript" in script
+    assert "RequireRecordingHotPathRustAudio" in script
+    assert "provider_transcript" in script
+    assert "rust_audio_engine" in script
     assert "--speech-prompt-text" in script
     assert "Convert-ToProcessArgument" in script
     assert "[string]$LegacyDataDir" in script

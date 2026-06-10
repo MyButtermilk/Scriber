@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-06-10
+Last verified: 2026-06-11
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -213,6 +213,27 @@ so release evidence uses the stable Windows default endpoint. Add
 Rust audio smokes still do not promote Rust audio to the default engine; longer
 physical Always-On-Mic matrix evidence and provider-backed transcription smokes
 remain required.
+
+Use the recording hot-path benchmark when Rust audio evidence must include the
+actual provider path, not only sidecar frame delivery. The strict provider/Rust
+flags require a final STT provider transcript and verify that
+`/api/runtime/audio-diagnostics` reported an active `rust-prototype`
+`rust-frame-pipe` capture during recording:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `
+  -RecordHotPathSamples `
+  -RequireRecordingHotPathProviderTranscript `
+  -RequireRecordingHotPathRustAudio `
+  -RecordingHotPathSpeechPrompt "Scriber provider-backed Rust audio validation"
+```
+
+This gate needs real provider credentials, microphone access, and the Rust
+prototype environment, for example `SCRIBER_AUDIO_ENGINE=rust-prototype` plus
+the WASAPI sidecar feature flags used by the current prototype. Add
+`-RequireRecordingHotPathTextTarget` with a controlled
+`-RecordingHotPathTextTargetFile` when the evidence also needs to prove
+end-to-end text insertion into a target window.
 
 The hybrid release-readiness runner can produce and validate this app-level
 report when Rust audio promotion evidence is being assembled:

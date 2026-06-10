@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-06-10
+Last verified: 2026-06-11
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -137,14 +137,21 @@ Rust audio:
   non-default Rust capture without a native endpoint hash still fails closed.
   The hybrid release-readiness runner can require this app-level smoke via
   `-RequireRustAudioAppPrewarmSmoke`.
+  The recording hot-path benchmark now has strict provider/Rust promotion
+  flags: `--require-provider-transcript` requires a final STT provider segment,
+  and `--require-rust-audio-engine` verifies active `rust-prototype`
+  `rust-frame-pipe` capture diagnostics during recording. The hybrid baseline
+  runner exposes those checks as `-RequireRecordingHotPathProviderTranscript`
+  and `-RequireRecordingHotPathRustAudio`.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no
   prebuffer-after-live frames. A local app-level WASAPI prewarm adoption smoke
   passed on 2026-06-11 with 40 adopted prebuffer blocks, 42 live blocks, no
   sequence/protocol errors, and successful idle-prewarm resume. Physical
-  Always-On-Mic matrix evidence, provider-backed transcription, and final Rust
-  promotion gates remain open before default promotion.
+  Always-On-Mic matrix evidence, real provider-backed transcription artifacts
+  using that gate, and final Rust promotion gates remain open before default
+  promotion.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 
