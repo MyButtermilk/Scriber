@@ -21,6 +21,8 @@ def recording_report(
     mic_always_on: bool | None = None,
     rust_prewarm_adopted: bool = True,
     rust_prewarm_raw_id: bool = False,
+    rust_mid_session_failure_reason: str = "",
+    rust_frame_pipe_reader_end_reason: str = "running",
 ) -> dict:
     if mic_always_on is None:
         mic_always_on = bool(rust_capture)
@@ -59,6 +61,11 @@ def recording_report(
         if rust_prewarm_raw_id:
             rust_adoption["prewarmId"] = "raw-prewarm-id"
         active_capture["rustPrewarmAdoption"] = rust_adoption
+        active_capture["midSessionFailureReason"] = rust_mid_session_failure_reason
+        active_capture["sourceMidSessionFailureReason"] = rust_mid_session_failure_reason
+        active_capture["lastRustAudioMidSessionFailureReason"] = rust_mid_session_failure_reason
+        active_capture["framePipeReaderEndReason"] = rust_frame_pipe_reader_end_reason
+        active_capture["sourceFramePipeReaderEndReason"] = rust_frame_pipe_reader_end_reason
 
     sample = {
         "ok": True,
@@ -266,6 +273,25 @@ def test_recording_hot_path_comparison_rejects_open_rust_fallback_circuit() -> N
     check = next(item for item in result["checks"] if item["name"] == "rustFallbackCircuitClosed")
     assert check["ok"] is False
     assert check["details"]["open"] is True
+
+
+def test_recording_hot_path_comparison_rejects_rust_mid_session_failure() -> None:
+    result = build_comparison(
+        recording_report(engine="python"),
+        recording_report(
+            engine="rust-prototype",
+            rust_capture=True,
+            rust_mid_session_failure_reason="pipeClosed",
+            rust_frame_pipe_reader_end_reason="pipeClosed",
+        ),
+    )
+
+    assert result["ok"] is False
+    assert "Rust report must not contain mid-session frame-pipe failures" in result["failures"]
+    check = next(item for item in result["checks"] if item["name"] == "rustMidSessionClean")
+    assert check["ok"] is False
+    assert check["details"]["failureSampleCount"] == 3
+    assert check["details"]["failures"][0]["midSessionFailureReason"] == "pipeClosed"
 
 
 def test_recording_hot_path_comparison_rejects_rust_without_always_on_mic() -> None:

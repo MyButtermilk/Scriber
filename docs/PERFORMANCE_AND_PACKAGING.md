@@ -796,8 +796,11 @@ Missing prerequisites:
    - Implemented: support-bundle redaction now treats raw `prewarmId` and
      `prewarm_id` JSON keys as sensitive while preserving already-redacted
      hash fields such as `prewarmIdHash`.
-   - Still open: durable mid-session failure policy and physical support-bundle
-     evidence from long real-device runs.
+   - Implemented: Rust mid-session frame-pipe failures are surfaced as
+     `midSessionFailureReason`, open a fallback-on-next-session circuit, and
+     are now rejected by recording hot-path summaries, Python/Rust comparison
+     gates, and installed live-recording Rust promotion evidence.
+   - Still open: physical support-bundle evidence from long real-device runs.
 4. Audio frame-pipe protocol:
    - Implemented on `codex/rust-expansion-plan` as shared Rust/Python protocol
      helpers, a Python `RustPrototypeFrameSource`, an opt-in sidecar synthetic
@@ -972,9 +975,12 @@ Implementation plan:
      promotion gates.
    - If Rust fails before the first frame, Python falls back to Python capture
      for that session.
-   - If Rust stalls mid-session, record diagnostics and fail the current engine
-     cleanly. Do not silently splice engines mid-utterance unless a later design
-     proves transcript safety.
+   - Implemented: if Rust stalls mid-session after audio has started, Python
+     records `midSessionFailureReason`, opens a short fallback circuit for the
+     next requested Rust session, and does not splice Python capture into the
+     current utterance. Promotion gates reject reports that contain
+     `midSessionFailureReason`, an unexpected `framePipeReaderEndReason`, or an
+     open Rust fallback circuit.
 4. Use a narrow control protocol:
    - Partly implemented: shared Rust/Python helpers define and validate the
      binary PCM frame header, and private shell IPC reserves

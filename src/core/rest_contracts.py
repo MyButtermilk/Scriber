@@ -156,6 +156,7 @@ def _validate_audio_capture_diagnostics(
     _require_optional_number(payload, "framePipeFirstFrameReadMs", contract)
     _require_optional_string(payload, "framePipeReaderEndReason", contract)
     _require_optional_string(payload, "midSessionFailureReason", contract)
+    _require_optional_string(payload, "lastRustAudioMidSessionFailureReason", contract)
 
     source = payload.get("source")
     if source is not None:

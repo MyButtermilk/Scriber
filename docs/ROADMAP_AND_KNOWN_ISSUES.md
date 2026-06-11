@@ -287,6 +287,11 @@ Tauri text injection:
   Python during the cooldown and records the circuit-open reason in diagnostics.
   `/api/runtime/audio-diagnostics` exposes that circuit globally, so support
   bundles can explain the fallback even after the failed recording has stopped.
+  Recording hot-path summaries, Python/Rust comparison reports, and installed
+  live-recording Rust promotion gates now reject explicit
+  `midSessionFailureReason` evidence or unexpectedly ended frame-pipe readers,
+  so a report with a hidden Rust stream break cannot pass as default-promotion
+  evidence.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

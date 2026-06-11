@@ -1431,6 +1431,7 @@ def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict
             "fallbackCircuitOpenCount": 0,
             "activeCaptureHealthRestartSampleCount": 0,
             "activeCaptureHealthRestartThrottleSampleCount": 0,
+            "midSessionFailureSampleCount": 0,
             "rustPrewarmAdoptionSampleCount": 0,
         }
 
@@ -1439,6 +1440,7 @@ def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict
     fallback_open_count = 0
     active_capture_health_restart_count = 0
     active_capture_health_restart_throttle_count = 0
+    mid_session_failure_count = 0
     rust_prewarm_adoption_count = 0
     for sample in samples:
         if not isinstance(sample, dict):
@@ -1467,6 +1469,23 @@ def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict
             restart_throttle_count = numeric_field(active_capture, "healthRestartThrottleCount")
             if restart_throttle_count is not None and restart_throttle_count > 0:
                 active_capture_health_restart_throttle_count += 1
+            source = active_capture.get("source")
+            mid_session_values = (
+                active_capture.get("midSessionFailureReason"),
+                active_capture.get("sourceMidSessionFailureReason"),
+                active_capture.get("lastRustAudioMidSessionFailureReason"),
+                source.get("midSessionFailureReason") if isinstance(source, dict) else None,
+            )
+            reader_end_values = (
+                active_capture.get("framePipeReaderEndReason"),
+                active_capture.get("sourceFramePipeReaderEndReason"),
+                source.get("framePipeReaderEndReason") if isinstance(source, dict) else None,
+            )
+            if any(str(value or "").strip() for value in mid_session_values) or any(
+                str(value or "").strip() not in {"", "running"}
+                for value in reader_end_values
+            ):
+                mid_session_failure_count += 1
             rust_prewarm_adoption = active_capture.get("rustPrewarmAdoption")
             if (
                 isinstance(rust_prewarm_adoption, dict)
@@ -1486,6 +1505,7 @@ def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict
         "fallbackCircuitOpenCount": fallback_open_count,
         "activeCaptureHealthRestartSampleCount": active_capture_health_restart_count,
         "activeCaptureHealthRestartThrottleSampleCount": active_capture_health_restart_throttle_count,
+        "midSessionFailureSampleCount": mid_session_failure_count,
         "rustPrewarmAdoptionSampleCount": rust_prewarm_adoption_count,
     }
 
@@ -1599,6 +1619,40 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
         if active_capture.get("lastHealthRestartError") not in (None, ""):
             failures.append(
                 f"installed live recording smoke sample {index} activeCapture.lastHealthRestartError must be empty"
+            )
+            break
+        if active_capture.get("lastRustAudioMidSessionFailureReason") not in (None, ""):
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.lastRustAudioMidSessionFailureReason must be empty"
+            )
+            break
+        source = active_capture.get("source")
+        mid_session_values = (
+            active_capture.get("midSessionFailureReason"),
+            active_capture.get("sourceMidSessionFailureReason"),
+            source.get("midSessionFailureReason") if isinstance(source, dict) else None,
+        )
+        if any(str(value or "").strip() for value in mid_session_values):
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.midSessionFailureReason must be empty"
+            )
+            break
+        reader_end_values = (
+            active_capture.get("framePipeReaderEndReason"),
+            active_capture.get("sourceFramePipeReaderEndReason"),
+            source.get("framePipeReaderEndReason") if isinstance(source, dict) else None,
+        )
+        unexpected_reader_end = next(
+            (
+                str(value or "").strip()
+                for value in reader_end_values
+                if str(value or "").strip() not in {"", "running"}
+            ),
+            "",
+        )
+        if unexpected_reader_end:
+            failures.append(
+                f"installed live recording smoke sample {index} framePipeReaderEndReason must be running or empty"
             )
             break
         callback_count = numeric_field(active_capture, "callbackCount")

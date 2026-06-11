@@ -627,8 +627,13 @@ active callbacks, no frame-pipe sequence/protocol/prebuffer-order errors, and
 `activeCapture.healthRestartThrottleCount=0`, an empty
 `activeCapture.lastHealthFailureReason`, and an empty
 `activeCapture.lastHealthRestartError`, so a recovered active-capture stall does
-not pass as stable installed evidence. Rust-audio promotion evidence also
-requires `liveRecording.micAlwaysOn=true` and
+not pass as stable installed evidence. The same gate rejects
+`activeCapture.midSessionFailureReason`,
+`activeCapture.lastRustAudioMidSessionFailureReason`, nested source
+mid-session failures, and any `framePipeReaderEndReason` other than empty or
+`running`; this prevents a broken Rust frame-pipe from passing merely because a
+later fallback circuit or final snapshot looks healthy. Rust-audio promotion
+evidence also requires `liveRecording.micAlwaysOn=true` and
 `audioDiagnostics.microphone.micAlwaysOn=true` in every stability sample, so
 the installed report proves the Always-On-Mic path was active instead of only
 proving an on-demand live recording. The same installed report must now include

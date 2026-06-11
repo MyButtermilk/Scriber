@@ -325,6 +325,7 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
                 "framePipeFirstFrameReadMs": 9.5,
                 "framePipeReaderEndReason": "stopRequested",
                 "midSessionFailureReason": "",
+                "lastRustAudioMidSessionFailureReason": "",
                 "source": {
                     "engine": "rust-prototype",
                     "frameSource": "rust-frame-pipe",

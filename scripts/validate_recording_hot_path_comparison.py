@@ -175,6 +175,54 @@ def has_open_rust_fallback_circuit(report: dict[str, Any]) -> bool:
     return any(circuit.get("open") is True for circuit in rust_fallback_circuits(report))
 
 
+def rust_mid_session_clean_check(report: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    checked = 0
+    failing: list[dict[str, Any]] = []
+    for capture in active_capture_samples(report):
+        if (
+            capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE
+            or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE
+        ):
+            continue
+        checked += 1
+        source = capture.get("source")
+        mid_session_values = (
+            capture.get("midSessionFailureReason"),
+            capture.get("sourceMidSessionFailureReason"),
+            capture.get("lastRustAudioMidSessionFailureReason"),
+            source.get("midSessionFailureReason") if isinstance(source, dict) else None,
+        )
+        reader_end_values = (
+            capture.get("framePipeReaderEndReason"),
+            capture.get("sourceFramePipeReaderEndReason"),
+            source.get("framePipeReaderEndReason") if isinstance(source, dict) else None,
+        )
+        mid_session_reason = next(
+            (str(value or "") for value in mid_session_values if str(value or "").strip()),
+            "",
+        )
+        unexpected_reader_end = next(
+            (
+                str(value or "").strip()
+                for value in reader_end_values
+                if str(value or "").strip() not in {"", "running"}
+            ),
+            "",
+        )
+        if mid_session_reason or unexpected_reader_end:
+            failing.append(
+                {
+                    "midSessionFailureReason": mid_session_reason,
+                    "framePipeReaderEndReason": unexpected_reader_end,
+                }
+            )
+    return not failing, {
+        "checkedRustFramePipeSamples": checked,
+        "failureSampleCount": len(failing),
+        "failures": failing[:5],
+    }
+
+
 def has_rust_frame_pipe(report: dict[str, Any]) -> bool:
     return any(
         capture.get("engine") == RUST_AUDIO_ACTIVE_ENGINE
@@ -520,6 +568,13 @@ def build_comparison(
                 "circuits": circuits[:5],
             },
             "Rust report must not have an open Rust audio fallback circuit",
+        )
+        mid_session_clean, mid_session_details = rust_mid_session_clean_check(rust_report)
+        add_check(
+            "rustMidSessionClean",
+            mid_session_clean,
+            mid_session_details,
+            "Rust report must not contain mid-session frame-pipe failures",
         )
         always_on_ok, always_on_details = rust_always_on_mic_check(rust_report)
         add_check(

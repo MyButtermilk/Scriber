@@ -340,6 +340,8 @@ function Convert-AudioDiagnosticsSummary {
     $framePipeSequenceErrorCount = if ($activeCapture -and $null -ne $activeCapture.framePipeSequenceErrorCount) { $activeCapture.framePipeSequenceErrorCount } elseif ($source) { $source.framePipeSequenceErrorCount } else { $null }
     $framePipeProtocolErrorCount = if ($activeCapture -and $null -ne $activeCapture.framePipeProtocolErrorCount) { $activeCapture.framePipeProtocolErrorCount } elseif ($source) { $source.framePipeProtocolErrorCount } else { $null }
     $framePipePrebufferAfterLiveCount = if ($activeCapture -and $null -ne $activeCapture.framePipePrebufferAfterLiveCount) { $activeCapture.framePipePrebufferAfterLiveCount } elseif ($source) { $source.framePipePrebufferAfterLiveCount } else { $null }
+    $framePipeReaderEndReason = if ($activeCapture -and $null -ne $activeCapture.framePipeReaderEndReason) { [string]$activeCapture.framePipeReaderEndReason } elseif ($source) { [string]$source.framePipeReaderEndReason } else { "" }
+    $midSessionFailureReason = if ($activeCapture -and $null -ne $activeCapture.midSessionFailureReason) { [string]$activeCapture.midSessionFailureReason } elseif ($source) { [string]$source.midSessionFailureReason } else { "" }
 
     return [pscustomobject]@{
         apiVersion = [string]$AudioDiagnostics.apiVersion
@@ -370,9 +372,12 @@ function Convert-AudioDiagnosticsSummary {
                 lastHealthRestartError = [string]$activeCapture.lastHealthRestartError
                 lastHealthRestartThrottledReason = [string]$activeCapture.lastHealthRestartThrottledReason
                 lastHealthRestartThrottleRemainingSeconds = $activeCapture.lastHealthRestartThrottleRemainingSeconds
+                lastRustAudioMidSessionFailureReason = [string]$activeCapture.lastRustAudioMidSessionFailureReason
                 nativeEndpointIdHash = [string]$activeCapture.nativeEndpointIdHash
                 sourceFrameSource = if ($source) { [string]$source.frameSource } else { "" }
                 sourceNativeEndpointIdHash = if ($source) { [string]$source.nativeEndpointIdHash } else { "" }
+                sourceFramePipeReaderEndReason = if ($source) { [string]$source.framePipeReaderEndReason } else { "" }
+                sourceMidSessionFailureReason = if ($source) { [string]$source.midSessionFailureReason } else { "" }
                 sourceEndpointSelectionMode = if ($endpointSelection) { [string]$endpointSelection.mode } else { "" }
                 sourceEndpointSelectionUsedDefault = if ($endpointSelection) { [bool]$endpointSelection.usedDefaultEndpoint } else { $false }
                 sourceEndpointSelectionRequestedHash = if ($endpointSelection) { [string]$endpointSelection.requestedNativeEndpointIdHash } else { "" }
@@ -382,6 +387,8 @@ function Convert-AudioDiagnosticsSummary {
                 framePipeSequenceErrorCount = $framePipeSequenceErrorCount
                 framePipeProtocolErrorCount = $framePipeProtocolErrorCount
                 framePipePrebufferAfterLiveCount = $framePipePrebufferAfterLiveCount
+                framePipeReaderEndReason = $framePipeReaderEndReason
+                midSessionFailureReason = $midSessionFailureReason
                 rustPrewarmAdoption = if ($activeCapture.rustPrewarmAdoption) {
                     $adoption = $activeCapture.rustPrewarmAdoption
                     $signature = $adoption.signature

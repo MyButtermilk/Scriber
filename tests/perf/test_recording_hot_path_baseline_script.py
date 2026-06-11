@@ -528,6 +528,57 @@ def test_recording_hot_path_rust_audio_requirement_rejects_raw_prewarm_id():
     assert rust_requirement["activeCaptures"][0]["rustPrewarmAdoption"]["hasRawPrewarmId"] is True
 
 
+def test_recording_hot_path_rust_audio_requirement_rejects_mid_session_failure():
+    audio_diagnostics = {
+        "featureFlags": {
+            "requestedAudioEngine": "rust-prototype",
+            "audioEngine": "rust-prototype",
+            "rustAudioRequested": True,
+            "rustAudioAvailable": True,
+        },
+        "microphone": {
+            "micAlwaysOn": True,
+        },
+    }
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_first_paste_ms": 82.5,
+                },
+                "audioDiagnosticsDuringRecording": {
+                    "microphone": {
+                        "micAlwaysOn": True,
+                        "activeCapture": {
+                            "engine": "rust-prototype",
+                            "frameSource": "rust-frame-pipe",
+                            "callbackCount": 9,
+                            "nativeEndpointIdHash": "redacted",
+                            "midSessionFailureReason": "pipeClosed",
+                            "framePipeReaderEndReason": "pipeClosed",
+                            "rustPrewarmAdoption": {
+                                "adopted": True,
+                                "prewarmIdHash": "prewarm-hash",
+                            },
+                        },
+                    }
+                },
+            }
+        ],
+        require_rust_audio_engine=True,
+        audio_diagnostics=audio_diagnostics,
+    )
+
+    rust_requirement = summary["requirements"]["rust_audio_engine"]
+    assert summary["complete"] is False
+    assert rust_requirement["status"] == "mid_session_failure"
+    assert rust_requirement["midSessionFailureSamples"] == 1
+    assert rust_requirement["activeCaptures"][0]["midSessionFailureReason"] == "pipeClosed"
+
+
 def test_recording_hot_path_rust_audio_requirement_rejects_python_capture_fallback():
     audio_diagnostics = {
         "featureFlags": {

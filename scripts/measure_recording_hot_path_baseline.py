@@ -519,6 +519,7 @@ def rust_audio_requirement(
     mic_always_on_samples = 0
     prewarm_adoption_samples = 0
     raw_prewarm_id_samples = 0
+    mid_session_failure_samples = 0
     report_microphone = (audio_diagnostics or {}).get("microphone") or {}
     report_mic_always_on = (
         isinstance(report_microphone, dict)
@@ -566,6 +567,27 @@ def rust_audio_requirement(
             adoption_has_hash = bool(adoption.get("prewarmIdHash") or adoption.get("prewarm_idHash"))
             adoption_adopted = adoption.get("adopted") is True
             adoption_has_raw_id = "prewarmId" in adoption or "prewarm_id" in adoption
+        source = active.get("source")
+        mid_session_values = (
+            active.get("midSessionFailureReason"),
+            active.get("sourceMidSessionFailureReason"),
+            active.get("lastRustAudioMidSessionFailureReason"),
+            source.get("midSessionFailureReason") if isinstance(source, dict) else None,
+        )
+        reader_end_values = (
+            active.get("framePipeReaderEndReason"),
+            active.get("sourceFramePipeReaderEndReason"),
+            source.get("framePipeReaderEndReason") if isinstance(source, dict) else None,
+        )
+        mid_session_failure = any(str(value or "").strip() for value in mid_session_values)
+        unexpected_reader_end = next(
+            (
+                str(value or "").strip()
+                for value in reader_end_values
+                if str(value or "").strip() not in {"", "running"}
+            ),
+            "",
+        )
         active_captures.append(
             {
                 "engine": active.get("engine"),
@@ -583,6 +605,13 @@ def rust_audio_requirement(
                 "engineFallbackReason": active.get("engineFallbackReason"),
                 "rustAudioFallbackCircuitOpen": active.get("rustAudioFallbackCircuitOpen"),
                 "rustAudioFallbackCircuitReason": active.get("rustAudioFallbackCircuitReason"),
+                "midSessionFailure": mid_session_failure,
+                "midSessionFailureReason": next(
+                    (str(value or "") for value in mid_session_values if str(value or "").strip()),
+                    "",
+                ),
+                "framePipeReaderEndReason": unexpected_reader_end
+                or next((str(value or "") for value in reader_end_values if str(value or "").strip()), ""),
             }
         )
         if (
@@ -590,6 +619,8 @@ def rust_audio_requirement(
             and active.get("frameSource") == RUST_AUDIO_FRAME_SOURCE
         ):
             matching_samples += 1
+            if mid_session_failure or unexpected_reader_end:
+                mid_session_failure_samples += 1
             if adoption_is_object and adoption_adopted and adoption_has_hash and not adoption_has_raw_id:
                 prewarm_adoption_samples += 1
             if adoption_has_raw_id:
@@ -600,6 +631,8 @@ def rust_audio_requirement(
     prewarm_adoption_required = report_mic_always_on or mic_always_on_samples > 0
     if fallback_circuit_open:
         status = "fallback_circuit_open"
+    elif mid_session_failure_samples > 0:
+        status = "mid_session_failure"
     elif raw_prewarm_id_samples > 0:
         status = "raw_prewarm_id"
     elif matching_samples <= 0:
@@ -625,6 +658,7 @@ def rust_audio_requirement(
         "prewarmAdoptionRequired": prewarm_adoption_required,
         "prewarmAdoptionSamples": prewarm_adoption_samples,
         "rawPrewarmIdSamples": raw_prewarm_id_samples,
+        "midSessionFailureSamples": mid_session_failure_samples,
         "activeCaptureSamples": len(active_captures),
         "activeCaptures": active_captures[:5],
         "fallbackCircuitOpen": fallback_circuit_open,
