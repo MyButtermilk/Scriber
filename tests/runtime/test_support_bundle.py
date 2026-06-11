@@ -165,6 +165,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
                     "lastEvent": {
                         "eventKind": "default_device_changed",
                         "flow": "capture",
+                        "endpointId": "raw-native-endpoint-id",
                         "endpointIdHash": "event-hash",
                     },
                 },
@@ -224,7 +225,9 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
     assert circuit["sessionToken"] == "[REDACTED]"
     assert "circuit-secret-token" not in combined
     assert native_events["registered"] is True
+    assert native_events["lastEvent"]["endpointId"] == "[REDACTED]"
     assert native_events["lastEvent"]["endpointIdHash"] == "event-hash"
+    assert "raw-native-endpoint-id" not in combined
     assert shell_ipc["lastCommand"] == "injectText"
     assert shell_ipc["lastErrorCode"] == "missingPasteMarker"
     assert shell_ipc["lastResponse"]["payload"]["foregroundBefore"]["titleHash"] == "title-hash"

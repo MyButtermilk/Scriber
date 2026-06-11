@@ -32,7 +32,10 @@ _MAX_LOG_BYTES = 750_000
 
 
 def is_sensitive_key(key: str) -> bool:
-    return bool(_SENSITIVE_KEY_RE.search(str(key)))
+    key_str = str(key)
+    if key_str.casefold() == "endpointid":
+        return True
+    return bool(_SENSITIVE_KEY_RE.search(key_str))
 
 
 def redact_value(value: Any) -> Any:

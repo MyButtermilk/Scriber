@@ -365,6 +365,11 @@ Implementation status on `codex/rust-expansion-plan`:
   disabled or unsupported, `scripts/smoke_tauri_desktop.ps1` now requires
   `available`, `running`, `registered`, `comInitialized`, and `callbackAlive`
   to be true, and records the verdict under `nativeDeviceEvents`.
+- Implemented installed support-bundle smoke coverage for Rust audio fallback
+  diagnostics: the same smoke now requires
+  `microphone.rustAudioFallbackCircuit` in `audio-diagnostics.redacted.json`,
+  including `available`, boolean `open`, non-negative cooldown fields, and
+  reason/remaining-time evidence whenever the circuit is open.
 - Still open: physical dock/USB/default-device matrix coverage.
 
 Acceptance gates:
@@ -385,7 +390,7 @@ Acceptance gates:
 - Always-on mic light must not blink during idle safety periods unless an actual
   capture endpoint event occurred.
 - Support bundle clearly reports whether Rust events or Python fallback handled
-  the last refresh.
+  the last refresh, and whether the Rust audio fallback circuit is open.
 
 Rollback:
 

@@ -702,6 +702,49 @@ function Test-NativeDeviceEventDiagnostics {
     }
 }
 
+function Test-RustAudioFallbackCircuitDiagnostics {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$RustAudioFallbackCircuit
+    )
+
+    foreach ($required in @("available", "open", "cooldownSeconds")) {
+        if ($null -eq $RustAudioFallbackCircuit.$required) {
+            throw "Support bundle Rust audio fallback-circuit diagnostics are missing $required."
+        }
+    }
+    if (-not [bool]$RustAudioFallbackCircuit.available) {
+        throw "Support bundle Rust audio fallback-circuit diagnostics did not prove available=true."
+    }
+    if (-not ($RustAudioFallbackCircuit.open -is [bool])) {
+        throw "Support bundle Rust audio fallback-circuit diagnostics open must be boolean."
+    }
+    if ($null -ne $RustAudioFallbackCircuit.cooldownSeconds -and [double]$RustAudioFallbackCircuit.cooldownSeconds -lt 0) {
+        throw "Support bundle Rust audio fallback-circuit diagnostics cooldownSeconds must be non-negative."
+    }
+
+    $remainingSeconds = $RustAudioFallbackCircuit.remainingSeconds
+    if ($null -ne $remainingSeconds -and [double]$remainingSeconds -lt 0) {
+        throw "Support bundle Rust audio fallback-circuit diagnostics remainingSeconds must be non-negative when present."
+    }
+    if ([bool]$RustAudioFallbackCircuit.open) {
+        if (-not [string]$RustAudioFallbackCircuit.reason) {
+            throw "Support bundle Rust audio fallback-circuit diagnostics reason is required when open=true."
+        }
+        if ($null -eq $remainingSeconds) {
+            throw "Support bundle Rust audio fallback-circuit diagnostics remainingSeconds is required when open=true."
+        }
+    }
+
+    return [pscustomobject]@{
+        available = [bool]$RustAudioFallbackCircuit.available
+        open = [bool]$RustAudioFallbackCircuit.open
+        reason = [string]$RustAudioFallbackCircuit.reason
+        remainingSeconds = $remainingSeconds
+        cooldownSeconds = $RustAudioFallbackCircuit.cooldownSeconds
+    }
+}
+
 function Resolve-FrontendAssetUrl {
     param(
         [string]$BaseUrl,
@@ -968,7 +1011,11 @@ function Test-SupportBundle {
         if (-not $audioDiagnostics.microphone.nativeDeviceEvents) {
             throw "Support bundle audio diagnostics are missing microphone.nativeDeviceEvents."
         }
+        if (-not $audioDiagnostics.microphone.rustAudioFallbackCircuit) {
+            throw "Support bundle audio diagnostics are missing microphone.rustAudioFallbackCircuit."
+        }
         $nativeDeviceEvents = Test-NativeDeviceEventDiagnostics -NativeDeviceEvents $audioDiagnostics.microphone.nativeDeviceEvents
+        $rustAudioFallbackCircuit = Test-RustAudioFallbackCircuitDiagnostics -RustAudioFallbackCircuit $audioDiagnostics.microphone.rustAudioFallbackCircuit
 
         return [pscustomobject]@{
             verified = $true
@@ -979,6 +1026,7 @@ function Test-SupportBundle {
             entryCount = [int]$entrySet.Count
             redactionVerified = $true
             nativeDeviceEvents = $nativeDeviceEvents
+            rustAudioFallbackCircuit = $rustAudioFallbackCircuit
             requiredEntries = @(
                 "manifest.json",
                 "runtime.json",

@@ -350,11 +350,15 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "Support bundle leaked a secret value" in desktop
     assert "audio-diagnostics.redacted.json" in desktop
     assert "microphone.nativeDeviceEvents" in desktop
+    assert "microphone.rustAudioFallbackCircuit" in desktop
     assert "shellIpcAvailable" in desktop
     assert "function Test-NativeDeviceEventDiagnostics" in desktop
+    assert "function Test-RustAudioFallbackCircuitDiagnostics" in desktop
     assert "wasapi-imm-notification" in desktop
     assert "comInitialized" in desktop
     assert "callbackAlive" in desktop
+    assert "Rust audio fallback-circuit diagnostics" in desktop
+    assert "rustAudioFallbackCircuit = $rustAudioFallbackCircuit" in desktop
     assert "registrationVerified = $true" in desktop
     assert "redactionVerified = $true" in desktop
     assert "$configSnapshots" in desktop

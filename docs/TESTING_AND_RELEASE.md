@@ -331,6 +331,8 @@ Support bundle smoke verifies:
   IPC is available; on supported Windows runs where native events are not
   disabled, the smoke requires COM initialization, monitor registration, and
   callback liveness evidence,
+- Rust audio fallback-circuit diagnostics are present and redacted; when the
+  circuit is open, the smoke requires reason and remaining-cooldown evidence,
 - redacted audio/text-injection diagnostics, including the latest sanitized
   Tauri `injectText` attempt when present,
 - restoration of runtime `.env` and `settings.json` after the test.

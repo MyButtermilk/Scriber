@@ -49,6 +49,8 @@ Debug/support:
   default, today filter, clear-view, clear-log, copy-visible, refresh, and
   support-bundle download.
 - Support bundles are token-protected and redacted.
+- Installed support-bundle smoke now gates both native device-event diagnostics
+  and Rust audio fallback-circuit diagnostics.
 
 Packaging/performance:
 
