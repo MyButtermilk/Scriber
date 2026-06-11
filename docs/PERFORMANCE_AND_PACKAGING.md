@@ -1211,6 +1211,14 @@ Implementation plan:
      the comparison JSON into the hardware input directory, and then feeds that
      report into final readiness validation. Without the run flag, the
      comparison remains an explicit external evidence requirement.
+   - Implemented: the same aggregate runner can now produce the physical
+     microphone matrix with `-RunMicrophoneHardwareMatrix`, passing through the
+     USB/dock/Bluetooth/favorite labels, Rust endpoint-inventory requirement,
+     and native device-refresh requirement to
+     `scripts\run_microphone_hardware_matrix.ps1` before final validation. It
+     rejects forced per-poll refresh when native device-refresh evidence is
+     required, so Rust promotion evidence cannot be satisfied by the legacy
+     polling diagnostic mode.
    - Still open: actually running the long physical Always-On-Mic evidence with
      the Rust manager, device-refresh pause/resume matrix evidence, real
      provider-backed Python/Rust comparison runs using the new gate, signing /

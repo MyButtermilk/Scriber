@@ -13,6 +13,17 @@ param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$HardwareInputDir = "tmp\hybrid-baseline",
     [string]$MatrixValidationOutput = "",
+    [switch]$RunMicrophoneHardwareMatrix,
+    [string]$MicrophoneMatrixBaseUrl = "http://127.0.0.1:8765",
+    [string]$MicrophoneMatrixToken = "",
+    [double]$MicrophoneMatrixWaitSec = 60,
+    [double]$MicrophoneMatrixPollSec = 1,
+    [string]$MicrophoneMatrixUsbLabel = "",
+    [string]$MicrophoneMatrixDockLabel = "",
+    [string]$MicrophoneMatrixBluetoothLabel = "",
+    [string]$MicrophoneMatrixFavoriteLabel = "",
+    [switch]$MicrophoneMatrixAssumeCompleted,
+    [switch]$MicrophoneMatrixForceRefreshEachPoll,
     [string]$UpdaterMetadata = "Frontend\src-tauri\target\release\release-metadata\latest.json",
     [string]$UpdaterArtifactDir = "Frontend\src-tauri\target\release\bundle\nsis",
     [string]$Sha256Sums = "Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt",
@@ -129,7 +140,18 @@ function Convert-ToFullPath {
 function Convert-ToDisplayCommand {
     param([string[]]$CommandArgs)
 
-    return (($CommandArgs | ForEach-Object {
+    $displayArgs = @()
+    for ($i = 0; $i -lt $CommandArgs.Count; $i++) {
+        $arg = $CommandArgs[$i]
+        if (($arg -eq "-Token" -or $arg -eq "--token") -and ($i + 1) -lt $CommandArgs.Count) {
+            $displayArgs += $arg
+            $displayArgs += "<session token>"
+            $i += 1
+            continue
+        }
+        $displayArgs += $arg
+    }
+    return (($displayArgs | ForEach-Object {
         if ($_ -match "\s" -or $_ -eq "") {
             '"' + ($_ -replace '"', '\"') + '"'
         } else {
@@ -332,6 +354,53 @@ if ($effectiveRequireRustEndpointInventory) {
 $effectiveRequireDeviceRefreshEvidence = [bool]($RequireDeviceRefreshEvidence -or $effectiveRequireRustAudioSidecarSmoke -or $effectiveRequireRustAudioAppPrewarmSmoke)
 if ($effectiveRequireDeviceRefreshEvidence) {
     $matrixArgs += "--require-device-refresh-evidence"
+}
+if ($MicrophoneMatrixForceRefreshEachPoll -and $effectiveRequireDeviceRefreshEvidence) {
+    throw "-MicrophoneMatrixForceRefreshEachPoll cannot be used when native device-refresh evidence is required. Rust-promotion evidence must prove native event-driven refreshes, not forced poll refreshes."
+}
+$microphoneMatrixRunnerArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    (Join-Path $RepoRoot "scripts\run_microphone_hardware_matrix.ps1"),
+    "-RepoRoot",
+    $RepoRoot,
+    "-BaseUrl",
+    $MicrophoneMatrixBaseUrl,
+    "-OutputDir",
+    $HardwareInputDir,
+    "-WaitSec",
+    ([string]$MicrophoneMatrixWaitSec),
+    "-PollSec",
+    ([string]$MicrophoneMatrixPollSec)
+)
+if ($MicrophoneMatrixToken) {
+    $microphoneMatrixRunnerArgs += @("-Token", $MicrophoneMatrixToken)
+}
+if ($MicrophoneMatrixUsbLabel) {
+    $microphoneMatrixRunnerArgs += @("-UsbLabel", $MicrophoneMatrixUsbLabel)
+}
+if ($MicrophoneMatrixDockLabel) {
+    $microphoneMatrixRunnerArgs += @("-DockLabel", $MicrophoneMatrixDockLabel)
+}
+if ($MicrophoneMatrixBluetoothLabel) {
+    $microphoneMatrixRunnerArgs += @("-BluetoothLabel", $MicrophoneMatrixBluetoothLabel)
+}
+if ($MicrophoneMatrixFavoriteLabel) {
+    $microphoneMatrixRunnerArgs += @("-FavoriteLabel", $MicrophoneMatrixFavoriteLabel)
+}
+if ($MicrophoneMatrixAssumeCompleted) {
+    $microphoneMatrixRunnerArgs += "-AssumeCompleted"
+}
+if ($MicrophoneMatrixForceRefreshEachPoll) {
+    $microphoneMatrixRunnerArgs += "-ForceRefreshEachPoll"
+}
+if ($effectiveRequireRustEndpointInventory) {
+    $microphoneMatrixRunnerArgs += "-RequireRustEndpointInventory"
+}
+if ($effectiveRequireDeviceRefreshEvidence) {
+    $microphoneMatrixRunnerArgs += "-RequireDeviceRefreshEvidence"
 }
 $updaterArgs = @(
     "scripts\verify_tauri_updater_publication.py",
@@ -631,12 +700,21 @@ $requiredEvidence = @(
     [pscustomobject]@{
         name = "physicalMicrophoneMatrix"
         required = $true
-        external = $true
-        producer = "scripts\run_microphone_hardware_matrix.ps1"
+        external = [bool](-not $RunMicrophoneHardwareMatrix)
+        producer = $(if ($RunMicrophoneHardwareMatrix) { "scripts\run_microphone_hardware_matrix.ps1" } else { "external artifacts or scripts\run_microphone_hardware_matrix.ps1" })
         validator = "scripts\validate_microphone_hardware_matrix.py"
         inputDir = $HardwareInputDir
         expectedArtifacts = @($hardwareArtifacts | ForEach-Object { Join-Path $HardwareInputDir $_ })
         output = $MatrixValidationOutput
+        waitSec = $MicrophoneMatrixWaitSec
+        pollSec = $MicrophoneMatrixPollSec
+        forceRefreshEachPoll = [bool]$MicrophoneMatrixForceRefreshEachPoll
+        labelsConfigured = [pscustomobject]@{
+            usb = [bool]$MicrophoneMatrixUsbLabel
+            dock = [bool]$MicrophoneMatrixDockLabel
+            bluetooth = [bool]$MicrophoneMatrixBluetoothLabel
+            favorite = [bool]$MicrophoneMatrixFavoriteLabel
+        }
         requireRustEndpointInventory = $effectiveRequireRustEndpointInventory
         requireDeviceRefreshEvidence = $effectiveRequireDeviceRefreshEvidence
         notes = "Requires physical USB, dock, Bluetooth, Windows default-device, and favorite-mic fallback actions on the target Windows machine. Rust audio promotion also requires Rust/WASAPI endpoint inventory evidence and native-event device-refresh evidence in each artifact without forced per-poll refreshes."
@@ -830,6 +908,11 @@ $plan = [pscustomobject]@{
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
     outputPath = $OutputPath
+    runMicrophoneHardwareMatrix = [bool]$RunMicrophoneHardwareMatrix
+    microphoneMatrixBaseUrl = $MicrophoneMatrixBaseUrl
+    microphoneMatrixWaitSec = $MicrophoneMatrixWaitSec
+    microphoneMatrixPollSec = $MicrophoneMatrixPollSec
+    microphoneMatrixForceRefreshEachPoll = [bool]$MicrophoneMatrixForceRefreshEachPoll
     useExistingAuthenticodeReport = [bool]$UseExistingAuthenticodeReport
     useExistingMediaPreparationReport = [bool]$UseExistingMediaPreparationReport
     useExistingRuntimeDependencyFootprintReport = [bool]$UseExistingRuntimeDependencyFootprintReport
@@ -859,7 +942,7 @@ $plan = [pscustomobject]@{
     commands = @(
         [pscustomobject]@{
             name = "microphoneMatrixValidation"
-            command = "python " + (Convert-ToDisplayCommand -CommandArgs $matrixArgs)
+            command = $(if ($RunMicrophoneHardwareMatrix) { "powershell " + (Convert-ToDisplayCommand -CommandArgs $microphoneMatrixRunnerArgs) + "; python " + (Convert-ToDisplayCommand -CommandArgs $matrixArgs) } else { "python " + (Convert-ToDisplayCommand -CommandArgs $matrixArgs) })
         },
         [pscustomobject]@{
             name = "updaterPublicationVerification"
@@ -926,6 +1009,12 @@ if (-not $UseExistingAuthenticodeReport -and $AuthenticodePath.Count -eq 0) {
 
 Push-Location $RepoRoot
 try {
+    if ($RunMicrophoneHardwareMatrix) {
+        Invoke-Checked -Label "Physical microphone matrix" -Command {
+            powershell @microphoneMatrixRunnerArgs
+        }
+    }
+
     Invoke-Checked -Label "Physical microphone matrix validation" -Command {
         python @matrixArgs
     }

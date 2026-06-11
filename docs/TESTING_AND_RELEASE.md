@@ -673,6 +673,27 @@ interval remains sparse, and the smoke did not use forced per-poll refresh
 requests. Use `-ForceRefreshEachPoll` only for diagnosing legacy fallback
 behavior, not for Rust-promotion evidence.
 
+The aggregate readiness runner can produce the same physical matrix artifacts
+before final validation when an operator is present:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunMicrophoneHardwareMatrix `
+  -MicrophoneMatrixUsbLabel "USB Mic" `
+  -MicrophoneMatrixDockLabel "Dock Mic" `
+  -MicrophoneMatrixBluetoothLabel "Bluetooth Headset" `
+  -MicrophoneMatrixFavoriteLabel "Favorite Mic" `
+  -RequireRustAudioPromotionReadiness
+```
+
+`-RunMicrophoneHardwareMatrix` invokes
+`scripts\run_microphone_hardware_matrix.ps1`, writes the eight scenario
+artifacts into `-HardwareInputDir`, then runs the normal matrix validator and
+final readiness validator. If native device-refresh evidence is required, the
+aggregate runner rejects `-MicrophoneMatrixForceRefreshEachPoll`; Rust
+promotion evidence must prove the native event-driven path, not a forced poll
+loop.
+
 The final readiness validator expects evidence for:
 
 - physical microphone hardware matrix,

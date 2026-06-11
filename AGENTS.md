@@ -176,7 +176,10 @@ Packaging and scripts:
 - Physical microphone matrix evidence is native-event-first. Use
   `-RequireDeviceRefreshEvidence` for Rust-promotion gates so artifacts prove
   native events, sparse safety polling, and zero forced per-poll refreshes.
-  `-ForceRefreshEachPoll` is legacy diagnostic fallback only.
+  `-ForceRefreshEachPoll` is legacy diagnostic fallback only. The aggregate
+  readiness runner can produce the guided matrix with
+  `-RunMicrophoneHardwareMatrix`; when native refresh evidence is required it
+  must reject forced per-poll refreshes.
 - Native endpoint IDs must stay private. Use hashed native endpoint IDs in
   diagnostics and prototype mapping; do not expose raw IMMDevice IDs as public
   microphone IDs or log fields.

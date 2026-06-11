@@ -228,11 +228,13 @@ Rust audio:
   live-recording smoke also passed on 2026-06-11 with increasing frame-pipe
   counters, closed fallback circuit, and Windows-default endpoint selection.
   The hardware matrix now records native DeviceMonitor refresh evidence without
-  forced per-poll refreshes, but actually running the long physical
-  Always-On-Mic and hardware matrix evidence, real provider-backed Python/Rust
-  comparison artifacts using the aggregate gate, signing/updater publication
-  evidence, and the final promotion decision are still open before default
-  promotion.
+  forced per-poll refreshes. The aggregate readiness runner can now also start
+  that guided physical matrix directly with `-RunMicrophoneHardwareMatrix` and
+  rejects forced poll refreshes whenever native device-refresh evidence is
+  required. Actually running the long physical Always-On-Mic and hardware
+  matrix evidence, real provider-backed Python/Rust comparison artifacts using
+  the aggregate gate, signing/updater publication evidence, and the final
+  promotion decision are still open before default promotion.
 
 Tauri text injection:
 

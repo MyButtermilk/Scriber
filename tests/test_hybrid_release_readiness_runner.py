@@ -115,6 +115,16 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert hardware_evidence["external"] is True
     assert len(hardware_evidence["expectedArtifacts"]) == 8
     assert any("favorite-fallback" in artifact for artifact in hardware_evidence["expectedArtifacts"])
+    assert hardware_evidence["producer"] == "external artifacts or scripts\\run_microphone_hardware_matrix.ps1"
+    assert hardware_evidence["waitSec"] == 60
+    assert hardware_evidence["pollSec"] == 1
+    assert hardware_evidence["forceRefreshEachPoll"] is False
+    assert hardware_evidence["labelsConfigured"] == {
+        "usb": False,
+        "dock": False,
+        "bluetooth": False,
+        "favorite": False,
+    }
     assert hardware_evidence["requireRustEndpointInventory"] is False
     assert hardware_evidence["requireDeviceRefreshEvidence"] is False
     updater_evidence = payload["requiredEvidence"][1]
@@ -212,6 +222,103 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert "runtime-dependency-footprint.json" in payload["commands"][12]["command"]
     assert "--require-authenticode-timestamp" in payload["commands"][12]["command"]
     assert written == payload
+
+
+def test_hybrid_release_readiness_runner_can_plan_microphone_matrix_run(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RunMicrophoneHardwareMatrix",
+        "-MicrophoneMatrixBaseUrl",
+        "http://127.0.0.1:9999",
+        "-MicrophoneMatrixToken",
+        "real-session-token",
+        "-MicrophoneMatrixWaitSec",
+        "75",
+        "-MicrophoneMatrixPollSec",
+        "0.5",
+        "-MicrophoneMatrixUsbLabel",
+        "USB Mic",
+        "-MicrophoneMatrixDockLabel",
+        "Dock Mic",
+        "-MicrophoneMatrixBluetoothLabel",
+        "Bluetooth Headset",
+        "-MicrophoneMatrixFavoriteLabel",
+        "Favorite Mic",
+        "-MicrophoneMatrixAssumeCompleted",
+        "-RequireRustEndpointInventory",
+        "-RequireDeviceRefreshEvidence",
+        "-UseExistingAuthenticodeReport",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runMicrophoneHardwareMatrix"] is True
+    assert payload["microphoneMatrixBaseUrl"] == "http://127.0.0.1:9999"
+    assert payload["microphoneMatrixWaitSec"] == 75
+    assert payload["microphoneMatrixPollSec"] == 0.5
+    assert payload["microphoneMatrixForceRefreshEachPoll"] is False
+
+    hardware_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
+    assert hardware_evidence["external"] is False
+    assert hardware_evidence["producer"] == "scripts\\run_microphone_hardware_matrix.ps1"
+    assert hardware_evidence["waitSec"] == 75
+    assert hardware_evidence["pollSec"] == 0.5
+    assert hardware_evidence["forceRefreshEachPoll"] is False
+    assert hardware_evidence["labelsConfigured"] == {
+        "usb": True,
+        "dock": True,
+        "bluetooth": True,
+        "favorite": True,
+    }
+    assert hardware_evidence["requireRustEndpointInventory"] is True
+    assert hardware_evidence["requireDeviceRefreshEvidence"] is True
+
+    matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "microphoneMatrixValidation")
+    assert "run_microphone_hardware_matrix.ps1" in matrix_command["command"]
+    assert "-BaseUrl http://127.0.0.1:9999" in matrix_command["command"]
+    assert "-OutputDir" in matrix_command["command"]
+    assert "-WaitSec 75" in matrix_command["command"]
+    assert "-PollSec 0.5" in matrix_command["command"]
+    assert '-UsbLabel "USB Mic"' in matrix_command["command"]
+    assert '-DockLabel "Dock Mic"' in matrix_command["command"]
+    assert '-BluetoothLabel "Bluetooth Headset"' in matrix_command["command"]
+    assert '-FavoriteLabel "Favorite Mic"' in matrix_command["command"]
+    assert "-AssumeCompleted" in matrix_command["command"]
+    assert "-RequireRustEndpointInventory" in matrix_command["command"]
+    assert "-RequireDeviceRefreshEvidence" in matrix_command["command"]
+    assert "; python" in matrix_command["command"]
+    assert "validate_microphone_hardware_matrix.py" in matrix_command["command"]
+    assert "real-session-token" not in matrix_command["command"]
+    assert "<session token>" in matrix_command["command"]
+
+
+def test_hybrid_release_readiness_runner_rejects_forced_refresh_for_device_refresh_evidence(
+    tmp_path: Path,
+) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RunMicrophoneHardwareMatrix",
+        "-MicrophoneMatrixForceRefreshEachPoll",
+        "-RequireDeviceRefreshEvidence",
+        "-UseExistingAuthenticodeReport",
+    )
+
+    assert result.returncode == 1
+    assert "-MicrophoneMatrixForceRefreshEachPoll cannot be used" in result.stderr
 
 
 def test_hybrid_release_readiness_runner_plans_required_rust_audio_sidecar_smoke(tmp_path: Path) -> None:
