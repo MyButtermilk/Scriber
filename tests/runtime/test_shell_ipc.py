@@ -85,6 +85,34 @@ def test_shell_ipc_call_records_transport_error(monkeypatch):
     assert "JSONDecodeError" in snapshot["lastError"]
 
 
+def test_shell_ipc_transport_error_redacts_pipe_name_and_token(monkeypatch):
+    monkeypatch.setattr(shell_ipc.sys, "platform", "win32")
+    pipe_name = r"\\.\pipe\scriber-shell-secret"
+    token = "secret-token"
+    escaped_pipe_name = pipe_name.replace("\\", "\\\\")
+    monkeypatch.setenv(shell_ipc.SHELL_IPC_PIPE_ENV, pipe_name)
+    monkeypatch.setenv(shell_ipc.SHELL_IPC_TOKEN_ENV, token)
+    shell_ipc._reset_diagnostics_for_tests()
+
+    def fake_transport(pipe_name: str, request_line: str, timeout_seconds: float) -> str:
+        raise OSError(f"cannot open {pipe_name} / {escaped_pipe_name} with {token}")
+
+    monkeypatch.setattr(shell_ipc, "_call_shell_ipc_windows", fake_transport)
+
+    response = shell_ipc.call_shell_ipc("capabilities")
+    snapshot = shell_ipc.diagnostic_snapshot()
+    serialized = json.dumps({"response": response, "snapshot": snapshot}, sort_keys=True)
+
+    assert response["success"] is False
+    assert response["errorCode"] == "transportError"
+    assert pipe_name not in serialized
+    assert escaped_pipe_name not in serialized
+    assert token not in serialized
+    assert "[REDACTED_PIPE]" in serialized
+    assert "[REDACTED_TOKEN]" in serialized
+    assert snapshot["pipeNameHash"]
+
+
 def test_shell_ipc_inject_text_diagnostics_are_redacted(monkeypatch):
     monkeypatch.setattr(shell_ipc.sys, "platform", "win32")
     monkeypatch.setenv(shell_ipc.SHELL_IPC_PIPE_ENV, r"\\.\pipe\scriber-shell-test")

@@ -334,7 +334,8 @@ Support bundle smoke verifies:
 - Rust audio fallback-circuit diagnostics are present and redacted; when the
   circuit is open, the smoke requires reason and remaining-cooldown evidence,
 - redacted audio/text-injection diagnostics, including the latest sanitized
-  Tauri `injectText` attempt when present,
+  Tauri `injectText` attempt when present, and Shell IPC transport failures do
+  not leak raw pipe names or session tokens,
 - restoration of runtime `.env` and `settings.json` after the test.
 
 Other available installed smokes include:

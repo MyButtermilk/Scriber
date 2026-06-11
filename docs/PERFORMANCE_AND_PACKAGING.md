@@ -501,7 +501,9 @@ Implementation status on `codex/rust-expansion-plan`:
   `SCRIBER_SHELL_IPC_TOKEN`, and `SCRIBER_SHELL_IPC_API_VERSION` only when the
   Tauri pipe server is running. The token is not logged.
 - Added the Python `src.runtime.shell_ipc` client/diagnostic module with short
-  call timeout support and redacted pipe-name hashing.
+  call timeout support, redacted pipe-name hashing, and redacted transport
+  failure text so raw pipe names and session tokens are not persisted in
+  diagnostics or returned fallback reasons.
 - `/api/runtime/audio-diagnostics` now reports `textInjection.shellIpc` status
   without calling the pipe from readiness or startup paths.
 - Added the `injectText` shell IPC command for opt-in Tauri text injection. The

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -15,6 +16,10 @@ SHELL_IPC_TOKEN_ENV = "SCRIBER_SHELL_IPC_TOKEN"
 SHELL_IPC_API_VERSION_ENV = "SCRIBER_SHELL_IPC_API_VERSION"
 DEFAULT_API_VERSION = "1"
 DEFAULT_TIMEOUT_SECONDS = 0.75
+_PIPE_NAME_PATTERN = re.compile(
+    r"(?:\\\\){1,2}\.(?:\\){1,2}pipe(?:\\){1,2}scriber-shell-[A-Za-z0-9_.-]+",
+    re.IGNORECASE,
+)
 
 _lock = threading.Lock()
 _last_command: str | None = None
@@ -122,6 +127,10 @@ def call_shell_ipc(
         success = bool(response.get("success"))
         error_code = response.get("errorCode")
         fallback_reason = response.get("fallbackReason")
+        if error_code is not None or fallback_reason is not None:
+            response = dict(response)
+            response["errorCode"] = _safe_optional_string(error_code)
+            response["fallbackReason"] = _safe_optional_string(fallback_reason, max_len=240)
         error = None if success else str(error_code or "shell IPC failed")
         _record_result(
             cleaned_command,
@@ -163,12 +172,13 @@ def _hash_pipe_name(pipe_name: str) -> str | None:
 
 
 def _failure(error_code: str, fallback_reason: str) -> dict[str, Any]:
+    safe_fallback_reason = _safe_optional_string(fallback_reason, max_len=240) or ""
     return {
         "apiVersion": _configured_api_version(),
         "requestId": None,
         "success": False,
         "errorCode": error_code,
-        "fallbackReason": fallback_reason,
+        "fallbackReason": safe_fallback_reason,
         "timingsMs": {"total": 0.0},
         "payload": {},
     }
@@ -208,7 +218,7 @@ def _record_result(
     global _last_success, _last_command_at, _last_response_summary
     with _lock:
         _last_command = command
-        _last_error = error
+        _last_error = _safe_optional_string(error, max_len=240)
         _last_error_code = _safe_optional_string(error_code)
         _last_fallback_reason = _safe_optional_string(fallback_reason)
         _last_success = success
@@ -331,7 +341,21 @@ def _numeric_mapping(value: Any, allowed_keys: set[str]) -> dict[str, float | No
 def _safe_optional_string(value: Any, *, max_len: int = 160) -> str | None:
     if value is None:
         return None
-    return str(value).replace("\x00", "")[:max_len]
+    return _redact_sensitive_text(str(value).replace("\x00", ""))[:max_len]
+
+
+def _redact_sensitive_text(value: str) -> str:
+    redacted = value
+    pipe_name = _configured_pipe_name()
+    if pipe_name:
+        for variant in {pipe_name, pipe_name.replace("\\", "\\\\")}:
+            if variant:
+                redacted = redacted.replace(variant, "[REDACTED_PIPE]")
+    redacted = _PIPE_NAME_PATTERN.sub("[REDACTED_PIPE]", redacted)
+    token = _configured_token()
+    if token:
+        redacted = redacted.replace(token, "[REDACTED_TOKEN]")
+    return redacted
 
 
 def _call_shell_ipc_windows(pipe_name: str, request_line: str, timeout_seconds: float) -> str:
