@@ -1158,19 +1158,21 @@ Implementation plan:
      machine-checkable Python-vs-Rust provider-backed comparison artifact from
      two recording hot-path reports. It rejects validate-only evidence by
      default, requires provider transcript evidence from the same STT provider
-     in both reports, requires active `rust-prototype`/`rust-frame-pipe`
-     capture in the Rust report, rejects an open Rust fallback circuit in that
-     report, and records segment deltas such as hotkey-to-first-frame,
-     provider-finalize, and stop-to-text-injection. The final readiness
-     validator and
+     in both reports, requires the same benchmark configuration through the
+     report-level `requested` object, requires active
+     `rust-prototype`/`rust-frame-pipe` capture in the Rust report, rejects an
+     open Rust fallback circuit in that report, and records segment deltas such
+     as hotkey-to-first-frame, provider-finalize, and stop-to-text-injection.
+     The final readiness validator and
      `scripts/run_hybrid_release_readiness.ps1` can require this artifact with
      `--require-recording-hot-path-comparison` /
      `-RequireRecordingHotPathComparison`.
      The final readiness validator now requires the comparison artifact's
-     `sameProvider` and `rustFallbackCircuitClosed` checks alongside
-     `rustAudioEngine`, and it requires at least three samples per engine plus
-     no clear P95 regression in local audio-owned segments. This gate cannot be
-     bypassed by passing a stale, one-shot, or clearly slower comparison schema.
+     `sameProvider`, `sameRecordingConfig`, and `rustFallbackCircuitClosed`
+     checks alongside `rustAudioEngine`, and it requires at least three samples
+     per engine plus no clear P95 regression in local audio-owned segments.
+     This gate cannot be bypassed by passing a stale, one-shot, mismatched, or
+     clearly slower comparison schema.
      The comparison validator also rejects unredacted source reports containing
      raw `SWD\MMDEVAPI\...` endpoint IDs, raw `\\.\pipe\scriber-*` pipe names,
      or non-redacted token fields, so sensitive hot-path evidence cannot become

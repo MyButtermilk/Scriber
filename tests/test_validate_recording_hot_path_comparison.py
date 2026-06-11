@@ -17,6 +17,7 @@ def recording_report(
     rust_capture: bool = False,
     fallback_circuit_open: bool = False,
     sample_count: int = 3,
+    record_seconds: float = 2.0,
 ) -> dict:
     requirements = {
         "hotkey_to_recording_state": {"status": "measured"},
@@ -74,6 +75,17 @@ def recording_report(
     return {
         "schemaVersion": 1,
         "ok": True,
+        "requested": {
+            "iterations": sample_count,
+            "recordSeconds": record_seconds,
+            "speechPromptText": "Scriber provider-backed Rust audio validation",
+            "speechPromptDelaySec": 0.5,
+            "requireTextTarget": False,
+            "requireProviderTranscript": True,
+            "textTargetTitle": "Scriber Hot Path Text Target",
+            "textTargetSettleSec": 1.0,
+            "textTargetTimeoutSec": 5.0,
+        },
         "audioDiagnostics": {
             "featureFlags": {
                 "audioEngine": engine,
@@ -143,6 +155,22 @@ def test_recording_hot_path_comparison_rejects_mismatched_provider() -> None:
     assert check["ok"] is False
     assert check["details"]["pythonProvider"] == "azure_mai"
     assert check["details"]["rustProvider"] == "deepgram"
+
+
+def test_recording_hot_path_comparison_rejects_mismatched_recording_config() -> None:
+    result = build_comparison(
+        recording_report(engine="python", record_seconds=2.0),
+        recording_report(engine="rust-prototype", rust_capture=True, record_seconds=3.0),
+    )
+
+    assert result["ok"] is False
+    assert (
+        "Python and Rust reports must use the same recording benchmark configuration"
+        in result["failures"]
+    )
+    check = next(item for item in result["checks"] if item["name"] == "sameRecordingConfig")
+    assert check["ok"] is False
+    assert check["details"]["mismatchedFields"] == ["recordSeconds"]
 
 
 def test_recording_hot_path_comparison_rejects_too_few_samples() -> None:

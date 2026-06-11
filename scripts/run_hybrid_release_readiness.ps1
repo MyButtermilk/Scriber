@@ -619,7 +619,7 @@ $requiredEvidence = @(
         external = $true
         producer = "scripts\run_recording_hot_path_comparison.ps1, or scripts\validate_recording_hot_path_comparison.py over existing provider-backed Python and Rust reports"
         report = $RecordingHotPathComparisonReport
-        notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires a passing inputReportRedaction check, requires at least three samples per engine, requires provider transcript evidence with the same STT provider in both reports, requires active rust-frame-pipe capture in the Rust report, rejects open Rust fallback-circuit evidence, and rejects clear P95 regressions in local audio-owned hot-path segments."
+        notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires passing inputReportRedaction and sameRecordingConfig checks, requires at least three samples per engine, requires provider transcript evidence with the same STT provider in both reports, requires active rust-frame-pipe capture in the Rust report, rejects open Rust fallback-circuit evidence, and rejects clear P95 regressions in local audio-owned hot-path segments."
     },
     [pscustomobject]@{
         name = "installedLiveRecordingSmoke"

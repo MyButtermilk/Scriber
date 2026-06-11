@@ -657,7 +657,22 @@ def write_recording_hot_path_comparison_report(
     input_redaction_ok: bool = True,
     latency_ok: bool = True,
     samples: int = 3,
+    same_recording_config_ok: bool = True,
 ) -> None:
+    requested = {
+        "iterations": samples,
+        "recordSeconds": 2.0,
+        "speechPromptText": "Scriber provider-backed Rust audio validation",
+        "speechPromptDelaySec": 0.5,
+        "requireTextTarget": False,
+        "requireProviderTranscript": True,
+        "textTargetTitle": "Scriber Hot Path Text Target",
+        "textTargetSettleSec": 1.0,
+        "textTargetTimeoutSec": 5.0,
+    }
+    rust_requested = dict(requested)
+    if not same_recording_config_ok:
+        rust_requested["recordSeconds"] = 3.0
     path.write_text(
         json.dumps(
             {
@@ -665,8 +680,18 @@ def write_recording_hot_path_comparison_report(
                 "ok": ok,
                 "failures": [] if ok else ["comparison failed"],
                 "reports": {
-                    "python": {"provider": "azure_mai", "audioEngine": "python", "samples": samples},
-                    "rust": {"provider": "azure_mai", "audioEngine": "rust-prototype", "samples": samples},
+                    "python": {
+                        "provider": "azure_mai",
+                        "audioEngine": "python",
+                        "samples": samples,
+                        "requested": requested,
+                    },
+                    "rust": {
+                        "provider": "azure_mai",
+                        "audioEngine": "rust-prototype",
+                        "samples": samples,
+                        "requested": rust_requested,
+                    },
                 },
                 "checks": [
                     {"name": "pythonReportOk", "ok": True, "details": {}},
@@ -693,6 +718,15 @@ def write_recording_hot_path_comparison_report(
                         "details": {
                             "pythonProvider": "azure_mai",
                             "rustProvider": "azure_mai" if same_provider_ok else "deepgram",
+                        },
+                    },
+                    {
+                        "name": "sameRecordingConfig",
+                        "ok": same_recording_config_ok,
+                        "details": {
+                            "mismatchedFields": [] if same_recording_config_ok else ["recordSeconds"],
+                            "python": requested,
+                            "rust": rust_requested,
                         },
                     },
                     {"name": "rustAudioEngine", "ok": rust_ok, "details": {}},
@@ -2408,6 +2442,34 @@ def test_validate_release_readiness_rejects_mismatched_recording_hot_path_provid
         check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
     )
     assert "recording hot-path comparison check failed: sameProvider" in comparison_check["failures"]
+
+
+def test_validate_release_readiness_rejects_mismatched_recording_hot_path_config(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
+    write_recording_hot_path_comparison_report(
+        comparison_report,
+        same_recording_config_ok=False,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        recording_hot_path_comparison_report=comparison_report,
+        require_recording_hot_path_comparison=True,
+    )
+
+    assert result["ok"] is False
+    comparison_check = next(
+        check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
+    )
+    assert "recording hot-path comparison check failed: sameRecordingConfig" in comparison_check["failures"]
 
 
 def test_validate_release_readiness_accepts_required_rust_audio_sidecar_prewarm_adoption(tmp_path: Path) -> None:

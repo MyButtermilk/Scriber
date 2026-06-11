@@ -247,10 +247,14 @@ end-to-end text insertion into a target window.
 For Rust audio promotion, run the recording hot-path benchmark once with the
 default Python engine and once with `SCRIBER_AUDIO_ENGINE=rust-prototype`, then
 turn both provider-backed reports into the required comparison artifact. Both
-runs must use the same STT provider; provider mismatches are rejected because
-they make latency deltas ambiguous. The dedicated runner defaults to three
-recording samples per engine, and final readiness rejects comparison artifacts
-with fewer than three Python or Rust samples. It also rejects clear P95
+runs must use the same STT provider and the same benchmark configuration;
+provider or configuration mismatches are rejected because they make latency
+deltas ambiguous. The benchmark report now records a `requested` object, and
+the comparison gate requires matching iterations, recording seconds, speech
+prompt, prompt delay, and text-target settings across Python and Rust. The
+dedicated runner defaults to three recording samples per engine, and final
+readiness rejects comparison artifacts with fewer than three Python or Rust
+samples. It also rejects clear P95
 regressions in local audio-owned segments such as first audio frame, first
 audible frame, and stop-to-last-chunk. Provider-finalize and total stop-to-text
 latency remain visible in the report but are not used as this local Rust-audio

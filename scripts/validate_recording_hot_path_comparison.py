@@ -51,6 +51,17 @@ AUDIO_OWNED_LATENCY_SEGMENTS = [
 DEFAULT_AUDIO_OWNED_MAX_P95_REGRESSION_MS = 50.0
 REDACTED_TEXT_MARKERS = {"[REDACTED]", "[redacted]", "<redacted>", "***REDACTED***"}
 REDACTED_ENDPOINT_MARKERS = {"[REDACTED_ENDPOINT]", "[redacted-endpoint]", "<redacted-endpoint>"}
+COMPARABLE_REQUESTED_FIELDS = [
+    "iterations",
+    "recordSeconds",
+    "speechPromptText",
+    "speechPromptDelaySec",
+    "requireTextTarget",
+    "requireProviderTranscript",
+    "textTargetTitle",
+    "textTargetSettleSec",
+    "textTargetTimeoutSec",
+]
 
 
 def read_json_object(path: Path) -> dict[str, Any]:
@@ -215,6 +226,41 @@ def provider_label(report: dict[str, Any]) -> str:
     return ""
 
 
+def comparable_recording_config(report: dict[str, Any]) -> dict[str, Any] | None:
+    requested = report.get("requested")
+    if not isinstance(requested, dict):
+        return None
+    return {field: requested.get(field) for field in COMPARABLE_REQUESTED_FIELDS}
+
+
+def same_recording_config_check(
+    python_report: dict[str, Any],
+    rust_report: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    python_config = comparable_recording_config(python_report)
+    rust_config = comparable_recording_config(rust_report)
+    missing = []
+    if python_config is None:
+        missing.append("python.requested")
+        python_config = {}
+    if rust_config is None:
+        missing.append("rust.requested")
+        rust_config = {}
+    mismatched_fields = [
+        field
+        for field in COMPARABLE_REQUESTED_FIELDS
+        if python_config.get(field) != rust_config.get(field)
+    ]
+    details = {
+        "fields": COMPARABLE_REQUESTED_FIELDS,
+        "missing": missing,
+        "mismatchedFields": mismatched_fields,
+        "python": python_config,
+        "rust": rust_config,
+    }
+    return not missing and not mismatched_fields, details
+
+
 def compare_segment(python_values: list[float], rust_values: list[float]) -> dict[str, Any]:
     python_summary = summarize(python_values)
     rust_summary = summarize(rust_values)
@@ -353,6 +399,13 @@ def build_comparison(
             },
             "Python and Rust reports must use the same STT provider",
         )
+        same_config, config_details = same_recording_config_check(python_report, rust_report)
+        add_check(
+            "sameRecordingConfig",
+            same_config,
+            config_details,
+            "Python and Rust reports must use the same recording benchmark configuration",
+        )
 
     if require_rust_audio:
         rust_status = requirement_status(rust_report, "rust_audio_engine")
@@ -426,11 +479,13 @@ def build_comparison(
                 "provider": provider_label(python_report),
                 "audioEngine": audio_engine(python_report) or "python",
                 "samples": len(report_samples(python_report)),
+                "requested": comparable_recording_config(python_report) or {},
             },
             "rust": {
                 "provider": provider_label(rust_report),
                 "audioEngine": audio_engine(rust_report),
                 "samples": len(report_samples(rust_report)),
+                "requested": comparable_recording_config(rust_report) or {},
             },
         },
         "segments": segments,

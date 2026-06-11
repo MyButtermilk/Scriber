@@ -1875,6 +1875,7 @@ def validate_recording_hot_path_comparison_report(
         "sampleCount",
         "providerTranscript",
         "sameProvider",
+        "sameRecordingConfig",
         "rustAudioEngine",
         "rustFallbackCircuitClosed",
         "audioOwnedLatencyNoRegression",
