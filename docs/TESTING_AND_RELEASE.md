@@ -571,9 +571,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_microphone_hardw
 That direct gate captures before/after audio diagnostics, validates
 `rustNativeEndpointInventoryChange`, requires the `rust-wasapi` inventory
 source, checks expected added/removed/default-change labels, and rejects raw
-IMMDevice endpoint IDs in the artifact. With `-RequireDeviceRefreshEvidence`,
-each scenario also proves native DeviceMonitor events are active, the safety
-poll interval remains sparse, and the smoke did not use forced per-poll refresh
+IMMDevice endpoint IDs, raw `\\.\pipe\scriber-*` pipe names, and unredacted
+token fields in the artifact. With `-RequireDeviceRefreshEvidence`, each
+scenario also proves native DeviceMonitor events are active, the safety poll
+interval remains sparse, and the smoke did not use forced per-poll refresh
 requests. Use `-ForceRefreshEachPoll` only for diagnosing legacy fallback
 behavior, not for Rust-promotion evidence.
 

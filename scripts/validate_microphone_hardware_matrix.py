@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.smoke_microphone_hardware_matrix import DEFAULT_SCENARIOS, SCENARIO_EXPECTATION_HINTS
+
+
+REDACTED_TEXT_MARKERS = {"[REDACTED]", "[redacted]", "<redacted>", "***REDACTED***"}
+REDACTED_ENDPOINT_MARKERS = {"[REDACTED_ENDPOINT]", "[redacted-endpoint]", "<redacted-endpoint>"}
 
 
 @dataclass(frozen=True)
@@ -90,6 +95,8 @@ def validate_scenario_artifact(
     if not isinstance(payload, dict):
         failures.append("artifact root must be a JSON object")
         payload = {}
+    else:
+        failures.extend(_find_redaction_failures(payload))
 
     if payload.get("ok") is not True:
         failures.append("artifact ok must be true")
@@ -175,6 +182,69 @@ def _validate_rust_inventory_evidence(
     if scenario == "default-mic-change" and rust_change.get("defaultChanged") is not True:
         failures.append("rust inventory defaultChanged must be true")
     return failures
+
+
+def _find_redaction_failures(value: Any) -> list[str]:
+    failures: list[str] = []
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, item in node.items():
+                key_str = str(key)
+                child_path = f"{path}.{key_str}" if path else key_str
+                walk(item, child_path)
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, f"{path}[{index}]")
+        elif isinstance(node, str):
+            if _looks_like_raw_scriber_pipe(node):
+                failures.append(f"artifact contains raw Scriber pipe name at {path}")
+            if _looks_like_raw_native_endpoint_id(node):
+                failures.append(f"artifact contains raw native endpoint ID at {path}")
+            if _looks_like_unredacted_endpoint_id_field(path, node):
+                failures.append(f"artifact contains unredacted endpointId value at {path}")
+            if _looks_like_unredacted_token_field(path, node):
+                failures.append(f"artifact contains unredacted token-like value at {path}")
+
+    walk(value, "")
+    return failures
+
+
+def _normalized_windows_identifier(value: str) -> str:
+    normalized = str(value).lower().replace("/", "\\")
+    for _ in range(6):
+        collapsed = normalized.replace("\\\\", "\\")
+        if collapsed == normalized:
+            break
+        normalized = collapsed
+    return normalized
+
+
+def _looks_like_raw_scriber_pipe(value: str) -> bool:
+    return "\\.\\pipe\\scriber-" in _normalized_windows_identifier(value)
+
+
+def _looks_like_raw_native_endpoint_id(value: str) -> bool:
+    normalized = _normalized_windows_identifier(value)
+    return "swd\\mmdevapi\\" in normalized or "swd#mmdevapi#" in str(value).lower()
+
+
+def _looks_like_unredacted_endpoint_id_field(path: str, value: str) -> bool:
+    tokens = [token for token in re.split(r"[.\[\]]+", path.lower()) if token]
+    if not any(token.endswith("endpointid") and not token.endswith("hash") for token in tokens):
+        return False
+    normalized = str(value).strip()
+    return bool(normalized) and normalized not in REDACTED_ENDPOINT_MARKERS
+
+
+def _looks_like_unredacted_token_field(path: str, value: str) -> bool:
+    path_lower = path.lower()
+    if "tokenconfigured" in path_lower:
+        return False
+    if "token" not in path_lower:
+        return False
+    normalized = str(value).strip()
+    return bool(normalized) and normalized not in REDACTED_TEXT_MARKERS
 
 
 def _validate_device_refresh_evidence(result: dict[str, Any]) -> list[str]:

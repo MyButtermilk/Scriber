@@ -237,6 +237,86 @@ def test_validate_matrix_accepts_required_device_refresh_evidence(tmp_path: Path
     assert result["requireDeviceRefreshEvidence"] is True
 
 
+def test_validate_matrix_rejects_unredacted_hardware_evidence(tmp_path: Path) -> None:
+    write_artifact(
+        tmp_path,
+        "usb-add",
+        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
+        rust_change={
+            "availableAfter": True,
+            "sourceAfter": "rust-wasapi",
+            "after": [
+                {
+                    "endpointIdHash": "usb-hash",
+                    "friendlyName": "USB Mic",
+                    "flow": "capture",
+                    "isDefault": True,
+                    "defaultRoles": ["console"],
+                }
+            ],
+            "added": [
+                {
+                    "endpointIdHash": "usb-hash",
+                    "friendlyName": "USB Mic",
+                    "flow": "capture",
+                    "isDefault": True,
+                    "defaultRoles": ["console"],
+                    "diagnostics": {
+                        "endpointId": r"SWD\MMDEVAPI\{0.0.1.00000000}.{raw-matrix-device}",
+                    },
+                }
+            ],
+            "removed": [],
+            "defaultChanged": False,
+        },
+        device_refresh={
+            "availableAfter": True,
+            "strategy": {"mode": "monitor-events", "forcedRefreshRequests": 0},
+            "nativeEventsActiveAfter": True,
+            "pollModeAfter": "native-event-safety",
+            "pollIntervalSecondsAfter": 900,
+            "pollRefreshDelta": 0,
+            "eventRefreshDelta": 1,
+            "portAudioRefreshDelta": 1,
+            "nativeHintDelta": 1,
+            "nativeHintPortAudioDelta": 1,
+            "after": {
+                "nativeEventsActive": True,
+                "pollMode": "native-event-safety",
+                "lastNativeHint": {"kind": "endpoint", "eventKind": "stateChanged"},
+                "debug": {
+                    "framePipe": r"\\.\pipe\scriber-audio-matrix-secret",
+                    "sessionToken": "raw-matrix-token",
+                },
+            },
+        },
+    )
+
+    result = validate_matrix(
+        input_dir=tmp_path,
+        scenarios=["usb-add"],
+        require_rust_endpoint_inventory=True,
+        require_device_refresh_evidence=True,
+    )
+
+    assert result["ok"] is False
+    failures = result["scenarios"][0]["failures"]
+    assert (
+        "artifact contains raw native endpoint ID at "
+        "result.rustNativeEndpointInventoryChange.added[0].diagnostics.endpointId"
+        in failures
+    )
+    assert (
+        "artifact contains raw Scriber pipe name at result.deviceMonitorRefresh.after.debug.framePipe"
+        in failures
+    )
+    assert (
+        "artifact contains unredacted token-like value at result.deviceMonitorRefresh.after.debug.sessionToken"
+        in failures
+    )
+
+
 def test_validate_matrix_rejects_forced_refresh_when_device_refresh_evidence_required(tmp_path: Path) -> None:
     write_artifact(
         tmp_path,
