@@ -2218,6 +2218,7 @@ def validate_recording_hot_path_comparison_report(
         "rustAudioEngine",
         "rustFallbackCircuitClosed",
         "rustMidSessionClean",
+        "rustActiveCaptureStable",
         "rustAlwaysOnMic",
         "rustPrewarmAdoption",
         "audioOwnedLatencyNoRegression",

@@ -924,7 +924,7 @@ $requiredEvidence = @(
         recordSeconds = $RecordingHotPathSeconds
         timeoutSec = $RecordingHotPathTimeoutSec
         rustCaptureMode = $RecordingHotPathRustCaptureMode
-        notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires passing inputReportRedaction, sameRecordingConfig, rustAlwaysOnMic, rustMidSessionClean, and rustPrewarmAdoption checks, requires at least three samples per engine, requires provider transcript evidence with the same STT provider in both reports, requires active rust-frame-pipe capture with adopted Rust prewarm evidence in the Rust report, rejects open Rust fallback-circuit and mid-session frame-pipe failure evidence, and rejects clear P95 regressions in local audio-owned hot-path segments."
+        notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires passing inputReportRedaction, sameRecordingConfig, rustAlwaysOnMic, rustMidSessionClean, rustActiveCaptureStable, and rustPrewarmAdoption checks, requires at least three samples per engine, requires provider transcript evidence with the same STT provider in both reports, requires active rust-frame-pipe capture with adopted Rust prewarm evidence in the Rust report, rejects open Rust fallback-circuit, mid-session frame-pipe failure, and active-capture watchdog restart evidence, and rejects clear P95 regressions in local audio-owned hot-path segments."
     },
     [pscustomobject]@{
         name = "installedLiveRecordingSmoke"

@@ -23,6 +23,10 @@ def recording_report(
     rust_prewarm_raw_id: bool = False,
     rust_mid_session_failure_reason: str = "",
     rust_frame_pipe_reader_end_reason: str = "running",
+    active_capture_health_restart_count: int = 0,
+    active_capture_health_restart_throttle_count: int = 0,
+    active_capture_last_health_failure_reason: str = "",
+    active_capture_last_health_restart_error: str = "",
 ) -> dict:
     if mic_always_on is None:
         mic_always_on = bool(rust_capture)
@@ -46,6 +50,10 @@ def recording_report(
         "frameSource": "rust-frame-pipe" if rust_capture else "sounddevice",
         "callbackCount": 12,
         "nativeEndpointIdHash": "hash" if rust_capture else None,
+        "healthRestartCount": active_capture_health_restart_count,
+        "healthRestartThrottleCount": active_capture_health_restart_throttle_count,
+        "lastHealthFailureReason": active_capture_last_health_failure_reason,
+        "lastHealthRestartError": active_capture_last_health_restart_error,
     }
     if rust_capture:
         rust_adoption = {
@@ -292,6 +300,31 @@ def test_recording_hot_path_comparison_rejects_rust_mid_session_failure() -> Non
     assert check["ok"] is False
     assert check["details"]["failureSampleCount"] == 3
     assert check["details"]["failures"][0]["midSessionFailureReason"] == "pipeClosed"
+
+
+def test_recording_hot_path_comparison_rejects_unstable_rust_active_capture() -> None:
+    result = build_comparison(
+        recording_report(engine="python"),
+        recording_report(
+            engine="rust-prototype",
+            rust_capture=True,
+            active_capture_health_restart_count=1,
+            active_capture_health_restart_throttle_count=1,
+            active_capture_last_health_failure_reason="staleCallbacks",
+            active_capture_last_health_restart_error="restart failed",
+        ),
+    )
+
+    assert result["ok"] is False
+    assert (
+        "Rust report must prove active capture stayed stable without watchdog restarts"
+        in result["failures"]
+    )
+    check = next(item for item in result["checks"] if item["name"] == "rustActiveCaptureStable")
+    assert check["ok"] is False
+    assert check["details"]["unstableSampleCount"] == 3
+    assert check["details"]["failures"][0]["healthRestartCount"] == 1
+    assert check["details"]["failures"][0]["lastHealthFailureReason"] == "staleCallbacks"
 
 
 def test_recording_hot_path_comparison_rejects_rust_without_always_on_mic() -> None:

@@ -192,9 +192,10 @@ Rust audio:
   Rust report. Final readiness now also requires at least three samples per
   engine, so one-shot comparison artifacts are not acceptable Rust promotion
   evidence. The same artifact now also fails Rust promotion when local
-  audio-owned P95 hot-path segments regress clearly against Python; the
-  provider-finalize and total stop-to-text values stay diagnostic-only because
-  they are network/provider dominated.
+  audio-owned P95 hot-path segments regress clearly against Python, or when
+  Rust active-capture watchdog restart/throttle evidence appears during the
+  provider-backed run; the provider-finalize and total stop-to-text values stay
+  diagnostic-only because they are network/provider dominated.
   `scripts/run_recording_hot_path_comparison.ps1` now orchestrates the Python
   pass, Rust-prototype pass, and comparison artifact creation for real
   provider-backed A/B runs, defaulting to three recording samples per engine

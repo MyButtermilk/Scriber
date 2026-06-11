@@ -223,6 +223,52 @@ def rust_mid_session_clean_check(report: dict[str, Any]) -> tuple[bool, dict[str
     }
 
 
+def _int_value(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
+def rust_active_capture_stable_check(report: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    checked = 0
+    failing: list[dict[str, Any]] = []
+    for capture in active_capture_samples(report):
+        if (
+            capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE
+            or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE
+        ):
+            continue
+        checked += 1
+        restart_count = _int_value(capture.get("healthRestartCount"))
+        throttle_count = _int_value(capture.get("healthRestartThrottleCount"))
+        failure_reason = str(capture.get("lastHealthFailureReason") or "").strip()
+        restart_error = str(capture.get("lastHealthRestartError") or "").strip()
+        sample_ok = (
+            restart_count == 0
+            and throttle_count == 0
+            and not failure_reason
+            and not restart_error
+        )
+        if not sample_ok:
+            failing.append(
+                {
+                    "healthRestartCount": restart_count,
+                    "healthRestartThrottleCount": throttle_count,
+                    "lastHealthFailureReason": failure_reason,
+                    "lastHealthRestartError": restart_error,
+                }
+            )
+    return checked > 0 and not failing, {
+        "checkedRustFramePipeSamples": checked,
+        "unstableSampleCount": len(failing),
+        "failures": failing[:5],
+    }
+
+
 def has_rust_frame_pipe(report: dict[str, Any]) -> bool:
     return any(
         capture.get("engine") == RUST_AUDIO_ACTIVE_ENGINE
@@ -575,6 +621,13 @@ def build_comparison(
             mid_session_clean,
             mid_session_details,
             "Rust report must not contain mid-session frame-pipe failures",
+        )
+        active_capture_stable, active_capture_details = rust_active_capture_stable_check(rust_report)
+        add_check(
+            "rustActiveCaptureStable",
+            active_capture_stable,
+            active_capture_details,
+            "Rust report must prove active capture stayed stable without watchdog restarts",
         )
         always_on_ok, always_on_details = rust_always_on_mic_check(rust_report)
         add_check(
