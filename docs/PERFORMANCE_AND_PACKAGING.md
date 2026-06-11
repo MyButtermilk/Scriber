@@ -1067,8 +1067,11 @@ Implementation plan:
      `-RequireInstalledLiveRecordingRustAudio`, which requires every stability
      sample to include compact audio diagnostics proving `rust-prototype`
      `rust-frame-pipe` capture, active callbacks, closed fallback circuit, and
-     clean frame-pipe counters. Provider-backed transcript quality and latency
-     still require the separate Python/Rust hot-path comparison artifact.
+     clean frame-pipe counters. The validator now also requires the Rust
+     callback, frame-pipe, and audio-frame counters to increase across
+     stability samples, so a stale diagnostics snapshot cannot satisfy the
+     long-recording gate. Provider-backed transcript quality and latency still
+     require the separate Python/Rust hot-path comparison artifact.
    - Local evidence from 2026-06-10: a direct Windows WASAPI prewarm smoke
      passed with
      `python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 0.5 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-current.json`.

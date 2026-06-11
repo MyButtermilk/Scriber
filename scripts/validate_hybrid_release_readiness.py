@@ -1149,6 +1149,9 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
     if not isinstance(samples, list) or not samples:
         return ["installed live recording smoke Rust audio evidence requires stability samples"]
 
+    previous_callback_count: float | None = None
+    previous_frame_pipe_frames_read: float | None = None
+    previous_frame_pipe_audio_frames_read: float | None = None
     for index, sample in enumerate(samples, start=1):
         if not isinstance(sample, dict):
             failures.append(f"installed live recording smoke sample {index} must be an object")
@@ -1193,14 +1196,32 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
         if active_capture.get("streamActive") is not True:
             failures.append(f"installed live recording smoke sample {index} activeCapture.streamActive must be true")
             break
-        if numeric_field(active_capture, "callbackCount") is None or numeric_field(active_capture, "callbackCount") <= 0:
+        callback_count = numeric_field(active_capture, "callbackCount")
+        if callback_count is None or callback_count <= 0:
             failures.append(f"installed live recording smoke sample {index} activeCapture.callbackCount must be positive")
             break
-        if numeric_field(active_capture, "framePipeFramesRead") is None or numeric_field(active_capture, "framePipeFramesRead") <= 0:
+        frame_pipe_frames_read = numeric_field(active_capture, "framePipeFramesRead")
+        if frame_pipe_frames_read is None or frame_pipe_frames_read <= 0:
             failures.append(f"installed live recording smoke sample {index} framePipeFramesRead must be positive")
             break
-        if numeric_field(active_capture, "framePipeAudioFramesRead") is None or numeric_field(active_capture, "framePipeAudioFramesRead") <= 0:
+        frame_pipe_audio_frames_read = numeric_field(active_capture, "framePipeAudioFramesRead")
+        if frame_pipe_audio_frames_read is None or frame_pipe_audio_frames_read <= 0:
             failures.append(f"installed live recording smoke sample {index} framePipeAudioFramesRead must be positive")
+            break
+        if previous_callback_count is not None and callback_count <= previous_callback_count:
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.callbackCount must increase between stability samples"
+            )
+            break
+        if previous_frame_pipe_frames_read is not None and frame_pipe_frames_read <= previous_frame_pipe_frames_read:
+            failures.append(
+                f"installed live recording smoke sample {index} framePipeFramesRead must increase between stability samples"
+            )
+            break
+        if previous_frame_pipe_audio_frames_read is not None and frame_pipe_audio_frames_read <= previous_frame_pipe_audio_frames_read:
+            failures.append(
+                f"installed live recording smoke sample {index} framePipeAudioFramesRead must increase between stability samples"
+            )
             break
         if not str(active_capture.get("nativeEndpointIdHash") or active_capture.get("sourceNativeEndpointIdHash") or ""):
             failures.append(f"installed live recording smoke sample {index} nativeEndpointIdHash is required")
@@ -1231,6 +1252,9 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
         if fallback_circuit.get("open") is True:
             failures.append(f"installed live recording smoke sample {index} rustAudioFallbackCircuit.open must be false")
             break
+        previous_callback_count = callback_count
+        previous_frame_pipe_frames_read = frame_pipe_frames_read
+        previous_frame_pipe_audio_frames_read = frame_pipe_audio_frames_read
 
     return failures
 
