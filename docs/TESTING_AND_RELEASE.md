@@ -514,11 +514,11 @@ This validates an existing `installed-live-recording-smoke.json` produced by
 app. Supplying `-MinInstalledLiveRecordingDurationSec` or
 `-RequireInstalledLiveRecordingRustAudio` also makes this artifact required,
 even without the generic `-RequireInstalledLiveRecordingSmoke` flag. The report
-must show a managed `tauri-supervised` runtime, healthy
-`apiVersion=1`/ready state, positive app/backend PID and backend-port metadata,
-clean live recording start/stop state, no non-recording samples during the
-recording window, stability samples that cover at least half of the expected
-probe count for the requested duration, and verified cleanup. Add
+must show a `tauri-supervised` sidecar runtime, healthy `apiVersion=1`/ready
+state, positive app/backend PID and backend-port metadata, clean live recording
+start/stop state, no non-recording samples during the recording window,
+stability samples that cover at least half of the expected probe count for the
+requested duration, and verified cleanup. Add
 `-RequireInstalledLiveRecordingRustAudio` when the report is used as Rust
 promotion evidence; that requires every stability sample to include compact
 audio diagnostics proving `audioEngine=rust-prototype`,

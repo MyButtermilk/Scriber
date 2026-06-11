@@ -1066,9 +1066,9 @@ Implementation plan:
    - Implemented: final readiness can require an installed live-recording smoke
      with `-RequireInstalledLiveRecordingSmoke` and
      `-MinInstalledLiveRecordingDurationSec`. The validator accepts reports from
-     the installed desktop smoke path and requires a managed `tauri-supervised`
-     runtime, healthy API version/ready state, positive app/backend process and
-     port metadata, clean start/stop state, verified cleanup, sufficient
+     the installed desktop smoke path and requires a `tauri-supervised`
+     sidecar runtime, healthy API version/ready state, positive app/backend
+     process and port metadata, clean start/stop state, verified cleanup, sufficient
      stability-sample coverage for the requested duration, and zero
      non-recording samples during active capture. A configured minimum duration
      now makes the installed live-recording report required even without the

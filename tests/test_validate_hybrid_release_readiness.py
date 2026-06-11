@@ -687,7 +687,7 @@ def write_installed_live_recording_smoke_report(
     *,
     ok: bool = True,
     runtime_mode: str = "tauri-supervised",
-    launch_kind: str = "managed",
+    launch_kind: str = "sidecar",
     api_version: str = "1",
     ready: bool = True,
     external_attach: bool = False,
@@ -1148,7 +1148,7 @@ def test_validate_release_readiness_accepts_required_installed_live_recording_sm
     live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
     assert live_check["details"]["liveRecording"]["durationSec"] == 600
     assert live_check["details"]["runtimeMode"] == "tauri-supervised"
-    assert live_check["details"]["launchKind"] == "managed"
+    assert live_check["details"]["launchKind"] == "sidecar"
     assert live_check["details"]["ready"] is True
     assert live_check["details"]["stability"]["sampleCount"] >= 60
 
@@ -1498,7 +1498,7 @@ def test_validate_release_readiness_rejects_non_installed_live_recording_metadat
     live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
     failures = live_check["failures"]
     assert "installed live recording smoke runtimeMode must be tauri-supervised" in failures
-    assert "installed live recording smoke launchKind must be managed" in failures
+    assert "installed live recording smoke launchKind must be sidecar" in failures
     assert "installed live recording smoke must not use an external backend" in failures
     assert "installed live recording smoke ready must be true" in failures
     assert "installed live recording smoke apiVersion must be 1" in failures

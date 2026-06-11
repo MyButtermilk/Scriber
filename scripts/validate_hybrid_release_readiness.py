@@ -979,8 +979,8 @@ def validate_installed_live_recording_smoke_report(
         failures.append("installed live recording smoke report ok must be true")
     if str(smoke.get("runtimeMode") or "") != "tauri-supervised":
         failures.append("installed live recording smoke runtimeMode must be tauri-supervised")
-    if str(smoke.get("launchKind") or "") != "managed":
-        failures.append("installed live recording smoke launchKind must be managed")
+    if str(smoke.get("launchKind") or "") != "sidecar":
+        failures.append("installed live recording smoke launchKind must be sidecar")
     if smoke.get("externalAttach") is True:
         failures.append("installed live recording smoke must not use an external backend")
     if smoke.get("ready") is not True:
