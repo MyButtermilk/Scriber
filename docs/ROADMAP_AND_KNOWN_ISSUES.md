@@ -221,7 +221,9 @@ Rust audio:
   single successful resume cannot hide repeated Stop-button failures. Final
   readiness validates per-cycle pre-adoption and post-resume
   `audioPrewarmStatus` snapshots. When sidecar prewarm adoption is part of that
-  gate, reused sidecar reports now must pass explicit
+  gate, app-level prewarm reports must also include the expected redacted
+  `recentEvents` lifecycle markers for pre-adoption start and post-resume
+  adoption/resume/restart. Reused sidecar reports now must pass explicit
   `--require-rust-audio-sidecar-prewarm-adoption` validation instead of relying
   on the report's own requested flags.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with

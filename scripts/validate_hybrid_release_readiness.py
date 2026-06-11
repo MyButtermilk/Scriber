@@ -910,6 +910,7 @@ def validate_rust_audio_app_prewarm_report(
             manager_pre_adoption_health,
             label="managerPreAdoptionHealth",
             expected_reason="smoke_pre_adoption",
+            required_recent_events=("started",),
         )
     )
     if not str(manager_adoption.get("prewarmIdHash") or ""):
@@ -926,6 +927,11 @@ def validate_rust_audio_app_prewarm_report(
                 manager_post_resume_health,
                 label="managerPostResumeHealth",
                 expected_reason="smoke_post_resume",
+                required_recent_events=(
+                    "adopted_for_capture",
+                    "resume_active_capture",
+                    "started",
+                ),
             )
         )
 
@@ -1003,6 +1009,7 @@ def validate_rust_audio_app_prewarm_report(
                 cycle_pre_health,
                 label=f"{cycle_label}.managerPreAdoptionHealth",
                 expected_reason=cycle_pre_reason,
+                required_recent_events=("started",),
             )
         )
         cycle_adoption = cycle.get("managerAdoption")
@@ -1093,6 +1100,11 @@ def validate_rust_audio_app_prewarm_report(
                 cycle_post_health,
                 label=f"{cycle_label}.managerPostResumeHealth",
                 expected_reason=cycle_post_reason,
+                required_recent_events=(
+                    "adopted_for_capture",
+                    "resume_active_capture",
+                    "started",
+                ),
             )
         )
 
@@ -1104,6 +1116,7 @@ def validate_rust_audio_app_prewarm_health_snapshot(
     *,
     label: str,
     expected_reason: str,
+    required_recent_events: tuple[str, ...] = (),
 ) -> list[str]:
     failures: list[str] = []
     prefix = f"Rust audio app prewarm smoke {label}"
@@ -1133,6 +1146,21 @@ def validate_rust_audio_app_prewarm_health_snapshot(
         failures.append(f"{prefix}.lastStatus.prewarmIdHash is required")
     if last_status.get("prewarmId") is not None:
         failures.append(f"{prefix}.lastStatus must not expose raw prewarmId")
+    if required_recent_events:
+        recent_events = snapshot.get("recentEvents")
+        if not isinstance(recent_events, list):
+            failures.append(f"{prefix}.recentEvents must be a list")
+        else:
+            event_names = {
+                str(event.get("event") or "")
+                for event in recent_events
+                if isinstance(event, dict)
+            }
+            for required_event in required_recent_events:
+                if required_event not in event_names:
+                    failures.append(
+                        f"{prefix}.recentEvents must include {required_event}"
+                    )
     return failures
 
 

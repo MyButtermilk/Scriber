@@ -114,7 +114,10 @@ def validate_smoke(payload: dict[str, Any]) -> list[str]:
     if not isinstance(manager_start, dict) or manager_start.get("active") is not True:
         errors.append("managerStart.active must be true")
     manager_pre_adoption_health = payload.get("managerPreAdoptionHealth")
-    if not _valid_manager_health_snapshot(manager_pre_adoption_health):
+    if not _valid_manager_health_snapshot(
+        manager_pre_adoption_health,
+        required_events=("started",),
+    ):
         errors.append("managerPreAdoptionHealth must prove active audioPrewarmStatus")
     adoption = payload.get("managerAdoption")
     if not isinstance(adoption, dict) or not adoption.get("prewarmIdHash"):
@@ -143,7 +146,10 @@ def validate_smoke(payload: dict[str, Any]) -> list[str]:
     if isinstance(manager_resume, dict) and manager_resume.get("active") is not True:
         errors.append("managerResume.active must be true when resume is requested")
     manager_post_resume_health = payload.get("managerPostResumeHealth")
-    if isinstance(manager_resume, dict) and not _valid_manager_health_snapshot(manager_post_resume_health):
+    if isinstance(manager_resume, dict) and not _valid_manager_health_snapshot(
+        manager_post_resume_health,
+        required_events=("adopted_for_capture", "resume_active_capture", "started"),
+    ):
         errors.append("managerPostResumeHealth must prove active audioPrewarmStatus when resume is requested")
     requested = payload.get("requested") if isinstance(payload.get("requested"), dict) else {}
     requested_cycles = int(requested.get("captureCycles") or 1)
@@ -160,6 +166,12 @@ def validate_smoke(payload: dict[str, Any]) -> list[str]:
                 errors.append("cycle entries must be objects")
                 continue
             prefix = f"cycle {cycle.get('index')}"
+            cycle_pre_health = cycle.get("managerPreAdoptionHealth")
+            if not _valid_manager_health_snapshot(
+                cycle_pre_health,
+                required_events=("started",),
+            ):
+                errors.append(f"{prefix} managerPreAdoptionHealth must prove active audioPrewarmStatus")
             cycle_adoption = cycle.get("managerAdoption")
             if not isinstance(cycle_adoption, dict) or not cycle_adoption.get("prewarmIdHash"):
                 errors.append(f"{prefix} managerAdoption.prewarmIdHash must be present")
@@ -173,7 +185,10 @@ def validate_smoke(payload: dict[str, Any]) -> list[str]:
                 if not isinstance(cycle_resume, dict) or cycle_resume.get("active") is not True:
                     errors.append(f"{prefix} managerResume.active must be true")
                 cycle_health = cycle.get("managerPostResumeHealth")
-                if not _valid_manager_health_snapshot(cycle_health):
+                if not _valid_manager_health_snapshot(
+                    cycle_health,
+                    required_events=("adopted_for_capture", "resume_active_capture", "started"),
+                ):
                     errors.append(f"{prefix} managerPostResumeHealth must prove active audioPrewarmStatus")
     return errors
 
@@ -200,7 +215,11 @@ def validate_source_final(final_source: dict[str, Any], prefix: str) -> list[str
     return errors
 
 
-def _valid_manager_health_snapshot(value: Any) -> bool:
+def _valid_manager_health_snapshot(
+    value: Any,
+    *,
+    required_events: tuple[str, ...] = (),
+) -> bool:
     if not isinstance(value, dict):
         return False
     if value.get("active") is not True:
@@ -219,7 +238,20 @@ def _valid_manager_health_snapshot(value: Any) -> bool:
         return False
     if status.get("active") is not True:
         return False
-    return bool(status.get("prewarmIdHash") or value.get("prewarmIdHash"))
+    if not bool(status.get("prewarmIdHash") or value.get("prewarmIdHash")):
+        return False
+    if required_events:
+        recent_events = value.get("recentEvents")
+        if not isinstance(recent_events, list):
+            return False
+        event_names = {
+            str(event.get("event") or "")
+            for event in recent_events
+            if isinstance(event, dict)
+        }
+        if not set(required_events).issubset(event_names):
+            return False
+    return True
 
 
 def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:

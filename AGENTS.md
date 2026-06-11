@@ -213,8 +213,10 @@ Packaging and scripts:
   counts. The prewarm diagnostics also expose a bounded redacted `recentEvents`
   timeline for start/stop/adoption/watchdog restarts so short Windows
   privacy-indicator dropouts are visible in support bundles without increasing
-  steady-state log volume. The default app path still uses Python `sounddevice`
-  prewarm. When
+  steady-state log volume. Rust app-prewarm promotion evidence must include
+  `recentEvents` lifecycle markers for pre-adoption start and post-resume
+  adoption/resume/restart, not only a final healthy status snapshot. The
+  default app path still uses Python `sounddevice` prewarm. When
   the opt-in Rust path is explicitly enabled and no favorite/non-default mic is selected,
   keep the request as `devicePreference=default` with no
   `nativeEndpointIdHash`; the Rust sidecar must open the Windows default WASAPI

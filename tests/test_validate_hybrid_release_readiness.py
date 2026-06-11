@@ -545,6 +545,7 @@ def write_rust_audio_app_prewarm_report(
     post_resume_status_active: bool = True,
     pre_adoption_health_restart_count: int = 0,
     post_resume_health_restart_count: int = 0,
+    include_recent_events: bool = True,
     capture_cycles: int = 1,
     last_error: str = "",
 ) -> None:
@@ -555,7 +556,7 @@ def write_rust_audio_app_prewarm_report(
         *,
         health_restart_count: int = 0,
     ) -> dict[str, object]:
-        return {
+        snapshot: dict[str, object] = {
             "active": active,
             "prewarmIdHash": prewarm_hash,
             "lastHealthCheckActive": active,
@@ -570,6 +571,29 @@ def write_rust_audio_app_prewarm_report(
                 "bufferedBlocks": 4 if active else 0,
             },
         }
+        if include_recent_events:
+            recent_events: list[dict[str, object]] = [
+                {"event": "start_attempt", "reason": "start", "ageSeconds": 2.0},
+                {"event": "started", "reason": "start", "ageSeconds": 1.9},
+            ]
+            if "post_resume" in reason:
+                recent_events.extend(
+                    [
+                        {
+                            "event": "adopted_for_capture",
+                            "reason": "active_capture",
+                            "ageSeconds": 1.2,
+                        },
+                        {
+                            "event": "resume_active_capture",
+                            "reason": "active_capture",
+                            "ageSeconds": 0.8,
+                        },
+                        {"event": "started", "reason": "start", "ageSeconds": 0.5},
+                    ]
+                )
+            snapshot["recentEvents"] = recent_events
+        return snapshot
 
     payload = {
         "apiVersion": "1",
@@ -2845,6 +2869,34 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_without_statu
     assert "managerPreAdoptionHealthReturned must be true" in failures
     assert "managerPostResumeHealth must be an object" in failures
     assert "managerPostResumeHealthReturned must be true" in failures
+
+
+def test_validate_release_readiness_rejects_rust_audio_app_prewarm_without_recent_events(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
+    write_rust_audio_app_prewarm_report(
+        app_prewarm_report,
+        include_recent_events=False,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_app_prewarm_report=app_prewarm_report,
+        require_rust_audio_app_prewarm_smoke=True,
+    )
+
+    assert result["ok"] is False
+    app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
+    failures = "\n".join(app_check["failures"])
+    assert "managerPreAdoptionHealth.recentEvents must be a list" in failures
+    assert "managerPostResumeHealth.recentEvents must be a list" in failures
 
 
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_inactive_status_evidence(tmp_path: Path) -> None:

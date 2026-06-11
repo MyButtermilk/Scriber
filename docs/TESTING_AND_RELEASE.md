@@ -331,9 +331,12 @@ adoption and after idle resume; the report must include
 `managerPostResumeHealth`. Final readiness rejects reports where those snapshots
 do not prove active `audioPrewarmStatus` responses with redacted prewarm IDs,
 non-negative response times, empty health errors, and
-`healthRestartCount=0`. This prevents a cached `prewarmId` from counting as
-proof that Always-On-Mic was still holding a live Rust/WASAPI prewarm session,
-and prevents a report with a hidden idle-session dropout from passing as stable
+`healthRestartCount=0`. It also requires the bounded redacted `recentEvents`
+timeline to contain the expected lifecycle markers: `started` before adoption,
+and `adopted_for_capture`, `resume_active_capture`, and `started` after idle
+resume. This prevents a cached `prewarmId` from counting as proof that
+Always-On-Mic was still holding a live Rust/WASAPI prewarm session, and
+prevents a report with a hidden idle-session dropout from passing as stable
 promotion evidence merely because the watchdog recovered before the final
 snapshot.
 
@@ -359,8 +362,9 @@ also makes the app-prewarm smoke artifact required, even without the generic
 sets the capture-cycle minimum to `2`, so promotion evidence must prove that
 Always-On-Mic resumes after at least two active recording stop events. Final
 readiness validates each cycle's pre-adoption and post-resume
-`audioPrewarmStatus` snapshots, so a report cannot pass by showing only a final
-healthy prewarm state after one failed resume.
+`audioPrewarmStatus` snapshots plus their `recentEvents` lifecycle markers, so
+a report cannot pass by showing only a final healthy prewarm state after one
+failed resume.
 
 The top-level release-readiness runner can also produce and validate the
 lifecycle report when explicit lifecycle evidence is wanted:
