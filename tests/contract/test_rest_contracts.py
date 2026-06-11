@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 
 import pytest
 
@@ -326,17 +327,80 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
     }
     validate_audio_diagnostics_payload(valid)
 
-    invalid = dict(valid)
+    tauri_injection = copy.deepcopy(valid)
+    tauri_injection["textInjection"]["method"] = "tauri"
+    tauri_injection["textInjection"]["shellIpc"] = {
+        "available": True,
+        "pipeConfigured": True,
+        "tokenConfigured": True,
+        "apiVersion": "1",
+        "pipeNameHash": "pipe-hash",
+        "lastCommand": "injectText",
+        "lastSuccess": True,
+        "lastError": None,
+        "lastErrorCode": None,
+        "lastFallbackReason": None,
+        "lastCommandAgoSeconds": 0.1,
+        "lastResponse": {
+            "success": True,
+            "errorCode": None,
+            "fallbackReason": None,
+            "timingsMs": {"total": 12.0},
+            "payload": {
+                "method": "tauri",
+                "dispatch": "ctrlV",
+                "preDelayMode": "auto",
+                "requestedPreDelayMs": 80.0,
+                "markers": ["clipboard_set", "paste"],
+                "restoreScheduled": True,
+                "restore": {
+                    "scheduled": True,
+                    "attempted": False,
+                    "succeeded": None,
+                    "skippedReason": "scheduled",
+                    "errorCode": None,
+                },
+                "foregroundBefore": {
+                    "available": True,
+                    "windowHash": "window-hash",
+                    "titleHash": "title-hash",
+                    "processIdHash": "pid-hash",
+                },
+                "foregroundAfter": {
+                    "available": True,
+                    "windowHash": "window-hash",
+                    "titleHash": "title-hash",
+                    "processIdHash": "pid-hash",
+                },
+                "foregroundChanged": False,
+                "timingsMs": {
+                    "clipboardRead": 1.0,
+                    "clipboardSet": 2.0,
+                    "preDelay": 80.0,
+                    "pasteDispatch": 3.0,
+                    "total": 10.0,
+                },
+            },
+        },
+    }
+    validate_audio_diagnostics_payload(tauri_injection)
+
+    invalid = copy.deepcopy(tauri_injection)
+    invalid["textInjection"]["shellIpc"]["lastResponse"]["payload"]["preDelayMode"] = "fixed"
+    with pytest.raises(RESTContractError):
+        validate_audio_diagnostics_payload(invalid)
+
+    invalid = copy.deepcopy(valid)
     invalid["runtimeImports"] = {}
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)
 
-    invalid = dict(valid)
+    invalid = copy.deepcopy(valid)
     invalid["textInjection"] = {**valid["textInjection"], "disabled": "no"}
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)
 
-    invalid = dict(valid)
+    invalid = copy.deepcopy(valid)
     invalid["microphone"] = {
         **valid["microphone"],
         "rustAudioFallbackCircuit": {
@@ -347,7 +411,7 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)
 
-    invalid = dict(valid)
+    invalid = copy.deepcopy(valid)
     invalid["microphone"] = {
         **valid["microphone"],
         "activeCapture": {
@@ -358,7 +422,7 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)
 
-    invalid = dict(valid)
+    invalid = copy.deepcopy(valid)
     invalid["microphone"] = {
         **valid["microphone"],
         "activeCapture": {
@@ -372,7 +436,7 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)
 
-    invalid = dict(valid)
+    invalid = copy.deepcopy(valid)
     invalid["watchdog"] = {
         **valid["watchdog"],
         "lastWarning": {

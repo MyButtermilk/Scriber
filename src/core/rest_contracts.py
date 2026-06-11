@@ -69,6 +69,13 @@ def _require_optional_int(payload: dict[str, Any], field: str, contract: str) ->
         raise RESTContractError(f"{contract} requires int-or-null '{field}'")
 
 
+def _require_string_list(payload: dict[str, Any], field: str, contract: str) -> list[str]:
+    value = payload.get(field)
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise RESTContractError(f"{contract} requires string list '{field}'")
+    return value
+
+
 def _require_api_version(payload: dict[str, Any], contract: str) -> None:
     if payload.get("apiVersion") != REST_API_VERSION:
         raise RESTContractError(f"{contract} requires apiVersion '{REST_API_VERSION}'")
@@ -153,6 +160,106 @@ def _validate_audio_capture_diagnostics(
     source = payload.get("source")
     if source is not None:
         _validate_audio_capture_diagnostics(source, contract, f"{path}.source")
+
+
+def _validate_redacted_foreground(payload: Any, contract: str, path: str) -> None:
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} requires object-or-null '{path}'")
+    _require_optional_bool(payload, "available", contract)
+    _require_optional_string(payload, "windowHash", contract)
+    _require_optional_string(payload, "titleHash", contract)
+    _require_optional_string(payload, "processIdHash", contract)
+
+
+def _validate_shell_ipc_restore(payload: Any, contract: str) -> None:
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} requires object-or-null 'lastResponse.payload.restore'")
+    _require_optional_bool(payload, "scheduled", contract)
+    _require_optional_bool(payload, "attempted", contract)
+    _require_optional_bool(payload, "succeeded", contract)
+    _require_optional_string(payload, "skippedReason", contract)
+    _require_optional_string(payload, "errorCode", contract)
+
+
+def _validate_shell_ipc_inject_text_payload(
+    payload: Any,
+    contract: str,
+    *,
+    require_success_fields: bool,
+) -> None:
+    if payload is None:
+        if require_success_fields:
+            raise RESTContractError(f"{contract} requires object 'lastResponse.payload'")
+        return
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} requires object-or-null 'lastResponse.payload'")
+    if require_success_fields:
+        if payload.get("method") != "tauri":
+            raise RESTContractError(f"{contract} requires lastResponse.payload.method 'tauri'")
+        if payload.get("preDelayMode") != "auto":
+            raise RESTContractError(f"{contract} requires lastResponse.payload.preDelayMode 'auto'")
+        _require_number(payload, "requestedPreDelayMs", contract)
+        markers = _require_string_list(payload, "markers", contract)
+        if "clipboard_set" not in markers or "paste" not in markers:
+            raise RESTContractError(
+                f"{contract} requires lastResponse.payload.markers to include clipboard_set and paste"
+            )
+        _require_bool(payload, "restoreScheduled", contract)
+        _require_optional_bool(payload, "foregroundChanged", contract)
+    else:
+        _require_optional_string(payload, "method", contract)
+        _require_optional_string(payload, "preDelayMode", contract)
+        _require_optional_number(payload, "requestedPreDelayMs", contract)
+        if "markers" in payload:
+            _require_string_list(payload, "markers", contract)
+        _require_optional_bool(payload, "restoreScheduled", contract)
+        _require_optional_bool(payload, "foregroundChanged", contract)
+    _validate_shell_ipc_restore(payload.get("restore"), contract)
+    _validate_redacted_foreground(
+        payload.get("foregroundBefore"),
+        contract,
+        "lastResponse.payload.foregroundBefore",
+    )
+    _validate_redacted_foreground(
+        payload.get("foregroundAfter"),
+        contract,
+        "lastResponse.payload.foregroundAfter",
+    )
+    timings = payload.get("timingsMs")
+    if timings is not None:
+        if not isinstance(timings, dict):
+            raise RESTContractError(f"{contract} requires object-or-null 'lastResponse.payload.timingsMs'")
+        for field in ("clipboardRead", "clipboardSet", "preDelay", "pasteDispatch", "total"):
+            _require_optional_number(timings, field, contract)
+
+
+def _validate_shell_ipc_last_response(
+    shell_ipc: dict[str, Any],
+    contract: str,
+) -> None:
+    last_response = shell_ipc.get("lastResponse")
+    if last_response is None:
+        return
+    if not isinstance(last_response, dict):
+        raise RESTContractError(f"{contract} requires object-or-null 'lastResponse'")
+    _require_bool(last_response, "success", contract)
+    _require_optional_string(last_response, "errorCode", contract)
+    _require_optional_string(last_response, "fallbackReason", contract)
+    timings = last_response.get("timingsMs")
+    if timings is not None:
+        if not isinstance(timings, dict):
+            raise RESTContractError(f"{contract} requires object-or-null 'lastResponse.timingsMs'")
+        _require_optional_number(timings, "total", contract)
+    if shell_ipc.get("lastCommand") == "injectText":
+        _validate_shell_ipc_inject_text_payload(
+            last_response.get("payload"),
+            contract,
+            require_success_fields=last_response.get("success") is True,
+        )
 
 
 def validate_runtime_payload(payload: dict[str, Any]) -> None:
@@ -343,16 +450,7 @@ def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
     _require_optional_string(shell_ipc, "lastErrorCode", contract)
     _require_optional_string(shell_ipc, "lastFallbackReason", contract)
     _require_optional_number(shell_ipc, "lastCommandAgoSeconds", contract)
-    last_response = shell_ipc.get("lastResponse")
-    if last_response is not None:
-        if not isinstance(last_response, dict):
-            raise RESTContractError(f"{contract} requires object-or-null 'lastResponse'")
-        _require_bool(last_response, "success", contract)
-        _require_optional_string(last_response, "errorCode", contract)
-        _require_optional_string(last_response, "fallbackReason", contract)
-        timings = last_response.get("timingsMs")
-        if timings is not None and not isinstance(timings, dict):
-            raise RESTContractError(f"{contract} requires object-or-null 'lastResponse.timingsMs'")
+    _validate_shell_ipc_last_response(shell_ipc, contract)
 
     runtime_imports = _require_dict(payload, "runtimeImports", contract)
     if not runtime_imports:

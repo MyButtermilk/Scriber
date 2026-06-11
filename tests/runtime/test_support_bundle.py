@@ -140,6 +140,8 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
                         "fallbackReason": "missing paste marker",
                         "payload": {
                             "method": "tauri",
+                            "preDelayMode": "auto",
+                            "requestedPreDelayMs": 80.0,
                             "markers": ["clipboard_set"],
                             "foregroundBefore": {
                                 "available": True,
@@ -230,6 +232,8 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
     assert "raw-native-endpoint-id" not in combined
     assert shell_ipc["lastCommand"] == "injectText"
     assert shell_ipc["lastErrorCode"] == "missingPasteMarker"
+    assert shell_ipc["lastResponse"]["payload"]["preDelayMode"] == "auto"
+    assert shell_ipc["lastResponse"]["payload"]["requestedPreDelayMs"] == 80.0
     assert shell_ipc["lastResponse"]["payload"]["foregroundBefore"]["titleHash"] == "title-hash"
 
 

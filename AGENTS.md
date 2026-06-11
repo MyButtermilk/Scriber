@@ -127,9 +127,10 @@ Packaging and scripts:
   default change.
 - Shell IPC diagnostics may expose the latest `injectText` attempt only in
   sanitized form: error codes, fallback reason, allowed markers, restore status,
-  timing numbers, and hashed foreground identifiers. Never store transcript
-  text, raw pipe names, session tokens, raw HWNDs, raw window titles, or raw
-  process identifiers in diagnostics or support bundles.
+  `preDelayMode`, requested/applied pre-delay numbers, timing numbers, and
+  hashed foreground identifiers. Never store transcript text, raw pipe names,
+  session tokens, raw HWNDs, raw window titles, or raw process identifiers in
+  diagnostics or support bundles.
 - The same private shell IPC may expose opt-in native diagnostics such as
   `audioProbe`. These diagnostics are not public API, must not expose raw
   endpoint IDs, and must not become an active capture path unless the Rust audio
