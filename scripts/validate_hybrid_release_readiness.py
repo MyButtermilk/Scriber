@@ -21,6 +21,7 @@ SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 RUST_AUDIO_ENGINE = "rust-prototype"
 RUST_AUDIO_FRAME_SOURCE = "rust-frame-pipe"
 REDACTED_TEXT_MARKERS = {"", "[REDACTED]", "[REDACTED_TOKEN]", "***"}
+REDACTED_ENDPOINT_MARKERS = {"", "[REDACTED]", "[REDACTED_ENDPOINT_ID]", "***"}
 
 REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS: dict[str, str] = {
     "notepad": "Notepad plain text target",
@@ -930,6 +931,7 @@ def validate_installed_live_recording_smoke_report(
     if not isinstance(stability, dict):
         failures.append("installed live recording smoke liveRecording.stability must be an object")
         stability = {}
+    failures.extend(find_installed_live_recording_redaction_failures(smoke))
 
     details.update(
         {
@@ -1338,13 +1340,26 @@ def validate_tauri_text_injection_payload(
 
 
 def _looks_like_raw_shell_pipe(value: str) -> bool:
+    return "\\.\\pipe\\scriber-shell-" in _normalized_windows_identifier(value)
+
+
+def _looks_like_raw_scriber_pipe(value: str) -> bool:
+    return "\\.\\pipe\\scriber-" in _normalized_windows_identifier(value)
+
+
+def _looks_like_raw_native_endpoint_id(value: str) -> bool:
+    normalized = _normalized_windows_identifier(value)
+    return "swd\\mmdevapi\\" in normalized or "swd#mmdevapi#" in str(value).lower()
+
+
+def _normalized_windows_identifier(value: str) -> str:
     normalized = str(value).lower().replace("/", "\\")
     for _ in range(6):
         collapsed = normalized.replace("\\\\", "\\")
         if collapsed == normalized:
             break
         normalized = collapsed
-    return "\\.\\pipe\\scriber-shell-" in normalized
+    return normalized
 
 
 def _looks_like_unredacted_token_field(path: str, value: str) -> bool:
@@ -1355,6 +1370,18 @@ def _looks_like_unredacted_token_field(path: str, value: str) -> bool:
         return False
     normalized = str(value).strip()
     return bool(normalized) and normalized not in REDACTED_TEXT_MARKERS
+
+
+def _looks_like_unredacted_endpoint_id_field(path: str, value: str) -> bool:
+    tokens = [
+        token
+        for token in re.split(r"[.\[\]]+", path.lower())
+        if token
+    ]
+    if not any(token.endswith("endpointid") and not token.endswith("hash") for token in tokens):
+        return False
+    normalized = str(value).strip()
+    return bool(normalized) and normalized not in REDACTED_ENDPOINT_MARKERS
 
 
 def find_tauri_text_injection_redaction_failures(value: Any, label: str) -> list[str]:
@@ -1378,6 +1405,31 @@ def find_tauri_text_injection_redaction_failures(value: Any, label: str) -> list
                 failures.append(
                     f"{label} contains unredacted token-like value at {path}"
                 )
+
+    walk(value, "")
+    return failures
+
+
+def find_installed_live_recording_redaction_failures(value: Any) -> list[str]:
+    failures: list[str] = []
+    label = "installed live recording smoke"
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, item in node.items():
+                key_str = str(key)
+                child_path = f"{path}.{key_str}" if path else key_str
+                walk(item, child_path)
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, f"{path}[{index}]")
+        elif isinstance(node, str):
+            if _looks_like_raw_scriber_pipe(node):
+                failures.append(f"{label} contains raw Scriber pipe name at {path}")
+            if _looks_like_raw_native_endpoint_id(node):
+                failures.append(f"{label} contains raw native endpoint ID at {path}")
+            if _looks_like_unredacted_endpoint_id_field(path, node):
+                failures.append(f"{label} contains unredacted endpointId value at {path}")
 
     walk(value, "")
     return failures

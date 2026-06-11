@@ -500,7 +500,9 @@ promotion evidence; that requires every stability sample to include compact
 audio diagnostics proving `audioEngine=rust-prototype`,
 `activeCapture.frameSource=rust-frame-pipe`, active callbacks, no frame-pipe
 sequence/protocol/prebuffer-order errors, and
-`rustAudioFallbackCircuit.open=false`. It complements the provider-backed
+`rustAudioFallbackCircuit.open=false`. The validator also rejects raw
+`SWD\MMDEVAPI\...` endpoint IDs and raw `\\.\pipe\scriber-*` pipe names in the
+installed live-recording artifact. It complements the provider-backed
 Python/Rust hot-path comparison; it does not replace transcript-quality
 evidence.
 

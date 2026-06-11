@@ -1217,6 +1217,56 @@ def test_validate_release_readiness_rejects_installed_live_recording_with_open_r
     assert any("rustAudioFallbackCircuit.open must be false" in failure for failure in live_check["failures"])
 
 
+def test_validate_release_readiness_rejects_installed_live_recording_redaction_leaks(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    live_recording_report = tmp_path / "installed-live-recording-smoke.json"
+    write_installed_live_recording_smoke_report(
+        live_recording_report,
+        duration_sec=600,
+        audio_engine="rust-prototype",
+        rust_audio_requested=True,
+        rust_audio_available=True,
+        frame_source="rust-frame-pipe",
+    )
+    payload = json.loads(live_recording_report.read_text(encoding="utf-8"))
+    active_capture = payload["liveRecording"]["stability"]["samples"][0]["audioDiagnostics"]["activeCapture"]
+    active_capture["endpointId"] = r"SWD\MMDEVAPI\{0.0.1.00000000}.{raw-live-device}"
+    active_capture["framePipe"] = r"\\.\pipe\scriber-audio-frame-secret"
+    live_recording_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        installed_live_recording_smoke_report=live_recording_report,
+        require_installed_live_recording_smoke=True,
+        require_installed_live_recording_rust_audio=True,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    assert (
+        "installed live recording smoke contains raw native endpoint ID at "
+        "liveRecording.stability.samples[0].audioDiagnostics.activeCapture.endpointId"
+        in live_check["failures"]
+    )
+    assert (
+        "installed live recording smoke contains unredacted endpointId value at "
+        "liveRecording.stability.samples[0].audioDiagnostics.activeCapture.endpointId"
+        in live_check["failures"]
+    )
+    assert (
+        "installed live recording smoke contains raw Scriber pipe name at "
+        "liveRecording.stability.samples[0].audioDiagnostics.activeCapture.framePipe"
+        in live_check["failures"]
+    )
+
+
 def test_validate_release_readiness_rejects_missing_required_installed_live_recording_smoke(tmp_path: Path) -> None:
     hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
 
