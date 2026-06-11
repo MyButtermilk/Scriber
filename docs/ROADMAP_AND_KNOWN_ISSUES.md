@@ -195,8 +195,11 @@ Rust audio:
   status instead of treating a cached `prewarmId` as sufficient proof of an
   active stream, and audio diagnostics expose redacted status/start/stop/health
   timings plus inactive reasons and restart counters. This should make short
-  microphone privacy-indicator dropouts visible in support bundles; it still
-  needs long physical evidence before default promotion.
+  microphone privacy-indicator dropouts visible in support bundles. Missing
+  post-start idle sessions are now recorded explicitly as
+  `missingPrewarmSession` for Rust and `missingPrewarmStream` for the Python
+  fallback, while first startup activation is not counted as a restart. This
+  still needs long physical evidence before default promotion.
   `scripts/run_hybrid_release_readiness.ps1` now exposes
   `-RequireRustAudioPromotionReadiness` as the aggregate default-promotion
   gate; it bundles Rust sidecar capture, app-level Always-On-Mic prewarm,

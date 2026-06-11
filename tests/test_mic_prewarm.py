@@ -251,6 +251,38 @@ def test_mic_prewarm_watchdog_restarts_inactive_idle_stream(monkeypatch):
     snapshot = manager.diagnostic_snapshot()
     assert snapshot["active"] is True
     assert snapshot["hasStream"] is True
+    assert snapshot["lastHealthCheckReason"] == "test"
+    assert snapshot["lastHealthFailureReason"] == "inactiveStream"
+
+    manager.stop()
+
+
+def test_mic_prewarm_watchdog_records_missing_idle_stream(monkeypatch):
+    _install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+
+    manager = MicrophonePrewarmManager()
+
+    assert manager.start_if_enabled() is True
+    first_stream = _FakeInputStream.instances[-1]
+    with manager._lock:
+        manager._release_stream()
+        first_stream.stop()
+        first_stream.close()
+        manager._stream = None
+        manager._stream_signature = {}
+
+    assert manager.ensure_healthy(reason="test-missing") is True
+
+    assert len(_FakeInputStream.instances) == 2
+    assert _FakeInputStream.instances[-1].active is True
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["healthRestartCount"] == 1
+    assert snapshot["lastHealthCheckReason"] == "test-missing"
+    assert snapshot["lastHealthFailureReason"] == "missingPrewarmStream"
+    assert snapshot["lastStatus"] == "missingPrewarmStream"
 
     manager.stop()
 
@@ -516,5 +548,54 @@ def test_rust_audio_prewarm_watchdog_restarts_missing_sidecar_session(monkeypatc
     assert snapshot["lastHealthCheckActive"] is False
     assert snapshot["lastHealthError"] == "noActivePrewarm"
     assert snapshot["lastStatus"]["prewarmIdHash"]
+    assert "prewarm-old" not in str(snapshot)
+    assert "prewarm-new" not in str(snapshot)
+
+
+def test_rust_audio_prewarm_watchdog_records_missing_cached_session(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
+    monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
+    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    commands: list[tuple[str, dict]] = []
+    start_ids = iter(["prewarm-old", "prewarm-new"])
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": next(start_ids)}}
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+
+    assert manager.start_if_enabled() is True
+    with manager._lock:
+        manager._prewarm_id = ""
+        manager._prewarm_payload = {}
+        manager._stream_signature = {}
+
+    assert manager.ensure_healthy(reason="test-missing") is True
+
+    assert [command for command, _payload in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStart",
+    ]
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["healthRestartCount"] == 1
+    assert snapshot["lastHealthCheckReason"] == "test-missing"
+    assert snapshot["lastHealthCheckActive"] is False
+    assert snapshot["lastHealthError"] == "missingPrewarmSession"
+    assert snapshot["active"] is True
+    assert snapshot["prewarmIdHash"]
     assert "prewarm-old" not in str(snapshot)
     assert "prewarm-new" not in str(snapshot)

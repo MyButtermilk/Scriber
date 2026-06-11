@@ -53,6 +53,8 @@ class MicrophonePrewarmManager:
         self._stream_started_at = 0.0
         self._last_status = ""
         self._last_health_restart_at = 0.0
+        self._last_health_check_reason = ""
+        self._last_health_failure_reason = ""
         self._stream_start_count = 0
         self._stream_close_count = 0
         self._health_restart_count = 0
@@ -92,6 +94,8 @@ class MicrophonePrewarmManager:
                     else None
                 ),
                 "lastStatus": self._last_status,
+                "lastHealthCheckReason": self._last_health_check_reason,
+                "lastHealthFailureReason": self._last_health_failure_reason,
                 "streamStartCount": self._stream_start_count,
                 "streamCloseCount": self._stream_close_count,
                 "healthRestartCount": self._health_restart_count,
@@ -305,12 +309,15 @@ class MicrophonePrewarmManager:
             self.stop(reason=f"{reason}:disabled")
             return False
 
+        missing_stream_restart = False
         with self._lock:
             if self._paused_for_active_capture or self._paused_for_device_refresh:
                 return False
             stream = self._stream
             active = bool(stream and getattr(stream, "active", False))
             now = time.monotonic()
+            self._last_health_check_reason = reason
+            self._last_health_failure_reason = ""
             callback_stale = (
                 max_callback_gap_seconds is not None
                 and (
@@ -329,6 +336,9 @@ class MicrophonePrewarmManager:
                 return True
             if stream:
                 stale_note = ", stale callbacks" if callback_stale else ""
+                self._last_health_failure_reason = (
+                    "staleCallbacks" if callback_stale else "inactiveStream"
+                )
                 callback_age = (
                     round(now - self._last_callback_at, 3)
                     if self._last_callback_at > 0
@@ -346,6 +356,21 @@ class MicrophonePrewarmManager:
                 self._health_restart_count += 1
                 self._record_transition_locked("watchdog_restart", reason)
                 self._close_locked(reason=f"{reason}:unhealthy")
+            else:
+                had_previous_stream = (
+                    self._stream_start_count > 0
+                    or self._stream_close_count > 0
+                    or bool(self._last_transition)
+                )
+                if had_previous_stream:
+                    missing_stream_restart = True
+                    self._last_status = "missingPrewarmStream"
+                    self._last_health_failure_reason = "missingPrewarmStream"
+                    self._health_restart_count += 1
+                    self._record_transition_locked("watchdog_restart", reason)
+
+        if missing_stream_restart:
+            logger.warning(f"Mic prewarm stream missing; restarting idle stream ({reason})")
 
         restarted = self.start_if_enabled()
         if restarted:
@@ -993,6 +1018,11 @@ class RustAudioPrewarmManager:
                 return False
             prewarm_id = self._prewarm_id
             active = bool(prewarm_id)
+            had_previous_session = (
+                self._stream_start_count > 0
+                or self._stream_close_count > 0
+                or bool(self._last_transition)
+            )
             self._last_health_check_at = time.monotonic()
             self._last_health_check_reason = reason
             self._last_health_check_active = active
@@ -1052,8 +1082,13 @@ class RustAudioPrewarmManager:
             )
             return self.start_if_enabled()
         with self._lock:
-            self._health_restart_count += 1
-            self._record_transition_locked("watchdog_restart", reason)
+            self._last_health_check_active = False
+            if had_previous_session:
+                self._last_health_error = "missingPrewarmSession"
+                self._health_restart_count += 1
+                self._record_transition_locked("watchdog_restart", reason)
+        if had_previous_session:
+            logger.warning(f"Rust mic prewarm session missing; restarting ({reason})")
         return self.start_if_enabled()
 
     def stop(self, *, reason: str = "stop") -> None:

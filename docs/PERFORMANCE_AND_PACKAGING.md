@@ -1239,7 +1239,12 @@ Implementation plan:
      idle prewarm session. `/api/runtime/audio-diagnostics` now includes
      redacted status payloads plus start/stop/health response times, last
      inactive reason, and restart counters, which makes brief microphone
-     privacy-indicator dropouts diagnosable in support bundles.
+     privacy-indicator dropouts diagnosable in support bundles. The watchdog
+     now also records and logs `missingPrewarmSession` when a previously active
+     Rust idle session disappears before a status query can be made, and the
+     Python prewarm fallback records the analogous `missingPrewarmStream`
+     condition. The initial startup activation is not counted as a health
+     restart, so these counters point to real post-start interruptions.
    - Implemented: the app-level Rust prewarm smoke now exercises that status
      path before capture adoption and after idle resume. Final hybrid readiness
      rejects Rust app-prewarm reports that lack active `audioPrewarmStatus`
