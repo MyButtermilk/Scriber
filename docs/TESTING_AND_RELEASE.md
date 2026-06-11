@@ -484,8 +484,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
 ```
 
 This validates `tauri-text-injection-matrix.json`, an aggregate artifact whose
-`scenarios` list contains real Tauri `injectText` reports. Required scenario
-IDs are `notepad`, `word`, `outlook`, `browser-input`,
+`scenarios` list contains real Tauri `injectText` reports. Build it from the
+individual reports with `scripts\build_tauri_text_injection_matrix.py`.
+Required scenario IDs are `notepad`, `word`, `outlook`, `browser-input`,
 `browser-contenteditable`, `electron`, `elevated-target`, `elevated-scriber`,
 `clipboard-text`, `clipboard-non-text`, `clipboard-locked`,
 `restore-user-copy`, and `restore-same-text-copy`. `remote-desktop` is optional

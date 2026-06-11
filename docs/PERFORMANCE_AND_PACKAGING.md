@@ -543,7 +543,9 @@ Implementation status on `codex/rust-expansion-plan`:
   browser contenteditable, Electron, elevated-target, elevated-Scriber,
   clipboard text/non-text/locked, restore user-copy, and same-text restore
   scenarios. Remote Desktop is optional when unavailable but is validated if
-  present.
+  present. `scripts/build_tauri_text_injection_matrix.py` builds the aggregate
+  from the individual scenario reports and validates it before returning
+  success.
 - Still open: actually running the installed target-app smoke matrix, packaging
   smoke evidence, and default-path decision based on installed evidence.
 
@@ -569,7 +571,8 @@ Tauri injection default blockers:
   user copy, Notepad, Word, Outlook, browser input, browser contenteditable,
   Electron, elevated target, elevated Scriber, and Remote Desktop if supported.
   For default-promotion evidence, aggregate those results into
-  `tauri-text-injection-matrix.json` and require
+  `tauri-text-injection-matrix.json` with
+  `scripts/build_tauri_text_injection_matrix.py` and require
   `-RequireTauriTextInjectionMatrix`.
 - Support bundles should surface the last Tauri injection fields:
   `textInjection.method`, `shellIpc.available`, `lastCommand`, `lastErrorCode`,

@@ -518,7 +518,7 @@ $requiredEvidence = @(
         name = "tauriTextInjectionMatrix"
         required = [bool]$RequireTauriTextInjectionMatrix
         external = $true
-        producer = "Aggregate real installed target-app matrix reports from scripts\smoke_text_injection_target.py --method tauri and manual target-app runs"
+        producer = "scripts\build_tauri_text_injection_matrix.py over real installed target-app matrix reports from scripts\smoke_text_injection_target.py --method tauri and manual target-app runs"
         report = $TauriTextInjectionMatrixReport
         notes = "Required before changing text-injection defaults. The matrix must cover Notepad, Word, Outlook, browser input, browser contenteditable, Electron, elevated-target, elevated-Scriber, clipboard text/non-text/locked, restore user-copy, and same-text restore scenarios; Remote Desktop is optional when unavailable."
     },
@@ -648,7 +648,7 @@ $plan = [pscustomobject]@{
         },
         [pscustomobject]@{
             name = "tauriTextInjectionMatrix"
-            command = $(if (Test-Path -LiteralPath $TauriTextInjectionMatrixReport -PathType Leaf) { "reuse $TauriTextInjectionMatrixReport" } elseif ($RequireTauriTextInjectionMatrix) { "required external report: aggregate installed target-app matrix evidence into tauri-text-injection-matrix.json" } else { "not requested" })
+            command = $(if (Test-Path -LiteralPath $TauriTextInjectionMatrixReport -PathType Leaf) { "reuse $TauriTextInjectionMatrixReport" } elseif ($RequireTauriTextInjectionMatrix) { "required external report: produce with scripts\build_tauri_text_injection_matrix.py over installed target-app matrix evidence" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "authenticodeValidation"

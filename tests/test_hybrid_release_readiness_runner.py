@@ -178,6 +178,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert injection_matrix_evidence["required"] is False
     assert injection_matrix_evidence["external"] is True
     assert injection_matrix_evidence["report"].endswith("tauri-text-injection-matrix.json")
+    assert "build_tauri_text_injection_matrix.py" in injection_matrix_evidence["producer"]
     assert "target-app matrix" in injection_matrix_evidence["producer"]
     assert "same-text restore" in injection_matrix_evidence["notes"]
     publication_evidence = payload["requiredEvidence"][11]
@@ -473,10 +474,12 @@ def test_hybrid_release_readiness_runner_plans_required_tauri_text_injection_mat
     assert matrix_evidence["required"] is True
     assert matrix_evidence["external"] is True
     assert matrix_evidence["report"].endswith("tauri-text-injection-matrix.json")
+    assert "build_tauri_text_injection_matrix.py" in matrix_evidence["producer"]
     assert "manual target-app runs" in matrix_evidence["producer"]
     assert "Notepad, Word, Outlook" in matrix_evidence["notes"]
     matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "tauriTextInjectionMatrix")
     assert "required external report" in matrix_command["command"]
+    assert "build_tauri_text_injection_matrix.py" in matrix_command["command"]
     assert "target-app matrix evidence" in matrix_command["command"]
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
     assert "--tauri-text-injection-matrix-report" in readiness_command["command"]
