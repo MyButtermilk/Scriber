@@ -165,7 +165,8 @@ Rust audio:
   recording duration. The aggregate Rust promotion gate also requires
   installed live-recording Rust-audio sample evidence, so installed reports must
   prove `rust-prototype` / `rust-frame-pipe` active capture with a closed
-  fallback circuit instead of only proving generic live-mic stability.
+  fallback circuit and `micAlwaysOn=true` instead of only proving generic
+  on-demand live-mic stability.
   The recording hot-path benchmark now has strict provider/Rust promotion
   flags: `--require-provider-transcript` requires a final STT provider segment,
   and `--require-rust-audio-engine` verifies active `rust-prototype`

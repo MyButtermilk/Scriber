@@ -233,6 +233,7 @@ if ($RequireRustAudioPromotionReadiness) {
     $RequireRustAudioAppPrewarmSmoke = $true
     $RequireInstalledLiveRecordingSmoke = $true
     $RequireInstalledLiveRecordingRustAudio = $true
+    $InstalledLiveRecordingMicAlwaysOn = $true
     $RequireRecordingHotPathComparison = $true
     $RequireRustEndpointInventory = $true
     $RequireDeviceRefreshEvidence = $true
@@ -624,7 +625,7 @@ $requiredEvidence = @(
         name = "installedLiveRecordingSmoke"
         required = $effectiveRequireInstalledLiveRecordingSmoke
         external = [bool](-not $RunInstalledLiveRecordingSmoke)
-        producer = $(if ($UseExistingInstalledLiveRecordingSmokeReport) { "existing report" } elseif ($RunInstalledLiveRecordingSmoke) { "scripts\smoke_windows_installer.ps1" } elseif ($RequireInstalledLiveRecordingRustAudio) { "scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke -InstallerLiveRecordingAudioEngine rust-prototype -InstallerLiveRecordingRustAudioCaptureMode wasapi, scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi, or scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi over an installed app" } elseif ($effectiveRequireInstalledLiveRecordingSmoke) { "required external report" } else { "not requested" })
+        producer = $(if ($UseExistingInstalledLiveRecordingSmokeReport) { "existing report" } elseif ($RunInstalledLiveRecordingSmoke) { "scripts\smoke_windows_installer.ps1" } elseif ($RequireInstalledLiveRecordingRustAudio) { "scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke -InstallerLiveRecordingAudioEngine rust-prototype -InstallerLiveRecordingRustAudioCaptureMode wasapi -InstallerLiveRecordingMicAlwaysOn, scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi -LiveRecordingMicAlwaysOn, or scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi -LiveRecordingMicAlwaysOn over an installed app" } elseif ($effectiveRequireInstalledLiveRecordingSmoke) { "required external report" } else { "not requested" })
         report = $InstalledLiveRecordingSmokeReport
         minDurationSec = $MinInstalledLiveRecordingDurationSec
         durationSec = $effectiveInstalledLiveRecordingDurationSec
@@ -783,7 +784,7 @@ $plan = [pscustomobject]@{
         },
         [pscustomobject]@{
             name = "installedLiveRecordingSmoke"
-            command = $(if ($UseExistingInstalledLiveRecordingSmokeReport) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RunInstalledLiveRecordingSmoke) { "powershell " + (Convert-ToDisplayCommand -CommandArgs $installedLiveRecordingArgs) } elseif (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RequireInstalledLiveRecordingRustAudio) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke -InstallerLiveRecordingAudioEngine rust-prototype -InstallerLiveRecordingRustAudioCaptureMode wasapi or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi" } elseif ($RequireInstalledLiveRecordingSmoke -or $MinInstalledLiveRecordingDurationSec -gt 0) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec" } else { "not requested" })
+            command = $(if ($UseExistingInstalledLiveRecordingSmokeReport) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RunInstalledLiveRecordingSmoke) { "powershell " + (Convert-ToDisplayCommand -CommandArgs $installedLiveRecordingArgs) } elseif (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RequireInstalledLiveRecordingRustAudio) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke -InstallerLiveRecordingAudioEngine rust-prototype -InstallerLiveRecordingRustAudioCaptureMode wasapi -InstallerLiveRecordingMicAlwaysOn or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi -LiveRecordingMicAlwaysOn" } elseif ($RequireInstalledLiveRecordingSmoke -or $MinInstalledLiveRecordingDurationSec -gt 0) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "tauriTextInjectionSmoke"

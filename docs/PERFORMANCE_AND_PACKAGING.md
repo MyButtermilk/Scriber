@@ -1077,7 +1077,12 @@ Implementation plan:
      `-RequireInstalledLiveRecordingRustAudio`, which requires every stability
      sample to include compact audio diagnostics proving `rust-prototype`
      `rust-frame-pipe` capture, active callbacks, closed fallback circuit, and
-     clean frame-pipe counters. The validator now also requires the Rust
+     clean frame-pipe counters. The aggregate Rust-promotion runner now also
+     enables `-InstalledLiveRecordingMicAlwaysOn`, and the validator requires
+     `liveRecording.micAlwaysOn=true` plus
+     `audioDiagnostics.microphone.micAlwaysOn=true` in every stability sample.
+     Installed Rust promotion evidence therefore proves the Always-On-Mic path,
+     not only an on-demand live recording. The validator now also requires the Rust
      callback, frame-pipe, and audio-frame counters to increase across
      stability samples, so a stale diagnostics snapshot cannot satisfy the
      long-recording gate. Provider-backed transcript quality and latency still
@@ -1085,9 +1090,10 @@ Implementation plan:
    - Implemented: installed live-recording smoke runners can now request
      `SCRIBER_AUDIO_ENGINE=rust-prototype` plus the explicit Rust sidecar
      capture mode via `-LiveRecordingAudioEngine rust-prototype
-     -LiveRecordingRustAudioCaptureMode wasapi` on the desktop/installer smoke
+     -LiveRecordingRustAudioCaptureMode wasapi -LiveRecordingMicAlwaysOn` on the desktop/installer smoke
      and `-InstallerLiveRecordingAudioEngine rust-prototype
-     -InstallerLiveRecordingRustAudioCaptureMode wasapi` on the build wrapper.
+     -InstallerLiveRecordingRustAudioCaptureMode wasapi
+     -InstallerLiveRecordingMicAlwaysOn` on the build wrapper.
      This makes the installed Rust-audio report producer explicit instead of
      relying on manual environment setup.
    - Implemented: the hybrid readiness runner can now produce the installed

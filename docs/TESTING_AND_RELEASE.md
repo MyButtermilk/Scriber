@@ -537,7 +537,11 @@ promotion evidence; that requires every stability sample to include compact
 audio diagnostics proving `audioEngine=rust-prototype`,
 `activeCapture.frameSource=rust-frame-pipe`, active callbacks, no frame-pipe
 sequence/protocol/prebuffer-order errors, and
-`rustAudioFallbackCircuit.open=false`. For default-device release evidence, the
+`rustAudioFallbackCircuit.open=false`. Rust-audio promotion evidence also
+requires `liveRecording.micAlwaysOn=true` and
+`audioDiagnostics.microphone.micAlwaysOn=true` in every stability sample, so
+the installed report proves the Always-On-Mic path was active instead of only
+proving an on-demand live recording. For default-device release evidence, the
 compact diagnostics must also show
 `activeCapture.sourceEndpointSelectionMode=default` and
 `activeCapture.sourceEndpointSelectionUsedDefault=true`; this proves the
@@ -551,9 +555,10 @@ installed live-recording artifact. It complements the provider-backed
 Python/Rust hot-path comparison; it does not replace transcript-quality
 evidence. To produce installed Rust-audio evidence, run the installed smoke with
 `-LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode
-wasapi`; the build wrapper exposes the same path as
+wasapi -LiveRecordingMicAlwaysOn`; the build wrapper exposes the same path as
 `-InstallerLiveRecordingAudioEngine rust-prototype
--InstallerLiveRecordingRustAudioCaptureMode wasapi`. The release-readiness
+-InstallerLiveRecordingRustAudioCaptureMode wasapi
+-InstallerLiveRecordingMicAlwaysOn`. The release-readiness
 runner can now run the same installed smoke directly with
 `-RunInstalledLiveRecordingSmoke -InstalledLiveRecordingInstallerPath <setup.exe>
 -RequireInstalledLiveRecordingRustAudio`.

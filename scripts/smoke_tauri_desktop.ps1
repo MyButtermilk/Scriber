@@ -392,6 +392,17 @@ function Convert-AudioDiagnosticsSummary {
         } else {
             $null
         }
+        microphone = if ($microphone) {
+            [pscustomobject]@{
+                micAlwaysOn = [bool]$microphone.micAlwaysOn
+                idlePrewarmActive = [bool]$microphone.idlePrewarmActive
+                prebufferMs = $microphone.prebufferMs
+                prewarmEngine = if ($microphone.prewarm) { [string]$microphone.prewarm.engine } else { "" }
+                prewarmActive = if ($microphone.prewarm) { [bool]$microphone.prewarm.active } else { $false }
+            }
+        } else {
+            $null
+        }
     }
 }
 
@@ -590,7 +601,8 @@ function Test-LiveRecordingStability {
         [double]$MaxCpuPercent = 0,
         [int]$StartTimeoutSec = 60,
         [int]$StopTimeoutSec = 60,
-        [bool]$TextInjectionDisabled = $false
+        [bool]$TextInjectionDisabled = $false,
+        [bool]$MicAlwaysOn = $false
     )
 
     if ($DurationSec -le 0) {
@@ -647,6 +659,7 @@ function Test-LiveRecordingStability {
             stoppedListening = [bool]$stoppedState.listening
             nonRecordingSampleCount = $nonRecordingSamples.Count
             textInjectionDisabled = $TextInjectionDisabled
+            micAlwaysOn = $MicAlwaysOn
             stability = $stability
         }
     } catch {
@@ -2221,7 +2234,8 @@ try {
         -MaxCpuPercent $MaxLiveCpuPercent `
         -StartTimeoutSec $LiveRecordingStartTimeoutSec `
         -StopTimeoutSec $LiveRecordingStopTimeoutSec `
-        -TextInjectionDisabled ([bool]$DisableLiveTextInjection)
+        -TextInjectionDisabled ([bool]$DisableLiveTextInjection) `
+        -MicAlwaysOn ([bool]$LiveRecordingMicAlwaysOn)
     $portConflictResult = $null
     if ($portConflict) {
         $portConflictResult = [pscustomobject]$portConflict
@@ -2275,6 +2289,7 @@ try {
             durationSec = $LiveRecordingDurationSec
             probeIntervalSec = [Math]::Max(1, $LiveRecordingProbeIntervalSec)
             textInjectionDisabled = [bool]$DisableLiveTextInjection
+            micAlwaysOn = [bool]$LiveRecordingMicAlwaysOn
             error = $failureMessage
         }
     }

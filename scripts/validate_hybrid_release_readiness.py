@@ -1094,6 +1094,10 @@ def validate_installed_live_recording_smoke_report(
         failures.append("installed live recording smoke stoppedListening must be false")
     if numeric_field(live_recording, "nonRecordingSampleCount") != 0:
         failures.append("installed live recording smoke nonRecordingSampleCount must be 0")
+    if require_rust_audio and live_recording.get("micAlwaysOn") is not True:
+        failures.append(
+            "installed live recording smoke liveRecording.micAlwaysOn must be true for Rust audio promotion"
+        )
 
     if stability.get("verified") is not True:
         failures.append("installed live recording smoke stability.verified must be true")
@@ -1232,6 +1236,15 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
         feature_flags = diagnostics.get("featureFlags")
         if not isinstance(feature_flags, dict):
             failures.append(f"installed live recording smoke sample {index} audioDiagnostics.featureFlags must be an object")
+            break
+        microphone = diagnostics.get("microphone")
+        if not isinstance(microphone, dict):
+            failures.append(f"installed live recording smoke sample {index} audioDiagnostics.microphone must be an object")
+            break
+        if microphone.get("micAlwaysOn") is not True:
+            failures.append(
+                f"installed live recording smoke sample {index} audioDiagnostics.microphone.micAlwaysOn must be true"
+            )
             break
         if feature_flags.get("audioEngine") != RUST_AUDIO_ENGINE:
             failures.append(
