@@ -514,12 +514,36 @@ def rust_audio_requirement(
     rust_available = feature_flags.get("rustAudioAvailable") is True
 
     active_captures: list[dict[str, Any]] = []
+    fallback_circuits: list[dict[str, Any]] = []
     matching_samples = 0
+    report_circuit = ((audio_diagnostics or {}).get("microphone") or {}).get(
+        "rustAudioFallbackCircuit"
+    )
+    if isinstance(report_circuit, dict):
+        fallback_circuits.append(
+            {
+                "source": "report",
+                "open": report_circuit.get("open"),
+                "reason": report_circuit.get("reason"),
+                "remainingSeconds": report_circuit.get("remainingSeconds"),
+            }
+        )
     for sample in samples:
         during = sample.get("audioDiagnosticsDuringRecording")
         if not isinstance(during, dict):
             continue
-        active = ((during.get("microphone") or {}).get("activeCapture") or {})
+        microphone = during.get("microphone") or {}
+        during_circuit = microphone.get("rustAudioFallbackCircuit")
+        if isinstance(during_circuit, dict):
+            fallback_circuits.append(
+                {
+                    "source": f"sample:{sample.get('iteration')}",
+                    "open": during_circuit.get("open"),
+                    "reason": during_circuit.get("reason"),
+                    "remainingSeconds": during_circuit.get("remainingSeconds"),
+                }
+            )
+        active = microphone.get("activeCapture") or {}
         if not isinstance(active, dict) or not active:
             continue
         active_captures.append(
@@ -530,6 +554,9 @@ def rust_audio_requirement(
                 "nativeEndpointIdHash": active.get("nativeEndpointIdHash"),
                 "requestedPrewarmIdHash": active.get("requestedPrewarmIdHash"),
                 "adoptedPrewarm": active.get("adoptedPrewarm"),
+                "engineFallbackReason": active.get("engineFallbackReason"),
+                "rustAudioFallbackCircuitOpen": active.get("rustAudioFallbackCircuitOpen"),
+                "rustAudioFallbackCircuitReason": active.get("rustAudioFallbackCircuitReason"),
             }
         )
         if (
@@ -539,7 +566,10 @@ def rust_audio_requirement(
             matching_samples += 1
 
     status = "measured"
-    if matching_samples <= 0:
+    fallback_circuit_open = any(circuit.get("open") is True for circuit in fallback_circuits)
+    if fallback_circuit_open:
+        status = "fallback_circuit_open"
+    elif matching_samples <= 0:
         if not rust_requested:
             status = "not_requested"
         elif not rust_available or effective != RUST_AUDIO_ACTIVE_ENGINE:
@@ -557,6 +587,8 @@ def rust_audio_requirement(
         "matchingSamples": matching_samples,
         "activeCaptureSamples": len(active_captures),
         "activeCaptures": active_captures[:5],
+        "fallbackCircuitOpen": fallback_circuit_open,
+        "fallbackCircuits": fallback_circuits[:5],
     }
 
 

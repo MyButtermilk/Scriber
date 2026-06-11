@@ -8,7 +8,13 @@ from pathlib import Path
 from scripts.validate_recording_hot_path_comparison import build_comparison
 
 
-def recording_report(*, engine: str, provider: bool = True, rust_capture: bool = False) -> dict:
+def recording_report(
+    *,
+    engine: str,
+    provider: bool = True,
+    rust_capture: bool = False,
+    fallback_circuit_open: bool = False,
+) -> dict:
     requirements = {
         "hotkey_to_recording_state": {"status": "measured"},
         "hotkey_to_first_audio_frame": {"status": "measured"},
@@ -41,6 +47,12 @@ def recording_report(*, engine: str, provider: bool = True, rust_capture: bool =
         },
         "audioDiagnosticsDuringRecording": {
             "microphone": {
+                "rustAudioFallbackCircuit": {
+                    "available": True,
+                    "open": fallback_circuit_open,
+                    "reason": "pipeClosed" if fallback_circuit_open else "",
+                    "remainingSeconds": 12.5 if fallback_circuit_open else None,
+                },
                 "activeCapture": {
                     "engine": "rust-prototype" if rust_capture else "python",
                     "frameSource": "rust-frame-pipe" if rust_capture else "sounddevice",
@@ -63,6 +75,14 @@ def recording_report(*, engine: str, provider: bool = True, rust_capture: bool =
             "provider": {
                 "configured": "azure_mai",
                 "active": "azure_mai",
+            },
+            "microphone": {
+                "rustAudioFallbackCircuit": {
+                    "available": True,
+                    "open": fallback_circuit_open,
+                    "reason": "pipeClosed" if fallback_circuit_open else "",
+                    "remainingSeconds": 12.5 if fallback_circuit_open else None,
+                },
             },
         },
         "summary": {
@@ -106,6 +126,23 @@ def test_recording_hot_path_comparison_rejects_rust_fallback_to_python_capture()
 
     assert result["ok"] is False
     assert "Rust report must prove active rust-prototype rust-frame-pipe capture" in result["failures"]
+
+
+def test_recording_hot_path_comparison_rejects_open_rust_fallback_circuit() -> None:
+    result = build_comparison(
+        recording_report(engine="python"),
+        recording_report(
+            engine="rust-prototype",
+            rust_capture=True,
+            fallback_circuit_open=True,
+        ),
+    )
+
+    assert result["ok"] is False
+    assert "Rust report must not have an open Rust audio fallback circuit" in result["failures"]
+    check = next(item for item in result["checks"] if item["name"] == "rustFallbackCircuitClosed")
+    assert check["ok"] is False
+    assert check["details"]["open"] is True
 
 
 def test_recording_hot_path_comparison_cli_writes_artifact(tmp_path: Path) -> None:

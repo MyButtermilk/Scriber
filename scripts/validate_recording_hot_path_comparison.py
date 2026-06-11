@@ -98,6 +98,27 @@ def active_capture_samples(report: dict[str, Any]) -> list[dict[str, Any]]:
     return captures
 
 
+def rust_fallback_circuits(report: dict[str, Any]) -> list[dict[str, Any]]:
+    circuits: list[dict[str, Any]] = []
+    report_circuit = ((report.get("audioDiagnostics") or {}).get("microphone") or {}).get(
+        "rustAudioFallbackCircuit"
+    )
+    if isinstance(report_circuit, dict):
+        circuits.append({"source": "report", **report_circuit})
+    for sample in report_samples(report):
+        during = sample.get("audioDiagnosticsDuringRecording")
+        if not isinstance(during, dict):
+            continue
+        circuit = ((during.get("microphone") or {}).get("rustAudioFallbackCircuit") or {})
+        if isinstance(circuit, dict) and circuit:
+            circuits.append({"source": f"sample:{sample.get('iteration')}", **circuit})
+    return circuits
+
+
+def has_open_rust_fallback_circuit(report: dict[str, Any]) -> bool:
+    return any(circuit.get("open") is True for circuit in rust_fallback_circuits(report))
+
+
 def has_rust_frame_pipe(report: dict[str, Any]) -> bool:
     return any(
         capture.get("engine") == RUST_AUDIO_ACTIVE_ENGINE
@@ -201,6 +222,16 @@ def build_comparison(
                 "activeCaptureSamples": len(active_capture_samples(rust_report)),
             },
             "Rust report must prove active rust-prototype rust-frame-pipe capture",
+        )
+        circuits = rust_fallback_circuits(rust_report)
+        add_check(
+            "rustFallbackCircuitClosed",
+            not has_open_rust_fallback_circuit(rust_report),
+            {
+                "open": has_open_rust_fallback_circuit(rust_report),
+                "circuits": circuits[:5],
+            },
+            "Rust report must not have an open Rust audio fallback circuit",
         )
 
     if require_python_engine:

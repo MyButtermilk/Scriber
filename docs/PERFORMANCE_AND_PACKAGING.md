@@ -1026,13 +1026,18 @@ Implementation plan:
      baseline runner exposes these as
      `-RequireRecordingHotPathProviderTranscript` and
      `-RequireRecordingHotPathRustAudio`.
+     The Rust requirement now also fails when
+     `microphone.rustAudioFallbackCircuit.open` is true in the report-level or
+     during-recording diagnostics, so a run that fell back to Python during the
+     Rust cooldown cannot be used as promotion evidence.
    - Implemented: `scripts/validate_recording_hot_path_comparison.py` builds a
      machine-checkable Python-vs-Rust provider-backed comparison artifact from
      two recording hot-path reports. It rejects validate-only evidence by
      default, requires provider transcript evidence in both reports, requires
-     active `rust-prototype`/`rust-frame-pipe` capture in the Rust report, and
-     records segment deltas such as hotkey-to-first-frame, provider-finalize,
-     and stop-to-text-injection. The final readiness validator and
+     active `rust-prototype`/`rust-frame-pipe` capture in the Rust report,
+     rejects an open Rust fallback circuit in that report, and records segment
+     deltas such as hotkey-to-first-frame, provider-finalize, and
+     stop-to-text-injection. The final readiness validator and
      `scripts/run_hybrid_release_readiness.ps1` can require this artifact with
      `--require-recording-hot-path-comparison` /
      `-RequireRecordingHotPathComparison`.

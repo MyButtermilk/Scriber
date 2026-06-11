@@ -150,13 +150,16 @@ Rust audio:
   The recording hot-path benchmark now has strict provider/Rust promotion
   flags: `--require-provider-transcript` requires a final STT provider segment,
   and `--require-rust-audio-engine` verifies active `rust-prototype`
-  `rust-frame-pipe` capture diagnostics during recording. The hybrid baseline
-  runner exposes those checks as `-RequireRecordingHotPathProviderTranscript`
-  and `-RequireRecordingHotPathRustAudio`.
+  `rust-frame-pipe` capture diagnostics during recording. It also rejects open
+  Rust fallback-circuit diagnostics, so a cooldown fallback cannot pass as Rust
+  capture evidence. The hybrid baseline runner exposes those checks as
+  `-RequireRecordingHotPathProviderTranscript` and
+  `-RequireRecordingHotPathRustAudio`.
   `scripts/validate_recording_hot_path_comparison.py` now turns separate
   provider-backed Python and Rust hot-path reports into a required promotion
   artifact, and `run_hybrid_release_readiness.ps1` can gate it with
-  `-RequireRecordingHotPathComparison`.
+  `-RequireRecordingHotPathComparison`. The comparison validator also rejects
+  an open Rust fallback circuit in the Rust report.
   `scripts/run_recording_hot_path_comparison.ps1` now orchestrates the Python
   pass, Rust-prototype pass, and comparison artifact creation for real
   provider-backed A/B runs.

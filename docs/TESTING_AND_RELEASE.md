@@ -218,7 +218,9 @@ Use the recording hot-path benchmark when Rust audio evidence must include the
 actual provider path, not only sidecar frame delivery. The strict provider/Rust
 flags require a final STT provider transcript and verify that
 `/api/runtime/audio-diagnostics` reported an active `rust-prototype`
-`rust-frame-pipe` capture during recording:
+`rust-frame-pipe` capture during recording. The same gate rejects reports where
+`microphone.rustAudioFallbackCircuit.open` is true, because those runs prove a
+fallback cooldown rather than valid Rust capture evidence:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `

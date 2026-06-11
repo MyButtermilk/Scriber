@@ -413,6 +413,62 @@ def test_recording_hot_path_rust_audio_requirement_rejects_python_capture_fallba
     assert rust_requirement["matchingSamples"] == 0
 
 
+def test_recording_hot_path_rust_audio_requirement_rejects_open_fallback_circuit():
+    audio_diagnostics = {
+        "featureFlags": {
+            "requestedAudioEngine": "rust-prototype",
+            "audioEngine": "rust-prototype",
+            "rustAudioRequested": True,
+            "rustAudioAvailable": True,
+        },
+        "microphone": {
+            "rustAudioFallbackCircuit": {
+                "available": True,
+                "open": True,
+                "reason": "pipeClosed",
+                "remainingSeconds": 12.5,
+            }
+        },
+    }
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_first_paste_ms": 82.5,
+                },
+                "audioDiagnosticsDuringRecording": {
+                    "microphone": {
+                        "rustAudioFallbackCircuit": {
+                            "available": True,
+                            "open": True,
+                            "reason": "pipeClosed",
+                            "remainingSeconds": 12.5,
+                        },
+                        "activeCapture": {
+                            "engine": "rust-prototype",
+                            "frameSource": "rust-frame-pipe",
+                            "callbackCount": 9,
+                            "nativeEndpointIdHash": "redacted",
+                        },
+                    }
+                },
+            }
+        ],
+        require_rust_audio_engine=True,
+        audio_diagnostics=audio_diagnostics,
+    )
+
+    rust_requirement = summary["requirements"]["rust_audio_engine"]
+    assert summary["complete"] is False
+    assert rust_requirement["status"] == "fallback_circuit_open"
+    assert rust_requirement["matchingSamples"] == 1
+    assert rust_requirement["fallbackCircuitOpen"] is True
+    assert rust_requirement["fallbackCircuits"][0]["reason"] == "pipeClosed"
+
+
 def test_recording_hot_path_summary_reports_missing_injection_after_transcript():
     summary = build_summary(
         [
