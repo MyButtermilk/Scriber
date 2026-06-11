@@ -1117,7 +1117,9 @@ Implementation plan:
      The comparison validator also rejects unredacted source reports containing
      raw `SWD\MMDEVAPI\...` endpoint IDs, raw `\\.\pipe\scriber-*` pipe names,
      or non-redacted token fields, so sensitive hot-path evidence cannot become
-     promotion input.
+     promotion input. Final hybrid readiness requires that
+     `inputReportRedaction` check to be present and passing, so stale
+     comparison artifacts from before this gate fail Rust promotion.
      Provider-finalize and total stop-to-text values remain reported but are not
      part of the local-audio regression gate because they are dominated by
      network/STT provider latency.

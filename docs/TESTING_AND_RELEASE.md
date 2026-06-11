@@ -276,7 +276,10 @@ python scripts\validate_recording_hot_path_comparison.py `
 The comparison validator rejects unredacted input reports before producing
 promotion evidence. Raw `SWD\MMDEVAPI\...` endpoint IDs, raw
 `\\.\pipe\scriber-*` pipe names, and non-redacted token fields in either the
-Python or Rust hot-path report fail the comparison gate.
+Python or Rust hot-path report fail the comparison gate. Final hybrid
+readiness also requires the resulting comparison artifact to contain a passing
+`inputReportRedaction` check, so stale comparison artifacts created before this
+gate cannot be reused for Rust promotion.
 
 The final readiness runner can require that artifact:
 

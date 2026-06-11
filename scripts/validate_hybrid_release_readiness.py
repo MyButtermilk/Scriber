@@ -1627,6 +1627,7 @@ def validate_recording_hot_path_comparison_report(
 
     for check_name in (
         "physicalReports",
+        "inputReportRedaction",
         "sampleCount",
         "providerTranscript",
         "sameProvider",
