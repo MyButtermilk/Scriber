@@ -535,7 +535,10 @@ evidence. To produce installed Rust-audio evidence, run the installed smoke with
 `-LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode
 wasapi`; the build wrapper exposes the same path as
 `-InstallerLiveRecordingAudioEngine rust-prototype
--InstallerLiveRecordingRustAudioCaptureMode wasapi`.
+-InstallerLiveRecordingRustAudioCaptureMode wasapi`. The release-readiness
+runner can now run the same installed smoke directly with
+`-RunInstalledLiveRecordingSmoke -InstalledLiveRecordingInstallerPath <setup.exe>
+-RequireInstalledLiveRecordingRustAudio`.
 
 When evaluating whether Tauri/Rust text injection can become more than an
 opt-in path, require safe target-window evidence as well:

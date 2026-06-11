@@ -1090,6 +1090,10 @@ Implementation plan:
      -InstallerLiveRecordingRustAudioCaptureMode wasapi` on the build wrapper.
      This makes the installed Rust-audio report producer explicit instead of
      relying on manual environment setup.
+   - Implemented: the hybrid readiness runner can now produce the installed
+     live-recording artifact directly with `-RunInstalledLiveRecordingSmoke`
+     and `-InstalledLiveRecordingInstallerPath`, or reuse an existing artifact
+     with `-UseExistingInstalledLiveRecordingSmokeReport`.
    - Local evidence from 2026-06-10: a direct Windows WASAPI prewarm smoke
      passed with
      `python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 0.5 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-current.json`.

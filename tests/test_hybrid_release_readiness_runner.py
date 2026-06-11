@@ -170,7 +170,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert live_recording_evidence["external"] is True
     assert live_recording_evidence["report"].endswith("installed-live-recording-smoke.json")
     assert live_recording_evidence["requireRustAudio"] is False
-    assert live_recording_evidence["producer"].startswith("scripts\\build_windows.ps1 -RunInstallerLiveRecordingSmoke")
+    assert live_recording_evidence["producer"] == "not requested"
     assert "non-recording sample leakage" in live_recording_evidence["notes"]
     injection_evidence = payload["requiredEvidence"][9]
     assert injection_evidence["required"] is False
@@ -502,7 +502,7 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
     assert live_evidence["external"] is True
     assert live_evidence["report"].endswith("installed-live-recording-smoke.json")
     assert live_evidence["minDurationSec"] == 600
-    assert "smoke_windows_installer.ps1" in live_evidence["producer"]
+    assert live_evidence["producer"] == "required external report"
     assert "provider-backed transcription quality" in live_evidence["notes"]
     live_command = next(entry for entry in payload["commands"] if entry["name"] == "installedLiveRecordingSmoke")
     assert "required external report" in live_command["command"]
@@ -571,6 +571,54 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
     assert "--installed-live-recording-smoke-report" in readiness_command["command"]
     assert "--require-installed-live-recording-smoke" not in readiness_command["command"]
     assert "--require-installed-live-recording-rust-audio" in readiness_command["command"]
+
+
+def test_hybrid_release_readiness_runner_can_run_installed_live_recording_smoke(tmp_path: Path) -> None:
+    installer = tmp_path / "Scriber_0.1.0_x64-setup.exe"
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RunInstalledLiveRecordingSmoke",
+        "-InstalledLiveRecordingInstallerPath",
+        str(installer),
+        "-RequireInstalledLiveRecordingRustAudio",
+        "-InstalledLiveRecordingDurationSec",
+        "600",
+        "-InstalledLiveRecordingDisableTextInjection",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runInstalledLiveRecordingSmoke"] is True
+    assert payload["installedLiveRecordingInstallerPath"].endswith("Scriber_0.1.0_x64-setup.exe")
+    assert payload["installedLiveRecordingDurationSec"] == 600
+    assert payload["installedLiveRecordingAudioEngine"] == "rust-prototype"
+    assert payload["installedLiveRecordingRustAudioCaptureMode"] == "wasapi"
+
+    live_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke")
+    assert live_evidence["required"] is True
+    assert live_evidence["external"] is False
+    assert live_evidence["producer"] == "scripts\\smoke_windows_installer.ps1"
+    assert live_evidence["installerPath"].endswith("Scriber_0.1.0_x64-setup.exe")
+    assert live_evidence["audioEngine"] == "rust-prototype"
+    assert live_evidence["rustAudioCaptureMode"] == "wasapi"
+    assert live_evidence["disableTextInjection"] is True
+
+    live_command = next(entry for entry in payload["commands"] if entry["name"] == "installedLiveRecordingSmoke")
+    assert "powershell" in live_command["command"]
+    assert "smoke_windows_installer.ps1" in live_command["command"]
+    assert "-InstallerPath" in live_command["command"]
+    assert "-OutputPath" in live_command["command"]
+    assert "-LiveRecordingDurationSec 600" in live_command["command"]
+    assert "-LiveRecordingAudioEngine rust-prototype" in live_command["command"]
+    assert "-LiveRecordingRustAudioCaptureMode wasapi" in live_command["command"]
+    assert "-DisableLiveTextInjection" in live_command["command"]
 
 
 def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tmp_path: Path) -> None:

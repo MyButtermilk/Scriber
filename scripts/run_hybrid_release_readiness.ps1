@@ -42,8 +42,21 @@ param(
     [double]$MinRustAudioAppPrewarmPrewarmDurationSec = 0,
     [switch]$RustAudioAppPrewarmHonorFavoriteMic,
     [string]$InstalledLiveRecordingSmokeReport = "",
+    [string]$InstalledLiveRecordingInstallerPath = "",
+    [switch]$RunInstalledLiveRecordingSmoke,
+    [switch]$UseExistingInstalledLiveRecordingSmokeReport,
     [switch]$RequireInstalledLiveRecordingSmoke,
     [switch]$RequireInstalledLiveRecordingRustAudio,
+    [int]$InstalledLiveRecordingDurationSec = 0,
+    [int]$InstalledLiveRecordingProbeIntervalSec = 5,
+    [int]$InstalledLiveRecordingStartTimeoutSec = 60,
+    [int]$InstalledLiveRecordingStopTimeoutSec = 90,
+    [switch]$InstalledLiveRecordingDisableTextInjection,
+    [ValidateSet("", "python", "rust-prototype")]
+    [string]$InstalledLiveRecordingAudioEngine = "",
+    [ValidateSet("", "synthetic", "wasapi")]
+    [string]$InstalledLiveRecordingRustAudioCaptureMode = "",
+    [switch]$InstalledLiveRecordingMicAlwaysOn,
     [double]$MinInstalledLiveRecordingDurationSec = 0,
     [string]$TauriTextInjectionSmokeReport = "",
     [switch]$RequireTauriTextInjectionSmoke,
@@ -183,6 +196,9 @@ if (-not $InstalledLiveRecordingSmokeReport) {
 } else {
     $InstalledLiveRecordingSmokeReport = Convert-ToFullPath -Path $InstalledLiveRecordingSmokeReport -Root $RepoRoot
 }
+if ($InstalledLiveRecordingInstallerPath) {
+    $InstalledLiveRecordingInstallerPath = Convert-ToFullPath -Path $InstalledLiveRecordingInstallerPath -Root $RepoRoot
+}
 if (-not $TauriTextInjectionSmokeReport) {
     $TauriTextInjectionSmokeReport = Join-Path $HardwareInputDir "tauri-text-injection-smoke.json"
 } else {
@@ -242,6 +258,26 @@ if ($RequireRustAudioPromotionReadiness) {
 
 $effectiveRequireRustAudioSidecarSmoke = [bool]($RequireRustAudioSidecarSmoke -or $RustAudioSidecarPrewarmBeforeCapture)
 $effectiveRequireRustAudioAppPrewarmSmoke = [bool]($RequireRustAudioAppPrewarmSmoke -or ($MinRustAudioAppPrewarmDurationSec -gt 0) -or ($MinRustAudioAppPrewarmPrewarmDurationSec -gt 0))
+$effectiveRequireInstalledLiveRecordingSmoke = [bool]($RequireInstalledLiveRecordingSmoke -or $RequireInstalledLiveRecordingRustAudio -or ($MinInstalledLiveRecordingDurationSec -gt 0))
+if ($RequireInstalledLiveRecordingRustAudio -and -not $InstalledLiveRecordingAudioEngine) {
+    $InstalledLiveRecordingAudioEngine = "rust-prototype"
+}
+if ($RequireInstalledLiveRecordingRustAudio -and -not $InstalledLiveRecordingRustAudioCaptureMode) {
+    $InstalledLiveRecordingRustAudioCaptureMode = "wasapi"
+}
+if ($InstalledLiveRecordingRustAudioCaptureMode -and $InstalledLiveRecordingAudioEngine -ne "rust-prototype") {
+    throw "-InstalledLiveRecordingRustAudioCaptureMode requires -InstalledLiveRecordingAudioEngine rust-prototype."
+}
+$effectiveInstalledLiveRecordingDurationSec = $InstalledLiveRecordingDurationSec
+if ($effectiveInstalledLiveRecordingDurationSec -le 0) {
+    if ($MinInstalledLiveRecordingDurationSec -gt 0) {
+        $effectiveInstalledLiveRecordingDurationSec = [int][Math]::Ceiling($MinInstalledLiveRecordingDurationSec)
+    } elseif ($RequireInstalledLiveRecordingRustAudio) {
+        $effectiveInstalledLiveRecordingDurationSec = 600
+    } else {
+        $effectiveInstalledLiveRecordingDurationSec = 1800
+    }
+}
 
 $matrixArgs = @(
     "scripts\validate_microphone_hardware_matrix.py",
@@ -358,6 +394,39 @@ if ($RustAudioAppPrewarmHonorFavoriteMic) {
 }
 if ($RustAudioSidecarExe) {
     $rustAudioAppPrewarmArgs += @("--sidecar-exe", $RustAudioSidecarExe)
+}
+
+$installedLiveRecordingArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    (Join-Path $RepoRoot "scripts\smoke_windows_installer.ps1"),
+    "-OutputPath",
+    $InstalledLiveRecordingSmokeReport,
+    "-LiveRecordingDurationSec",
+    ([string]$effectiveInstalledLiveRecordingDurationSec),
+    "-LiveRecordingProbeIntervalSec",
+    ([string]$InstalledLiveRecordingProbeIntervalSec),
+    "-LiveRecordingStartTimeoutSec",
+    ([string]$InstalledLiveRecordingStartTimeoutSec),
+    "-LiveRecordingStopTimeoutSec",
+    ([string]$InstalledLiveRecordingStopTimeoutSec)
+)
+if ($InstalledLiveRecordingInstallerPath) {
+    $installedLiveRecordingArgs += @("-InstallerPath", $InstalledLiveRecordingInstallerPath)
+}
+if ($InstalledLiveRecordingDisableTextInjection) {
+    $installedLiveRecordingArgs += "-DisableLiveTextInjection"
+}
+if ($InstalledLiveRecordingAudioEngine) {
+    $installedLiveRecordingArgs += @("-LiveRecordingAudioEngine", $InstalledLiveRecordingAudioEngine)
+}
+if ($InstalledLiveRecordingRustAudioCaptureMode) {
+    $installedLiveRecordingArgs += @("-LiveRecordingRustAudioCaptureMode", $InstalledLiveRecordingRustAudioCaptureMode)
+}
+if ($InstalledLiveRecordingMicAlwaysOn) {
+    $installedLiveRecordingArgs += "-LiveRecordingMicAlwaysOn"
 }
 
 $readinessArgs = @(
@@ -553,12 +622,19 @@ $requiredEvidence = @(
     },
     [pscustomobject]@{
         name = "installedLiveRecordingSmoke"
-        required = [bool]($RequireInstalledLiveRecordingSmoke -or $RequireInstalledLiveRecordingRustAudio -or $MinInstalledLiveRecordingDurationSec -gt 0)
-        external = $true
-        producer = $(if ($RequireInstalledLiveRecordingRustAudio) { "scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke -InstallerLiveRecordingAudioEngine rust-prototype -InstallerLiveRecordingRustAudioCaptureMode wasapi, scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi, or scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi over an installed app" } else { "scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke, scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec, or scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec over an installed app" })
+        required = $effectiveRequireInstalledLiveRecordingSmoke
+        external = [bool](-not $RunInstalledLiveRecordingSmoke)
+        producer = $(if ($UseExistingInstalledLiveRecordingSmokeReport) { "existing report" } elseif ($RunInstalledLiveRecordingSmoke) { "scripts\smoke_windows_installer.ps1" } elseif ($RequireInstalledLiveRecordingRustAudio) { "scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke -InstallerLiveRecordingAudioEngine rust-prototype -InstallerLiveRecordingRustAudioCaptureMode wasapi, scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi, or scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi over an installed app" } elseif ($effectiveRequireInstalledLiveRecordingSmoke) { "required external report" } else { "not requested" })
         report = $InstalledLiveRecordingSmokeReport
         minDurationSec = $MinInstalledLiveRecordingDurationSec
+        durationSec = $effectiveInstalledLiveRecordingDurationSec
+        probeIntervalSec = $InstalledLiveRecordingProbeIntervalSec
+        installerPath = $InstalledLiveRecordingInstallerPath
+        audioEngine = $InstalledLiveRecordingAudioEngine
+        rustAudioCaptureMode = $InstalledLiveRecordingRustAudioCaptureMode
         requireRustAudio = [bool]$RequireInstalledLiveRecordingRustAudio
+        micAlwaysOn = [bool]$InstalledLiveRecordingMicAlwaysOn
+        disableTextInjection = [bool]$InstalledLiveRecordingDisableTextInjection
         notes = "Required for Rust audio promotion before changing the default live-mic path. Validates installed app live recording start/stop state, non-recording sample leakage, stability samples, cleanup, and, when requireRustAudio=true, sampled rust-prototype/rust-frame-pipe capture with a closed fallback circuit; provider-backed transcription quality remains covered by recordingHotPathPythonRustComparison."
     },
     [pscustomobject]@{
@@ -635,6 +711,12 @@ $plan = [pscustomobject]@{
     minRustAudioAppPrewarmPrewarmDurationSec = $MinRustAudioAppPrewarmPrewarmDurationSec
     rustAudioAppPrewarmHonorFavoriteMic = [bool]$RustAudioAppPrewarmHonorFavoriteMic
     installedLiveRecordingSmokeReport = $InstalledLiveRecordingSmokeReport
+    installedLiveRecordingInstallerPath = $InstalledLiveRecordingInstallerPath
+    installedLiveRecordingDurationSec = $effectiveInstalledLiveRecordingDurationSec
+    installedLiveRecordingProbeIntervalSec = $InstalledLiveRecordingProbeIntervalSec
+    installedLiveRecordingAudioEngine = $InstalledLiveRecordingAudioEngine
+    installedLiveRecordingRustAudioCaptureMode = $InstalledLiveRecordingRustAudioCaptureMode
+    installedLiveRecordingMicAlwaysOn = [bool]$InstalledLiveRecordingMicAlwaysOn
     minInstalledLiveRecordingDurationSec = $MinInstalledLiveRecordingDurationSec
     tauriTextInjectionSmokeReport = $TauriTextInjectionSmokeReport
     tauriTextInjectionMatrixReport = $TauriTextInjectionMatrixReport
@@ -648,9 +730,11 @@ $plan = [pscustomobject]@{
     useExistingRustAudioSidecarReport = [bool]$UseExistingRustAudioSidecarReport
     useExistingRustAudioPrewarmSidecarReport = [bool]$UseExistingRustAudioPrewarmSidecarReport
     useExistingRustAudioAppPrewarmReport = [bool]$UseExistingRustAudioAppPrewarmReport
+    useExistingInstalledLiveRecordingSmokeReport = [bool]$UseExistingInstalledLiveRecordingSmokeReport
     runRustAudioSidecarSmoke = [bool]$RunRustAudioSidecarSmoke
     runRustAudioPrewarmSidecarSmoke = [bool]$RunRustAudioPrewarmSidecarSmoke
     runRustAudioAppPrewarmSmoke = [bool]$RunRustAudioAppPrewarmSmoke
+    runInstalledLiveRecordingSmoke = [bool]$RunInstalledLiveRecordingSmoke
     requireRustAudioSidecarSmoke = [bool]$RequireRustAudioSidecarSmoke
     requireRustAudioPrewarmSidecarSmoke = [bool]$RequireRustAudioPrewarmSidecarSmoke
     requireRustAudioAppPrewarmSmoke = [bool]$RequireRustAudioAppPrewarmSmoke
@@ -699,7 +783,7 @@ $plan = [pscustomobject]@{
         },
         [pscustomobject]@{
             name = "installedLiveRecordingSmoke"
-            command = $(if (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RequireInstalledLiveRecordingRustAudio) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke -InstallerLiveRecordingAudioEngine rust-prototype -InstallerLiveRecordingRustAudioCaptureMode wasapi or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi" } elseif ($RequireInstalledLiveRecordingSmoke -or $MinInstalledLiveRecordingDurationSec -gt 0) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec" } else { "not requested" })
+            command = $(if ($UseExistingInstalledLiveRecordingSmokeReport) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RunInstalledLiveRecordingSmoke) { "powershell " + (Convert-ToDisplayCommand -CommandArgs $installedLiveRecordingArgs) } elseif (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RequireInstalledLiveRecordingRustAudio) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke -InstallerLiveRecordingAudioEngine rust-prototype -InstallerLiveRecordingRustAudioCaptureMode wasapi or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi" } elseif ($RequireInstalledLiveRecordingSmoke -or $MinInstalledLiveRecordingDurationSec -gt 0) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "tauriTextInjectionSmoke"
@@ -790,6 +874,22 @@ try {
         }
     } elseif ($effectiveRequireRustAudioAppPrewarmSmoke) {
         throw "Rust audio app prewarm evidence is required; pass -RunRustAudioAppPrewarmSmoke or -UseExistingRustAudioAppPrewarmReport."
+    }
+
+    if ($UseExistingInstalledLiveRecordingSmokeReport) {
+        Assert-ExistingFile -Path $InstalledLiveRecordingSmokeReport -Label "Installed live recording smoke report"
+    } elseif ($RunInstalledLiveRecordingSmoke) {
+        if (-not $InstalledLiveRecordingInstallerPath) {
+            throw "-RunInstalledLiveRecordingSmoke requires -InstalledLiveRecordingInstallerPath."
+        }
+        Assert-ExistingFile -Path $InstalledLiveRecordingInstallerPath -Label "Installed live recording installer"
+        Invoke-Checked -Label "Installed live recording smoke" -Command {
+            powershell @installedLiveRecordingArgs
+        }
+    } elseif (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf) {
+        Assert-ExistingFile -Path $InstalledLiveRecordingSmokeReport -Label "Installed live recording smoke report"
+    } elseif ($effectiveRequireInstalledLiveRecordingSmoke) {
+        throw "Installed live recording evidence is required; pass -RunInstalledLiveRecordingSmoke or -UseExistingInstalledLiveRecordingSmokeReport."
     }
 
     if ($UseExistingAuthenticodeReport) {
