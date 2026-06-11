@@ -1044,9 +1044,12 @@ Implementation plan:
      `-RequireRecordingHotPathComparison`.
      The final readiness validator now requires the comparison artifact's
      `sameProvider` and `rustFallbackCircuitClosed` checks alongside
-     `rustAudioEngine`, and it requires at least three samples per engine, so
-     this gate cannot be bypassed by passing a stale or one-shot comparison
-     schema.
+     `rustAudioEngine`, and it requires at least three samples per engine plus
+     no clear P95 regression in local audio-owned segments. This gate cannot be
+     bypassed by passing a stale, one-shot, or clearly slower comparison schema.
+     Provider-finalize and total stop-to-text values remain reported but are not
+     part of the local-audio regression gate because they are dominated by
+     network/STT provider latency.
    - Implemented: `scripts/run_recording_hot_path_comparison.ps1` orchestrates
      the full provider-backed A/B evidence path. It runs
      `measure_hybrid_baseline.ps1` once with `SCRIBER_AUDIO_ENGINE=python`, once
@@ -1055,6 +1058,8 @@ Implementation plan:
      `recording-hot-path-python-rust-comparison.json`.
      The runner defaults to three recording samples per engine and passes that
      as the minimum accepted sample count to the validator.
+     It also passes a default 50 ms max P95 regression tolerance for local
+     audio-owned hot-path segments.
    - Still open: actually running the long physical Always-On-Mic evidence with
      the Rust manager, device-refresh pause/resume matrix evidence, real
      provider-backed Python/Rust comparison runs using the new gate, and final

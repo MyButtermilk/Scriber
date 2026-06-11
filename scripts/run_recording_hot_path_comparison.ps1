@@ -28,6 +28,7 @@ param(
     [int]$RecordingHotPathTimeoutSec = 60,
     [string]$RecordingHotPathSpeechPrompt = "Scriber provider-backed Rust audio validation",
     [double]$RecordingHotPathSpeechDelaySec = 0.5,
+    [double]$MaxAudioOwnedP95RegressionMs = 50.0,
     [string]$RecordingHotPathTextTargetFile = "",
     [double]$RecordingHotPathTextTargetSettleSec = 1.0,
     [double]$RecordingHotPathTextTargetTimeoutSec = 5.0,
@@ -277,6 +278,8 @@ $comparisonArgs = @(
     $RustHotPathReport,
     "--min-samples-per-report",
     ([string]$RecordingHotPathIterations),
+    "--max-audio-owned-p95-regression-ms",
+    ([string]$MaxAudioOwnedP95RegressionMs),
     "--output",
     $ComparisonOutput
 )

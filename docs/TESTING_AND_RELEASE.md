@@ -243,7 +243,11 @@ turn both provider-backed reports into the required comparison artifact. Both
 runs must use the same STT provider; provider mismatches are rejected because
 they make latency deltas ambiguous. The dedicated runner defaults to three
 recording samples per engine, and final readiness rejects comparison artifacts
-with fewer than three Python or Rust samples:
+with fewer than three Python or Rust samples. It also rejects clear P95
+regressions in local audio-owned segments such as first audio frame, first
+audible frame, and stop-to-last-chunk. Provider-finalize and total stop-to-text
+latency remain visible in the report but are not used as this local Rust-audio
+regression gate:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_recording_hot_path_comparison.ps1 `
@@ -261,6 +265,7 @@ python scripts\validate_recording_hot_path_comparison.py `
   --python-report tmp\hybrid-baseline\python-recording-hot-path-baseline-recording-hot-path-1.json `
   --rust-report tmp\hybrid-baseline\rust-recording-hot-path-baseline-recording-hot-path-1.json `
   --min-samples-per-report 3 `
+  --max-audio-owned-p95-regression-ms 50 `
   --output tmp\hybrid-baseline\recording-hot-path-python-rust-comparison.json
 ```
 

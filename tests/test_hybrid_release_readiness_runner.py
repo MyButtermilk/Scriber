@@ -155,6 +155,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert "validate_recording_hot_path_comparison.py" in comparison_evidence["producer"]
     assert "provider-backed Python and Rust reports" in comparison_evidence["producer"]
     assert "at least three samples per engine" in comparison_evidence["notes"]
+    assert "local audio-owned hot-path segments" in comparison_evidence["notes"]
     publication_evidence = payload["requiredEvidence"][8]
     assert "final redirect URL" in publication_evidence["notes"]
     authenticode_evidence = payload["requiredEvidence"][9]

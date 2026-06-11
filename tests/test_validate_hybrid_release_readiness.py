@@ -545,6 +545,7 @@ def write_recording_hot_path_comparison_report(
     rust_ok: bool = True,
     fallback_circuit_ok: bool = True,
     same_provider_ok: bool = True,
+    latency_ok: bool = True,
     samples: int = 3,
 ) -> None:
     path.write_text(
@@ -584,6 +585,14 @@ def write_recording_hot_path_comparison_report(
                         "name": "rustFallbackCircuitClosed",
                         "ok": fallback_circuit_ok,
                         "details": {"open": not fallback_circuit_ok},
+                    },
+                    {
+                        "name": "audioOwnedLatencyNoRegression",
+                        "ok": latency_ok,
+                        "details": {
+                            "maxAllowedRustP95RegressionMs": 50.0,
+                            "gatedSegments": {},
+                        },
                     },
                     {"name": "pythonAudioEngine", "ok": True, "details": {}},
                 ],
@@ -788,6 +797,31 @@ def test_validate_release_readiness_rejects_open_rust_fallback_circuit_compariso
         check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
     )
     assert "recording hot-path comparison check failed: rustFallbackCircuitClosed" in comparison_check["failures"]
+
+
+def test_validate_release_readiness_rejects_audio_owned_latency_regression_comparison(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
+    write_recording_hot_path_comparison_report(comparison_report, latency_ok=False)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        recording_hot_path_comparison_report=comparison_report,
+        require_recording_hot_path_comparison=True,
+    )
+
+    assert result["ok"] is False
+    comparison_check = next(
+        check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
+    )
+    assert "recording hot-path comparison check failed: audioOwnedLatencyNoRegression" in comparison_check["failures"]
 
 
 def test_validate_release_readiness_rejects_mismatched_recording_hot_path_provider(tmp_path: Path) -> None:

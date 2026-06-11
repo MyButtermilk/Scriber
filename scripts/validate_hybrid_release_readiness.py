@@ -874,6 +874,7 @@ def validate_recording_hot_path_comparison_report(
         "sameProvider",
         "rustAudioEngine",
         "rustFallbackCircuitClosed",
+        "audioOwnedLatencyNoRegression",
         "pythonAudioEngine",
     ):
         check = checks_by_name.get(check_name)

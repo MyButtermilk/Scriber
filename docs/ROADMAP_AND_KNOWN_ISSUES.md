@@ -162,10 +162,14 @@ Rust audio:
   the same STT provider in both reports and rejects an open Rust fallback
   circuit in the Rust report. Final readiness now also requires at least three
   samples per engine, so one-shot comparison artifacts are not acceptable Rust
-  promotion evidence.
+  promotion evidence. The same artifact now also fails Rust promotion when
+  local audio-owned P95 hot-path segments regress clearly against Python; the
+  provider-finalize and total stop-to-text values stay diagnostic-only because
+  they are network/provider dominated.
   `scripts/run_recording_hot_path_comparison.ps1` now orchestrates the Python
   pass, Rust-prototype pass, and comparison artifact creation for real
-  provider-backed A/B runs, defaulting to three recording samples per engine.
+  provider-backed A/B runs, defaulting to three recording samples per engine
+  and a 50 ms max P95 regression tolerance for local audio-owned segments.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no

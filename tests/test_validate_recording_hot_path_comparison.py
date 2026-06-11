@@ -171,6 +171,29 @@ def test_recording_hot_path_comparison_rejects_rust_fallback_to_python_capture()
     assert "Rust report must prove active rust-prototype rust-frame-pipe capture" in result["failures"]
 
 
+def test_recording_hot_path_comparison_rejects_audio_owned_latency_regression() -> None:
+    rust_report = recording_report(engine="rust-prototype", rust_capture=True)
+    for sample in rust_report["samples"]:
+        sample["segments"]["hotkey_received_to_first_audio_frame_ms"] = 260.0
+
+    result = build_comparison(
+        recording_report(engine="python"),
+        rust_report,
+        max_audio_owned_p95_regression_ms=50.0,
+    )
+
+    assert result["ok"] is False
+    assert (
+        "Rust audio-owned hot-path P95 latency must not regress by more than 50.0 ms on any gated segment"
+        in result["failures"]
+    )
+    check = next(item for item in result["checks"] if item["name"] == "audioOwnedLatencyNoRegression")
+    assert check["ok"] is False
+    segment = check["details"]["gatedSegments"]["hotkey_received_to_first_audio_frame_ms"]
+    assert segment["rustMinusPythonP95Ms"] == 80.0
+    assert segment["ok"] is False
+
+
 def test_recording_hot_path_comparison_rejects_open_rust_fallback_circuit() -> None:
     result = build_comparison(
         recording_report(engine="python"),

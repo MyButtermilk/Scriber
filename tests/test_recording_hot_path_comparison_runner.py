@@ -71,6 +71,8 @@ def test_recording_hot_path_comparison_runner_plan_only_wires_python_and_rust_ru
         "2",
         "-RecordingHotPathSeconds",
         "3",
+        "-MaxAudioOwnedP95RegressionMs",
+        "75",
         "-RecordingHotPathSpeechPrompt",
         "Scriber comparison evidence",
         "-RustAlwaysOnMic",
@@ -120,6 +122,7 @@ def test_recording_hot_path_comparison_runner_plan_only_wires_python_and_rust_ru
     assert "--python-report" in comparison_command
     assert "--rust-report" in comparison_command
     assert "--min-samples-per-report 2" in comparison_command
+    assert "--max-audio-owned-p95-regression-ms 75" in comparison_command
     assert "--output" in comparison_command
 
 
@@ -143,6 +146,7 @@ def test_recording_hot_path_comparison_runner_plan_only_can_select_synthetic_cap
     commands = {entry["name"]: entry for entry in payload["commands"]}
     assert "-RecordingHotPathIterations 3" in commands["pythonRecordingHotPath"]["command"]
     assert "--min-samples-per-report 3" in commands["comparisonValidation"]["command"]
+    assert "--max-audio-owned-p95-regression-ms 50" in commands["comparisonValidation"]["command"]
     rust_env = next(entry for entry in payload["commands"] if entry["name"] == "rustRecordingHotPath")[
         "environment"
     ]

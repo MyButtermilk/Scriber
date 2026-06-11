@@ -41,6 +41,14 @@ COMPARISON_SEGMENTS = [
     STOP_TO_TEXT_SEGMENT,
 ]
 
+AUDIO_OWNED_LATENCY_SEGMENTS = [
+    "hotkey_received_to_mic_ready_ms",
+    "hotkey_received_to_first_audio_frame_ms",
+    AUDIBLE_AUDIO_SEGMENT,
+    STOP_TO_LAST_CHUNK_SEGMENT,
+]
+DEFAULT_AUDIO_OWNED_MAX_P95_REGRESSION_MS = 50.0
+
 
 def read_json_object(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -161,6 +169,32 @@ def compare_segment(python_values: list[float], rust_values: list[float]) -> dic
     }
 
 
+def audio_owned_latency_regression_check(
+    segments: dict[str, Any],
+    *,
+    max_p95_regression_ms: float,
+) -> tuple[bool, dict[str, Any]]:
+    details: dict[str, Any] = {
+        "maxAllowedRustP95RegressionMs": max_p95_regression_ms,
+        "gatedSegments": {},
+    }
+    ok = True
+    for name in AUDIO_OWNED_LATENCY_SEGMENTS:
+        segment = segments.get(name)
+        complete = isinstance(segment, dict) and segment.get("complete") is True
+        rust_minus_python_p95 = None
+        if isinstance(segment, dict) and isinstance(segment.get("rustMinusPythonP95Ms"), (int, float)):
+            rust_minus_python_p95 = float(segment["rustMinusPythonP95Ms"])
+        segment_ok = complete and rust_minus_python_p95 is not None and rust_minus_python_p95 <= max_p95_regression_ms
+        details["gatedSegments"][name] = {
+            "complete": complete,
+            "rustMinusPythonP95Ms": rust_minus_python_p95,
+            "ok": segment_ok,
+        }
+        ok = ok and segment_ok
+    return ok, details
+
+
 def build_comparison(
     python_report: dict[str, Any],
     rust_report: dict[str, Any],
@@ -170,6 +204,8 @@ def build_comparison(
     require_python_engine: bool = True,
     allow_validate_only: bool = False,
     min_samples_per_report: int = 1,
+    require_audio_owned_latency_no_regression: bool = True,
+    max_audio_owned_p95_regression_ms: float = DEFAULT_AUDIO_OWNED_MAX_P95_REGRESSION_MS,
 ) -> dict[str, Any]:
     failures: list[str] = []
     checks: list[dict[str, Any]] = []
@@ -283,6 +319,21 @@ def build_comparison(
             segment_values(rust_report, segment),
         )
 
+    if require_audio_owned_latency_no_regression:
+        latency_ok, latency_details = audio_owned_latency_regression_check(
+            segments,
+            max_p95_regression_ms=max_audio_owned_p95_regression_ms,
+        )
+        add_check(
+            "audioOwnedLatencyNoRegression",
+            latency_ok,
+            latency_details,
+            (
+                "Rust audio-owned hot-path P95 latency must not regress by more than "
+                f"{max_audio_owned_p95_regression_ms} ms on any gated segment"
+            ),
+        )
+
     return {
         "schemaVersion": 1,
         "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -324,6 +375,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--no-require-rust-audio", action="store_true")
     parser.add_argument("--no-require-python-engine", action="store_true")
     parser.add_argument("--min-samples-per-report", type=int, default=1)
+    parser.add_argument(
+        "--max-audio-owned-p95-regression-ms",
+        type=float,
+        default=DEFAULT_AUDIO_OWNED_MAX_P95_REGRESSION_MS,
+    )
+    parser.add_argument("--no-require-audio-owned-latency-no-regression", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -346,6 +403,8 @@ def main(argv: list[str] | None = None) -> int:
         require_python_engine=not args.no_require_python_engine,
         allow_validate_only=args.allow_validate_only,
         min_samples_per_report=args.min_samples_per_report,
+        require_audio_owned_latency_no_regression=not args.no_require_audio_owned_latency_no_regression,
+        max_audio_owned_p95_regression_ms=args.max_audio_owned_p95_regression_ms,
     )
     write_result(result, args.output)
     return 0 if result.get("ok") else 1
