@@ -502,7 +502,10 @@ This validates an existing `installed-live-recording-smoke.json` produced by
 `scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke`,
 `scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec`, or
 `scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec` over an installed
-app. The report must show a managed `tauri-supervised` runtime, healthy
+app. Supplying `-MinInstalledLiveRecordingDurationSec` or
+`-RequireInstalledLiveRecordingRustAudio` also makes this artifact required,
+even without the generic `-RequireInstalledLiveRecordingSmoke` flag. The report
+must show a managed `tauri-supervised` runtime, healthy
 `apiVersion=1`/ready state, positive app/backend PID and backend-port metadata,
 clean live recording start/stop state, no non-recording samples during the
 recording window, stability samples that cover at least half of the expected

@@ -1356,6 +1356,29 @@ def test_validate_release_readiness_rejects_missing_installed_live_recording_rep
     assert "Installed live recording smoke report is required" in live_check["failures"]
 
 
+def test_validate_release_readiness_rejects_missing_installed_live_recording_report_when_min_duration_is_set(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    assert live_check["details"]["required"] is True
+    assert live_check["details"]["requireInstalledLiveRecordingSmoke"] is False
+    assert live_check["details"]["minDurationSec"] == 600
+    assert "Installed live recording smoke report is required" in live_check["failures"]
+
+
 def test_validate_release_readiness_rejects_weak_installed_live_recording_smoke(tmp_path: Path) -> None:
     hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"

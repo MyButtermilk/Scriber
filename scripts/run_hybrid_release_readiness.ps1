@@ -550,7 +550,7 @@ $requiredEvidence = @(
     },
     [pscustomobject]@{
         name = "installedLiveRecordingSmoke"
-        required = [bool]$RequireInstalledLiveRecordingSmoke
+        required = [bool]($RequireInstalledLiveRecordingSmoke -or $RequireInstalledLiveRecordingRustAudio -or $MinInstalledLiveRecordingDurationSec -gt 0)
         external = $true
         producer = "scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke, scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec, or scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec over an installed app"
         report = $InstalledLiveRecordingSmokeReport

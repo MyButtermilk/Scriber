@@ -448,6 +448,34 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
     assert "--min-installed-live-recording-duration-sec 600" in readiness_command["command"]
 
 
+def test_hybrid_release_readiness_runner_treats_installed_live_recording_min_duration_as_required(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-MinInstalledLiveRecordingDurationSec",
+        "600",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["requireInstalledLiveRecordingSmoke"] is False
+    live_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke")
+    assert live_evidence["required"] is True
+    assert live_evidence["minDurationSec"] == 600
+    live_command = next(entry for entry in payload["commands"] if entry["name"] == "installedLiveRecordingSmoke")
+    assert "required external report" in live_command["command"]
+    readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    assert "--installed-live-recording-smoke-report" in readiness_command["command"]
+    assert "--require-installed-live-recording-smoke" not in readiness_command["command"]
+    assert "--min-installed-live-recording-duration-sec 600" in readiness_command["command"]
+
+
 def test_hybrid_release_readiness_runner_plans_required_installed_live_recording_rust_audio(tmp_path: Path) -> None:
     result = run_powershell(
         "-NoProfile",
@@ -466,7 +494,7 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
     assert payload["requireInstalledLiveRecordingSmoke"] is False
     assert payload["requireInstalledLiveRecordingRustAudio"] is True
     live_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke")
-    assert live_evidence["required"] is False
+    assert live_evidence["required"] is True
     assert live_evidence["requireRustAudio"] is True
     live_command = next(entry for entry in payload["commands"] if entry["name"] == "installedLiveRecordingSmoke")
     assert "required external report" in live_command["command"]

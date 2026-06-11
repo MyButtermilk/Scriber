@@ -161,6 +161,7 @@ def validate_release_readiness(
     if (
         require_installed_live_recording_smoke
         or require_installed_live_recording_rust_audio
+        or min_installed_live_recording_duration_sec > 0
         or installed_live_recording_smoke_report is not None
     ):
         checks.append(
@@ -911,14 +912,16 @@ def validate_installed_live_recording_smoke_report(
     require_rust_audio: bool = False,
 ) -> ReadinessCheck:
     failures: list[str] = []
+    effective_required = bool(required or require_rust_audio or min_duration_sec > 0)
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
-        "required": required,
+        "required": effective_required,
+        "requireInstalledLiveRecordingSmoke": required,
         "minDurationSec": min_duration_sec,
         "requireRustAudio": require_rust_audio,
     }
     if report_path is None:
-        if required or require_rust_audio:
+        if effective_required:
             failures.append("Installed live recording smoke report is required")
         return ReadinessCheck("installedLiveRecordingSmoke", not failures, failures, details)
 

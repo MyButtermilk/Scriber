@@ -1056,7 +1056,9 @@ Implementation plan:
      runtime, healthy API version/ready state, positive app/backend process and
      port metadata, clean start/stop state, verified cleanup, sufficient
      stability-sample coverage for the requested duration, and zero
-     non-recording samples during active capture. This is a default-path
+     non-recording samples during active capture. A configured minimum duration
+     now makes the installed live-recording report required even without the
+     generic `-RequireInstalledLiveRecordingSmoke` flag. This is a default-path
      app/installer gate. For Rust default promotion, the runner also sets
      `-RequireInstalledLiveRecordingRustAudio`, which requires every stability
      sample to include compact audio diagnostics proving `rust-prototype`
