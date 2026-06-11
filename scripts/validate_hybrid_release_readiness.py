@@ -815,6 +815,12 @@ def validate_rust_audio_app_prewarm_report(
     if not isinstance(manager_start, dict):
         failures.append("Rust audio app prewarm smoke managerStart must be an object")
         manager_start = {}
+    manager_pre_adoption_health = report.get("managerPreAdoptionHealth")
+    if not isinstance(manager_pre_adoption_health, dict):
+        failures.append(
+            "Rust audio app prewarm smoke managerPreAdoptionHealth must be an object"
+        )
+        manager_pre_adoption_health = {}
     manager_adoption = report.get("managerAdoption")
     if not isinstance(manager_adoption, dict):
         failures.append("Rust audio app prewarm smoke managerAdoption must be an object")
@@ -827,6 +833,12 @@ def validate_rust_audio_app_prewarm_report(
     if manager_resume is not None and not isinstance(manager_resume, dict):
         failures.append("Rust audio app prewarm smoke managerResume must be an object when present")
         manager_resume = {}
+    manager_post_resume_health = report.get("managerPostResumeHealth")
+    if manager_resume is not None and not isinstance(manager_post_resume_health, dict):
+        failures.append(
+            "Rust audio app prewarm smoke managerPostResumeHealth must be an object when managerResume is present"
+        )
+        manager_post_resume_health = {}
 
     details.update(
         {
@@ -862,10 +874,33 @@ def validate_rust_audio_app_prewarm_report(
         failures.append("Rust audio app prewarm smoke managerStart.active must be true")
     if not str(manager_start.get("prewarmIdHash") or ""):
         failures.append("Rust audio app prewarm smoke managerStart.prewarmIdHash is required")
+    if report.get("managerPreAdoptionHealthReturned") is not True:
+        failures.append(
+            "Rust audio app prewarm smoke managerPreAdoptionHealthReturned must be true"
+        )
+    failures.extend(
+        validate_rust_audio_app_prewarm_health_snapshot(
+            manager_pre_adoption_health,
+            label="managerPreAdoptionHealth",
+            expected_reason="smoke_pre_adoption",
+        )
+    )
     if not str(manager_adoption.get("prewarmIdHash") or ""):
         failures.append("Rust audio app prewarm smoke managerAdoption.prewarmIdHash is required")
     if manager_resume is not None and manager_resume.get("active") is not True:
         failures.append("Rust audio app prewarm smoke managerResume.active must be true when present")
+    if manager_resume is not None:
+        if report.get("managerPostResumeHealthReturned") is not True:
+            failures.append(
+                "Rust audio app prewarm smoke managerPostResumeHealthReturned must be true when managerResume is present"
+            )
+        failures.extend(
+            validate_rust_audio_app_prewarm_health_snapshot(
+                manager_post_resume_health,
+                label="managerPostResumeHealth",
+                expected_reason="smoke_post_resume",
+            )
+        )
 
     adopted = source_final.get("adoptedPrewarm")
     if not isinstance(adopted, dict):
@@ -912,6 +947,40 @@ def validate_rust_audio_app_prewarm_report(
         failures.append("Rust audio app prewarm smoke summary.protocolErrorCount must be 0")
 
     return ReadinessCheck("rustAudioAppPrewarmSmoke", not failures, failures, details)
+
+
+def validate_rust_audio_app_prewarm_health_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    label: str,
+    expected_reason: str,
+) -> list[str]:
+    failures: list[str] = []
+    prefix = f"Rust audio app prewarm smoke {label}"
+    if snapshot.get("active") is not True:
+        failures.append(f"{prefix}.active must be true")
+    if snapshot.get("lastHealthCheckActive") is not True:
+        failures.append(f"{prefix}.lastHealthCheckActive must be true")
+    if str(snapshot.get("lastHealthCheckReason") or "") != expected_reason:
+        failures.append(f"{prefix}.lastHealthCheckReason must be {expected_reason}")
+    response_ms = numeric_field(snapshot, "lastHealthResponseMs")
+    if response_ms is None or response_ms < 0:
+        failures.append(f"{prefix}.lastHealthResponseMs must be non-negative")
+    if snapshot.get("lastHealthError") not in (None, ""):
+        failures.append(f"{prefix}.lastHealthError must be empty")
+    last_status = snapshot.get("lastStatus")
+    if not isinstance(last_status, dict):
+        failures.append(f"{prefix}.lastStatus must be an object")
+        last_status = {}
+    if last_status.get("active") is not True:
+        failures.append(f"{prefix}.lastStatus.active must be true")
+    if str(last_status.get("reason") or "") != "active":
+        failures.append(f"{prefix}.lastStatus.reason must be active")
+    if not str(last_status.get("prewarmIdHash") or snapshot.get("prewarmIdHash") or ""):
+        failures.append(f"{prefix}.lastStatus.prewarmIdHash is required")
+    if last_status.get("prewarmId") is not None:
+        failures.append(f"{prefix}.lastStatus must not expose raw prewarmId")
+    return failures
 
 
 def validate_installed_live_recording_smoke_report(

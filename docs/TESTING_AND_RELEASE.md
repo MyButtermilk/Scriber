@@ -300,6 +300,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RequireRustAudioAppPrewarmSmoke
 ```
 
+Required app-prewarm evidence now includes the Rust prewarm watchdog status
+path. The smoke calls `RustAudioPrewarmManager.ensure_healthy()` before capture
+adoption and after idle resume; the report must include
+`managerPreAdoptionHealth` and, when resume is enabled,
+`managerPostResumeHealth`. Final readiness rejects reports where those snapshots
+do not prove active `audioPrewarmStatus` responses with redacted prewarm IDs,
+non-negative response times, and empty health errors. This prevents a cached
+`prewarmId` from counting as proof that Always-On-Mic was still holding a live
+Rust/WASAPI prewarm session.
+
 For Always-On-Mic promotion evidence, make the app-level smoke a long run and
 require the same durations in final validation:
 

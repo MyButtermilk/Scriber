@@ -540,67 +540,98 @@ def write_rust_audio_app_prewarm_report(
     protocol_errors: int = 0,
     native_endpoint_hash: str = "abc123",
     manager_resume_active: bool = True,
+    include_status_health: bool = True,
+    pre_adoption_status_active: bool = True,
+    post_resume_status_active: bool = True,
     last_error: str = "",
 ) -> None:
+    def health_snapshot(prewarm_hash: str, reason: str, active: bool = True) -> dict[str, object]:
+        return {
+            "active": active,
+            "prewarmIdHash": prewarm_hash,
+            "lastHealthCheckActive": active,
+            "lastHealthCheckReason": reason,
+            "lastHealthResponseMs": 4.0,
+            "lastHealthError": "" if active else "noActivePrewarm",
+            "lastStatus": {
+                "active": active,
+                "prewarmIdHash": prewarm_hash,
+                "reason": "active" if active else "noActivePrewarm",
+                "bufferedBlocks": 4 if active else 0,
+            },
+        }
+
+    payload = {
+        "apiVersion": "1",
+        "ok": ok,
+        "planOnly": plan_only,
+        "mode": mode,
+        "requested": {
+            "durationSec": duration_sec,
+            "prewarmDurationSec": prewarm_duration_sec,
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 160,
+            "prebufferMs": 400,
+            "honorFavoriteMic": honor_favorite_mic,
+        },
+        "managerStart": {
+            "active": True,
+            "prewarmIdHash": "prewarm-start-hash",
+        },
+        "managerAdoption": {
+            "prewarmIdHash": "prewarm-start-hash",
+            "signature": {
+                "device_preference": "default",
+                "sample_rate": 16000,
+                "target_channels": 1,
+                "block_size": 160,
+            },
+        },
+        "managerResume": {
+            "active": manager_resume_active,
+            "prewarmIdHash": "prewarm-resume-hash",
+        },
+        "sourceFinal": {
+            "callbackCount": callback_count,
+            "nativeEndpointIdHash": native_endpoint_hash,
+            "lastError": last_error,
+            "adoptedPrewarm": {
+                "adopted": adopted_blocks > 0,
+                "blocks": adopted_blocks,
+                "audioFrames": adopted_blocks * 160,
+            },
+            "framePipePrebufferFramesRead": prebuffer_frames,
+            "framePipeLiveFramesRead": live_frames,
+            "framePipePrebufferAfterLiveCount": prebuffer_after_live,
+            "framePipeSequenceErrorCount": sequence_errors,
+            "framePipeProtocolErrorCount": protocol_errors,
+        },
+        "summary": {
+            "callbackCount": callback_count,
+            "adoptedPrewarmBlocks": adopted_blocks,
+            "prebufferFramesRead": prebuffer_frames,
+            "liveFramesRead": live_frames,
+            "prebufferAfterLiveCount": prebuffer_after_live,
+            "sequenceErrorCount": sequence_errors,
+            "protocolErrorCount": protocol_errors,
+        },
+    }
+    if include_status_health:
+        payload["managerPreAdoptionHealthReturned"] = pre_adoption_status_active
+        payload["managerPreAdoptionHealth"] = health_snapshot(
+            "prewarm-start-hash",
+            "smoke_pre_adoption",
+            pre_adoption_status_active,
+        )
+        payload["managerPostResumeHealthReturned"] = post_resume_status_active
+        payload["managerPostResumeHealth"] = health_snapshot(
+            "prewarm-resume-hash",
+            "smoke_post_resume",
+            post_resume_status_active,
+        )
     path.write_text(
-        json.dumps(
-            {
-                "apiVersion": "1",
-                "ok": ok,
-                "planOnly": plan_only,
-                "mode": mode,
-                "requested": {
-                    "durationSec": duration_sec,
-                    "prewarmDurationSec": prewarm_duration_sec,
-                    "sampleRate": 16000,
-                    "channels": 1,
-                    "blockSize": 160,
-                    "prebufferMs": 400,
-                    "honorFavoriteMic": honor_favorite_mic,
-                },
-                "managerStart": {
-                    "active": True,
-                    "prewarmIdHash": "prewarm-start-hash",
-                },
-                "managerAdoption": {
-                    "prewarmIdHash": "prewarm-start-hash",
-                    "signature": {
-                        "device_preference": "default",
-                        "sample_rate": 16000,
-                        "target_channels": 1,
-                        "block_size": 160,
-                    },
-                },
-                "managerResume": {
-                    "active": manager_resume_active,
-                    "prewarmIdHash": "prewarm-resume-hash",
-                },
-                "sourceFinal": {
-                    "callbackCount": callback_count,
-                    "nativeEndpointIdHash": native_endpoint_hash,
-                    "lastError": last_error,
-                    "adoptedPrewarm": {
-                        "adopted": adopted_blocks > 0,
-                        "blocks": adopted_blocks,
-                        "audioFrames": adopted_blocks * 160,
-                    },
-                    "framePipePrebufferFramesRead": prebuffer_frames,
-                    "framePipeLiveFramesRead": live_frames,
-                    "framePipePrebufferAfterLiveCount": prebuffer_after_live,
-                    "framePipeSequenceErrorCount": sequence_errors,
-                    "framePipeProtocolErrorCount": protocol_errors,
-                },
-                "summary": {
-                    "callbackCount": callback_count,
-                    "adoptedPrewarmBlocks": adopted_blocks,
-                    "prebufferFramesRead": prebuffer_frames,
-                    "liveFramesRead": live_frames,
-                    "prebufferAfterLiveCount": prebuffer_after_live,
-                    "sequenceErrorCount": sequence_errors,
-                    "protocolErrorCount": protocol_errors,
-                },
-            }
-        ),
+        json.dumps(payload),
         encoding="utf-8",
     )
 
@@ -2452,6 +2483,66 @@ def test_validate_release_readiness_accepts_required_rust_audio_app_prewarm_smok
     assert result["ok"] is True
     app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
     assert app_check["details"]["summary"]["adoptedPrewarmBlocks"] == 40
+
+
+def test_validate_release_readiness_rejects_rust_audio_app_prewarm_without_status_evidence(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
+    write_rust_audio_app_prewarm_report(
+        app_prewarm_report,
+        include_status_health=False,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_app_prewarm_report=app_prewarm_report,
+        require_rust_audio_app_prewarm_smoke=True,
+    )
+
+    assert result["ok"] is False
+    app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
+    failures = "\n".join(app_check["failures"])
+    assert "managerPreAdoptionHealth must be an object" in failures
+    assert "managerPreAdoptionHealthReturned must be true" in failures
+    assert "managerPostResumeHealth must be an object" in failures
+    assert "managerPostResumeHealthReturned must be true" in failures
+
+
+def test_validate_release_readiness_rejects_rust_audio_app_prewarm_inactive_status_evidence(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
+    write_rust_audio_app_prewarm_report(
+        app_prewarm_report,
+        pre_adoption_status_active=False,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_app_prewarm_report=app_prewarm_report,
+        require_rust_audio_app_prewarm_smoke=True,
+    )
+
+    assert result["ok"] is False
+    app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
+    failures = "\n".join(app_check["failures"])
+    assert "managerPreAdoptionHealthReturned must be true" in failures
+    assert "managerPreAdoptionHealth.active must be true" in failures
+    assert "managerPreAdoptionHealth.lastStatus.active must be true" in failures
+    assert "managerPreAdoptionHealth.lastHealthError must be empty" in failures
 
 
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_redaction_leaks(tmp_path: Path) -> None:

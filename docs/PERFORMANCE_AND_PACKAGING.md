@@ -1234,6 +1234,12 @@ Implementation plan:
      redacted status payloads plus start/stop/health response times, last
      inactive reason, and restart counters, which makes brief microphone
      privacy-indicator dropouts diagnosable in support bundles.
+   - Implemented: the app-level Rust prewarm smoke now exercises that status
+     path before capture adoption and after idle resume. Final hybrid readiness
+     rejects Rust app-prewarm reports that lack active `audioPrewarmStatus`
+     evidence, redacted prewarm IDs, health response timing, or an empty health
+     error. This prevents stale cached `prewarmId` state from satisfying the
+     Always-On-Mic promotion gate.
    - Still open: physical proof that this restart/cooldown policy behaves well
      during real long recordings and dock/USB/default-device transitions.
 7. Run A/B measurements before any promotion:

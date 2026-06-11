@@ -26,6 +26,7 @@ from src.microphone import RustPrototypeFrameSource  # noqa: E402
 
 COMMAND_MAP = {
     "audioPrewarmStart": "prewarmStart",
+    "audioPrewarmStatus": "prewarmStatus",
     "audioPrewarmStop": "prewarmStop",
     "audioCaptureStart": "captureStart",
     "audioCaptureStop": "captureStop",
@@ -112,6 +113,9 @@ def validate_smoke(payload: dict[str, Any]) -> list[str]:
     manager_start = payload.get("managerStart")
     if not isinstance(manager_start, dict) or manager_start.get("active") is not True:
         errors.append("managerStart.active must be true")
+    manager_pre_adoption_health = payload.get("managerPreAdoptionHealth")
+    if not _valid_manager_health_snapshot(manager_pre_adoption_health):
+        errors.append("managerPreAdoptionHealth must prove active audioPrewarmStatus")
     adoption = payload.get("managerAdoption")
     if not isinstance(adoption, dict) or not adoption.get("prewarmIdHash"):
         errors.append("managerAdoption.prewarmIdHash must be present")
@@ -138,7 +142,27 @@ def validate_smoke(payload: dict[str, Any]) -> list[str]:
     manager_resume = payload.get("managerResume")
     if isinstance(manager_resume, dict) and manager_resume.get("active") is not True:
         errors.append("managerResume.active must be true when resume is requested")
+    manager_post_resume_health = payload.get("managerPostResumeHealth")
+    if isinstance(manager_resume, dict) and not _valid_manager_health_snapshot(manager_post_resume_health):
+        errors.append("managerPostResumeHealth must prove active audioPrewarmStatus when resume is requested")
     return errors
+
+
+def _valid_manager_health_snapshot(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("active") is not True:
+        return False
+    if value.get("lastHealthCheckActive") is not True:
+        return False
+    if not isinstance(value.get("lastHealthResponseMs"), (int, float)):
+        return False
+    status = value.get("lastStatus")
+    if not isinstance(status, dict):
+        return False
+    if status.get("active") is not True:
+        return False
+    return bool(status.get("prewarmIdHash") or value.get("prewarmIdHash"))
 
 
 def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -232,6 +256,10 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 return payload
 
             time.sleep(max(0.05, float(args.prewarm_duration_sec)))
+            payload["managerPreAdoptionHealthReturned"] = bool(
+                manager.ensure_healthy(reason="smoke_pre_adoption")
+            )
+            payload["managerPreAdoptionHealth"] = manager.diagnostic_snapshot()
             adopted = manager.attach_active_capture(
                 None,
                 sample_rate=args.sample_rate,
@@ -281,6 +309,10 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 time.sleep(max(0.05, float(args.post_resume_duration_sec)))
                 payload["managerResume"] = manager.diagnostic_snapshot()
                 payload["managerResume"]["resumeReturned"] = bool(resumed)
+                payload["managerPostResumeHealthReturned"] = bool(
+                    manager.ensure_healthy(reason="smoke_post_resume")
+                )
+                payload["managerPostResumeHealth"] = manager.diagnostic_snapshot()
                 manager.stop(reason="smoke_complete")
             payload["managerFinal"] = manager.diagnostic_snapshot()
             payload["callbacks"] = callbacks[:5]
