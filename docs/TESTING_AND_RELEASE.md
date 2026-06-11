@@ -230,6 +230,11 @@ query private shell IPC `audioEndpointInventory` and use that redacted endpoint
 inventory for the selected/favorite mapping. Standalone sidecar smokes without
 Tauri shell IPC can still fail closed for selected devices; that is safer than
 opening the wrong microphone and is not sufficient installed-app evidence.
+The 2026-06-11 Insta360 investigation used this rule: standalone sidecar
+evidence failed closed without a native hash, then the rebuilt Tauri backend
+support bundle proved `prewarm.engine=rust-prototype`, the selected
+`Mikrofon (4- Insta360 Link)` label, a matching redacted native endpoint hash,
+and `usedDefaultEndpoint=false`.
 
 Use the recording hot-path benchmark when Rust audio evidence must include the
 actual provider path, not only sidecar frame delivery. The strict provider/Rust

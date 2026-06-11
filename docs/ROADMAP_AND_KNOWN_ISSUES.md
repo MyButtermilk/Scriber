@@ -164,9 +164,10 @@ Rust audio:
   path resolved `Mikrofon (4- Insta360 Link)` to PortAudio index `11` but still
   opened `Microphone (Jabra Engage 75)` as the default endpoint, leaving the
   Insta360 privacy light off. Source and unit tests now fail closed instead of
-  opening the wrong device; a rebuilt Tauri backend still needs installed-app
-  evidence that shell-IPC inventory maps the Insta360 favorite to a native
-  endpoint hash.
+  opening the wrong device. The rebuilt Tauri backend was also smoke-tested via
+  support-bundle diagnostics, which showed Rust prewarm active for
+  `Mikrofon (4- Insta360 Link)` with `device_preference=11`, a matching
+  redacted native endpoint hash, and `usedDefaultEndpoint=false`.
   The hybrid release-readiness runner can require this app-level smoke via
   `-RequireRustAudioAppPrewarmSmoke`. It can also require explicit app-level
   Rust Always-On-Mic durations with `-MinRustAudioAppPrewarmDurationSec` and

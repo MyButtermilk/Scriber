@@ -1199,8 +1199,16 @@ Implementation plan:
      the favorite to PortAudio index `11`. After the fix, the standalone
      sidecar smoke fails closed with `devicePreference=11` and no
      `portAudioLabel`/native hash instead of opening Jabra. A rebuilt Tauri
-     backend is still required to verify that shell-IPC endpoint inventory maps
-     the Insta360 favorite to a native endpoint hash in the installed app.
+     backend was then verified with
+     `tmp\rust-promotion-evidence\20260611-161011\tauri-insta360-rust-prewarm-smoke.json`.
+     The support-bundle `audio-diagnostics.redacted.json` showed
+     `favoriteMic=Mikrofon (4- Insta360 Link)`, `prewarm.engine=rust-prototype`,
+     `prewarm.active=true`, `signature.device_preference=11`,
+     `signature.port_audio_label=Mikrofon (4- Insta360 Link)`,
+     matching `native_endpoint_id_hash=51112d9ccdd3a140`, and
+     `endpointSelection.usedDefaultEndpoint=false`. This proves the Tauri
+     shell-IPC endpoint inventory can map the Insta360 favorite to a native
+     WASAPI endpoint instead of opening the Windows default microphone.
    - Local evidence from 2026-06-11: the installed Rust/WASAPI Always-On-Mic
      live-recording smoke passed with
      `tmp\rust-promotion-evidence\installed-live-recording-rust-wasapi-alwayson-30s-default-endpoint-fix-v2.json`.
