@@ -544,6 +544,7 @@ def write_recording_hot_path_comparison_report(
     ok: bool = True,
     rust_ok: bool = True,
     fallback_circuit_ok: bool = True,
+    same_provider_ok: bool = True,
 ) -> None:
     path.write_text(
         json.dumps(
@@ -560,6 +561,14 @@ def write_recording_hot_path_comparison_report(
                     {"name": "rustReportOk", "ok": True, "details": {}},
                     {"name": "physicalReports", "ok": True, "details": {}},
                     {"name": "providerTranscript", "ok": True, "details": {}},
+                    {
+                        "name": "sameProvider",
+                        "ok": same_provider_ok,
+                        "details": {
+                            "pythonProvider": "azure_mai",
+                            "rustProvider": "azure_mai" if same_provider_ok else "deepgram",
+                        },
+                    },
                     {"name": "rustAudioEngine", "ok": rust_ok, "details": {}},
                     {
                         "name": "rustFallbackCircuitClosed",
@@ -742,6 +751,31 @@ def test_validate_release_readiness_rejects_open_rust_fallback_circuit_compariso
         check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
     )
     assert "recording hot-path comparison check failed: rustFallbackCircuitClosed" in comparison_check["failures"]
+
+
+def test_validate_release_readiness_rejects_mismatched_recording_hot_path_provider(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
+    write_recording_hot_path_comparison_report(comparison_report, same_provider_ok=False)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        recording_hot_path_comparison_report=comparison_report,
+        require_recording_hot_path_comparison=True,
+    )
+
+    assert result["ok"] is False
+    comparison_check = next(
+        check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
+    )
+    assert "recording hot-path comparison check failed: sameProvider" in comparison_check["failures"]
 
 
 def test_validate_release_readiness_accepts_required_rust_audio_sidecar_prewarm_adoption(tmp_path: Path) -> None:

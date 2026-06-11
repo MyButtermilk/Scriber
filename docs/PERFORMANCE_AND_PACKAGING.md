@@ -1033,17 +1033,19 @@ Implementation plan:
    - Implemented: `scripts/validate_recording_hot_path_comparison.py` builds a
      machine-checkable Python-vs-Rust provider-backed comparison artifact from
      two recording hot-path reports. It rejects validate-only evidence by
-     default, requires provider transcript evidence in both reports, requires
-     active `rust-prototype`/`rust-frame-pipe` capture in the Rust report,
-     rejects an open Rust fallback circuit in that report, and records segment
-     deltas such as hotkey-to-first-frame, provider-finalize, and
-     stop-to-text-injection. The final readiness validator and
+     default, requires provider transcript evidence from the same STT provider
+     in both reports, requires active `rust-prototype`/`rust-frame-pipe`
+     capture in the Rust report, rejects an open Rust fallback circuit in that
+     report, and records segment deltas such as hotkey-to-first-frame,
+     provider-finalize, and stop-to-text-injection. The final readiness
+     validator and
      `scripts/run_hybrid_release_readiness.ps1` can require this artifact with
      `--require-recording-hot-path-comparison` /
      `-RequireRecordingHotPathComparison`.
      The final readiness validator now requires the comparison artifact's
-     `rustFallbackCircuitClosed` check alongside `rustAudioEngine`, so this
-     gate cannot be bypassed by passing a stale comparison schema.
+     `sameProvider` and `rustFallbackCircuitClosed` checks alongside
+     `rustAudioEngine`, so this gate cannot be bypassed by passing a stale
+     comparison schema.
    - Implemented: `scripts/run_recording_hot_path_comparison.ps1` orchestrates
      the full provider-backed A/B evidence path. It runs
      `measure_hybrid_baseline.ps1` once with `SCRIBER_AUDIO_ENGINE=python`, once

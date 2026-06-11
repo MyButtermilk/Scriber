@@ -210,6 +210,18 @@ def build_comparison(
             {"pythonStatus": python_provider, "rustStatus": rust_provider},
             "Both Python and Rust reports must measure provider_transcript",
         )
+        python_provider_label = provider_label(python_report)
+        rust_provider_label = provider_label(rust_report)
+        add_check(
+            "sameProvider",
+            bool(python_provider_label)
+            and python_provider_label == rust_provider_label,
+            {
+                "pythonProvider": python_provider_label,
+                "rustProvider": rust_provider_label,
+            },
+            "Python and Rust reports must use the same STT provider",
+        )
 
     if require_rust_audio:
         rust_status = requirement_status(rust_report, "rust_audio_engine")

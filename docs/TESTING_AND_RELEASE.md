@@ -239,7 +239,9 @@ end-to-end text insertion into a target window.
 
 For Rust audio promotion, run the recording hot-path benchmark once with the
 default Python engine and once with `SCRIBER_AUDIO_ENGINE=rust-prototype`, then
-turn both provider-backed reports into the required comparison artifact:
+turn both provider-backed reports into the required comparison artifact. Both
+runs must use the same STT provider; provider mismatches are rejected because
+they make latency deltas ambiguous:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_recording_hot_path_comparison.ps1 `

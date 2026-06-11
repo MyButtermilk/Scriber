@@ -351,6 +351,7 @@ def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_compa
     assert comparison_evidence["report"].endswith("recording-hot-path-python-rust-comparison.json")
     assert "run_recording_hot_path_comparison.ps1" in comparison_evidence["producer"]
     assert "validate_recording_hot_path_comparison.py" in comparison_evidence["producer"]
+    assert "same STT provider" in comparison_evidence["notes"]
     assert "active rust-frame-pipe capture" in comparison_evidence["notes"]
     assert "fallback-circuit" in comparison_evidence["notes"]
     comparison_command = next(

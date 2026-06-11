@@ -158,8 +158,9 @@ Rust audio:
   `scripts/validate_recording_hot_path_comparison.py` now turns separate
   provider-backed Python and Rust hot-path reports into a required promotion
   artifact, and `run_hybrid_release_readiness.ps1` can gate it with
-  `-RequireRecordingHotPathComparison`. The comparison validator also rejects
-  an open Rust fallback circuit in the Rust report.
+  `-RequireRecordingHotPathComparison`. The comparison validator also requires
+  the same STT provider in both reports and rejects an open Rust fallback
+  circuit in the Rust report.
   `scripts/run_recording_hot_path_comparison.ps1` now orchestrates the Python
   pass, Rust-prototype pass, and comparison artifact creation for real
   provider-backed A/B runs.

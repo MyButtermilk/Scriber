@@ -11,6 +11,7 @@ from scripts.validate_recording_hot_path_comparison import build_comparison
 def recording_report(
     *,
     engine: str,
+    provider_label: str = "azure_mai",
     provider: bool = True,
     rust_capture: bool = False,
     fallback_circuit_open: bool = False,
@@ -73,8 +74,8 @@ def recording_report(
                 "rustAudioAvailable": engine == "rust-prototype",
             },
             "provider": {
-                "configured": "azure_mai",
-                "active": "azure_mai",
+                "configured": provider_label,
+                "active": provider_label,
             },
             "microphone": {
                 "rustAudioFallbackCircuit": {
@@ -116,6 +117,24 @@ def test_recording_hot_path_comparison_rejects_missing_provider_transcript() -> 
 
     assert result["ok"] is False
     assert "Both Python and Rust reports must measure provider_transcript" in result["failures"]
+
+
+def test_recording_hot_path_comparison_rejects_mismatched_provider() -> None:
+    result = build_comparison(
+        recording_report(engine="python", provider_label="azure_mai"),
+        recording_report(
+            engine="rust-prototype",
+            provider_label="deepgram",
+            rust_capture=True,
+        ),
+    )
+
+    assert result["ok"] is False
+    assert "Python and Rust reports must use the same STT provider" in result["failures"]
+    check = next(item for item in result["checks"] if item["name"] == "sameProvider")
+    assert check["ok"] is False
+    assert check["details"]["pythonProvider"] == "azure_mai"
+    assert check["details"]["rustProvider"] == "deepgram"
 
 
 def test_recording_hot_path_comparison_rejects_rust_fallback_to_python_capture() -> None:
