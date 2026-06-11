@@ -476,8 +476,10 @@ least two app-level prewarm/capture/stop/resume cycles. Each cycle must carry
 its own pre-adoption and post-resume `audioPrewarmStatus` health snapshot; a
 final healthy snapshot alone is not promotion evidence.
 The installed live-recording report must also prove sampled
-`rust-prototype`/`rust-frame-pipe` active capture with a closed Rust fallback
-circuit; generic Python live-mic stability is not enough for Rust promotion.
+`rust-prototype`/`rust-frame-pipe` active capture, adopted Rust prewarm
+evidence through `activeCapture.rustPrewarmAdoption`, and a closed Rust
+fallback circuit; generic Python live-mic stability is not enough for Rust
+promotion.
 Then add the matching `-Run...` or `-UseExisting...` flags to produce or reuse
 the required reports.
 

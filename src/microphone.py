@@ -1440,6 +1440,7 @@ class MicrophoneInput(BaseInputTransport):
         if not isinstance(self._rust_prewarm_adoption, dict):
             return None
         payload = dict(self._rust_prewarm_adoption)
+        payload.setdefault("adopted", True)
         for key in ("prewarmId", "prewarm_id"):
             if key in payload:
                 payload[f"{key}Hash"] = _hash_private_hint(str(payload.pop(key) or ""))

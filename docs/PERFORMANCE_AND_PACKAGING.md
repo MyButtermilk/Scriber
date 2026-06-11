@@ -1098,8 +1098,10 @@ Implementation plan:
      app/installer gate. For Rust default promotion, the runner also sets
      `-RequireInstalledLiveRecordingRustAudio`, which requires every stability
      sample to include compact audio diagnostics proving `rust-prototype`
-     `rust-frame-pipe` capture, active callbacks, closed fallback circuit, and
-     clean frame-pipe counters. The aggregate Rust-promotion runner now also
+     `rust-frame-pipe` capture, adopted Rust prewarm evidence via
+     `activeCapture.rustPrewarmAdoption.adopted=true` plus a redacted prewarm
+     hash, active callbacks, closed fallback circuit, and clean frame-pipe
+     counters. The aggregate Rust-promotion runner now also
      enables `-InstalledLiveRecordingMicAlwaysOn`, and the validator requires
      `liveRecording.micAlwaysOn=true` plus
      `audioDiagnostics.microphone.micAlwaysOn=true` in every stability sample.

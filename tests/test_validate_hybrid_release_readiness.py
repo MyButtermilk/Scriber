@@ -894,6 +894,7 @@ def write_installed_live_recording_smoke_report(
     active_capture_health_restart_throttle_count: int = 0,
     active_capture_last_health_failure_reason: str = "",
     active_capture_last_health_restart_error: str = "",
+    rust_prewarm_adopted: bool = True,
 ) -> None:
     if stability_duration_sec is None:
         stability_duration_sec = duration_sec
@@ -950,6 +951,18 @@ def write_installed_live_recording_smoke_report(
                     "framePipeSequenceErrorCount": frame_pipe_sequence_errors,
                     "framePipeProtocolErrorCount": frame_pipe_protocol_errors,
                     "framePipePrebufferAfterLiveCount": frame_pipe_prebuffer_after_live,
+                    "rustPrewarmAdoption": {
+                        "adopted": rust_prewarm_adopted,
+                        "prewarmIdHash": "prewarm-hash" if rust_prewarm_adopted else "",
+                        "signature": {
+                            "device_preference": "default",
+                            "sample_rate": 16000,
+                            "target_channels": 1,
+                            "block_size": 160,
+                        },
+                    }
+                    if frame_source == "rust-frame-pipe"
+                    else None,
                     "healthRestartCount": active_capture_health_restart_count,
                     "healthRestartThrottleCount": active_capture_health_restart_throttle_count,
                     "lastHealthFailureReason": active_capture_last_health_failure_reason,
@@ -1384,6 +1397,7 @@ def test_validate_release_readiness_accepts_installed_live_recording_rust_audio_
     assert rust_evidence["fallbackCircuitOpenCount"] == 0
     assert rust_evidence["activeCaptureHealthRestartSampleCount"] == 0
     assert rust_evidence["activeCaptureHealthRestartThrottleSampleCount"] == 0
+    assert rust_evidence["rustPrewarmAdoptionSampleCount"] == rust_evidence["sampleCount"]
 
 
 def test_validate_release_readiness_rejects_installed_rust_live_recording_without_always_on_mic(tmp_path: Path) -> None:
@@ -1419,6 +1433,42 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_withou
     failures = "\n".join(live_check["failures"])
     assert "liveRecording.micAlwaysOn must be true" in failures
     assert "audioDiagnostics.microphone.micAlwaysOn must be true" in failures
+
+
+def test_validate_release_readiness_rejects_installed_rust_live_recording_without_prewarm_adoption(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    live_recording_report = tmp_path / "installed-live-recording-smoke.json"
+    write_installed_live_recording_smoke_report(
+        live_recording_report,
+        duration_sec=600,
+        audio_engine="rust-prototype",
+        rust_audio_requested=True,
+        rust_audio_available=True,
+        frame_source="rust-frame-pipe",
+        rust_prewarm_adopted=False,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        installed_live_recording_smoke_report=live_recording_report,
+        require_installed_live_recording_smoke=True,
+        require_installed_live_recording_rust_audio=True,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    failures = "\n".join(live_check["failures"])
+    rust_evidence = live_check["details"]["rustAudioEvidence"]
+    assert rust_evidence["rustPrewarmAdoptionSampleCount"] == 0
+    assert "activeCapture.rustPrewarmAdoption.adopted must be true" in failures
 
 
 def test_validate_release_readiness_rejects_installed_rust_live_recording_without_default_endpoint_evidence(tmp_path: Path) -> None:

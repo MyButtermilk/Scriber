@@ -598,8 +598,9 @@ requested duration, and verified cleanup. Add
 `-RequireInstalledLiveRecordingRustAudio` when the report is used as Rust
 promotion evidence; that requires every stability sample to include compact
 audio diagnostics proving `audioEngine=rust-prototype`,
-`activeCapture.frameSource=rust-frame-pipe`, active callbacks, no frame-pipe
-sequence/protocol/prebuffer-order errors, and
+`activeCapture.frameSource=rust-frame-pipe`,
+`activeCapture.rustPrewarmAdoption.adopted=true` with a redacted prewarm hash,
+active callbacks, no frame-pipe sequence/protocol/prebuffer-order errors, and
 `rustAudioFallbackCircuit.open=false`. The same compact diagnostics must show
 `activeCapture.healthRestartCount=0`,
 `activeCapture.healthRestartThrottleCount=0`, an empty

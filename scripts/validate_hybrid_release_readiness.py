@@ -1366,6 +1366,7 @@ def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict
             "fallbackCircuitOpenCount": 0,
             "activeCaptureHealthRestartSampleCount": 0,
             "activeCaptureHealthRestartThrottleSampleCount": 0,
+            "rustPrewarmAdoptionSampleCount": 0,
         }
 
     audio_diagnostics_count = 0
@@ -1373,6 +1374,7 @@ def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict
     fallback_open_count = 0
     active_capture_health_restart_count = 0
     active_capture_health_restart_throttle_count = 0
+    rust_prewarm_adoption_count = 0
     for sample in samples:
         if not isinstance(sample, dict):
             continue
@@ -1400,6 +1402,17 @@ def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict
             restart_throttle_count = numeric_field(active_capture, "healthRestartThrottleCount")
             if restart_throttle_count is not None and restart_throttle_count > 0:
                 active_capture_health_restart_throttle_count += 1
+            rust_prewarm_adoption = active_capture.get("rustPrewarmAdoption")
+            if (
+                isinstance(rust_prewarm_adoption, dict)
+                and rust_prewarm_adoption.get("adopted") is True
+                and str(
+                    rust_prewarm_adoption.get("prewarmIdHash")
+                    or rust_prewarm_adoption.get("prewarm_idHash")
+                    or ""
+                )
+            ):
+                rust_prewarm_adoption_count += 1
 
     return {
         "sampleCount": len(samples),
@@ -1408,6 +1421,7 @@ def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict
         "fallbackCircuitOpenCount": fallback_open_count,
         "activeCaptureHealthRestartSampleCount": active_capture_health_restart_count,
         "activeCaptureHealthRestartThrottleSampleCount": active_capture_health_restart_throttle_count,
+        "rustPrewarmAdoptionSampleCount": rust_prewarm_adoption_count,
     }
 
 
@@ -1471,6 +1485,34 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
             break
         if active_capture.get("streamActive") is not True:
             failures.append(f"installed live recording smoke sample {index} activeCapture.streamActive must be true")
+            break
+        rust_prewarm_adoption = active_capture.get("rustPrewarmAdoption")
+        if not isinstance(rust_prewarm_adoption, dict):
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.rustPrewarmAdoption must be an object"
+            )
+            break
+        if rust_prewarm_adoption.get("adopted") is not True:
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.rustPrewarmAdoption.adopted must be true"
+            )
+            break
+        if not str(
+            rust_prewarm_adoption.get("prewarmIdHash")
+            or rust_prewarm_adoption.get("prewarm_idHash")
+            or ""
+        ):
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.rustPrewarmAdoption.prewarmIdHash is required"
+            )
+            break
+        if (
+            rust_prewarm_adoption.get("prewarmId") is not None
+            or rust_prewarm_adoption.get("prewarm_id") is not None
+        ):
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.rustPrewarmAdoption must not expose raw prewarmId"
+            )
             break
         health_restart_count = numeric_field(active_capture, "healthRestartCount")
         if health_restart_count != 0:

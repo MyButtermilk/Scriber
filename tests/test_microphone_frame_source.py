@@ -1060,5 +1060,6 @@ async def test_rust_prototype_adopts_rust_prewarm_id_when_always_on(monkeypatch)
     assert snapshot["engine"] == "rust-prototype"
     assert snapshot["usingPrewarmStream"] is False
     assert snapshot["prewarmAdoptionSkippedReason"] == ""
+    assert snapshot["rustPrewarmAdoption"]["adopted"] is True
     assert snapshot["rustPrewarmAdoption"]["prewarmIdHash"]
     assert "prewarm-rust-1" not in str(snapshot)

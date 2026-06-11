@@ -382,6 +382,28 @@ function Convert-AudioDiagnosticsSummary {
                 framePipeSequenceErrorCount = $framePipeSequenceErrorCount
                 framePipeProtocolErrorCount = $framePipeProtocolErrorCount
                 framePipePrebufferAfterLiveCount = $framePipePrebufferAfterLiveCount
+                rustPrewarmAdoption = if ($activeCapture.rustPrewarmAdoption) {
+                    $adoption = $activeCapture.rustPrewarmAdoption
+                    $signature = $adoption.signature
+                    [pscustomobject]@{
+                        adopted = [bool]$adoption.adopted
+                        engine = [string]$adoption.engine
+                        prewarmIdHash = [string]$adoption.prewarmIdHash
+                        prewarm_idHash = [string]$adoption.prewarm_idHash
+                        signature = if ($signature) {
+                            [pscustomobject]@{
+                                device_preference = [string]$signature.device_preference
+                                sample_rate = $signature.sample_rate
+                                target_channels = $signature.target_channels
+                                block_size = $signature.block_size
+                            }
+                        } else {
+                            $null
+                        }
+                    }
+                } else {
+                    $null
+                }
                 sidecarPid = $activeCapture.sidecarPid
                 sidecarConnected = $activeCapture.sidecarConnected
             }
