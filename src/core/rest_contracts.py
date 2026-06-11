@@ -95,6 +95,66 @@ def _validate_feature_flags(feature_flags: dict[str, Any], contract: str) -> Non
     _require_bool(feature_flags, "validateWsContracts", contract)
 
 
+def _validate_audio_capture_diagnostics(
+    payload: Any,
+    contract: str,
+    path: str = "activeCapture",
+) -> None:
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} requires object-or-null '{path}'")
+
+    _require_optional_bool(payload, "running", contract)
+    _require_optional_string(payload, "engine", contract)
+    _require_optional_string(payload, "requestedEngine", contract)
+    _require_optional_string(payload, "frameSource", contract)
+    _require_optional_string(payload, "engineFallbackReason", contract)
+    _require_optional_bool(payload, "hasStream", contract)
+    _require_optional_bool(payload, "streamActive", contract)
+    _require_optional_bool(payload, "usingPrewarmStream", contract)
+    _require_optional_string(payload, "prewarmAdoptionSkippedReason", contract)
+    _require_optional_bool(payload, "streamClaimed", contract)
+    _require_optional_int(payload, "sampleRate", contract)
+    _require_optional_int(payload, "targetChannels", contract)
+    _require_optional_int(payload, "captureChannels", contract)
+    _require_optional_int(payload, "blockSize", contract)
+    _require_optional_string(payload, "device", contract)
+    _require_optional_int(payload, "callbackCount", contract)
+    _require_optional_int(payload, "droppedFrameCount", contract)
+    _require_optional_number(payload, "lastCallbackAgoSeconds", contract)
+    _require_optional_string(payload, "fallbackReason", contract)
+    _require_optional_string(payload, "lastError", contract)
+    _require_optional_string(payload, "nativeEndpointIdHash", contract)
+    _require_optional_int(payload, "sidecarPid", contract)
+    _require_optional_int(payload, "sidecarExitStatus", contract)
+    _require_optional_int(payload, "sidecarUptimeMs", contract)
+    _require_optional_bool(payload, "sidecarKilledAfterTimeout", contract)
+    _require_optional_string(payload, "sidecarWaitError", contract)
+    _require_optional_bool(payload, "sidecarConnected", contract)
+    _require_optional_int(payload, "sidecarFramesWritten", contract)
+    _require_optional_int(payload, "sidecarPrebufferFramesWritten", contract)
+    _require_optional_int(payload, "sidecarLiveFramesWritten", contract)
+    _require_optional_int(payload, "sidecarBytesWritten", contract)
+    _require_optional_string(payload, "sidecarWriterError", contract)
+    _require_optional_string(payload, "sidecarStopReason", contract)
+    _require_optional_int(payload, "sidecarStartCount", contract)
+    _require_optional_int(payload, "sidecarRestartCount", contract)
+    _require_optional_bool(payload, "readerThreadAlive", contract)
+    _require_optional_int(payload, "framePipeFramesRead", contract)
+    _require_optional_int(payload, "framePipeAudioFramesRead", contract)
+    _require_optional_int(payload, "framePipeSequenceErrorCount", contract)
+    _require_optional_int(payload, "framePipeProtocolErrorCount", contract)
+    _require_optional_int(payload, "framePipePrebufferAfterLiveCount", contract)
+    _require_optional_number(payload, "framePipeFirstFrameReadMs", contract)
+    _require_optional_string(payload, "framePipeReaderEndReason", contract)
+    _require_optional_string(payload, "midSessionFailureReason", contract)
+
+    source = payload.get("source")
+    if source is not None:
+        _validate_audio_capture_diagnostics(source, contract, f"{path}.source")
+
+
 def validate_runtime_payload(payload: dict[str, Any]) -> None:
     contract = "/api/runtime"
     if not isinstance(payload, dict):
@@ -230,6 +290,11 @@ def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
     _require_optional_string(rust_audio_fallback_circuit, "reason", contract)
     _require_optional_number(rust_audio_fallback_circuit, "remainingSeconds", contract)
     _require_optional_number(rust_audio_fallback_circuit, "cooldownSeconds", contract)
+    _validate_audio_capture_diagnostics(
+        microphone.get("activeCapture"),
+        contract,
+        "microphone.activeCapture",
+    )
 
     watchdog = _require_dict(payload, "watchdog", contract)
     _require_bool(watchdog, "enabled", contract)

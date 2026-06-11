@@ -694,6 +694,10 @@ Missing prerequisites:
      writer connection state, frames/bytes written, writer error, reader-thread
      liveness, and sidecar restart count are exposed through the nested
      active-capture source diagnostics.
+   - Implemented: the REST contract for `/api/runtime/audio-diagnostics`
+     validates the optional `microphone.activeCapture` schema, including nested
+     Rust `source` diagnostics and bounded-cleanup fields
+     `sidecarKilledAfterTimeout` and `sidecarWaitError`.
    - Implemented for the Rust prototype: Python reader diagnostics now include
      frame-pipe frames read, audio frames read, bytes read, sequence/protocol
      error counters, last frame metadata, first-frame read timing, reader end

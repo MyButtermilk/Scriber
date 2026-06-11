@@ -228,6 +228,53 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
                 "remainingSeconds": 12.5,
                 "cooldownSeconds": 60.0,
             },
+            "activeCapture": {
+                "running": True,
+                "engine": "rust-prototype",
+                "requestedEngine": "rust-prototype",
+                "frameSource": "rust-frame-pipe",
+                "hasStream": True,
+                "streamActive": True,
+                "sampleRate": 16000,
+                "targetChannels": 1,
+                "captureChannels": 1,
+                "blockSize": 512,
+                "device": "default",
+                "callbackCount": 3,
+                "droppedFrameCount": 0,
+                "nativeEndpointIdHash": "endpoint-hash",
+                "sidecarPid": 1234,
+                "sidecarExitStatus": 0,
+                "sidecarUptimeMs": 55,
+                "sidecarKilledAfterTimeout": False,
+                "sidecarWaitError": None,
+                "sidecarConnected": True,
+                "sidecarFramesWritten": 3,
+                "sidecarPrebufferFramesWritten": 1,
+                "sidecarLiveFramesWritten": 2,
+                "sidecarBytesWritten": 3072,
+                "sidecarWriterError": None,
+                "sidecarStopReason": "captureStop",
+                "sidecarStartCount": 1,
+                "sidecarRestartCount": 0,
+                "readerThreadAlive": False,
+                "framePipeFramesRead": 3,
+                "framePipeAudioFramesRead": 1536,
+                "framePipeSequenceErrorCount": 0,
+                "framePipeProtocolErrorCount": 0,
+                "framePipePrebufferAfterLiveCount": 0,
+                "framePipeFirstFrameReadMs": 9.5,
+                "framePipeReaderEndReason": "stopRequested",
+                "midSessionFailureReason": "",
+                "source": {
+                    "engine": "rust-prototype",
+                    "frameSource": "rust-frame-pipe",
+                    "hasStream": False,
+                    "streamActive": False,
+                    "sidecarKilledAfterTimeout": False,
+                    "sidecarWaitError": None,
+                },
+            },
         },
         "watchdog": {
             "enabled": True,
@@ -295,6 +342,31 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
         "rustAudioFallbackCircuit": {
             **valid["microphone"]["rustAudioFallbackCircuit"],
             "open": "yes",
+        },
+    }
+    with pytest.raises(RESTContractError):
+        validate_audio_diagnostics_payload(invalid)
+
+    invalid = dict(valid)
+    invalid["microphone"] = {
+        **valid["microphone"],
+        "activeCapture": {
+            **valid["microphone"]["activeCapture"],
+            "sidecarKilledAfterTimeout": "no",
+        },
+    }
+    with pytest.raises(RESTContractError):
+        validate_audio_diagnostics_payload(invalid)
+
+    invalid = dict(valid)
+    invalid["microphone"] = {
+        **valid["microphone"],
+        "activeCapture": {
+            **valid["microphone"]["activeCapture"],
+            "source": {
+                **valid["microphone"]["activeCapture"]["source"],
+                "streamActive": "yes",
+            },
         },
     }
     with pytest.raises(RESTContractError):
