@@ -23,6 +23,8 @@ param(
     [switch]$AssumeCompleted,
     [switch]$PlanOnly,
     [switch]$RequireRustEndpointInventory,
+    [switch]$RequireDeviceRefreshEvidence,
+    [switch]$ForceRefreshEachPoll,
     [switch]$SkipValidation
 )
 
@@ -152,6 +154,9 @@ function New-SmokeArgs {
     if ($AssumeCompleted) {
         $args += "--assume-completed"
     }
+    if ($ForceRefreshEachPoll) {
+        $args += "--force-refresh-each-poll"
+    }
     $args += $Scenario.Flags
     return $args
 }
@@ -192,6 +197,9 @@ function New-Plan {
     if ($RequireRustEndpointInventory) {
         $validationArgs += "--require-rust-endpoint-inventory"
     }
+    if ($RequireDeviceRefreshEvidence) {
+        $validationArgs += "--require-device-refresh-evidence"
+    }
     return [pscustomobject]@{
         ok = $true
         planOnly = [bool]$PlanOnly
@@ -199,6 +207,9 @@ function New-Plan {
         outputDir = $OutputDir
         waitSec = $WaitSec
         pollSec = $PollSec
+        forceRefreshEachPoll = [bool]$ForceRefreshEachPoll
+        requireRustEndpointInventory = [bool]$RequireRustEndpointInventory
+        requireDeviceRefreshEvidence = [bool]$RequireDeviceRefreshEvidence
         readyForPhysicalRun = ($missingLabelParameters.Count -eq 0)
         missingLabelParameters = $missingLabelParameters
         scenarios = @($entries)
@@ -248,6 +259,9 @@ try {
         )
         if ($RequireRustEndpointInventory) {
             $validationArgs += "--require-rust-endpoint-inventory"
+        }
+        if ($RequireDeviceRefreshEvidence) {
+            $validationArgs += "--require-device-refresh-evidence"
         }
         python @validationArgs
         if ($LASTEXITCODE -ne 0) {

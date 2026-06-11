@@ -126,11 +126,32 @@ def test_prompted_physical_run_records_operator_completion(monkeypatch, tmp_path
                             }
                         ]
                     },
+                    "deviceMonitor": {
+                        "nativeEventsSupported": True,
+                        "nativeEventsActive": True,
+                        "pollMode": "native-event-safety",
+                        "pollIntervalSeconds": 900.0,
+                        "pollRefreshCount": 0,
+                        "eventRefreshCount": 1,
+                        "portAudioRefreshCount": 1,
+                        "nativeHintCount": 1,
+                        "nativeHintIgnoredCount": 0,
+                        "nativeHintPortAudioCount": 1,
+                        "pendingRefresh": False,
+                        "pendingRefreshRequiresPortAudio": False,
+                        "refreshDeferredUntilIdle": False,
+                        "lastNativeHint": {
+                            "kind": "endpoint",
+                            "eventKind": "stateChanged",
+                            "endpointId": r"SWD\MMDEVAPI\{raw-hint}",
+                            "forcePortAudioRefresh": True,
+                        },
+                    },
                 }
             }
 
-    def fake_wait_for_condition(**_kwargs: object) -> tuple[list[Device], dict[str, object], list[str]]:
-        return [Device("USB Mic", "USB Mic")], {}, []
+    def fake_wait_for_condition(**_kwargs: object) -> tuple[list[Device], dict[str, object], list[str], int]:
+        return [Device("USB Mic", "USB Mic")], {}, [], 0
 
     monkeypatch.setattr(matrix_smoke, "HttpClient", FakeClient)
     monkeypatch.setattr(matrix_smoke, "wait_for_condition", fake_wait_for_condition)
@@ -160,6 +181,14 @@ def test_prompted_physical_run_records_operator_completion(monkeypatch, tmp_path
     after_diagnostics = payload["result"]["audioDiagnosticsAfter"]
     assert "endpointId" not in after_diagnostics["rustNativeEndpointInventory"]["endpoints"][0]
     assert "endpointId" not in after_diagnostics["nativeEndpointMapping"]["mappings"][0]
+    assert "endpointId" not in after_diagnostics["deviceMonitor"]["lastNativeHint"]
+    device_refresh = payload["result"]["deviceMonitorRefresh"]
+    assert device_refresh["strategy"] == {
+        "mode": "monitor-events",
+        "forcedRefreshRequests": 0,
+    }
+    assert device_refresh["nativeEventsActiveAfter"] is True
+    assert device_refresh["pollModeAfter"] == "native-event-safety"
 
 
 def test_change_summary_tracks_added_removed_and_default_change() -> None:

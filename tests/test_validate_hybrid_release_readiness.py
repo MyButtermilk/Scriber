@@ -64,6 +64,45 @@ SCENARIO_FIXTURES = {
 def write_full_hardware_matrix(directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     for scenario, (expectations, change, settings_after) in SCENARIO_FIXTURES.items():
+        added = [
+            {
+                "endpointIdHash": f"{str(item['label']).casefold().replace(' ', '-')}-hash",
+                "friendlyName": item["label"],
+                "flow": "capture",
+                "isDefault": False,
+                "defaultRoles": [],
+            }
+            for item in change.get("added", [])
+        ]
+        removed = [
+            {
+                "endpointIdHash": f"{str(item['label']).casefold().replace(' ', '-')}-hash",
+                "friendlyName": item["label"],
+                "flow": "capture",
+                "isDefault": False,
+                "defaultRoles": [],
+            }
+            for item in change.get("removed", [])
+        ]
+        after_endpoints = [
+            {
+                "endpointIdHash": "built-in-hash",
+                "friendlyName": "Built-in Mic",
+                "flow": "capture",
+                "isDefault": not bool(change.get("defaultChanged")),
+                "defaultRoles": ["console"] if not bool(change.get("defaultChanged")) else [],
+            }
+        ] + added
+        if change.get("defaultChanged"):
+            after_endpoints.append(
+                {
+                    "endpointIdHash": "default-target-hash",
+                    "friendlyName": "Default Target Mic",
+                    "flow": "capture",
+                    "isDefault": True,
+                    "defaultRoles": ["console"],
+                }
+            )
         payload = {
             "ok": True,
             "scenarios": [scenario],
@@ -75,6 +114,31 @@ def write_full_hardware_matrix(directory: Path) -> None:
                 "settingsBefore": {},
                 "settingsAfter": settings_after,
                 "change": change,
+                "rustNativeEndpointInventoryChange": {
+                    "availableAfter": True,
+                    "sourceAfter": "rust-wasapi",
+                    "after": after_endpoints,
+                    "added": added,
+                    "removed": removed,
+                    "defaultChanged": bool(change.get("defaultChanged")),
+                },
+                "deviceMonitorRefresh": {
+                    "availableAfter": True,
+                    "strategy": {"mode": "monitor-events", "forcedRefreshRequests": 0},
+                    "nativeEventsActiveAfter": True,
+                    "pollModeAfter": "native-event-safety",
+                    "pollIntervalSecondsAfter": 900,
+                    "pollRefreshDelta": 0,
+                    "eventRefreshDelta": 1,
+                    "portAudioRefreshDelta": 1,
+                    "nativeHintDelta": 1,
+                    "nativeHintPortAudioDelta": 1,
+                    "after": {
+                        "nativeEventsActive": True,
+                        "pollMode": "native-event-safety",
+                        "lastNativeHint": {"kind": "endpoint", "eventKind": "stateChanged"},
+                    },
+                },
                 "expectations": expectations,
                 "failures": [],
             },
@@ -865,6 +929,30 @@ def test_validate_release_readiness_accepts_complete_evidence(tmp_path: Path) ->
         "publishedUpdaterManifest",
         "authenticodeSignatures",
     }
+
+
+def test_validate_release_readiness_rejects_missing_required_device_refresh_evidence(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    usb_add = hardware_dir / "microphone-hardware-usb-add.json"
+    payload = json.loads(usb_add.read_text(encoding="utf-8"))
+    payload["result"].pop("deviceMonitorRefresh", None)
+    usb_add.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        require_device_refresh_evidence=True,
+    )
+
+    assert result["ok"] is False
+    hardware_check = next(check for check in result["checks"] if check["name"] == "physicalMicrophoneMatrix")
+    assert "usb-add: result.deviceMonitorRefresh must be present" in hardware_check["failures"]
 
 
 def test_validate_release_readiness_accepts_required_rust_audio_sidecar_smoke(tmp_path: Path) -> None:

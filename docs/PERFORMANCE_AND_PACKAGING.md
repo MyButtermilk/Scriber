@@ -377,9 +377,11 @@ Acceptance gates:
 - Physical hardware matrix covers USB mic add/remove, dock connect/disconnect,
   Windows default input changes, and favorite mic restore. For Rust audio
   promotion, run `scripts\run_microphone_hardware_matrix.ps1` or the hybrid
-  readiness runner with `-RequireRustEndpointInventory` so every physical
-  artifact also captures and validates Rust/WASAPI endpoint inventory changes
-  without raw IMMDevice IDs.
+  readiness runner with `-RequireRustEndpointInventory` and
+  `-RequireDeviceRefreshEvidence` so every physical artifact also captures and
+  validates Rust/WASAPI endpoint inventory changes plus native-event
+  DeviceMonitor refresh evidence without raw IMMDevice IDs or forced per-poll
+  refreshes.
 - Always-on mic light must not blink during idle safety periods unless an actual
   capture endpoint event occurred.
 - Support bundle clearly reports whether Rust events or Python fallback handled
@@ -1193,8 +1195,12 @@ Acceptance gates:
   for default promotion because it does not prove app-wide Always-On-Mic
   lifecycle integration or provider-backed transcription.
 - Physical mic matrix across built-in, USB, Bluetooth, docked, undocked, and
-  Windows default-device changes, with `--require-rust-endpoint-inventory`
-  validation for Rust promotion.
+  Windows default-device changes, with `--require-rust-endpoint-inventory` and
+  `--require-device-refresh-evidence` validation for Rust promotion. The matrix
+  smoke now observes `/api/microphones` by default and relies on native events
+  or sparse fallback polling; `--force-refresh-each-poll` exists only as an
+  explicit legacy fallback because it can mask over-aggressive PortAudio
+  refresh behavior.
 - No feature loss for provider streaming, final transcript injection, overlay,
   audio diagnostics, support bundles, and fallback settings.
 - Backend restart and Tauri exit clean up the Rust audio sidecar. Cleanup now

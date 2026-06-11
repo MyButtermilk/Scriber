@@ -172,6 +172,10 @@ Packaging and scripts:
   With active native events, polling is only a sparse safety net; faster polling
   is fallback-only when native events are unavailable.
 - Device refresh is recording-aware and can be deferred until idle.
+- Physical microphone matrix evidence is native-event-first. Use
+  `-RequireDeviceRefreshEvidence` for Rust-promotion gates so artifacts prove
+  native events, sparse safety polling, and zero forced per-poll refreshes.
+  `-ForceRefreshEachPoll` is legacy diagnostic fallback only.
 - Native endpoint IDs must stay private. Use hashed native endpoint IDs in
   diagnostics and prototype mapping; do not expose raw IMMDevice IDs as public
   microphone IDs or log fields.
@@ -298,6 +302,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -RunInstallerFrontendSmoke `
   -RunInstallerMediaPreparationSmoke `
   -RunInstallerRealMediaWorkflowSmoke
+```
+
+Rust-promotion microphone matrix:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_microphone_hardware_matrix.ps1 `
+  -RequireRustEndpointInventory `
+  -RequireDeviceRefreshEvidence
 ```
 
 Frontend browser smoke:

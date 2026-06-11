@@ -115,6 +115,8 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert hardware_evidence["external"] is True
     assert len(hardware_evidence["expectedArtifacts"]) == 8
     assert any("favorite-fallback" in artifact for artifact in hardware_evidence["expectedArtifacts"])
+    assert hardware_evidence["requireRustEndpointInventory"] is False
+    assert hardware_evidence["requireDeviceRefreshEvidence"] is False
     updater_evidence = payload["requiredEvidence"][1]
     assert updater_evidence["metadata"].endswith("latest.json")
     assert "absolute HTTPS" in updater_evidence["notes"]
@@ -187,6 +189,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert authenticode_evidence["expectedPublisher"] == "Scriber Publisher"
     assert authenticode_evidence["requireTimestamp"] is True
     assert "validate_microphone_hardware_matrix.py" in payload["commands"][0]["command"]
+    assert "--require-device-refresh-evidence" not in payload["commands"][0]["command"]
     assert "verify_tauri_updater_publication.py" in payload["commands"][1]["command"]
     assert "smoke_media_preparation.py" in payload["commands"][2]["command"]
     assert "--media-tools-dir" in payload["commands"][2]["command"]
@@ -258,9 +261,13 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_sidecar_smoke
     matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
     matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "microphoneMatrixValidation")
     assert matrix_evidence["requireRustEndpointInventory"] is True
+    assert matrix_evidence["requireDeviceRefreshEvidence"] is True
     assert "--require-rust-endpoint-inventory" in matrix_command["command"]
+    assert "--require-device-refresh-evidence" in matrix_command["command"]
     assert "--rust-audio-sidecar-report" in readiness_command["command"]
     assert "--require-rust-audio-sidecar-smoke" in readiness_command["command"]
+    assert "--require-rust-endpoint-inventory" in readiness_command["command"]
+    assert "--require-device-refresh-evidence" in readiness_command["command"]
     assert "--min-rust-audio-duration-sec 600" in readiness_command["command"]
 
 
@@ -307,7 +314,9 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_prewarm_sidec
     matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
     matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "microphoneMatrixValidation")
     assert matrix_evidence["requireRustEndpointInventory"] is False
+    assert matrix_evidence["requireDeviceRefreshEvidence"] is False
     assert "--require-rust-endpoint-inventory" not in matrix_command["command"]
+    assert "--require-device-refresh-evidence" not in matrix_command["command"]
     assert "--rust-audio-prewarm-sidecar-report" in readiness_command["command"]
     assert "--require-rust-audio-prewarm-sidecar-smoke" in readiness_command["command"]
 
@@ -351,11 +360,19 @@ def test_hybrid_release_readiness_runner_plans_required_long_rust_audio_app_prew
     assert "--duration-sec 600" in app_command["command"]
     assert "--prewarm-duration-sec 1800" in app_command["command"]
     assert "--sidecar-exe" in app_command["command"]
+    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
+    matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "microphoneMatrixValidation")
+    assert matrix_evidence["requireRustEndpointInventory"] is True
+    assert matrix_evidence["requireDeviceRefreshEvidence"] is True
+    assert "--require-rust-endpoint-inventory" in matrix_command["command"]
+    assert "--require-device-refresh-evidence" in matrix_command["command"]
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
     assert "--rust-audio-app-prewarm-report" in readiness_command["command"]
     assert "--require-rust-audio-app-prewarm-smoke" in readiness_command["command"]
     assert "--min-rust-audio-app-prewarm-duration-sec 600" in readiness_command["command"]
     assert "--min-rust-audio-app-prewarm-prewarm-duration-sec 1800" in readiness_command["command"]
+    assert "--require-rust-endpoint-inventory" in readiness_command["command"]
+    assert "--require-device-refresh-evidence" in readiness_command["command"]
 
 
 def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_comparison(tmp_path: Path) -> None:

@@ -80,6 +80,8 @@ def validate_release_readiness(
     require_tauri_text_injection_smoke: bool = False,
     require_tauri_text_injection_matrix: bool = False,
     require_recording_hot_path_comparison: bool = False,
+    require_rust_endpoint_inventory: bool = False,
+    require_device_refresh_evidence: bool = False,
     min_rust_audio_duration_sec: float = 0.0,
     min_rust_audio_app_prewarm_duration_sec: float = 0.0,
     min_rust_audio_app_prewarm_prewarm_duration_sec: float = 0.0,
@@ -89,8 +91,22 @@ def validate_release_readiness(
     platform: str = "windows-x86_64",
 ) -> dict[str, Any]:
     expected_signed_artifact_names = read_updater_artifact_names(updater_metadata)
+    effective_require_rust_endpoint_inventory = (
+        require_rust_endpoint_inventory
+        or require_rust_audio_sidecar_smoke
+        or require_rust_audio_app_prewarm_smoke
+    )
+    effective_require_device_refresh_evidence = (
+        require_device_refresh_evidence
+        or require_rust_audio_sidecar_smoke
+        or require_rust_audio_app_prewarm_smoke
+    )
     checks = [
-        validate_physical_microphone_matrix(hardware_input_dir),
+        validate_physical_microphone_matrix(
+            hardware_input_dir,
+            require_rust_endpoint_inventory=effective_require_rust_endpoint_inventory,
+            require_device_refresh_evidence=effective_require_device_refresh_evidence,
+        ),
         validate_signed_updater_metadata(
             updater_metadata,
             platform=platform,
@@ -166,8 +182,17 @@ def validate_release_readiness(
     }
 
 
-def validate_physical_microphone_matrix(input_dir: Path) -> ReadinessCheck:
-    payload = validate_microphone_matrix(input_dir=input_dir)
+def validate_physical_microphone_matrix(
+    input_dir: Path,
+    *,
+    require_rust_endpoint_inventory: bool = False,
+    require_device_refresh_evidence: bool = False,
+) -> ReadinessCheck:
+    payload = validate_microphone_matrix(
+        input_dir=input_dir,
+        require_rust_endpoint_inventory=require_rust_endpoint_inventory,
+        require_device_refresh_evidence=require_device_refresh_evidence,
+    )
     failures: list[str] = []
     if payload["failedCount"]:
         failures.append(f"{payload['failedCount']} physical microphone scenario(s) failed or are missing")
@@ -183,6 +208,8 @@ def validate_physical_microphone_matrix(input_dir: Path) -> ReadinessCheck:
             "passedCount": payload["passedCount"],
             "failedCount": payload["failedCount"],
             "requiredScenarios": payload["requiredScenarios"],
+            "requireRustEndpointInventory": payload.get("requireRustEndpointInventory", False),
+            "requireDeviceRefreshEvidence": payload.get("requireDeviceRefreshEvidence", False),
         },
     )
 
@@ -1577,6 +1604,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--require-tauri-text-injection-smoke", action="store_true")
     parser.add_argument("--require-tauri-text-injection-matrix", action="store_true")
     parser.add_argument("--require-recording-hot-path-comparison", action="store_true")
+    parser.add_argument("--require-rust-endpoint-inventory", action="store_true")
+    parser.add_argument("--require-device-refresh-evidence", action="store_true")
     parser.add_argument("--min-rust-audio-duration-sec", type=float, default=0.0)
     parser.add_argument("--min-rust-audio-app-prewarm-duration-sec", type=float, default=0.0)
     parser.add_argument("--min-rust-audio-app-prewarm-prewarm-duration-sec", type=float, default=0.0)
@@ -1613,6 +1642,8 @@ def main(argv: list[str]) -> int:
         require_tauri_text_injection_smoke=args.require_tauri_text_injection_smoke,
         require_tauri_text_injection_matrix=args.require_tauri_text_injection_matrix,
         require_recording_hot_path_comparison=args.require_recording_hot_path_comparison,
+        require_rust_endpoint_inventory=args.require_rust_endpoint_inventory,
+        require_device_refresh_evidence=args.require_device_refresh_evidence,
         min_rust_audio_duration_sec=args.min_rust_audio_duration_sec,
         min_rust_audio_app_prewarm_duration_sec=args.min_rust_audio_app_prewarm_duration_sec,
         min_rust_audio_app_prewarm_prewarm_duration_sec=args.min_rust_audio_app_prewarm_prewarm_duration_sec,

@@ -26,6 +26,9 @@ Mic and recording:
 - The installed desktop support-bundle smoke now gates native device-event COM
   initialization, monitor registration, and callback liveness whenever Tauri
   shell IPC is available and native events are supported/enabled.
+- The microphone hardware matrix is native-event-first and can require
+  DeviceMonitor refresh evidence that proves native events, sparse safety
+  polling, and zero forced per-poll refreshes.
 - Polling fallback is intentionally slow compared with the old aggressive poll.
 - PortAudio access is guarded and refreshes are recording-aware.
 - Always-on mic prewarm and rolling prebuffer are implemented.
@@ -97,8 +100,12 @@ Physical hardware evidence:
 - Matrix artifacts now capture redacted Rust/WASAPI endpoint inventory
   before/after each physical action, and validation can require that evidence
   with `-RequireRustEndpointInventory` or the Rust audio release-readiness gate.
+- Matrix artifacts now also capture DeviceMonitor refresh counters, and
+  validation can require native-event refresh evidence with
+  `-RequireDeviceRefreshEvidence`.
 - Final release-readiness still needs real physical runs for USB, Bluetooth,
-  dock connect/disconnect, Windows default changes, and favorite fallback.
+  dock connect/disconnect, Windows default changes, and favorite fallback using
+  both Rust endpoint inventory and DeviceMonitor refresh evidence.
 
 Provider latency:
 
@@ -179,10 +186,12 @@ Rust audio:
   capture, no sequence gaps, matching reader/writer frame counts, and no
   prebuffer-after-live frames. A local app-level WASAPI prewarm adoption smoke
   passed on 2026-06-11 with 40 adopted prebuffer blocks, 42 live blocks, no
-  sequence/protocol errors, and successful idle-prewarm resume. Actually
-  running the long physical Always-On-Mic matrix evidence, real provider-backed
-  Python/Rust comparison artifacts using that gate, and final Rust promotion
-  gates remain open before default promotion.
+  sequence/protocol errors, and successful idle-prewarm resume. The hardware
+  matrix now records native DeviceMonitor refresh evidence without forced
+  per-poll refreshes, but actually running the long physical Always-On-Mic and
+  hardware matrix evidence, real provider-backed Python/Rust comparison
+  artifacts using that gate, and final Rust promotion gates remain open before
+  default promotion.
 
 Tauri text injection:
 

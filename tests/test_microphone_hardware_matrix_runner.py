@@ -97,8 +97,12 @@ def test_microphone_matrix_runner_plan_only_writes_redacted_plan(tmp_path: Path)
     assert payload["ok"] is True
     assert payload["planOnly"] is True
     assert payload["readyForPhysicalRun"] is True
+    assert payload["forceRefreshEachPoll"] is False
+    assert payload["requireRustEndpointInventory"] is False
+    assert payload["requireDeviceRefreshEvidence"] is False
     assert payload["missingLabelParameters"] == []
     assert "validate_microphone_hardware_matrix.py" in payload["validationCommand"]
+    assert "--force-refresh-each-poll" not in result.stdout
     assert "real-session-token" not in result.stdout
     assert any("<session token>" in entry["command"] for entry in payload["scenarios"])
     assert written == payload
@@ -128,6 +132,60 @@ def test_microphone_matrix_runner_plan_only_can_require_rust_endpoint_inventory(
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert "--require-rust-endpoint-inventory" in payload["validationCommand"]
+
+
+def test_microphone_matrix_runner_plan_only_can_require_device_refresh_evidence(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-OutputDir",
+        str(tmp_path),
+        "-UsbLabel",
+        "USB Mic",
+        "-DockLabel",
+        "Dock Mic",
+        "-BluetoothLabel",
+        "Bluetooth Headset",
+        "-FavoriteLabel",
+        "Favorite Mic",
+        "-RequireDeviceRefreshEvidence",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["requireDeviceRefreshEvidence"] is True
+    assert "--require-device-refresh-evidence" in payload["validationCommand"]
+
+
+def test_microphone_matrix_runner_plan_only_can_use_legacy_forced_refresh(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-OutputDir",
+        str(tmp_path),
+        "-UsbLabel",
+        "USB Mic",
+        "-DockLabel",
+        "Dock Mic",
+        "-BluetoothLabel",
+        "Bluetooth Headset",
+        "-FavoriteLabel",
+        "Favorite Mic",
+        "-ForceRefreshEachPoll",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["forceRefreshEachPoll"] is True
+    assert any("--force-refresh-each-poll" in entry["command"] for entry in payload["scenarios"])
 
 
 def test_microphone_matrix_runner_plan_only_reports_missing_labels(tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ def write_artifact(
     expectations: dict[str, object],
     change: dict[str, object],
     rust_change: dict[str, object] | None = None,
+    device_refresh: dict[str, object] | None = None,
     settings_after: dict[str, object] | None = None,
     ok: bool = True,
     plan_only: bool = False,
@@ -39,6 +40,7 @@ def write_artifact(
             "settingsAfter": settings_after or {},
             "change": change,
             "rustNativeEndpointInventoryChange": rust_change,
+            "deviceMonitorRefresh": device_refresh,
             "expectations": expectations,
             "failures": [],
         },
@@ -198,6 +200,75 @@ def test_validate_matrix_rejects_missing_required_rust_endpoint_inventory(tmp_pa
     assert result["ok"] is False
     failures = result["scenarios"][0]["failures"]
     assert "result.rustNativeEndpointInventoryChange must be present" in failures
+
+
+def test_validate_matrix_accepts_required_device_refresh_evidence(tmp_path: Path) -> None:
+    write_artifact(
+        tmp_path,
+        "usb-add",
+        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
+        device_refresh={
+            "availableAfter": True,
+            "strategy": {"mode": "monitor-events", "forcedRefreshRequests": 0},
+            "nativeEventsActiveAfter": True,
+            "pollModeAfter": "native-event-safety",
+            "pollIntervalSecondsAfter": 900,
+            "pollRefreshDelta": 0,
+            "eventRefreshDelta": 1,
+            "portAudioRefreshDelta": 1,
+            "nativeHintDelta": 1,
+            "nativeHintPortAudioDelta": 1,
+            "after": {
+                "nativeEventsActive": True,
+                "pollMode": "native-event-safety",
+                "lastNativeHint": {"kind": "endpoint", "eventKind": "stateChanged"},
+            },
+        },
+    )
+
+    result = validate_matrix(
+        input_dir=tmp_path,
+        scenarios=["usb-add"],
+        require_device_refresh_evidence=True,
+    )
+
+    assert result["ok"] is True
+    assert result["requireDeviceRefreshEvidence"] is True
+
+
+def test_validate_matrix_rejects_forced_refresh_when_device_refresh_evidence_required(tmp_path: Path) -> None:
+    write_artifact(
+        tmp_path,
+        "usb-add",
+        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
+        device_refresh={
+            "availableAfter": True,
+            "strategy": {"mode": "forced-refresh-each-poll", "forcedRefreshRequests": 5},
+            "nativeEventsActiveAfter": False,
+            "pollModeAfter": "fallback",
+            "pollIntervalSecondsAfter": 60,
+            "pollRefreshDelta": 5,
+            "eventRefreshDelta": 0,
+            "portAudioRefreshDelta": 5,
+            "nativeHintDelta": 0,
+            "nativeHintPortAudioDelta": 0,
+            "after": {},
+        },
+    )
+
+    result = validate_matrix(
+        input_dir=tmp_path,
+        scenarios=["usb-add"],
+        require_device_refresh_evidence=True,
+    )
+
+    assert result["ok"] is False
+    failures = result["scenarios"][0]["failures"]
+    assert "device monitor refresh strategy must use monitor-events, not forced polling" in failures
+    assert "device monitor refresh evidence must not use forced refresh requests" in failures
+    assert "device monitor native events must be active after the hardware action" in failures
 
 
 def test_validate_matrix_cli_writes_summary(tmp_path: Path) -> None:

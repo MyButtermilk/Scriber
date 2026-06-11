@@ -212,6 +212,113 @@ def rust_inventory_snapshot(audio_diagnostics: dict[str, Any] | None) -> dict[st
     return snapshot
 
 
+DEVICE_MONITOR_SNAPSHOT_FIELDS = (
+    "nativeEventsSupported",
+    "nativeEventsActive",
+    "pollMode",
+    "pollIntervalSeconds",
+    "pollRefreshCount",
+    "eventRefreshCount",
+    "portAudioRefreshCount",
+    "nativeHintCount",
+    "nativeHintIgnoredCount",
+    "nativeHintPortAudioCount",
+    "lastPollRefreshAgoSeconds",
+    "lastEventRefreshAgoSeconds",
+    "lastNativeHintAgoSeconds",
+    "lastDevicesChangedAgoSeconds",
+    "pendingRefresh",
+    "pendingRefreshRequiresPortAudio",
+    "refreshDeferredUntilIdle",
+    "deferredRefreshTrigger",
+)
+
+
+def _device_monitor_payload(audio_diagnostics: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(audio_diagnostics, dict):
+        return {}
+    microphone = audio_diagnostics.get("microphone")
+    if not isinstance(microphone, dict):
+        return {}
+    monitor = microphone.get("deviceMonitor")
+    return monitor if isinstance(monitor, dict) else {}
+
+
+def device_monitor_snapshot(audio_diagnostics: dict[str, Any] | None) -> dict[str, Any]:
+    monitor = _device_monitor_payload(audio_diagnostics)
+    if not monitor:
+        return {}
+    snapshot = {
+        key: monitor.get(key)
+        for key in DEVICE_MONITOR_SNAPSHOT_FIELDS
+        if key in monitor
+    }
+    raw_hint = monitor.get("lastNativeHint")
+    if isinstance(raw_hint, dict):
+        snapshot["lastNativeHint"] = {
+            key: raw_hint.get(key)
+            for key in (
+                "kind",
+                "eventKind",
+                "flow",
+                "forcePortAudioRefresh",
+                "immediate",
+                "reason",
+            )
+            if key in raw_hint
+        }
+    return snapshot
+
+
+def _counter_delta(before: dict[str, Any], after: dict[str, Any], key: str) -> int | None:
+    before_value = before.get(key)
+    after_value = after.get(key)
+    if not isinstance(before_value, (int, float)) or not isinstance(after_value, (int, float)):
+        return None
+    return int(after_value - before_value)
+
+
+def summarize_device_monitor_refresh(
+    before_audio: dict[str, Any] | None,
+    after_audio: dict[str, Any] | None,
+    *,
+    forced_refresh_requests: int,
+    force_refresh_each_poll: bool,
+) -> dict[str, Any]:
+    before = device_monitor_snapshot(before_audio)
+    after = device_monitor_snapshot(after_audio)
+    return {
+        "availableBefore": bool(before),
+        "availableAfter": bool(after),
+        "strategy": {
+            "mode": "forced-refresh-each-poll" if force_refresh_each_poll else "monitor-events",
+            "forcedRefreshRequests": int(forced_refresh_requests),
+        },
+        "nativeEventsActiveBefore": before.get("nativeEventsActive"),
+        "nativeEventsActiveAfter": after.get("nativeEventsActive"),
+        "pollModeBefore": before.get("pollMode"),
+        "pollModeAfter": after.get("pollMode"),
+        "pollIntervalSecondsBefore": before.get("pollIntervalSeconds"),
+        "pollIntervalSecondsAfter": after.get("pollIntervalSeconds"),
+        "pollRefreshDelta": _counter_delta(before, after, "pollRefreshCount"),
+        "eventRefreshDelta": _counter_delta(before, after, "eventRefreshCount"),
+        "portAudioRefreshDelta": _counter_delta(before, after, "portAudioRefreshCount"),
+        "nativeHintDelta": _counter_delta(before, after, "nativeHintCount"),
+        "nativeHintPortAudioDelta": _counter_delta(before, after, "nativeHintPortAudioCount"),
+        "pendingRefreshObserved": bool(before.get("pendingRefresh") or after.get("pendingRefresh")),
+        "pendingRefreshRequiresPortAudioObserved": bool(
+            before.get("pendingRefreshRequiresPortAudio")
+            or after.get("pendingRefreshRequiresPortAudio")
+        ),
+        "refreshDeferredUntilIdleObserved": bool(
+            before.get("refreshDeferredUntilIdle")
+            or after.get("refreshDeferredUntilIdle")
+        ),
+        "before": before,
+        "after": after,
+    }
+
+
 def omit_raw_endpoint_ids(value: Any) -> Any:
     if isinstance(value, dict):
         return {
@@ -310,13 +417,17 @@ def wait_for_condition(
     expect_removed: str,
     expect_default_changed: bool,
     expect_favorite_fallback: bool,
-) -> tuple[list[Device], dict[str, Any], list[str]]:
+    force_refresh_each_poll: bool,
+) -> tuple[list[Device], dict[str, Any], list[str], int]:
     deadline = time.monotonic() + timeout_sec
     last_after = before
     last_settings: dict[str, Any] = {}
     last_failures: list[str] = ["no post-action sample collected"]
+    forced_refresh_requests = 0
     while time.monotonic() <= deadline:
-        client.refresh_microphones()
+        if force_refresh_each_poll:
+            client.refresh_microphones()
+            forced_refresh_requests += 1
         time.sleep(max(0.05, poll_sec))
         last_after = client.get_microphones()
         last_settings = client.get_settings()
@@ -330,8 +441,8 @@ def wait_for_condition(
             expect_favorite_fallback=expect_favorite_fallback,
         )
         if not last_failures:
-            return last_after, last_settings, []
-    return last_after, last_settings, last_failures
+            return last_after, last_settings, [], forced_refresh_requests
+    return last_after, last_settings, last_failures, forced_refresh_requests
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -351,6 +462,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output", default="")
     parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--assume-completed", action="store_true")
+    parser.add_argument(
+        "--force-refresh-each-poll",
+        action="store_true",
+        help="Legacy fallback: explicitly POST /api/microphones/refresh in every poll iteration.",
+    )
     return parser.parse_args(argv)
 
 
@@ -456,7 +572,7 @@ def main(argv: list[str]) -> int:
         input()
     payload["assumeCompleted"] = True
 
-    after, settings_after, failures = wait_for_condition(
+    after, settings_after, failures, forced_refresh_requests = wait_for_condition(
         client=client,
         before=before,
         timeout_sec=args.wait_sec,
@@ -465,6 +581,7 @@ def main(argv: list[str]) -> int:
         expect_removed=args.expect_removed,
         expect_default_changed=args.expect_default_changed,
         expect_favorite_fallback=args.expect_favorite_fallback,
+        force_refresh_each_poll=bool(args.force_refresh_each_poll),
     )
     audio_after = safe_audio_diagnostics(client)
     result = {
@@ -485,8 +602,15 @@ def main(argv: list[str]) -> int:
             audio_before,
             audio_after,
         ),
+        "deviceMonitorRefresh": summarize_device_monitor_refresh(
+            audio_before,
+            audio_after,
+            forced_refresh_requests=forced_refresh_requests,
+            force_refresh_each_poll=bool(args.force_refresh_each_poll),
+        ),
         "audioDiagnosticsBefore": {
             "rustNativeEndpointInventory": rust_inventory_snapshot(audio_before),
+            "deviceMonitor": device_monitor_snapshot(audio_before),
             "nativeEndpointMapping": omit_raw_endpoint_ids(
                 audio_before.get("microphone", {}).get("nativeEndpointMapping")
                 if isinstance(audio_before.get("microphone"), dict)
@@ -495,6 +619,7 @@ def main(argv: list[str]) -> int:
         },
         "audioDiagnosticsAfter": {
             "rustNativeEndpointInventory": rust_inventory_snapshot(audio_after),
+            "deviceMonitor": device_monitor_snapshot(audio_after),
             "nativeEndpointMapping": omit_raw_endpoint_ids(
                 audio_after.get("microphone", {}).get("nativeEndpointMapping")
                 if isinstance(audio_after.get("microphone"), dict)

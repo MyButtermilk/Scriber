@@ -35,6 +35,7 @@ def validate_matrix(
     input_dir: Path,
     scenarios: list[str] | None = None,
     require_rust_endpoint_inventory: bool = False,
+    require_device_refresh_evidence: bool = False,
 ) -> dict[str, Any]:
     selected = scenarios or list(DEFAULT_SCENARIOS)
     results = [
@@ -42,6 +43,7 @@ def validate_matrix(
             input_dir,
             scenario,
             require_rust_endpoint_inventory=require_rust_endpoint_inventory,
+            require_device_refresh_evidence=require_device_refresh_evidence,
         )
         for scenario in selected
     ]
@@ -51,6 +53,7 @@ def validate_matrix(
         "inputDir": str(input_dir),
         "requiredScenarios": selected,
         "requireRustEndpointInventory": bool(require_rust_endpoint_inventory),
+        "requireDeviceRefreshEvidence": bool(require_device_refresh_evidence),
         "passedCount": sum(1 for result in results if result.ok),
         "failedCount": sum(1 for result in results if not result.ok),
         "scenarios": [result.to_public() for result in results],
@@ -62,6 +65,7 @@ def validate_scenario_artifact(
     scenario: str,
     *,
     require_rust_endpoint_inventory: bool = False,
+    require_device_refresh_evidence: bool = False,
 ) -> ScenarioValidation:
     path = input_dir / f"microphone-hardware-{scenario}.json"
     failures: list[str] = []
@@ -123,6 +127,8 @@ def validate_scenario_artifact(
     failures.extend(_validate_change_evidence(scenario, expectations, change, settings_after))
     if require_rust_endpoint_inventory:
         failures.extend(_validate_rust_inventory_evidence(scenario, expectations, result))
+    if require_device_refresh_evidence:
+        failures.extend(_validate_device_refresh_evidence(result))
 
     return ScenarioValidation(
         scenario=scenario,
@@ -168,6 +174,61 @@ def _validate_rust_inventory_evidence(
             failures.append("rust inventory removed endpoints must contain the expected hardware label")
     if scenario == "default-mic-change" and rust_change.get("defaultChanged") is not True:
         failures.append("rust inventory defaultChanged must be true")
+    return failures
+
+
+def _validate_device_refresh_evidence(result: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    refresh = result.get("deviceMonitorRefresh")
+    if not isinstance(refresh, dict):
+        return ["result.deviceMonitorRefresh must be present"]
+    if refresh.get("availableAfter") is not True:
+        failures.append("device monitor refresh evidence must be available after the hardware action")
+
+    strategy = refresh.get("strategy")
+    if not isinstance(strategy, dict):
+        failures.append("device monitor refresh strategy must be present")
+        strategy = {}
+    if strategy.get("mode") != "monitor-events":
+        failures.append("device monitor refresh strategy must use monitor-events, not forced polling")
+    if strategy.get("forcedRefreshRequests") != 0:
+        failures.append("device monitor refresh evidence must not use forced refresh requests")
+
+    if refresh.get("nativeEventsActiveAfter") is not True:
+        failures.append("device monitor native events must be active after the hardware action")
+    if refresh.get("pollModeAfter") != "native-event-safety":
+        failures.append("device monitor pollModeAfter must be native-event-safety")
+    poll_interval = refresh.get("pollIntervalSecondsAfter")
+    if not isinstance(poll_interval, (int, float)) or poll_interval < 300:
+        failures.append("device monitor native safety poll interval must be at least 300 seconds")
+
+    for key in (
+        "pollRefreshDelta",
+        "eventRefreshDelta",
+        "portAudioRefreshDelta",
+        "nativeHintDelta",
+        "nativeHintPortAudioDelta",
+    ):
+        value = refresh.get(key)
+        if not isinstance(value, int):
+            failures.append(f"device monitor {key} must be recorded as an integer")
+    poll_delta = refresh.get("pollRefreshDelta")
+    if isinstance(poll_delta, int) and poll_delta > 1:
+        failures.append("device monitor pollRefreshDelta must not show repeated polling during the scenario")
+    event_delta = refresh.get("eventRefreshDelta")
+    if isinstance(event_delta, int) and event_delta < 1:
+        failures.append("device monitor eventRefreshDelta must show at least one native event refresh")
+    portaudio_delta = refresh.get("portAudioRefreshDelta")
+    if isinstance(portaudio_delta, int) and portaudio_delta < 1:
+        failures.append("device monitor portAudioRefreshDelta must show the event-triggered PortAudio refresh")
+
+    after = refresh.get("after")
+    if not isinstance(after, dict):
+        failures.append("device monitor refresh after snapshot must be present")
+    elif "lastNativeHint" in after:
+        hint = after.get("lastNativeHint")
+        if isinstance(hint, dict) and any("endpointId" in key for key in hint):
+            failures.append("device monitor lastNativeHint must not expose raw endpoint IDs")
     return failures
 
 
@@ -254,6 +315,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--input-dir", default="tmp/hybrid-baseline")
     parser.add_argument("--scenario", action="append", choices=DEFAULT_SCENARIOS)
     parser.add_argument("--require-rust-endpoint-inventory", action="store_true")
+    parser.add_argument("--require-device-refresh-evidence", action="store_true")
     parser.add_argument("--output", default="")
     return parser.parse_args(argv)
 
@@ -272,6 +334,7 @@ def main(argv: list[str]) -> int:
         input_dir=Path(args.input_dir).expanduser().resolve(),
         scenarios=args.scenario,
         require_rust_endpoint_inventory=bool(args.require_rust_endpoint_inventory),
+        require_device_refresh_evidence=bool(args.require_device_refresh_evidence),
     )
     write_output(payload, args.output)
     print(json.dumps(payload, separators=(",", ":")))

@@ -397,7 +397,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
 ```
 
 When evaluating whether the Rust audio prototype can be promoted, add the
-physical sidecar smoke and Rust endpoint inventory evidence as hard gates:
+physical sidecar smoke, Rust endpoint inventory evidence, and native
+DeviceMonitor refresh evidence as hard gates:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
@@ -405,6 +406,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RequireRustAudioSidecarSmoke `
   -RustAudioSidecarDurationSec 600
 ```
+
+`-RequireRustAudioSidecarSmoke` and `-RequireRustAudioAppPrewarmSmoke`
+automatically make the physical microphone matrix require
+`--require-rust-endpoint-inventory` and `--require-device-refresh-evidence`.
 
 Add sidecar-local prewarm adoption evidence to that physical smoke when testing
 Rust prewarm parity:
@@ -493,24 +498,29 @@ Required scenario IDs are `notepad`, `word`, `outlook`, `browser-input`,
 when unavailable, but if present it must pass the same Shell IPC, target text,
 and marker checks.
 
-The microphone matrix can also be run directly with the same Rust inventory
-gate:
+The microphone matrix can also be run directly with the same Rust promotion
+gates:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_microphone_hardware_matrix.ps1 `
-  -RequireRustEndpointInventory
+  -RequireRustEndpointInventory `
+  -RequireDeviceRefreshEvidence
 ```
 
 That direct gate captures before/after audio diagnostics, validates
 `rustNativeEndpointInventoryChange`, requires the `rust-wasapi` inventory
 source, checks expected added/removed/default-change labels, and rejects raw
-IMMDevice endpoint IDs in the artifact.
+IMMDevice endpoint IDs in the artifact. With `-RequireDeviceRefreshEvidence`,
+each scenario also proves native DeviceMonitor events are active, the safety
+poll interval remains sparse, and the smoke did not use forced per-poll refresh
+requests. Use `-ForceRefreshEachPoll` only for diagnosing legacy fallback
+behavior, not for Rust-promotion evidence.
 
 The final readiness validator expects evidence for:
 
 - physical microphone hardware matrix,
-- Rust audio sidecar physical smoke and Rust endpoint inventory evidence when
-  evaluating the Rust prototype,
+- Rust audio sidecar physical smoke, Rust endpoint inventory evidence, and
+  native DeviceMonitor refresh evidence when evaluating the Rust prototype,
 - installed live-recording smoke when evaluating a default-path Rust audio
   promotion,
 - Tauri text-injection safe target smoke before promoting Tauri/Rust injection

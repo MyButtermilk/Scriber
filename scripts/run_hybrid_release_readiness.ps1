@@ -60,6 +60,7 @@ param(
     [string]$RecordingHotPathComparisonReport = "",
     [switch]$RequireRecordingHotPathComparison,
     [switch]$RequireRustEndpointInventory,
+    [switch]$RequireDeviceRefreshEvidence,
     [string]$UpdaterPublicationUrl = "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
     [string]$UpdaterPublicationReport = "",
     [int]$UpdaterPublicationAttempts = 6,
@@ -215,8 +216,13 @@ $matrixArgs = @(
     "--output",
     $MatrixValidationOutput
 )
-if ($RequireRustEndpointInventory -or $RequireRustAudioSidecarSmoke) {
+$effectiveRequireRustEndpointInventory = [bool]($RequireRustEndpointInventory -or $RequireRustAudioSidecarSmoke -or $RequireRustAudioAppPrewarmSmoke)
+if ($effectiveRequireRustEndpointInventory) {
     $matrixArgs += "--require-rust-endpoint-inventory"
+}
+$effectiveRequireDeviceRefreshEvidence = [bool]($RequireDeviceRefreshEvidence -or $RequireRustAudioSidecarSmoke -or $RequireRustAudioAppPrewarmSmoke)
+if ($effectiveRequireDeviceRefreshEvidence) {
+    $matrixArgs += "--require-device-refresh-evidence"
 }
 $updaterArgs = @(
     "scripts\verify_tauri_updater_publication.py",
@@ -392,6 +398,12 @@ if ($RequireRecordingHotPathComparison -or (Test-Path -LiteralPath $RecordingHot
 if ($RequireRecordingHotPathComparison) {
     $readinessArgs += "--require-recording-hot-path-comparison"
 }
+if ($effectiveRequireRustEndpointInventory) {
+    $readinessArgs += "--require-rust-endpoint-inventory"
+}
+if ($effectiveRequireDeviceRefreshEvidence) {
+    $readinessArgs += "--require-device-refresh-evidence"
+}
 if ($ExpectedAuthenticodePublisher) {
     $readinessArgs += @("--expected-authenticode-publisher", $ExpectedAuthenticodePublisher)
 }
@@ -419,8 +431,9 @@ $requiredEvidence = @(
         inputDir = $HardwareInputDir
         expectedArtifacts = @($hardwareArtifacts | ForEach-Object { Join-Path $HardwareInputDir $_ })
         output = $MatrixValidationOutput
-        requireRustEndpointInventory = [bool]($RequireRustEndpointInventory -or $RequireRustAudioSidecarSmoke)
-        notes = "Requires physical USB, dock, Bluetooth, Windows default-device, and favorite-mic fallback actions on the target Windows machine. Rust audio promotion also requires Rust/WASAPI endpoint inventory evidence in each artifact."
+        requireRustEndpointInventory = $effectiveRequireRustEndpointInventory
+        requireDeviceRefreshEvidence = $effectiveRequireDeviceRefreshEvidence
+        notes = "Requires physical USB, dock, Bluetooth, Windows default-device, and favorite-mic fallback actions on the target Windows machine. Rust audio promotion also requires Rust/WASAPI endpoint inventory evidence and native-event device-refresh evidence in each artifact without forced per-poll refreshes."
     },
     [pscustomobject]@{
         name = "signedTauriUpdaterMetadata"
@@ -603,6 +616,8 @@ $plan = [pscustomobject]@{
     requireTauriTextInjectionSmoke = [bool]$RequireTauriTextInjectionSmoke
     requireTauriTextInjectionMatrix = [bool]$RequireTauriTextInjectionMatrix
     requireRecordingHotPathComparison = [bool]$RequireRecordingHotPathComparison
+    requireRustEndpointInventory = $effectiveRequireRustEndpointInventory
+    requireDeviceRefreshEvidence = $effectiveRequireDeviceRefreshEvidence
     useExistingUpdaterPublicationReport = [bool]$UseExistingUpdaterPublicationReport
     requiredEvidence = $requiredEvidence
     commands = @(
