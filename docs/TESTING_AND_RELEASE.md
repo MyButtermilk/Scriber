@@ -279,7 +279,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_recording_hot_pa
 The runner sets `SCRIBER_AUDIO_ENGINE=python` for the first pass, then
 `SCRIBER_AUDIO_ENGINE=rust-prototype` plus the requested Rust capture mode for
 the second pass. With `-RustAlwaysOnMic`, it also sets
-`SCRIBER_MIC_ALWAYS_ON=1` for the Rust pass. It finally calls:
+`SCRIBER_MIC_ALWAYS_ON=1` for the Rust pass. Non-plan comparison runs now fail
+early without `-RustAlwaysOnMic`, because valid Rust promotion evidence requires
+both `rustAlwaysOnMic` and `rustPrewarmAdoption` checks. It finally calls:
 
 ```powershell
 python scripts\validate_recording_hot_path_comparison.py `

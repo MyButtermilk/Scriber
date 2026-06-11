@@ -84,6 +84,8 @@ def test_recording_hot_path_comparison_runner_plan_only_wires_python_and_rust_ru
     assert payload["planOnly"] is True
     assert payload["rustCaptureMode"] == "wasapi"
     assert payload["rustAlwaysOnMic"] is True
+    assert payload["rustAlwaysOnMicRequired"] is True
+    assert payload["rustPrewarmAdoptionRequired"] is True
     assert payload["pythonHotPathReport"].endswith("python-recording-hot-path-baseline-recording-hot-path-1.json")
     assert payload["rustHotPathReport"].endswith("rust-recording-hot-path-baseline-recording-hot-path-1.json")
     assert payload["comparisonOutput"].endswith("recording-hot-path-python-rust-comparison.json")
@@ -152,3 +154,19 @@ def test_recording_hot_path_comparison_runner_plan_only_can_select_synthetic_cap
     ]
     assert rust_env["SCRIBER_RUST_AUDIO_WASAPI_CAPTURE"] == ""
     assert rust_env["SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE"] == "1"
+
+
+def test_recording_hot_path_comparison_runner_rejects_actual_run_without_always_on(tmp_path: Path) -> None:
+    output_dir = REPO_ROOT / "tmp" / f"pytest-{tmp_path.name}"
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-OutputDir",
+        str(output_dir),
+    )
+
+    assert result.returncode != 0
+    assert "requires -RustAlwaysOnMic" in result.stderr

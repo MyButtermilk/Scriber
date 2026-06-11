@@ -1222,6 +1222,9 @@ Implementation plan:
      mode, and with `-RustAlwaysOnMic` it sets `SCRIBER_MIC_ALWAYS_ON=1` for the
      Rust pass before calling the comparison validator to produce
      `recording-hot-path-python-rust-comparison.json`.
+     Non-plan runs now fail early without `-RustAlwaysOnMic`, because the
+     comparison validator requires both Always-On-Mic and adopted Rust prewarm
+     evidence.
      The runner defaults to three recording samples per engine and passes that
      as the minimum accepted sample count to the validator.
      It also passes a default 50 ms max P95 regression tolerance for local

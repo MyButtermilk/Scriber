@@ -268,6 +268,10 @@ foreach ($path in @($PythonBaselineOutput, $RustBaselineOutput, $ComparisonOutpu
     New-Item -ItemType Directory -Force -Path (Split-Path $path) | Out-Null
 }
 
+if (-not $PlanOnly -and -not $RustAlwaysOnMic) {
+    throw "Recording hot-path Python/Rust comparison requires -RustAlwaysOnMic because validation requires rustAlwaysOnMic and rustPrewarmAdoption evidence."
+}
+
 $PythonHotPathReport = Get-HotPathReportPath -BaselineOutput $PythonBaselineOutput
 $RustHotPathReport = Get-HotPathReportPath -BaselineOutput $RustBaselineOutput
 $comparisonArgs = @(
@@ -291,6 +295,8 @@ $plan = [pscustomobject]@{
     outputDir = $OutputDir
     rustCaptureMode = $RustCaptureMode
     rustAlwaysOnMic = [bool]$RustAlwaysOnMic
+    rustAlwaysOnMicRequired = $true
+    rustPrewarmAdoptionRequired = $true
     pythonBaselineOutput = $PythonBaselineOutput
     rustBaselineOutput = $RustBaselineOutput
     pythonHotPathReport = $PythonHotPathReport
