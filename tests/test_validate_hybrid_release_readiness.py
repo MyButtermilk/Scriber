@@ -1042,6 +1042,48 @@ def test_validate_release_readiness_accepts_required_rust_audio_sidecar_smoke(tm
     assert rust_audio_check["details"]["summary"]["selectedHashVerified"] is True
 
 
+def test_validate_release_readiness_rejects_rust_audio_sidecar_redaction_leaks(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
+    write_rust_audio_sidecar_report(rust_audio_report)
+    payload = json.loads(rust_audio_report.read_text(encoding="utf-8"))
+    payload["captures"][0]["start"]["endpointId"] = r"SWD\MMDEVAPI\{0.0.1.00000000}.{raw-sidecar-device}"
+    payload["captures"][0]["start"]["framePipe"] = r"\\.\pipe\scriber-audio-frame-secret"
+    rust_audio_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_sidecar_report=rust_audio_report,
+        require_rust_audio_sidecar_smoke=True,
+        min_rust_audio_duration_sec=600,
+    )
+
+    rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    assert result["ok"] is False
+    assert (
+        "Rust audio sidecar smoke contains raw native endpoint ID at "
+        "captures[0].start.endpointId"
+        in rust_audio_check["failures"]
+    )
+    assert (
+        "Rust audio sidecar smoke contains unredacted endpointId value at "
+        "captures[0].start.endpointId"
+        in rust_audio_check["failures"]
+    )
+    assert (
+        "Rust audio sidecar smoke contains raw Scriber pipe name at "
+        "captures[0].start.framePipe"
+        in rust_audio_check["failures"]
+    )
+
+
 def test_validate_release_readiness_accepts_required_recording_hot_path_comparison(tmp_path: Path) -> None:
     hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
@@ -1977,6 +2019,42 @@ def test_validate_release_readiness_accepts_required_wasapi_rust_audio_prewarm_s
     assert prewarm_check["details"]["mode"] == "wasapi"
 
 
+def test_validate_release_readiness_rejects_rust_audio_prewarm_sidecar_redaction_leaks(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    prewarm_report = tmp_path / "rust-audio-prewarm-sidecar-smoke.json"
+    write_rust_audio_prewarm_sidecar_report(prewarm_report, mode="wasapi")
+    payload = json.loads(prewarm_report.read_text(encoding="utf-8"))
+    payload["prewarm"]["start"]["endpointId"] = r"SWD\MMDEVAPI\{0.0.1.00000000}.{raw-prewarm-device}"
+    payload["prewarm"]["start"]["framePipe"] = r"\\.\pipe\scriber-audio-prewarm-secret"
+    prewarm_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_prewarm_sidecar_report=prewarm_report,
+        require_rust_audio_prewarm_sidecar_smoke=True,
+    )
+
+    prewarm_check = next(check for check in result["checks"] if check["name"] == "rustAudioPrewarmSidecarSmoke")
+    assert result["ok"] is False
+    assert (
+        "Rust audio prewarm sidecar smoke contains raw native endpoint ID at "
+        "prewarm.start.endpointId"
+        in prewarm_check["failures"]
+    )
+    assert (
+        "Rust audio prewarm sidecar smoke contains raw Scriber pipe name at "
+        "prewarm.start.framePipe"
+        in prewarm_check["failures"]
+    )
+
+
 def test_validate_release_readiness_rejects_missing_required_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
     hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
 
@@ -2049,6 +2127,42 @@ def test_validate_release_readiness_accepts_required_rust_audio_app_prewarm_smok
     assert result["ok"] is True
     app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
     assert app_check["details"]["summary"]["adoptedPrewarmBlocks"] == 40
+
+
+def test_validate_release_readiness_rejects_rust_audio_app_prewarm_redaction_leaks(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
+    write_rust_audio_app_prewarm_report(app_prewarm_report)
+    payload = json.loads(app_prewarm_report.read_text(encoding="utf-8"))
+    payload["sourceFinal"]["endpointId"] = r"SWD\MMDEVAPI\{0.0.1.00000000}.{raw-app-device}"
+    payload["sourceFinal"]["framePipe"] = r"\\.\pipe\scriber-audio-app-secret"
+    app_prewarm_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_app_prewarm_report=app_prewarm_report,
+        require_rust_audio_app_prewarm_smoke=True,
+    )
+
+    app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
+    assert result["ok"] is False
+    assert (
+        "Rust audio app prewarm smoke contains raw native endpoint ID at "
+        "sourceFinal.endpointId"
+        in app_check["failures"]
+    )
+    assert (
+        "Rust audio app prewarm smoke contains raw Scriber pipe name at "
+        "sourceFinal.framePipe"
+        in app_check["failures"]
+    )
 
 
 def test_validate_release_readiness_accepts_required_long_rust_audio_app_prewarm_smoke(tmp_path: Path) -> None:

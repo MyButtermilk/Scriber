@@ -212,7 +212,11 @@ so release evidence uses the stable Windows default endpoint. Add
 `--honor-favorite-mic` only for a targeted selected-device investigation. These
 Rust audio smokes still do not promote Rust audio to the default engine; longer
 physical Always-On-Mic matrix evidence and provider-backed transcription smokes
-remain required.
+remain required. The release-readiness validator also redaction-gates the Rust
+audio sidecar, prewarm sidecar, and app prewarm smoke artifacts: raw
+`SWD\MMDEVAPI\...` endpoint IDs and raw `\\.\pipe\scriber-*` pipe names must
+not appear in those reports; only hashes or explicit redaction markers are
+acceptable release evidence.
 
 Use the recording hot-path benchmark when Rust audio evidence must include the
 actual provider path, not only sidecar frame delivery. The strict provider/Rust

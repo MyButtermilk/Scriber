@@ -497,6 +497,9 @@ def validate_rust_audio_sidecar_report(
     report = read_json_object(report_path, failures, "Rust audio sidecar smoke report")
     if not report:
         return ReadinessCheck("rustAudioSidecarSmoke", False, failures, details)
+    failures.extend(
+        find_rust_audio_redaction_failures(report, "Rust audio sidecar smoke")
+    )
 
     summary = report.get("summary")
     if not isinstance(summary, dict):
@@ -652,6 +655,9 @@ def validate_rust_audio_prewarm_sidecar_report(
     report = read_json_object(report_path, failures, "Rust audio prewarm sidecar smoke report")
     if not report:
         return ReadinessCheck("rustAudioPrewarmSidecarSmoke", False, failures, details)
+    failures.extend(
+        find_rust_audio_redaction_failures(report, "Rust audio prewarm sidecar smoke")
+    )
 
     requested = report.get("requested")
     if not isinstance(requested, dict):
@@ -782,6 +788,9 @@ def validate_rust_audio_app_prewarm_report(
     report = read_json_object(report_path, failures, "Rust audio app prewarm smoke report")
     if not report:
         return ReadinessCheck("rustAudioAppPrewarmSmoke", False, failures, details)
+    failures.extend(
+        find_rust_audio_redaction_failures(report, "Rust audio app prewarm smoke")
+    )
 
     requested = report.get("requested")
     if not isinstance(requested, dict):
@@ -931,7 +940,9 @@ def validate_installed_live_recording_smoke_report(
     if not isinstance(stability, dict):
         failures.append("installed live recording smoke liveRecording.stability must be an object")
         stability = {}
-    failures.extend(find_installed_live_recording_redaction_failures(smoke))
+    failures.extend(
+        find_rust_audio_redaction_failures(smoke, "installed live recording smoke")
+    )
 
     details.update(
         {
@@ -1410,9 +1421,8 @@ def find_tauri_text_injection_redaction_failures(value: Any, label: str) -> list
     return failures
 
 
-def find_installed_live_recording_redaction_failures(value: Any) -> list[str]:
+def find_rust_audio_redaction_failures(value: Any, label: str) -> list[str]:
     failures: list[str] = []
-    label = "installed live recording smoke"
 
     def walk(node: Any, path: str) -> None:
         if isinstance(node, dict):
