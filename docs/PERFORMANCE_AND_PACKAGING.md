@@ -503,6 +503,10 @@ Implementation status on `codex/rust-expansion-plan`:
   foreground-window diagnostics, uses byte-budgeted request limits, rejects
   embedded NUL text, enforces a request deadline before side effects, and guards
   clipboard restore with the clipboard sequence number.
+- Hardened the private Tauri shell IPC pipe with an explicit protected Windows
+  DACL. The pipe still uses a per-process random name, a per-session token, and
+  `PIPE_REJECT_REMOTE_CLIENTS`; access is limited to the owner, LocalSystem, and
+  built-in administrators instead of relying on the default security descriptor.
 - Added strict `SCRIBER_INJECT_METHOD=tauri` in Python `TextInjector`.
   `auto` intentionally still uses the existing Python paste path until installed
   target-app evidence justifies changing the default.
@@ -527,9 +531,9 @@ Implementation status on `codex/rust-expansion-plan`:
   `--validate-only`, and must show `injectText` success, target text arrival,
   and `clipboard_set` plus `paste` markers.
 - Still open: installed target-app smoke matrix, packaging smoke evidence,
-  explicit pipe DACL/current-session security descriptor, real owner HWND or
-  message-only clipboard owner instead of `OpenClipboard(NULL)`, and
-  default-path decision based on installed evidence.
+  optional current-session SID hardening beyond the owner/admin/system DACL,
+  real owner HWND or message-only clipboard owner instead of
+  `OpenClipboard(NULL)`, and default-path decision based on installed evidence.
 
 Tauri injection default blockers:
 

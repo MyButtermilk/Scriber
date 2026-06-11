@@ -19,6 +19,7 @@ use crate::audio_sidecar_client::{audio_sidecar_executable_available, call_audio
 const API_VERSION: &str = "1";
 const MAX_REQUEST_BYTES: usize = 512 * 1024;
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
+const SHELL_IPC_PIPE_SECURITY_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)";
 const MAX_INJECT_TEXT_BYTES: usize = 384 * 1024;
 const DEFAULT_CLIPBOARD_RETRIES: u32 = 5;
 const DEFAULT_CLIPBOARD_RETRY_DELAY_MS: u64 = 5;
@@ -1395,6 +1396,77 @@ fn restore_clipboard_now(
 }
 
 #[cfg(windows)]
+struct PipeSecurityAttributes {
+    security_descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    attributes: windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
+}
+
+#[cfg(windows)]
+impl PipeSecurityAttributes {
+    fn as_ptr(&self) -> *const windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+        &self.attributes
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PipeSecurityAttributes {
+    fn drop(&mut self) {
+        if !self.security_descriptor.is_null() {
+            unsafe {
+                let _ = windows_sys::Win32::Foundation::LocalFree(self.security_descriptor as _);
+            }
+        }
+    }
+}
+
+fn shell_ipc_pipe_security_sddl() -> &'static str {
+    SHELL_IPC_PIPE_SECURITY_SDDL
+}
+
+#[cfg(windows)]
+fn create_shell_ipc_security_attributes() -> Result<PipeSecurityAttributes, String> {
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
+    use windows_sys::Win32::{
+        Foundation::GetLastError,
+        Security::{
+            Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+            },
+            PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+        },
+    };
+
+    let sddl: Vec<u16> = OsStr::new(shell_ipc_pipe_security_sddl())
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut security_descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut security_descriptor,
+            ptr::null_mut(),
+        )
+    };
+    if converted == 0 || security_descriptor.is_null() {
+        return Err(format!(
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW failed with {}",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    Ok(PipeSecurityAttributes {
+        security_descriptor,
+        attributes: SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: security_descriptor,
+            bInheritHandle: 0,
+        },
+    })
+}
+
+#[cfg(windows)]
 fn run_shell_ipc_server<L>(config: ShellIpcConfig, stop: Arc<AtomicBool>, log: &mut L)
 where
     L: FnMut(String),
@@ -1434,6 +1506,7 @@ fn serve_one_client(config: &ShellIpcConfig) -> Result<(), String> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
+    let security_attributes = create_shell_ipc_security_attributes()?;
     let pipe: HANDLE = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
@@ -1443,7 +1516,7 @@ fn serve_one_client(config: &ShellIpcConfig) -> Result<(), String> {
             PIPE_BUFFER_BYTES,
             PIPE_BUFFER_BYTES,
             250,
-            ptr::null(),
+            security_attributes.as_ptr(),
         )
     };
     if pipe == INVALID_HANDLE_VALUE {
@@ -1622,7 +1695,10 @@ fn wake_pipe_server(_pipe_name: &str) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{handle_shell_ipc_request, response_line, ShellIpcConfig, API_VERSION};
+    use super::{
+        handle_shell_ipc_request, response_line, shell_ipc_pipe_security_sddl, ShellIpcConfig,
+        API_VERSION,
+    };
     use serde_json::json;
     use std::time::Instant;
 
@@ -1635,6 +1711,19 @@ mod tests {
         assert!(!config.pipe_name.contains(&config.token));
         assert_ne!(config.pipe_name_hash(), config.pipe_name);
         assert_eq!(config.pipe_name_hash().len(), 16);
+    }
+
+    #[test]
+    fn shell_ipc_pipe_security_sddl_is_restricted() {
+        let sddl = shell_ipc_pipe_security_sddl();
+
+        assert!(sddl.starts_with("D:P"));
+        assert!(sddl.contains("(A;;GA;;;SY)"));
+        assert!(sddl.contains("(A;;GA;;;BA)"));
+        assert!(sddl.contains("(A;;GA;;;OW)"));
+        assert!(!sddl.contains("WD"));
+        assert!(!sddl.contains("AU"));
+        assert!(!sddl.contains("IU"));
     }
 
     #[test]
