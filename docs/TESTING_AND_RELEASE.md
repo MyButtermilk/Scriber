@@ -622,7 +622,18 @@ not pass as stable installed evidence. Rust-audio promotion evidence also
 requires `liveRecording.micAlwaysOn=true` and
 `audioDiagnostics.microphone.micAlwaysOn=true` in every stability sample, so
 the installed report proves the Always-On-Mic path was active instead of only
-proving an on-demand live recording. For default-device release evidence, the
+proving an on-demand live recording. The same installed report must now include
+`liveRecording.postStopAudioDiagnostics`: after the stop response and idle
+state transition, the smoke polls `/api/runtime/audio-diagnostics` until the
+idle Rust prewarm is active again. Rust promotion validation requires
+`prewarmEngine=rust-prototype`, `prewarmActive=true`, positive
+`prewarmActiveCaptureResumeReadyCount`, zero
+`prewarmActiveCaptureResumeFailedCount`, and non-negative post-stop
+`prewarmLastActiveCaptureResumeGapMs`,
+`prewarmLastActiveCaptureStopToReadyMs`, and
+`prewarmMaxActiveCaptureStopToReadyMs`. This turns the visible mic-light
+off/on transition after pressing Stop into measured installer-path evidence.
+For default-device release evidence, the
 compact diagnostics must also show
 `activeCapture.sourceEndpointSelectionMode=default` and
 `activeCapture.sourceEndpointSelectionUsedDefault=true`; this proves the

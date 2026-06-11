@@ -224,7 +224,10 @@ Rust audio:
   requires at least two app-level prewarm/capture/stop/resume cycles so a
   single successful resume cannot hide repeated Stop-button failures. Final
   readiness validates per-cycle pre-adoption and post-resume
-  `audioPrewarmStatus` snapshots. When sidecar prewarm adoption is part of that
+  `audioPrewarmStatus` snapshots. Installed Rust live-recording evidence now
+  also includes post-stop audio diagnostics and measured stop-to-prewarm-ready
+  gap fields, so the real Tauri/installer path proves that Always-On-Mic
+  resumes after the user stops a recording. When sidecar prewarm adoption is part of that
   gate, app-level prewarm reports must also include the expected redacted
   `recentEvents` lifecycle markers for pre-adoption start and post-resume
   adoption/resume/restart. Reused sidecar reports now must pass explicit

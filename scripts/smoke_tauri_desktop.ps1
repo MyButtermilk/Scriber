@@ -428,6 +428,11 @@ function Convert-AudioDiagnosticsSummary {
                 prebufferMs = $microphone.prebufferMs
                 prewarmEngine = if ($microphone.prewarm) { [string]$microphone.prewarm.engine } else { "" }
                 prewarmActive = if ($microphone.prewarm) { [bool]$microphone.prewarm.active } else { $false }
+                prewarmActiveCaptureResumeReadyCount = if ($microphone.prewarm) { $microphone.prewarm.activeCaptureResumeReadyCount } else { $null }
+                prewarmActiveCaptureResumeFailedCount = if ($microphone.prewarm) { $microphone.prewarm.activeCaptureResumeFailedCount } else { $null }
+                prewarmLastActiveCaptureResumeGapMs = if ($microphone.prewarm) { $microphone.prewarm.lastActiveCaptureResumeGapMs } else { $null }
+                prewarmLastActiveCaptureStopToReadyMs = if ($microphone.prewarm) { $microphone.prewarm.lastActiveCaptureStopToReadyMs } else { $null }
+                prewarmMaxActiveCaptureStopToReadyMs = if ($microphone.prewarm) { $microphone.prewarm.maxActiveCaptureStopToReadyMs } else { $null }
             }
         } else {
             $null
@@ -642,6 +647,7 @@ function Test-LiveRecordingStability {
     $stability = $null
     $stopResponse = $null
     $stoppedState = $null
+    $postStopAudioDiagnostics = $null
     try {
         $startResponse = Invoke-LiveMicStart -Port $Port -Token $Token
         $startedState = Wait-BackendState `
@@ -676,6 +682,25 @@ function Test-LiveRecordingStability {
             -Predicate { param($state) ([string]$state.recordingState -eq "idle") -and -not ([bool]$state.listening) } `
             -DeadlineSec $StopTimeoutSec `
             -Label "live recording stopped"
+        if ($MicAlwaysOn) {
+            $headers = @{}
+            if ($Token) {
+                $headers["X-Scriber-Token"] = $Token
+            }
+            $prewarmDeadline = (Get-Date).AddSeconds([Math]::Min(10, [Math]::Max(2, $StopTimeoutSec)))
+            do {
+                $postStopProbe = Invoke-TimedRestGet -Uri "http://127.0.0.1:$Port/api/runtime/audio-diagnostics" -Headers $headers
+                $postStopSummary = Convert-AudioDiagnosticsSummary -AudioDiagnostics $postStopProbe.payload
+                $postStopAudioDiagnostics = [pscustomobject]@{
+                    elapsedMs = $postStopProbe.elapsedMs
+                    audioDiagnostics = $postStopSummary
+                }
+                if ($postStopSummary.microphone -and [bool]$postStopSummary.microphone.prewarmActive) {
+                    break
+                }
+                Start-Sleep -Milliseconds 250
+            } while ((Get-Date) -lt $prewarmDeadline)
+        }
         return [pscustomobject]@{
             verified = $true
             durationSec = $DurationSec
@@ -690,6 +715,7 @@ function Test-LiveRecordingStability {
             textInjectionDisabled = $TextInjectionDisabled
             micAlwaysOn = $MicAlwaysOn
             stability = $stability
+            postStopAudioDiagnostics = $postStopAudioDiagnostics
         }
     } catch {
         try {

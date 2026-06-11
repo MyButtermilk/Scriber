@@ -1232,6 +1232,7 @@ def validate_installed_live_recording_smoke_report(
             "cleanupVerified": smoke.get("cleanupVerified"),
             "liveRecording": live_recording,
             "stability": stability,
+            "postStopAudioDiagnostics": live_recording.get("postStopAudioDiagnostics"),
             "rustAudioEvidence": summarize_installed_live_recording_rust_audio_evidence(
                 stability.get("samples") if isinstance(stability, dict) else None
             ),
@@ -1365,8 +1366,60 @@ def validate_installed_live_recording_smoke_report(
                 failures.append("installed live recording smoke samples must span at least 75% of stability.durationSec")
         if require_rust_audio:
             failures.extend(validate_installed_live_recording_rust_audio_samples(samples))
+            failures.extend(validate_installed_live_recording_post_stop_prewarm(live_recording))
 
     return ReadinessCheck("installedLiveRecordingSmoke", not failures, failures, details)
+
+
+def validate_installed_live_recording_post_stop_prewarm(
+    live_recording: dict[str, Any],
+) -> list[str]:
+    failures: list[str] = []
+    post_stop = live_recording.get("postStopAudioDiagnostics")
+    if not isinstance(post_stop, dict):
+        return ["installed live recording smoke postStopAudioDiagnostics must be an object"]
+    diagnostics = post_stop.get("audioDiagnostics")
+    if not isinstance(diagnostics, dict):
+        return ["installed live recording smoke postStopAudioDiagnostics.audioDiagnostics must be an object"]
+    microphone = diagnostics.get("microphone")
+    if not isinstance(microphone, dict):
+        return [
+            "installed live recording smoke postStopAudioDiagnostics.audioDiagnostics.microphone must be an object"
+        ]
+    if microphone.get("micAlwaysOn") is not True:
+        failures.append("installed live recording smoke post-stop micAlwaysOn must be true")
+    if microphone.get("idlePrewarmActive") is not True:
+        failures.append("installed live recording smoke post-stop idlePrewarmActive must be true")
+    if microphone.get("prewarmActive") is not True:
+        failures.append("installed live recording smoke post-stop prewarmActive must be true")
+    if str(microphone.get("prewarmEngine") or "") != RUST_AUDIO_ENGINE:
+        failures.append(
+            f"installed live recording smoke post-stop prewarmEngine must be {RUST_AUDIO_ENGINE}"
+        )
+    resume_ready_count = numeric_field(microphone, "prewarmActiveCaptureResumeReadyCount")
+    if resume_ready_count is None or resume_ready_count <= 0:
+        failures.append(
+            "installed live recording smoke post-stop prewarmActiveCaptureResumeReadyCount must be positive"
+        )
+    resume_failed_count = numeric_field(microphone, "prewarmActiveCaptureResumeFailedCount")
+    if resume_failed_count != 0:
+        failures.append(
+            "installed live recording smoke post-stop prewarmActiveCaptureResumeFailedCount must be 0"
+        )
+    for field in (
+        "prewarmLastActiveCaptureResumeGapMs",
+        "prewarmLastActiveCaptureStopToReadyMs",
+        "prewarmMaxActiveCaptureStopToReadyMs",
+    ):
+        value = numeric_field(microphone, field)
+        if value is None or value < 0:
+            failures.append(f"installed live recording smoke post-stop {field} must be non-negative")
+    active_capture = diagnostics.get("activeCapture")
+    if active_capture not in (None, {}):
+        if isinstance(active_capture, dict) and active_capture.get("running") is False:
+            return failures
+        failures.append("installed live recording smoke post-stop activeCapture must be absent")
+    return failures
 
 
 def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict[str, Any]:

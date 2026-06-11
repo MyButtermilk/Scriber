@@ -915,6 +915,10 @@ def write_installed_live_recording_smoke_report(
     active_capture_last_health_failure_reason: str = "",
     active_capture_last_health_restart_error: str = "",
     rust_prewarm_adopted: bool = True,
+    include_post_stop_prewarm: bool = True,
+    post_stop_prewarm_active: bool = True,
+    post_stop_resume_ready_count: int = 1,
+    post_stop_resume_failed_count: int = 0,
 ) -> None:
     if stability_duration_sec is None:
         stability_duration_sec = duration_sec
@@ -997,6 +1001,39 @@ def write_installed_live_recording_smoke_report(
                 },
             }
         samples.append(sample)
+    post_stop_audio_diagnostics = None
+    if include_post_stop_prewarm:
+        post_stop_audio_diagnostics = {
+            "elapsedMs": 4.0,
+            "audioDiagnostics": {
+                "featureFlags": {
+                    "audioEngine": audio_engine,
+                    "requestedAudioEngine": audio_engine,
+                    "rustAudioRequested": rust_audio_requested,
+                    "rustAudioAvailable": rust_audio_available,
+                },
+                "microphone": {
+                    "micAlwaysOn": mic_always_on,
+                    "idlePrewarmActive": mic_always_on and post_stop_prewarm_active,
+                    "prebufferMs": 400,
+                    "prewarmEngine": audio_engine if frame_source == "rust-frame-pipe" else "",
+                    "prewarmActive": post_stop_prewarm_active,
+                    "prewarmActiveCaptureResumeReadyCount": post_stop_resume_ready_count,
+                    "prewarmActiveCaptureResumeFailedCount": post_stop_resume_failed_count,
+                    "prewarmLastActiveCaptureResumeGapMs": 12.0,
+                    "prewarmLastActiveCaptureStopToReadyMs": 18.0,
+                    "prewarmMaxActiveCaptureStopToReadyMs": 18.0,
+                },
+                "activeCapture": None,
+                "rustAudioFallbackCircuit": {
+                    "available": True,
+                    "open": fallback_circuit_open,
+                    "reason": "pipeClosed" if fallback_circuit_open else "",
+                    "remainingSeconds": 30 if fallback_circuit_open else None,
+                    "cooldownSeconds": 60,
+                },
+            },
+        }
     path.write_text(
         json.dumps(
             {
@@ -1023,6 +1060,7 @@ def write_installed_live_recording_smoke_report(
                     "nonRecordingSampleCount": non_recording_sample_count,
                     "textInjectionDisabled": True,
                     "micAlwaysOn": mic_always_on,
+                    "postStopAudioDiagnostics": post_stop_audio_diagnostics,
                     "stability": {
                         "verified": True,
                         "durationSec": stability_duration_sec,
@@ -1418,6 +1456,42 @@ def test_validate_release_readiness_accepts_installed_live_recording_rust_audio_
     assert rust_evidence["activeCaptureHealthRestartSampleCount"] == 0
     assert rust_evidence["activeCaptureHealthRestartThrottleSampleCount"] == 0
     assert rust_evidence["rustPrewarmAdoptionSampleCount"] == rust_evidence["sampleCount"]
+
+
+def test_validate_release_readiness_rejects_installed_rust_live_recording_without_post_stop_prewarm(
+    tmp_path: Path,
+) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    live_recording_report = tmp_path / "installed-live-recording-smoke.json"
+    write_installed_live_recording_smoke_report(
+        live_recording_report,
+        duration_sec=600,
+        audio_engine="rust-prototype",
+        rust_audio_requested=True,
+        rust_audio_available=True,
+        frame_source="rust-frame-pipe",
+        include_post_stop_prewarm=False,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        installed_live_recording_smoke_report=live_recording_report,
+        require_installed_live_recording_smoke=True,
+        require_installed_live_recording_rust_audio=True,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    failures = "\n".join(live_check["failures"])
+    assert "postStopAudioDiagnostics must be an object" in failures
 
 
 def test_validate_release_readiness_rejects_installed_rust_live_recording_without_always_on_mic(tmp_path: Path) -> None:

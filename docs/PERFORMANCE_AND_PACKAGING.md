@@ -1106,7 +1106,13 @@ Implementation plan:
      `liveRecording.micAlwaysOn=true` plus
      `audioDiagnostics.microphone.micAlwaysOn=true` in every stability sample.
      Installed Rust promotion evidence therefore proves the Always-On-Mic path,
-     not only an on-demand live recording. The validator now also requires the Rust
+     not only an on-demand live recording. The installed smoke now also records
+     `liveRecording.postStopAudioDiagnostics` after Stop and idle-state
+     confirmation, and Rust promotion validation requires the idle Rust prewarm
+     to be active there with positive resume-ready count, zero resume failures,
+     and non-negative stop-to-prewarm-ready gap metrics. This makes the
+     observed microphone privacy-indicator off/on transition after Stop part of
+     the installer-path evidence. The validator now also requires the Rust
      callback, frame-pipe, and audio-frame counters to increase across
      stability samples, so a stale diagnostics snapshot cannot satisfy the
      long-recording gate. Installed Rust-audio samples must also show
