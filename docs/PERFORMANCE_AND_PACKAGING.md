@@ -1069,7 +1069,9 @@ Implementation plan:
      `-RequireRustAudioAppPrewarmSmoke` flag. The aggregate
      `-RequireRustAudioPromotionReadiness` gate raises the cycle requirement to
      two, so promotion evidence must prove idle-prewarm resume after repeated
-     active recording stops.
+     active recording stops. Final readiness validates each cycle's
+     pre-adoption and post-resume `audioPrewarmStatus` snapshot rather than
+     trusting a final aggregate healthy state.
    - Implemented: final readiness can require an installed live-recording smoke
      with `-RequireInstalledLiveRecordingSmoke` and
      `-MinInstalledLiveRecordingDurationSec`. The validator accepts reports from

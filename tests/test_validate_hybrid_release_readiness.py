@@ -631,39 +631,64 @@ def write_rust_audio_app_prewarm_report(
     }
     payload["cycles"] = []
     for index in range(max(0, capture_cycles)):
-        payload["cycles"].append(
-            {
-                "index": index + 1,
-                "managerAdoption": {
-                    "prewarmIdHash": f"prewarm-cycle-{index + 1}-hash",
-                    "signature": {
-                        "device_preference": "default",
-                        "sample_rate": 16000,
-                        "target_channels": 1,
-                        "block_size": 160,
-                    },
+        cycle_number = index + 1
+        cycle = {
+            "index": cycle_number,
+            "managerAdoption": {
+                "prewarmIdHash": f"prewarm-cycle-{cycle_number}-hash",
+                "signature": {
+                    "device_preference": "default",
+                    "sample_rate": 16000,
+                    "target_channels": 1,
+                    "block_size": 160,
                 },
-                "managerResume": {
-                    "active": manager_resume_active,
-                    "prewarmIdHash": f"prewarm-cycle-{index + 1}-resume-hash",
+            },
+            "managerResume": {
+                "active": manager_resume_active,
+                "prewarmIdHash": f"prewarm-cycle-{cycle_number}-resume-hash",
+            },
+            "sourceFinal": {
+                "callbackCount": callback_count,
+                "nativeEndpointIdHash": native_endpoint_hash,
+                "lastError": last_error,
+                "adoptedPrewarm": {
+                    "adopted": adopted_blocks > 0,
+                    "blocks": adopted_blocks,
+                    "audioFrames": adopted_blocks * 160,
                 },
-                "sourceFinal": {
-                    "callbackCount": callback_count,
-                    "nativeEndpointIdHash": native_endpoint_hash,
-                    "lastError": last_error,
-                    "adoptedPrewarm": {
-                        "adopted": adopted_blocks > 0,
-                        "blocks": adopted_blocks,
-                        "audioFrames": adopted_blocks * 160,
-                    },
-                    "framePipePrebufferFramesRead": prebuffer_frames,
-                    "framePipeLiveFramesRead": live_frames,
-                    "framePipePrebufferAfterLiveCount": prebuffer_after_live,
-                    "framePipeSequenceErrorCount": sequence_errors,
-                    "framePipeProtocolErrorCount": protocol_errors,
-                },
-            }
-        )
+                "framePipePrebufferFramesRead": prebuffer_frames,
+                "framePipeLiveFramesRead": live_frames,
+                "framePipePrebufferAfterLiveCount": prebuffer_after_live,
+                "framePipeSequenceErrorCount": sequence_errors,
+                "framePipeProtocolErrorCount": protocol_errors,
+            },
+        }
+        if include_status_health:
+            cycle_pre_reason = (
+                "smoke_pre_adoption"
+                if cycle_number == 1
+                else f"smoke_pre_adoption_cycle_{cycle_number}"
+            )
+            cycle_post_reason = (
+                "smoke_post_resume"
+                if cycle_number == capture_cycles
+                else f"smoke_post_resume_cycle_{cycle_number}"
+            )
+            cycle["managerPreAdoptionHealthReturned"] = pre_adoption_status_active
+            cycle["managerPreAdoptionHealth"] = health_snapshot(
+                f"prewarm-cycle-{cycle_number}-hash",
+                cycle_pre_reason,
+                pre_adoption_status_active,
+                health_restart_count=pre_adoption_health_restart_count,
+            )
+            cycle["managerPostResumeHealthReturned"] = post_resume_status_active
+            cycle["managerPostResumeHealth"] = health_snapshot(
+                f"prewarm-cycle-{cycle_number}-resume-hash",
+                cycle_post_reason,
+                post_resume_status_active,
+                health_restart_count=post_resume_health_restart_count,
+            )
+        payload["cycles"].append(cycle)
     if include_status_health:
         payload["managerPreAdoptionHealthReturned"] = pre_adoption_status_active
         payload["managerPreAdoptionHealth"] = health_snapshot(
@@ -3003,6 +3028,47 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_with_too_few_
     assert "requested.captureCycles must be at least 2" in failures
     assert "cycles must include at least 2 entries" in failures
     assert "summary.captureCycleCount must be at least 2" in failures
+
+
+def test_validate_release_readiness_rejects_rust_audio_app_prewarm_cycle_health_failure(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
+    write_rust_audio_app_prewarm_report(
+        app_prewarm_report,
+        duration_sec=600,
+        prewarm_duration_sec=1800,
+        capture_cycles=2,
+    )
+    payload = json.loads(app_prewarm_report.read_text(encoding="utf-8"))
+    payload["cycles"][1]["managerPostResumeHealthReturned"] = False
+    payload["cycles"][1]["managerPostResumeHealth"]["active"] = False
+    payload["cycles"][1]["managerPostResumeHealth"]["lastStatus"]["active"] = False
+    payload["cycles"][1]["managerPostResumeHealth"]["lastHealthError"] = "noActivePrewarm"
+    app_prewarm_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_app_prewarm_report=app_prewarm_report,
+        require_rust_audio_app_prewarm_smoke=True,
+        min_rust_audio_app_prewarm_duration_sec=600,
+        min_rust_audio_app_prewarm_prewarm_duration_sec=1800,
+        min_rust_audio_app_prewarm_cycles=2,
+    )
+
+    assert result["ok"] is False
+    app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
+    failures = "\n".join(app_check["failures"])
+    assert "cycles[1].managerPostResumeHealthReturned must be true" in failures
+    assert "cycles[1].managerPostResumeHealth.active must be true" in failures
+    assert "cycles[1].managerPostResumeHealth.lastStatus.active must be true" in failures
+    assert "cycles[1].managerPostResumeHealth.lastHealthError must be empty" in failures
 
 
 def test_validate_release_readiness_rejects_missing_rust_audio_app_prewarm_report_when_min_duration_is_set(tmp_path: Path) -> None:

@@ -209,10 +209,12 @@ Rust audio:
   comparison, Rust endpoint inventory, and native device-refresh evidence with
   the required 10-minute active / 30-minute idle-prewarm minimums. It also
   requires at least two app-level prewarm/capture/stop/resume cycles so a
-  single successful resume cannot hide repeated Stop-button failures. When
-  sidecar prewarm adoption is part of that gate, reused sidecar reports now
-  must pass explicit `--require-rust-audio-sidecar-prewarm-adoption` validation
-  instead of relying on the report's own requested flags.
+  single successful resume cannot hide repeated Stop-button failures. Final
+  readiness validates per-cycle pre-adoption and post-resume
+  `audioPrewarmStatus` snapshots. When sidecar prewarm adoption is part of that
+  gate, reused sidecar reports now must pass explicit
+  `--require-rust-audio-sidecar-prewarm-adoption` validation instead of relying
+  on the report's own requested flags.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no

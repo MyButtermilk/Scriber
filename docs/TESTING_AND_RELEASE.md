@@ -341,7 +341,10 @@ Supplying either app-prewarm minimum duration or the minimum capture-cycle count
 also makes the app-prewarm smoke artifact required, even without the generic
 `-RequireRustAudioAppPrewarmSmoke` flag. `-RequireRustAudioPromotionReadiness`
 sets the capture-cycle minimum to `2`, so promotion evidence must prove that
-Always-On-Mic resumes after at least two active recording stop events.
+Always-On-Mic resumes after at least two active recording stop events. Final
+readiness validates each cycle's pre-adoption and post-resume
+`audioPrewarmStatus` snapshots, so a report cannot pass by showing only a final
+healthy prewarm state after one failed resume.
 
 The top-level release-readiness runner can also produce and validate the
 lifecycle report when explicit lifecycle evidence is wanted:

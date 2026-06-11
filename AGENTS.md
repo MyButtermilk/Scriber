@@ -450,7 +450,9 @@ Rust sidecar smoke, app-level Always-On-Mic prewarm smoke, installed live
 recording smoke, provider-backed Python-vs-Rust comparison, Rust endpoint
 inventory, and native device-refresh evidence mandatory, and raises the
 promotion minima to 10-minute active / 30-minute idle-prewarm evidence plus at
-least two app-level prewarm/capture/stop/resume cycles.
+least two app-level prewarm/capture/stop/resume cycles. Each cycle must carry
+its own pre-adoption and post-resume `audioPrewarmStatus` health snapshot; a
+final healthy snapshot alone is not promotion evidence.
 The installed live-recording report must also prove sampled
 `rust-prototype`/`rust-frame-pipe` active capture with a closed Rust fallback
 circuit; generic Python live-mic stability is not enough for Rust promotion.

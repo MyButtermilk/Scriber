@@ -985,6 +985,26 @@ def validate_rust_audio_app_prewarm_report(
             failures.append(f"Rust audio app prewarm smoke cycles[{index - 1}] must be an object")
             continue
         cycle_label = f"cycles[{index - 1}]"
+        cycle_pre_reason = (
+            "smoke_pre_adoption" if index == 1 else f"smoke_pre_adoption_cycle_{index}"
+        )
+        if cycle.get("managerPreAdoptionHealthReturned") is not True:
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.managerPreAdoptionHealthReturned must be true"
+            )
+        cycle_pre_health = cycle.get("managerPreAdoptionHealth")
+        if not isinstance(cycle_pre_health, dict):
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.managerPreAdoptionHealth must be an object"
+            )
+            cycle_pre_health = {}
+        failures.extend(
+            validate_rust_audio_app_prewarm_health_snapshot(
+                cycle_pre_health,
+                label=f"{cycle_label}.managerPreAdoptionHealth",
+                expected_reason=cycle_pre_reason,
+            )
+        )
         cycle_adoption = cycle.get("managerAdoption")
         if not isinstance(cycle_adoption, dict):
             failures.append(f"Rust audio app prewarm smoke {cycle_label}.managerAdoption must be an object")
@@ -1043,6 +1063,38 @@ def validate_rust_audio_app_prewarm_report(
             failures.append(
                 f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.framePipeProtocolErrorCount must be 0"
             )
+        cycle_resume = cycle.get("managerResume")
+        if not isinstance(cycle_resume, dict):
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.managerResume must be an object"
+            )
+            cycle_resume = {}
+        if cycle_resume.get("active") is not True:
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.managerResume.active must be true"
+            )
+        if cycle.get("managerPostResumeHealthReturned") is not True:
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.managerPostResumeHealthReturned must be true"
+            )
+        cycle_post_health = cycle.get("managerPostResumeHealth")
+        if not isinstance(cycle_post_health, dict):
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.managerPostResumeHealth must be an object"
+            )
+            cycle_post_health = {}
+        cycle_post_reason = (
+            "smoke_post_resume"
+            if index == len(cycles)
+            else f"smoke_post_resume_cycle_{index}"
+        )
+        failures.extend(
+            validate_rust_audio_app_prewarm_health_snapshot(
+                cycle_post_health,
+                label=f"{cycle_label}.managerPostResumeHealth",
+                expected_reason=cycle_post_reason,
+            )
+        )
 
     return ReadinessCheck("rustAudioAppPrewarmSmoke", not failures, failures, details)
 
