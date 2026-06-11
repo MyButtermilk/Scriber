@@ -95,6 +95,10 @@ Signing/updater:
   HTTPS endpoint, signed `latest.json`, and publication evidence.
 - Authenticode validation exists, but real signing requires a certificate or
   cloud-signing provider.
+- `run_hybrid_release_readiness.ps1 -RunReleaseBuild` can now run the Windows
+  release build as an evidence producer and reuse its Authenticode validation
+  report, but it still depends on real Tauri updater signing secrets,
+  Authenticode signing, and public HTTPS publication.
 
 Physical hardware evidence:
 

@@ -13,6 +13,19 @@ param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$HardwareInputDir = "tmp\hybrid-baseline",
     [string]$MatrixValidationOutput = "",
+    [switch]$RunReleaseBuild,
+    [string[]]$ReleaseBuildBundles = @("nsis"),
+    [string]$ReleaseBuildReleaseBaseUrl = "",
+    [switch]$ReleaseBuildEnableTauriUpdater,
+    [string]$ReleaseBuildUpdaterEndpoint = "",
+    [string]$ReleaseBuildUpdaterPublicKey = "",
+    [switch]$ReleaseBuildRequireUpdaterSignatures,
+    [switch]$ReleaseBuildRequireAuthenticodeSignature,
+    [switch]$ReleaseBuildUseProfileBFfmpeg,
+    [switch]$ReleaseBuildValidateSlimMediaTools,
+    [switch]$ReleaseBuildReuseSidecarIfUnchanged,
+    [switch]$ReleaseBuildRunMediaPreparationSmoke,
+    [switch]$ReleaseBuildRunRuntimeDependencyFootprint,
     [switch]$RunMicrophoneHardwareMatrix,
     [string]$MicrophoneMatrixBaseUrl = "http://127.0.0.1:8765",
     [string]$MicrophoneMatrixToken = "",
@@ -298,6 +311,7 @@ if ($RustAudioSidecarExe) {
     $RustAudioSidecarExe = Convert-ToFullPath -Path $RustAudioSidecarExe -Root $RepoRoot
 }
 $AuthenticodePath = @($AuthenticodePath | ForEach-Object { Convert-ToFullPath -Path $_ -Root $RepoRoot })
+$releaseBuildGeneratedAuthenticodeReport = Join-Path $RepoRoot "Frontend\src-tauri\target\release\release-metadata\authenticode.json"
 
 if ($RequireRustAudioPromotionReadiness) {
     $RequireRustAudioSidecarSmoke = $true
@@ -419,6 +433,56 @@ if ($effectiveRequireRustEndpointInventory) {
 }
 if ($effectiveRequireDeviceRefreshEvidence) {
     $microphoneMatrixRunnerArgs += "-RequireDeviceRefreshEvidence"
+}
+$releaseBuildArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    (Join-Path $RepoRoot "scripts\build_windows.ps1"),
+    "-RepoRoot",
+    $RepoRoot,
+    "-Bundles"
+)
+$releaseBuildArgs += $ReleaseBuildBundles
+if ($ReleaseBuildReleaseBaseUrl) {
+    $releaseBuildArgs += @("-ReleaseBaseUrl", $ReleaseBuildReleaseBaseUrl)
+}
+if ($ReleaseBuildEnableTauriUpdater) {
+    $releaseBuildArgs += "-EnableTauriUpdater"
+}
+if ($ReleaseBuildUpdaterEndpoint) {
+    $releaseBuildArgs += @("-UpdaterEndpoint", $ReleaseBuildUpdaterEndpoint)
+}
+if ($ReleaseBuildUpdaterPublicKey) {
+    $releaseBuildArgs += @("-UpdaterPublicKey", $ReleaseBuildUpdaterPublicKey)
+}
+if ($ReleaseBuildRequireUpdaterSignatures) {
+    $releaseBuildArgs += "-RequireUpdaterSignatures"
+}
+if ($ReleaseBuildRequireAuthenticodeSignature) {
+    $releaseBuildArgs += "-RequireAuthenticodeSignature"
+}
+if ($ExpectedAuthenticodePublisher) {
+    $releaseBuildArgs += @("-ExpectedAuthenticodePublisher", $ExpectedAuthenticodePublisher)
+}
+if ($RequireAuthenticodeTimestamp) {
+    $releaseBuildArgs += "-RequireAuthenticodeTimestamp"
+}
+if ($ReleaseBuildUseProfileBFfmpeg) {
+    $releaseBuildArgs += "-UseProfileBFfmpeg"
+}
+if ($ReleaseBuildValidateSlimMediaTools) {
+    $releaseBuildArgs += "-ValidateSlimMediaTools"
+}
+if ($ReleaseBuildReuseSidecarIfUnchanged) {
+    $releaseBuildArgs += "-ReuseSidecarIfUnchanged"
+}
+if ($ReleaseBuildRunMediaPreparationSmoke) {
+    $releaseBuildArgs += "-RunMediaPreparationSmoke"
+}
+if ($ReleaseBuildRunRuntimeDependencyFootprint) {
+    $releaseBuildArgs += "-RunRuntimeDependencyFootprint"
 }
 $updaterArgs = @(
     "scripts\verify_tauri_updater_publication.py",
@@ -776,10 +840,16 @@ $requiredEvidence = @(
         name = "signedTauriUpdaterMetadata"
         required = $true
         external = $true
-        producer = "scripts\build_windows.ps1 -EnableTauriUpdater with signing keys"
+        producer = $(if ($RunReleaseBuild) { "scripts\build_windows.ps1" } else { "scripts\build_windows.ps1 -EnableTauriUpdater with signing keys" })
         metadata = $UpdaterMetadata
         artifactDir = $UpdaterArtifactDir
         sha256Sums = $Sha256Sums
+        releaseBuild = [pscustomobject]@{
+            run = [bool]$RunReleaseBuild
+            enableTauriUpdater = [bool]$ReleaseBuildEnableTauriUpdater
+            requireUpdaterSignatures = [bool]$ReleaseBuildRequireUpdaterSignatures
+            releaseBaseUrlConfigured = [bool]$ReleaseBuildReleaseBaseUrl
+        }
         notes = "latest.json must use absolute HTTPS release URLs and non-empty Tauri updater signatures."
     },
     [pscustomobject]@{
@@ -912,6 +982,8 @@ $requiredEvidence = @(
         producer = $(if ($UseExistingAuthenticodeReport) { "existing report" } else { "scripts\validate_windows_authenticode.ps1" })
         inputPaths = $AuthenticodePath
         report = $AuthenticodeReport
+        releaseBuildReport = $releaseBuildGeneratedAuthenticodeReport
+        generatedByReleaseBuild = [bool]($RunReleaseBuild -and $ReleaseBuildRequireAuthenticodeSignature)
         expectedPublisher = $ExpectedAuthenticodePublisher
         requireTimestamp = [bool]$RequireAuthenticodeTimestamp
         notes = "The Authenticode report must include the release artifact names from latest.json, not only an unrelated signed executable."
@@ -929,6 +1001,12 @@ $requiredEvidence = @(
 $plan = [pscustomobject]@{
     ok = $true
     planOnly = [bool]$PlanOnly
+    runReleaseBuild = [bool]$RunReleaseBuild
+    releaseBuildCommand = $(if ($RunReleaseBuild) { "powershell " + (Convert-ToDisplayCommand -CommandArgs $releaseBuildArgs) } else { "not requested" })
+    releaseBuildGeneratedAuthenticodeReport = $releaseBuildGeneratedAuthenticodeReport
+    releaseBuildEnableTauriUpdater = [bool]$ReleaseBuildEnableTauriUpdater
+    releaseBuildRequireUpdaterSignatures = [bool]$ReleaseBuildRequireUpdaterSignatures
+    releaseBuildRequireAuthenticodeSignature = [bool]$ReleaseBuildRequireAuthenticodeSignature
     hardwareInputDir = $HardwareInputDir
     matrixValidationOutput = $MatrixValidationOutput
     mediaPreparationReport = $MediaPreparationReport
@@ -1069,12 +1147,26 @@ if ($PlanOnly) {
     exit 0
 }
 
-if (-not $UseExistingAuthenticodeReport -and $AuthenticodePath.Count -eq 0) {
+if (-not $UseExistingAuthenticodeReport -and $AuthenticodePath.Count -eq 0 -and -not ($RunReleaseBuild -and $ReleaseBuildRequireAuthenticodeSignature)) {
     throw "-AuthenticodePath is required unless -UseExistingAuthenticodeReport is passed."
 }
 
 Push-Location $RepoRoot
 try {
+    if ($RunReleaseBuild) {
+        Invoke-Checked -Label "Windows release build" -Command {
+            powershell @releaseBuildArgs
+        }
+        if ($ReleaseBuildRequireAuthenticodeSignature) {
+            Assert-ExistingFile -Path $releaseBuildGeneratedAuthenticodeReport -Label "Release-build Authenticode report"
+            if ($releaseBuildGeneratedAuthenticodeReport -ne $AuthenticodeReport) {
+                New-Item -ItemType Directory -Force -Path ([System.IO.Path]::GetDirectoryName($AuthenticodeReport)) | Out-Null
+                Copy-Item -LiteralPath $releaseBuildGeneratedAuthenticodeReport -Destination $AuthenticodeReport -Force
+            }
+            $UseExistingAuthenticodeReport = $true
+        }
+    }
+
     if ($RunMicrophoneHardwareMatrix) {
         Invoke-Checked -Label "Physical microphone matrix" -Command {
             powershell @microphoneMatrixRunnerArgs

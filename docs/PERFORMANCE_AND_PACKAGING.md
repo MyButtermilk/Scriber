@@ -145,6 +145,12 @@ Release workflow:
 - It collects size, media-preparation, runtime dependency, and timing evidence.
 - Authenticode and Tauri updater signing gates are available but require real
   signing/updater secrets.
+- The hybrid release-readiness runner can now invoke `scripts\build_windows.ps1`
+  with `-RunReleaseBuild`, pass through updater/signature/Profile-B release
+  flags, and reuse the build-generated Authenticode validation report before
+  the final aggregate validator runs. This makes the signed release build a
+  first-class evidence producer while still requiring real Tauri signing keys,
+  HTTPS publication, and Authenticode certificate/cloud-signing evidence.
 
 ## Size Decisions
 

@@ -461,6 +461,28 @@ certificate or cloud-signing provider.
 Unsigned local builds are valid for development and smoke testing, but they do
 not satisfy final external release-readiness.
 
+The release-readiness runner can invoke the Windows release build before
+validating final evidence:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunReleaseBuild `
+  -ReleaseBuildEnableTauriUpdater `
+  -ReleaseBuildRequireUpdaterSignatures `
+  -ReleaseBuildRequireAuthenticodeSignature `
+  -ReleaseBuildUseProfileBFfmpeg `
+  -ReleaseBuildValidateSlimMediaTools `
+  -ReleaseBuildRunMediaPreparationSmoke `
+  -ReleaseBuildRunRuntimeDependencyFootprint
+```
+
+This calls `scripts\build_windows.ps1` and can produce signed updater metadata,
+release metadata, media-preparation evidence, runtime-footprint evidence, and
+the build's Authenticode validation report when the required secrets and
+certificate/cloud-signing step are available. It still does not create signing
+credentials or publish `latest.json`; publication verification remains a
+separate gate.
+
 ## Release Readiness
 
 Use the top-level release-readiness runner for final external evidence:

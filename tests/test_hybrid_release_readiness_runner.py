@@ -328,6 +328,78 @@ def test_hybrid_release_readiness_runner_rejects_forced_refresh_for_device_refre
     assert "-MicrophoneMatrixForceRefreshEachPoll cannot be used" in result.stderr
 
 
+def test_hybrid_release_readiness_runner_can_plan_release_build(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RunReleaseBuild",
+        "-ReleaseBuildBundles",
+        "nsis",
+        "-ReleaseBuildReleaseBaseUrl",
+        "https://github.com/MyButtermilk/Scriber/releases/latest/download",
+        "-ReleaseBuildEnableTauriUpdater",
+        "-ReleaseBuildUpdaterEndpoint",
+        "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
+        "-ReleaseBuildUpdaterPublicKey",
+        "test-public-key",
+        "-ReleaseBuildRequireUpdaterSignatures",
+        "-ReleaseBuildRequireAuthenticodeSignature",
+        "-ReleaseBuildUseProfileBFfmpeg",
+        "-ReleaseBuildValidateSlimMediaTools",
+        "-ReleaseBuildReuseSidecarIfUnchanged",
+        "-ReleaseBuildRunMediaPreparationSmoke",
+        "-ReleaseBuildRunRuntimeDependencyFootprint",
+        "-ExpectedAuthenticodePublisher",
+        "Scriber Publisher",
+        "-RequireAuthenticodeTimestamp",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runReleaseBuild"] is True
+    assert payload["releaseBuildEnableTauriUpdater"] is True
+    assert payload["releaseBuildRequireUpdaterSignatures"] is True
+    assert payload["releaseBuildRequireAuthenticodeSignature"] is True
+    assert payload["releaseBuildGeneratedAuthenticodeReport"].endswith(
+        "Frontend\\src-tauri\\target\\release\\release-metadata\\authenticode.json"
+    )
+    assert "build_windows.ps1" in payload["releaseBuildCommand"]
+    assert "-Bundles nsis" in payload["releaseBuildCommand"]
+    assert "-ReleaseBaseUrl https://github.com/MyButtermilk/Scriber/releases/latest/download" in payload[
+        "releaseBuildCommand"
+    ]
+    assert "-EnableTauriUpdater" in payload["releaseBuildCommand"]
+    assert "-UpdaterEndpoint https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json" in payload[
+        "releaseBuildCommand"
+    ]
+    assert "-UpdaterPublicKey test-public-key" in payload["releaseBuildCommand"]
+    assert "-RequireUpdaterSignatures" in payload["releaseBuildCommand"]
+    assert "-RequireAuthenticodeSignature" in payload["releaseBuildCommand"]
+    assert "-ExpectedAuthenticodePublisher" in payload["releaseBuildCommand"]
+    assert "-RequireAuthenticodeTimestamp" in payload["releaseBuildCommand"]
+    assert "-UseProfileBFfmpeg" in payload["releaseBuildCommand"]
+    assert "-ValidateSlimMediaTools" in payload["releaseBuildCommand"]
+    assert "-ReuseSidecarIfUnchanged" in payload["releaseBuildCommand"]
+    assert "-RunMediaPreparationSmoke" in payload["releaseBuildCommand"]
+    assert "-RunRuntimeDependencyFootprint" in payload["releaseBuildCommand"]
+
+    signed_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "signedTauriUpdaterMetadata")
+    assert signed_evidence["producer"] == "scripts\\build_windows.ps1"
+    assert signed_evidence["releaseBuild"]["run"] is True
+    assert signed_evidence["releaseBuild"]["enableTauriUpdater"] is True
+    assert signed_evidence["releaseBuild"]["requireUpdaterSignatures"] is True
+    assert signed_evidence["releaseBuild"]["releaseBaseUrlConfigured"] is True
+    authenticode_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "authenticodeSignatures")
+    assert authenticode_evidence["generatedByReleaseBuild"] is True
+    assert authenticode_evidence["releaseBuildReport"].endswith("release-metadata\\authenticode.json")
+
+
 def test_hybrid_release_readiness_runner_plans_required_rust_audio_sidecar_smoke(tmp_path: Path) -> None:
     sidecar_exe = tmp_path / "scriber-audio-sidecar.exe"
     result = run_powershell(

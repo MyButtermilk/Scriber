@@ -103,6 +103,10 @@ Packaging and scripts:
 - `scripts/ffmpeg/build_profile_b_msys2.ps1`: Profile B custom ffmpeg build.
 - `scripts/smoke_*.ps1` and `scripts/smoke_*.py`: installed app, desktop,
   frontend, media, and workflow gates.
+- `scripts/run_hybrid_release_readiness.ps1 -RunReleaseBuild` may invoke
+  `scripts/build_windows.ps1` as an evidence producer, but it still requires
+  real updater signing secrets, HTTPS publication, and Authenticode signing
+  evidence for final readiness.
 
 ## Non-Negotiable Contracts
 
