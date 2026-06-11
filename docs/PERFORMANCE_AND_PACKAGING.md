@@ -1169,6 +1169,21 @@ Implementation plan:
      It reported `totalAdoptedPrewarmBlocks=40`,
      `prebufferFramesRead=40`, `liveFramesRead=43`,
      `prebufferAfterLiveCount=0`, and `sequenceGapCount=0`.
+   - Local evidence from 2026-06-11: the Rust sidecar Windows WASAPI promotion
+     smoke passed with the release `scriber-audio-sidecar.exe` built from the
+     current branch:
+     `python scripts\smoke_rust_audio_sidecar.py --sidecar-exe Frontend\src-tauri\target\release\scriber-audio-sidecar.exe --mode wasapi --duration-sec 600 --selected-duration-sec 10 --prebuffer-ms 400 --prewarm-before-capture --prewarm-duration-sec 0.5 --output tmp\hybrid-baseline\rust-audio-sidecar-smoke.json`.
+     It reported a 600.003 second default capture, a 10.008 second selected
+     native-endpoint-hash capture, `selectedHashVerified=true`, matching
+     `totalFramesRead=61035` and `totalFramesWritten=61035`, zero sequence
+     gaps, zero prebuffer-after-live frames, `totalAdoptedPrewarmBlocks=34`,
+     and `adoptedPrewarm.handoffMode=overlap-capture-start-before-prewarm-stop`.
+     A focused `validate_hybrid_release_readiness.py` invocation marked
+     `rustAudioSidecarSmoke.ok=true` for this report with
+     `--min-rust-audio-duration-sec 600` and
+     `--require-rust-audio-sidecar-prewarm-adoption`; the overall aggregate
+     remained red only because unrelated release/signing/hardware evidence was
+     intentionally not supplied in that focused check.
    - Local evidence from 2026-06-11: the app-level Windows WASAPI prewarm
      adoption smoke passed with
      `python scripts\smoke_rust_audio_app_prewarm.py --mode wasapi --duration-sec 10 --prewarm-duration-sec 2 --post-resume-duration-sec 2 --output tmp\rust-promotion-evidence\rust-audio-app-prewarm-wasapi-10s-default-endpoint-fix.json`.

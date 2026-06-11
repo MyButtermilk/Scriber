@@ -251,12 +251,19 @@ Rust audio:
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no
-  prebuffer-after-live frames. A local app-level WASAPI prewarm adoption smoke
-  passed on 2026-06-11 with 40 adopted prebuffer blocks, 992 live blocks, no
-  sequence/protocol errors, successful idle-prewarm resume, and Windows-default
-  endpoint selection evidence. A 30-second installed Rust/WASAPI Always-On-Mic
-  live-recording smoke also passed on 2026-06-11 with increasing frame-pipe
-  counters, closed fallback circuit, and Windows-default endpoint selection.
+  prebuffer-after-live frames. The same sidecar promotion evidence was refreshed
+  on 2026-06-11 against the current release `scriber-audio-sidecar.exe` and the
+  overlap handoff implementation: 600.003 seconds observed default capture,
+  10.008 seconds selected native-endpoint-hash capture,
+  `selectedHashVerified=true`, no sequence gaps, no prebuffer-after-live
+  frames, matching total read/write frame counts, 34 adopted prewarm blocks, and
+  `adoptedPrewarm.handoffMode=overlap-capture-start-before-prewarm-stop`.
+  A local app-level WASAPI prewarm adoption smoke passed on 2026-06-11 with 40
+  adopted prebuffer blocks, 992 live blocks, no sequence/protocol errors,
+  successful idle-prewarm resume, and Windows-default endpoint selection
+  evidence. A 30-second installed Rust/WASAPI Always-On-Mic live-recording
+  smoke also passed on 2026-06-11 with increasing frame-pipe counters, closed
+  fallback circuit, and Windows-default endpoint selection.
   A targeted 2026-06-11 favorite-mic investigation fixed a Python/Rust endpoint
   hash mismatch by preferring the private Tauri shell-IPC endpoint inventory
   for Rust active capture and prewarm. A Rust-only provider-backed smoke then
