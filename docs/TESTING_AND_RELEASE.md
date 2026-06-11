@@ -352,6 +352,12 @@ prewarm session, and prevents a report with a hidden idle-session dropout or an
 unmeasured stop-to-prewarm-ready gap from passing as stable promotion evidence
 merely because the watchdog recovered before the final snapshot.
 
+The running app also persists recovered idle-prewarm watchdog restarts under
+`watchdog.lastWarning` when `healthRestartCount` increases during a watchdog
+check. Support bundles should therefore show the last brief Always-On-Mic
+dropout/recovery even when the stream was already healthy again before the user
+opened the Debug Console or clicked Stop in the recording popup.
+
 For Always-On-Mic promotion evidence, make the app-level smoke a long run and
 require the same durations plus repeated stop/resume capture cycles in final
 validation:

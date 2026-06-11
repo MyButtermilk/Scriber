@@ -1793,6 +1793,19 @@ class ScriberWebController:
         except Exception as exc:
             return {"available": False, "error": str(exc)}
 
+    @staticmethod
+    def _prewarm_health_restart_count(diagnostics: dict[str, Any] | None) -> int | None:
+        if not isinstance(diagnostics, dict):
+            return None
+        value = diagnostics.get("healthRestartCount")
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        return None
+
     def _log_mic_watchdog_warning(self, message: str, *, diagnostics: dict[str, Any] | None = None) -> None:
         now = time.monotonic()
         self._last_mic_watchdog_warning_snapshot = {
@@ -1841,15 +1854,29 @@ class ScriberWebController:
 
         ensure_idle = getattr(self._mic_prewarm, "ensure_healthy", None)
         if callable(ensure_idle):
+            before_diagnostics = self._prewarm_diagnostics()
+            before_restart_count = self._prewarm_health_restart_count(before_diagnostics)
             healthy = await asyncio.to_thread(
                 ensure_idle,
                 reason="watchdog",
                 max_callback_gap_seconds=self._mic_watchdog_callback_gap_seconds,
             )
+            after_diagnostics = self._prewarm_diagnostics()
+            after_restart_count = self._prewarm_health_restart_count(after_diagnostics)
             if not healthy and Config.MIC_ALWAYS_ON:
                 self._log_mic_watchdog_warning(
                     "Idle microphone watchdog could not verify prewarm stream",
-                    diagnostics=self._prewarm_diagnostics(),
+                    diagnostics=after_diagnostics,
+                )
+            elif (
+                Config.MIC_ALWAYS_ON
+                and before_restart_count is not None
+                and after_restart_count is not None
+                and after_restart_count > before_restart_count
+            ):
+                self._log_mic_watchdog_warning(
+                    "Idle microphone watchdog recovered prewarm stream",
+                    diagnostics=after_diagnostics,
                 )
             return
 

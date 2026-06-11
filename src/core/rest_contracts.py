@@ -530,6 +530,11 @@ def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
                 "lastHealthRestartThrottleRemainingSeconds",
                 contract,
             )
+            _validate_prewarm_diagnostics(
+                diagnostics,
+                contract,
+                "watchdog.lastWarning.diagnostics",
+            )
 
     text_injection = _require_dict(payload, "textInjection", contract)
     _require_string(text_injection, "method", contract)

@@ -512,6 +512,25 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)
 
+    idle_warning = copy.deepcopy(valid)
+    idle_warning["watchdog"]["lastWarning"] = {
+        **valid["watchdog"]["lastWarning"],
+        "message": "Idle microphone watchdog recovered prewarm stream",
+        "diagnostics": {
+            **valid["microphone"]["prewarm"],
+            "healthRestartCount": 1,
+            "lastHealthError": "missingPrewarmSession",
+        },
+    }
+    validate_audio_diagnostics_payload(idle_warning)
+
+    invalid = copy.deepcopy(idle_warning)
+    invalid["watchdog"]["lastWarning"]["diagnostics"]["lastStatus"]["raw"] = {
+        "prewarmId": "raw-prewarm-id"
+    }
+    with pytest.raises(RESTContractError):
+        validate_audio_diagnostics_payload(invalid)
+
     invalid = copy.deepcopy(valid)
     invalid["watchdog"] = {
         **valid["watchdog"],

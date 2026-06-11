@@ -785,10 +785,14 @@ Missing prerequisites:
      that arrive after live frames.
    - Implemented: `/api/runtime/audio-diagnostics` now retains the latest mic
      watchdog warning snapshot under `watchdog.lastWarning`, including the
-     redacted active-capture diagnostics that caused the warning. Support
-     bundles include this snapshot through `audio-diagnostics.redacted.json`,
-     so short live/Always-On-Mic interruptions remain diagnosable after the
-     recording has stopped.
+     redacted active-capture or idle-prewarm diagnostics that caused the
+     warning. Successful idle-prewarm recoveries are captured too when
+     `healthRestartCount` increases during a watchdog check, so a brief
+     microphone privacy-indicator off/on event is visible even if the stream is
+     already healthy again by the time the user opens the Debug Console.
+     Support bundles include this snapshot through
+     `audio-diagnostics.redacted.json`, so short live/Always-On-Mic
+     interruptions remain diagnosable after the recording has stopped.
    - Implemented: support-bundle redaction now treats raw `prewarmId` and
      `prewarm_id` JSON keys as sensitive while preserving already-redacted
      hash fields such as `prewarmIdHash`.
@@ -1322,7 +1326,10 @@ Implementation plan:
      Rust idle session disappears before a status query can be made, and the
      Python prewarm fallback records the analogous `missingPrewarmStream`
      condition. The initial startup activation is not counted as a health
-     restart, so these counters point to real post-start interruptions.
+     restart, so these counters point to real post-start interruptions. The
+     app watchdog now snapshots recovered idle-prewarm restarts under
+     `watchdog.lastWarning` when `healthRestartCount` increases, even if
+     `ensure_healthy()` successfully restored the stream in the same check.
    - Implemented: the app-level Rust prewarm smoke now exercises that status
      path before capture adoption and after idle resume. Final hybrid readiness
      rejects Rust app-prewarm reports that lack active `audioPrewarmStatus`

@@ -276,8 +276,11 @@ Tauri text injection:
   suppression. Stale active streams report unhealthy during throttle windows so
   long physical evidence can show short interruptions instead of silently
   treating them as healthy. `/api/runtime/audio-diagnostics` and support
-  bundles also retain the latest mic-watchdog warning snapshot, so a brief
-  interruption remains visible after the capture has already ended.
+  bundles also retain the latest mic-watchdog warning snapshot. Idle
+  Always-On-Mic recoveries now update that snapshot when the prewarm
+  `healthRestartCount` increases, so a brief privacy-indicator off/on event
+  remains visible after the capture has already ended or after the user clicked
+  Stop in the popup.
 - Rust frame-pipe failures after the first callback now open a short
   fallback-on-next-session circuit. The current utterance is not switched to
   Python mid-stream, but the next requested Rust-prototype recording uses

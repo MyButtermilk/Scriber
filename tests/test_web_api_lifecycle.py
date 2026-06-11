@@ -74,6 +74,43 @@ class _FakeRustMicPrewarmManager(_FakeMicPrewarmManager):
     instances: list["_FakeRustMicPrewarmManager"] = []
 
 
+class _RecoveringFakeMicPrewarmManager(_FakeMicPrewarmManager):
+    instances: list["_RecoveringFakeMicPrewarmManager"] = []
+
+    def __init__(self):
+        super().__init__()
+        self.health_restart_count = 0
+        self.last_health_error = ""
+
+    def ensure_healthy(self, *, reason: str = "watchdog", max_callback_gap_seconds=None) -> bool:
+        self.ensure_calls += 1
+        self.health_restart_count += 1
+        self.last_health_error = "missingPrewarmSession"
+        self.active = True
+        return True
+
+    def diagnostic_snapshot(self) -> dict:
+        snapshot = super().diagnostic_snapshot()
+        snapshot.update(
+            {
+                "healthRestartCount": self.health_restart_count,
+                "lastHealthError": self.last_health_error,
+                "lastHealthCheckReason": "watchdog" if self.ensure_calls else "",
+                "lastHealthCheckActive": self.active,
+                "recentEvents": [
+                    {
+                        "event": "health_restart",
+                        "reason": "watchdog",
+                        "healthError": self.last_health_error,
+                    }
+                ]
+                if self.health_restart_count
+                else [],
+            }
+        )
+        return snapshot
+
+
 def _install_fake_sounddevice_module(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -352,6 +389,34 @@ async def test_mic_watchdog_checks_idle_prewarm(monkeypatch, tmp_path):
     assert manager.ensure_calls == 1
     assert manager.active is True
     assert ctl.get_audio_diagnostics()["microphone"]["prewarm"]["ensureCalls"] == 1
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mic_watchdog_persists_idle_prewarm_recovery_snapshot(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_MIC_WATCHDOG_INTERVAL_SEC", "0")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(web_api, "MicrophonePrewarmManager", _RecoveringFakeMicPrewarmManager)
+    _RecoveringFakeMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    await _wait_for_prewarm_task(ctl)
+    manager = _RecoveringFakeMicPrewarmManager.instances[-1]
+    manager.active = False
+
+    await ctl._run_mic_watchdog_check()
+
+    assert manager.ensure_calls == 1
+    assert manager.active is True
+    watchdog = ctl.get_audio_diagnostics()["watchdog"]
+    last_warning = watchdog["lastWarning"]
+    assert last_warning["message"] == "Idle microphone watchdog recovered prewarm stream"
+    assert last_warning["diagnostics"]["healthRestartCount"] == 1
+    assert last_warning["diagnostics"]["lastHealthError"] == "missingPrewarmSession"
+    assert last_warning["diagnostics"]["recentEvents"][0]["event"] == "health_restart"
 
     ctl.shutdown()
 
