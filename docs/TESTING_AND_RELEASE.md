@@ -351,6 +351,13 @@ counting as proof that Always-On-Mic was still holding a live Rust/WASAPI
 prewarm session, and prevents a report with a hidden idle-session dropout or an
 unmeasured stop-to-prewarm-ready gap from passing as stable promotion evidence
 merely because the watchdog recovered before the final snapshot.
+The same app-prewarm smoke rejects source-final reports with
+`midSessionFailureReason`, `fallbackReason`, non-empty `lastError`, or a
+`framePipeReaderEndReason` other than empty, `stopRequested`, or `endOfStream`.
+This keeps app-level Always-On-Mic promotion evidence aligned with the
+installed live-recording and provider-backed comparison gates: a broken Rust
+frame pipe cannot pass merely because adoption counters were positive before
+the break.
 
 The running app also persists recovered idle-prewarm watchdog restarts under
 `watchdog.lastWarning` when `healthRestartCount` increases during a watchdog

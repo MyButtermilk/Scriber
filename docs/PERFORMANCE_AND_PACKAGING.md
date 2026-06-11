@@ -1087,7 +1087,11 @@ Implementation plan:
      `-RequireRustAudioAppPrewarmSmoke`. Required app-level readiness expects
      WASAPI mode, default-endpoint evidence, positive adopted/prebuffer/live
      frame counts, a native endpoint hash, successful idle-prewarm resume, and
-     zero sequence/protocol/prebuffer-ordering errors.
+     zero sequence/protocol/prebuffer-ordering errors. It also rejects
+     `midSessionFailureReason`, `fallbackReason`, non-empty `lastError`, and
+     final frame-pipe reader states other than empty, `stopRequested`, or
+     `endOfStream`, so a report with a broken Rust reader cannot pass on
+     adoption counters alone.
    - Implemented: final readiness can also require long app-level Rust
      Always-On-Mic evidence with
      `-MinRustAudioAppPrewarmDurationSec` and

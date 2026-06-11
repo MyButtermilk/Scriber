@@ -50,6 +50,15 @@ def _manager_health_snapshot(
     }
     if include_recent_events:
         snapshot["recentEvents"] = recent_events
+    if post_resume:
+        snapshot.update(
+            {
+                "activeCaptureResumeReadyCount": 1,
+                "lastActiveCaptureResumeGapMs": 4.0,
+                "lastActiveCaptureStopToReadyMs": 6.0,
+                "maxActiveCaptureStopToReadyMs": 6.0,
+            }
+        )
     return {
         **snapshot,
     }
@@ -68,7 +77,9 @@ def test_rust_audio_app_prewarm_smoke_script_documents_app_lifecycle_contract() 
     assert "managerResume" in script
     assert "adoptedPrewarm" in script
     assert "healthRestartCount" in script
+    assert "midSessionFailureReason" in script
     assert "framePipePrebufferFramesRead" in script
+    assert "framePipeReaderEndReason" in script
     assert "framePipePrebufferAfterLiveCount" in script
     assert "--mode wasapi" in script
     assert "--honor-favorite-mic" in script
@@ -122,6 +133,10 @@ def test_rust_audio_app_prewarm_validation_accepts_app_adoption_metrics() -> Non
                 "framePipePrebufferAfterLiveCount": 0,
                 "framePipeSequenceErrorCount": 0,
                 "framePipeProtocolErrorCount": 0,
+                "framePipeReaderEndReason": "stopRequested",
+                "midSessionFailureReason": "",
+                "fallbackReason": "",
+                "lastError": "",
             },
         }
     )
@@ -146,6 +161,7 @@ def test_rust_audio_app_prewarm_validation_rejects_health_restart() -> None:
                 "framePipePrebufferAfterLiveCount": 0,
                 "framePipeSequenceErrorCount": 0,
                 "framePipeProtocolErrorCount": 0,
+                "framePipeReaderEndReason": "stopRequested",
             },
         }
     )
@@ -169,6 +185,7 @@ def test_rust_audio_app_prewarm_validation_rejects_missing_adoption() -> None:
                 "framePipePrebufferAfterLiveCount": 0,
                 "framePipeSequenceErrorCount": 0,
                 "framePipeProtocolErrorCount": 0,
+                "framePipeReaderEndReason": "stopRequested",
             },
         }
     )
@@ -200,6 +217,7 @@ def test_rust_audio_app_prewarm_validation_rejects_missing_recent_events() -> No
                 "framePipePrebufferAfterLiveCount": 0,
                 "framePipeSequenceErrorCount": 0,
                 "framePipeProtocolErrorCount": 0,
+                "framePipeReaderEndReason": "stopRequested",
             },
         }
     )
@@ -209,3 +227,37 @@ def test_rust_audio_app_prewarm_validation_rejects_missing_recent_events() -> No
         "managerPostResumeHealth must prove active audioPrewarmStatus when resume is requested"
         in errors
     )
+
+
+def test_rust_audio_app_prewarm_validation_rejects_mid_session_failure() -> None:
+    errors = validate_smoke(
+        {
+            "ok": True,
+            "managerStart": {"active": True},
+            "managerPreAdoptionHealth": _manager_health_snapshot(),
+            "managerAdoption": {"prewarmIdHash": "abc"},
+            "managerResume": {"active": True},
+            "managerPostResumeHealth": _manager_health_snapshot(post_resume=True),
+            "sourceFinal": {
+                "callbackCount": 12,
+                "adoptedPrewarm": {"adopted": True, "blocks": 4},
+                "framePipePrebufferFramesRead": 4,
+                "framePipeLiveFramesRead": 8,
+                "framePipePrebufferAfterLiveCount": 0,
+                "framePipeSequenceErrorCount": 0,
+                "framePipeProtocolErrorCount": 0,
+                "framePipeReaderEndReason": "pipeClosed",
+                "midSessionFailureReason": "pipeClosed",
+                "fallbackReason": "rustFramePipeClosedAfterFirstFrame",
+                "lastError": "audio frame pipe closed",
+            },
+        }
+    )
+
+    assert "sourceFinal.midSessionFailureReason must be empty" in errors
+    assert "sourceFinal.fallbackReason must be empty" in errors
+    assert (
+        "sourceFinal.framePipeReaderEndReason must be stopRequested, endOfStream, or empty"
+        in errors
+    )
+    assert "sourceFinal.lastError must be empty" in errors

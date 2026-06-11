@@ -32,6 +32,8 @@ COMMAND_MAP = {
     "audioCaptureStop": "captureStop",
 }
 
+ALLOWED_FINAL_READER_END_REASONS = {"", "stopRequested", "endOfStream"}
+
 
 def hash_hint(value: str | None) -> str | None:
     if not value:
@@ -142,6 +144,7 @@ def validate_smoke(payload: dict[str, Any]) -> list[str]:
         errors.append("sourceFinal.framePipeSequenceErrorCount must be 0")
     if int(final_source.get("framePipeProtocolErrorCount") or 0) != 0:
         errors.append("sourceFinal.framePipeProtocolErrorCount must be 0")
+    errors.extend(validate_source_failure_state(final_source, "sourceFinal"))
     manager_resume = payload.get("managerResume")
     if isinstance(manager_resume, dict) and manager_resume.get("active") is not True:
         errors.append("managerResume.active must be true when resume is requested")
@@ -212,6 +215,23 @@ def validate_source_final(final_source: dict[str, Any], prefix: str) -> list[str
         errors.append(f"{prefix} sourceFinal.framePipeSequenceErrorCount must be 0")
     if int(final_source.get("framePipeProtocolErrorCount") or 0) != 0:
         errors.append(f"{prefix} sourceFinal.framePipeProtocolErrorCount must be 0")
+    errors.extend(validate_source_failure_state(final_source, f"{prefix} sourceFinal"))
+    return errors
+
+
+def validate_source_failure_state(final_source: dict[str, Any], prefix: str) -> list[str]:
+    errors: list[str] = []
+    if str(final_source.get("midSessionFailureReason") or "").strip():
+        errors.append(f"{prefix}.midSessionFailureReason must be empty")
+    if str(final_source.get("fallbackReason") or "").strip():
+        errors.append(f"{prefix}.fallbackReason must be empty")
+    reader_end_reason = str(final_source.get("framePipeReaderEndReason") or "").strip()
+    if reader_end_reason not in ALLOWED_FINAL_READER_END_REASONS:
+        errors.append(
+            f"{prefix}.framePipeReaderEndReason must be stopRequested, endOfStream, or empty"
+        )
+    if str(final_source.get("lastError") or "").strip():
+        errors.append(f"{prefix}.lastError must be empty")
     return errors
 
 
@@ -331,6 +351,8 @@ def summarize_source(final_source: dict[str, Any], callback_count: int) -> dict[
         "prebufferAfterLiveCount": int(final_source.get("framePipePrebufferAfterLiveCount") or 0),
         "sequenceErrorCount": int(final_source.get("framePipeSequenceErrorCount") or 0),
         "protocolErrorCount": int(final_source.get("framePipeProtocolErrorCount") or 0),
+        "midSessionFailure": bool(str(final_source.get("midSessionFailureReason") or "").strip()),
+        "readerEndReason": str(final_source.get("framePipeReaderEndReason") or ""),
     }
 
 
@@ -514,6 +536,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         "prebufferAfterLiveCount": sum(int(item.get("prebufferAfterLiveCount") or 0) for item in cycle_summaries),
         "sequenceErrorCount": sum(int(item.get("sequenceErrorCount") or 0) for item in cycle_summaries),
         "protocolErrorCount": sum(int(item.get("protocolErrorCount") or 0) for item in cycle_summaries),
+        "midSessionFailureCount": sum(1 for item in cycle_summaries if item.get("midSessionFailure")),
         "lastCycle": summarize_source(final_source, int((cycles[-1] if cycles else {}).get("callbackCount") or 0)),
     }
     errors = validate_smoke({**payload, "ok": True})
