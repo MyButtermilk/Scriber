@@ -220,6 +220,16 @@ def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
     _require_optional_bool(native_device_events, "registered", contract)
     _require_optional_string(native_device_events, "reason", contract)
     _require_optional_string(native_device_events, "effectiveMode", contract)
+    rust_audio_fallback_circuit = _require_dict(
+        microphone,
+        "rustAudioFallbackCircuit",
+        contract,
+    )
+    _require_bool(rust_audio_fallback_circuit, "available", contract)
+    _require_bool(rust_audio_fallback_circuit, "open", contract)
+    _require_optional_string(rust_audio_fallback_circuit, "reason", contract)
+    _require_optional_number(rust_audio_fallback_circuit, "remainingSeconds", contract)
+    _require_optional_number(rust_audio_fallback_circuit, "cooldownSeconds", contract)
 
     watchdog = _require_dict(payload, "watchdog", contract)
     _require_bool(watchdog, "enabled", contract)

@@ -559,6 +559,8 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert audio["provider"]["active"] is None
     assert audio["microphone"]["configuredDevice"]
     assert audio["microphone"]["prebufferMs"] >= 0
+    assert audio["microphone"]["rustAudioFallbackCircuit"]["available"] is True
+    assert audio["microphone"]["rustAudioFallbackCircuit"]["open"] is False
     assert audio["textInjection"]["method"]
     assert audio["textInjection"]["shellIpc"]["available"] is False
     assert audio["textInjection"]["shellIpc"]["pipeConfigured"] is False
@@ -572,6 +574,36 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert health["host"] == runtime["host"]
     assert health["port"] == runtime["port"]
     assert health["startedAt"] == runtime["startedAt"]
+
+
+@pytest.mark.asyncio
+async def test_audio_diagnostics_include_global_rust_fallback_circuit(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_MIC_WATCHDOG_INTERVAL_SEC", "0")
+    monkeypatch.setattr(
+        web_api,
+        "_rust_audio_fallback_circuit_diagnostics",
+        lambda: {
+            "available": True,
+            "open": True,
+            "reason": "pipeClosed",
+            "remainingSeconds": 12.5,
+            "cooldownSeconds": 60.0,
+        },
+    )
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    audio = ctl.get_audio_diagnostics()
+
+    circuit = audio["microphone"]["rustAudioFallbackCircuit"]
+    assert circuit["available"] is True
+    assert circuit["open"] is True
+    assert circuit["reason"] == "pipeClosed"
+    assert circuit["remainingSeconds"] == 12.5
+    assert circuit["cooldownSeconds"] == 60.0
+
+    ctl.shutdown()
 
 
 @pytest.mark.asyncio

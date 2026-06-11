@@ -1077,6 +1077,11 @@ Implementation plan:
      next `SCRIBER_AUDIO_ENGINE=rust-prototype` session falls back to Python
      during the cooldown and records
      `rustPrototypeCircuitOpen:<reason>` in diagnostics.
+   - Implemented: `/api/runtime/audio-diagnostics` also exposes the global
+     fallback circuit as `microphone.rustAudioFallbackCircuit`, even when there
+     is no active pipeline. Support bundles preserve the same redacted circuit
+     state, so a post-failure idle bundle can prove why the next requested Rust
+     recording used Python.
    - Still open: physical proof that this restart/cooldown policy behaves well
      during real long recordings and dock/USB/default-device transitions.
 7. Run A/B measurements before any promotion:

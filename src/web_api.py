@@ -364,6 +364,30 @@ def _runtime_feature_flags() -> dict[str, Any]:
     }
 
 
+def _rust_audio_fallback_circuit_diagnostics() -> dict[str, Any]:
+    try:
+        from src.microphone import rust_audio_fallback_circuit_diagnostics
+
+        payload = rust_audio_fallback_circuit_diagnostics()
+        if isinstance(payload, dict):
+            return payload
+    except Exception as exc:
+        return {
+            "available": False,
+            "open": False,
+            "reason": f"unavailable:{type(exc).__name__}",
+            "remainingSeconds": None,
+            "cooldownSeconds": None,
+        }
+    return {
+        "available": False,
+        "open": False,
+        "reason": "unavailable:invalidPayload",
+        "remainingSeconds": None,
+        "cooldownSeconds": None,
+    }
+
+
 def _create_mic_prewarm_manager() -> Any:
     if _audio_engine_feature_flags()["rustAudioRequested"]:
         return RustAudioPrewarmManager()
@@ -2525,6 +2549,7 @@ class ScriberWebController:
                 ),
                 "rustNativeEndpointInventory": rust_native_endpoint_inventory,
                 "rustAudioProbe": self._rust_audio_probe_diagnostics(),
+                "rustAudioFallbackCircuit": _rust_audio_fallback_circuit_diagnostics(),
                 "prewarm": self._prewarm_diagnostics(),
                 "activeCapture": self._active_audio_diagnostics(),
             },

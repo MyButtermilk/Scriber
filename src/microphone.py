@@ -129,6 +129,17 @@ def _rust_audio_fallback_circuit_state() -> dict:
     }
 
 
+def rust_audio_fallback_circuit_diagnostics() -> dict:
+    state = _rust_audio_fallback_circuit_state()
+    return {
+        "available": True,
+        "open": bool(state.get("open")),
+        "reason": str(state.get("reason") or ""),
+        "remainingSeconds": state.get("remainingSeconds"),
+        "cooldownSeconds": _rust_audio_failure_cooldown_seconds(),
+    }
+
+
 def _record_rust_audio_mid_session_failure(reason: str) -> None:
     reason = str(reason or "rustMidSessionFailure")
     cooldown = _rust_audio_failure_cooldown_seconds()

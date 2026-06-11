@@ -168,6 +168,14 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
                         "endpointIdHash": "event-hash",
                     },
                 },
+                "rustAudioFallbackCircuit": {
+                    "available": True,
+                    "open": True,
+                    "reason": "pipeClosed",
+                    "remainingSeconds": 12.5,
+                    "cooldownSeconds": 60.0,
+                    "sessionToken": "circuit-secret-token",
+                },
                 "activeCapture": {
                     "engine": "python",
                     "requestedEngine": "rust-prototype",
@@ -195,6 +203,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
 
     active = payload["microphone"]["activeCapture"]
     native_events = payload["microphone"]["nativeDeviceEvents"]
+    circuit = payload["microphone"]["rustAudioFallbackCircuit"]
     watchdog = payload["watchdog"]["lastWarning"]
     shell_ipc = payload["textInjection"]["shellIpc"]
     assert "audio-diagnostics.redacted.json" in names
@@ -210,6 +219,10 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
     assert watchdog["diagnostics"]["healthRestartThrottleCount"] == 1
     assert watchdog["diagnostics"]["sessionToken"] == "[REDACTED]"
     assert "watchdog-secret-token" not in combined
+    assert circuit["open"] is True
+    assert circuit["reason"] == "pipeClosed"
+    assert circuit["sessionToken"] == "[REDACTED]"
+    assert "circuit-secret-token" not in combined
     assert native_events["registered"] is True
     assert native_events["lastEvent"]["endpointIdHash"] == "event-hash"
     assert shell_ipc["lastCommand"] == "injectText"

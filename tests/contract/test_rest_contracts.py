@@ -221,6 +221,13 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
                 "available": False,
                 "reason": "shellIpcUnavailable",
             },
+            "rustAudioFallbackCircuit": {
+                "available": True,
+                "open": True,
+                "reason": "pipeClosed",
+                "remainingSeconds": 12.5,
+                "cooldownSeconds": 60.0,
+            },
         },
         "watchdog": {
             "enabled": True,
@@ -279,6 +286,17 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
 
     invalid = dict(valid)
     invalid["textInjection"] = {**valid["textInjection"], "disabled": "no"}
+    with pytest.raises(RESTContractError):
+        validate_audio_diagnostics_payload(invalid)
+
+    invalid = dict(valid)
+    invalid["microphone"] = {
+        **valid["microphone"],
+        "rustAudioFallbackCircuit": {
+            **valid["microphone"]["rustAudioFallbackCircuit"],
+            "open": "yes",
+        },
+    }
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)
 

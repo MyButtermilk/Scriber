@@ -180,6 +180,8 @@ Rust audio:
   fallback-on-next-session circuit. The current utterance is not switched to
   Python mid-stream, but the next requested Rust-prototype recording uses
   Python during the cooldown and records the circuit-open reason in diagnostics.
+  `/api/runtime/audio-diagnostics` exposes that circuit globally, so support
+  bundles can explain the fallback even after the failed recording has stopped.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 
