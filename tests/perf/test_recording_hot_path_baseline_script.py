@@ -667,6 +667,7 @@ def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
     assert "RequireRecordingHotPathRustAudio" in script
     assert "provider_transcript" in script
     assert "rust_audio_engine" in script
+    assert "rustPrewarmAdoption during recording" in script
     assert "--speech-prompt-text" in script
     assert "Convert-ToProcessArgument" in script
     assert "[string]$LegacyDataDir" in script

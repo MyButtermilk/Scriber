@@ -1196,7 +1196,7 @@ $requirements = @(
         New-Requirement `
             -Name "rust_audio_engine" `
             -Status $(Get-RecordingHotPathRequirementStatus -RequirementName "rust_audio_engine") `
-            -Evidence "/api/runtime/audio-diagnostics microphone.activeCapture engine/frameSource during recording" `
+            -Evidence "/api/runtime/audio-diagnostics microphone.activeCapture engine/frameSource and rustPrewarmAdoption during recording" `
             -Notes $(Get-RecordingHotPathRequirementNotes)
     }
     if ($RequireRecordingHotPathTextTarget) {
