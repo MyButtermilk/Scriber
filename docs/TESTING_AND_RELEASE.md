@@ -336,6 +336,8 @@ Support bundle smoke verifies:
 - redacted audio/text-injection diagnostics, including the latest sanitized
   Tauri `injectText` attempt when present, and Shell IPC transport failures do
   not leak raw pipe names or session tokens,
+- support-bundle text redaction removes raw Scriber Shell IPC named-pipe paths
+  from env files and logs,
 - restoration of runtime `.env` and `settings.json` after the test.
 
 Other available installed smokes include:

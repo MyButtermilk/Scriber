@@ -8,11 +8,20 @@ from src.runtime.support_bundle import create_support_bundle, redact_mapping, re
 
 def test_redaction_helpers_hide_sensitive_values():
     assert "plain" in redact_text("mode=plain")
-    redacted = redact_text("OPENAI_API_KEY=sk-abcdefghijklmnop Authorization: Bearer token-value")
+    pipe_name = r"\\.\pipe\scriber-shell-secret"
+    escaped_pipe_name = pipe_name.replace("\\", "\\\\")
+    redacted = redact_text(
+        f"OPENAI_API_KEY=sk-abcdefghijklmnop Authorization: Bearer token-value "
+        f"pipe={pipe_name} escaped={escaped_pipe_name}"
+    )
 
     assert "sk-abcdefghijklmnop" not in redacted
     assert "token-value" not in redacted
+    assert pipe_name not in redacted
+    assert escaped_pipe_name not in redacted
+    assert "scriber-shell-secret" not in redacted
     assert "[REDACTED]" in redacted
+    assert "[REDACTED_PIPE]" in redacted
 
     mapping = redact_mapping(
         {
@@ -35,6 +44,8 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(data_dir))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-abcdefghijklmnop")
     monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "session-secret-value")
+    shell_pipe = r"\\.\pipe\scriber-shell-bundle"
+    monkeypatch.setenv("SCRIBER_SHELL_IPC_PIPE", shell_pipe)
     monkeypatch.setattr(support_bundle, "repo_root", lambda: repo_dir)
 
     (data_dir / "settings.json").write_text(
@@ -42,11 +53,11 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
         encoding="utf-8",
     )
     (data_dir / ".env").write_text(
-        "SONIOX_API_KEY=env-secret-value\nSCRIBER_MODE=toggle\n",
+        f"SONIOX_API_KEY=env-secret-value\nSCRIBER_MODE=toggle\nSCRIBER_SHELL_IPC_PIPE={shell_pipe}\n",
         encoding="utf-8",
     )
     (logs_dir / "latest.log").write_text(
-        "\x00\x00OPENAI_API_KEY=log-secret-value Authorization: Bearer bearer-secret\n",
+        f"\x00\x00OPENAI_API_KEY=log-secret-value Authorization: Bearer bearer-secret pipe={shell_pipe}\n",
         encoding="utf-8",
     )
 
@@ -86,9 +97,12 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     assert "session-secret-value" not in combined
     assert "sk-abcdefghijklmnop" not in combined
     assert "bearer-secret" not in combined
+    assert shell_pipe not in combined
+    assert "scriber-shell-bundle" not in combined
     assert "private transcript text" not in combined
     assert "\x00" not in combined
     assert "[REDACTED]" in combined
+    assert "[REDACTED_PIPE]" in combined
 
 
 def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_path):
