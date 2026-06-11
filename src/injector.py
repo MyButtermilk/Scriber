@@ -393,23 +393,13 @@ def _tauri_inject_text(
 ) -> bool:
     client_timeout_seconds = 2.5
     deadline_ms = 2000
-    pre_delay_ms = _get_pre_delay_for_window()
-    if pre_delay_ms + 250 >= deadline_ms:
-        logger.warning(
-            "Tauri text injection skipped: pre-delay would exceed IPC deadline budget"
-        )
-        record_command_diagnostic(
-            "injectText",
-            False,
-            error_code="deadlineBudgetExceeded",
-            fallback_reason="pre-delay would exceed IPC deadline budget",
-        )
-        return False
+    pre_delay_ms = max(0, int(getattr(Config, "PASTE_PRE_DELAY_MS", 80) or 80))
 
     payload = {
         "text": text,
         "restoreClipboard": True,
         "restoreDelayMs": max(0, int(getattr(Config, "PASTE_RESTORE_DELAY_MS", 1500) or 0)),
+        "preDelayMode": "auto",
         "preDelayMs": pre_delay_ms,
         "dispatch": "ctrlV",
         "maxClipboardRetries": 5,

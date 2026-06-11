@@ -102,6 +102,8 @@ def test_inject_method_tauri_uses_shell_ipc_and_forwards_markers(monkeypatch):
     assert command == "injectText"
     assert payload["text"] == "hello "
     assert payload["dispatch"] == "ctrlV"
+    assert payload["preDelayMode"] == "auto"
+    assert payload["preDelayMs"] == Config.PASTE_PRE_DELAY_MS
     assert payload["deadlineMs"] < 2500
     assert markers == ["clipboard_set", "paste"]
     assert injected == ["hello "]
@@ -111,6 +113,27 @@ def test_inject_method_tauri_uses_shell_ipc_and_forwards_markers(monkeypatch):
     assert snapshot["lastResponse"]["payload"]["markers"] == ["clipboard_set", "paste"]
     paste_mock.assert_not_called()
     sendinput_mock.assert_not_called()
+
+
+def test_inject_method_tauri_leaves_auto_pre_delay_deadline_to_rust(monkeypatch):
+    monkeypatch.setattr(Config, "INJECT_METHOD", "tauri")
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    monkeypatch.setattr(Config, "PASTE_PRE_DELAY_MS", 5000)
+    injector = TextInjector()
+
+    with patch("src.injector.call_shell_ipc") as ipc_mock:
+        ipc_mock.return_value = {
+            "success": False,
+            "errorCode": "deadlineBeforePaste",
+            "fallbackReason": "deadline would be exceeded",
+            "payload": {},
+        }
+        injector._inject_text("hello ")
+
+    ipc_mock.assert_called_once()
+    _, payload = ipc_mock.call_args.args[:2]
+    assert payload["preDelayMode"] == "auto"
+    assert payload["preDelayMs"] == 5000
 
 
 def test_inject_method_tauri_is_strict_without_python_fallback(monkeypatch):

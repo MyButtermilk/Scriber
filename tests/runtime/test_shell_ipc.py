@@ -105,6 +105,8 @@ def test_shell_ipc_inject_text_diagnostics_are_redacted(monkeypatch):
                 "payload": {
                     "method": "tauri",
                     "dispatch": "ctrlV",
+                    "preDelayMode": "auto",
+                    "requestedPreDelayMs": 80,
                     "markers": ["clipboard_set", "paste", "ignored"],
                     "restoreScheduled": True,
                     "restore": {
@@ -153,6 +155,8 @@ def test_shell_ipc_inject_text_diagnostics_are_redacted(monkeypatch):
     assert "private transcript text" not in serialized
     inject_payload = snapshot["lastResponse"]["payload"]
     assert inject_payload["method"] == "tauri"
+    assert inject_payload["preDelayMode"] == "auto"
+    assert inject_payload["requestedPreDelayMs"] == 80.0
     assert inject_payload["markers"] == ["clipboard_set", "paste"]
     assert inject_payload["restore"]["skippedReason"] == "scheduled"
     assert inject_payload["foregroundBefore"]["titleHash"] == "title-hash"

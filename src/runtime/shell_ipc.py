@@ -250,10 +250,15 @@ def _response_summary(
 
 def _inject_text_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
-    for key in ("method", "dispatch"):
+    for key in ("method", "dispatch", "preDelayMode"):
         value = _safe_optional_string(payload.get(key), max_len=48)
         if value is not None:
             summary[key] = value
+    requested_pre_delay_ms = payload.get("requestedPreDelayMs")
+    if isinstance(requested_pre_delay_ms, (int, float)) and not isinstance(
+        requested_pre_delay_ms, bool
+    ):
+        summary["requestedPreDelayMs"] = float(requested_pre_delay_ms)
     markers = payload.get("markers")
     if isinstance(markers, list):
         summary["markers"] = [

@@ -34,6 +34,7 @@ struct InjectTextOptions {
     restore_clipboard: bool,
     restore_delay_ms: u64,
     pre_delay_ms: u64,
+    pre_delay_mode: String,
     dispatch: String,
     max_clipboard_retries: u32,
     clipboard_retry_delay_ms: u64,
@@ -710,12 +711,20 @@ fn parse_inject_text_options(payload: &Value) -> Result<InjectTextOptions, Shell
             "injectText only supports ctrlV dispatch",
         ));
     }
+    let pre_delay_mode = bounded_string(payload, "preDelayMode", "fixed", 32);
+    if pre_delay_mode != "fixed" && pre_delay_mode != "auto" {
+        return Err(ShellCommandError::new(
+            "invalidPreDelayMode",
+            "injectText preDelayMode must be fixed or auto",
+        ));
+    }
 
     Ok(InjectTextOptions {
         text,
         restore_clipboard: optional_bool(payload, "restoreClipboard", true),
         restore_delay_ms: optional_u64(payload, "restoreDelayMs", DEFAULT_RESTORE_DELAY_MS, 30_000),
         pre_delay_ms: optional_u64(payload, "preDelayMs", 0, 5_000),
+        pre_delay_mode,
         dispatch,
         max_clipboard_retries: optional_u64(
             payload,
@@ -777,6 +786,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
     let options = parse_inject_text_options(payload)?;
     let started = Instant::now();
     let mut markers: Vec<&'static str> = Vec::new();
+    let pre_delay_ms = resolve_pre_delay_ms(&options, foreground_title_for_policy().as_deref());
     let foreground_before = foreground_snapshot();
 
     let clipboard_options = ClipboardOptions {
@@ -791,6 +801,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
                 let partial_payload = inject_response_payload(
                     &options,
                     &markers,
+                    pre_delay_ms,
                     Some(elapsed_ms(read_started)),
                     None,
                     None,
@@ -809,6 +820,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
                 let partial_payload = inject_response_payload(
                     &options,
                     &markers,
+                    pre_delay_ms,
                     Some(elapsed_ms(read_started)),
                     None,
                     None,
@@ -828,6 +840,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
         inject_response_payload(
             &options,
             &markers,
+            pre_delay_ms,
             clipboard_read_ms,
             None,
             None,
@@ -843,11 +856,11 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
     let clipboard_set_ms = elapsed_ms(set_started);
     markers.push("clipboard_set");
 
-    if options.pre_delay_ms > 0 {
+    if pre_delay_ms > 0 {
         ensure_deadline_budget(
             &options,
             started,
-            options.pre_delay_ms + 50,
+            pre_delay_ms + 50,
             "deadlineBeforePaste",
             || {
                 let restore = restore_clipboard_now(
@@ -859,6 +872,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
                 inject_response_payload(
                     &options,
                     &markers,
+                    pre_delay_ms,
                     clipboard_read_ms,
                     Some(clipboard_set_ms),
                     None,
@@ -880,6 +894,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
             inject_response_payload(
                 &options,
                 &markers,
+                pre_delay_ms,
                 clipboard_read_ms,
                 Some(clipboard_set_ms),
                 None,
@@ -891,8 +906,8 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
         })?;
     }
 
-    if options.pre_delay_ms > 0 {
-        thread::sleep(Duration::from_millis(options.pre_delay_ms));
+    if pre_delay_ms > 0 {
+        thread::sleep(Duration::from_millis(pre_delay_ms));
     }
 
     ensure_deadline_budget(&options, started, 50, "deadlineBeforePaste", || {
@@ -905,6 +920,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
         inject_response_payload(
             &options,
             &markers,
+            pre_delay_ms,
             clipboard_read_ms,
             Some(clipboard_set_ms),
             None,
@@ -926,6 +942,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
         let partial_payload = inject_response_payload(
             &options,
             &markers,
+            pre_delay_ms,
             clipboard_read_ms,
             Some(clipboard_set_ms),
             Some(elapsed_ms(paste_started)),
@@ -960,6 +977,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
     Ok(inject_response_payload(
         &options,
         &markers,
+        pre_delay_ms,
         clipboard_read_ms,
         Some(clipboard_set_ms),
         Some(paste_dispatch_ms),
@@ -986,6 +1004,7 @@ fn elapsed_ms(started: Instant) -> f64 {
 fn inject_response_payload(
     options: &InjectTextOptions,
     markers: &[&'static str],
+    pre_delay_ms: u64,
     clipboard_read_ms: Option<f64>,
     clipboard_set_ms: Option<f64>,
     paste_dispatch_ms: Option<f64>,
@@ -997,6 +1016,8 @@ fn inject_response_payload(
     json!({
         "method": "tauri",
         "dispatch": options.dispatch,
+        "preDelayMode": options.pre_delay_mode,
+        "requestedPreDelayMs": options.pre_delay_ms,
         "markers": markers,
         "restore": restore,
         "restoreScheduled": restore
@@ -1009,7 +1030,7 @@ fn inject_response_payload(
         "timingsMs": {
             "clipboardRead": clipboard_read_ms,
             "clipboardSet": clipboard_set_ms,
-            "preDelay": options.pre_delay_ms as f64,
+            "preDelay": pre_delay_ms as f64,
             "pasteDispatch": paste_dispatch_ms,
             "total": total_ms,
         },
@@ -1207,6 +1228,26 @@ fn foreground_snapshot() -> Value {
     }
 }
 
+#[cfg(windows)]
+fn foreground_title_for_policy() -> Option<String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return None;
+        }
+        let mut title_buffer = [0u16; 512];
+        let title_len = GetWindowTextW(hwnd, title_buffer.as_mut_ptr(), title_buffer.len() as i32)
+            .max(0) as usize;
+        if title_len == 0 {
+            None
+        } else {
+            Some(String::from_utf16_lossy(&title_buffer[..title_len]))
+        }
+    }
+}
+
 #[cfg(not(windows))]
 fn foreground_snapshot() -> Value {
     json!({
@@ -1215,6 +1256,30 @@ fn foreground_snapshot() -> Value {
         "titleHash": Value::Null,
         "processIdHash": Value::Null,
     })
+}
+
+#[cfg(not(windows))]
+fn foreground_title_for_policy() -> Option<String> {
+    None
+}
+
+fn resolve_pre_delay_ms(options: &InjectTextOptions, foreground_title: Option<&str>) -> u64 {
+    if options.pre_delay_mode == "auto" {
+        return if foreground_title
+            .map(is_slow_text_injection_foreground_title)
+            .unwrap_or(false)
+        {
+            options.pre_delay_ms
+        } else {
+            0
+        };
+    }
+    options.pre_delay_ms
+}
+
+fn is_slow_text_injection_foreground_title(title: &str) -> bool {
+    let title_lower = title.trim().to_lowercase();
+    title_lower.ends_with(" - word") || title_lower.ends_with(" - outlook")
 }
 
 #[cfg(windows)]
@@ -2139,6 +2204,7 @@ mod tests {
             "restoreClipboard": false,
             "restoreDelayMs": 999_999,
             "preDelayMs": 999_999,
+            "preDelayMode": "auto",
             "dispatch": "ctrlV",
             "maxClipboardRetries": 999,
             "clipboardRetryDelayMs": 999_999,
@@ -2151,9 +2217,54 @@ mod tests {
         assert!(!options.restore_clipboard);
         assert_eq!(options.restore_delay_ms, 30_000);
         assert_eq!(options.pre_delay_ms, 5_000);
+        assert_eq!(options.pre_delay_mode, "auto");
         assert_eq!(options.max_clipboard_retries, 50);
         assert_eq!(options.clipboard_retry_delay_ms, 500);
         assert_eq!(options.deadline_ms, 30_000);
+    }
+
+    #[test]
+    fn parse_inject_text_options_rejects_unknown_pre_delay_mode() {
+        let payload = json!({
+            "text": "hello",
+            "dispatch": "ctrlV",
+            "preDelayMode": "guess",
+        });
+
+        let err = super::parse_inject_text_options(&payload).unwrap_err();
+
+        assert_eq!(err.code, "invalidPreDelayMode");
+    }
+
+    #[test]
+    fn auto_pre_delay_policy_uses_rust_foreground_title_only_for_slow_apps() {
+        let mut options = super::parse_inject_text_options(&json!({
+            "text": "hello",
+            "dispatch": "ctrlV",
+            "preDelayMode": "auto",
+            "preDelayMs": 80,
+        }))
+        .unwrap();
+
+        assert_eq!(
+            super::resolve_pre_delay_ms(&options, Some("Quarterly Report - Word")),
+            80
+        );
+        assert_eq!(
+            super::resolve_pre_delay_ms(&options, Some("Inbox - Outlook")),
+            80
+        );
+        assert_eq!(
+            super::resolve_pre_delay_ms(&options, Some("Scriber - Notepad")),
+            0
+        );
+        assert_eq!(super::resolve_pre_delay_ms(&options, None), 0);
+
+        options.pre_delay_mode = "fixed".to_string();
+        assert_eq!(
+            super::resolve_pre_delay_ms(&options, Some("Scriber - Notepad")),
+            80
+        );
     }
 
     #[test]

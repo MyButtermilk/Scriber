@@ -507,9 +507,11 @@ Implementation status on `codex/rust-expansion-plan`:
 - Added the `injectText` shell IPC command for opt-in Tauri text injection. The
   Rust side reads and sets `CF_UNICODETEXT`, dispatches Ctrl+V with `SendInput`,
   returns structured timing data and `clipboard_set`/`paste` markers, hashes
-  foreground-window diagnostics, uses byte-budgeted request limits, rejects
-  embedded NUL text, enforces a request deadline before side effects, and guards
-  clipboard restore with the clipboard sequence number.
+  foreground-window diagnostics, owns `preDelayMode=auto` foreground-title
+  classification for Word/Outlook without logging raw titles, uses
+  byte-budgeted request limits, rejects embedded NUL text, enforces a request
+  deadline before side effects, and guards clipboard restore with the clipboard
+  sequence number.
 - Hardened the private Tauri shell IPC pipe with an explicit protected Windows
   DACL. The pipe still uses a per-process random name, a per-session token, and
   `PIPE_REJECT_REMOTE_CLIENTS`. When the current logon SID is available, access
@@ -585,9 +587,9 @@ Tauri injection default blockers:
   `-RequireTauriTextInjectionMatrix`.
 - Support bundles should surface the last Tauri injection fields:
   `textInjection.method`, `shellIpc.available`, `lastCommand`, `lastErrorCode`,
-  `fallbackReason`, `restoreScheduled`, `restore.succeeded`,
-  `restore.skippedReason`, `foregroundBefore`, `foregroundAfter`,
-  `foregroundChanged`, and `timingsMs`, all redacted.
+  `fallbackReason`, `preDelayMode`, `requestedPreDelayMs`, `restoreScheduled`,
+  `restore.succeeded`, `restore.skippedReason`, `foregroundBefore`,
+  `foregroundAfter`, `foregroundChanged`, and `timingsMs`, all redacted.
 
 Acceptance gates:
 
