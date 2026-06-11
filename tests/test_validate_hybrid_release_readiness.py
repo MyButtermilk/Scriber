@@ -1661,6 +1661,37 @@ def test_validate_release_readiness_rejects_tauri_text_injection_without_restore
     assert "response restore.attempted must be boolean" in failures
 
 
+def test_validate_release_readiness_rejects_tauri_text_injection_raw_foreground_diagnostics(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    injection_report = tmp_path / "tauri-text-injection-smoke.json"
+    write_tauri_text_injection_smoke_report(injection_report)
+    payload = json.loads(injection_report.read_text(encoding="utf-8"))
+    foreground = payload["shellIpc"]["lastResponse"]["payload"]["foregroundBefore"]
+    foreground["title"] = "Sensitive Word Document.docx"
+    foreground["processId"] = 1234
+    foreground["windowHash"] = ""
+    injection_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_smoke_report=injection_report,
+        require_tauri_text_injection_smoke=True,
+    )
+
+    injection_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionSmoke")
+    failures = "\n".join(injection_check["failures"])
+    assert "response foregroundBefore.title must not expose raw foreground data" in failures
+    assert "response foregroundBefore.processId must not expose raw foreground data" in failures
+    assert "response foregroundBefore.windowHash must be present when available" in failures
+
+
 def test_validate_release_readiness_rejects_tauri_text_injection_redaction_leaks(tmp_path: Path) -> None:
     hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     injection_report = tmp_path / "tauri-text-injection-smoke.json"

@@ -1356,6 +1356,7 @@ def validate_tauri_text_injection_payload(
     if not isinstance(markers, list) or "clipboard_set" not in markers or "paste" not in markers:
         failures.append(f"{label} response markers must include clipboard_set and paste")
     validate_tauri_text_injection_restore(response_payload, failures, label)
+    validate_tauri_text_injection_foreground(response_payload, failures, label)
     timings = response_payload.get("timingsMs")
     if not isinstance(timings, dict):
         failures.append(f"{label} response timingsMs must be an object")
@@ -1426,6 +1427,34 @@ def validate_tauri_text_injection_restore(
         failures.append(f"{label} response restore.succeeded must not be false")
     if skipped_reason in {"disabled", "restoreFailed", "restoreReadFailed", "clipboardReadFailed"}:
         failures.append(f"{label} response restore.skippedReason must not be {skipped_reason}")
+
+
+def validate_tauri_text_injection_foreground(
+    response_payload: dict[str, Any],
+    failures: list[str],
+    label: str,
+) -> None:
+    for key in ("foregroundBefore", "foregroundAfter"):
+        foreground = response_payload.get(key)
+        if not isinstance(foreground, dict):
+            failures.append(f"{label} response {key} must be an object")
+            continue
+        for raw_key in ("hwnd", "processId", "processName", "title", "windowTitle", "windowText"):
+            raw_value = foreground.get(raw_key)
+            if raw_value not in (None, ""):
+                failures.append(f"{label} response {key}.{raw_key} must not expose raw foreground data")
+
+        available = foreground.get("available")
+        if not isinstance(available, bool):
+            failures.append(f"{label} response {key}.available must be boolean")
+            continue
+        window_hash = foreground.get("windowHash")
+        if available is True and not str(window_hash or "").strip():
+            failures.append(f"{label} response {key}.windowHash must be present when available")
+        for hash_key in ("windowHash", "titleHash", "processIdHash"):
+            value = foreground.get(hash_key)
+            if value is not None and not isinstance(value, str):
+                failures.append(f"{label} response {key}.{hash_key} must be string or null")
 
 
 def _looks_like_raw_shell_pipe(value: str) -> bool:

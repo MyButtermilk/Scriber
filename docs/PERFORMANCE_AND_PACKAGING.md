@@ -554,7 +554,9 @@ Implementation status on `codex/rust-expansion-plan`:
   `--validate-only`, and must show `injectText` success, target text arrival,
   and `clipboard_set` plus `paste` markers. It now also must include structured
   clipboard restore evidence; missing restore fields, restore errors, or
-  disabled restore fail promotion evidence.
+  disabled restore fail promotion evidence. Foreground diagnostics in the Shell
+  IPC payload must remain hashed/redacted and must not expose raw window titles,
+  HWNDs, process IDs, or process names.
 - Added a stronger Tauri text-injection matrix readiness gate:
   `-RequireTauriTextInjectionMatrix` /
   `--require-tauri-text-injection-matrix`. The matrix artifact must aggregate
@@ -566,6 +568,7 @@ Implementation status on `codex/rust-expansion-plan`:
   from the individual scenario reports and validates it before returning
   success. The matrix reuses the safe-smoke restore gate for every scenario, so
   target-app evidence cannot omit restore diagnostics or hide restore failures.
+  It also reuses the foreground redaction gate for every target-app scenario.
 - Still open: actually running the installed target-app smoke matrix, packaging
   smoke evidence, and default-path decision based on installed evidence.
 
