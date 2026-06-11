@@ -160,9 +160,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     comparison_evidence = payload["requiredEvidence"][7]
     assert comparison_evidence["required"] is False
     assert comparison_evidence["report"].endswith("recording-hot-path-python-rust-comparison.json")
-    assert "run_recording_hot_path_comparison.ps1" in comparison_evidence["producer"]
-    assert "validate_recording_hot_path_comparison.py" in comparison_evidence["producer"]
-    assert "provider-backed Python and Rust reports" in comparison_evidence["producer"]
+    assert comparison_evidence["producer"] == "not requested"
     assert "at least three samples per engine" in comparison_evidence["notes"]
     assert "local audio-owned hot-path segments" in comparison_evidence["notes"]
     live_recording_evidence = payload["requiredEvidence"][8]
@@ -507,6 +505,61 @@ def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_compa
         entry for entry in payload["commands"] if entry["name"] == "recordingHotPathPythonRustComparison"
     )
     assert "required external report" in comparison_command["command"]
+    readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    assert "--recording-hot-path-comparison-report" in readiness_command["command"]
+    assert "--require-recording-hot-path-comparison" in readiness_command["command"]
+
+
+def test_hybrid_release_readiness_runner_can_plan_recording_hot_path_comparison_run(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RunRecordingHotPathComparison",
+        "-RequireRecordingHotPathComparison",
+        "-RecordingHotPathIterations",
+        "4",
+        "-RecordingHotPathSeconds",
+        "3",
+        "-RecordingHotPathTimeoutSec",
+        "90",
+        "-RecordingHotPathRustCaptureMode",
+        "wasapi",
+        "-RecordingHotPathHidden",
+        "-RecordingHotPathDisableDevFallback",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runRecordingHotPathComparison"] is True
+    comparison_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "recordingHotPathPythonRustComparison"
+    )
+    assert comparison_evidence["required"] is True
+    assert comparison_evidence["external"] is False
+    assert comparison_evidence["producer"] == "scripts\\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic"
+    assert comparison_evidence["iterations"] == 4
+    assert comparison_evidence["recordSeconds"] == 3
+    assert comparison_evidence["timeoutSec"] == 90
+    assert comparison_evidence["rustCaptureMode"] == "wasapi"
+    comparison_command = next(
+        entry for entry in payload["commands"] if entry["name"] == "recordingHotPathPythonRustComparison"
+    )
+    command = comparison_command["command"]
+    assert "run_recording_hot_path_comparison.ps1" in command
+    assert "-RustAlwaysOnMic" in command
+    assert "-RecordingHotPathIterations 4" in command
+    assert "-RecordingHotPathSeconds 3" in command
+    assert "-RecordingHotPathTimeoutSec 90" in command
+    assert "-RustCaptureMode wasapi" in command
+    assert "-Hidden" in command
+    assert "-DisableDevFallback" in command
+    assert "recording-hot-path-python-rust-comparison.json" in command
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
     assert "--recording-hot-path-comparison-report" in readiness_command["command"]
     assert "--require-recording-hot-path-comparison" in readiness_command["command"]

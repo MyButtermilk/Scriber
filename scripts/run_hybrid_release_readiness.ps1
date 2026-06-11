@@ -74,7 +74,25 @@ param(
     [switch]$RunRustAudioAppPrewarmSmoke,
     [switch]$UseExistingRustAudioAppPrewarmReport,
     [string]$RecordingHotPathComparisonReport = "",
+    [switch]$RunRecordingHotPathComparison,
+    [switch]$UseExistingRecordingHotPathComparisonReport,
     [switch]$RequireRecordingHotPathComparison,
+    [int]$RecordingHotPathIterations = 3,
+    [double]$RecordingHotPathSeconds = 2,
+    [int]$RecordingHotPathTimeoutSec = 60,
+    [string]$RecordingHotPathSpeechPrompt = "Scriber provider-backed Rust audio validation",
+    [double]$RecordingHotPathSpeechDelaySec = 0.5,
+    [double]$RecordingHotPathMaxAudioOwnedP95RegressionMs = 50,
+    [ValidateSet("wasapi", "synthetic")]
+    [string]$RecordingHotPathRustCaptureMode = "wasapi",
+    [string]$RecordingHotPathExePath = "",
+    [string]$RecordingHotPathPythonPath = "",
+    [string]$RecordingHotPathBackendExePath = "",
+    [string]$RecordingHotPathLegacyDataDir = "",
+    [switch]$RecordingHotPathHidden,
+    [switch]$RecordingHotPathSkipUiVisibleWait,
+    [switch]$RecordingHotPathDisableDevFallback,
+    [switch]$RecordingHotPathKeepArtifacts,
     [switch]$RequireRustAudioPromotionReadiness,
     [switch]$RequireRustEndpointInventory,
     [switch]$RequireDeviceRefreshEvidence,
@@ -192,6 +210,18 @@ if (-not $RecordingHotPathComparisonReport) {
     $RecordingHotPathComparisonReport = Join-Path $HardwareInputDir "recording-hot-path-python-rust-comparison.json"
 } else {
     $RecordingHotPathComparisonReport = Convert-ToFullPath -Path $RecordingHotPathComparisonReport -Root $RepoRoot
+}
+if ($RecordingHotPathExePath) {
+    $RecordingHotPathExePath = Convert-ToFullPath -Path $RecordingHotPathExePath -Root $RepoRoot
+}
+if ($RecordingHotPathPythonPath) {
+    $RecordingHotPathPythonPath = Convert-ToFullPath -Path $RecordingHotPathPythonPath -Root $RepoRoot
+}
+if ($RecordingHotPathBackendExePath) {
+    $RecordingHotPathBackendExePath = Convert-ToFullPath -Path $RecordingHotPathBackendExePath -Root $RepoRoot
+}
+if ($RecordingHotPathLegacyDataDir) {
+    $RecordingHotPathLegacyDataDir = Convert-ToFullPath -Path $RecordingHotPathLegacyDataDir -Root $RepoRoot
 }
 if (-not $InstalledLiveRecordingSmokeReport) {
     $InstalledLiveRecordingSmokeReport = Join-Path $HardwareInputDir "installed-live-recording-smoke.json"
@@ -440,6 +470,59 @@ if ($InstalledLiveRecordingMicAlwaysOn) {
     $installedLiveRecordingArgs += "-LiveRecordingMicAlwaysOn"
 }
 
+$recordingHotPathComparisonArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    (Join-Path $RepoRoot "scripts\run_recording_hot_path_comparison.ps1"),
+    "-RepoRoot",
+    $RepoRoot,
+    "-OutputDir",
+    $HardwareInputDir,
+    "-ComparisonOutput",
+    $RecordingHotPathComparisonReport,
+    "-RecordingHotPathIterations",
+    ([string]$RecordingHotPathIterations),
+    "-RecordingHotPathSeconds",
+    ([string]$RecordingHotPathSeconds),
+    "-RecordingHotPathTimeoutSec",
+    ([string]$RecordingHotPathTimeoutSec),
+    "-RecordingHotPathSpeechPrompt",
+    $RecordingHotPathSpeechPrompt,
+    "-RecordingHotPathSpeechDelaySec",
+    ([string]$RecordingHotPathSpeechDelaySec),
+    "-MaxAudioOwnedP95RegressionMs",
+    ([string]$RecordingHotPathMaxAudioOwnedP95RegressionMs),
+    "-RustCaptureMode",
+    $RecordingHotPathRustCaptureMode,
+    "-RustAlwaysOnMic"
+)
+if ($RecordingHotPathExePath) {
+    $recordingHotPathComparisonArgs += @("-ExePath", $RecordingHotPathExePath)
+}
+if ($RecordingHotPathPythonPath) {
+    $recordingHotPathComparisonArgs += @("-PythonPath", $RecordingHotPathPythonPath)
+}
+if ($RecordingHotPathBackendExePath) {
+    $recordingHotPathComparisonArgs += @("-BackendExePath", $RecordingHotPathBackendExePath)
+}
+if ($RecordingHotPathLegacyDataDir) {
+    $recordingHotPathComparisonArgs += @("-LegacyDataDir", $RecordingHotPathLegacyDataDir)
+}
+if ($RecordingHotPathHidden) {
+    $recordingHotPathComparisonArgs += "-Hidden"
+}
+if ($RecordingHotPathSkipUiVisibleWait) {
+    $recordingHotPathComparisonArgs += "-SkipUiVisibleWait"
+}
+if ($RecordingHotPathDisableDevFallback) {
+    $recordingHotPathComparisonArgs += "-DisableDevFallback"
+}
+if ($RecordingHotPathKeepArtifacts) {
+    $recordingHotPathComparisonArgs += "-KeepArtifacts"
+}
+
 $readinessArgs = @(
     "scripts\validate_hybrid_release_readiness.py",
     "--hardware-input-dir",
@@ -631,10 +714,14 @@ $requiredEvidence = @(
     [pscustomobject]@{
         name = "recordingHotPathPythonRustComparison"
         required = [bool]$RequireRecordingHotPathComparison
-        external = $true
-        producer = "scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic, or scripts\validate_recording_hot_path_comparison.py over existing provider-backed Python and Rust reports with Always-On-Mic evidence"
+        external = [bool](-not $RunRecordingHotPathComparison)
+        producer = $(if ($UseExistingRecordingHotPathComparisonReport) { "existing report" } elseif ($RunRecordingHotPathComparison) { "scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic" } elseif ($RequireRecordingHotPathComparison) { "required external report: scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic, or scripts\validate_recording_hot_path_comparison.py over existing provider-backed Python and Rust reports with Always-On-Mic evidence" } else { "not requested" })
         report = $RecordingHotPathComparisonReport
         rustAlwaysOnMicRequired = $true
+        iterations = $RecordingHotPathIterations
+        recordSeconds = $RecordingHotPathSeconds
+        timeoutSec = $RecordingHotPathTimeoutSec
+        rustCaptureMode = $RecordingHotPathRustCaptureMode
         notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires passing inputReportRedaction, sameRecordingConfig, and rustAlwaysOnMic checks, requires at least three samples per engine, requires provider transcript evidence with the same STT provider in both reports, requires active rust-frame-pipe capture in the Rust report, rejects open Rust fallback-circuit evidence, and rejects clear P95 regressions in local audio-owned hot-path segments."
     },
     [pscustomobject]@{
@@ -749,10 +836,12 @@ $plan = [pscustomobject]@{
     useExistingRustAudioSidecarReport = [bool]$UseExistingRustAudioSidecarReport
     useExistingRustAudioPrewarmSidecarReport = [bool]$UseExistingRustAudioPrewarmSidecarReport
     useExistingRustAudioAppPrewarmReport = [bool]$UseExistingRustAudioAppPrewarmReport
+    useExistingRecordingHotPathComparisonReport = [bool]$UseExistingRecordingHotPathComparisonReport
     useExistingInstalledLiveRecordingSmokeReport = [bool]$UseExistingInstalledLiveRecordingSmokeReport
     runRustAudioSidecarSmoke = [bool]$RunRustAudioSidecarSmoke
     runRustAudioPrewarmSidecarSmoke = [bool]$RunRustAudioPrewarmSidecarSmoke
     runRustAudioAppPrewarmSmoke = [bool]$RunRustAudioAppPrewarmSmoke
+    runRecordingHotPathComparison = [bool]$RunRecordingHotPathComparison
     runInstalledLiveRecordingSmoke = [bool]$RunInstalledLiveRecordingSmoke
     requireRustAudioSidecarSmoke = [bool]$RequireRustAudioSidecarSmoke
     requireRustAudioPrewarmSidecarSmoke = [bool]$RequireRustAudioPrewarmSidecarSmoke
@@ -798,7 +887,7 @@ $plan = [pscustomobject]@{
         },
         [pscustomobject]@{
             name = "recordingHotPathPythonRustComparison"
-            command = $(if (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf) { "reuse $RecordingHotPathComparisonReport" } elseif ($RequireRecordingHotPathComparison) { "required external report: produce with scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic or validate existing Python/Rust Always-On-Mic reports with scripts\validate_recording_hot_path_comparison.py" } else { "not requested" })
+            command = $(if ($UseExistingRecordingHotPathComparisonReport) { "reuse $RecordingHotPathComparisonReport" } elseif ($RunRecordingHotPathComparison) { "powershell " + (Convert-ToDisplayCommand -CommandArgs $recordingHotPathComparisonArgs) } elseif (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf) { "reuse $RecordingHotPathComparisonReport" } elseif ($RequireRecordingHotPathComparison) { "required external report: produce with scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic or validate existing Python/Rust Always-On-Mic reports with scripts\validate_recording_hot_path_comparison.py" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "installedLiveRecordingSmoke"
@@ -893,6 +982,18 @@ try {
         }
     } elseif ($effectiveRequireRustAudioAppPrewarmSmoke) {
         throw "Rust audio app prewarm evidence is required; pass -RunRustAudioAppPrewarmSmoke or -UseExistingRustAudioAppPrewarmReport."
+    }
+
+    if ($UseExistingRecordingHotPathComparisonReport) {
+        Assert-ExistingFile -Path $RecordingHotPathComparisonReport -Label "Recording hot-path Python/Rust comparison report"
+    } elseif ($RunRecordingHotPathComparison) {
+        Invoke-Checked -Label "Recording hot-path Python/Rust comparison" -Command {
+            powershell @recordingHotPathComparisonArgs
+        }
+    } elseif (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf) {
+        Assert-ExistingFile -Path $RecordingHotPathComparisonReport -Label "Recording hot-path Python/Rust comparison report"
+    } elseif ($RequireRecordingHotPathComparison) {
+        throw "Recording hot-path Python/Rust comparison evidence is required; pass -RunRecordingHotPathComparison or -UseExistingRecordingHotPathComparisonReport."
     }
 
     if ($UseExistingInstalledLiveRecordingSmokeReport) {

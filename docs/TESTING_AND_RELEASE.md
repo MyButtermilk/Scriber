@@ -299,6 +299,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RequireRecordingHotPathComparison
 ```
 
+It can also produce the artifact directly when provider credentials,
+microphone access, and the app under test are available:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunRecordingHotPathComparison `
+  -RequireRecordingHotPathComparison `
+  -RecordingHotPathIterations 3 `
+  -RecordingHotPathSeconds 3
+```
+
+That runner path calls `scripts\run_recording_hot_path_comparison.ps1` with
+`-RustAlwaysOnMic`, writes
+`recording-hot-path-python-rust-comparison.json` into the hardware input
+directory, and then passes it into final readiness validation.
+
 The hybrid release-readiness runner can produce and validate this app-level
 report when Rust audio promotion evidence is being assembled:
 

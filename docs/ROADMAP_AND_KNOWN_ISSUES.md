@@ -191,7 +191,10 @@ Rust audio:
   `scripts/run_recording_hot_path_comparison.ps1` now orchestrates the Python
   pass, Rust-prototype pass, and comparison artifact creation for real
   provider-backed A/B runs, defaulting to three recording samples per engine
-  and a 50 ms max P95 regression tolerance for local audio-owned segments.
+  and a 50 ms max P95 regression tolerance for local audio-owned segments. The
+  aggregate release-readiness runner can now produce that artifact directly
+  with `-RunRecordingHotPathComparison`, using `-RustAlwaysOnMic`, before final
+  validation.
   Rust Always-On-Mic prewarm now has an `audioPrewarmStatus` path through
   Shell IPC and the audio sidecar. The Python Rust prewarm watchdog uses that
   status instead of treating a cached `prewarmId` as sufficient proof of an

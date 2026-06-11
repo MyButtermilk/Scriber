@@ -436,6 +436,10 @@ python scripts\validate_recording_hot_path_comparison.py `
 
 Final Rust promotion readiness can require that artifact with
 `-RequireRecordingHotPathComparison` on `scripts\run_hybrid_release_readiness.ps1`.
+Use `-RunRecordingHotPathComparison` on the aggregate runner when provider
+credentials and the app under test are available; it invokes
+`scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic` before final
+validation.
 
 Rust audio promotion readiness gate:
 
