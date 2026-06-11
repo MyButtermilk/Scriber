@@ -1384,8 +1384,35 @@ Implementation plan:
      This prevents stale cached `prewarmId` state, a recovered idle-session
      dropout, or an unmeasured stop-to-prewarm gap from satisfying the
      Always-On-Mic promotion gate.
+   - Implemented on 2026-06-11: Rust active capture and Rust prewarm now prefer
+     the private Tauri shell-IPC `audioEndpointInventory` payload over
+     Python-local endpoint inventory when resolving favorite/non-default
+     microphones. This prevents a Python-only endpoint hash from being sent to
+     the Rust sidecar when both layers name the same physical microphone but
+     derive different redacted hashes. The targeted Insta360 investigation
+     reproduced the failure with `Mikrofon (4- Insta360 Link)` and confirmed
+     the fixed active capture uses the Rust/Tauri endpoint hash
+     `51112d9ccdd3a140` instead of the stale Python-local hash.
+   - Implemented on 2026-06-11: Rust prewarm adoption now starts the new
+     WASAPI capture before stopping the idle prewarm session. Diagnostics patch
+     the final adopted-prewarm stop payload after capture readiness and expose
+     `adoptedPrewarm.handoffMode=overlap-capture-start-before-prewarm-stop`.
+     This is intended to remove the visible microphone privacy-light off/on
+     gap during hotkey start. It is still an overlap of two shared WASAPI
+     clients for a short handoff window, not a same-stream transfer.
+   - Provider-backed Rust-only evidence on 2026-06-11:
+     `tmp\rust-promotion-evidence\rust-only-provider-after-overlap-handoff-provider-confirm-recording-hot-path-1.json`
+     passed with Azure MAI provider transcript, `engine=rust-prototype`,
+     `frameSource=rust-frame-pipe`, no Python fallback, no dropped frames,
+     favorite mic `Mikrofon (4- Insta360 Link)`, active endpoint hash
+     `51112d9ccdd3a140`, adopted prewarm, and
+     `hotkey_received_to_first_audio_frame_ms` about `126 ms`.
    - Still open: physical proof that this restart/cooldown policy behaves well
      during real long recordings and dock/USB/default-device transitions.
+     The first one-sample Python-vs-Rust provider comparison after the endpoint
+     fix proved active Rust capture and prewarm adoption, but failed the strict
+     audio-owned latency no-regression gate by about 100 ms on first audio.
+     More repeated A/B evidence is required before Rust audio can be promoted.
 7. Run A/B measurements before any promotion:
    - hotkey to first audio frame,
    - hotkey to first audible audio frame,

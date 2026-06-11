@@ -257,14 +257,27 @@ Rust audio:
   endpoint selection evidence. A 30-second installed Rust/WASAPI Always-On-Mic
   live-recording smoke also passed on 2026-06-11 with increasing frame-pipe
   counters, closed fallback circuit, and Windows-default endpoint selection.
+  A targeted 2026-06-11 favorite-mic investigation fixed a Python/Rust endpoint
+  hash mismatch by preferring the private Tauri shell-IPC endpoint inventory
+  for Rust active capture and prewarm. A Rust-only provider-backed smoke then
+  passed with Azure MAI, `rust-prototype` / `rust-frame-pipe`, no Python
+  fallback, adopted prewarm, no dropped frames, selected Insta360 endpoint hash
+  `51112d9ccdd3a140`, and about 126 ms hotkey-to-first-audio. The sidecar now
+  starts the new WASAPI capture before stopping prewarm and exposes
+  `adoptedPrewarm.handoffMode=overlap-capture-start-before-prewarm-stop`, which
+  is the current mitigation for the visible microphone privacy-light off/on
+  gap. This is not yet a true same-stream handoff.
   The hardware matrix now records native DeviceMonitor refresh evidence without
   forced per-poll refreshes. The aggregate readiness runner can now also start
   that guided physical matrix directly with `-RunMicrophoneHardwareMatrix` and
   rejects forced poll refreshes whenever native device-refresh evidence is
   required. Actually running the long physical Always-On-Mic and hardware
-  matrix evidence, real provider-backed Python/Rust comparison artifacts using
-  the aggregate gate, signing/updater publication evidence, and the final
-  promotion decision are still open before default promotion.
+  matrix evidence, repeated provider-backed Python/Rust comparison artifacts
+  using the aggregate gate, signing/updater publication evidence, and the final
+  promotion decision are still open before default promotion. The first
+  one-sample Python/Rust comparison after the endpoint fix proved active Rust
+  capture and prewarm adoption, but still failed the strict local audio-owned
+  latency no-regression gate, so more A/B evidence is required.
 
 Tauri text injection:
 

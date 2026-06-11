@@ -225,6 +225,105 @@ def test_rust_audio_default_without_favorite_uses_windows_default(monkeypatch):
     assert payload["nativeEndpointMatchReason"] == "windowsDefaultEndpoint"
 
 
+def test_rust_audio_selection_uses_shell_inventory_for_favorite_label(monkeypatch):
+    commands: list[str] = []
+    monkeypatch.setattr(microphone.Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(
+        microphone.Config,
+        "FAVORITE_MIC",
+        "Mikrofon (4- Insta360 Link)",
+        raising=False,
+    )
+    monkeypatch.setattr(microphone, "HAS_SOUNDDEVICE", True, raising=False)
+    monkeypatch.setattr(microphone, "sd", types.SimpleNamespace(), raising=False)
+    monkeypatch.setattr(microphone, "collect_native_capture_endpoint_inventory", lambda: [])
+    monkeypatch.setattr(microphone, "build_input_endpoint_mappings", lambda *_args, **_kwargs: [])
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        assert command == "audioEndpointInventory"
+        return {
+            "success": True,
+            "payload": {
+                "endpoints": [
+                    {
+                        "endpointIdHash": "insta-hash",
+                        "friendlyName": "Mikrofon (4- Insta360 Link)",
+                        "flow": "capture",
+                        "state": "active",
+                        "isDefault": False,
+                    }
+                ]
+            },
+        }
+
+    payload = microphone._rust_audio_device_selection_payload(
+        "11",
+        sample_rate=16000,
+        channels=1,
+        shell_call=shell_call,
+    )
+
+    assert commands == ["audioEndpointInventory"]
+    assert payload["devicePreference"] == "11"
+    assert payload["portAudioLabel"] == "Mikrofon (4- Insta360 Link)"
+    assert payload["nativeEndpointIdHash"] == "insta-hash"
+    assert payload["nativeEndpointMatchReason"] == "nativeInventoryLabel"
+
+
+def test_rust_audio_selection_prefers_shell_inventory_hash(monkeypatch):
+    commands: list[str] = []
+    monkeypatch.setattr(microphone.Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(
+        microphone.Config,
+        "FAVORITE_MIC",
+        "Mikrofon (4- Insta360 Link)",
+        raising=False,
+    )
+    monkeypatch.setattr(microphone, "HAS_SOUNDDEVICE", True, raising=False)
+    monkeypatch.setattr(microphone, "sd", types.SimpleNamespace(), raising=False)
+    monkeypatch.setattr(
+        microphone,
+        "collect_native_capture_endpoint_inventory",
+        lambda: [
+            {
+                "endpointIdHash": "python-local-hash",
+                "friendlyName": "Mikrofon (4- Insta360 Link)",
+                "flow": "capture",
+                "state": "active",
+            }
+        ],
+    )
+    monkeypatch.setattr(microphone, "build_input_endpoint_mappings", lambda *_args, **_kwargs: [])
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        assert command == "audioEndpointInventory"
+        return {
+            "success": True,
+            "payload": {
+                "endpoints": [
+                    {
+                        "endpointIdHash": "rust-shell-hash",
+                        "friendlyName": "Mikrofon (4- Insta360 Link)",
+                        "flow": "capture",
+                        "state": "active",
+                    }
+                ]
+            },
+        }
+
+    payload = microphone._rust_audio_device_selection_payload(
+        "11",
+        sample_rate=16000,
+        channels=1,
+        shell_call=shell_call,
+    )
+
+    assert commands == ["audioEndpointInventory"]
+    assert payload["nativeEndpointIdHash"] == "rust-shell-hash"
+
+
 def test_rust_prototype_frame_source_honors_selection_device_preference(monkeypatch):
     commands: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -276,6 +375,94 @@ def test_rust_prototype_frame_source_honors_selection_device_preference(monkeypa
     assert snapshot["nativeEndpointIdHash"] == "windows-default-hash"
     assert snapshot["endpointSelection"]["mode"] == "default"
     assert snapshot["endpointSelection"]["usedDefaultEndpoint"] is True
+
+
+def test_rust_prototype_frame_source_passes_shell_inventory_hash(monkeypatch):
+    audio = np.full((512, 1), 321, dtype=np.int16)
+    frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(audio.tobytes()),
+            sequence=0,
+            timestamp_micros=123_456,
+            frame_count=512,
+            channels=1,
+        ),
+        audio.tobytes(),
+    )
+    commands: list[tuple[str, dict]] = []
+    monkeypatch.setattr(microphone.Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(
+        microphone.Config,
+        "FAVORITE_MIC",
+        "Mikrofon (4- Insta360 Link)",
+        raising=False,
+    )
+    monkeypatch.setattr(microphone, "HAS_SOUNDDEVICE", True, raising=False)
+    monkeypatch.setattr(microphone, "sd", types.SimpleNamespace(), raising=False)
+    monkeypatch.setattr(microphone, "collect_native_capture_endpoint_inventory", lambda: [])
+    monkeypatch.setattr(microphone, "build_input_endpoint_mappings", lambda *_args, **_kwargs: [])
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioEndpointInventory":
+            return {
+                "success": True,
+                "payload": {
+                    "endpoints": [
+                        {
+                            "endpointIdHash": "insta-hash",
+                            "friendlyName": "Mikrofon (4- Insta360 Link)",
+                            "flow": "capture",
+                            "state": "active",
+                            "isDefault": False,
+                        }
+                    ]
+                },
+            }
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-insta",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "insta-hash",
+                    "endpointSelection": {
+                        "mode": "nativeEndpointHash",
+                        "usedDefaultEndpoint": False,
+                        "requestedNativeEndpointIdHash": "insta-hash",
+                        "selectedNativeEndpointIdHash": "insta-hash",
+                    },
+                },
+            }
+        raise AssertionError(command)
+
+    def reader_factory(_path, *_args, **_kwargs):
+        import io
+
+        return io.BytesIO(frame)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=512,
+        device="11",
+        shell_call=shell_call,
+        reader_factory=reader_factory,
+        first_frame_timeout_seconds=1.0,
+    )
+
+    source.open(lambda *_args: None)
+    source.stop(close=True)
+
+    assert commands[0][0] == "audioEndpointInventory"
+    assert commands[1][0] == "audioCaptureStart"
+    assert commands[1][1]["devicePreference"] == "11"
+    assert commands[1][1]["portAudioLabel"] == "Mikrofon (4- Insta360 Link)"
+    assert commands[1][1]["nativeEndpointIdHash"] == "insta-hash"
 
 
 def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):

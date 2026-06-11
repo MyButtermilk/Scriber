@@ -13,6 +13,7 @@ from src.audio_devices import (
     build_input_endpoint_mappings,
     collect_native_capture_endpoint_inventory,
     normalize_device_name,
+    normalize_native_endpoint_inventory,
 )
 from src.config import Config
 from src.runtime.audio_frame_pipe import (
@@ -501,6 +502,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             self.device,
             sample_rate=self.sample_rate,
             channels=self.target_channels,
+            shell_call=self._shell_call,
         )
         self.requested_prebuffer_ms = _rust_audio_prebuffer_ms()
         payload = {
@@ -849,11 +851,19 @@ def _rust_audio_prebuffer_ms() -> int:
         return 0
 
 
-def _rust_audio_device_selection_payload(device, *, sample_rate: int, channels: int) -> dict:
+def _rust_audio_device_selection_payload(
+    device,
+    *,
+    sample_rate: int,
+    channels: int,
+    shell_call=None,
+) -> dict:
     """Return redacted native endpoint hints for the opt-in Rust audio prototype."""
 
     configured_device = str(getattr(Config, "MIC_DEVICE", "default") or "default").strip() or "default"
     favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "").strip()
+    raw_device = str(device or "default").strip()
+    resolved_non_default = raw_device not in {"", "default", "None"}
     result = {
         "devicePreference": str(device or "default"),
         "portAudioLabel": "",
@@ -876,7 +886,9 @@ def _rust_audio_device_selection_payload(device, *, sample_rate: int, channels: 
         return result
 
     try:
-        native_endpoints = collect_native_capture_endpoint_inventory()
+        native_endpoints = _collect_rust_audio_native_capture_endpoint_inventory(
+            shell_call=shell_call,
+        )
         mappings = build_input_endpoint_mappings(
             sd,
             native_endpoints=native_endpoints,
@@ -887,7 +899,6 @@ def _rust_audio_device_selection_payload(device, *, sample_rate: int, channels: 
         result["nativeEndpointMatchReason"] = f"mappingFailed:{type(exc).__name__}"
         return result
 
-    raw_device = str(device or "default").strip()
     match = None
     if raw_device and raw_device not in {"default", "None"}:
         try:
@@ -914,6 +925,24 @@ def _rust_audio_device_selection_payload(device, *, sample_rate: int, channels: 
         match = next((mapping for mapping in mappings if mapping.is_default), None)
 
     if match is None:
+        endpoint = (
+            _match_rust_audio_native_endpoint_by_label(
+                native_endpoints,
+                favorite_mic or configured_device or raw_device,
+            )
+            if resolved_non_default
+            else None
+        )
+        if endpoint is not None:
+            result.update(
+                {
+                    "portAudioLabel": favorite_mic or configured_device or raw_device,
+                    "nativeEndpointIdHash": endpoint.endpoint_id_hash,
+                    "nativeEndpointMatchConfidence": "name",
+                    "nativeEndpointMatchReason": "nativeInventoryLabel",
+                }
+            )
+            return result
         result["nativeEndpointMatchReason"] = (
             "nativeEndpointNotFound" if native_endpoints else "nativeInventoryUnavailable"
         )
@@ -929,6 +958,35 @@ def _rust_audio_device_selection_payload(device, *, sample_rate: int, channels: 
         }
     )
     return result
+
+
+def _collect_rust_audio_native_capture_endpoint_inventory(*, shell_call=None) -> list[dict]:
+    if shell_call is not None:
+        try:
+            response = shell_call("audioEndpointInventory", {}, timeout_seconds=2.0)
+        except Exception:
+            response = None
+        if isinstance(response, dict) and response.get("success"):
+            payload = response.get("payload")
+            endpoints = payload.get("endpoints") if isinstance(payload, dict) else None
+            if isinstance(endpoints, list):
+                shell_endpoints = [item for item in endpoints if isinstance(item, dict)]
+                if shell_endpoints:
+                    return shell_endpoints
+    return collect_native_capture_endpoint_inventory()
+
+
+def _match_rust_audio_native_endpoint_by_label(
+    native_endpoints: list[dict],
+    label: str,
+):
+    normalized_label = normalize_device_name(str(label or ""))
+    if not normalized_label:
+        return None
+    for endpoint in normalize_native_endpoint_inventory(native_endpoints):
+        if endpoint.normalized_name == normalized_label:
+            return endpoint
+    return None
 
 
 class MicrophoneInput(BaseInputTransport):

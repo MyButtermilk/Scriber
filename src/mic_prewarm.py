@@ -1175,22 +1175,18 @@ class RustAudioPrewarmManager:
         return None
 
     def _collect_native_capture_endpoint_inventory(self) -> list[dict[str, Any]]:
-        native_endpoints = collect_native_capture_endpoint_inventory()
-        if native_endpoints:
-            return native_endpoints
         try:
             response = self._shell_call("audioEndpointInventory", {}, timeout_seconds=2.0)
         except Exception:
-            return []
-        if not isinstance(response, dict) or not response.get("success"):
-            return []
-        payload = response.get("payload")
-        if not isinstance(payload, dict):
-            return []
-        endpoints = payload.get("endpoints")
-        if not isinstance(endpoints, list):
-            return []
-        return [item for item in endpoints if isinstance(item, dict)]
+            response = None
+        if isinstance(response, dict) and response.get("success"):
+            payload = response.get("payload")
+            endpoints = payload.get("endpoints") if isinstance(payload, dict) else None
+            if isinstance(endpoints, list):
+                shell_endpoints = [item for item in endpoints if isinstance(item, dict)]
+                if shell_endpoints:
+                    return shell_endpoints
+        return collect_native_capture_endpoint_inventory()
 
     def attach_active_capture(
         self,

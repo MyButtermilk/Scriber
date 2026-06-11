@@ -401,30 +401,55 @@ impl AudioSidecarState {
     }
 
     fn start_capture(&mut self, request: CaptureRequest) -> Result<Value, String> {
-        let adopted_prewarm = if request.prewarm_id.trim().is_empty() {
+        let delayed_prewarm_stop = if request.prewarm_id.trim().is_empty() {
             None
         } else {
             let prewarm_id = request.prewarm_id.clone();
-            let Some(mut prewarm_session) = self.prewarm_sessions.remove(&prewarm_id) else {
+            let Some(prewarm_session) = self.prewarm_sessions.remove(&prewarm_id) else {
                 return Err(format!("requested prewarmId was not found: {prewarm_id}"));
             };
             let adopted = prewarm_session.snapshot_buffer();
-            let stop_payload = prewarm_session.stop("adoptedIntoCapture");
-            Some((adopted, stop_payload))
+            let pending_stop_payload = json!({
+                "sidecar": SIDECAR_NAME,
+                "stopped": false,
+                "prewarmId": adopted.prewarm_id,
+                "reason": "pendingCaptureReady",
+                "source": adopted.source,
+            });
+            Some((prewarm_session, adopted, pending_stop_payload))
         };
+        let adopted_prewarm = delayed_prewarm_stop
+            .as_ref()
+            .map(|(_, adopted, stop_payload)| (adopted.clone(), stop_payload.clone()));
         let result = if wasapi_capture_enabled() {
             start_wasapi_capture_impl(request, adopted_prewarm)
         } else {
             start_synthetic_capture_impl(request, adopted_prewarm)
         };
-        result.map(|(session, payload)| {
-            let stream_id = session.stream_id.clone();
-            if let Some(mut old_session) = self.capture_sessions.remove(&stream_id) {
-                let _ = old_session.stop("duplicateStreamId");
+        match result {
+            Ok((session, mut payload)) => {
+                if let Some((mut prewarm_session, _, _)) = delayed_prewarm_stop {
+                    let stop_payload = prewarm_session.stop("adoptedIntoCapture");
+                    patch_adopted_prewarm_stop_payload(
+                        &mut payload,
+                        stop_payload,
+                        "overlap-capture-start-before-prewarm-stop",
+                    );
+                }
+                let stream_id = session.stream_id.clone();
+                if let Some(mut old_session) = self.capture_sessions.remove(&stream_id) {
+                    let _ = old_session.stop("duplicateStreamId");
+                }
+                self.capture_sessions.insert(stream_id, session);
+                Ok(payload)
             }
-            self.capture_sessions.insert(stream_id, session);
-            payload
-        })
+            Err(err) => {
+                if let Some((mut prewarm_session, _, _)) = delayed_prewarm_stop {
+                    let _ = prewarm_session.stop("captureStartFailed");
+                }
+                Err(err)
+            }
+        }
     }
 
     fn start_prewarm(&mut self, request: CaptureRequest) -> Result<Value, String> {
@@ -618,6 +643,22 @@ impl PrewarmBuffer {
             .iter()
             .map(|block| block.len() as u64)
             .sum::<u64>()
+    }
+}
+
+fn patch_adopted_prewarm_stop_payload(
+    payload: &mut Value,
+    stop_payload: Value,
+    handoff_mode: &str,
+) {
+    if let Value::Object(root) = payload {
+        if let Some(Value::Object(adopted)) = root.get_mut("adoptedPrewarm") {
+            adopted.insert("stop".to_string(), stop_payload);
+            adopted.insert(
+                "handoffMode".to_string(),
+                Value::String(handoff_mode.to_string()),
+            );
+        }
     }
 }
 
@@ -1659,38 +1700,40 @@ fn run_wasapi_capture_writer_inner(
         let capture_client: IAudioCaptureClient = unsafe { client.GetService() }
             .map_err(|err| format!("IAudioCaptureClient service unavailable: {err}"))?;
 
-        ready_tx
-            .send(Ok(WasapiReady {
-                endpoint_id_hash,
-                endpoint_selection: selected.endpoint_selection,
-                mix_format: mix_format.clone(),
-            }))
-            .map_err(|err| format!("could not report WASAPI readiness: {err}"))?;
-        *ready_sent = true;
-
-        wait_for_pipe_client(pipe_handle, stop_rx)?;
-        stats.connected = true;
-        let mut sequence = 0_u64;
-        write_adopted_prebuffer_blocks(
-            pipe_handle,
-            request,
-            &adopted_prebuffer_blocks,
-            started,
-            &mut sequence,
-            stats,
-        )?;
         unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
-        let capture_result = pump_wasapi_capture(
-            pipe_handle,
-            request,
-            stop_rx,
-            &capture_client,
-            mix_format,
-            stats,
-            started,
-            sequence,
-            adopted_prebuffer_blocks.is_empty(),
-        );
+        let capture_result = (|| -> Result<(), String> {
+            ready_tx
+                .send(Ok(WasapiReady {
+                    endpoint_id_hash,
+                    endpoint_selection: selected.endpoint_selection,
+                    mix_format: mix_format.clone(),
+                }))
+                .map_err(|err| format!("could not report WASAPI readiness: {err}"))?;
+            *ready_sent = true;
+
+            wait_for_pipe_client(pipe_handle, stop_rx)?;
+            stats.connected = true;
+            let mut sequence = 0_u64;
+            write_adopted_prebuffer_blocks(
+                pipe_handle,
+                request,
+                &adopted_prebuffer_blocks,
+                started,
+                &mut sequence,
+                stats,
+            )?;
+            pump_wasapi_capture(
+                pipe_handle,
+                request,
+                stop_rx,
+                &capture_client,
+                mix_format,
+                stats,
+                started,
+                sequence,
+                adopted_prebuffer_blocks.is_empty(),
+            )
+        })();
         let stop_result = unsafe { client.Stop() };
         if let Err(err) = stop_result {
             if capture_result.is_ok() {
@@ -2611,6 +2654,46 @@ mod tests {
                 .as_u64()
                 .unwrap_or_default()
                 >= 1
+        );
+    }
+
+    #[test]
+    fn adopted_prewarm_stop_payload_is_patched_after_overlap_start() {
+        let mut payload = serde_json::json!({
+            "adoptedPrewarm": {
+                "adopted": true,
+                "blocks": 12,
+                "stop": {
+                    "stopped": false,
+                    "reason": "pendingCaptureReady"
+                }
+            }
+        });
+
+        patch_adopted_prewarm_stop_payload(
+            &mut payload,
+            serde_json::json!({
+                "stopped": true,
+                "reason": "adoptedIntoCapture",
+                "totalBlocksObserved": 155
+            }),
+            "overlap-capture-start-before-prewarm-stop",
+        );
+
+        assert_eq!(payload["adoptedPrewarm"]["adopted"], true);
+        assert_eq!(payload["adoptedPrewarm"]["blocks"], 12);
+        assert_eq!(payload["adoptedPrewarm"]["stop"]["stopped"], true);
+        assert_eq!(
+            payload["adoptedPrewarm"]["stop"]["reason"],
+            "adoptedIntoCapture"
+        );
+        assert_eq!(
+            payload["adoptedPrewarm"]["stop"]["totalBlocksObserved"],
+            155
+        );
+        assert_eq!(
+            payload["adoptedPrewarm"]["handoffMode"],
+            "overlap-capture-start-before-prewarm-stop"
         );
     }
 
