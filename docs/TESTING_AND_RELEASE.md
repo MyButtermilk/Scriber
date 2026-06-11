@@ -273,6 +273,11 @@ python scripts\validate_recording_hot_path_comparison.py `
   --output tmp\hybrid-baseline\recording-hot-path-python-rust-comparison.json
 ```
 
+The comparison validator rejects unredacted input reports before producing
+promotion evidence. Raw `SWD\MMDEVAPI\...` endpoint IDs, raw
+`\\.\pipe\scriber-*` pipe names, and non-redacted token fields in either the
+Python or Rust hot-path report fail the comparison gate.
+
 The final readiness runner can require that artifact:
 
 ```powershell

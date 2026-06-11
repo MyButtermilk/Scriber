@@ -211,6 +211,38 @@ def test_recording_hot_path_comparison_rejects_open_rust_fallback_circuit() -> N
     assert check["details"]["open"] is True
 
 
+def test_recording_hot_path_comparison_rejects_unredacted_input_reports() -> None:
+    python_report = recording_report(engine="python")
+    rust_report = recording_report(engine="rust-prototype", rust_capture=True)
+    python_report["audioDiagnostics"]["sessionToken"] = "raw-python-token"
+    active_capture = rust_report["samples"][0]["audioDiagnosticsDuringRecording"]["microphone"]["activeCapture"]
+    active_capture["endpointId"] = r"SWD\MMDEVAPI\{0.0.1.00000000}.{raw-hot-path-device}"
+    active_capture["framePipe"] = r"\\.\pipe\scriber-audio-hot-path-secret"
+
+    result = build_comparison(python_report, rust_report)
+
+    assert result["ok"] is False
+    assert "Recording hot-path comparison input reports must be redacted" in result["failures"]
+    assert (
+        "Python recording hot-path report contains unredacted token-like value at "
+        "audioDiagnostics.sessionToken"
+        in result["failures"]
+    )
+    assert (
+        "Rust recording hot-path report contains raw native endpoint ID at "
+        "samples[0].audioDiagnosticsDuringRecording.microphone.activeCapture.endpointId"
+        in result["failures"]
+    )
+    assert (
+        "Rust recording hot-path report contains raw Scriber pipe name at "
+        "samples[0].audioDiagnosticsDuringRecording.microphone.activeCapture.framePipe"
+        in result["failures"]
+    )
+    check = next(item for item in result["checks"] if item["name"] == "inputReportRedaction")
+    assert check["ok"] is False
+    assert check["details"]["failureCount"] >= 3
+
+
 def test_recording_hot_path_comparison_cli_writes_artifact(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     python_report = tmp_path / "python.json"

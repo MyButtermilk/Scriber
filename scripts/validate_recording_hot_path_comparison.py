@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -48,6 +49,8 @@ AUDIO_OWNED_LATENCY_SEGMENTS = [
     STOP_TO_LAST_CHUNK_SEGMENT,
 ]
 DEFAULT_AUDIO_OWNED_MAX_P95_REGRESSION_MS = 50.0
+REDACTED_TEXT_MARKERS = {"[REDACTED]", "[redacted]", "<redacted>", "***REDACTED***"}
+REDACTED_ENDPOINT_MARKERS = {"[REDACTED_ENDPOINT]", "[redacted-endpoint]", "<redacted-endpoint>"}
 
 
 def read_json_object(path: Path) -> dict[str, Any]:
@@ -133,6 +136,69 @@ def has_rust_frame_pipe(report: dict[str, Any]) -> bool:
         and capture.get("frameSource") == RUST_AUDIO_FRAME_SOURCE
         for capture in active_capture_samples(report)
     )
+
+
+def _normalized_windows_identifier(value: str) -> str:
+    normalized = str(value).lower().replace("/", "\\")
+    for _ in range(6):
+        collapsed = normalized.replace("\\\\", "\\")
+        if collapsed == normalized:
+            break
+        normalized = collapsed
+    return normalized
+
+
+def _looks_like_raw_scriber_pipe(value: str) -> bool:
+    return "\\.\\pipe\\scriber-" in _normalized_windows_identifier(value)
+
+
+def _looks_like_raw_native_endpoint_id(value: str) -> bool:
+    normalized = _normalized_windows_identifier(value)
+    return "swd\\mmdevapi\\" in normalized or "swd#mmdevapi#" in str(value).lower()
+
+
+def _looks_like_unredacted_endpoint_id_field(path: str, value: str) -> bool:
+    tokens = [token for token in re.split(r"[.\[\]]+", path.lower()) if token]
+    if not any(token.endswith("endpointid") and not token.endswith("hash") for token in tokens):
+        return False
+    normalized = str(value).strip()
+    return bool(normalized) and normalized not in REDACTED_ENDPOINT_MARKERS
+
+
+def _looks_like_unredacted_token_field(path: str, value: str) -> bool:
+    path_lower = path.lower()
+    if "tokenconfigured" in path_lower:
+        return False
+    if "token" not in path_lower:
+        return False
+    normalized = str(value).strip()
+    return bool(normalized) and normalized not in REDACTED_TEXT_MARKERS
+
+
+def find_input_redaction_failures(value: Any, label: str) -> list[str]:
+    failures: list[str] = []
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, item in node.items():
+                key_str = str(key)
+                child_path = f"{path}.{key_str}" if path else key_str
+                walk(item, child_path)
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, f"{path}[{index}]")
+        elif isinstance(node, str):
+            if _looks_like_raw_scriber_pipe(node):
+                failures.append(f"{label} contains raw Scriber pipe name at {path}")
+            if _looks_like_raw_native_endpoint_id(node):
+                failures.append(f"{label} contains raw native endpoint ID at {path}")
+            if _looks_like_unredacted_endpoint_id_field(path, node):
+                failures.append(f"{label} contains unredacted endpointId value at {path}")
+            if _looks_like_unredacted_token_field(path, node):
+                failures.append(f"{label} contains unredacted token-like value at {path}")
+
+    walk(value, "")
+    return failures
 
 
 def audio_engine(report: dict[str, Any]) -> str:
@@ -250,6 +316,21 @@ def build_comparison(
             },
             "Recording hot-path comparison reports must not be validate-only artifacts",
         )
+
+    input_redaction_failures = find_input_redaction_failures(
+        python_report, "Python recording hot-path report"
+    ) + find_input_redaction_failures(rust_report, "Rust recording hot-path report")
+    add_check(
+        "inputReportRedaction",
+        not input_redaction_failures,
+        {
+            "failureCount": len(input_redaction_failures),
+            "failures": input_redaction_failures[:10],
+        },
+        "Recording hot-path comparison input reports must be redacted",
+    )
+    if input_redaction_failures:
+        failures.extend(input_redaction_failures)
 
     if require_provider_transcript:
         python_provider = requirement_status(python_report, "provider_transcript")
