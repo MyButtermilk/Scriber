@@ -183,3 +183,32 @@ def test_inject_method_tauri_rejects_success_without_paste_marker(monkeypatch):
     assert snapshot["lastErrorCode"] == "missingPasteMarker"
     assert snapshot["lastResponse"]["success"] is False
     assert snapshot["lastResponse"]["payload"]["markers"] == ["clipboard_set"]
+
+
+def test_inject_method_tauri_rejects_success_without_clipboard_set_marker(monkeypatch):
+    monkeypatch.setattr(Config, "INJECT_METHOD", "tauri")
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    shell_ipc._reset_diagnostics_for_tests()
+    injected = []
+    markers = []
+    injector = TextInjector(on_injected=injected.append, on_injection_marker=markers.append)
+
+    with patch("src.injector.call_shell_ipc") as ipc_mock:
+        ipc_mock.return_value = {
+            "success": True,
+            "payload": {
+                "method": "tauri",
+                "markers": ["paste"],
+            },
+        }
+        injector._inject_text("hello ")
+
+    assert injected == []
+    assert markers == []
+    snapshot = shell_ipc.diagnostic_snapshot()
+    assert snapshot["lastCommand"] == "injectText"
+    assert snapshot["lastSuccess"] is False
+    assert snapshot["lastErrorCode"] == "missingInjectionMarker"
+    assert snapshot["lastFallbackReason"] == "missing marker(s): clipboard_set"
+    assert snapshot["lastResponse"]["success"] is False
+    assert snapshot["lastResponse"]["payload"]["markers"] == ["paste"]

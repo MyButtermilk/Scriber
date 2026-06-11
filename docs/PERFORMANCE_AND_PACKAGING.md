@@ -526,8 +526,9 @@ Implementation status on `codex/rust-expansion-plan`:
 - Implemented redacted last-attempt diagnostics for Tauri text injection:
   Shell IPC records `lastErrorCode`, `lastFallbackReason`, and a sanitized
   `lastResponse`; `TextInjector` overwrites transport-level success when
-  injection validation fails, such as invalid payload or missing `paste`
-  marker. Support bundles include these fields through
+  injection validation fails, such as invalid payload or missing
+  `clipboard_set` / `paste` markers. Support bundles include these fields
+  through
   `audio-diagnostics.redacted.json` without transcript text, raw pipe names,
   raw foreground titles, or session tokens.
 - Added Rust unit tests for the shell IPC protocol and backend env contract,

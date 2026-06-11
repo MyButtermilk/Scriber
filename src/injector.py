@@ -452,13 +452,25 @@ def _tauri_inject_text(
         )
         return False
     markers = response_payload.get("markers") if isinstance(response_payload, dict) else None
-    if not isinstance(markers, list) or "paste" not in markers:
-        logger.warning("Tauri text injection failed: missing paste marker")
+    required_markers = {"clipboard_set", "paste"}
+    marker_set = (
+        {marker for marker in markers if isinstance(marker, str)}
+        if isinstance(markers, list)
+        else set()
+    )
+    missing_markers = sorted(required_markers - marker_set)
+    if missing_markers:
+        missing_label = ", ".join(missing_markers)
+        logger.warning(f"Tauri text injection failed: missing marker(s): {missing_label}")
         record_command_diagnostic(
             "injectText",
             False,
-            error_code="missingPasteMarker",
-            fallback_reason="missing paste marker",
+            error_code=(
+                "missingPasteMarker"
+                if missing_markers == ["paste"]
+                else "missingInjectionMarker"
+            ),
+            fallback_reason=f"missing marker(s): {missing_label}",
             response=response,
         )
         return False
