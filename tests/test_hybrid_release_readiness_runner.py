@@ -184,14 +184,21 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert injection_evidence["required"] is False
     assert injection_evidence["external"] is True
     assert injection_evidence["report"].endswith("tauri-text-injection-smoke.json")
-    assert "smoke_text_injection_target.py --method tauri" in injection_evidence["producer"]
+    assert injection_evidence["producer"] == "not requested"
+    assert injection_evidence["textChars"] > 0
+    assert injection_evidence["targetTitle"] == "Scriber Tauri Injection Readiness Target"
+    assert injection_evidence["timeoutSec"] == 5
+    assert injection_evidence["skipTargetClick"] is False
     assert "clipboard_set and paste markers" in injection_evidence["notes"]
     injection_matrix_evidence = payload["requiredEvidence"][10]
     assert injection_matrix_evidence["required"] is False
     assert injection_matrix_evidence["external"] is True
     assert injection_matrix_evidence["report"].endswith("tauri-text-injection-matrix.json")
-    assert "build_tauri_text_injection_matrix.py" in injection_matrix_evidence["producer"]
-    assert "target-app matrix" in injection_matrix_evidence["producer"]
+    assert injection_matrix_evidence["producer"] == "not requested"
+    assert injection_matrix_evidence["inputDir"].endswith("tauri-text-injection")
+    assert injection_matrix_evidence["scenarioOverrides"] == []
+    assert injection_matrix_evidence["unsupportedOptional"] == []
+    assert injection_matrix_evidence["inputReportsExternal"] is True
     assert "same-text restore" in injection_matrix_evidence["notes"]
     publication_evidence = payload["requiredEvidence"][11]
     assert "final redirect URL" in publication_evidence["notes"]
@@ -930,6 +937,56 @@ def test_hybrid_release_readiness_runner_plans_required_tauri_text_injection_smo
     assert "--require-tauri-text-injection-smoke" in readiness_command["command"]
 
 
+def test_hybrid_release_readiness_runner_can_plan_tauri_text_injection_smoke_run(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RunTauriTextInjectionSmoke",
+        "-RequireTauriTextInjectionSmoke",
+        "-TauriTextInjectionSmokeText",
+        "Scriber Tauri smoke text",
+        "-TauriTextInjectionTargetTitle",
+        "Scriber Target",
+        "-TauriTextInjectionSettleSec",
+        "1.5",
+        "-TauriTextInjectionTimeoutSec",
+        "8",
+        "-TauriTextInjectionSkipTargetClick",
+        "-TauriTextInjectionPasteRestoreDelayMs",
+        "1200",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runTauriTextInjectionSmoke"] is True
+    smoke_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "tauriTextInjectionSmoke")
+    assert smoke_evidence["required"] is True
+    assert smoke_evidence["external"] is False
+    assert smoke_evidence["producer"] == "scripts\\smoke_text_injection_target.py --method tauri"
+    assert smoke_evidence["textChars"] == len("Scriber Tauri smoke text")
+    assert smoke_evidence["targetTitle"] == "Scriber Target"
+    assert smoke_evidence["timeoutSec"] == 8
+    assert smoke_evidence["skipTargetClick"] is True
+    smoke_command = next(entry for entry in payload["commands"] if entry["name"] == "tauriTextInjectionSmoke")
+    assert "smoke_text_injection_target.py" in smoke_command["command"]
+    assert "--method tauri" in smoke_command["command"]
+    assert '--text "Scriber Tauri smoke text"' in smoke_command["command"]
+    assert '--target-title "Scriber Target"' in smoke_command["command"]
+    assert "--settle-sec 1.5" in smoke_command["command"]
+    assert "--timeout-sec 8" in smoke_command["command"]
+    assert "--paste-restore-delay-ms 1200" in smoke_command["command"]
+    assert "--skip-target-click" in smoke_command["command"]
+    readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    assert "--tauri-text-injection-smoke-report" in readiness_command["command"]
+    assert "--require-tauri-text-injection-smoke" in readiness_command["command"]
+
+
 def test_hybrid_release_readiness_runner_plans_required_tauri_text_injection_matrix(tmp_path: Path) -> None:
     result = run_powershell(
         "-NoProfile",
@@ -957,6 +1014,57 @@ def test_hybrid_release_readiness_runner_plans_required_tauri_text_injection_mat
     assert "required external report" in matrix_command["command"]
     assert "build_tauri_text_injection_matrix.py" in matrix_command["command"]
     assert "target-app matrix evidence" in matrix_command["command"]
+    readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    assert "--tauri-text-injection-matrix-report" in readiness_command["command"]
+    assert "--require-tauri-text-injection-matrix" in readiness_command["command"]
+
+
+def test_hybrid_release_readiness_runner_can_plan_tauri_text_injection_matrix_builder(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "text-injection-reports"
+    word_report = input_dir / "word.json"
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RunTauriTextInjectionMatrixBuilder",
+        "-RequireTauriTextInjectionMatrix",
+        "-TauriTextInjectionMatrixInputDir",
+        str(input_dir),
+        "-TauriTextInjectionMatrixScenario",
+        f"word={word_report}",
+        "-TauriTextInjectionMatrixUnsupportedOptional",
+        "remote-desktop=Remote Desktop is not available on this test machine",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runTauriTextInjectionMatrixBuilder"] is True
+    assert payload["tauriTextInjectionMatrixInputDir"] == str(input_dir)
+    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "tauriTextInjectionMatrix")
+    assert matrix_evidence["required"] is True
+    assert matrix_evidence["external"] is False
+    assert matrix_evidence["producer"] == "scripts\\build_tauri_text_injection_matrix.py"
+    assert matrix_evidence["inputDir"] == str(input_dir)
+    assert matrix_evidence["scenarioOverrides"] == [f"word={word_report}"]
+    assert matrix_evidence["unsupportedOptional"] == [
+        "remote-desktop=Remote Desktop is not available on this test machine"
+    ]
+    assert matrix_evidence["inputReportsExternal"] is True
+    matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "tauriTextInjectionMatrix")
+    assert "build_tauri_text_injection_matrix.py" in matrix_command["command"]
+    assert "--input-dir" in matrix_command["command"]
+    assert str(input_dir) in matrix_command["command"]
+    assert "--scenario" in matrix_command["command"]
+    assert str(word_report) in matrix_command["command"]
+    assert "--unsupported-optional" in matrix_command["command"]
+    assert "remote-desktop=Remote Desktop is not available on this test machine" in matrix_command["command"]
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
     assert "--tauri-text-injection-matrix-report" in readiness_command["command"]
     assert "--require-tauri-text-injection-matrix" in readiness_command["command"]

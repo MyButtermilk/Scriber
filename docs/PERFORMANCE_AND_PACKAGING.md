@@ -550,13 +550,16 @@ Implementation status on `codex/rust-expansion-plan`:
   and records the redacted Shell IPC diagnostic snapshot in its JSON artifact.
   The hybrid release-readiness runner and validator can require that artifact
   with `-RequireTauriTextInjectionSmoke` /
-  `--require-tauri-text-injection-smoke`. The report must be real evidence, not
-  `--validate-only`, and must show `injectText` success, target text arrival,
-  and `clipboard_set` plus `paste` markers. It now also must include structured
-  clipboard restore evidence; missing restore fields, restore errors, or
-  disabled restore fail promotion evidence. Foreground diagnostics in the Shell
-  IPC payload must remain hashed/redacted and must not expose raw window titles,
-  HWNDs, process IDs, or process names.
+  `--require-tauri-text-injection-smoke`, and the runner can now produce it
+  directly with `-RunTauriTextInjectionSmoke` when launched inside the
+  Tauri-managed backend environment that provides Shell IPC variables. The
+  report must be real evidence, not `--validate-only`, and must show
+  `injectText` success, target text arrival, and `clipboard_set` plus `paste`
+  markers. It now also must include structured clipboard restore evidence;
+  missing restore fields, restore errors, or disabled restore fail promotion
+  evidence. Foreground diagnostics in the Shell IPC payload must remain
+  hashed/redacted and must not expose raw window titles, HWNDs, process IDs, or
+  process names.
 - Added a stronger Tauri text-injection matrix readiness gate:
   `-RequireTauriTextInjectionMatrix` /
   `--require-tauri-text-injection-matrix`. The matrix artifact must aggregate
@@ -573,6 +576,10 @@ Implementation status on `codex/rust-expansion-plan`:
   IPC response payload, and the validator rejects artifacts whose
   `timingsMs.total` exceeds that deadline, so stale reports cannot prove the
   "do not paste after Python timed out" invariant.
+  The hybrid release-readiness runner can now invoke the matrix builder with
+  `-RunTauriTextInjectionMatrixBuilder`, but this only aggregates already
+  collected real target-app reports; it does not simulate the required manual
+  Notepad/Office/browser/Electron/elevated/clipboard coverage.
 - Still open: actually running the installed target-app smoke matrix, packaging
   smoke evidence, and default-path decision based on installed evidence.
 

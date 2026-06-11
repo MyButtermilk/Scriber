@@ -131,6 +131,12 @@ Packaging and scripts:
   hashed foreground identifiers. Never store transcript text, raw pipe names,
   session tokens, raw HWNDs, raw window titles, or raw process identifiers in
   diagnostics or support bundles.
+- Readiness can produce the safe Tauri injection smoke with
+  `-RunTauriTextInjectionSmoke` only when Shell IPC env vars are present. The
+  full target-app matrix still needs real scenario reports; the runner may
+  aggregate them with `-RunTauriTextInjectionMatrixBuilder`, but must not
+  replace the manual Notepad/Office/browser/Electron/elevated/clipboard
+  coverage with validate-only evidence.
 - The same private shell IPC may expose opt-in native diagnostics such as
   `audioProbe`. These diagnostics are not public API, must not expose raw
   endpoint IDs, and must not become an active capture path unless the Rust audio

@@ -247,11 +247,15 @@ Tauri text injection:
   `-RequireTauriTextInjectionSmoke`, which validates real Shell IPC success plus
   `clipboard_set`/`paste` markers, structured restore evidence, redacted
   foreground diagnostics, and `deadlineMs` evidence proving the measured Shell
-  IPC total stayed within Rust's paste deadline. It can also require the full
-  installed target-app matrix with `-RequireTauriTextInjectionMatrix`. Actually running
-  and attaching that matrix evidence across Notepad, Office, browsers,
-  Electron, elevated windows, clipboard edge cases, and Remote Desktop is still
-  open before any default-path decision.
+  IPC total stayed within Rust's paste deadline. It can now also produce that
+  safe-target artifact directly with `-RunTauriTextInjectionSmoke` when the
+  runner is launched with Tauri Shell IPC variables. It can require the full
+  installed target-app matrix with `-RequireTauriTextInjectionMatrix` and build
+  the aggregate from existing scenario reports with
+  `-RunTauriTextInjectionMatrixBuilder`. Actually running and attaching that
+  matrix evidence across Notepad, Office, browsers, Electron, elevated windows,
+  clipboard edge cases, and Remote Desktop is still open before any
+  default-path decision.
 - Active-capture watchdog diagnostics now distinguish missing streams, inactive
   streams, no-callback-after-start, stale-callback stalls, and restart-throttle
   suppression. Stale active streams report unhealthy during throttle windows so

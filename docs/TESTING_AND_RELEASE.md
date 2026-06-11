@@ -630,6 +630,19 @@ Manual Notepad, Word,
 Outlook, browser, Electron, elevated, and Remote Desktop target-app evidence is
 still required before changing defaults.
 
+When the readiness runner itself is launched inside that Tauri-managed backend
+environment, it can produce the safe-target artifact directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunTauriTextInjectionSmoke `
+  -RequireTauriTextInjectionSmoke
+```
+
+This invokes `scripts\smoke_text_injection_target.py --method tauri`, writes
+`tauri-text-injection-smoke.json`, then passes it into the aggregate validator.
+Use `-UseExistingTauriTextInjectionSmokeReport` when the smoke was already run.
+
 For a default-path decision, require the full installed target-app matrix:
 
 ```powershell
@@ -653,6 +666,22 @@ same structured restore evidence as the safe smoke; restore errors or disabled
 restore fail the matrix. Foreground diagnostics must remain hashed/redacted in
 every scenario. The same redaction gate rejects raw Shell IPC pipe names and
 unredacted token-like values in every scenario report.
+
+The aggregate runner can also build the matrix artifact from already collected
+scenario reports:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RunTauriTextInjectionMatrixBuilder `
+  -TauriTextInjectionMatrixInputDir tmp\hybrid-baseline\tauri-text-injection `
+  -TauriTextInjectionMatrixUnsupportedOptional "remote-desktop=Remote Desktop is not available on this test machine" `
+  -RequireTauriTextInjectionMatrix
+```
+
+This only aggregates real target-app reports; it does not replace the manual
+Notepad/Word/Outlook/browser/Electron/elevated/clipboard scenario runs. Use
+`-UseExistingTauriTextInjectionMatrixReport` to reuse a validated aggregate
+artifact.
 
 The microphone matrix can also be run directly with the same Rust promotion
 gates:
