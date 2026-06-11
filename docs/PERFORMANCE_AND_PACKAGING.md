@@ -1251,9 +1251,12 @@ Acceptance gates:
   smoke now observes `/api/microphones` by default and relies on native events
   or sparse fallback polling; `--force-refresh-each-poll` exists only as an
   explicit legacy fallback because it can mask over-aggressive PortAudio
-  refresh behavior. The matrix validator also rejects raw IMMDevice endpoint
-  IDs, raw `\\.\pipe\scriber-*` pipe names, and unredacted token fields anywhere
-  in the hardware artifact.
+  refresh behavior. For Rust promotion, the matrix validator now also requires
+  positive native Tauri refresh-hint and native-hint PortAudio-refresh deltas,
+  so legacy Python/native monitor events cannot satisfy the Rust-native event
+  evidence by themselves. The matrix validator also rejects raw IMMDevice
+  endpoint IDs, raw `\\.\pipe\scriber-*` pipe names, and unredacted token fields
+  anywhere in the hardware artifact.
 - No feature loss for provider streaming, final transcript injection, overlay,
   audio diagnostics, support bundles, and fallback settings.
 - Backend restart and Tauri exit clean up the Rust audio sidecar. Cleanup now

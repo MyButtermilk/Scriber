@@ -351,6 +351,46 @@ def test_validate_matrix_rejects_forced_refresh_when_device_refresh_evidence_req
     assert "device monitor native events must be active after the hardware action" in failures
 
 
+def test_validate_matrix_rejects_device_refresh_without_native_tauri_hint(tmp_path: Path) -> None:
+    write_artifact(
+        tmp_path,
+        "usb-add",
+        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
+        device_refresh={
+            "availableAfter": True,
+            "strategy": {"mode": "monitor-events", "forcedRefreshRequests": 0},
+            "nativeEventsActiveAfter": True,
+            "pollModeAfter": "native-event-safety",
+            "pollIntervalSecondsAfter": 900,
+            "pollRefreshDelta": 0,
+            "eventRefreshDelta": 1,
+            "portAudioRefreshDelta": 1,
+            "nativeHintDelta": 0,
+            "nativeHintPortAudioDelta": 0,
+            "after": {
+                "nativeEventsActive": True,
+                "pollMode": "native-event-safety",
+                "lastNativeHint": {"kind": "endpoint", "eventKind": "stateChanged"},
+            },
+        },
+    )
+
+    result = validate_matrix(
+        input_dir=tmp_path,
+        scenarios=["usb-add"],
+        require_device_refresh_evidence=True,
+    )
+
+    assert result["ok"] is False
+    failures = result["scenarios"][0]["failures"]
+    assert "device monitor nativeHintDelta must show at least one native Tauri refresh hint" in failures
+    assert (
+        "device monitor nativeHintPortAudioDelta must show a native hint requested PortAudio refresh"
+        in failures
+    )
+
+
 def test_validate_matrix_cli_writes_summary(tmp_path: Path) -> None:
     write_success_matrix(tmp_path)
     output = tmp_path / "matrix-summary.json"

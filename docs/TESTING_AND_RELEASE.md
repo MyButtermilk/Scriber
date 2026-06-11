@@ -456,6 +456,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
 `-RequireRustAudioSidecarSmoke` and `-RequireRustAudioAppPrewarmSmoke`
 automatically make the physical microphone matrix require
 `--require-rust-endpoint-inventory` and `--require-device-refresh-evidence`.
+Device-refresh evidence must show positive native Tauri refresh-hint and
+native-hint PortAudio-refresh deltas, so legacy Python/native monitor events
+alone cannot satisfy Rust-native device-event evidence.
 
 Add sidecar-local prewarm adoption evidence to that physical smoke when testing
 Rust prewarm parity:

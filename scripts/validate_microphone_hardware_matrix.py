@@ -291,6 +291,12 @@ def _validate_device_refresh_evidence(result: dict[str, Any]) -> list[str]:
     portaudio_delta = refresh.get("portAudioRefreshDelta")
     if isinstance(portaudio_delta, int) and portaudio_delta < 1:
         failures.append("device monitor portAudioRefreshDelta must show the event-triggered PortAudio refresh")
+    native_hint_delta = refresh.get("nativeHintDelta")
+    if isinstance(native_hint_delta, int) and native_hint_delta < 1:
+        failures.append("device monitor nativeHintDelta must show at least one native Tauri refresh hint")
+    native_hint_portaudio_delta = refresh.get("nativeHintPortAudioDelta")
+    if isinstance(native_hint_portaudio_delta, int) and native_hint_portaudio_delta < 1:
+        failures.append("device monitor nativeHintPortAudioDelta must show a native hint requested PortAudio refresh")
 
     after = refresh.get("after")
     if not isinstance(after, dict):
