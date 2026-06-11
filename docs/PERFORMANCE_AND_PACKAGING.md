@@ -1300,7 +1300,10 @@ Implementation plan:
      inactive reason, restart counters, and a bounded redacted `recentEvents`
      timeline for start/stop/adoption/watchdog restarts, which makes brief
      microphone privacy-indicator dropouts diagnosable in support bundles
-     without increasing steady-state log volume. The watchdog
+     without increasing steady-state log volume. The Rust manager also records
+     `lastActiveCaptureResumeGapMs`, `lastActiveCaptureStopToReadyMs`, and
+     `maxActiveCaptureStopToReadyMs`, so the visible off/on gap after a user
+     stops an active recording is measured instead of inferred. The watchdog
      now also records and logs `missingPrewarmSession` when a previously active
      Rust idle session disappears before a status query can be made, and the
      Python prewarm fallback records the analogous `missingPrewarmStream`
@@ -1313,8 +1316,11 @@ Implementation plan:
      error, `healthRestartCount=0`, or the expected bounded redacted
      `recentEvents` lifecycle markers (`started` before adoption and
      `adopted_for_capture` / `resume_active_capture` / `started` after idle
-     resume). This prevents stale cached `prewarmId` state or a recovered
-     idle-session dropout from satisfying the Always-On-Mic promotion gate.
+     resume). Post-resume snapshots must also include positive
+     `activeCaptureResumeReadyCount` and non-negative resume-gap timing fields.
+     This prevents stale cached `prewarmId` state, a recovered idle-session
+     dropout, or an unmeasured stop-to-prewarm gap from satisfying the
+     Always-On-Mic promotion gate.
    - Still open: physical proof that this restart/cooldown policy behaves well
      during real long recordings and dock/USB/default-device transitions.
 7. Run A/B measurements before any promotion:

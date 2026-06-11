@@ -383,6 +383,80 @@ def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch)
     assert "prewarm-1" not in str(snapshot)
 
 
+def test_rust_audio_prewarm_manager_records_resume_gap_after_capture(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
+    monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
+    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
+    monkeypatch.setattr(Config, "MIC_PREBUFFER_MS", 400, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    commands: list[tuple[str, dict]] = []
+    start_ids = iter(["prewarm-capture", "prewarm-resume"])
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": next(start_ids)}}
+        if command == "audioPrewarmStop":
+            return {
+                "success": True,
+                "payload": {"stopped": True, "prewarmId": payload["prewarmId"]},
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+
+    assert manager.start_if_enabled() is True
+    adopted = manager.attach_active_capture(
+        None,
+        sample_rate=16000,
+        target_channels=1,
+        block_size=160,
+        device="default",
+    )
+    assert adopted is not None
+
+    assert manager.detach_active_capture(None) is False
+    assert manager.resume_after_active_capture() is True
+
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["active"] is True
+    assert snapshot["activeCaptureResumeCount"] == 1
+    assert snapshot["activeCaptureResumeReadyCount"] == 1
+    assert snapshot["activeCaptureResumeFailedCount"] == 0
+    assert snapshot["lastActiveCaptureResumeGapMs"] is not None
+    assert snapshot["lastActiveCaptureResumeGapMs"] >= 0
+    assert snapshot["lastActiveCaptureStopToReadyMs"] is not None
+    assert snapshot["lastActiveCaptureStopToReadyMs"] >= 0
+    assert snapshot["maxActiveCaptureStopToReadyMs"] == snapshot["lastActiveCaptureStopToReadyMs"]
+    assert snapshot["lastActiveCaptureDetachAgoSeconds"] is not None
+    assert snapshot["lastActiveCaptureResumeAttemptAgoSeconds"] is not None
+    events = snapshot["recentEvents"]
+    assert any(
+        event["event"] == "started"
+        and event.get("activeCaptureResumeGapMs") is not None
+        and event.get("activeCaptureStopToReadyMs") is not None
+        for event in events
+    )
+    assert [command for command, _payload in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStart",
+    ]
+    assert "prewarm-capture" not in str(snapshot)
+    assert "prewarm-resume" not in str(snapshot)
+
+    manager.stop()
+
+
 def test_rust_audio_prewarm_manager_keeps_default_when_native_mapping_unavailable(
     monkeypatch,
 ):

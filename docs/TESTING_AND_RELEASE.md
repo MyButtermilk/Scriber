@@ -343,11 +343,14 @@ non-negative response times, empty health errors, and
 `healthRestartCount=0`. It also requires the bounded redacted `recentEvents`
 timeline to contain the expected lifecycle markers: `started` before adoption,
 and `adopted_for_capture`, `resume_active_capture`, and `started` after idle
-resume. This prevents a cached `prewarmId` from counting as proof that
-Always-On-Mic was still holding a live Rust/WASAPI prewarm session, and
-prevents a report with a hidden idle-session dropout from passing as stable
-promotion evidence merely because the watchdog recovered before the final
-snapshot.
+resume. Post-resume snapshots must also expose positive
+`activeCaptureResumeReadyCount` plus non-negative
+`lastActiveCaptureResumeGapMs`, `lastActiveCaptureStopToReadyMs`, and
+`maxActiveCaptureStopToReadyMs`. This prevents a cached `prewarmId` from
+counting as proof that Always-On-Mic was still holding a live Rust/WASAPI
+prewarm session, and prevents a report with a hidden idle-session dropout or an
+unmeasured stop-to-prewarm-ready gap from passing as stable promotion evidence
+merely because the watchdog recovered before the final snapshot.
 
 For Always-On-Mic promotion evidence, make the app-level smoke a long run and
 require the same durations plus repeated stop/resume capture cycles in final

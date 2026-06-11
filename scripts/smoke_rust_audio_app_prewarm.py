@@ -251,6 +251,26 @@ def _valid_manager_health_snapshot(
         }
         if not set(required_events).issubset(event_names):
             return False
+        if "resume_active_capture" in set(required_events):
+            resume_ready_count = value.get("activeCaptureResumeReadyCount")
+            if (
+                not isinstance(resume_ready_count, (int, float))
+                or isinstance(resume_ready_count, bool)
+                or resume_ready_count <= 0
+            ):
+                return False
+            for field in (
+                "lastActiveCaptureResumeGapMs",
+                "lastActiveCaptureStopToReadyMs",
+                "maxActiveCaptureStopToReadyMs",
+            ):
+                metric = value.get(field)
+                if (
+                    not isinstance(metric, (int, float))
+                    or isinstance(metric, bool)
+                    or metric < 0
+                ):
+                    return False
     return True
 
 

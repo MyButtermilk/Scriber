@@ -740,8 +740,16 @@ class RustAudioPrewarmManager:
         self._device_refresh_resume_count = 0
         self._active_capture_pause_count = 0
         self._active_capture_resume_count = 0
+        self._active_capture_resume_ready_count = 0
+        self._active_capture_resume_failed_count = 0
         self._adoption_count = 0
         self._last_adopted_prewarm_id_hash: str | None = None
+        self._last_active_capture_detach_at = 0.0
+        self._last_active_capture_resume_attempt_at = 0.0
+        self._pending_active_capture_resume_attempt_at = 0.0
+        self._last_active_capture_resume_gap_ms: float | None = None
+        self._last_active_capture_stop_to_ready_ms: float | None = None
+        self._max_active_capture_stop_to_ready_ms: float | None = None
         self._last_stop_payload: dict[str, Any] = {}
         self._last_status_payload: dict[str, Any] = {}
         self._last_start_attempt_at = 0.0
@@ -788,8 +796,23 @@ class RustAudioPrewarmManager:
                 "deviceRefreshResumeCount": self._device_refresh_resume_count,
                 "activeCapturePauseCount": self._active_capture_pause_count,
                 "activeCaptureResumeCount": self._active_capture_resume_count,
+                "activeCaptureResumeReadyCount": self._active_capture_resume_ready_count,
+                "activeCaptureResumeFailedCount": self._active_capture_resume_failed_count,
+                "lastActiveCaptureResumeGapMs": self._last_active_capture_resume_gap_ms,
+                "lastActiveCaptureStopToReadyMs": self._last_active_capture_stop_to_ready_ms,
+                "maxActiveCaptureStopToReadyMs": self._max_active_capture_stop_to_ready_ms,
                 "adoptionCount": self._adoption_count,
                 "lastAdoptedPrewarmIdHash": self._last_adopted_prewarm_id_hash,
+                "lastActiveCaptureDetachAgoSeconds": (
+                    round(time.monotonic() - self._last_active_capture_detach_at, 3)
+                    if self._last_active_capture_detach_at > 0
+                    else None
+                ),
+                "lastActiveCaptureResumeAttemptAgoSeconds": (
+                    round(time.monotonic() - self._last_active_capture_resume_attempt_at, 3)
+                    if self._last_active_capture_resume_attempt_at > 0
+                    else None
+                ),
                 "lastError": self._last_error,
                 "lastStartAttemptAgoSeconds": (
                     round(time.monotonic() - self._last_start_attempt_at, 3)
@@ -906,6 +929,8 @@ class RustAudioPrewarmManager:
                 return False
             if self._prewarm_id:
                 return True
+            active_resume_started_at = self._pending_active_capture_resume_attempt_at
+            active_resume_detach_at = self._last_active_capture_detach_at
 
         attempt_started = time.monotonic()
         shell_started: float | None = None
@@ -946,6 +971,29 @@ class RustAudioPrewarmManager:
                 }
                 self._stream_started_at = time.monotonic()
                 self._stream_start_count += 1
+                if active_resume_started_at > 0:
+                    resume_ready_ms = round(
+                        max(0.0, self._stream_started_at - active_resume_started_at) * 1000.0,
+                        3,
+                    )
+                    stop_to_ready_ms = (
+                        round(max(0.0, self._stream_started_at - active_resume_detach_at) * 1000.0, 3)
+                        if active_resume_detach_at > 0
+                        else None
+                    )
+                    self._last_active_capture_resume_gap_ms = resume_ready_ms
+                    self._last_active_capture_stop_to_ready_ms = stop_to_ready_ms
+                    if stop_to_ready_ms is not None:
+                        self._max_active_capture_stop_to_ready_ms = max(
+                            value
+                            for value in (
+                                self._max_active_capture_stop_to_ready_ms,
+                                stop_to_ready_ms,
+                            )
+                            if value is not None
+                        )
+                    self._active_capture_resume_ready_count += 1
+                    self._pending_active_capture_resume_attempt_at = 0.0
                 self._last_error = ""
                 self._last_start_duration_ms = round(
                     max(0.0, time.monotonic() - attempt_started) * 1000.0,
@@ -965,6 +1013,16 @@ class RustAudioPrewarmManager:
                     nativeEndpointIdHash=str(payload.get("nativeEndpointIdHash") or ""),
                     responseMs=shell_response_ms,
                     durationMs=self._last_start_duration_ms,
+                    activeCaptureResumeGapMs=(
+                        self._last_active_capture_resume_gap_ms
+                        if active_resume_started_at > 0
+                        else None
+                    ),
+                    activeCaptureStopToReadyMs=(
+                        self._last_active_capture_stop_to_ready_ms
+                        if active_resume_started_at > 0
+                        else None
+                    ),
                 )
             logger.info("Rust mic prewarm session active")
             return True
@@ -984,6 +1042,9 @@ class RustAudioPrewarmManager:
                     )
                 self._last_start_response_ms = shell_response_ms
                 self._last_start_success = False
+                if active_resume_started_at > 0:
+                    self._active_capture_resume_failed_count += 1
+                    self._pending_active_capture_resume_attempt_at = 0.0
                 self._record_event_locked(
                     "start_failed",
                     "start",
@@ -1144,6 +1205,7 @@ class RustAudioPrewarmManager:
     ) -> bool:
         with self._lock:
             self._active_capture_attached = False
+            self._last_active_capture_detach_at = time.monotonic()
             self._record_event_locked("detached_active_capture", "active_capture")
             return bool(self._prewarm_id)
 
@@ -1160,8 +1222,20 @@ class RustAudioPrewarmManager:
             self._paused_for_active_capture = False
             self._active_capture_attached = False
             self._active_capture_resume_count += 1
+            self._last_active_capture_resume_attempt_at = time.monotonic()
+            self._pending_active_capture_resume_attempt_at = self._last_active_capture_resume_attempt_at
             self._record_event_locked("resume_active_capture", "active_capture")
-        return self.start_if_enabled()
+        started = self.start_if_enabled()
+        if not started:
+            with self._lock:
+                if self._pending_active_capture_resume_attempt_at:
+                    self._active_capture_resume_failed_count += 1
+                    self._pending_active_capture_resume_attempt_at = 0.0
+                    self._record_event_locked(
+                        "active_capture_resume_failed",
+                        "active_capture",
+                    )
+        return started
 
     def quiesce_for_device_refresh(self) -> None:
         with self._lock:

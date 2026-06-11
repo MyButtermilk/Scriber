@@ -1161,6 +1161,18 @@ def validate_rust_audio_app_prewarm_health_snapshot(
                     failures.append(
                         f"{prefix}.recentEvents must include {required_event}"
                     )
+    if "resume_active_capture" in required_recent_events:
+        resume_ready_count = numeric_field(snapshot, "activeCaptureResumeReadyCount")
+        if resume_ready_count is None or resume_ready_count <= 0:
+            failures.append(f"{prefix}.activeCaptureResumeReadyCount must be positive")
+        for field in (
+            "lastActiveCaptureResumeGapMs",
+            "lastActiveCaptureStopToReadyMs",
+            "maxActiveCaptureStopToReadyMs",
+        ):
+            metric = numeric_field(snapshot, field)
+            if metric is None or metric < 0:
+                failures.append(f"{prefix}.{field} must be non-negative")
     return failures
 
 

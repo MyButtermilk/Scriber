@@ -577,6 +577,14 @@ def write_rust_audio_app_prewarm_report(
                 {"event": "started", "reason": "start", "ageSeconds": 1.9},
             ]
             if "post_resume" in reason:
+                snapshot.update(
+                    {
+                        "activeCaptureResumeReadyCount": 1,
+                        "lastActiveCaptureResumeGapMs": 12.0,
+                        "lastActiveCaptureStopToReadyMs": 18.0,
+                        "maxActiveCaptureStopToReadyMs": 18.0,
+                    }
+                )
                 recent_events.extend(
                     [
                         {
@@ -3016,6 +3024,45 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_without_recen
     failures = "\n".join(app_check["failures"])
     assert "managerPreAdoptionHealth.recentEvents must be a list" in failures
     assert "managerPostResumeHealth.recentEvents must be a list" in failures
+
+
+def test_validate_release_readiness_rejects_rust_audio_app_prewarm_without_resume_gap(
+    tmp_path: Path,
+) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
+    write_rust_audio_app_prewarm_report(app_prewarm_report)
+    payload = json.loads(app_prewarm_report.read_text(encoding="utf-8"))
+    for key in (
+        "activeCaptureResumeReadyCount",
+        "lastActiveCaptureResumeGapMs",
+        "lastActiveCaptureStopToReadyMs",
+        "maxActiveCaptureStopToReadyMs",
+    ):
+        payload["managerPostResumeHealth"].pop(key, None)
+        for cycle in payload.get("cycles", []):
+            cycle.get("managerPostResumeHealth", {}).pop(key, None)
+    app_prewarm_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_app_prewarm_report=app_prewarm_report,
+        require_rust_audio_app_prewarm_smoke=True,
+    )
+
+    app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
+    failures = "\n".join(app_check["failures"])
+    assert "managerPostResumeHealth.activeCaptureResumeReadyCount must be positive" in failures
+    assert "managerPostResumeHealth.lastActiveCaptureResumeGapMs must be non-negative" in failures
+    assert "managerPostResumeHealth.lastActiveCaptureStopToReadyMs must be non-negative" in failures
+    assert "managerPostResumeHealth.maxActiveCaptureStopToReadyMs must be non-negative" in failures
 
 
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_inactive_status_evidence(tmp_path: Path) -> None:
