@@ -176,6 +176,10 @@ Rust audio:
   treating them as healthy. `/api/runtime/audio-diagnostics` and support
   bundles also retain the latest mic-watchdog warning snapshot, so a brief
   interruption remains visible after the capture has already ended.
+- Rust frame-pipe failures after the first callback now open a short
+  fallback-on-next-session circuit. The current utterance is not switched to
+  Python mid-stream, but the next requested Rust-prototype recording uses
+  Python during the cooldown and records the circuit-open reason in diagnostics.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

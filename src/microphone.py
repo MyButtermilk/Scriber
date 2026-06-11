@@ -103,6 +103,51 @@ def _requested_audio_engine() -> str:
     return requested
 
 
+_RUST_AUDIO_FALLBACK_LOCK = threading.Lock()
+_RUST_AUDIO_FALLBACK_UNTIL = 0.0
+_RUST_AUDIO_FALLBACK_REASON = ""
+
+
+def _rust_audio_failure_cooldown_seconds() -> float:
+    raw = os.getenv("SCRIBER_RUST_AUDIO_FAILURE_COOLDOWN_SEC", "60")
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _rust_audio_fallback_circuit_state() -> dict:
+    now = time.monotonic()
+    with _RUST_AUDIO_FALLBACK_LOCK:
+        remaining = max(0.0, _RUST_AUDIO_FALLBACK_UNTIL - now)
+        open_ = remaining > 0.0
+        reason = _RUST_AUDIO_FALLBACK_REASON if open_ else ""
+    return {
+        "open": open_,
+        "reason": reason,
+        "remainingSeconds": round(remaining, 3) if open_ else None,
+    }
+
+
+def _record_rust_audio_mid_session_failure(reason: str) -> None:
+    reason = str(reason or "rustMidSessionFailure")
+    cooldown = _rust_audio_failure_cooldown_seconds()
+    if cooldown <= 0:
+        return
+    until = time.monotonic() + cooldown
+    with _RUST_AUDIO_FALLBACK_LOCK:
+        global _RUST_AUDIO_FALLBACK_UNTIL, _RUST_AUDIO_FALLBACK_REASON
+        _RUST_AUDIO_FALLBACK_UNTIL = max(_RUST_AUDIO_FALLBACK_UNTIL, until)
+        _RUST_AUDIO_FALLBACK_REASON = reason
+
+
+def _reset_rust_audio_fallback_circuit() -> None:
+    with _RUST_AUDIO_FALLBACK_LOCK:
+        global _RUST_AUDIO_FALLBACK_UNTIL, _RUST_AUDIO_FALLBACK_REASON
+        _RUST_AUDIO_FALLBACK_UNTIL = 0.0
+        _RUST_AUDIO_FALLBACK_REASON = ""
+
+
 class AudioFrameSource:
     """Internal capture boundary for future non-sounddevice engines."""
 
@@ -405,6 +450,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.adopted_prewarm: dict | None = None
         self.frame_pipe_reader_end_reason = "notStarted"
         self.frame_pipe_first_frame_read_ms = None
+        self.mid_session_failure_reason = ""
         self._shell_call = shell_call or call_shell_ipc
         self._reader_factory = reader_factory or open
         self._first_frame_timeout_seconds = (
@@ -622,6 +668,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "framePipeFirstLiveSequence": self.frame_pipe_first_live_sequence,
             "framePipeReaderEndReason": self.frame_pipe_reader_end_reason,
             "framePipeFirstFrameReadMs": self.frame_pipe_first_frame_read_ms,
+            "midSessionFailureReason": self.mid_session_failure_reason,
             "fallbackReason": self.fallback_reason,
             "lastError": self._last_error,
             "lastCallbackAgoSeconds": (
@@ -721,6 +768,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 if self.callback_count <= 0 and not self.fallback_reason:
                     self.fallback_reason = "rustFramePipeClosedBeforeFirstFrame"
                 if self.callback_count > 0:
+                    self.mid_session_failure_reason = "pipeClosed"
                     logger.warning(
                         f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
                     )
@@ -743,6 +791,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             self._last_error = message
             self._first_frame_event.set()
             if self.callback_count > 0:
+                self.mid_session_failure_reason = self.fallback_reason or "protocolError"
                 logger.warning(
                     f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
                 )
@@ -756,6 +805,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
                     self.fallback_reason = "rustFramePipeReadError"
             self._first_frame_event.set()
             if self.callback_count > 0 and not self._stop_event.is_set():
+                self.mid_session_failure_reason = self.frame_pipe_reader_end_reason
                 logger.warning(
                     f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
                 )
@@ -933,6 +983,7 @@ class MicrophoneInput(BaseInputTransport):
         self._last_health_restart_error = ""
         self._last_health_restart_throttled_reason = ""
         self._last_health_restart_throttle_remaining_seconds = None
+        self._last_rust_audio_mid_session_failure_reason = ""
 
     def _claim_active_stream(self) -> None:
         if self._stream_claimed:
@@ -951,6 +1002,15 @@ class MicrophoneInput(BaseInputTransport):
         self._requested_audio_engine = requested
         self._audio_engine_fallback_reason = ""
         if requested == "rust-prototype":
+            circuit = _rust_audio_fallback_circuit_state()
+            if circuit["open"]:
+                reason = str(circuit.get("reason") or "rustMidSessionFailure")
+                self._audio_engine_fallback_reason = f"rustPrototypeCircuitOpen:{reason}"
+                logger.warning(
+                    "Rust audio prototype fallback circuit is open; using Python capture "
+                    f"for this session (reason={reason}, remaining={circuit.get('remainingSeconds')}s)"
+                )
+                return self._create_python_frame_source()
             return RustPrototypeFrameSource(
                 sample_rate=self._target_sample_rate,
                 target_channels=self._target_channels,
@@ -1067,6 +1127,7 @@ class MicrophoneInput(BaseInputTransport):
         self._last_health_restart_error = ""
         self._last_health_restart_throttled_reason = ""
         self._last_health_restart_throttle_remaining_seconds = None
+        self._last_rust_audio_mid_session_failure_reason = ""
         self._prewarm_adoption_skipped_reason = ""
         self._rust_prewarm_adoption = None
         self._rust_prewarm_id = ""
@@ -1296,6 +1357,7 @@ class MicrophoneInput(BaseInputTransport):
                 "streamActive": bool(stream and getattr(stream, "active", False)),
             }
         )
+        rust_circuit = _rust_audio_fallback_circuit_state()
         return {
             "running": bool(self._running),
             "engine": self._audio_engine,
@@ -1336,6 +1398,10 @@ class MicrophoneInput(BaseInputTransport):
             "lastHealthRestartError": self._last_health_restart_error,
             "lastHealthRestartThrottledReason": self._last_health_restart_throttled_reason,
             "lastHealthRestartThrottleRemainingSeconds": self._last_health_restart_throttle_remaining_seconds,
+            "lastRustAudioMidSessionFailureReason": self._last_rust_audio_mid_session_failure_reason,
+            "rustAudioFallbackCircuitOpen": bool(rust_circuit.get("open")),
+            "rustAudioFallbackCircuitReason": str(rust_circuit.get("reason") or ""),
+            "rustAudioFallbackCircuitRemainingSeconds": rust_circuit.get("remainingSeconds"),
         }
 
     def _redacted_rust_prewarm_adoption(self) -> dict | None:
@@ -1427,6 +1493,22 @@ class MicrophoneInput(BaseInputTransport):
         try:
             with get_device_guard_lock():
                 if source_owns_stream and (callback_stale or not active):
+                    mid_session_failure = str(
+                        getattr(self._frame_source, "mid_session_failure_reason", "") or ""
+                    )
+                    if (
+                        mid_session_failure
+                        and getattr(self._frame_source, "engine", "") == "rust-prototype"
+                    ):
+                        self._last_rust_audio_mid_session_failure_reason = mid_session_failure
+                        _record_rust_audio_mid_session_failure(mid_session_failure)
+                        self._audio_engine_fallback_reason = (
+                            f"rustPrototypeMidSessionFailure:{mid_session_failure}"
+                        )
+                        logger.warning(
+                            "Rust audio prototype mid-session failure recorded; "
+                            f"next recording will use Python during cooldown ({mid_session_failure})"
+                        )
                     try:
                         self._frame_source.stop(close=False)
                     except Exception:

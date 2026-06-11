@@ -300,6 +300,82 @@ def test_microphone_watchdog_reopens_inactive_owned_frame_source():
 
 
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+def test_microphone_watchdog_opens_rust_fallback_circuit_for_next_session(monkeypatch):
+    class _FakeRustFrameSource:
+        engine = "rust-prototype"
+        name = "rust-frame-pipe"
+        target_channels = 1
+        capture_channels = 1
+        fallback_reason = ""
+        mid_session_failure_reason = "pipeClosed"
+
+        def __init__(self):
+            self.stream = _FakeStream(active=False)
+            self.stop_calls: list[bool] = []
+            self.start_calls = 0
+
+        def stop(self, *, close: bool):
+            self.stop_calls.append(close)
+            self.stream.active = False
+
+        def start(self):
+            self.start_calls += 1
+            self.stream.active = True
+
+        def diagnostic_snapshot(self):
+            return {
+                "engine": self.engine,
+                "frameSource": self.name,
+                "hasStream": True,
+                "streamActive": self.stream.active,
+                "midSessionFailureReason": self.mid_session_failure_reason,
+            }
+
+    microphone._reset_rust_audio_fallback_circuit()
+    monkeypatch.setenv("SCRIBER_RUST_AUDIO_FAILURE_COOLDOWN_SEC", "30")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setattr(microphone.time, "monotonic", lambda: 100.0)
+
+    try:
+        mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+        source = _FakeRustFrameSource()
+        mic._frame_source = source
+        mic.stream = source.stream
+        mic._audio_engine = source.engine
+        mic._frame_source_name = source.name
+        mic._running = True
+
+        assert (
+            mic.ensure_stream_health(
+                reason="watchdog",
+                max_callback_gap_seconds=10.0,
+                min_restart_interval_seconds=0.0,
+            )
+            is True
+        )
+
+        snapshot = mic.diagnostic_snapshot()
+        assert source.stop_calls == [False]
+        assert source.start_calls == 1
+        assert snapshot["lastRustAudioMidSessionFailureReason"] == "pipeClosed"
+        assert snapshot["engineFallbackReason"] == "rustPrototypeMidSessionFailure:pipeClosed"
+        assert snapshot["rustAudioFallbackCircuitOpen"] is True
+        assert snapshot["rustAudioFallbackCircuitReason"] == "pipeClosed"
+        assert snapshot["rustAudioFallbackCircuitRemainingSeconds"] == pytest.approx(30.0)
+
+        next_mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+        next_source = next_mic._create_frame_source()
+
+        assert next_source.engine == "python"
+        assert (
+            next_mic._audio_engine_fallback_reason
+            == "rustPrototypeCircuitOpen:pipeClosed"
+        )
+    finally:
+        microphone._reset_rust_audio_fallback_circuit()
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
 def test_microphone_external_error_detaches_adopted_prewarm_stream():
     class _FakePrewarmManager:
         def __init__(self):

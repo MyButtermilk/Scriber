@@ -413,6 +413,88 @@ def test_rust_prototype_frame_source_reports_sequence_error_before_first_frame(m
     assert "sequence out of order" in snapshot["lastError"]
 
 
+def test_rust_prototype_frame_source_records_pipe_closed_mid_session_failure(monkeypatch):
+    audio = np.zeros((16, 1), dtype=np.int16)
+    frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(audio.tobytes()),
+            sequence=0,
+            timestamp_micros=1,
+            frame_count=16,
+            channels=1,
+        ),
+        audio.tobytes(),
+    )
+    got_frame = threading.Event()
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
+
+    def shell_call(command, payload=None, **_kwargs):
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-mid-session",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "endpoint-hash",
+                },
+            }
+        if command == "audioCaptureStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "reason": "captureStop",
+                    "connected": False,
+                    "framesWritten": 1,
+                    "bytesWritten": len(frame),
+                    "writerError": "pipe closed",
+                    "exitStatus": 0,
+                },
+            }
+        raise AssertionError(command)
+
+    def reader_factory(_path, *_args, **_kwargs):
+        import io
+
+        return io.BytesIO(frame)
+
+    def callback(*_args):
+        got_frame.set()
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=shell_call,
+        reader_factory=reader_factory,
+        first_frame_timeout_seconds=1.0,
+    )
+
+    source.open(callback)
+    source.start()
+    assert got_frame.wait(1.0)
+    if source._reader_thread is not None:
+        source._reader_thread.join(timeout=1.0)
+    snapshot = source.diagnostic_snapshot()
+    source.stop(close=True)
+
+    assert snapshot["callbackCount"] == 1
+    assert snapshot["framePipeReaderEndReason"] == "pipeClosed"
+    assert snapshot["midSessionFailureReason"] == "pipeClosed"
+
+
 def test_rust_prototype_frame_source_tracks_prebuffer_before_live_frames(monkeypatch):
     prebuffer_audio = np.full((16, 1), 100, dtype=np.int16)
     live_audio = np.full((16, 1), 200, dtype=np.int16)

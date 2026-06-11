@@ -1070,8 +1070,15 @@ Implementation plan:
      healthy merely because a restart is still inside the minimum restart
      interval; it returns unhealthy so the backend emits a diagnostic warning
      without spam-restarting the stream.
-   - Match stale callback detection, minimum restart interval, restart count,
-     graceful close, and fallback-on-next-session policy.
+   - Implemented: Rust frame-pipe failures after the first callback now record
+     `midSessionFailureReason`. When the active-capture watchdog observes such
+     a source-owned Rust failure, it opens a short Rust fallback circuit. The
+     current recording still does not splice to Python mid-utterance, but the
+     next `SCRIBER_AUDIO_ENGINE=rust-prototype` session falls back to Python
+     during the cooldown and records
+     `rustPrototypeCircuitOpen:<reason>` in diagnostics.
+   - Still open: physical proof that this restart/cooldown policy behaves well
+     during real long recordings and dock/USB/default-device transitions.
 7. Run A/B measurements before any promotion:
    - hotkey to first audio frame,
    - hotkey to first audible audio frame,
