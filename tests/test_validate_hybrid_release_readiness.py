@@ -543,9 +543,17 @@ def write_rust_audio_app_prewarm_report(
     include_status_health: bool = True,
     pre_adoption_status_active: bool = True,
     post_resume_status_active: bool = True,
+    pre_adoption_health_restart_count: int = 0,
+    post_resume_health_restart_count: int = 0,
     last_error: str = "",
 ) -> None:
-    def health_snapshot(prewarm_hash: str, reason: str, active: bool = True) -> dict[str, object]:
+    def health_snapshot(
+        prewarm_hash: str,
+        reason: str,
+        active: bool = True,
+        *,
+        health_restart_count: int = 0,
+    ) -> dict[str, object]:
         return {
             "active": active,
             "prewarmIdHash": prewarm_hash,
@@ -553,6 +561,7 @@ def write_rust_audio_app_prewarm_report(
             "lastHealthCheckReason": reason,
             "lastHealthResponseMs": 4.0,
             "lastHealthError": "" if active else "noActivePrewarm",
+            "healthRestartCount": health_restart_count,
             "lastStatus": {
                 "active": active,
                 "prewarmIdHash": prewarm_hash,
@@ -623,12 +632,14 @@ def write_rust_audio_app_prewarm_report(
             "prewarm-start-hash",
             "smoke_pre_adoption",
             pre_adoption_status_active,
+            health_restart_count=pre_adoption_health_restart_count,
         )
         payload["managerPostResumeHealthReturned"] = post_resume_status_active
         payload["managerPostResumeHealth"] = health_snapshot(
             "prewarm-resume-hash",
             "smoke_post_resume",
             post_resume_status_active,
+            health_restart_count=post_resume_health_restart_count,
         )
     path.write_text(
         json.dumps(payload),
@@ -2585,6 +2596,35 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_inactive_stat
     assert "managerPreAdoptionHealth.active must be true" in failures
     assert "managerPreAdoptionHealth.lastStatus.active must be true" in failures
     assert "managerPreAdoptionHealth.lastHealthError must be empty" in failures
+
+
+def test_validate_release_readiness_rejects_rust_audio_app_prewarm_health_restarts(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
+    write_rust_audio_app_prewarm_report(
+        app_prewarm_report,
+        pre_adoption_health_restart_count=1,
+        post_resume_health_restart_count=1,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_app_prewarm_report=app_prewarm_report,
+        require_rust_audio_app_prewarm_smoke=True,
+    )
+
+    assert result["ok"] is False
+    app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
+    failures = "\n".join(app_check["failures"])
+    assert "managerPreAdoptionHealth.healthRestartCount must be 0" in failures
+    assert "managerPostResumeHealth.healthRestartCount must be 0" in failures
 
 
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_redaction_leaks(tmp_path: Path) -> None:

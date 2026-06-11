@@ -1248,8 +1248,9 @@ Implementation plan:
    - Implemented: the app-level Rust prewarm smoke now exercises that status
      path before capture adoption and after idle resume. Final hybrid readiness
      rejects Rust app-prewarm reports that lack active `audioPrewarmStatus`
-     evidence, redacted prewarm IDs, health response timing, or an empty health
-     error. This prevents stale cached `prewarmId` state from satisfying the
+     evidence, redacted prewarm IDs, health response timing, an empty health
+     error, or `healthRestartCount=0`. This prevents stale cached `prewarmId`
+     state or a recovered idle-session dropout from satisfying the
      Always-On-Mic promotion gate.
    - Still open: physical proof that this restart/cooldown policy behaves well
      during real long recordings and dock/USB/default-device transitions.

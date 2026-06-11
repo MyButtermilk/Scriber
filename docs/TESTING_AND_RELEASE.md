@@ -306,9 +306,12 @@ adoption and after idle resume; the report must include
 `managerPreAdoptionHealth` and, when resume is enabled,
 `managerPostResumeHealth`. Final readiness rejects reports where those snapshots
 do not prove active `audioPrewarmStatus` responses with redacted prewarm IDs,
-non-negative response times, and empty health errors. This prevents a cached
-`prewarmId` from counting as proof that Always-On-Mic was still holding a live
-Rust/WASAPI prewarm session.
+non-negative response times, empty health errors, and
+`healthRestartCount=0`. This prevents a cached `prewarmId` from counting as
+proof that Always-On-Mic was still holding a live Rust/WASAPI prewarm session,
+and prevents a report with a hidden idle-session dropout from passing as stable
+promotion evidence merely because the watchdog recovered before the final
+snapshot.
 
 For Always-On-Mic promotion evidence, make the app-level smoke a long run and
 require the same durations in final validation:

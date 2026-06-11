@@ -968,6 +968,9 @@ def validate_rust_audio_app_prewarm_health_snapshot(
         failures.append(f"{prefix}.lastHealthResponseMs must be non-negative")
     if snapshot.get("lastHealthError") not in (None, ""):
         failures.append(f"{prefix}.lastHealthError must be empty")
+    health_restart_count = numeric_field(snapshot, "healthRestartCount")
+    if health_restart_count != 0:
+        failures.append(f"{prefix}.healthRestartCount must be 0")
     last_status = snapshot.get("lastStatus")
     if not isinstance(last_status, dict):
         failures.append(f"{prefix}.lastStatus must be an object")

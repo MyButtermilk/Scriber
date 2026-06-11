@@ -11,6 +11,20 @@ from scripts.smoke_rust_audio_app_prewarm import validate_smoke
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _manager_health_snapshot(*, health_restart_count: int = 0) -> dict[str, object]:
+    return {
+        "active": True,
+        "prewarmIdHash": "abc",
+        "lastHealthCheckActive": True,
+        "lastHealthResponseMs": 3.0,
+        "healthRestartCount": health_restart_count,
+        "lastStatus": {
+            "active": True,
+            "prewarmIdHash": "abc",
+        },
+    }
+
+
 def test_rust_audio_app_prewarm_smoke_script_documents_app_lifecycle_contract() -> None:
     script = (REPO_ROOT / "scripts" / "smoke_rust_audio_app_prewarm.py").read_text(
         encoding="utf-8"
@@ -23,6 +37,7 @@ def test_rust_audio_app_prewarm_smoke_script_documents_app_lifecycle_contract() 
     assert "prewarmId" in script
     assert "managerResume" in script
     assert "adoptedPrewarm" in script
+    assert "healthRestartCount" in script
     assert "framePipePrebufferFramesRead" in script
     assert "framePipePrebufferAfterLiveCount" in script
     assert "--mode wasapi" in script
@@ -65,8 +80,10 @@ def test_rust_audio_app_prewarm_validation_accepts_app_adoption_metrics() -> Non
         {
             "ok": True,
             "managerStart": {"active": True},
+            "managerPreAdoptionHealth": _manager_health_snapshot(),
             "managerAdoption": {"prewarmIdHash": "abc"},
             "managerResume": {"active": True},
+            "managerPostResumeHealth": _manager_health_snapshot(),
             "sourceFinal": {
                 "callbackCount": 12,
                 "adoptedPrewarm": {"adopted": True, "blocks": 4},
@@ -82,12 +99,38 @@ def test_rust_audio_app_prewarm_validation_accepts_app_adoption_metrics() -> Non
     assert errors == []
 
 
+def test_rust_audio_app_prewarm_validation_rejects_health_restart() -> None:
+    errors = validate_smoke(
+        {
+            "ok": True,
+            "managerStart": {"active": True},
+            "managerPreAdoptionHealth": _manager_health_snapshot(health_restart_count=1),
+            "managerAdoption": {"prewarmIdHash": "abc"},
+            "managerResume": {"active": True},
+            "managerPostResumeHealth": _manager_health_snapshot(),
+            "sourceFinal": {
+                "callbackCount": 12,
+                "adoptedPrewarm": {"adopted": True, "blocks": 4},
+                "framePipePrebufferFramesRead": 4,
+                "framePipeLiveFramesRead": 8,
+                "framePipePrebufferAfterLiveCount": 0,
+                "framePipeSequenceErrorCount": 0,
+                "framePipeProtocolErrorCount": 0,
+            },
+        }
+    )
+
+    assert "managerPreAdoptionHealth must prove active audioPrewarmStatus" in errors
+
+
 def test_rust_audio_app_prewarm_validation_rejects_missing_adoption() -> None:
     errors = validate_smoke(
         {
             "ok": True,
             "managerStart": {"active": True},
+            "managerPreAdoptionHealth": _manager_health_snapshot(),
             "managerAdoption": {},
+            "managerPostResumeHealth": _manager_health_snapshot(),
             "sourceFinal": {
                 "callbackCount": 2,
                 "adoptedPrewarm": {"adopted": False, "blocks": 0},
