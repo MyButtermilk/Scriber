@@ -352,6 +352,7 @@ def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_compa
     assert "run_recording_hot_path_comparison.ps1" in comparison_evidence["producer"]
     assert "validate_recording_hot_path_comparison.py" in comparison_evidence["producer"]
     assert "active rust-frame-pipe capture" in comparison_evidence["notes"]
+    assert "fallback-circuit" in comparison_evidence["notes"]
     comparison_command = next(
         entry for entry in payload["commands"] if entry["name"] == "recordingHotPathPythonRustComparison"
     )

@@ -1041,6 +1041,9 @@ Implementation plan:
      `scripts/run_hybrid_release_readiness.ps1` can require this artifact with
      `--require-recording-hot-path-comparison` /
      `-RequireRecordingHotPathComparison`.
+     The final readiness validator now requires the comparison artifact's
+     `rustFallbackCircuitClosed` check alongside `rustAudioEngine`, so this
+     gate cannot be bypassed by passing a stale comparison schema.
    - Implemented: `scripts/run_recording_hot_path_comparison.ps1` orchestrates
      the full provider-backed A/B evidence path. It runs
      `measure_hybrid_baseline.ps1` once with `SCRIBER_AUDIO_ENGINE=python`, once

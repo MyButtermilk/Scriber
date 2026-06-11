@@ -855,7 +855,13 @@ def validate_recording_hot_path_comparison_report(
     if not isinstance(rust_report, dict) or rust_report.get("audioEngine") != "rust-prototype":
         failures.append("recording hot-path comparison Rust report must use audioEngine=rust-prototype")
 
-    for check_name in ("physicalReports", "providerTranscript", "rustAudioEngine", "pythonAudioEngine"):
+    for check_name in (
+        "physicalReports",
+        "providerTranscript",
+        "rustAudioEngine",
+        "rustFallbackCircuitClosed",
+        "pythonAudioEngine",
+    ):
         check = checks_by_name.get(check_name)
         if not isinstance(check, dict):
             failures.append(f"recording hot-path comparison is missing check: {check_name}")
