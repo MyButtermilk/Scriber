@@ -146,7 +146,11 @@ Rust audio:
   `-RequireRustAudioAppPrewarmSmoke`. It can also require explicit app-level
   Rust Always-On-Mic durations with `-MinRustAudioAppPrewarmDurationSec` and
   `-MinRustAudioAppPrewarmPrewarmDurationSec`, so the 10-minute active-capture
-  / 30-minute idle-prewarm promotion target is machine-checkable.
+  / 30-minute idle-prewarm promotion target is machine-checkable. Default-path
+  Rust promotion can now also require installed live-recording start/stop
+  stability through `-RequireInstalledLiveRecordingSmoke` and
+  `-MinInstalledLiveRecordingDurationSec`; this gates the app/installer path
+  separately from provider-backed transcript quality.
   The recording hot-path benchmark now has strict provider/Rust promotion
   flags: `--require-provider-transcript` requires a final STT provider segment,
   and `--require-rust-audio-engine` verifies active `rust-prototype`

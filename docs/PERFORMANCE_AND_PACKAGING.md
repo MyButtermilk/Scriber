@@ -1000,6 +1000,14 @@ Implementation plan:
      `-MinRustAudioAppPrewarmPrewarmDurationSec`. This makes the 10-minute
      active-capture / 30-minute idle-prewarm promotion target
      machine-checkable instead of relying on a short smoke report.
+   - Implemented: final readiness can require an installed live-recording smoke
+     with `-RequireInstalledLiveRecordingSmoke` and
+     `-MinInstalledLiveRecordingDurationSec`. The validator accepts reports from
+     the installed desktop smoke path and requires clean start/stop state,
+     verified cleanup, positive stability samples, and zero non-recording
+     samples during active capture. This is a default-path app/installer gate;
+     provider-backed transcript quality and latency still require the separate
+     Python/Rust hot-path comparison artifact.
    - Local evidence from 2026-06-10: a direct Windows WASAPI prewarm smoke
      passed with
      `python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 0.5 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-current.json`.

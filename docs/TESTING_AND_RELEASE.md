@@ -440,6 +440,24 @@ default Rust audio promotion without the sidecar capture adoption smoke,
 app-wide Always-On-Mic lifecycle integration, and provider-backed transcription
 smokes.
 
+When evaluating a default-path Rust audio promotion, also require installed
+live-mic start/stop stability evidence:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RequireInstalledLiveRecordingSmoke `
+  -MinInstalledLiveRecordingDurationSec 600
+```
+
+This validates an existing `installed-live-recording-smoke.json` produced by
+`scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke`,
+`scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec`, or
+`scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec` over an installed
+app. The report must show clean live recording start/stop state, no
+non-recording samples during the recording window, positive stability samples,
+and verified cleanup. It complements the provider-backed Python/Rust hot-path
+comparison; it does not replace transcript-quality evidence.
+
 The microphone matrix can also be run directly with the same Rust inventory
 gate:
 
@@ -458,6 +476,8 @@ The final readiness validator expects evidence for:
 - physical microphone hardware matrix,
 - Rust audio sidecar physical smoke and Rust endpoint inventory evidence when
   evaluating the Rust prototype,
+- installed live-recording smoke when evaluating a default-path Rust audio
+  promotion,
 - media preparation smoke,
 - runtime dependency footprint,
 - signed updater publication,

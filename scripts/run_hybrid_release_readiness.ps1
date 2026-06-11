@@ -41,6 +41,9 @@ param(
     [double]$MinRustAudioAppPrewarmDurationSec = 0,
     [double]$MinRustAudioAppPrewarmPrewarmDurationSec = 0,
     [switch]$RustAudioAppPrewarmHonorFavoriteMic,
+    [string]$InstalledLiveRecordingSmokeReport = "",
+    [switch]$RequireInstalledLiveRecordingSmoke,
+    [double]$MinInstalledLiveRecordingDurationSec = 0,
     [switch]$RequireRustAudioSidecarSmoke,
     [switch]$RunRustAudioSidecarSmoke,
     [switch]$UseExistingRustAudioSidecarReport,
@@ -167,6 +170,11 @@ if (-not $RecordingHotPathComparisonReport) {
     $RecordingHotPathComparisonReport = Join-Path $HardwareInputDir "recording-hot-path-python-rust-comparison.json"
 } else {
     $RecordingHotPathComparisonReport = Convert-ToFullPath -Path $RecordingHotPathComparisonReport -Root $RepoRoot
+}
+if (-not $InstalledLiveRecordingSmokeReport) {
+    $InstalledLiveRecordingSmokeReport = Join-Path $HardwareInputDir "installed-live-recording-smoke.json"
+} else {
+    $InstalledLiveRecordingSmokeReport = Convert-ToFullPath -Path $InstalledLiveRecordingSmokeReport -Root $RepoRoot
 }
 if (-not $OutputPath) {
     $OutputPath = Join-Path $HardwareInputDir "hybrid-release-readiness.json"
@@ -343,6 +351,15 @@ if ($MinRustAudioAppPrewarmDurationSec -gt 0) {
 if ($MinRustAudioAppPrewarmPrewarmDurationSec -gt 0) {
     $readinessArgs += @("--min-rust-audio-app-prewarm-prewarm-duration-sec", ([string]$MinRustAudioAppPrewarmPrewarmDurationSec))
 }
+if ($RequireInstalledLiveRecordingSmoke -or $MinInstalledLiveRecordingDurationSec -gt 0 -or (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf)) {
+    $readinessArgs += @("--installed-live-recording-smoke-report", $InstalledLiveRecordingSmokeReport)
+}
+if ($RequireInstalledLiveRecordingSmoke) {
+    $readinessArgs += "--require-installed-live-recording-smoke"
+}
+if ($MinInstalledLiveRecordingDurationSec -gt 0) {
+    $readinessArgs += @("--min-installed-live-recording-duration-sec", ([string]$MinInstalledLiveRecordingDurationSec))
+}
 if ($RequireRecordingHotPathComparison -or (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf)) {
     $readinessArgs += @("--recording-hot-path-comparison-report", $RecordingHotPathComparisonReport)
 }
@@ -455,6 +472,15 @@ $requiredEvidence = @(
         notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires at least three samples per engine, requires provider transcript evidence with the same STT provider in both reports, requires active rust-frame-pipe capture in the Rust report, rejects open Rust fallback-circuit evidence, and rejects clear P95 regressions in local audio-owned hot-path segments."
     },
     [pscustomobject]@{
+        name = "installedLiveRecordingSmoke"
+        required = [bool]$RequireInstalledLiveRecordingSmoke
+        external = $true
+        producer = "scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke, scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec, or scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec over an installed app"
+        report = $InstalledLiveRecordingSmokeReport
+        minDurationSec = $MinInstalledLiveRecordingDurationSec
+        notes = "Required for Rust audio promotion before changing the default live-mic path. Validates installed app live recording start/stop state, non-recording sample leakage, stability samples, and cleanup; provider-backed transcription quality remains covered by recordingHotPathPythonRustComparison."
+    },
+    [pscustomobject]@{
         name = "publishedUpdaterManifest"
         required = $true
         external = $true
@@ -511,6 +537,8 @@ $plan = [pscustomobject]@{
     minRustAudioAppPrewarmDurationSec = $MinRustAudioAppPrewarmDurationSec
     minRustAudioAppPrewarmPrewarmDurationSec = $MinRustAudioAppPrewarmPrewarmDurationSec
     rustAudioAppPrewarmHonorFavoriteMic = [bool]$RustAudioAppPrewarmHonorFavoriteMic
+    installedLiveRecordingSmokeReport = $InstalledLiveRecordingSmokeReport
+    minInstalledLiveRecordingDurationSec = $MinInstalledLiveRecordingDurationSec
     recordingHotPathComparisonReport = $RecordingHotPathComparisonReport
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
@@ -527,6 +555,7 @@ $plan = [pscustomobject]@{
     requireRustAudioSidecarSmoke = [bool]$RequireRustAudioSidecarSmoke
     requireRustAudioPrewarmSidecarSmoke = [bool]$RequireRustAudioPrewarmSidecarSmoke
     requireRustAudioAppPrewarmSmoke = [bool]$RequireRustAudioAppPrewarmSmoke
+    requireInstalledLiveRecordingSmoke = [bool]$RequireInstalledLiveRecordingSmoke
     requireRecordingHotPathComparison = [bool]$RequireRecordingHotPathComparison
     useExistingUpdaterPublicationReport = [bool]$UseExistingUpdaterPublicationReport
     requiredEvidence = $requiredEvidence
@@ -562,6 +591,10 @@ $plan = [pscustomobject]@{
         [pscustomobject]@{
             name = "recordingHotPathPythonRustComparison"
             command = $(if (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf) { "reuse $RecordingHotPathComparisonReport" } elseif ($RequireRecordingHotPathComparison) { "required external report: produce with scripts\validate_recording_hot_path_comparison.py" } else { "not requested" })
+        },
+        [pscustomobject]@{
+            name = "installedLiveRecordingSmoke"
+            command = $(if (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RequireInstalledLiveRecordingSmoke -or $MinInstalledLiveRecordingDurationSec -gt 0) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "authenticodeValidation"
@@ -670,6 +703,7 @@ try {
     rustAudioSidecarReport = $RustAudioSidecarReport
     rustAudioPrewarmSidecarReport = $RustAudioPrewarmSidecarReport
     rustAudioAppPrewarmReport = $RustAudioAppPrewarmReport
+    installedLiveRecordingSmokeReport = $InstalledLiveRecordingSmokeReport
     recordingHotPathComparisonReport = $RecordingHotPathComparisonReport
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport

@@ -49,14 +49,17 @@ def validate_release_readiness(
     rust_audio_sidecar_report: Path | None = None,
     rust_audio_prewarm_sidecar_report: Path | None = None,
     rust_audio_app_prewarm_report: Path | None = None,
+    installed_live_recording_smoke_report: Path | None = None,
     recording_hot_path_comparison_report: Path | None = None,
     require_rust_audio_sidecar_smoke: bool = False,
     require_rust_audio_prewarm_sidecar_smoke: bool = False,
     require_rust_audio_app_prewarm_smoke: bool = False,
+    require_installed_live_recording_smoke: bool = False,
     require_recording_hot_path_comparison: bool = False,
     min_rust_audio_duration_sec: float = 0.0,
     min_rust_audio_app_prewarm_duration_sec: float = 0.0,
     min_rust_audio_app_prewarm_prewarm_duration_sec: float = 0.0,
+    min_installed_live_recording_duration_sec: float = 0.0,
     expected_authenticode_publisher: str = "",
     require_authenticode_timestamp: bool = False,
     platform: str = "windows-x86_64",
@@ -102,6 +105,14 @@ def validate_release_readiness(
                 required=require_rust_audio_app_prewarm_smoke,
                 min_duration_sec=min_rust_audio_app_prewarm_duration_sec,
                 min_prewarm_duration_sec=min_rust_audio_app_prewarm_prewarm_duration_sec,
+            )
+        )
+    if require_installed_live_recording_smoke or installed_live_recording_smoke_report is not None:
+        checks.append(
+            validate_installed_live_recording_smoke_report(
+                installed_live_recording_smoke_report,
+                required=require_installed_live_recording_smoke,
+                min_duration_sec=min_installed_live_recording_duration_sec,
             )
         )
     if require_recording_hot_path_comparison or recording_hot_path_comparison_report is not None:
@@ -796,6 +807,113 @@ def validate_rust_audio_app_prewarm_report(
     return ReadinessCheck("rustAudioAppPrewarmSmoke", not failures, failures, details)
 
 
+def validate_installed_live_recording_smoke_report(
+    report_path: Path | None,
+    *,
+    required: bool,
+    min_duration_sec: float = 0.0,
+) -> ReadinessCheck:
+    failures: list[str] = []
+    details: dict[str, Any] = {
+        "report": str(report_path) if report_path else "",
+        "required": required,
+        "minDurationSec": min_duration_sec,
+    }
+    if report_path is None:
+        if required:
+            failures.append("Installed live recording smoke report is required")
+        return ReadinessCheck("installedLiveRecordingSmoke", not failures, failures, details)
+
+    report = read_json_object(report_path, failures, "installed live recording smoke report")
+    if not report:
+        return ReadinessCheck("installedLiveRecordingSmoke", False, failures, details)
+
+    smoke = report
+    if not isinstance(smoke.get("liveRecording"), dict):
+        nested_smoke = smoke.get("smoke")
+        if isinstance(nested_smoke, dict):
+            smoke = nested_smoke
+
+    live_recording = smoke.get("liveRecording")
+    if not isinstance(live_recording, dict):
+        failures.append("installed live recording smoke liveRecording must be an object")
+        live_recording = {}
+    stability = live_recording.get("stability")
+    if not isinstance(stability, dict):
+        failures.append("installed live recording smoke liveRecording.stability must be an object")
+        stability = {}
+
+    details.update(
+        {
+            "runtimeMode": smoke.get("runtimeMode", ""),
+            "launchKind": smoke.get("launchKind", ""),
+            "cleanupVerified": smoke.get("cleanupVerified"),
+            "liveRecording": live_recording,
+            "stability": stability,
+        }
+    )
+    if smoke.get("ok") is not True:
+        failures.append("installed live recording smoke report ok must be true")
+    if smoke.get("cleanupVerified") is not True:
+        failures.append("installed live recording smoke cleanupVerified must be true")
+    if live_recording.get("verified") is not True:
+        failures.append("installed live recording smoke liveRecording.verified must be true")
+
+    duration = numeric_field(live_recording, "durationSec")
+    if duration is None or duration <= 0:
+        failures.append("installed live recording smoke liveRecording.durationSec must be positive")
+    elif min_duration_sec > 0 and duration < min_duration_sec:
+        failures.append(
+            f"installed live recording smoke liveRecording.durationSec must be at least {min_duration_sec:g}"
+        )
+
+    if live_recording.get("startResponseOk") is not True:
+        failures.append("installed live recording smoke startResponseOk must be true")
+    started_state = str(live_recording.get("startedRecordingState") or "")
+    started_listening = live_recording.get("startedListening") is True
+    if started_state != "recording" and not started_listening:
+        failures.append("installed live recording smoke must observe recording state after start")
+    if live_recording.get("stopResponseOk") is not True:
+        failures.append("installed live recording smoke stopResponseOk must be true")
+    if str(live_recording.get("stoppedRecordingState") or "") != "idle":
+        failures.append("installed live recording smoke stoppedRecordingState must be idle")
+    if live_recording.get("stoppedListening") is not False:
+        failures.append("installed live recording smoke stoppedListening must be false")
+    if numeric_field(live_recording, "nonRecordingSampleCount") != 0:
+        failures.append("installed live recording smoke nonRecordingSampleCount must be 0")
+
+    if stability.get("verified") is not True:
+        failures.append("installed live recording smoke stability.verified must be true")
+    sample_count = numeric_field(stability, "sampleCount")
+    if sample_count is None or sample_count <= 0:
+        failures.append("installed live recording smoke stability.sampleCount must be positive")
+    stability_duration = numeric_field(stability, "durationSec")
+    if stability_duration is None or stability_duration <= 0:
+        failures.append("installed live recording smoke stability.durationSec must be positive")
+    elif min_duration_sec > 0 and stability_duration < min_duration_sec:
+        failures.append(
+            f"installed live recording smoke stability.durationSec must be at least {min_duration_sec:g}"
+        )
+
+    samples = stability.get("samples")
+    if not isinstance(samples, list) or not samples:
+        failures.append("installed live recording smoke stability.samples must be a non-empty list")
+    else:
+        for index, sample in enumerate(samples, start=1):
+            if not isinstance(sample, dict):
+                failures.append(f"installed live recording smoke sample {index} must be an object")
+                continue
+            recording_state = str(sample.get("recordingState") or "")
+            listening = sample.get("listening") is True
+            if recording_state != "recording" and not listening:
+                failures.append(
+                    f"installed live recording smoke sample {index} must remain in recording or listening state"
+                )
+                break
+
+    return ReadinessCheck("installedLiveRecordingSmoke", not failures, failures, details)
+
+
 def validate_recording_hot_path_comparison_report(
     report_path: Path | None,
     *,
@@ -1196,14 +1314,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--rust-audio-sidecar-report", default="")
     parser.add_argument("--rust-audio-prewarm-sidecar-report", default="")
     parser.add_argument("--rust-audio-app-prewarm-report", default="")
+    parser.add_argument("--installed-live-recording-smoke-report", default="")
     parser.add_argument("--recording-hot-path-comparison-report", default="")
     parser.add_argument("--require-rust-audio-sidecar-smoke", action="store_true")
     parser.add_argument("--require-rust-audio-prewarm-sidecar-smoke", action="store_true")
     parser.add_argument("--require-rust-audio-app-prewarm-smoke", action="store_true")
+    parser.add_argument("--require-installed-live-recording-smoke", action="store_true")
     parser.add_argument("--require-recording-hot-path-comparison", action="store_true")
     parser.add_argument("--min-rust-audio-duration-sec", type=float, default=0.0)
     parser.add_argument("--min-rust-audio-app-prewarm-duration-sec", type=float, default=0.0)
     parser.add_argument("--min-rust-audio-app-prewarm-prewarm-duration-sec", type=float, default=0.0)
+    parser.add_argument("--min-installed-live-recording-duration-sec", type=float, default=0.0)
     parser.add_argument("--expected-authenticode-publisher", default="")
     parser.add_argument("--require-authenticode-timestamp", action="store_true")
     parser.add_argument("--platform", default="windows-x86_64")
@@ -1225,14 +1346,17 @@ def main(argv: list[str]) -> int:
         rust_audio_sidecar_report=parse_optional_path(args.rust_audio_sidecar_report),
         rust_audio_prewarm_sidecar_report=parse_optional_path(args.rust_audio_prewarm_sidecar_report),
         rust_audio_app_prewarm_report=parse_optional_path(args.rust_audio_app_prewarm_report),
+        installed_live_recording_smoke_report=parse_optional_path(args.installed_live_recording_smoke_report),
         recording_hot_path_comparison_report=parse_optional_path(args.recording_hot_path_comparison_report),
         require_rust_audio_sidecar_smoke=args.require_rust_audio_sidecar_smoke,
         require_rust_audio_prewarm_sidecar_smoke=args.require_rust_audio_prewarm_sidecar_smoke,
         require_rust_audio_app_prewarm_smoke=args.require_rust_audio_app_prewarm_smoke,
+        require_installed_live_recording_smoke=args.require_installed_live_recording_smoke,
         require_recording_hot_path_comparison=args.require_recording_hot_path_comparison,
         min_rust_audio_duration_sec=args.min_rust_audio_duration_sec,
         min_rust_audio_app_prewarm_duration_sec=args.min_rust_audio_app_prewarm_duration_sec,
         min_rust_audio_app_prewarm_prewarm_duration_sec=args.min_rust_audio_app_prewarm_prewarm_duration_sec,
+        min_installed_live_recording_duration_sec=args.min_installed_live_recording_duration_sec,
         expected_authenticode_publisher=args.expected_authenticode_publisher,
         require_authenticode_timestamp=args.require_authenticode_timestamp,
         platform=args.platform,

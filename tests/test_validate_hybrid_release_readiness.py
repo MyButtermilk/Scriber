@@ -609,6 +609,82 @@ def write_recording_hot_path_comparison_report(
     )
 
 
+def write_installed_live_recording_smoke_report(
+    path: Path,
+    *,
+    ok: bool = True,
+    cleanup_verified: bool = True,
+    live_verified: bool = True,
+    duration_sec: float = 600,
+    stability_duration_sec: float | None = None,
+    non_recording_sample_count: int = 0,
+    sample_count: int = 3,
+    stopped_listening: bool = False,
+    started_recording_state: str = "recording",
+    stopped_recording_state: str = "idle",
+) -> None:
+    if stability_duration_sec is None:
+        stability_duration_sec = duration_sec
+    samples = []
+    for index in range(max(0, sample_count)):
+        if non_recording_sample_count > 0 and index == 0:
+            samples.append(
+                {
+                    "index": index + 1,
+                    "recordingState": "idle",
+                    "listening": False,
+                    "healthReady": True,
+                }
+            )
+        else:
+            samples.append(
+                {
+                    "index": index + 1,
+                    "recordingState": "recording",
+                    "listening": True,
+                    "healthReady": True,
+                }
+            )
+    path.write_text(
+        json.dumps(
+            {
+                "ok": ok,
+                "runtimeMode": "tauri-supervised",
+                "launchKind": "managed",
+                "cleanupVerified": cleanup_verified,
+                "liveRecording": {
+                    "verified": live_verified,
+                    "durationSec": duration_sec,
+                    "probeIntervalSec": 5,
+                    "startResponseOk": True,
+                    "startedRecordingState": started_recording_state,
+                    "startedListening": True,
+                    "stopResponseOk": True,
+                    "stoppedRecordingState": stopped_recording_state,
+                    "stoppedListening": stopped_listening,
+                    "nonRecordingSampleCount": non_recording_sample_count,
+                    "textInjectionDisabled": True,
+                    "stability": {
+                        "verified": True,
+                        "durationSec": stability_duration_sec,
+                        "probeIntervalSec": 5,
+                        "sampleCount": sample_count,
+                        "backendWorkingSetPeakGrowthMb": 1.0,
+                        "combinedCpuAvgPercent": 1.0,
+                        "samples": samples,
+                    },
+                },
+                "stability": {
+                    "verified": True,
+                    "durationSec": 1,
+                    "sampleCount": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_complete_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
     hardware_dir = tmp_path / "hardware"
     write_full_hardware_matrix(hardware_dir)
@@ -698,6 +774,84 @@ def test_validate_release_readiness_accepts_required_recording_hot_path_comparis
         check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
     )
     assert comparison_check["details"]["summary"]["completeSegmentCount"] == 3
+
+
+def test_validate_release_readiness_accepts_required_installed_live_recording_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    live_recording_report = tmp_path / "installed-live-recording-smoke.json"
+    write_installed_live_recording_smoke_report(live_recording_report, duration_sec=600)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        installed_live_recording_smoke_report=live_recording_report,
+        require_installed_live_recording_smoke=True,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    assert result["ok"] is True
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    assert live_check["details"]["liveRecording"]["durationSec"] == 600
+    assert live_check["details"]["stability"]["sampleCount"] == 3
+
+
+def test_validate_release_readiness_rejects_missing_required_installed_live_recording_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        require_installed_live_recording_smoke=True,
+    )
+
+    assert result["ok"] is False
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    assert "Installed live recording smoke report is required" in live_check["failures"]
+
+
+def test_validate_release_readiness_rejects_weak_installed_live_recording_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    live_recording_report = tmp_path / "installed-live-recording-smoke.json"
+    write_installed_live_recording_smoke_report(
+        live_recording_report,
+        duration_sec=120,
+        non_recording_sample_count=1,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        installed_live_recording_smoke_report=live_recording_report,
+        require_installed_live_recording_smoke=True,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    assert (
+        "installed live recording smoke liveRecording.durationSec must be at least 600"
+        in live_check["failures"]
+    )
+    assert "installed live recording smoke nonRecordingSampleCount must be 0" in live_check["failures"]
+    assert any("sample 1 must remain in recording or listening state" in failure for failure in live_check["failures"])
 
 
 def test_validate_release_readiness_rejects_missing_required_recording_hot_path_comparison(tmp_path: Path) -> None:
