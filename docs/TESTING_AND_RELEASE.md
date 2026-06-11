@@ -298,6 +298,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_recording_hot_pa
   -RustAlwaysOnMic `
   -RecordingHotPathIterations 3 `
   -RecordingHotPathSeconds 3 `
+  -RecordingHotPathEnvFile .env `
+  -RecordingHotPathDefaultStt soniox `
+  -RecordingHotPathSonioxMode realtime `
   -RecordingHotPathSpeechPrompt "Scriber provider-backed Rust audio validation"
 ```
 
@@ -306,7 +309,11 @@ The runner sets `SCRIBER_AUDIO_ENGINE=python` for the first pass, then
 the second pass. With `-RustAlwaysOnMic`, it also sets
 `SCRIBER_MIC_ALWAYS_ON=1` for the Rust pass. Non-plan comparison runs now fail
 early without `-RustAlwaysOnMic`, because valid Rust promotion evidence requires
-both `rustAlwaysOnMic` and `rustPrewarmAdoption` checks. It finally calls:
+both `rustAlwaysOnMic` and `rustPrewarmAdoption` checks. Use
+`-RecordingHotPathEnvFile` plus explicit provider overrides when the comparison
+must load credentials and provider defaults from a local/release `.env`; the
+runner records only the file path and provider names, never secret values. It
+finally calls:
 
 ```powershell
 python scripts\validate_recording_hot_path_comparison.py `
@@ -342,7 +349,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RunRecordingHotPathComparison `
   -RequireRecordingHotPathComparison `
   -RecordingHotPathIterations 3 `
-  -RecordingHotPathSeconds 3
+  -RecordingHotPathSeconds 3 `
+  -RecordingHotPathEnvFile .env `
+  -RecordingHotPathDefaultStt soniox `
+  -RecordingHotPathSonioxMode realtime
 ```
 
 That runner path calls `scripts\run_recording_hot_path_comparison.ps1` with

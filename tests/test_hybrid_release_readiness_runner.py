@@ -704,6 +704,8 @@ def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_compa
 
 
 def test_hybrid_release_readiness_runner_can_plan_recording_hot_path_comparison_run(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("SONIOX_API_KEY=do-not-log\n", encoding="utf-8")
     result = run_powershell(
         "-NoProfile",
         "-ExecutionPolicy",
@@ -723,13 +725,23 @@ def test_hybrid_release_readiness_runner_can_plan_recording_hot_path_comparison_
         "90",
         "-RecordingHotPathRustCaptureMode",
         "wasapi",
+        "-RecordingHotPathEnvFile",
+        str(env_file),
+        "-RecordingHotPathDefaultStt",
+        "soniox",
+        "-RecordingHotPathSonioxMode",
+        "realtime",
         "-RecordingHotPathHidden",
         "-RecordingHotPathDisableDevFallback",
     )
 
     assert result.returncode == 0, result.stderr
+    assert "do-not-log" not in result.stdout
     payload = json.loads(result.stdout)
     assert payload["runRecordingHotPathComparison"] is True
+    assert payload["recordingHotPathEnvFile"] == str(env_file)
+    assert payload["recordingHotPathDefaultStt"] == "soniox"
+    assert payload["recordingHotPathSonioxMode"] == "realtime"
     comparison_evidence = next(
         entry for entry in payload["requiredEvidence"] if entry["name"] == "recordingHotPathPythonRustComparison"
     )
@@ -741,6 +753,9 @@ def test_hybrid_release_readiness_runner_can_plan_recording_hot_path_comparison_
     assert comparison_evidence["recordSeconds"] == 3
     assert comparison_evidence["timeoutSec"] == 90
     assert comparison_evidence["rustCaptureMode"] == "wasapi"
+    assert comparison_evidence["envFile"] == str(env_file)
+    assert comparison_evidence["defaultStt"] == "soniox"
+    assert comparison_evidence["sonioxMode"] == "realtime"
     comparison_command = next(
         entry for entry in payload["commands"] if entry["name"] == "recordingHotPathPythonRustComparison"
     )
@@ -751,6 +766,9 @@ def test_hybrid_release_readiness_runner_can_plan_recording_hot_path_comparison_
     assert "-RecordingHotPathSeconds 3" in command
     assert "-RecordingHotPathTimeoutSec 90" in command
     assert "-RustCaptureMode wasapi" in command
+    assert "-RecordingHotPathEnvFile" in command
+    assert "-RecordingHotPathDefaultStt soniox" in command
+    assert "-RecordingHotPathSonioxMode realtime" in command
     assert "-Hidden" in command
     assert "-DisableDevFallback" in command
     assert "recording-hot-path-python-rust-comparison.json" in command

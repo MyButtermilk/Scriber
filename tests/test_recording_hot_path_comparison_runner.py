@@ -58,6 +58,8 @@ def test_recording_hot_path_comparison_runner_powershell_parses() -> None:
 
 def test_recording_hot_path_comparison_runner_plan_only_wires_python_and_rust_runs(tmp_path: Path) -> None:
     output_dir = REPO_ROOT / "tmp" / f"pytest-{tmp_path.name}"
+    env_file = tmp_path / "provider.env"
+    env_file.write_text("SONIOX_API_KEY=do-not-log\n", encoding="utf-8")
     result = run_powershell(
         "-NoProfile",
         "-ExecutionPolicy",
@@ -75,10 +77,17 @@ def test_recording_hot_path_comparison_runner_plan_only_wires_python_and_rust_ru
         "75",
         "-RecordingHotPathSpeechPrompt",
         "Scriber comparison evidence",
+        "-RecordingHotPathEnvFile",
+        str(env_file),
+        "-RecordingHotPathDefaultStt",
+        "soniox",
+        "-RecordingHotPathSonioxMode",
+        "realtime",
         "-RustAlwaysOnMic",
     )
 
     assert result.returncode == 0, result.stderr
+    assert "do-not-log" not in result.stdout
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["planOnly"] is True
@@ -89,6 +98,9 @@ def test_recording_hot_path_comparison_runner_plan_only_wires_python_and_rust_ru
     assert payload["pythonHotPathReport"].endswith("python-recording-hot-path-baseline-recording-hot-path-1.json")
     assert payload["rustHotPathReport"].endswith("rust-recording-hot-path-baseline-recording-hot-path-1.json")
     assert payload["comparisonOutput"].endswith("recording-hot-path-python-rust-comparison.json")
+    assert payload["providerConfig"]["envFile"] == str(env_file)
+    assert payload["providerConfig"]["defaultStt"] == "soniox"
+    assert payload["providerConfig"]["sonioxMode"] == "realtime"
 
     commands = {entry["name"]: entry for entry in payload["commands"]}
     assert set(commands) == {

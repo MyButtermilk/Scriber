@@ -122,6 +122,9 @@ param(
     [int]$RecordingHotPathTimeoutSec = 60,
     [string]$RecordingHotPathSpeechPrompt = "Scriber provider-backed Rust audio validation",
     [double]$RecordingHotPathSpeechDelaySec = 0.5,
+    [string]$RecordingHotPathEnvFile = "",
+    [string]$RecordingHotPathDefaultStt = "",
+    [string]$RecordingHotPathSonioxMode = "",
     [double]$RecordingHotPathMaxAudioOwnedP95RegressionMs = 50,
     [ValidateSet("wasapi", "synthetic")]
     [string]$RecordingHotPathRustCaptureMode = "wasapi",
@@ -273,6 +276,9 @@ if ($RecordingHotPathBackendExePath) {
 }
 if ($RecordingHotPathLegacyDataDir) {
     $RecordingHotPathLegacyDataDir = Convert-ToFullPath -Path $RecordingHotPathLegacyDataDir -Root $RepoRoot
+}
+if ($RecordingHotPathEnvFile) {
+    $RecordingHotPathEnvFile = Convert-ToFullPath -Path $RecordingHotPathEnvFile -Root $RepoRoot
 }
 if (-not $InstalledLiveRecordingSmokeReport) {
     $InstalledLiveRecordingSmokeReport = Join-Path $HardwareInputDir "installed-live-recording-smoke.json"
@@ -714,6 +720,15 @@ if ($RecordingHotPathBackendExePath) {
 if ($RecordingHotPathLegacyDataDir) {
     $recordingHotPathComparisonArgs += @("-LegacyDataDir", $RecordingHotPathLegacyDataDir)
 }
+if ($RecordingHotPathEnvFile) {
+    $recordingHotPathComparisonArgs += @("-RecordingHotPathEnvFile", $RecordingHotPathEnvFile)
+}
+if ($RecordingHotPathDefaultStt) {
+    $recordingHotPathComparisonArgs += @("-RecordingHotPathDefaultStt", $RecordingHotPathDefaultStt)
+}
+if ($RecordingHotPathSonioxMode) {
+    $recordingHotPathComparisonArgs += @("-RecordingHotPathSonioxMode", $RecordingHotPathSonioxMode)
+}
 if ($RecordingHotPathHidden) {
     $recordingHotPathComparisonArgs += "-Hidden"
 }
@@ -942,6 +957,9 @@ $requiredEvidence = @(
         recordSeconds = $RecordingHotPathSeconds
         timeoutSec = $RecordingHotPathTimeoutSec
         rustCaptureMode = $RecordingHotPathRustCaptureMode
+        envFile = $(if ($RecordingHotPathEnvFile) { $RecordingHotPathEnvFile } else { "" })
+        defaultStt = $RecordingHotPathDefaultStt
+        sonioxMode = $RecordingHotPathSonioxMode
         notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires passing inputReportRedaction, sameRecordingConfig, rustAlwaysOnMic, rustMidSessionClean, rustFramePipeFlow, rustNoDroppedFrames, rustActiveCaptureStable, and rustPrewarmAdoption checks, requires at least three samples per engine, requires provider transcript evidence with the same STT provider in both reports, requires active rust-frame-pipe capture with positive callback/frame/audio-frame counters, zero dropped frames, and adopted Rust prewarm evidence in the Rust report, rejects open Rust fallback-circuit, mid-session frame-pipe failure, and active-capture watchdog restart evidence, and rejects clear P95 regressions in local audio-owned hot-path segments."
     },
     [pscustomobject]@{
@@ -1071,6 +1089,9 @@ $plan = [pscustomobject]@{
     tauriTextInjectionMatrixReport = $TauriTextInjectionMatrixReport
     tauriTextInjectionMatrixInputDir = $TauriTextInjectionMatrixInputDir
     recordingHotPathComparisonReport = $RecordingHotPathComparisonReport
+    recordingHotPathEnvFile = $RecordingHotPathEnvFile
+    recordingHotPathDefaultStt = $RecordingHotPathDefaultStt
+    recordingHotPathSonioxMode = $RecordingHotPathSonioxMode
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
     outputPath = $OutputPath

@@ -1321,12 +1321,18 @@ Implementation plan:
      as the minimum accepted sample count to the validator.
      It also passes a default 50 ms max P95 regression tolerance for local
      audio-owned hot-path segments.
+     For reproducible provider-backed runs it accepts
+     `-RecordingHotPathEnvFile`, `-RecordingHotPathDefaultStt`, and
+     `-RecordingHotPathSonioxMode`, applying those settings to both the Python
+     and Rust passes while keeping secret `.env` values out of PlanOnly output
+     and reports.
    - Implemented: `scripts/run_hybrid_release_readiness.ps1` can now produce
      that comparison artifact directly with `-RunRecordingHotPathComparison`.
      The aggregate runner invokes
      `scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic`, writes
-     the comparison JSON into the hardware input directory, and then feeds that
-     report into final readiness validation. Without the run flag, the
+     the comparison JSON into the hardware input directory, forwards the same
+     sanitized recording-hot-path provider flags when supplied, and then feeds
+     that report into final readiness validation. Without the run flag, the
      comparison remains an explicit external evidence requirement.
    - Implemented: the same aggregate runner can now produce the physical
      microphone matrix with `-RunMicrophoneHardwareMatrix`, passing through the
