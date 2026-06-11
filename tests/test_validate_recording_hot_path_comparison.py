@@ -23,6 +23,7 @@ def recording_report(
     rust_prewarm_raw_id: bool = False,
     rust_mid_session_failure_reason: str = "",
     rust_frame_pipe_reader_end_reason: str = "running",
+    rust_frame_pipe_flow: bool = True,
     active_capture_health_restart_count: int = 0,
     active_capture_health_restart_throttle_count: int = 0,
     active_capture_last_health_failure_reason: str = "",
@@ -68,6 +69,15 @@ def recording_report(
         }
         if rust_prewarm_raw_id:
             rust_adoption["prewarmId"] = "raw-prewarm-id"
+        frame_pipe_frames_read = 12 if rust_frame_pipe_flow else 0
+        frame_pipe_audio_frames_read = 1920 if rust_frame_pipe_flow else 0
+        active_capture["source"] = {
+            "engine": "rust-prototype",
+            "frameSource": "rust-frame-pipe",
+            "callbackCount": 12 if rust_frame_pipe_flow else 0,
+            "framePipeFramesRead": frame_pipe_frames_read,
+            "framePipeAudioFramesRead": frame_pipe_audio_frames_read,
+        }
         active_capture["rustPrewarmAdoption"] = rust_adoption
         active_capture["midSessionFailureReason"] = rust_mid_session_failure_reason
         active_capture["sourceMidSessionFailureReason"] = rust_mid_session_failure_reason
@@ -300,6 +310,25 @@ def test_recording_hot_path_comparison_rejects_rust_mid_session_failure() -> Non
     assert check["ok"] is False
     assert check["details"]["failureSampleCount"] == 3
     assert check["details"]["failures"][0]["midSessionFailureReason"] == "pipeClosed"
+
+
+def test_recording_hot_path_comparison_rejects_empty_rust_frame_pipe_flow() -> None:
+    result = build_comparison(
+        recording_report(engine="python"),
+        recording_report(
+            engine="rust-prototype",
+            rust_capture=True,
+            rust_frame_pipe_flow=False,
+        ),
+    )
+
+    assert result["ok"] is False
+    assert "Rust report must prove frame-pipe callbacks and audio frames flowed" in result["failures"]
+    check = next(item for item in result["checks"] if item["name"] == "rustFramePipeFlow")
+    assert check["ok"] is False
+    assert check["details"]["missingOrEmptySampleCount"] == 3
+    assert check["details"]["failures"][0]["framePipeFramesRead"] == 0
+    assert check["details"]["failures"][0]["framePipeAudioFramesRead"] == 0
 
 
 def test_recording_hot_path_comparison_rejects_unstable_rust_active_capture() -> None:

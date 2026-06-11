@@ -193,6 +193,7 @@ Rust audio:
   engine, so one-shot comparison artifacts are not acceptable Rust promotion
   evidence. The same artifact now also fails Rust promotion when local
   audio-owned P95 hot-path segments regress clearly against Python, or when
+  Rust frame-pipe callback/audio-frame counters are missing or empty, or when
   Rust active-capture watchdog restart/throttle evidence appears during the
   provider-backed run; the provider-finalize and total stop-to-text values stay
   diagnostic-only because they are network/provider dominated.

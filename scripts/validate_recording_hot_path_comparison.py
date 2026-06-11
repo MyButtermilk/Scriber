@@ -233,6 +233,51 @@ def _int_value(value: Any) -> int | None:
     return None
 
 
+def _capture_int(capture: dict[str, Any], key: str) -> int | None:
+    value = _int_value(capture.get(key))
+    if value is not None:
+        return value
+    source = capture.get("source")
+    if isinstance(source, dict):
+        return _int_value(source.get(key))
+    return None
+
+
+def rust_frame_pipe_flow_check(report: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    checked = 0
+    failing: list[dict[str, Any]] = []
+    sample_details: list[dict[str, Any]] = []
+    for capture in active_capture_samples(report):
+        if (
+            capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE
+            or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE
+        ):
+            continue
+        checked += 1
+        detail = {
+            "callbackCount": _capture_int(capture, "callbackCount"),
+            "framePipeFramesRead": _capture_int(capture, "framePipeFramesRead"),
+            "framePipeAudioFramesRead": _capture_int(capture, "framePipeAudioFramesRead"),
+        }
+        if len(sample_details) < 5:
+            sample_details.append(detail)
+        if (
+            detail["callbackCount"] is None
+            or detail["callbackCount"] <= 0
+            or detail["framePipeFramesRead"] is None
+            or detail["framePipeFramesRead"] <= 0
+            or detail["framePipeAudioFramesRead"] is None
+            or detail["framePipeAudioFramesRead"] <= 0
+        ):
+            failing.append(detail)
+    return checked > 0 and not failing, {
+        "checkedRustFramePipeSamples": checked,
+        "missingOrEmptySampleCount": len(failing),
+        "samples": sample_details,
+        "failures": failing[:5],
+    }
+
+
 def rust_active_capture_stable_check(report: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     checked = 0
     failing: list[dict[str, Any]] = []
@@ -621,6 +666,13 @@ def build_comparison(
             mid_session_clean,
             mid_session_details,
             "Rust report must not contain mid-session frame-pipe failures",
+        )
+        frame_pipe_flow, frame_pipe_flow_details = rust_frame_pipe_flow_check(rust_report)
+        add_check(
+            "rustFramePipeFlow",
+            frame_pipe_flow,
+            frame_pipe_flow_details,
+            "Rust report must prove frame-pipe callbacks and audio frames flowed",
         )
         active_capture_stable, active_capture_details = rust_active_capture_stable_check(rust_report)
         add_check(
