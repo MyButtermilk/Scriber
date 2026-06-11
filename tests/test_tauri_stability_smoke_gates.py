@@ -287,7 +287,16 @@ def test_desktop_and_installer_smokes_can_persist_json_output_under_tmp() -> Non
         assert "ConvertTo-Json -Compress -Depth 8" in script
 
     assert "Write-SmokeJson -Payload $result -Path $OutputPath -Root $RepoRoot" in desktop
+    assert "function Get-SmokeFailureDiagnostics" in desktop
+    assert "failureDiagnostics = $failureDiagnostics" in desktop
+    assert "if ($failure) {" in desktop
     assert "Write-SmokeJson -Payload ([pscustomobject]$result) -Path $OutputPath -Root $RepoRoot" in installer
+    assert '$desktopSmokeOutputPath = Join-Path $RuntimeDataDir "installed-desktop-smoke.json"' in installer
+    assert '"-OutputPath"' in installer
+    assert "$smokeExitCode = $LASTEXITCODE" in installer
+    assert "if (-not $result.ok) {" in installer
+    assert "failureDiagnostics = $smoke.failureDiagnostics" in installer
+    assert "desktopSmokeFailure = $desktopSmokeFailure" in installer
 
 
 def test_desktop_smoke_can_verify_os_global_hotkey_dispatch() -> None:
@@ -411,16 +420,21 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
 
     assert "[int]$LiveRecordingDurationSec = 0" in desktop
     assert "function Test-LiveRecordingStability" in desktop
+    assert "[scriptblock]$FailurePredicate = $null" in desktop
+    assert "Backend entered failure state while waiting for '$Label'" in desktop
     assert "function Convert-AudioDiagnosticsSummary" in desktop
     assert "/api/runtime/audio-diagnostics" in desktop
     assert "-CollectAudioDiagnostics $true" in desktop
     assert "Invoke-LiveMicStart" in desktop
+    assert '-FailurePredicate { param($state) ([string]$state.recordingState -eq "failed") -or ([string]$state.status -eq "Error") }' in desktop
     assert "Invoke-LiveMicStop" in desktop
     assert "nonRecordingSampleCount = $nonRecordingSamples.Count" in desktop
     assert "[switch]$DisableLiveTextInjection" in desktop
     assert "$env:SCRIBER_DISABLE_TEXT_INJECTION = \"1\"" in desktop
     assert "textInjectionDisabled = $TextInjectionDisabled" in desktop
     assert "liveRecording = $liveRecording" in desktop
+    assert "verified = $false" in desktop
+    assert "runtimeLogs = $runtimeLogs" in desktop
 
     assert "[int]$LiveRecordingDurationSec = 0" in installer
     assert "[switch]$DisableLiveTextInjection" in installer
@@ -432,6 +446,8 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
     assert "apiVersion = $smoke.apiVersion" in installer
     assert "ready = $smoke.ready" in installer
     assert "liveRecording = $smoke.liveRecording" in installer
+    assert "ok = $smokeOk" in installer
+    assert "$desktopSmokeFailure = if (-not $smokeOk) { $smoke } else { $null }" in installer
 
     assert "[switch]$RunInstallerLiveRecordingSmoke" in build
     assert "[switch]$InstallerDisableLiveTextInjection" in build

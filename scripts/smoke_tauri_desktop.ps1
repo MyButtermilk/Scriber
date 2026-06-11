@@ -267,6 +267,7 @@ function Wait-BackendState {
         [int]$Port,
         [string]$Token,
         [scriptblock]$Predicate,
+        [scriptblock]$FailurePredicate = $null,
         [int]$DeadlineSec,
         [string]$Label
     )
@@ -281,10 +282,17 @@ function Wait-BackendState {
         try {
             $state = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/state" -Headers $headers -TimeoutSec 5
             $lastState = $state
+            if ($FailurePredicate -and (& $FailurePredicate $state)) {
+                $stateJson = try { $state | ConvertTo-Json -Compress -Depth 4 } catch { [string]$state }
+                throw "Backend entered failure state while waiting for '$Label': $stateJson"
+            }
             if (& $Predicate $state) {
                 return $state
             }
         } catch {
+            if ($_.Exception.Message -like "Backend entered failure state while waiting*") {
+                throw
+            }
             $lastState = $_.Exception.Message
         }
         Start-Sleep -Milliseconds 500
@@ -580,6 +588,7 @@ function Test-LiveRecordingStability {
             -Port $Port `
             -Token $Token `
             -Predicate { param($state) ([string]$state.recordingState -eq "recording") -or ([bool]$state.listening) } `
+            -FailurePredicate { param($state) ([string]$state.recordingState -eq "failed") -or ([string]$state.status -eq "Error") } `
             -DeadlineSec $StartTimeoutSec `
             -Label "live recording started"
         $stability = Test-RuntimeStability `
@@ -676,6 +685,42 @@ function Write-SmokeJson {
         Write-Utf8NoBomJson -Path $outputFull -Json $json
     }
     return $json
+}
+
+function Get-SmokeFailureDiagnostics {
+    param(
+        [int]$Port,
+        [string]$Token
+    )
+
+    $headers = @{}
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+    $state = $null
+    $audioDiagnostics = $null
+    $runtimeLogs = $null
+    try {
+        $state = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/state" -Headers $headers -TimeoutSec 5
+    } catch {
+        $state = [pscustomobject]@{ error = $_.Exception.Message }
+    }
+    try {
+        $audioDiagnostics = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/runtime/audio-diagnostics" -Headers $headers -TimeoutSec 5
+    } catch {
+        $audioDiagnostics = [pscustomobject]@{ error = $_.Exception.Message }
+    }
+    try {
+        $runtimeLogs = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/runtime/logs?limit=80" -Headers $headers -TimeoutSec 5
+    } catch {
+        $runtimeLogs = [pscustomobject]@{ error = $_.Exception.Message }
+    }
+
+    return [pscustomobject]@{
+        state = $state
+        audioDiagnostics = $audioDiagnostics
+        runtimeLogs = $runtimeLogs
+    }
 }
 
 function Read-ZipEntryText {
@@ -1906,6 +1951,7 @@ if ($SimulateBackendStartupTimeout) {
 
 $app = $null
 $result = $null
+$failure = $null
 $defaultPortBlocker = $null
 $externalBackend = $null
 $externalBackendPid = $null
@@ -2177,6 +2223,50 @@ try {
         stability = $stability
         cleanupVerified = $false
     }
+} catch {
+    $failure = $_
+    $failureMessage = $_.Exception.Message
+    $failureDiagnostics = $null
+    if ($listener) {
+        $failureDiagnostics = Get-SmokeFailureDiagnostics -Port ([int]$listener.Port) -Token $SessionToken
+    }
+    $failureLiveRecording = $null
+    if ($LiveRecordingDurationSec -gt 0) {
+        $failureLiveRecording = [pscustomobject]@{
+            verified = $false
+            durationSec = $LiveRecordingDurationSec
+            probeIntervalSec = [Math]::Max(1, $LiveRecordingProbeIntervalSec)
+            textInjectionDisabled = [bool]$DisableLiveTextInjection
+            error = $failureMessage
+        }
+    }
+    $result = [pscustomobject]@{
+        ok = $false
+        error = $failureMessage
+        appPid = if ($app) { $app.Id } else { $null }
+        backendPid = if ($listener) { $listener.BackendPid } else { $null }
+        backendPort = if ($listener) { $listener.Port } else { $null }
+        runtimeMode = if ($health) { $health.runtimeMode } else { $null }
+        apiVersion = if ($health) { $health.apiVersion } else { $null }
+        ready = if ($health) { $health.ready } else { $null }
+        dataDir = if ($runtime) { $runtime.dataDir } else { $DataDir }
+        downloadsDir = if ($runtime) { $runtime.downloadsDir } else { $null }
+        launchKind = if ($runtime) { $runtime.launchKind } else { $null }
+        externalAttach = $externalAttach
+        portConflict = if ($portConflict) { [pscustomobject]$portConflict } else { $null }
+        legacyDataMigration = $legacyDataMigration
+        frontend = $frontend
+        supportBundle = $supportBundle
+        realMediaWorkflows = $realMediaWorkflows
+        globalHotkey = $globalHotkey
+        startupTimeout = $startupTimeout
+        crashRecovery = $crashRecovery
+        controlledShutdown = $controlledShutdown
+        liveRecording = $failureLiveRecording
+        stability = $null
+        failureDiagnostics = $failureDiagnostics
+        cleanupVerified = $false
+    }
 } finally {
     $cleanupFailure = $null
     if (-not $KeepAppOpen -and $app -and -not $app.HasExited) {
@@ -2245,3 +2335,6 @@ try {
 }
 
 Write-SmokeJson -Payload $result -Path $OutputPath -Root $RepoRoot
+if ($failure) {
+    throw $failure
+}

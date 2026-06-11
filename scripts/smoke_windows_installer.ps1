@@ -449,6 +449,7 @@ function Invoke-InstalledDesktopSmoke {
         [string]$RuntimeDataDir
     )
 
+    $desktopSmokeOutputPath = Join-Path $RuntimeDataDir "installed-desktop-smoke.json"
     $smokeArgs = @(
         "-NoProfile",
         "-ExecutionPolicy",
@@ -461,6 +462,8 @@ function Invoke-InstalledDesktopSmoke {
         $AppExe,
         "-DataDir",
         $RuntimeDataDir,
+        "-OutputPath",
+        $desktopSmokeOutputPath,
         "-DisableDevFallback"
     )
     if ($SimulateBackendCrash) {
@@ -548,10 +551,17 @@ function Invoke-InstalledDesktopSmoke {
     }
 
     $smokeJson = powershell @smokeArgs
-    if ($LASTEXITCODE -ne 0) {
+    $smokeExitCode = $LASTEXITCODE
+    $smokeReport = $null
+    if (Test-Path -LiteralPath $desktopSmokeOutputPath -PathType Leaf) {
+        $smokeReport = Get-Content -LiteralPath $desktopSmokeOutputPath -Raw | ConvertFrom-Json
+    } elseif ($smokeJson) {
+        $smokeReport = $smokeJson | ConvertFrom-Json
+    }
+    if ($smokeExitCode -ne 0 -and -not $smokeReport) {
         throw "Installed app smoke test failed."
     }
-    return ($smokeJson | ConvertFrom-Json)
+    return $smokeReport
 }
 
 function Invoke-InstalledMediaPreparationSmoke {
@@ -690,9 +700,11 @@ try {
     if ($VerifyMediaPreparation) {
         $mediaPreparation = Invoke-InstalledMediaPreparationSmoke -InstallRoot $InstallDir -RuntimeDataDir $DataDir
     }
+    $smokeOk = [bool]($smoke -and ($smoke.ok -ne $false))
+    $desktopSmokeFailure = if (-not $smokeOk) { $smoke } else { $null }
 
     $result = [ordered]@{
-        ok = $true
+        ok = $smokeOk
         installer = $InstallerPath
         installDir = $InstallDir
         appExe = $appExe
@@ -720,6 +732,8 @@ try {
         mediaPreparation = $mediaPreparation
         liveRecording = $smoke.liveRecording
         stability = $smoke.stability
+        failureDiagnostics = $smoke.failureDiagnostics
+        desktopSmokeFailure = $desktopSmokeFailure
         cleanupVerified = $smoke.cleanupVerified
         uninstall = $null
     }
@@ -737,6 +751,9 @@ try {
     }
 
     Write-SmokeJson -Payload ([pscustomobject]$result) -Path $OutputPath -Root $RepoRoot
+    if (-not $result.ok) {
+        throw "Installed app smoke test failed."
+    }
 } finally {
     if (-not $KeepInstalled -and -not $cleanupCompleted) {
         $uninstaller = Resolve-InstalledUninstaller -Root $InstallDir
