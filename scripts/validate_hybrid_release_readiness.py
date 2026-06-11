@@ -1226,6 +1226,16 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
         if not str(active_capture.get("nativeEndpointIdHash") or active_capture.get("sourceNativeEndpointIdHash") or ""):
             failures.append(f"installed live recording smoke sample {index} nativeEndpointIdHash is required")
             break
+        if active_capture.get("sourceEndpointSelectionMode") != "default":
+            failures.append(
+                f"installed live recording smoke sample {index} sourceEndpointSelectionMode must be default"
+            )
+            break
+        if active_capture.get("sourceEndpointSelectionUsedDefault") is not True:
+            failures.append(
+                f"installed live recording smoke sample {index} sourceEndpointSelectionUsedDefault must be true"
+            )
+            break
         if numeric_field(active_capture, "framePipeSequenceErrorCount") != 0:
             failures.append(
                 f"installed live recording smoke sample {index} framePipeSequenceErrorCount must be 0"

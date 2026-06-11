@@ -528,7 +528,7 @@ audio diagnostics proving `audioEngine=rust-prototype`,
 `activeCapture.frameSource=rust-frame-pipe`, active callbacks, no frame-pipe
 sequence/protocol/prebuffer-order errors, and
 `rustAudioFallbackCircuit.open=false`. For default-device release evidence, the
-compact diagnostics should also show
+compact diagnostics must also show
 `activeCapture.sourceEndpointSelectionMode=default` and
 `activeCapture.sourceEndpointSelectionUsedDefault=true`; this proves the
 installed WASAPI sidecar opened the Windows default endpoint rather than a

@@ -714,6 +714,8 @@ def write_installed_live_recording_smoke_report(
     frame_pipe_sequence_errors: int = 0,
     frame_pipe_protocol_errors: int = 0,
     frame_pipe_prebuffer_after_live: int = 0,
+    source_endpoint_selection_mode: str = "default",
+    source_endpoint_selection_used_default: bool = True,
 ) -> None:
     if stability_duration_sec is None:
         stability_duration_sec = duration_sec
@@ -754,6 +756,12 @@ def write_installed_live_recording_smoke_report(
                     "callbackCount": 10 + index,
                     "nativeEndpointIdHash": "abc123" if frame_source == "rust-frame-pipe" else "",
                     "sourceNativeEndpointIdHash": "abc123" if frame_source == "rust-frame-pipe" else "",
+                    "sourceEndpointSelectionMode": source_endpoint_selection_mode
+                    if frame_source == "rust-frame-pipe"
+                    else "",
+                    "sourceEndpointSelectionUsedDefault": source_endpoint_selection_used_default
+                    if frame_source == "rust-frame-pipe"
+                    else False,
                     "framePipeFramesRead": 10 + index if frame_source == "rust-frame-pipe" else None,
                     "framePipeAudioFramesRead": (10 + index) * 160 if frame_source == "rust-frame-pipe" else None,
                     "framePipeSequenceErrorCount": frame_pipe_sequence_errors,
@@ -1186,6 +1194,41 @@ def test_validate_release_readiness_accepts_installed_live_recording_rust_audio_
     assert rust_evidence["audioDiagnosticsSampleCount"] == rust_evidence["sampleCount"]
     assert rust_evidence["rustFramePipeSampleCount"] == rust_evidence["sampleCount"]
     assert rust_evidence["fallbackCircuitOpenCount"] == 0
+
+
+def test_validate_release_readiness_rejects_installed_rust_live_recording_without_default_endpoint_evidence(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    live_recording_report = tmp_path / "installed-live-recording-smoke.json"
+    write_installed_live_recording_smoke_report(
+        live_recording_report,
+        duration_sec=600,
+        audio_engine="rust-prototype",
+        rust_audio_requested=True,
+        rust_audio_available=True,
+        frame_source="rust-frame-pipe",
+        source_endpoint_selection_mode="nativeEndpointHash",
+        source_endpoint_selection_used_default=False,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        installed_live_recording_smoke_report=live_recording_report,
+        require_installed_live_recording_smoke=True,
+        require_installed_live_recording_rust_audio=True,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    failures = "\n".join(live_check["failures"])
+    assert "sourceEndpointSelectionMode must be default" in failures
 
 
 def test_validate_release_readiness_rejects_stale_installed_live_recording_rust_audio_counters(tmp_path: Path) -> None:
