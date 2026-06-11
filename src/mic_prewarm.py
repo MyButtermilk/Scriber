@@ -12,6 +12,8 @@ from loguru import logger
 from src.audio_devices import (
     build_input_endpoint_mappings,
     collect_native_capture_endpoint_inventory,
+    normalize_device_name,
+    normalize_native_endpoint_inventory,
     resolve_input_microphone_device,
 )
 from src.config import Config
@@ -1098,6 +1100,7 @@ class RustAudioPrewarmManager:
         requested_device = str(device_preference or "default").strip() or "default"
         favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "").strip()
         default_requested = requested_device in {"default", "None"}
+        resolved_non_default = False
         if default_requested and not favorite_mic:
             result["devicePreference"] = "default"
             return result
@@ -1114,10 +1117,11 @@ class RustAudioPrewarmManager:
             )
             if resolved not in ("", None):
                 result["devicePreference"] = str(resolved)
+                resolved_non_default = result["devicePreference"] not in {"default", "None"}
         except Exception:
             pass
         try:
-            native_endpoints = collect_native_capture_endpoint_inventory()
+            native_endpoints = self._collect_native_capture_endpoint_inventory()
             mappings = build_input_endpoint_mappings(
                 sd,
                 native_endpoints=native_endpoints,
@@ -1125,8 +1129,9 @@ class RustAudioPrewarmManager:
                 channels=channels,
             )
             raw_device = str(result["devicePreference"] or "default").strip()
+            raw_device_is_default = raw_device in {"", "default", "None"}
             match = None
-            if raw_device and raw_device not in {"default", "None"}:
+            if not raw_device_is_default:
                 try:
                     wanted_index = int(raw_device)
                     match = next(
@@ -1135,18 +1140,57 @@ class RustAudioPrewarmManager:
                     )
                 except (TypeError, ValueError):
                     match = None
-            if match is None:
+            if match is None and raw_device_is_default:
                 match = next((mapping for mapping in mappings if mapping.is_default), None)
             if match is not None:
                 result["portAudioLabel"] = match.portaudio_name
                 result["nativeEndpointIdHash"] = match.native_endpoint_id_hash
-            if default_requested and not result["nativeEndpointIdHash"]:
+            elif resolved_non_default:
+                endpoint = self._match_native_endpoint_by_label(
+                    native_endpoints,
+                    favorite_mic or device_preference,
+                )
+                if endpoint is not None:
+                    result["portAudioLabel"] = favorite_mic or device_preference
+                    result["nativeEndpointIdHash"] = endpoint.endpoint_id_hash
+            if default_requested and not favorite_mic and not result["nativeEndpointIdHash"]:
                 result["devicePreference"] = "default"
         except Exception:
-            if default_requested:
+            if default_requested and not resolved_non_default:
                 result["devicePreference"] = "default"
             return result
         return result
+
+    @staticmethod
+    def _match_native_endpoint_by_label(
+        native_endpoints: list[dict[str, Any]],
+        label: str,
+    ) -> Any | None:
+        normalized_label = normalize_device_name(str(label or ""))
+        if not normalized_label:
+            return None
+        for endpoint in normalize_native_endpoint_inventory(native_endpoints):
+            if endpoint.normalized_name == normalized_label:
+                return endpoint
+        return None
+
+    def _collect_native_capture_endpoint_inventory(self) -> list[dict[str, Any]]:
+        native_endpoints = collect_native_capture_endpoint_inventory()
+        if native_endpoints:
+            return native_endpoints
+        try:
+            response = self._shell_call("audioEndpointInventory", {}, timeout_seconds=2.0)
+        except Exception:
+            return []
+        if not isinstance(response, dict) or not response.get("success"):
+            return []
+        payload = response.get("payload")
+        if not isinstance(payload, dict):
+            return []
+        endpoints = payload.get("endpoints")
+        if not isinstance(endpoints, list):
+            return []
+        return [item for item in endpoints if isinstance(item, dict)]
 
     def attach_active_capture(
         self,

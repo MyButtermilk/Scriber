@@ -481,6 +481,111 @@ def test_rust_audio_prewarm_manager_keeps_default_when_native_mapping_unavailabl
     assert payload["nativeEndpointIdHash"] is None
 
 
+def test_rust_audio_prewarm_manager_does_not_default_resolved_favorite_without_native_hash(
+    monkeypatch,
+):
+    _install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "Dock Mic, MME", raising=False)
+    monkeypatch.setattr(
+        mic_prewarm,
+        "resolve_input_microphone_device",
+        lambda *_args, **_kwargs: "1",
+    )
+    monkeypatch.setattr(
+        mic_prewarm,
+        "collect_native_capture_endpoint_inventory",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        mic_prewarm,
+        "build_input_endpoint_mappings",
+        lambda *_args, **_kwargs: [
+            types.SimpleNamespace(
+                portaudio_index=0,
+                portaudio_name="Built-in Mic, MME",
+                native_endpoint_id_hash="default-hash",
+                is_default=True,
+            )
+        ],
+    )
+
+    manager = RustAudioPrewarmManager(shell_call=lambda *_args, **_kwargs: {})
+
+    payload = manager._device_selection_payload(
+        "default",
+        sample_rate=16000,
+        channels=1,
+    )
+
+    assert payload["devicePreference"] == "1"
+    assert payload["nativeEndpointIdHash"] is None
+    assert payload["portAudioLabel"] == ""
+
+
+def test_rust_audio_prewarm_manager_uses_shell_inventory_for_resolved_favorite(
+    monkeypatch,
+):
+    _install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "Dock Mic, MME", raising=False)
+    monkeypatch.setattr(
+        mic_prewarm,
+        "resolve_input_microphone_device",
+        lambda *_args, **_kwargs: "1",
+    )
+    monkeypatch.setattr(
+        mic_prewarm,
+        "collect_native_capture_endpoint_inventory",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        mic_prewarm,
+        "build_input_endpoint_mappings",
+        lambda *_args, **_kwargs: [
+            types.SimpleNamespace(
+                portaudio_index=0,
+                portaudio_name="Built-in Mic, MME",
+                native_endpoint_id_hash="default-hash",
+                is_default=True,
+            )
+        ],
+    )
+    commands: list[str] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioEndpointInventory":
+            return {
+                "success": True,
+                "payload": {
+                    "available": True,
+                    "endpoints": [
+                        {
+                            "endpointIdHash": "dock-hash",
+                            "friendlyName": "Dock Mic",
+                            "flow": "capture",
+                            "isDefault": False,
+                        }
+                    ],
+                },
+            }
+        return {}
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+
+    payload = manager._device_selection_payload(
+        "default",
+        sample_rate=16000,
+        channels=1,
+    )
+
+    assert payload["devicePreference"] == "1"
+    assert payload["portAudioLabel"] == "Dock Mic, MME"
+    assert payload["nativeEndpointIdHash"] == "dock-hash"
+    assert commands == ["audioEndpointInventory"]
+
+
 def test_rust_audio_prewarm_manager_pause_stops_sidecar_session(monkeypatch):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
     monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)

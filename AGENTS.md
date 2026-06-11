@@ -221,11 +221,14 @@ Packaging and scripts:
   keep the request as `devicePreference=default` with no
   `nativeEndpointIdHash`; the Rust sidecar must open the Windows default WASAPI
   capture endpoint directly so the visible microphone privacy indicator matches
-  the active device. Non-default Rust capture without a native endpoint hash
-  must fail before first frame and let Python fall back to `sounddevice`; it
-  must not silently use the Windows default endpoint. The default capture path
-  remains Python `sounddevice` until a measured Rust prototype is explicitly
-  promoted.
+  the active device. For selected or favorite microphones, the backend may use
+  the private Tauri `audioEndpointInventory` shell IPC response as fallback
+  native endpoint inventory when Python/PyCAW inventory is empty. Non-default
+  Rust capture without a native endpoint hash must fail before first frame and
+  let Python fall back to `sounddevice`; it must not silently use the Windows
+  default endpoint or attach default-device metadata to a resolved favorite.
+  The default capture path remains Python `sounddevice` until a measured Rust
+  prototype is explicitly promoted.
 - The Rust audio frame-pipe protocol is length-prefixed and versioned. Keep the
   Rust and Python header fixtures in sync when changing it.
 - The opt-in Rust prototype may read frame-pipe PCM into Python, but if capture

@@ -221,6 +221,16 @@ audio sidecar, prewarm sidecar, and app prewarm smoke artifacts: raw
 not appear in those reports; only hashes or explicit redaction markers are
 acceptable release evidence.
 
+For selected/favorite microphone investigations, a valid Rust prewarm artifact
+must either show a redacted native endpoint hash for that selected device or
+fail closed before capture. It must not silently fall back to
+`endpointSelection.mode=default` for a different microphone. When Python/PyCAW
+native inventory is empty in the Tauri runtime, `RustAudioPrewarmManager` can
+query private shell IPC `audioEndpointInventory` and use that redacted endpoint
+inventory for the selected/favorite mapping. Standalone sidecar smokes without
+Tauri shell IPC can still fail closed for selected devices; that is safer than
+opening the wrong microphone and is not sufficient installed-app evidence.
+
 Use the recording hot-path benchmark when Rust audio evidence must include the
 actual provider path, not only sidecar frame delivery. The strict provider/Rust
 flags require a final STT provider transcript and verify that

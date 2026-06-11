@@ -1184,7 +1184,23 @@ Implementation plan:
      the real Windows default capture endpoint with WASAPI, which matches the
      visible Windows microphone privacy indicator. Explicit or favorite
      non-default devices still use the redacted native endpoint hash path and
-     fail closed if no native endpoint hash can be resolved.
+     fail closed if no native endpoint hash can be resolved. The Python
+     `RustAudioPrewarmManager` now also tries the private Tauri shell-IPC
+     `audioEndpointInventory` payload when Python/PyCAW native inventory is
+     empty, so selected/favorite microphone prewarm can use the same redacted
+     endpoint inventory as Tauri diagnostics. If a favorite resolves to a
+     concrete PortAudio device but no native endpoint hash can be found, the
+     manager no longer attaches default-device metadata or silently opens the
+     Windows default microphone.
+   - Local evidence from 2026-06-11: a targeted
+     `--honor-favorite-mic` smoke with `Mikrofon (4- Insta360 Link)` exposed a
+     previous unsafe fallback where the Rust prewarm path opened
+     `Microphone (Jabra Engage 75)` as the Windows default despite resolving
+     the favorite to PortAudio index `11`. After the fix, the standalone
+     sidecar smoke fails closed with `devicePreference=11` and no
+     `portAudioLabel`/native hash instead of opening Jabra. A rebuilt Tauri
+     backend is still required to verify that shell-IPC endpoint inventory maps
+     the Insta360 favorite to a native endpoint hash in the installed app.
    - Local evidence from 2026-06-11: the installed Rust/WASAPI Always-On-Mic
      live-recording smoke passed with
      `tmp\rust-promotion-evidence\installed-live-recording-rust-wasapi-alwayson-30s-default-endpoint-fix-v2.json`.

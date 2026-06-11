@@ -156,6 +156,17 @@ Rust audio:
   requests as `devicePreference=default` with no native endpoint hash, so the
   Rust WASAPI sidecar opens the real Windows default capture endpoint directly.
   Non-default Rust capture without a native endpoint hash still fails closed.
+  The Rust prewarm manager now prevents a resolved favorite microphone from
+  silently falling back to the Windows default endpoint, and it can use the
+  private Tauri shell-IPC `audioEndpointInventory` payload as a fallback native
+  endpoint source when Python/PyCAW inventory is empty. A 2026-06-11 targeted
+  Insta360 favorite-mic smoke showed why this matters: the previous standalone
+  path resolved `Mikrofon (4- Insta360 Link)` to PortAudio index `11` but still
+  opened `Microphone (Jabra Engage 75)` as the default endpoint, leaving the
+  Insta360 privacy light off. Source and unit tests now fail closed instead of
+  opening the wrong device; a rebuilt Tauri backend still needs installed-app
+  evidence that shell-IPC inventory maps the Insta360 favorite to a native
+  endpoint hash.
   The hybrid release-readiness runner can require this app-level smoke via
   `-RequireRustAudioAppPrewarmSmoke`. It can also require explicit app-level
   Rust Always-On-Mic durations with `-MinRustAudioAppPrewarmDurationSec` and
