@@ -819,6 +819,9 @@ def write_tauri_text_injection_smoke_report(
     shell_ipc_available: bool = True,
     markers: list[str] | None = None,
     target_text_verified: bool = True,
+    pre_delay_mode: str = "auto",
+    requested_pre_delay_ms: float | None = 80.0,
+    actual_pre_delay_ms: float | None = 80.0,
 ) -> None:
     if markers is None:
         markers = ["clipboard_set", "paste"]
@@ -864,6 +867,8 @@ def write_tauri_text_injection_smoke_report(
                         "payload": {
                             "method": method,
                             "dispatch": "ctrlV",
+                            "preDelayMode": pre_delay_mode,
+                            "requestedPreDelayMs": requested_pre_delay_ms,
                             "markers": markers,
                             "restoreScheduled": True,
                             "restore": {
@@ -889,7 +894,7 @@ def write_tauri_text_injection_smoke_report(
                             "timingsMs": {
                                 "clipboardRead": 1.0,
                                 "clipboardSet": 2.0,
-                                "preDelay": 80.0,
+                                "preDelay": actual_pre_delay_ms,
                                 "pasteDispatch": 3.0,
                                 "total": 10.0,
                             },
@@ -1433,6 +1438,28 @@ def test_validate_release_readiness_rejects_weak_tauri_text_injection_smoke(tmp_
     )
 
 
+def test_validate_release_readiness_rejects_tauri_text_injection_without_auto_pre_delay(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    injection_report = tmp_path / "tauri-text-injection-smoke.json"
+    write_tauri_text_injection_smoke_report(injection_report, pre_delay_mode="")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_smoke_report=injection_report,
+        require_tauri_text_injection_smoke=True,
+    )
+
+    injection_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionSmoke")
+    assert "Tauri text injection smoke response preDelayMode must be auto" in injection_check["failures"]
+
+
 def test_validate_release_readiness_accepts_required_tauri_text_injection_matrix(tmp_path: Path) -> None:
     hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     matrix_report = tmp_path / "tauri-text-injection-matrix.json"
@@ -1515,6 +1542,35 @@ def test_validate_release_readiness_rejects_weak_tauri_text_injection_matrix(tmp
         in matrix_check["failures"]
     )
     assert any("missing required scenario(s): outlook" in failure for failure in matrix_check["failures"])
+
+
+def test_validate_release_readiness_rejects_word_matrix_without_positive_pre_delay(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    matrix_report = tmp_path / "tauri-text-injection-matrix.json"
+    write_tauri_text_injection_matrix_report(matrix_report)
+    payload = json.loads(matrix_report.read_text(encoding="utf-8"))
+    word = next(scenario for scenario in payload["scenarios"] if scenario["id"] == "word")
+    word["report"]["shellIpc"]["lastResponse"]["payload"]["timingsMs"]["preDelay"] = 0.0
+    matrix_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_matrix_report=matrix_report,
+        require_tauri_text_injection_matrix=True,
+    )
+
+    matrix_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionMatrix")
+    assert (
+        "Tauri text injection matrix scenario word timing preDelay must be positive for Word/Outlook scenario"
+        in matrix_check["failures"]
+    )
 
 
 def test_validate_release_readiness_rejects_missing_required_recording_hot_path_comparison(tmp_path: Path) -> None:

@@ -530,7 +530,10 @@ Required scenario IDs are `notepad`, `word`, `outlook`, `browser-input`,
 `clipboard-text`, `clipboard-non-text`, `clipboard-locked`,
 `restore-user-copy`, and `restore-same-text-copy`. `remote-desktop` is optional
 when unavailable, but if present it must pass the same Shell IPC, target text,
-and marker checks.
+and marker checks. Every scenario must also prove `preDelayMode=auto` in the
+redacted Shell IPC payload, and the Word/Outlook scenarios must show a positive
+applied `timingsMs.preDelay` so default evidence proves the Rust foreground
+policy, not Python-side title heuristics.
 
 The microphone matrix can also be run directly with the same Rust promotion
 gates:

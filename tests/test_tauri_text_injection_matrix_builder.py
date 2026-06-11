@@ -36,9 +36,12 @@ def valid_tauri_smoke_payload() -> dict:
                 "success": True,
                 "payload": {
                     "method": "tauri",
+                    "preDelayMode": "auto",
+                    "requestedPreDelayMs": 80.0,
                     "markers": ["clipboard_set", "paste"],
                     "timingsMs": {
                         "clipboardSet": 1.0,
+                        "preDelay": 80.0,
                         "pasteDispatch": 2.0,
                         "total": 3.0,
                     },

@@ -584,7 +584,9 @@ Tauri injection default blockers:
   For default-promotion evidence, aggregate those results into
   `tauri-text-injection-matrix.json` with
   `scripts/build_tauri_text_injection_matrix.py` and require
-  `-RequireTauriTextInjectionMatrix`.
+  `-RequireTauriTextInjectionMatrix`. Matrix validation now requires
+  `preDelayMode=auto` for every scenario and positive applied pre-delay for
+  Word/Outlook, so the artifact proves Rust owns the foreground delay policy.
 - Support bundles should surface the last Tauri injection fields:
   `textInjection.method`, `shellIpc.available`, `lastCommand`, `lastErrorCode`,
   `fallbackReason`, `preDelayMode`, `requestedPreDelayMs`, `restoreScheduled`,

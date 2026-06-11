@@ -1235,6 +1235,8 @@ def validate_tauri_text_injection_payload(
     report: dict[str, Any],
     failures: list[str],
     label: str,
+    *,
+    scenario_id: str = "",
 ) -> dict[str, Any]:
     shell_ipc = report.get("shellIpc")
     if not isinstance(shell_ipc, dict):
@@ -1292,6 +1294,11 @@ def validate_tauri_text_injection_payload(
 
     if response_payload.get("method") != "tauri":
         failures.append(f"{label} shellIpc response method must be tauri")
+    if response_payload.get("preDelayMode") != "auto":
+        failures.append(f"{label} response preDelayMode must be auto")
+    requested_pre_delay_ms = numeric_field(response_payload, "requestedPreDelayMs")
+    if requested_pre_delay_ms is None or requested_pre_delay_ms < 0:
+        failures.append(f"{label} response requestedPreDelayMs must be non-negative")
     markers = response_payload.get("markers")
     if not isinstance(markers, list) or "clipboard_set" not in markers or "paste" not in markers:
         failures.append(f"{label} response markers must include clipboard_set and paste")
@@ -1299,10 +1306,21 @@ def validate_tauri_text_injection_payload(
     if not isinstance(timings, dict):
         failures.append(f"{label} response timingsMs must be an object")
     else:
-        for key in ("clipboardSet", "pasteDispatch", "total"):
+        for key in ("clipboardSet", "pasteDispatch", "preDelay", "total"):
             value = timings.get(key)
             if value is None or not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
                 failures.append(f"{label} timing {key} must be non-negative")
+        if scenario_id in {"word", "outlook"}:
+            pre_delay = timings.get("preDelay")
+            if (
+                pre_delay is None
+                or not isinstance(pre_delay, (int, float))
+                or isinstance(pre_delay, bool)
+                or pre_delay <= 0
+            ):
+                failures.append(
+                    f"{label} timing preDelay must be positive for Word/Outlook scenario"
+                )
 
     return {
         "schemaVersion": report.get("schemaVersion"),
@@ -1310,6 +1328,8 @@ def validate_tauri_text_injection_payload(
         "status": report.get("status", ""),
         "callbackElapsedMs": report.get("callbackElapsedMs"),
         "targetTextElapsedMs": report.get("targetTextElapsedMs"),
+        "preDelayMode": response_payload.get("preDelayMode"),
+        "requestedPreDelayMs": response_payload.get("requestedPreDelayMs"),
         "shellIpc": shell_ipc,
     }
 
@@ -1397,6 +1417,7 @@ def validate_tauri_text_injection_matrix_report(
             scenario_report,
             failures,
             f"Tauri text injection matrix scenario {scenario_id}",
+            scenario_id=scenario_id,
         )
         if len(failures) == before:
             valid_count += 1

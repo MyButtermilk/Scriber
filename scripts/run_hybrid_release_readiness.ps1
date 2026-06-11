@@ -572,7 +572,7 @@ $requiredEvidence = @(
         external = $true
         producer = "scripts\build_tauri_text_injection_matrix.py over real installed target-app matrix reports from scripts\smoke_text_injection_target.py --method tauri and manual target-app runs"
         report = $TauriTextInjectionMatrixReport
-        notes = "Required before changing text-injection defaults. The matrix must cover Notepad, Word, Outlook, browser input, browser contenteditable, Electron, elevated-target, elevated-Scriber, clipboard text/non-text/locked, restore user-copy, and same-text restore scenarios; Remote Desktop is optional when unavailable."
+        notes = "Required before changing text-injection defaults. The matrix must cover Notepad, Word, Outlook, browser input, browser contenteditable, Electron, elevated-target, elevated-Scriber, clipboard text/non-text/locked, restore user-copy, and same-text restore scenarios; Remote Desktop is optional when unavailable. Every scenario must prove preDelayMode=auto, and Word/Outlook must show a positive applied pre-delay from Rust foreground policy."
     },
     [pscustomobject]@{
         name = "publishedUpdaterManifest"

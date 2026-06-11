@@ -604,6 +604,7 @@ def test_hybrid_release_readiness_runner_plans_required_tauri_text_injection_mat
     assert "build_tauri_text_injection_matrix.py" in matrix_evidence["producer"]
     assert "manual target-app runs" in matrix_evidence["producer"]
     assert "Notepad, Word, Outlook" in matrix_evidence["notes"]
+    assert "preDelayMode=auto" in matrix_evidence["notes"]
     matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "tauriTextInjectionMatrix")
     assert "required external report" in matrix_command["command"]
     assert "build_tauri_text_injection_matrix.py" in matrix_command["command"]
