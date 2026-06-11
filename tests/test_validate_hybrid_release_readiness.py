@@ -1460,6 +1460,39 @@ def test_validate_release_readiness_rejects_tauri_text_injection_without_auto_pr
     assert "Tauri text injection smoke response preDelayMode must be auto" in injection_check["failures"]
 
 
+def test_validate_release_readiness_rejects_tauri_text_injection_redaction_leaks(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    injection_report = tmp_path / "tauri-text-injection-smoke.json"
+    write_tauri_text_injection_smoke_report(injection_report)
+    payload = json.loads(injection_report.read_text(encoding="utf-8"))
+    payload["shellIpc"]["lastFallbackReason"] = r"failed \\.\pipe\scriber-shell-secret"
+    payload["shellIpc"]["sessionToken"] = "secret-token"
+    injection_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_smoke_report=injection_report,
+        require_tauri_text_injection_smoke=True,
+    )
+
+    injection_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionSmoke")
+    assert (
+        "Tauri text injection smoke contains raw Shell IPC pipe name at shellIpc.lastFallbackReason"
+        in injection_check["failures"]
+    )
+    assert (
+        "Tauri text injection smoke contains unredacted token-like value at shellIpc.sessionToken"
+        in injection_check["failures"]
+    )
+
+
 def test_validate_release_readiness_accepts_required_tauri_text_injection_matrix(tmp_path: Path) -> None:
     hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     matrix_report = tmp_path / "tauri-text-injection-matrix.json"
@@ -1483,6 +1516,41 @@ def test_validate_release_readiness_accepts_required_tauri_text_injection_matrix
     assert matrix_check["details"]["validScenarioCount"] == len(REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS)
     assert "notepad" in matrix_check["details"]["coveredScenarioIds"]
     assert "restore-same-text-copy" in matrix_check["details"]["coveredScenarioIds"]
+
+
+def test_validate_release_readiness_rejects_tauri_text_injection_matrix_redaction_leaks(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    matrix_report = tmp_path / "tauri-text-injection-matrix.json"
+    write_tauri_text_injection_matrix_report(matrix_report)
+    payload = json.loads(matrix_report.read_text(encoding="utf-8"))
+    first = payload["scenarios"][0]["report"]
+    first["shellIpc"]["lastError"] = r"transport failed at \\\\.\\pipe\\scriber-shell-secret"
+    first["shellIpc"]["requestToken"] = "secret-token"
+    matrix_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_matrix_report=matrix_report,
+        require_tauri_text_injection_matrix=True,
+    )
+
+    scenario_id = payload["scenarios"][0]["id"]
+    matrix_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionMatrix")
+    assert (
+        f"Tauri text injection matrix scenario {scenario_id} contains raw Shell IPC pipe name at shellIpc.lastError"
+        in matrix_check["failures"]
+    )
+    assert (
+        f"Tauri text injection matrix scenario {scenario_id} contains unredacted token-like value at shellIpc.requestToken"
+        in matrix_check["failures"]
+    )
 
 
 def test_validate_release_readiness_rejects_missing_required_tauri_text_injection_matrix(tmp_path: Path) -> None:

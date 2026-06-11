@@ -20,6 +20,7 @@ from scripts.validate_tauri_updater_metadata import DEFAULT_METADATA, sha256_fil
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 RUST_AUDIO_ENGINE = "rust-prototype"
 RUST_AUDIO_FRAME_SOURCE = "rust-frame-pipe"
+REDACTED_TEXT_MARKERS = {"", "[REDACTED]", "[REDACTED_TOKEN]", "***"}
 
 REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS: dict[str, str] = {
     "notepad": "Notepad plain text target",
@@ -1238,6 +1239,8 @@ def validate_tauri_text_injection_payload(
     *,
     scenario_id: str = "",
 ) -> dict[str, Any]:
+    failures.extend(find_tauri_text_injection_redaction_failures(report, label))
+
     shell_ipc = report.get("shellIpc")
     if not isinstance(shell_ipc, dict):
         failures.append(f"{label} shellIpc must be an object")
@@ -1332,6 +1335,52 @@ def validate_tauri_text_injection_payload(
         "requestedPreDelayMs": response_payload.get("requestedPreDelayMs"),
         "shellIpc": shell_ipc,
     }
+
+
+def _looks_like_raw_shell_pipe(value: str) -> bool:
+    normalized = str(value).lower().replace("/", "\\")
+    for _ in range(6):
+        collapsed = normalized.replace("\\\\", "\\")
+        if collapsed == normalized:
+            break
+        normalized = collapsed
+    return "\\.\\pipe\\scriber-shell-" in normalized
+
+
+def _looks_like_unredacted_token_field(path: str, value: str) -> bool:
+    path_lower = path.lower()
+    if "tokenconfigured" in path_lower:
+        return False
+    if "token" not in path_lower:
+        return False
+    normalized = str(value).strip()
+    return bool(normalized) and normalized not in REDACTED_TEXT_MARKERS
+
+
+def find_tauri_text_injection_redaction_failures(value: Any, label: str) -> list[str]:
+    failures: list[str] = []
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, item in node.items():
+                key_str = str(key)
+                child_path = f"{path}.{key_str}" if path else key_str
+                walk(item, child_path)
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, f"{path}[{index}]")
+        elif isinstance(node, str):
+            if _looks_like_raw_shell_pipe(node):
+                failures.append(
+                    f"{label} contains raw Shell IPC pipe name at {path}"
+                )
+            if _looks_like_unredacted_token_field(path, node):
+                failures.append(
+                    f"{label} contains unredacted token-like value at {path}"
+                )
+
+    walk(value, "")
+    return failures
 
 
 def validate_tauri_text_injection_matrix_report(
