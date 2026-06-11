@@ -535,6 +535,10 @@ Implementation status on `codex/rust-expansion-plan`:
   through
   `audio-diagnostics.redacted.json` without transcript text, raw pipe names,
   raw foreground titles, or session tokens.
+- Tauri text-injection hot-path metrics now use the Rust-reported
+  `clipboardSet` and `pasteDispatch` timing offsets to place Python
+  `clipboard_set` and `paste` markers inside the real Shell IPC call window,
+  instead of stamping both markers only after the IPC response returns.
 - Added Rust unit tests for the shell IPC protocol and backend env contract,
   injectText payload validation, retry-limit clamping, request/text budget
   consistency, NUL rejection, deadline failure payloads, and message-mode

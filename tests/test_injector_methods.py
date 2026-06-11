@@ -115,6 +115,45 @@ def test_inject_method_tauri_uses_shell_ipc_and_forwards_markers(monkeypatch):
     sendinput_mock.assert_not_called()
 
 
+def test_inject_method_tauri_forwards_estimated_marker_timestamps(monkeypatch):
+    monkeypatch.setattr(Config, "INJECT_METHOD", "tauri")
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    shell_ipc._reset_diagnostics_for_tests()
+    markers = []
+    injector = TextInjector(
+        on_injected=lambda _text: None,
+        on_injection_marker=lambda marker, timestamp_ns=None: markers.append(
+            (marker, timestamp_ns)
+        ),
+    )
+
+    with (
+        patch("src.injector.call_shell_ipc") as ipc_mock,
+        patch(
+            "src.injector.time.perf_counter_ns",
+            side_effect=[1_000_000_000, 1_100_000_000],
+        ),
+    ):
+        ipc_mock.return_value = {
+            "success": True,
+            "payload": {
+                "method": "tauri",
+                "markers": ["clipboard_set", "paste"],
+                "timingsMs": {
+                    "clipboardSet": 10.0,
+                    "pasteDispatch": 45.0,
+                    "total": 50.0,
+                },
+            },
+        }
+        injector._inject_text("hello ")
+
+    assert markers == [
+        ("clipboard_set", 1_060_000_000),
+        ("paste", 1_095_000_000),
+    ]
+
+
 def test_inject_method_tauri_leaves_auto_pre_delay_deadline_to_rust(monkeypatch):
     monkeypatch.setattr(Config, "INJECT_METHOD", "tauri")
     monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)

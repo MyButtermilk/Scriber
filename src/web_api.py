@@ -2299,14 +2299,20 @@ class ScriberWebController:
             self._hot_path_tracers[session_id] = tracer
             self._hot_path_reports_emitted.discard(session_id)
 
-    def _mark_hot_path(self, session_id: str | None, marker: str) -> None:
+    def _mark_hot_path(
+        self,
+        session_id: str | None,
+        marker: str,
+        *,
+        timestamp_ns: int | None = None,
+    ) -> None:
         if not session_id or not marker:
             return
         with self._hot_path_lock:
             tracer = self._hot_path_tracers.get(session_id)
             if not tracer or tracer.has_mark(marker):
                 return
-            tracer.mark(marker)
+            tracer.mark(marker, timestamp_ns=timestamp_ns)
 
     def _emit_hot_path_report_once(self, session_id: str | None, *, required_marker: str | None = "first_paste") -> bool:
         if not session_id:
@@ -3814,11 +3820,11 @@ class ScriberWebController:
                     meta={"chars": len(_text or "")},
                 )
 
-            def on_injection_marker(marker: str):
+            def on_injection_marker(marker: str, timestamp_ns: int | None = None):
                 if session_id != self._session_id:
                     return
                 if marker in {"clipboard_set", "paste"}:
-                    self._mark_hot_path(session_id, marker)
+                    self._mark_hot_path(session_id, marker, timestamp_ns=timestamp_ns)
 
             def on_last_audio_chunk_sent():
                 self._mark_hot_path(session_id, "last_chunk_sent")

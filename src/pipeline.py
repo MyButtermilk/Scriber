@@ -715,7 +715,7 @@ class ScriberPipeline:
         on_audio_level=None,
         on_transcription: Optional[Callable[[str, bool], None]] = None,
         on_text_injected: Optional[Callable[[str], None]] = None,
-        on_injection_marker: Optional[Callable[[str], None]] = None,
+        on_injection_marker: Optional[Callable[..., None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
         on_mic_ready: Optional[Callable[[], None]] = None,
         on_last_audio_chunk_sent: Optional[Callable[[], None]] = None,

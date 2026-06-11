@@ -12,12 +12,13 @@ class HotPathTracer:
         self._clock_ns = clock_ns or time.perf_counter_ns
         self._marks: dict[str, int] = {}
 
-    def mark(self, name: str) -> None:
+    def mark(self, name: str, *, timestamp_ns: int | None = None) -> None:
         if not name:
             return
         # Keep first occurrence to stabilize segment calculations.
         if name not in self._marks:
-            self._marks[name] = int(self._clock_ns())
+            timestamp = timestamp_ns if timestamp_ns is not None else self._clock_ns()
+            self._marks[name] = int(timestamp)
 
     def has_mark(self, name: str) -> bool:
         return name in self._marks

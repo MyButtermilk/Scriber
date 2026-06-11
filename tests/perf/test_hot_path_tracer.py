@@ -30,6 +30,19 @@ def test_hot_path_tracer_ignores_duplicate_marks():
     assert report["a_to_b_ms"] == 0.00005
 
 
+def test_hot_path_tracer_accepts_external_marker_timestamp():
+    ticks = iter([1_000_000_000, 1_200_000_000])
+    tracer = HotPathTracer("s4", clock_ns=lambda: next(ticks))
+
+    tracer.mark("provider_final_received")
+    tracer.mark("clipboard_set", timestamp_ns=1_040_000_000)
+    tracer.mark("first_paste")
+
+    report = tracer.report()
+    assert report["provider_final_received_to_clipboard_set_ms"] == 40.0
+    assert report["clipboard_set_to_first_paste_ms"] == 160.0
+
+
 def test_hot_path_tracer_without_enough_marks_is_empty():
     tracer = HotPathTracer("s3", clock_ns=lambda: 123)
     tracer.mark("only_one")

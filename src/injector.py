@@ -1,5 +1,6 @@
 import sys
 import asyncio
+import math
 import os
 import time
 import threading
@@ -389,7 +390,7 @@ def _paste_text(
 def _tauri_inject_text(
     text: str,
     *,
-    on_marker: Optional[Callable[[str], None]] = None,
+    on_marker: Optional[Callable[..., None]] = None,
 ) -> bool:
     client_timeout_seconds = 2.5
     deadline_ms = 2000
@@ -407,7 +408,9 @@ def _tauri_inject_text(
         "deadlineMs": deadline_ms,
     }
     try:
+        call_started_ns = time.perf_counter_ns()
         response = call_shell_ipc("injectText", payload, timeout_seconds=client_timeout_seconds)
+        call_finished_ns = time.perf_counter_ns()
     except Exception as exc:
         logger.warning(f"Tauri text injection failed: {type(exc).__name__}")
         record_command_diagnostic(
@@ -467,9 +470,49 @@ def _tauri_inject_text(
     if on_marker:
         for marker in markers:
             if marker in {"clipboard_set", "paste"}:
-                on_marker(marker)
+                timestamp_ns = _tauri_marker_timestamp_ns(
+                    response_payload,
+                    marker,
+                    call_started_ns=call_started_ns,
+                    call_finished_ns=call_finished_ns,
+                )
+                if timestamp_ns is None:
+                    on_marker(marker)
+                else:
+                    on_marker(marker, timestamp_ns)
     record_command_diagnostic("injectText", True, response=response)
     return True
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _tauri_marker_timestamp_ns(
+    response_payload: dict,
+    marker: str,
+    *,
+    call_started_ns: int,
+    call_finished_ns: int,
+) -> int | None:
+    timings = response_payload.get("timingsMs")
+    if not isinstance(timings, dict):
+        return None
+    timing_key = {"clipboard_set": "clipboardSet", "paste": "pasteDispatch"}.get(
+        marker
+    )
+    if not timing_key:
+        return None
+    total_ms = _finite_number(timings.get("total"))
+    marker_ms = _finite_number(timings.get(timing_key))
+    if total_ms is None or marker_ms is None:
+        return None
+    remaining_ms = max(0.0, total_ms - marker_ms)
+    estimated_ns = int(call_finished_ns - (remaining_ms * 1_000_000))
+    return max(call_started_ns, min(call_finished_ns, estimated_ns))
 
 
 class TextInjector(FrameProcessor):
@@ -477,7 +520,7 @@ class TextInjector(FrameProcessor):
         self,
         inject_immediately: bool = False,
         on_injected: Optional[Callable[[str], None]] = None,
-        on_injection_marker: Optional[Callable[[str], None]] = None,
+        on_injection_marker: Optional[Callable[..., None]] = None,
     ):
         super().__init__()
         self.inject_immediately = inject_immediately
@@ -615,10 +658,23 @@ class TextInjector(FrameProcessor):
         except Exception as exc:
             logger.debug(f"TextInjector on_injected callback failed: {exc}")
 
-    def _notify_injection_marker(self, marker: str) -> None:
+    def _notify_injection_marker(
+        self, marker: str, timestamp_ns: int | None = None
+    ) -> None:
         if not self.on_injection_marker:
             return
         try:
-            self.on_injection_marker(marker)
+            if timestamp_ns is None:
+                self.on_injection_marker(marker)
+            else:
+                self.on_injection_marker(marker, timestamp_ns)
+        except TypeError as exc:
+            if timestamp_ns is None:
+                logger.debug(f"TextInjector on_injection_marker callback failed: {exc}")
+                return
+            try:
+                self.on_injection_marker(marker)
+            except Exception as fallback_exc:
+                logger.debug(f"TextInjector on_injection_marker callback failed: {fallback_exc}")
         except Exception as exc:
             logger.debug(f"TextInjector on_injection_marker callback failed: {exc}")
