@@ -18,7 +18,10 @@ def recording_report(
     fallback_circuit_open: bool = False,
     sample_count: int = 3,
     record_seconds: float = 2.0,
+    mic_always_on: bool | None = None,
 ) -> dict:
+    if mic_always_on is None:
+        mic_always_on = bool(rust_capture)
     requirements = {
         "hotkey_to_recording_state": {"status": "measured"},
         "hotkey_to_first_audio_frame": {"status": "measured"},
@@ -51,6 +54,9 @@ def recording_report(
         },
         "audioDiagnosticsDuringRecording": {
             "microphone": {
+                "micAlwaysOn": mic_always_on,
+                "idlePrewarmActive": mic_always_on,
+                "prewarmEngine": "rust" if mic_always_on and rust_capture else "",
                 "rustAudioFallbackCircuit": {
                     "available": True,
                     "open": fallback_circuit_open,
@@ -98,6 +104,9 @@ def recording_report(
                 "active": provider_label,
             },
             "microphone": {
+                "micAlwaysOn": mic_always_on,
+                "idlePrewarmActive": mic_always_on,
+                "prewarmEngine": "rust" if mic_always_on and rust_capture else "",
                 "rustAudioFallbackCircuit": {
                     "available": True,
                     "open": fallback_circuit_open,
@@ -123,6 +132,7 @@ def test_recording_hot_path_comparison_accepts_provider_backed_rust_evidence() -
     assert result["ok"] is True
     assert result["reports"]["python"]["audioEngine"] == "python"
     assert result["reports"]["rust"]["audioEngine"] == "rust-prototype"
+    assert result["reports"]["rust"]["micAlwaysOn"] is True
     assert result["summary"]["completeSegmentCount"] > 0
     first_audio = result["segments"]["hotkey_received_to_first_audio_frame_ms"]
     assert first_audio["rustMinusPythonP95Ms"] == -40.0
@@ -237,6 +247,27 @@ def test_recording_hot_path_comparison_rejects_open_rust_fallback_circuit() -> N
     check = next(item for item in result["checks"] if item["name"] == "rustFallbackCircuitClosed")
     assert check["ok"] is False
     assert check["details"]["open"] is True
+
+
+def test_recording_hot_path_comparison_rejects_rust_without_always_on_mic() -> None:
+    result = build_comparison(
+        recording_report(engine="python"),
+        recording_report(
+            engine="rust-prototype",
+            rust_capture=True,
+            mic_always_on=False,
+        ),
+    )
+
+    assert result["ok"] is False
+    assert (
+        "Rust report must prove MIC always-on was enabled during provider-backed comparison"
+        in result["failures"]
+    )
+    check = next(item for item in result["checks"] if item["name"] == "rustAlwaysOnMic")
+    assert check["ok"] is False
+    assert check["details"]["micAlwaysOnSnapshotCount"] == 0
+    assert result["reports"]["rust"]["micAlwaysOn"] is False
 
 
 def test_recording_hot_path_comparison_rejects_unredacted_input_reports() -> None:

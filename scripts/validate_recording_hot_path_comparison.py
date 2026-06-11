@@ -137,6 +137,40 @@ def rust_fallback_circuits(report: dict[str, Any]) -> list[dict[str, Any]]:
     return circuits
 
 
+def microphone_status_snapshots(report: dict[str, Any]) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    report_microphone = (report.get("audioDiagnostics") or {}).get("microphone")
+    if isinstance(report_microphone, dict):
+        snapshots.append({"source": "report", **report_microphone})
+    for sample in report_samples(report):
+        during = sample.get("audioDiagnosticsDuringRecording")
+        if not isinstance(during, dict):
+            continue
+        microphone = during.get("microphone")
+        if isinstance(microphone, dict):
+            snapshots.append({"source": f"sample:{sample.get('iteration')}", **microphone})
+    return snapshots
+
+
+def rust_always_on_mic_check(report: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    snapshots = microphone_status_snapshots(report)
+    always_on_snapshots = [
+        {
+            "source": snapshot.get("source"),
+            "micAlwaysOn": snapshot.get("micAlwaysOn"),
+            "idlePrewarmActive": snapshot.get("idlePrewarmActive"),
+            "prewarmEngine": snapshot.get("prewarmEngine"),
+        }
+        for snapshot in snapshots
+        if snapshot.get("micAlwaysOn") is True
+    ]
+    return bool(always_on_snapshots), {
+        "snapshotCount": len(snapshots),
+        "micAlwaysOnSnapshotCount": len(always_on_snapshots),
+        "snapshots": always_on_snapshots[:5],
+    }
+
+
 def has_open_rust_fallback_circuit(report: dict[str, Any]) -> bool:
     return any(circuit.get("open") is True for circuit in rust_fallback_circuits(report))
 
@@ -429,6 +463,13 @@ def build_comparison(
             },
             "Rust report must not have an open Rust audio fallback circuit",
         )
+        always_on_ok, always_on_details = rust_always_on_mic_check(rust_report)
+        add_check(
+            "rustAlwaysOnMic",
+            always_on_ok,
+            always_on_details,
+            "Rust report must prove MIC always-on was enabled during provider-backed comparison",
+        )
 
     if require_python_engine:
         engine = audio_engine(python_report)
@@ -486,6 +527,7 @@ def build_comparison(
                 "audioEngine": audio_engine(rust_report),
                 "samples": len(report_samples(rust_report)),
                 "requested": comparable_recording_config(rust_report) or {},
+                "micAlwaysOn": rust_always_on_mic_check(rust_report)[0],
             },
         },
         "segments": segments,

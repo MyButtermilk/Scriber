@@ -1878,6 +1878,7 @@ def validate_recording_hot_path_comparison_report(
         "sameRecordingConfig",
         "rustAudioEngine",
         "rustFallbackCircuitClosed",
+        "rustAlwaysOnMic",
         "audioOwnedLatencyNoRegression",
         "pythonAudioEngine",
     ):

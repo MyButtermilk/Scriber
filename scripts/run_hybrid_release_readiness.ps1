@@ -617,9 +617,10 @@ $requiredEvidence = @(
         name = "recordingHotPathPythonRustComparison"
         required = [bool]$RequireRecordingHotPathComparison
         external = $true
-        producer = "scripts\run_recording_hot_path_comparison.ps1, or scripts\validate_recording_hot_path_comparison.py over existing provider-backed Python and Rust reports"
+        producer = "scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic, or scripts\validate_recording_hot_path_comparison.py over existing provider-backed Python and Rust reports with Always-On-Mic evidence"
         report = $RecordingHotPathComparisonReport
-        notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires passing inputReportRedaction and sameRecordingConfig checks, requires at least three samples per engine, requires provider transcript evidence with the same STT provider in both reports, requires active rust-frame-pipe capture in the Rust report, rejects open Rust fallback-circuit evidence, and rejects clear P95 regressions in local audio-owned hot-path segments."
+        rustAlwaysOnMicRequired = $true
+        notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires passing inputReportRedaction, sameRecordingConfig, and rustAlwaysOnMic checks, requires at least three samples per engine, requires provider transcript evidence with the same STT provider in both reports, requires active rust-frame-pipe capture in the Rust report, rejects open Rust fallback-circuit evidence, and rejects clear P95 regressions in local audio-owned hot-path segments."
     },
     [pscustomobject]@{
         name = "installedLiveRecordingSmoke"
@@ -780,7 +781,7 @@ $plan = [pscustomobject]@{
         },
         [pscustomobject]@{
             name = "recordingHotPathPythonRustComparison"
-            command = $(if (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf) { "reuse $RecordingHotPathComparisonReport" } elseif ($RequireRecordingHotPathComparison) { "required external report: produce with scripts\validate_recording_hot_path_comparison.py" } else { "not requested" })
+            command = $(if (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf) { "reuse $RecordingHotPathComparisonReport" } elseif ($RequireRecordingHotPathComparison) { "required external report: produce with scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic or validate existing Python/Rust Always-On-Mic reports with scripts\validate_recording_hot_path_comparison.py" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "installedLiveRecordingSmoke"

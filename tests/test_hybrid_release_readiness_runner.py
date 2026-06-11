@@ -670,8 +670,10 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert by_name["rustAudioAppPrewarmSmoke"]["durationSec"] == 600
     assert by_name["rustAudioAppPrewarmSmoke"]["prewarmDurationSec"] == 1800
     assert by_name["recordingHotPathPythonRustComparison"]["required"] is True
+    assert by_name["recordingHotPathPythonRustComparison"]["rustAlwaysOnMicRequired"] is True
     assert "inputReportRedaction" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert "sameRecordingConfig" in by_name["recordingHotPathPythonRustComparison"]["notes"]
+    assert "rustAlwaysOnMic" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert by_name["installedLiveRecordingSmoke"]["required"] is True
     assert by_name["installedLiveRecordingSmoke"]["minDurationSec"] == 600
     assert by_name["installedLiveRecordingSmoke"]["requireRustAudio"] is True
@@ -686,6 +688,7 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert "required external report" in command_by_name["rustAudioAppPrewarmSmoke"]
     assert "RunRustAudioAppPrewarmSmoke" in command_by_name["rustAudioAppPrewarmSmoke"]
     assert "required external report" in command_by_name["recordingHotPathPythonRustComparison"]
+    assert "run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic" in command_by_name["recordingHotPathPythonRustComparison"]
     assert "required external report" in command_by_name["installedLiveRecordingSmoke"]
     readiness_command = command_by_name["hybridReleaseReadiness"]
     assert "--require-rust-audio-sidecar-smoke" in readiness_command

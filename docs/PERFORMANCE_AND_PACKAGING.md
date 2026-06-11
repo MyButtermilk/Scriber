@@ -1161,16 +1161,18 @@ Implementation plan:
      in both reports, requires the same benchmark configuration through the
      report-level `requested` object, requires active
      `rust-prototype`/`rust-frame-pipe` capture in the Rust report, rejects an
-     open Rust fallback circuit in that report, and records segment deltas such
-     as hotkey-to-first-frame, provider-finalize, and stop-to-text-injection.
+     open Rust fallback circuit in that report, requires `micAlwaysOn=true`
+     evidence in the Rust report, and records segment deltas such as
+     hotkey-to-first-frame, provider-finalize, and stop-to-text-injection.
      The final readiness validator and
      `scripts/run_hybrid_release_readiness.ps1` can require this artifact with
      `--require-recording-hot-path-comparison` /
      `-RequireRecordingHotPathComparison`.
      The final readiness validator now requires the comparison artifact's
-     `sameProvider`, `sameRecordingConfig`, and `rustFallbackCircuitClosed`
-     checks alongside `rustAudioEngine`, and it requires at least three samples
-     per engine plus no clear P95 regression in local audio-owned segments.
+     `sameProvider`, `sameRecordingConfig`, `rustFallbackCircuitClosed`, and
+     `rustAlwaysOnMic` checks alongside `rustAudioEngine`, and it requires at
+     least three samples per engine plus no clear P95 regression in local
+     audio-owned segments.
      This gate cannot be bypassed by passing a stale, one-shot, mismatched, or
      clearly slower comparison schema.
      The comparison validator also rejects unredacted source reports containing
@@ -1186,7 +1188,8 @@ Implementation plan:
      the full provider-backed A/B evidence path. It runs
      `measure_hybrid_baseline.ps1` once with `SCRIBER_AUDIO_ENGINE=python`, once
      with `SCRIBER_AUDIO_ENGINE=rust-prototype` and the requested Rust capture
-     mode, then calls the comparison validator to produce
+     mode, and with `-RustAlwaysOnMic` it sets `SCRIBER_MIC_ALWAYS_ON=1` for the
+     Rust pass before calling the comparison validator to produce
      `recording-hot-path-python-rust-comparison.json`.
      The runner defaults to three recording samples per engine and passes that
      as the minimum accepted sample count to the validator.
