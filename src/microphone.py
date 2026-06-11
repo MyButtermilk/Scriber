@@ -428,6 +428,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.fallback_reason = ""
         self.stream_id = ""
         self.native_endpoint_id_hash = None
+        self.endpoint_selection = None
         self.sidecar_pid = None
         self.sidecar_exit_status = None
         self.sidecar_uptime_ms = None
@@ -506,7 +507,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "sampleRate": self.sample_rate,
             "channels": self.target_channels,
             "blockSize": self.block_size,
-            "devicePreference": str(self.device or "default"),
+            "devicePreference": selection.get("devicePreference") or str(self.device or "default"),
             "portAudioLabel": selection.get("portAudioLabel") or "",
             "nativeEndpointIdHash": selection.get("nativeEndpointIdHash") or None,
             "prebufferMs": self.requested_prebuffer_ms,
@@ -533,6 +534,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._frame_pipe = str(response_payload.get("framePipe") or "")
         self._frame_pipe_hash = _hash_private_hint(self._frame_pipe)
         self.native_endpoint_id_hash = response_payload.get("nativeEndpointIdHash")
+        endpoint_selection = response_payload.get("endpointSelection")
+        self.endpoint_selection = endpoint_selection if isinstance(endpoint_selection, dict) else None
         adopted_prewarm = response_payload.get("adoptedPrewarm")
         self.adopted_prewarm = adopted_prewarm if isinstance(adopted_prewarm, dict) else None
         self.sidecar_pid = response_payload.get("sidecarPid")
@@ -651,6 +654,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "streamId": self.stream_id or None,
             "framePipeHash": self._frame_pipe_hash,
             "nativeEndpointIdHash": self.native_endpoint_id_hash,
+            "endpointSelection": self.endpoint_selection,
             "sidecarPid": self.sidecar_pid,
             "sidecarExitStatus": self.sidecar_exit_status,
             "sidecarUptimeMs": self.sidecar_uptime_ms,
@@ -848,6 +852,8 @@ def _rust_audio_prebuffer_ms() -> int:
 def _rust_audio_device_selection_payload(device, *, sample_rate: int, channels: int) -> dict:
     """Return redacted native endpoint hints for the opt-in Rust audio prototype."""
 
+    configured_device = str(getattr(Config, "MIC_DEVICE", "default") or "default").strip() or "default"
+    favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "").strip()
     result = {
         "devicePreference": str(device or "default"),
         "portAudioLabel": "",
@@ -856,6 +862,15 @@ def _rust_audio_device_selection_payload(device, *, sample_rate: int, channels: 
         "nativeEndpointMatchConfidence": "none",
         "nativeEndpointMatchReason": "notResolved",
     }
+    if configured_device in {"default", "None"} and not favorite_mic:
+        result.update(
+            {
+                "devicePreference": "default",
+                "nativeEndpointMatchConfidence": "default",
+                "nativeEndpointMatchReason": "windowsDefaultEndpoint",
+            }
+        )
+        return result
     if not HAS_SOUNDDEVICE or sd is None:
         result["nativeEndpointMatchReason"] = "sounddeviceUnavailable"
         return result

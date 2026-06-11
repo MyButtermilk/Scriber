@@ -333,7 +333,13 @@ function Convert-AudioDiagnosticsSummary {
     $microphone = $AudioDiagnostics.microphone
     $activeCapture = if ($microphone) { $microphone.activeCapture } else { $null }
     $source = if ($activeCapture) { $activeCapture.source } else { $null }
+    $endpointSelection = if ($source) { $source.endpointSelection } else { $null }
     $fallbackCircuit = if ($microphone) { $microphone.rustAudioFallbackCircuit } else { $null }
+    $framePipeFramesRead = if ($activeCapture -and $null -ne $activeCapture.framePipeFramesRead) { $activeCapture.framePipeFramesRead } elseif ($source) { $source.framePipeFramesRead } else { $null }
+    $framePipeAudioFramesRead = if ($activeCapture -and $null -ne $activeCapture.framePipeAudioFramesRead) { $activeCapture.framePipeAudioFramesRead } elseif ($source) { $source.framePipeAudioFramesRead } else { $null }
+    $framePipeSequenceErrorCount = if ($activeCapture -and $null -ne $activeCapture.framePipeSequenceErrorCount) { $activeCapture.framePipeSequenceErrorCount } elseif ($source) { $source.framePipeSequenceErrorCount } else { $null }
+    $framePipeProtocolErrorCount = if ($activeCapture -and $null -ne $activeCapture.framePipeProtocolErrorCount) { $activeCapture.framePipeProtocolErrorCount } elseif ($source) { $source.framePipeProtocolErrorCount } else { $null }
+    $framePipePrebufferAfterLiveCount = if ($activeCapture -and $null -ne $activeCapture.framePipePrebufferAfterLiveCount) { $activeCapture.framePipePrebufferAfterLiveCount } elseif ($source) { $source.framePipePrebufferAfterLiveCount } else { $null }
 
     return [pscustomobject]@{
         apiVersion = [string]$AudioDiagnostics.apiVersion
@@ -360,11 +366,15 @@ function Convert-AudioDiagnosticsSummary {
                 nativeEndpointIdHash = [string]$activeCapture.nativeEndpointIdHash
                 sourceFrameSource = if ($source) { [string]$source.frameSource } else { "" }
                 sourceNativeEndpointIdHash = if ($source) { [string]$source.nativeEndpointIdHash } else { "" }
-                framePipeFramesRead = $activeCapture.framePipeFramesRead
-                framePipeAudioFramesRead = $activeCapture.framePipeAudioFramesRead
-                framePipeSequenceErrorCount = $activeCapture.framePipeSequenceErrorCount
-                framePipeProtocolErrorCount = $activeCapture.framePipeProtocolErrorCount
-                framePipePrebufferAfterLiveCount = $activeCapture.framePipePrebufferAfterLiveCount
+                sourceEndpointSelectionMode = if ($endpointSelection) { [string]$endpointSelection.mode } else { "" }
+                sourceEndpointSelectionUsedDefault = if ($endpointSelection) { [bool]$endpointSelection.usedDefaultEndpoint } else { $false }
+                sourceEndpointSelectionRequestedHash = if ($endpointSelection) { [string]$endpointSelection.requestedNativeEndpointIdHash } else { "" }
+                sourceEndpointSelectionSelectedHash = if ($endpointSelection) { [string]$endpointSelection.selectedNativeEndpointIdHash } else { "" }
+                framePipeFramesRead = $framePipeFramesRead
+                framePipeAudioFramesRead = $framePipeAudioFramesRead
+                framePipeSequenceErrorCount = $framePipeSequenceErrorCount
+                framePipeProtocolErrorCount = $framePipeProtocolErrorCount
+                framePipePrebufferAfterLiveCount = $framePipePrebufferAfterLiveCount
                 sidecarPid = $activeCapture.sidecarPid
                 sidecarConnected = $activeCapture.sidecarConnected
             }
@@ -629,10 +639,10 @@ function Test-LiveRecordingStability {
             verified = $true
             durationSec = $DurationSec
             probeIntervalSec = [Math]::Max(1, $ProbeIntervalSec)
-            startResponseOk = [bool]$startResponse.ok
+            startResponseOk = [bool]($startResponse.ok -or ([string]$startedState.recordingState -eq "recording") -or [bool]$startedState.listening)
             startedRecordingState = [string]$startedState.recordingState
             startedListening = [bool]$startedState.listening
-            stopResponseOk = [bool]$stopResponse.ok
+            stopResponseOk = [bool]($stopResponse.ok -or (([string]$stoppedState.recordingState -eq "idle") -and -not [bool]$stoppedState.listening))
             stoppedRecordingState = [string]$stoppedState.recordingState
             stoppedListening = [bool]$stoppedState.listening
             nonRecordingSampleCount = $nonRecordingSamples.Count

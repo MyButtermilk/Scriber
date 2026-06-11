@@ -109,7 +109,40 @@ fn active_audio_prewarm_sidecars() -> &'static Mutex<HashMap<String, ActiveAudio
     ACTIVE_AUDIO_PREWARM_SIDECARS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn payload_prewarm_id(payload: &Value) -> String {
+    payload
+        .get("prewarmId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(96)
+        .collect()
+}
+
 fn start_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
+    let prewarm_id = payload_prewarm_id(&payload);
+    if !prewarm_id.is_empty() {
+        let mut prewarm_sessions = active_audio_prewarm_sidecars().lock().unwrap();
+        if let Some(sidecar) = prewarm_sessions.remove(&prewarm_id) {
+            drop(prewarm_sessions);
+            return start_audio_sidecar_capture_with_sidecar(sidecar, payload);
+        }
+        drop(prewarm_sessions);
+        let executable_available = audio_sidecar_executable_available();
+        return unavailable_result(
+            "audioCaptureUnavailable",
+            "Rust audio prewarm session was not found for capture adoption",
+            json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "sidecarExecutableAvailable": executable_available,
+                "prewarmAdoptionRequested": true,
+            }),
+            None,
+            None,
+        );
+    }
+
     let Some(program) = find_audio_sidecar_executable() else {
         return unavailable_result(
             "audioCaptureUnavailable",
@@ -127,12 +160,20 @@ fn start_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
 
 fn start_audio_sidecar_capture_at(program: &Path, payload: Value) -> AudioSidecarCallResult {
     let path_hash = Some(hash_sensitive_identifier(&program.display().to_string()));
-    let mut sidecar = match spawn_audio_sidecar_process(program, path_hash.clone()) {
+    let sidecar = match spawn_audio_sidecar_process(program, path_hash) {
         Ok(sidecar) => sidecar,
         Err(result) => return result,
     };
+    start_audio_sidecar_capture_with_sidecar(sidecar, payload)
+}
+
+fn start_audio_sidecar_capture_with_sidecar(
+    mut sidecar: ActiveAudioSidecar,
+    payload: Value,
+) -> AudioSidecarCallResult {
     let request_id = Uuid::new_v4().simple().to_string();
     let request = sidecar_request(&request_id, "captureStart", payload);
+    let path_hash = sidecar.path_hash.clone();
 
     if let Err(err) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
         let _ = sidecar.child.kill();

@@ -752,7 +752,11 @@ class RustAudioPrewarmManager:
             "nativeEndpointIdHash": None,
         }
         requested_device = str(device_preference or "default").strip() or "default"
+        favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "").strip()
         default_requested = requested_device in {"default", "None"}
+        if default_requested and not favorite_mic:
+            result["devicePreference"] = "default"
+            return result
         if not HAS_SOUNDDEVICE or sd is None:
             return result
         try:

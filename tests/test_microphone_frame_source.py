@@ -210,6 +210,74 @@ def test_python_sounddevice_frame_source_device_index_parsing(requested, expecte
     assert source._parse_device_index() == expected
 
 
+def test_rust_audio_default_without_favorite_uses_windows_default(monkeypatch):
+    monkeypatch.setattr(microphone.Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(microphone.Config, "FAVORITE_MIC", "", raising=False)
+
+    payload = microphone._rust_audio_device_selection_payload(
+        "7",
+        sample_rate=16000,
+        channels=1,
+    )
+
+    assert payload["devicePreference"] == "default"
+    assert payload["nativeEndpointIdHash"] is None
+    assert payload["nativeEndpointMatchReason"] == "windowsDefaultEndpoint"
+
+
+def test_rust_prototype_frame_source_honors_selection_device_preference(monkeypatch):
+    commands: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-default",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "windows-default-hash",
+                    "endpointSelection": {
+                        "mode": "default",
+                        "usedDefaultEndpoint": True,
+                        "requestedNativeEndpointIdHash": None,
+                        "selectedNativeEndpointIdHash": "windows-default-hash",
+                    },
+                },
+            }
+        raise AssertionError(command)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=512,
+        device="7",
+        shell_call=shell_call,
+    )
+
+    source.open(lambda *_args: None)
+    snapshot = source.diagnostic_snapshot()
+
+    assert commands[0][1]["devicePreference"] == "default"
+    assert commands[0][1]["nativeEndpointIdHash"] is None
+    assert snapshot["nativeEndpointIdHash"] == "windows-default-hash"
+    assert snapshot["endpointSelection"]["mode"] == "default"
+    assert snapshot["endpointSelection"]["usedDefaultEndpoint"] is True
+
+
 def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     audio = np.full((512, 1), 321, dtype=np.int16)
     frame = encode_audio_frame(

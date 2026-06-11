@@ -208,7 +208,10 @@ python scripts\smoke_rust_audio_app_prewarm.py `
 ```
 
 The app-level smoke ignores locally configured favorite microphones by default
-so release evidence uses the stable Windows default endpoint. Add
+so release evidence uses the stable Windows default endpoint. In the default
+case, Rust requests must keep `devicePreference=default` and omit
+`nativeEndpointIdHash`; the WASAPI sidecar must then report
+`endpointSelection.mode=default` and `usedDefaultEndpoint=true`. Add
 `--honor-favorite-mic` only for a targeted selected-device investigation. These
 Rust audio smokes still do not promote Rust audio to the default engine; longer
 physical Always-On-Mic matrix evidence and provider-backed transcription smokes
@@ -524,10 +527,15 @@ promotion evidence; that requires every stability sample to include compact
 audio diagnostics proving `audioEngine=rust-prototype`,
 `activeCapture.frameSource=rust-frame-pipe`, active callbacks, no frame-pipe
 sequence/protocol/prebuffer-order errors, and
-`rustAudioFallbackCircuit.open=false`. The Rust callback, frame-pipe, and
-audio-frame counters must also increase across stability samples, so a stale
-positive diagnostics snapshot cannot satisfy long-recording evidence. The
-validator also rejects raw
+`rustAudioFallbackCircuit.open=false`. For default-device release evidence, the
+compact diagnostics should also show
+`activeCapture.sourceEndpointSelectionMode=default` and
+`activeCapture.sourceEndpointSelectionUsedDefault=true`; this proves the
+installed WASAPI sidecar opened the Windows default endpoint rather than a
+PortAudio-to-native hash mapping. The Rust callback, frame-pipe, and audio-frame
+counters must also increase across stability samples, so a stale positive
+diagnostics snapshot cannot satisfy long-recording evidence. The validator also
+rejects raw
 `SWD\MMDEVAPI\...` endpoint IDs and raw `\\.\pipe\scriber-*` pipe names in the
 installed live-recording artifact. It complements the provider-backed
 Python/Rust hot-path comparison; it does not replace transcript-quality

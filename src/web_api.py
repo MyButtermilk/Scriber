@@ -303,7 +303,12 @@ def _audio_engine_feature_flags() -> dict[str, Any]:
         requested = "python"
 
     rust_requested = requested == "rust-prototype"
-    rust_available = bool(_RUST_AUDIO_PROTOTYPE_AVAILABLE)
+    # Active Rust capture is driven through the Tauri shell IPC sidecar. The
+    # legacy module-level flag is kept for older harnesses, but installed
+    # Tauri runs should report Rust as available when the private IPC bridge is
+    # present; the activeCapture diagnostics still prove whether the sidecar
+    # actually delivered frames for a recording.
+    rust_available = bool(_RUST_AUDIO_PROTOTYPE_AVAILABLE or shell_ipc_available())
     effective = "rust-prototype" if rust_requested and rust_available else "python"
 
     return {
@@ -1714,12 +1719,16 @@ class ScriberWebController:
 
     def _rust_audio_probe_device_selection_payload(self, *, sample_rate: int, channels: int) -> dict[str, Any]:
         device_preference = str(getattr(Config, "MIC_DEVICE", "default") or "default").strip() or "default"
+        favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "").strip()
         payload: dict[str, Any] = {
             "devicePreference": device_preference,
             "portAudioLabel": "",
             "nativeEndpointIdHash": None,
             "nativeEndpointMatchReason": "notResolved",
         }
+        if device_preference in {"default", "None"} and not favorite_mic:
+            payload["nativeEndpointMatchReason"] = "windowsDefaultEndpoint"
+            return payload
         try:
             import sounddevice as sd  # type: ignore
 

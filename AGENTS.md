@@ -193,8 +193,12 @@ Packaging and scripts:
   `SCRIBER_AUDIO_ENGINE=rust-prototype` and `SCRIBER_MIC_ALWAYS_ON=1` are both
   enabled, the backend uses a Rust prewarm manager that keeps `audioPrewarmStart`
   alive while idle and passes its `prewarmId` to the next Rust capture. The
-  default app path still uses Python `sounddevice` prewarm. Non-default Rust
-  capture without a native endpoint hash
+  default app path still uses Python `sounddevice` prewarm. When the opt-in
+  Rust path is explicitly enabled and no favorite/non-default mic is selected,
+  keep the request as `devicePreference=default` with no
+  `nativeEndpointIdHash`; the Rust sidecar must open the Windows default WASAPI
+  capture endpoint directly so the visible microphone privacy indicator matches
+  the active device. Non-default Rust capture without a native endpoint hash
   must fail before first frame and let Python fall back to `sounddevice`; it
   must not silently use the Windows default endpoint. The default capture path
   remains Python `sounddevice` until a measured Rust prototype is explicitly

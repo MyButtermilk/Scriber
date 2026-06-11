@@ -417,6 +417,7 @@ impl BackendManager {
         if let Ok(mut state) = self.state.lock() {
             refresh_child_state(&mut state);
             if ready && state.port == port && (!force_managed || state.child.is_some()) {
+                state.started_at = None;
                 state.message = if state.child.is_some() {
                     "Managed backend is ready".to_string()
                 } else {
@@ -425,11 +426,17 @@ impl BackendManager {
                 return status_from_state(&state, true);
             }
             if state.child.is_some() {
-                if managed_backend_start_timed_out(state.started_at, Instant::now()) {
+                if state.started_at.is_some()
+                    && managed_backend_start_timed_out(state.started_at, Instant::now())
+                {
                     terminate_managed_child(&mut state);
                     state.message = "Managed backend startup timed out; restarting".to_string();
                 } else {
-                    state.message = "Managed backend is starting".to_string();
+                    state.message = if state.started_at.is_some() {
+                        "Managed backend is starting".to_string()
+                    } else {
+                        "Managed backend is not responding".to_string()
+                    };
                     return status_from_state(&state, false);
                 }
             }
@@ -457,13 +464,19 @@ impl BackendManager {
         if let Ok(mut state) = self.state.lock() {
             refresh_child_state(&mut state);
             let ready = health && state.port == port && (!force_managed || state.child.is_some());
-            if ready && state.child.is_none() {
-                state.message = "Attached to existing backend".to_string();
+            if ready {
+                state.started_at = None;
+                if state.child.is_none() {
+                    state.message = "Attached to existing backend".to_string();
+                }
             } else if !ready
                 && state.child.is_some()
+                && state.started_at.is_some()
                 && managed_backend_start_timed_out(state.started_at, Instant::now())
             {
                 state.message = "Managed backend startup timed out".to_string();
+            } else if !ready && state.child.is_some() && state.started_at.is_none() {
+                state.message = "Managed backend is not responding".to_string();
             }
             return status_from_state(&state, ready);
         }

@@ -1108,14 +1108,29 @@ Implementation plan:
      `prebufferAfterLiveCount=0`, and `sequenceGapCount=0`.
    - Local evidence from 2026-06-11: the app-level Windows WASAPI prewarm
      adoption smoke passed with
-     `python scripts\smoke_rust_audio_app_prewarm.py --mode wasapi --duration-sec 0.5 --prewarm-duration-sec 0.5 --post-resume-duration-sec 0.1 --output tmp\rust-audio-app-prewarm-wasapi-current.json`.
+     `python scripts\smoke_rust_audio_app_prewarm.py --mode wasapi --duration-sec 10 --prewarm-duration-sec 2 --post-resume-duration-sec 2 --output tmp\rust-promotion-evidence\rust-audio-app-prewarm-wasapi-10s-default-endpoint-fix.json`.
      It reported `adoptedPrewarmBlocks=40`, `prebufferFramesRead=40`,
-     `liveFramesRead=42`, `prebufferAfterLiveCount=0`,
+     `liveFramesRead=992`, `prebufferAfterLiveCount=0`,
      `sequenceErrorCount=0`, `protocolErrorCount=0`,
-     `framePipeFirstFrameReadMs=10.271`, and successful idle-prewarm resume.
-     A related fix keeps the Rust prewarm manager's default device preference as
-     `default` when Python cannot map the PortAudio default to a native endpoint
-     hash; non-default Rust capture without a native hash still fails closed.
+     `framePipeFirstFrameReadMs=10.186`, and successful idle-prewarm resume.
+     The same run showed `endpointSelection.mode=default` and
+     `usedDefaultEndpoint=true`.
+   - Implemented: for the opt-in Rust prototype, an unfavorited default
+     microphone request is passed through to the Rust sidecar as
+     `devicePreference=default` with no native endpoint hash. Rust then opens
+     the real Windows default capture endpoint with WASAPI, which matches the
+     visible Windows microphone privacy indicator. Explicit or favorite
+     non-default devices still use the redacted native endpoint hash path and
+     fail closed if no native endpoint hash can be resolved.
+   - Local evidence from 2026-06-11: the installed Rust/WASAPI Always-On-Mic
+     live-recording smoke passed with
+     `tmp\rust-promotion-evidence\installed-live-recording-rust-wasapi-alwayson-30s-default-endpoint-fix-v2.json`.
+     It verified 30 seconds of installed `tauri-supervised` recording with
+     `SCRIBER_AUDIO_ENGINE=rust-prototype`, `frameSource=rust-frame-pipe`,
+     increasing callback and frame-pipe counters, no sequence/protocol/prebuffer
+     ordering errors, `rustAudioFallbackCircuit.open=false`, and
+     `sourceEndpointSelectionMode=default` /
+     `sourceEndpointSelectionUsedDefault=true`.
    - Implemented: the recording hot-path benchmark can now be run as a strict
      provider-backed Rust evidence gate. `--require-provider-transcript`
      requires a final STT provider transcript, and `--require-rust-audio-engine`
@@ -1166,8 +1181,9 @@ Implementation plan:
      audio-owned hot-path segments.
    - Still open: actually running the long physical Always-On-Mic evidence with
      the Rust manager, device-refresh pause/resume matrix evidence, real
-     provider-backed Python/Rust comparison runs using the new gate, and final
-     promotion decision gates. The readiness runner now has
+     provider-backed Python/Rust comparison runs using the new gate, signing /
+     updater publication evidence, and final promotion decision gates. The
+     readiness runner now has
      `-RequireRustAudioPromotionReadiness` as a single aggregate switch for the
      final default-path decision; it makes the sidecar, app prewarm, installed
      live-recording, provider-comparison, Rust endpoint inventory, and native

@@ -148,9 +148,10 @@ Rust audio:
   Rust capture for sidecar-local buffered-frame adoption. The app-level smoke
   `scripts/smoke_rust_audio_app_prewarm.py` now verifies that the Python
   manager/source lifecycle performs this handoff against the real sidecar and
-  resumes idle prewarm after capture. It also keeps the neutral default-device
-  path as `default` when Python lacks native endpoint inventory, while
-  non-default Rust capture without a native endpoint hash still fails closed.
+  resumes idle prewarm after capture. It also keeps unfavorited default-device
+  requests as `devicePreference=default` with no native endpoint hash, so the
+  Rust WASAPI sidecar opens the real Windows default capture endpoint directly.
+  Non-default Rust capture without a native endpoint hash still fails closed.
   The hybrid release-readiness runner can require this app-level smoke via
   `-RequireRustAudioAppPrewarmSmoke`. It can also require explicit app-level
   Rust Always-On-Mic durations with `-MinRustAudioAppPrewarmDurationSec` and
@@ -201,13 +202,17 @@ Rust audio:
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no
   prebuffer-after-live frames. A local app-level WASAPI prewarm adoption smoke
-  passed on 2026-06-11 with 40 adopted prebuffer blocks, 42 live blocks, no
-  sequence/protocol errors, and successful idle-prewarm resume. The hardware
-  matrix now records native DeviceMonitor refresh evidence without forced
-  per-poll refreshes, but actually running the long physical Always-On-Mic and
-  hardware matrix evidence, real provider-backed Python/Rust comparison
-  artifacts using the aggregate gate, and the final promotion decision are still
-  open before default promotion.
+  passed on 2026-06-11 with 40 adopted prebuffer blocks, 992 live blocks, no
+  sequence/protocol errors, successful idle-prewarm resume, and Windows-default
+  endpoint selection evidence. A 30-second installed Rust/WASAPI Always-On-Mic
+  live-recording smoke also passed on 2026-06-11 with increasing frame-pipe
+  counters, closed fallback circuit, and Windows-default endpoint selection.
+  The hardware matrix now records native DeviceMonitor refresh evidence without
+  forced per-poll refreshes, but actually running the long physical
+  Always-On-Mic and hardware matrix evidence, real provider-backed Python/Rust
+  comparison artifacts using the aggregate gate, signing/updater publication
+  evidence, and the final promotion decision are still open before default
+  promotion.
 
 Tauri text injection:
 
