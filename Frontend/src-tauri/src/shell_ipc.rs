@@ -1823,7 +1823,13 @@ fn handle_connected_client(
                 ptr::null_mut(),
             )
         };
-        if ok == 0 || bytes_read == 0 {
+        let read_error = if ok == 0 {
+            unsafe { GetLastError() }
+        } else {
+            0
+        };
+        let read_status = pipe_read_chunk_status(ok, bytes_read, read_error)?;
+        if matches!(read_status, PipeReadChunkStatus::Finished) {
             break;
         }
         request.extend_from_slice(&buffer[..bytes_read as usize]);
@@ -1852,6 +1858,37 @@ fn handle_connected_client(
     let raw = String::from_utf8_lossy(first_line);
     let response = handle_shell_ipc_request(raw.trim(), expected_token);
     write_response(pipe, &response)
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipeReadChunkStatus {
+    Complete,
+    MoreData,
+    Finished,
+}
+
+#[cfg(windows)]
+fn pipe_read_chunk_status(
+    ok: i32,
+    bytes_read: u32,
+    error_code: u32,
+) -> Result<PipeReadChunkStatus, String> {
+    use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
+
+    if ok != 0 {
+        return if bytes_read == 0 {
+            Ok(PipeReadChunkStatus::Finished)
+        } else {
+            Ok(PipeReadChunkStatus::Complete)
+        };
+    }
+
+    if error_code == ERROR_MORE_DATA && bytes_read > 0 {
+        return Ok(PipeReadChunkStatus::MoreData);
+    }
+
+    Err(format!("ReadFile failed with {error_code}"))
 }
 
 #[cfg(windows)]
@@ -2413,6 +2450,26 @@ mod tests {
     #[test]
     fn inject_text_byte_budget_fits_inside_request_budget_with_overhead() {
         assert!(super::MAX_INJECT_TEXT_BYTES + 8192 < super::MAX_REQUEST_BYTES);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_ipc_pipe_read_accepts_message_mode_partial_chunks() {
+        use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
+
+        assert_eq!(
+            super::pipe_read_chunk_status(0, 4096, ERROR_MORE_DATA).unwrap(),
+            super::PipeReadChunkStatus::MoreData
+        );
+        assert_eq!(
+            super::pipe_read_chunk_status(1, 128, 0).unwrap(),
+            super::PipeReadChunkStatus::Complete
+        );
+        assert_eq!(
+            super::pipe_read_chunk_status(1, 0, 0).unwrap(),
+            super::PipeReadChunkStatus::Finished
+        );
+        assert!(super::pipe_read_chunk_status(0, 0, ERROR_MORE_DATA).is_err());
     }
 
     #[test]

@@ -533,9 +533,10 @@ Implementation status on `codex/rust-expansion-plan`:
   raw foreground titles, or session tokens.
 - Added Rust unit tests for the shell IPC protocol and backend env contract,
   injectText payload validation, retry-limit clamping, request/text budget
-  consistency, NUL rejection, and deadline failure payloads, plus Python unit/
-  contract coverage for shell IPC diagnostics, strict Tauri injection marker
-  forwarding, and response protocol validation.
+  consistency, NUL rejection, deadline failure payloads, and message-mode
+  partial-read handling for large IPC requests, plus Python unit/contract
+  coverage for shell IPC diagnostics, strict Tauri injection marker forwarding,
+  and response protocol validation.
 - Implemented the first promotion evidence hook for the safe target-window
   path: `scripts/smoke_text_injection_target.py` now accepts `--method tauri`
   and records the redacted Shell IPC diagnostic snapshot in its JSON artifact.
