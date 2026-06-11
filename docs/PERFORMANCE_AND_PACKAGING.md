@@ -1114,7 +1114,12 @@ Implementation plan:
    - Still open: actually running the long physical Always-On-Mic evidence with
      the Rust manager, device-refresh pause/resume matrix evidence, real
      provider-backed Python/Rust comparison runs using the new gate, and final
-     promotion decision gates.
+     promotion decision gates. The readiness runner now has
+     `-RequireRustAudioPromotionReadiness` as a single aggregate switch for the
+     final default-path decision; it makes the sidecar, app prewarm, installed
+     live-recording, provider-comparison, Rust endpoint inventory, and native
+     device-refresh evidence mandatory, and raises the relevant duration minima
+     to 10-minute active / 30-minute idle-prewarm promotion values.
    - Keep Python prewarm as default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream
@@ -1182,6 +1187,11 @@ Acceptance gates:
 - New Python `AudioFrameSource` contract tests, Rust frame-source fallback
   tests, diagnostics schema tests, and support-bundle redaction tests.
 - Installed live-mic smoke with visible waveform and successful transcription.
+- For final Rust-audio default promotion only: run
+  `scripts\run_hybrid_release_readiness.ps1 -RequireRustAudioPromotionReadiness`
+  with either matching `-Run...` flags or validated existing reports. This is
+  the canonical aggregate gate before changing defaults; individual Rust gates
+  remain available for focused investigations.
 - For Rust audio promotion only: 10-minute physical WASAPI sidecar smoke via
   `scripts\run_hybrid_release_readiness.ps1 -RunRustAudioSidecarSmoke
   -RequireRustAudioSidecarSmoke`, including default capture, selected native

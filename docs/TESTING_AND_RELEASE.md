@@ -398,6 +398,24 @@ Use the top-level release-readiness runner for final external evidence:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 -PlanOnly
 ```
 
+For a default-path Rust audio promotion decision, use the aggregate gate first:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RequireRustAudioPromotionReadiness `
+  -PlanOnly
+```
+
+`-RequireRustAudioPromotionReadiness` turns on the full Rust-audio promotion
+bundle without starting long hardware tests by itself. It requires the Rust
+WASAPI sidecar smoke, app-level Always-On-Mic prewarm smoke, installed
+live-recording smoke, provider-backed Python-vs-Rust hot-path comparison,
+Rust/WASAPI endpoint inventory in the physical microphone matrix, and native
+device-refresh evidence. It also raises the promotion minima to a 10-minute
+Rust sidecar smoke, 10-minute active app prewarm capture, 30-minute idle prewarm
+window, and 10-minute installed live-recording smoke. Add the matching `-Run...`
+or `-UseExisting...` flags when producing or reusing those reports.
+
 When evaluating whether the Rust audio prototype can be promoted, add the
 physical sidecar smoke, Rust endpoint inventory evidence, and native
 DeviceMonitor refresh evidence as hard gates:

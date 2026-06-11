@@ -185,6 +185,12 @@ Rust audio:
   pass, Rust-prototype pass, and comparison artifact creation for real
   provider-backed A/B runs, defaulting to three recording samples per engine
   and a 50 ms max P95 regression tolerance for local audio-owned segments.
+  `scripts/run_hybrid_release_readiness.ps1` now exposes
+  `-RequireRustAudioPromotionReadiness` as the aggregate default-promotion
+  gate; it bundles Rust sidecar capture, app-level Always-On-Mic prewarm,
+  installed live-recording stability, provider-backed Python-vs-Rust
+  comparison, Rust endpoint inventory, and native device-refresh evidence with
+  the required 10-minute active / 30-minute idle-prewarm minimums.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no
@@ -194,8 +200,8 @@ Rust audio:
   matrix now records native DeviceMonitor refresh evidence without forced
   per-poll refreshes, but actually running the long physical Always-On-Mic and
   hardware matrix evidence, real provider-backed Python/Rust comparison
-  artifacts using that gate, and final Rust promotion gates remain open before
-  default promotion.
+  artifacts using the aggregate gate, and the final promotion decision are still
+  open before default promotion.
 
 Tauri text injection:
 

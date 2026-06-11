@@ -443,6 +443,79 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
     assert "--min-installed-live-recording-duration-sec 600" in readiness_command["command"]
 
 
+def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RequireRustAudioPromotionReadiness",
+        "-RustAudioSidecarDurationSec",
+        "30",
+        "-RustAudioAppPrewarmDurationSec",
+        "30",
+        "-RustAudioAppPrewarmPrewarmDurationSec",
+        "30",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["requireRustAudioPromotionReadiness"] is True
+    assert payload["requireRustAudioSidecarSmoke"] is True
+    assert payload["requireRustAudioAppPrewarmSmoke"] is True
+    assert payload["requireInstalledLiveRecordingSmoke"] is True
+    assert payload["requireRecordingHotPathComparison"] is True
+    assert payload["requireRustEndpointInventory"] is True
+    assert payload["requireDeviceRefreshEvidence"] is True
+    assert payload["rustAudioSidecarDurationSec"] == 600
+    assert payload["rustAudioSidecarPrewarmBeforeCapture"] is True
+    assert payload["rustAudioAppPrewarmDurationSec"] == 600
+    assert payload["rustAudioAppPrewarmPrewarmDurationSec"] == 1800
+    assert payload["minRustAudioAppPrewarmDurationSec"] == 600
+    assert payload["minRustAudioAppPrewarmPrewarmDurationSec"] == 1800
+    assert payload["minInstalledLiveRecordingDurationSec"] == 600
+
+    by_name = {entry["name"]: entry for entry in payload["requiredEvidence"]}
+    assert by_name["rustAudioSidecarSmoke"]["required"] is True
+    assert by_name["rustAudioSidecarSmoke"]["producer"] == "required external report"
+    assert by_name["rustAudioSidecarSmoke"]["durationSec"] == 600
+    assert by_name["rustAudioSidecarSmoke"]["prewarmBeforeCapture"] is True
+    assert by_name["rustAudioAppPrewarmSmoke"]["required"] is True
+    assert by_name["rustAudioAppPrewarmSmoke"]["producer"] == "required external report"
+    assert by_name["rustAudioAppPrewarmSmoke"]["durationSec"] == 600
+    assert by_name["rustAudioAppPrewarmSmoke"]["prewarmDurationSec"] == 1800
+    assert by_name["recordingHotPathPythonRustComparison"]["required"] is True
+    assert by_name["installedLiveRecordingSmoke"]["required"] is True
+    assert by_name["installedLiveRecordingSmoke"]["minDurationSec"] == 600
+    assert by_name["physicalMicrophoneMatrix"]["requireRustEndpointInventory"] is True
+    assert by_name["physicalMicrophoneMatrix"]["requireDeviceRefreshEvidence"] is True
+
+    command_by_name = {entry["name"]: entry["command"] for entry in payload["commands"]}
+    assert "--require-rust-endpoint-inventory" in command_by_name["microphoneMatrixValidation"]
+    assert "--require-device-refresh-evidence" in command_by_name["microphoneMatrixValidation"]
+    assert "required external report" in command_by_name["rustAudioSidecarSmoke"]
+    assert "RunRustAudioSidecarSmoke" in command_by_name["rustAudioSidecarSmoke"]
+    assert "required external report" in command_by_name["rustAudioAppPrewarmSmoke"]
+    assert "RunRustAudioAppPrewarmSmoke" in command_by_name["rustAudioAppPrewarmSmoke"]
+    assert "required external report" in command_by_name["recordingHotPathPythonRustComparison"]
+    assert "required external report" in command_by_name["installedLiveRecordingSmoke"]
+    readiness_command = command_by_name["hybridReleaseReadiness"]
+    assert "--require-rust-audio-sidecar-smoke" in readiness_command
+    assert "--min-rust-audio-duration-sec 600" in readiness_command
+    assert "--require-rust-audio-app-prewarm-smoke" in readiness_command
+    assert "--min-rust-audio-app-prewarm-duration-sec 600" in readiness_command
+    assert "--min-rust-audio-app-prewarm-prewarm-duration-sec 1800" in readiness_command
+    assert "--require-installed-live-recording-smoke" in readiness_command
+    assert "--min-installed-live-recording-duration-sec 600" in readiness_command
+    assert "--require-recording-hot-path-comparison" in readiness_command
+    assert "--require-rust-endpoint-inventory" in readiness_command
+    assert "--require-device-refresh-evidence" in readiness_command
+
+
 def test_hybrid_release_readiness_runner_plans_required_tauri_text_injection_smoke(tmp_path: Path) -> None:
     result = run_powershell(
         "-NoProfile",

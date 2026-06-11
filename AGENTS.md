@@ -428,6 +428,20 @@ Rust audio promotion readiness gate:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RequireRustAudioPromotionReadiness `
+  -PlanOnly
+```
+
+Use this aggregate gate before any default Rust-audio promotion. It makes the
+Rust sidecar smoke, app-level Always-On-Mic prewarm smoke, installed live
+recording smoke, provider-backed Python-vs-Rust comparison, Rust endpoint
+inventory, and native device-refresh evidence mandatory, and raises the
+promotion minima to 10-minute active / 30-minute idle-prewarm evidence.
+Then add the matching `-Run...` or `-UseExisting...` flags to produce or reuse
+the required reports.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
   -RunRustAudioSidecarSmoke `
   -RequireRustAudioSidecarSmoke `
   -RustAudioSidecarDurationSec 600
