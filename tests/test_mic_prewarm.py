@@ -283,6 +283,13 @@ def test_mic_prewarm_watchdog_records_missing_idle_stream(monkeypatch):
     assert snapshot["lastHealthCheckReason"] == "test-missing"
     assert snapshot["lastHealthFailureReason"] == "missingPrewarmStream"
     assert snapshot["lastStatus"] == "missingPrewarmStream"
+    events = snapshot["recentEvents"]
+    assert any(
+        event["event"] == "health_restart"
+        and event["failureReason"] == "missingPrewarmStream"
+        for event in events
+    )
+    assert any(event["event"] == "recovered" for event in events)
 
     manager.stop()
 
@@ -548,6 +555,13 @@ def test_rust_audio_prewarm_watchdog_restarts_missing_sidecar_session(monkeypatc
     assert snapshot["lastHealthCheckActive"] is False
     assert snapshot["lastHealthError"] == "noActivePrewarm"
     assert snapshot["lastStatus"]["prewarmIdHash"]
+    events = snapshot["recentEvents"]
+    assert any(
+        event["event"] == "health_restart"
+        and event["healthError"] == "noActivePrewarm"
+        for event in events
+    )
+    assert sum(1 for event in events if event["event"] == "started") == 2
     assert "prewarm-old" not in str(snapshot)
     assert "prewarm-new" not in str(snapshot)
 

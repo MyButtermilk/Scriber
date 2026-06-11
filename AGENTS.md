@@ -210,8 +210,11 @@ Packaging and scripts:
   a cached `prewarmId` alone is not proof that the microphone stream is still
   active. Status diagnostics must keep prewarm IDs redacted and preserve
   response time, active/inactive reason, buffered-frame counters, and restart
-  counts so short Windows privacy-indicator dropouts are visible in support
-  bundles. The default app path still uses Python `sounddevice` prewarm. When
+  counts. The prewarm diagnostics also expose a bounded redacted `recentEvents`
+  timeline for start/stop/adoption/watchdog restarts so short Windows
+  privacy-indicator dropouts are visible in support bundles without increasing
+  steady-state log volume. The default app path still uses Python `sounddevice`
+  prewarm. When
   the opt-in Rust path is explicitly enabled and no favorite/non-default mic is selected,
   keep the request as `devicePreference=default` with no
   `nativeEndpointIdHash`; the Rust sidecar must open the Windows default WASAPI

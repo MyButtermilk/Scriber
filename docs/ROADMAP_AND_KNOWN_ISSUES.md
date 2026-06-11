@@ -203,8 +203,10 @@ Rust audio:
   Shell IPC and the audio sidecar. The Python Rust prewarm watchdog uses that
   status instead of treating a cached `prewarmId` as sufficient proof of an
   active stream, and audio diagnostics expose redacted status/start/stop/health
-  timings plus inactive reasons and restart counters. This should make short
-  microphone privacy-indicator dropouts visible in support bundles. Missing
+  timings plus inactive reasons, restart counters, and a bounded redacted
+  `recentEvents` timeline for start/stop/adoption/watchdog restarts. This
+  should make short microphone privacy-indicator dropouts visible in support
+  bundles without increasing steady-state log volume. Missing
   post-start idle sessions are now recorded explicitly as
   `missingPrewarmSession` for Rust and `missingPrewarmStream` for the Python
   fallback, while first startup activation is not counted as a restart. This

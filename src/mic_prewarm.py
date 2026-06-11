@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from collections import deque
@@ -25,6 +26,99 @@ try:
 except Exception:
     sd = None  # type: ignore[assignment]
     HAS_SOUNDDEVICE = False
+
+
+_PREWARM_RECENT_EVENT_LIMIT = 40
+_SECRET_KEY_FRAGMENTS = (
+    "token",
+    "secret",
+    "authorization",
+    "api_key",
+    "apikey",
+    "bearer",
+)
+_RAW_IDENTIFIER_KEYS = {
+    "endpointid",
+    "framepipe",
+    "pipename",
+    "prewarmid",
+    "prewarm_id",
+    "streamid",
+    "stream_id",
+}
+
+
+def _hash_diagnostic_hint(value: str | None) -> str | None:
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _bounded_diagnostic_text(value: object, *, limit: int = 240) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "..."
+
+
+def _sanitize_event_value(key: str, value: object, *, depth: int = 0) -> object:
+    key_text = str(key or "")
+    normalized_key = key_text.replace("-", "_").lower()
+    if any(fragment in normalized_key for fragment in _SECRET_KEY_FRAGMENTS):
+        return "[REDACTED]"
+    if normalized_key in _RAW_IDENTIFIER_KEYS and not normalized_key.endswith("hash"):
+        return _hash_diagnostic_hint(str(value or ""))
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        if depth >= 2:
+            return "[OBJECT]"
+        return {
+            _bounded_diagnostic_text(k, limit=80): _sanitize_event_value(
+                str(k),
+                v,
+                depth=depth + 1,
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        if depth >= 2:
+            return "[LIST]"
+        return [
+            _sanitize_event_value(key_text, item, depth=depth + 1)
+            for item in list(value)[:8]
+        ]
+    return _bounded_diagnostic_text(value)
+
+
+def _append_prewarm_event(
+    events: deque[dict[str, Any]],
+    event: str,
+    reason: str = "",
+    **fields: object,
+) -> None:
+    entry: dict[str, Any] = {
+        "event": _bounded_diagnostic_text(event, limit=96),
+        "reason": _bounded_diagnostic_text(reason, limit=160),
+        "_at": time.monotonic(),
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        entry[_bounded_diagnostic_text(key, limit=80)] = _sanitize_event_value(key, value)
+    events.append(entry)
+
+
+def _snapshot_prewarm_events(events: deque[dict[str, Any]]) -> list[dict[str, Any]]:
+    now = time.monotonic()
+    snapshot: list[dict[str, Any]] = []
+    for entry in events:
+        event = {key: value for key, value in entry.items() if key != "_at"}
+        at = entry.get("_at")
+        if isinstance(at, (int, float)):
+            event["ageSeconds"] = round(max(0.0, now - float(at)), 3)
+        snapshot.append(event)
+    return snapshot
 
 
 class MicrophonePrewarmManager:
@@ -65,6 +159,7 @@ class MicrophonePrewarmManager:
         self._last_transition = ""
         self._last_transition_reason = ""
         self._last_transition_at = 0.0
+        self._recent_events: deque[dict[str, Any]] = deque(maxlen=_PREWARM_RECENT_EVENT_LIMIT)
 
     @property
     def is_active(self) -> bool:
@@ -111,12 +206,16 @@ class MicrophonePrewarmManager:
                     else None
                 ),
                 "signature": dict(self._stream_signature),
+                "recentEvents": _snapshot_prewarm_events(self._recent_events),
             }
 
     def _record_transition_locked(self, transition: str, reason: str = "") -> None:
         self._last_transition = transition
         self._last_transition_reason = reason
         self._last_transition_at = time.monotonic()
+
+    def _record_event_locked(self, event: str, reason: str = "", **fields: object) -> None:
+        _append_prewarm_event(self._recent_events, event, reason, **fields)
 
     def _claim_stream(self) -> None:
         if self._stream_claimed:
@@ -200,6 +299,13 @@ class MicrophonePrewarmManager:
         return frames, duration_ms
 
     def _log_start_error(self, exc: Exception) -> None:
+        with self._lock:
+            self._record_event_locked(
+                "start_failed",
+                "start",
+                errorType=type(exc).__name__,
+                error=str(exc),
+            )
         now = time.monotonic()
         if now - self._last_error_log_at < 60.0:
             logger.debug(f"Mic prewarm skipped: {exc}")
@@ -288,6 +394,15 @@ class MicrophonePrewarmManager:
                     self._claim_stream()
                     self._stream_start_count += 1
                     self._record_transition_locked("started", "start")
+                    self._record_event_locked(
+                        "started",
+                        "start",
+                        device="default" if device_index is None else device_index,
+                        sampleRate=sample_rate,
+                        targetChannels=channels,
+                        captureChannels=capture_channels,
+                        blockSize=block_size,
+                    )
                 logger.info(
                     "Mic prewarm stream active "
                     f"(device={'default' if device_index is None else device_index}, "
@@ -355,6 +470,14 @@ class MicrophonePrewarmManager:
                 )
                 self._health_restart_count += 1
                 self._record_transition_locked("watchdog_restart", reason)
+                self._record_event_locked(
+                    "health_restart",
+                    reason,
+                    failureReason=self._last_health_failure_reason,
+                    active=active,
+                    callbackAgeSeconds=callback_age,
+                    startedAgeSeconds=started_age,
+                )
                 self._close_locked(reason=f"{reason}:unhealthy")
             else:
                 had_previous_stream = (
@@ -368,6 +491,11 @@ class MicrophonePrewarmManager:
                     self._last_health_failure_reason = "missingPrewarmStream"
                     self._health_restart_count += 1
                     self._record_transition_locked("watchdog_restart", reason)
+                    self._record_event_locked(
+                        "health_restart",
+                        reason,
+                        failureReason="missingPrewarmStream",
+                    )
 
         if missing_stream_restart:
             logger.warning(f"Mic prewarm stream missing; restarting idle stream ({reason})")
@@ -376,6 +504,7 @@ class MicrophonePrewarmManager:
         if restarted:
             with self._lock:
                 self._last_health_restart_at = time.monotonic()
+                self._record_event_locked("recovered", reason)
             logger.info(f"Mic prewarm stream recovered ({reason})")
         return restarted
 
@@ -419,6 +548,12 @@ class MicrophonePrewarmManager:
         with self._lock:
             self._health_restart_count += 1
             self._record_transition_locked("active_capture_watchdog_restart", reason)
+            self._record_event_locked(
+                "active_capture_health_restart",
+                reason,
+                active=active,
+                staleCallbacks=callback_stale,
+            )
 
         try:
             with get_device_guard_lock():
@@ -484,6 +619,11 @@ class MicrophonePrewarmManager:
             self._active_capture_callback = callback
             signature["prebuffer_frames"] = prebuffer_frames
             signature["prebuffer_ms"] = round(prebuffer_ms, 3)
+            self._record_event_locked(
+                "adopted_for_capture",
+                "active_capture",
+                prebufferMs=round(prebuffer_ms, 3),
+            )
             return signature
 
     def detach_active_capture(
@@ -495,6 +635,7 @@ class MicrophonePrewarmManager:
                 return bool(self._stream and getattr(self._stream, "active", False))
             self._active_capture_callback = None
             self._paused_for_active_capture = False
+            self._record_event_locked("detached_active_capture", "active_capture")
             return bool(self._stream and getattr(self._stream, "active", False))
 
     def _close_locked(self, *, reason: str = "close") -> None:
@@ -518,6 +659,7 @@ class MicrophonePrewarmManager:
         if stream:
             self._stream_close_count += 1
             self._record_transition_locked("closed", reason)
+            self._record_event_locked("closed", reason)
             if reason.startswith("device_refresh"):
                 logger.info(f"Mic prewarm stream paused for device refresh ({reason})")
             elif reason.endswith(":unhealthy") or "watchdog" in reason:
@@ -534,12 +676,14 @@ class MicrophonePrewarmManager:
             self._paused_for_active_capture = True
             self._active_capture_callback = None
             self._active_capture_pause_count += 1
+            self._record_event_locked("pause_active_capture", "active_capture")
             self._close_locked(reason="active_capture")
 
     def resume_after_active_capture(self) -> bool:
         with self._lock:
             self._paused_for_active_capture = False
             self._active_capture_resume_count += 1
+            self._record_event_locked("resume_active_capture", "active_capture")
         return self.start_if_enabled()
 
     def quiesce_for_device_refresh(self) -> None:
@@ -548,6 +692,7 @@ class MicrophonePrewarmManager:
             if self._paused_for_device_refresh:
                 self._device_refresh_pause_count += 1
                 self._record_transition_locked("device_refresh_pause", "device_refresh")
+                self._record_event_locked("device_refresh_pause", "device_refresh")
             self._close_locked(reason="device_refresh")
 
     def resume_after_device_refresh(self) -> bool:
@@ -559,6 +704,7 @@ class MicrophonePrewarmManager:
         with self._lock:
             self._device_refresh_resume_count += 1
             self._record_transition_locked("device_refresh_resume", "device_refresh")
+            self._record_event_locked("device_refresh_resume", "device_refresh")
         return self.start_if_enabled()
 
 
@@ -612,6 +758,7 @@ class RustAudioPrewarmManager:
         self._last_health_check_active: bool | None = None
         self._last_health_response_ms: float | None = None
         self._last_health_error = ""
+        self._recent_events: deque[dict[str, Any]] = deque(maxlen=_PREWARM_RECENT_EVENT_LIMIT)
 
     @property
     def is_active(self) -> bool:
@@ -681,6 +828,7 @@ class RustAudioPrewarmManager:
                 "lastStop": self._redacted_stop_payload_locked(),
                 "lastStatus": self._redacted_status_payload_locked(),
                 "start": self._redacted_start_payload_locked(),
+                "recentEvents": _snapshot_prewarm_events(self._recent_events),
             }
 
     def _record_transition_locked(self, transition: str, reason: str = "") -> None:
@@ -690,11 +838,10 @@ class RustAudioPrewarmManager:
 
     @staticmethod
     def _hash_hint(value: str | None) -> str | None:
-        if not value:
-            return None
-        import hashlib
+        return _hash_diagnostic_hint(value)
 
-        return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:16]
+    def _record_event_locked(self, event: str, reason: str = "", **fields: object) -> None:
+        _append_prewarm_event(self._recent_events, event, reason, **fields)
 
     def _redacted_start_payload_locked(self) -> dict[str, Any]:
         payload = dict(self._prewarm_payload)
@@ -768,6 +915,7 @@ class RustAudioPrewarmManager:
             self._last_start_duration_ms = None
             self._last_start_response_ms = None
             self._last_start_success = False
+            self._record_event_locked("start_attempt", "start")
 
         try:
             payload = self._build_start_payload()
@@ -806,6 +954,18 @@ class RustAudioPrewarmManager:
                 self._last_start_response_ms = shell_response_ms
                 self._last_start_success = True
                 self._record_transition_locked("started", "start")
+                self._record_event_locked(
+                    "started",
+                    "start",
+                    prewarmIdHash=self._hash_hint(prewarm_id),
+                    sampleRate=int(payload["sampleRate"]),
+                    channels=int(payload["channels"]),
+                    blockSize=int(payload["blockSize"]),
+                    devicePreference=str(payload.get("devicePreference") or "default"),
+                    nativeEndpointIdHash=str(payload.get("nativeEndpointIdHash") or ""),
+                    responseMs=shell_response_ms,
+                    durationMs=self._last_start_duration_ms,
+                )
             logger.info("Rust mic prewarm session active")
             return True
         except Exception as exc:
@@ -824,6 +984,14 @@ class RustAudioPrewarmManager:
                     )
                 self._last_start_response_ms = shell_response_ms
                 self._last_start_success = False
+                self._record_event_locked(
+                    "start_failed",
+                    "start",
+                    errorType=type(exc).__name__,
+                    error=str(exc),
+                    responseMs=shell_response_ms,
+                    durationMs=self._last_start_duration_ms,
+                )
             self._log_start_error(exc)
             return False
 
@@ -953,6 +1121,14 @@ class RustAudioPrewarmManager:
             self._adoption_count += 1
             self._last_adopted_prewarm_id_hash = self._hash_hint(prewarm_id)
             self._record_transition_locked("adopted_for_capture", "active_capture")
+            self._record_event_locked(
+                "adopted_for_capture",
+                "active_capture",
+                prewarmIdHash=self._hash_hint(prewarm_id),
+                sampleRate=sample_rate,
+                targetChannels=target_channels,
+                blockSize=block_size,
+            )
             return {
                 "engine": self.engine,
                 "prewarmId": prewarm_id,
@@ -968,6 +1144,7 @@ class RustAudioPrewarmManager:
     ) -> bool:
         with self._lock:
             self._active_capture_attached = False
+            self._record_event_locked("detached_active_capture", "active_capture")
             return bool(self._prewarm_id)
 
     def pause_for_active_capture(self) -> None:
@@ -975,6 +1152,7 @@ class RustAudioPrewarmManager:
             self._paused_for_active_capture = True
             self._active_capture_attached = False
             self._active_capture_pause_count += 1
+            self._record_event_locked("pause_active_capture", "active_capture")
         self.stop(reason="active_capture")
 
     def resume_after_active_capture(self) -> bool:
@@ -982,6 +1160,7 @@ class RustAudioPrewarmManager:
             self._paused_for_active_capture = False
             self._active_capture_attached = False
             self._active_capture_resume_count += 1
+            self._record_event_locked("resume_active_capture", "active_capture")
         return self.start_if_enabled()
 
     def quiesce_for_device_refresh(self) -> None:
@@ -990,6 +1169,7 @@ class RustAudioPrewarmManager:
             if self._paused_for_device_refresh:
                 self._device_refresh_pause_count += 1
                 self._record_transition_locked("device_refresh_pause", "device_refresh")
+                self._record_event_locked("device_refresh_pause", "device_refresh")
         self.stop(reason="device_refresh")
 
     def resume_after_device_refresh(self) -> bool:
@@ -1001,6 +1181,7 @@ class RustAudioPrewarmManager:
         with self._lock:
             self._device_refresh_resume_count += 1
             self._record_transition_locked("device_refresh_resume", "device_refresh")
+            self._record_event_locked("device_refresh_resume", "device_refresh")
         return self.start_if_enabled()
 
     def ensure_healthy(
@@ -1058,6 +1239,12 @@ class RustAudioPrewarmManager:
                     self._last_status_payload = dict(response_payload)
                     self._last_health_response_ms = response_ms
                     self._last_health_error = "unknownCommand"
+                    self._record_event_locked(
+                        "health_status_unknown",
+                        reason,
+                        errorCode="unknownCommand",
+                        responseMs=response_ms,
+                    )
                 return True
             status_active = success and bool(response_payload.get("active"))
             with self._lock:
@@ -1076,6 +1263,14 @@ class RustAudioPrewarmManager:
                     self._stream_signature = {}
                 self._health_restart_count += 1
                 self._record_transition_locked("watchdog_restart", reason)
+                self._record_event_locked(
+                    "health_restart",
+                    reason,
+                    prewarmIdHash=self._hash_hint(prewarm_id),
+                    statusActive=status_active,
+                    healthError=self._last_health_error or "inactive",
+                    responseMs=response_ms,
+                )
             logger.warning(
                 "Rust mic prewarm session unhealthy; restarting "
                 f"({reason}, status={self._last_health_error or 'inactive'})"
@@ -1087,6 +1282,11 @@ class RustAudioPrewarmManager:
                 self._last_health_error = "missingPrewarmSession"
                 self._health_restart_count += 1
                 self._record_transition_locked("watchdog_restart", reason)
+                self._record_event_locked(
+                    "health_restart",
+                    reason,
+                    healthError="missingPrewarmSession",
+                )
         if had_previous_session:
             logger.warning(f"Rust mic prewarm session missing; restarting ({reason})")
         return self.start_if_enabled()
@@ -1103,6 +1303,8 @@ class RustAudioPrewarmManager:
             self._last_stop_success = False
             self._last_stop_error = ""
         if not prewarm_id:
+            with self._lock:
+                self._record_event_locked("stop_without_session", reason)
             return
         stop_started = time.monotonic()
         try:
@@ -1121,6 +1323,13 @@ class RustAudioPrewarmManager:
                 self._last_stop_success = bool(response.get("success", True))
                 self._stream_close_count += 1
                 self._record_transition_locked("closed", reason)
+                self._record_event_locked(
+                    "stopped",
+                    reason,
+                    prewarmIdHash=self._hash_hint(prewarm_id),
+                    success=self._last_stop_success,
+                    responseMs=stop_response_ms,
+                )
             logger.debug(f"Rust mic prewarm session stopped ({reason})")
         except Exception as exc:
             with self._lock:
@@ -1133,4 +1342,12 @@ class RustAudioPrewarmManager:
                 self._last_stop_success = False
                 self._stream_close_count += 1
                 self._record_transition_locked("close_error", reason)
+                self._record_event_locked(
+                    "stop_failed",
+                    reason,
+                    prewarmIdHash=self._hash_hint(prewarm_id),
+                    errorType=type(exc).__name__,
+                    error=str(exc),
+                    responseMs=self._last_stop_response_ms,
+                )
             logger.debug(f"Rust mic prewarm stop failed ({reason}): {exc}")

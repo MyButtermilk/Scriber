@@ -1285,8 +1285,10 @@ Implementation plan:
      sidecar reports `active=false`, Python clears stale state and restarts the
      idle prewarm session. `/api/runtime/audio-diagnostics` now includes
      redacted status payloads plus start/stop/health response times, last
-     inactive reason, and restart counters, which makes brief microphone
-     privacy-indicator dropouts diagnosable in support bundles. The watchdog
+     inactive reason, restart counters, and a bounded redacted `recentEvents`
+     timeline for start/stop/adoption/watchdog restarts, which makes brief
+     microphone privacy-indicator dropouts diagnosable in support bundles
+     without increasing steady-state log volume. The watchdog
      now also records and logs `missingPrewarmSession` when a previously active
      Rust idle session disappears before a status query can be made, and the
      Python prewarm fallback records the analogous `missingPrewarmStream`
