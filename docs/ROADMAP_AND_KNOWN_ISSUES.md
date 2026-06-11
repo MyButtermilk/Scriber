@@ -190,7 +190,10 @@ Rust audio:
   gate; it bundles Rust sidecar capture, app-level Always-On-Mic prewarm,
   installed live-recording stability, provider-backed Python-vs-Rust
   comparison, Rust endpoint inventory, and native device-refresh evidence with
-  the required 10-minute active / 30-minute idle-prewarm minimums.
+  the required 10-minute active / 30-minute idle-prewarm minimums. When sidecar
+  prewarm adoption is part of that gate, reused sidecar reports now must pass
+  explicit `--require-rust-audio-sidecar-prewarm-adoption` validation instead
+  of relying on the report's own requested flags.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no

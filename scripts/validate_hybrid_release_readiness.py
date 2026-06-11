@@ -82,6 +82,7 @@ def validate_release_readiness(
     require_recording_hot_path_comparison: bool = False,
     require_rust_endpoint_inventory: bool = False,
     require_device_refresh_evidence: bool = False,
+    require_rust_audio_sidecar_prewarm_adoption: bool = False,
     min_rust_audio_duration_sec: float = 0.0,
     min_rust_audio_app_prewarm_duration_sec: float = 0.0,
     min_rust_audio_app_prewarm_prewarm_duration_sec: float = 0.0,
@@ -123,12 +124,17 @@ def validate_release_readiness(
             expected_artifact_names=expected_signed_artifact_names,
         ),
     ]
-    if require_rust_audio_sidecar_smoke or rust_audio_sidecar_report is not None:
+    if (
+        require_rust_audio_sidecar_smoke
+        or require_rust_audio_sidecar_prewarm_adoption
+        or rust_audio_sidecar_report is not None
+    ):
         checks.append(
             validate_rust_audio_sidecar_report(
                 rust_audio_sidecar_report,
                 required=require_rust_audio_sidecar_smoke,
                 min_duration_sec=min_rust_audio_duration_sec,
+                require_prewarm_adoption=require_rust_audio_sidecar_prewarm_adoption,
             )
         )
     if require_rust_audio_prewarm_sidecar_smoke or rust_audio_prewarm_sidecar_report is not None:
@@ -464,15 +470,17 @@ def validate_rust_audio_sidecar_report(
     *,
     required: bool,
     min_duration_sec: float,
+    require_prewarm_adoption: bool = False,
 ) -> ReadinessCheck:
     failures: list[str] = []
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
         "required": required,
         "minDurationSec": min_duration_sec,
+        "requirePrewarmAdoption": require_prewarm_adoption,
     }
     if report_path is None:
-        if required:
+        if required or require_prewarm_adoption:
             failures.append("Rust audio sidecar smoke report is required")
         return ReadinessCheck("rustAudioSidecarSmoke", not failures, failures, details)
 
@@ -513,7 +521,11 @@ def validate_rust_audio_sidecar_report(
     duration = requested.get("durationSec")
     prebuffer_ms = requested.get("prebufferMs", 0)
     prebuffer_required = isinstance(prebuffer_ms, (int, float)) and float(prebuffer_ms) > 0
-    prewarm_adoption_required = requested.get("prewarmBeforeCapture") is True
+    prewarm_adoption_required = require_prewarm_adoption or requested.get("prewarmBeforeCapture") is True
+    if require_prewarm_adoption and requested.get("prewarmBeforeCapture") is not True:
+        failures.append(
+            "Rust audio sidecar smoke requested.prewarmBeforeCapture must be true when prewarm adoption is required"
+        )
     if min_duration_sec > 0 and (
         not isinstance(duration, (int, float)) or float(duration) < min_duration_sec
     ):
@@ -1676,6 +1688,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--require-recording-hot-path-comparison", action="store_true")
     parser.add_argument("--require-rust-endpoint-inventory", action="store_true")
     parser.add_argument("--require-device-refresh-evidence", action="store_true")
+    parser.add_argument("--require-rust-audio-sidecar-prewarm-adoption", action="store_true")
     parser.add_argument("--min-rust-audio-duration-sec", type=float, default=0.0)
     parser.add_argument("--min-rust-audio-app-prewarm-duration-sec", type=float, default=0.0)
     parser.add_argument("--min-rust-audio-app-prewarm-prewarm-duration-sec", type=float, default=0.0)
@@ -1714,6 +1727,7 @@ def main(argv: list[str]) -> int:
         require_recording_hot_path_comparison=args.require_recording_hot_path_comparison,
         require_rust_endpoint_inventory=args.require_rust_endpoint_inventory,
         require_device_refresh_evidence=args.require_device_refresh_evidence,
+        require_rust_audio_sidecar_prewarm_adoption=args.require_rust_audio_sidecar_prewarm_adoption,
         min_rust_audio_duration_sec=args.min_rust_audio_duration_sec,
         min_rust_audio_app_prewarm_duration_sec=args.min_rust_audio_app_prewarm_duration_sec,
         min_rust_audio_app_prewarm_prewarm_duration_sec=args.min_rust_audio_app_prewarm_prewarm_duration_sec,

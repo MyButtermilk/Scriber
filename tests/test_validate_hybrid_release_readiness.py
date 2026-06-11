@@ -1521,6 +1521,39 @@ def test_validate_release_readiness_accepts_required_rust_audio_sidecar_prewarm_
     assert rust_audio_check["details"]["summary"]["totalAdoptedPrewarmBlocks"] == 4
 
 
+def test_validate_release_readiness_rejects_reused_sidecar_report_without_required_prewarm_adoption(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
+    write_rust_audio_sidecar_report(
+        rust_audio_report,
+        prewarm_before_capture=False,
+        adopted_prewarm_blocks=0,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        rust_audio_sidecar_report=rust_audio_report,
+        require_rust_audio_sidecar_smoke=True,
+        require_rust_audio_sidecar_prewarm_adoption=True,
+        min_rust_audio_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    assert rust_audio_check["details"]["requirePrewarmAdoption"] is True
+    failures = "\n".join(rust_audio_check["failures"])
+    assert "requested.prewarmBeforeCapture must be true" in failures
+    assert "totalAdoptedPrewarmBlocks must be positive" in failures
+    assert "adoptedPrewarm.adopted must be true" in failures
+
+
 def test_validate_release_readiness_rejects_missing_rust_audio_sidecar_prewarm_adoption(tmp_path: Path) -> None:
     hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
@@ -1902,6 +1935,27 @@ def test_validate_release_readiness_rejects_missing_required_rust_audio_sidecar_
 
     assert result["ok"] is False
     rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    assert "Rust audio sidecar smoke report is required" in rust_audio_check["failures"]
+
+
+def test_validate_release_readiness_rejects_missing_sidecar_report_when_prewarm_adoption_is_required(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        require_rust_audio_sidecar_prewarm_adoption=True,
+    )
+
+    assert result["ok"] is False
+    rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    assert rust_audio_check["details"]["requirePrewarmAdoption"] is True
     assert "Rust audio sidecar smoke report is required" in rust_audio_check["failures"]
 
 

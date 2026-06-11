@@ -138,6 +138,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert rust_evidence["selectedDurationSec"] == 10
     assert rust_evidence["prebufferMs"] == 400
     assert rust_evidence["prewarmBeforeCapture"] is False
+    assert rust_evidence["requirePrewarmAdoption"] is False
     assert rust_evidence["prewarmDurationSec"] == 0.5
     assert "Optional for standard releases" in rust_evidence["notes"]
     prewarm_evidence = payload["requiredEvidence"][5]
@@ -247,6 +248,7 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_sidecar_smoke
     assert rust_evidence["selectedDurationSec"] == 12
     assert rust_evidence["prebufferMs"] == 400
     assert rust_evidence["prewarmBeforeCapture"] is True
+    assert rust_evidence["requirePrewarmAdoption"] is True
     assert rust_evidence["prewarmDurationSec"] == 0.75
     rust_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioSidecarSmoke")
     assert "smoke_rust_audio_sidecar.py" in rust_command["command"]
@@ -269,6 +271,7 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_sidecar_smoke
     assert "--require-rust-endpoint-inventory" in readiness_command["command"]
     assert "--require-device-refresh-evidence" in readiness_command["command"]
     assert "--min-rust-audio-duration-sec 600" in readiness_command["command"]
+    assert "--require-rust-audio-sidecar-prewarm-adoption" in readiness_command["command"]
 
 
 def test_hybrid_release_readiness_runner_plans_required_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
@@ -484,6 +487,7 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert by_name["rustAudioSidecarSmoke"]["producer"] == "required external report"
     assert by_name["rustAudioSidecarSmoke"]["durationSec"] == 600
     assert by_name["rustAudioSidecarSmoke"]["prewarmBeforeCapture"] is True
+    assert by_name["rustAudioSidecarSmoke"]["requirePrewarmAdoption"] is True
     assert by_name["rustAudioAppPrewarmSmoke"]["required"] is True
     assert by_name["rustAudioAppPrewarmSmoke"]["producer"] == "required external report"
     assert by_name["rustAudioAppPrewarmSmoke"]["durationSec"] == 600
@@ -506,6 +510,7 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     readiness_command = command_by_name["hybridReleaseReadiness"]
     assert "--require-rust-audio-sidecar-smoke" in readiness_command
     assert "--min-rust-audio-duration-sec 600" in readiness_command
+    assert "--require-rust-audio-sidecar-prewarm-adoption" in readiness_command
     assert "--require-rust-audio-app-prewarm-smoke" in readiness_command
     assert "--min-rust-audio-app-prewarm-duration-sec 600" in readiness_command
     assert "--min-rust-audio-app-prewarm-prewarm-duration-sec 1800" in readiness_command

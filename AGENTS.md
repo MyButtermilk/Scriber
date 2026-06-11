@@ -440,6 +440,11 @@ promotion minima to 10-minute active / 30-minute idle-prewarm evidence.
 Then add the matching `-Run...` or `-UseExisting...` flags to produce or reuse
 the required reports.
 
+When `-RustAudioSidecarPrewarmBeforeCapture` is active, the runner must pass
+`--require-rust-audio-sidecar-prewarm-adoption` to the final validator. This
+keeps old sidecar reports without adopted prewarm blocks from satisfying Rust
+promotion evidence.
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
   -RunRustAudioSidecarSmoke `

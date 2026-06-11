@@ -448,11 +448,13 @@ report must come from real WASAPI capture, include default-device and selected
 native-endpoint-hash runs, read frames without sequence gaps, and preserve
 sidecar stop-health metrics. When `-RustAudioSidecarPrewarmBeforeCapture` is
 set, the validator also requires positive adopted prewarm blocks in the default
-capture. `-RequireRustAudioSidecarSmoke` also makes the microphone hardware
-matrix validator require redacted Rust/WASAPI endpoint inventory evidence for
-every physical device scenario. Without that flag the Rust smoke remains
-visible in the runner plan but optional, so standard Python-capture release
-builds are not blocked by prototype evidence.
+capture, and the runner passes
+`--require-rust-audio-sidecar-prewarm-adoption` so reused sidecar reports cannot
+silently skip that evidence. `-RequireRustAudioSidecarSmoke` also makes the
+microphone hardware matrix validator require redacted Rust/WASAPI endpoint
+inventory evidence for every physical device scenario. Without that flag the
+Rust smoke remains visible in the runner plan but optional, so standard
+Python-capture release builds are not blocked by prototype evidence.
 
 The prewarm sidecar smoke can be added independently with
 `-RunRustAudioPrewarmSidecarSmoke` and

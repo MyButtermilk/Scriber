@@ -382,6 +382,9 @@ if ($RequireRustAudioSidecarSmoke -or $RunRustAudioSidecarSmoke -or $UseExisting
 if ($RequireRustAudioSidecarSmoke) {
     $readinessArgs += @("--require-rust-audio-sidecar-smoke", "--min-rust-audio-duration-sec", ([string]$RustAudioSidecarDurationSec))
 }
+if ($RustAudioSidecarPrewarmBeforeCapture) {
+    $readinessArgs += "--require-rust-audio-sidecar-prewarm-adoption"
+}
 if ($RequireRustAudioPrewarmSidecarSmoke -or $RunRustAudioPrewarmSidecarSmoke -or $UseExistingRustAudioPrewarmSidecarReport) {
     $readinessArgs += @("--rust-audio-prewarm-sidecar-report", $RustAudioPrewarmSidecarReport)
 }
@@ -502,6 +505,7 @@ $requiredEvidence = @(
         selectedDurationSec = $RustAudioSidecarSelectedDurationSec
         prebufferMs = $RustAudioSidecarPrebufferMs
         prewarmBeforeCapture = [bool]$RustAudioSidecarPrewarmBeforeCapture
+        requirePrewarmAdoption = [bool]$RustAudioSidecarPrewarmBeforeCapture
         prewarmDurationSec = $RustAudioSidecarPrewarmDurationSec
         notes = "Optional for standard releases. Required when evaluating Rust audio promotion; validates default WASAPI capture, selected native endpoint hash capture, requested prebuffer delivery, optional prewarm adoption, frame-pipe metrics, and stop health."
     },

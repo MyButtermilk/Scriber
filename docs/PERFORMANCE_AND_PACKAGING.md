@@ -1200,6 +1200,9 @@ Acceptance gates:
   reader/writer frame-count consistency, no sequence gaps, and valid
   stop-health metrics. Add `-RustAudioSidecarPrewarmBeforeCapture` to require
   sidecar-local prewarm adoption evidence in the default capture. The readiness
+  runner passes `--require-rust-audio-sidecar-prewarm-adoption` when that mode
+  is enabled, so reused sidecar reports without adopted prewarm blocks fail
+  validation instead of silently satisfying the promotion gate. The readiness
   runner also requires Rust/WASAPI endpoint inventory evidence in the physical
   microphone matrix when this promotion gate is enabled.
 - Rust prewarm lifecycle smoke via
