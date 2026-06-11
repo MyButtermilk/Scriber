@@ -85,7 +85,7 @@ param(
     [string]$InstallerLiveRecordingDefaultStt = "",
     [string]$InstallerLiveRecordingSonioxMode = "",
     [switch]$InstallerDisableLiveTextInjection,
-    [ValidateSet("", "python", "rust-prototype")]
+    [ValidateSet("", "rust-wasapi")]
     [string]$InstallerLiveRecordingAudioEngine = "",
     [ValidateSet("", "synthetic", "wasapi")]
     [string]$InstallerLiveRecordingRustAudioCaptureMode = "",

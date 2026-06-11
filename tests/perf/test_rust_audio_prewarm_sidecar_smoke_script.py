@@ -17,7 +17,8 @@ def test_rust_audio_prewarm_sidecar_smoke_script_documents_prewarm_contract() ->
     )
 
     assert "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE" in script
-    assert "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE" in script
+    assert "SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE" in script
+    assert "normal WASAPI capture is enabled by default" in script
     assert "--mode" in script
     assert "prewarmStart" in script
     assert "prewarmStop" in script
@@ -54,7 +55,7 @@ def test_rust_audio_prewarm_sidecar_smoke_plan_only_writes_artifact(tmp_path: Pa
     assert stdout_payload["requested"]["prebufferMs"] == 400
     assert "--mode wasapi" in stdout_payload["exampleCommand"]
     assert any("SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1" in item for item in stdout_payload["requirements"])
-    assert any("SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1" in item for item in stdout_payload["requirements"])
+    assert any("normal WASAPI capture is enabled by default" in item for item in stdout_payload["requirements"])
     assert any("does not yet prove buffered WASAPI audio adoption" in item for item in stdout_payload["requirements"])
 
 

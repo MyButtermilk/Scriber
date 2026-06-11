@@ -96,12 +96,16 @@ def _determine_capture_channels(output_channels: int, max_channels: int) -> int:
 
 
 def _requested_audio_engine() -> str:
-    requested = (os.getenv("SCRIBER_AUDIO_ENGINE", "python") or "python").strip().lower()
-    if requested == "rust":
-        return "rust-prototype"
-    if requested not in {"python", "rust-prototype"}:
-        return "python"
-    return requested
+    """Live microphone capture is Rust/WASAPI-only.
+
+    ``SCRIBER_AUDIO_ENGINE`` is kept as a backwards-compatible diagnostic input,
+    but it no longer selects a Python capture implementation.
+    """
+    requested = (os.getenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi") or "").strip().lower()
+    if requested in {"", "rust", "rust-wasapi", "rust-prototype", "python"}:
+        return "rust-wasapi"
+    logger.warning(f"Ignoring unsupported SCRIBER_AUDIO_ENGINE={requested!r}; using Rust/WASAPI")
+    return "rust-wasapi"
 
 
 _RUST_AUDIO_FALLBACK_LOCK = threading.Lock()
@@ -161,7 +165,7 @@ def _reset_rust_audio_fallback_circuit() -> None:
 
 
 class AudioFrameSource:
-    """Internal capture boundary for future non-sounddevice engines."""
+    """Internal capture boundary for Rust/WASAPI microphone frames."""
 
     engine = "unknown"
     name = "unknown"
@@ -190,179 +194,6 @@ class AudioFrameSource:
             "hasStream": False,
             "streamActive": False,
         }
-
-
-class PythonSoundDeviceFrameSource(AudioFrameSource):
-    """Behavior-preserving sounddevice capture source used by MicrophoneInput."""
-
-    engine = "python"
-    name = "sounddevice"
-
-    def __init__(
-        self,
-        *,
-        sample_rate: int,
-        target_channels: int,
-        block_size: int,
-        device,
-        sd_module=None,
-    ):
-        self.sample_rate = int(sample_rate)
-        self.target_channels = int(target_channels)
-        self.capture_channels = int(target_channels)
-        self.block_size = int(block_size)
-        self.device = device
-        self.device_index: int | None = None
-        self.fallback_reason = ""
-        self._sd = sd if sd_module is None else sd_module
-        self._stream = None
-        if self._sd is None:
-            raise RuntimeError("sounddevice is not available")
-
-    @property
-    def stream(self):
-        return self._stream
-
-    @property
-    def is_active(self) -> bool:
-        return bool(self._stream and getattr(self._stream, "active", False))
-
-    def open(self, callback):
-        device_index = self._parse_device_index()
-        device_index = self._configure_channels_for_device(device_index)
-        self._stream, self.device_index = self._open_stream(callback, device_index)
-        return self
-
-    def start(self) -> None:
-        if self._stream and not getattr(self._stream, "active", False):
-            self._stream.start()
-
-    def stop(self, *, close: bool) -> None:
-        if not self._stream:
-            return
-        try:
-            self._stream.stop()
-            if close:
-                self._stream.close()
-                self._stream = None
-        finally:
-            if close:
-                self.device_index = None
-
-    def diagnostic_snapshot(self) -> dict:
-        return {
-            "engine": self.engine,
-            "frameSource": self.name,
-            "hasStream": bool(self._stream),
-            "streamActive": self.is_active,
-            "sampleRate": self.sample_rate,
-            "targetChannels": self.target_channels,
-            "captureChannels": self.capture_channels,
-            "blockSize": self.block_size,
-            "device": str(self.device),
-            "deviceIndex": self.device_index,
-            "fallbackReason": self.fallback_reason,
-        }
-
-    def _parse_device_index(self) -> int | None:
-        if self.device in ("default", "", None):
-            return None
-        try:
-            return int(self.device)
-        except (TypeError, ValueError):
-            logger.warning(
-                f"Invalid microphone device id '{self.device}', using default microphone"
-            )
-            self.fallback_reason = "invalidDeviceId"
-            return None
-
-    def _configure_channels_for_device(self, device_index: int | None) -> int | None:
-        try:
-            dev_info = self._sd.query_devices(device=device_index, kind="input")
-            max_channels = int(dev_info.get("max_input_channels", 0))
-            if max_channels == 0:
-                raise ValueError("Device has no input channels")
-            self._apply_channel_limits(max_channels)
-            return device_index
-        except Exception as exc:
-            if device_index is not None:
-                logger.warning(
-                    f"Configured device {self.device} unavailable ({exc}); falling back to default microphone"
-                )
-                self.fallback_reason = "configuredDeviceUnavailable"
-                return self._configure_default_channels(exc)
-
-            logger.warning(f"Could not query default device ({exc}); using 1 channel")
-            self.fallback_reason = "defaultDeviceQueryFailed"
-            self.target_channels = 1
-            self.capture_channels = 1
-            return None
-
-    def _configure_default_channels(self, original_error: Exception) -> None:
-        try:
-            default_info = self._sd.query_devices(device=None, kind="input")
-            max_channels = int(default_info.get("max_input_channels", 1))
-            if max_channels > 0:
-                self._apply_channel_limits(max_channels)
-                logger.info(f"Using default device with {self.target_channels} channel(s)")
-                return None
-        except Exception as exc:
-            logger.warning(f"Could not query default device ({exc}); using 1 channel")
-        self.target_channels = 1
-        self.capture_channels = 1
-        if not self.fallback_reason:
-            self.fallback_reason = f"defaultDeviceQueryFailedAfter:{type(original_error).__name__}"
-        return None
-
-    def _apply_channel_limits(self, max_channels: int) -> None:
-        output_channels = self.target_channels
-        if output_channels <= 0:
-            output_channels = 1
-        if output_channels > max_channels:
-            output_channels = max_channels
-        if self.target_channels != output_channels:
-            logger.info(
-                f"Overriding configured channels {self.target_channels} with device-supported {output_channels}"
-            )
-            self.target_channels = output_channels
-
-        capture_channels = _determine_capture_channels(output_channels, max_channels)
-        self.capture_channels = capture_channels
-        if capture_channels != output_channels:
-            logger.info(
-                f"Using {capture_channels} capture channels for stability, downmixing to {output_channels}"
-            )
-
-    def _open_stream(self, callback, device_index: int | None):
-        try:
-            stream = self._sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=self.capture_channels,
-                blocksize=self.block_size,
-                dtype="int16",
-                callback=callback,
-                device=device_index,
-            )
-            return stream, device_index
-        except Exception as stream_err:
-            if device_index is None:
-                raise
-
-            logger.warning(
-                f"Could not open device {device_index} ({stream_err}); "
-                f"falling back to Windows default microphone"
-            )
-            self.fallback_reason = "configuredDeviceOpenFailed"
-            self._configure_default_channels(stream_err)
-            stream = self._sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=self.capture_channels,
-                blocksize=self.block_size,
-                dtype="int16",
-                callback=callback,
-                device=None,
-            )
-            return stream, None
 
 
 def _hash_private_hint(value: str | None) -> str | None:
@@ -398,15 +229,14 @@ class _RustPrototypeStreamHandle:
 
 
 class RustPrototypeFrameSource(AudioFrameSource):
-    """Opt-in reader for a future Rust WASAPI capture sidecar.
+    """Reader for the Rust WASAPI capture sidecar.
 
-    The Rust capture side is still prototype-only. This class gives Python the
-    stable boundary it needs: start through private shell IPC, read versioned
-    PCM frames from a private binary pipe, and fail before first frame so the
-    caller can fall back to the current sounddevice path.
+    Python owns the Pipecat transport queue, but microphone capture itself is
+    supplied by the Rust sidecar through private shell IPC and the versioned
+    frame pipe.
     """
 
-    engine = "rust-prototype"
+    engine = "rust-wasapi"
     name = "rust-frame-pipe"
 
     def __init__(
@@ -1004,9 +834,6 @@ class MicrophoneInput(BaseInputTransport):
         on_ready=None,
         on_last_audio_chunk_sent=None,
     ):
-        if not HAS_SOUNDDEVICE:
-            raise RuntimeError("Sounddevice is not available, cannot use MicrophoneInput.")
-
         params = TransportParams(
             audio_in_enabled=True,
             audio_in_sample_rate=sample_rate,
@@ -1029,14 +856,12 @@ class MicrophoneInput(BaseInputTransport):
         self.stream = None
         self._frame_source: AudioFrameSource | None = None
         self._requested_audio_engine = _requested_audio_engine()
-        self._audio_engine = "python"
-        self._frame_source_name = "sounddevice"
+        self._audio_engine = "rust-wasapi"
+        self._frame_source_name = "rust-frame-pipe"
         self._audio_engine_fallback_reason = ""
-        self._using_prewarm_stream = False
         self._prewarm_adoption_skipped_reason = ""
         self._rust_prewarm_adoption: dict | None = None
         self._rust_prewarm_id = ""
-        self._prewarm_callback = None
         self._running = False
         self._queue = _queue.Queue(maxsize=512)
         self._dropped_chunks = 0
@@ -1091,32 +916,20 @@ class MicrophoneInput(BaseInputTransport):
         requested = _requested_audio_engine()
         self._requested_audio_engine = requested
         self._audio_engine_fallback_reason = ""
-        if requested == "rust-prototype":
-            circuit = _rust_audio_fallback_circuit_state()
-            if circuit["open"]:
-                reason = str(circuit.get("reason") or "rustMidSessionFailure")
-                self._audio_engine_fallback_reason = f"rustPrototypeCircuitOpen:{reason}"
-                logger.warning(
-                    "Rust audio prototype fallback circuit is open; using Python capture "
-                    f"for this session (reason={reason}, remaining={circuit.get('remainingSeconds')}s)"
-                )
-                return self._create_python_frame_source()
-            return RustPrototypeFrameSource(
-                sample_rate=self._target_sample_rate,
-                target_channels=self._target_channels,
-                block_size=self.block_size,
-                device=self.device,
-                prewarm_id=self._rust_prewarm_id,
+        circuit = _rust_audio_fallback_circuit_state()
+        if circuit["open"]:
+            reason = str(circuit.get("reason") or "rustMidSessionFailure")
+            self._audio_engine_fallback_reason = f"rustCircuitOpen:{reason}"
+            raise RuntimeError(
+                "Rust audio fallback circuit is open; Python capture fallback has been removed "
+                f"(reason={reason}, remaining={circuit.get('remainingSeconds')}s)"
             )
-
-        return self._create_python_frame_source()
-
-    def _create_python_frame_source(self) -> AudioFrameSource:
-        return PythonSoundDeviceFrameSource(
+        return RustPrototypeFrameSource(
             sample_rate=self._target_sample_rate,
             target_channels=self._target_channels,
             block_size=self.block_size,
             device=self.device,
+            prewarm_id=self._rust_prewarm_id,
         )
 
     def _open_and_start_frame_source(self) -> None:
@@ -1137,34 +950,15 @@ class MicrophoneInput(BaseInputTransport):
             self._sync_frame_source_state()
             return
         except Exception as exc:
-            if getattr(source, "engine", "") != "rust-prototype" or getattr(
-                source, "callback_count", 0
-            ) > 0:
-                raise
-
             reason = str(getattr(source, "fallback_reason", "") or type(exc).__name__)
-            self._audio_engine_fallback_reason = f"rustPrototypeFallback:{reason}"
-            logger.warning(
-                "Rust audio prototype unavailable before first frame; "
-                f"falling back to Python ({exc})"
-            )
+            self._audio_engine_fallback_reason = f"rustCaptureFailed:{reason}"
+            logger.error(f"Rust audio capture failed; no Python fallback is available ({exc})")
             try:
-                source.stop(close=True)
+                if source is not None:
+                    source.stop(close=True)
             except Exception:
                 pass
-
-            fallback = self._create_python_frame_source()
-            self._frame_source = fallback
-            fallback.open(self._audio_callback)
-            self._sync_frame_source_state()
-            if not self.stream:
-                raise RuntimeError("Python microphone fallback did not expose a stream handle")
-            if not getattr(self.stream, "active", False):
-                if self._source_owns_stream():
-                    fallback.start()
-                else:
-                    self.stream.start()
-            self._sync_frame_source_state()
+            raise
 
     def _sync_frame_source_state(self) -> None:
         source = self._frame_source
@@ -1229,39 +1023,9 @@ class MicrophoneInput(BaseInputTransport):
             if self.keep_alive and self.prewarm_manager is not None:
                 adopted = None
                 self._prewarm_adoption_skipped_reason = ""
-                if self._requested_audio_engine == "python":
-                    self._prewarm_callback = self._audio_callback
-                    try:
-                        adopted = self.prewarm_manager.attach_active_capture(
-                            self._prewarm_callback,
-                            sample_rate=self._target_sample_rate,
-                            target_channels=self._target_channels,
-                            block_size=self.block_size,
-                            device=self.device,
-                        )
-                    except Exception as exc:
-                        logger.debug(f"Could not attach prewarmed microphone stream: {exc}")
-
-                    if adopted:
-                        self._capture_channels = int(
-                            adopted.get("capture_channels") or self._target_channels
-                        )
-                        self._using_prewarm_stream = True
-                        self._prepend_prewarm_audio(adopted)
-                        logger.info(
-                            "Microphone prewarm stream adopted "
-                            f"(device={'default' if adopted.get('device_index') is None else adopted.get('device_index')}, "
-                            f"prebuffer={float(adopted.get('prebuffer_ms') or 0.0):.1f} ms)"
-                        )
-                        if self.on_ready:
-                            try:
-                                self.on_ready()
-                            except Exception as e:
-                                logger.warning(f"on_ready callback error: {e}")
-                        return
-                elif (
-                    self._requested_audio_engine == "rust-prototype"
-                    and getattr(self.prewarm_manager, "engine", "") == "rust-prototype"
+                if (
+                    self._requested_audio_engine == "rust-wasapi"
+                    and getattr(self.prewarm_manager, "engine", "") == "rust-wasapi"
                 ):
                     try:
                         adopted = self.prewarm_manager.attach_active_capture(
@@ -1294,9 +1058,7 @@ class MicrophoneInput(BaseInputTransport):
                     try:
                         self.prewarm_manager.pause_for_active_capture()
                     except Exception as exc:
-                        logger.debug(f"Could not pause idle mic prewarm before fallback capture: {exc}")
-                self._prewarm_callback = None
-
+                        logger.debug(f"Could not pause idle mic prewarm before Rust capture: {exc}")
             # Device enumeration/open is guarded against concurrent PortAudio refresh.
             with get_device_guard_lock():
                 self._open_and_start_frame_source()
@@ -1456,7 +1218,7 @@ class MicrophoneInput(BaseInputTransport):
             "engineFallbackReason": self._audio_engine_fallback_reason,
             "hasStream": bool(stream),
             "streamActive": bool(stream and getattr(stream, "active", False)),
-            "usingPrewarmStream": bool(self._using_prewarm_stream),
+            "usingPrewarmStream": False,
             "prewarmAdoptionSkippedReason": self._prewarm_adoption_skipped_reason,
             "rustPrewarmAdoption": self._redacted_rust_prewarm_adoption(),
             "streamClaimed": bool(self._stream_claimed),
@@ -1515,23 +1277,6 @@ class MicrophoneInput(BaseInputTransport):
             return True
         self._last_health_check_reason = str(reason or "watchdog")
 
-        if self._using_prewarm_stream:
-            ensure = getattr(self.prewarm_manager, "ensure_active_capture_healthy", None)
-            if callable(ensure):
-                healthy = bool(
-                    ensure(
-                        self._prewarm_callback,
-                        reason=reason,
-                        max_callback_gap_seconds=max_callback_gap_seconds,
-                        min_restart_interval_seconds=min_restart_interval_seconds,
-                    )
-                )
-                if not healthy:
-                    self._last_health_failure_reason = "prewarmUnhealthy"
-                    logger.warning(f"Mic watchdog found unhealthy adopted prewarm stream ({reason})")
-                return healthy
-            return True
-
         stream = self.stream
         active = bool(stream and getattr(stream, "active", False))
         if stream and not active:
@@ -1589,16 +1334,16 @@ class MicrophoneInput(BaseInputTransport):
                     )
                     if (
                         mid_session_failure
-                        and getattr(self._frame_source, "engine", "") == "rust-prototype"
+                        and getattr(self._frame_source, "engine", "") == "rust-wasapi"
                     ):
                         self._last_rust_audio_mid_session_failure_reason = mid_session_failure
                         _record_rust_audio_mid_session_failure(mid_session_failure)
                         self._audio_engine_fallback_reason = (
-                            f"rustPrototypeMidSessionFailure:{mid_session_failure}"
+                            f"rustWasapiMidSessionFailure:{mid_session_failure}"
                         )
                         logger.warning(
-                            "Rust audio prototype mid-session failure recorded; "
-                            f"next recording will use Python during cooldown ({mid_session_failure})"
+                            "Rust audio mid-session failure recorded; "
+                            f"next recording will fail fast during cooldown ({mid_session_failure})"
                         )
                     try:
                         self._frame_source.stop(close=False)
@@ -1640,17 +1385,6 @@ class MicrophoneInput(BaseInputTransport):
     def force_stop_from_external_error(self, *, reason: str = "external_error") -> None:
         logger.warning(f"Microphone capture stopped by pipeline error ({reason})")
         self._running = False
-        if self._using_prewarm_stream:
-            try:
-                if self.prewarm_manager is not None:
-                    self.prewarm_manager.detach_active_capture(self._prewarm_callback)
-            except Exception as exc:
-                logger.debug(f"Could not detach prewarmed microphone stream after pipeline error: {exc}")
-            finally:
-                self._using_prewarm_stream = False
-                self._prewarm_callback = None
-            return
-
         with get_device_guard_lock():
             if self.stream:
                 try:
@@ -1662,22 +1396,6 @@ class MicrophoneInput(BaseInputTransport):
                 except Exception as exc:
                     logger.debug(f"Microphone stream stop after pipeline error failed: {exc}")
             self._release_active_stream()
-
-    def _prepend_prewarm_audio(self, adopted: dict) -> None:
-        frames = adopted.get("prebuffer_frames") or []
-        if not frames:
-            return
-        # Hold the callback lock across the whole replay so the prebuffered frames
-        # are queued as a contiguous block before any live frame from the PortAudio
-        # thread can interleave ahead of them. The lock is reentrant, so the nested
-        # _audio_callback calls below re-acquire it without blocking.
-        with self._callback_lock:
-            for item in frames:
-                try:
-                    indata, frame_count, time_info, status = item
-                    self._audio_callback(indata, int(frame_count or 0), time_info, status)
-                except Exception as exc:
-                    logger.debug(f"Prewarmed audio prepend skipped frame: {exc}")
 
     async def _drain_queue(self):
         # Ensure audio queue exists (BaseInputTransport creates it in _create_audio_task)
@@ -1742,30 +1460,20 @@ class MicrophoneInput(BaseInputTransport):
         # With keep_alive: pause stream (fast restart via stream.start())
         # Without keep_alive: close stream entirely
         should_close_stream = (not self.keep_alive) if close_stream is None else bool(close_stream)
-        if self._using_prewarm_stream:
-            try:
-                if self.prewarm_manager is not None:
-                    self.prewarm_manager.detach_active_capture(self._prewarm_callback)
-            except Exception as exc:
-                logger.debug(f"Could not detach prewarmed microphone stream: {exc}")
-            finally:
-                self._using_prewarm_stream = False
-                self._prewarm_callback = None
-        else:
-            with get_device_guard_lock():
-                if self.stream:
-                    try:
-                        if self._source_owns_stream():
-                            self._frame_source.stop(close=should_close_stream)
-                            self._sync_frame_source_state()
-                        else:
-                            self.stream.stop()  # Stops callbacks, saves CPU, prevents overflow
-                            if should_close_stream:
-                                self.stream.close()
-                                self.stream = None
-                    except Exception:
-                        pass
-                self._release_active_stream()
+        with get_device_guard_lock():
+            if self.stream:
+                try:
+                    if self._source_owns_stream():
+                        self._frame_source.stop(close=should_close_stream)
+                        self._sync_frame_source_state()
+                    else:
+                        self.stream.stop()  # Stops callbacks, saves CPU, prevents overflow
+                        if should_close_stream:
+                            self.stream.close()
+                            self.stream = None
+                except Exception:
+                    pass
+            self._release_active_stream()
 
         # Signal the queue to stop
         if self._queue:

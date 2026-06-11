@@ -860,11 +860,11 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
     assert live_evidence["requireRustAudio"] is True
     assert live_evidence["rustPrewarmAdoptionRequired"] is True
     assert "adopted Rust prewarm evidence" in live_evidence["notes"]
-    assert "-InstallerLiveRecordingAudioEngine rust-prototype" in live_evidence["producer"]
+    assert "-InstallerLiveRecordingAudioEngine rust-wasapi" in live_evidence["producer"]
     assert "-LiveRecordingRustAudioCaptureMode wasapi" in live_evidence["producer"]
     live_command = next(entry for entry in payload["commands"] if entry["name"] == "installedLiveRecordingSmoke")
     assert "required external report" in live_command["command"]
-    assert "-InstallerLiveRecordingAudioEngine rust-prototype" in live_command["command"]
+    assert "-InstallerLiveRecordingAudioEngine rust-wasapi" in live_command["command"]
     assert "-LiveRecordingRustAudioCaptureMode wasapi" in live_command["command"]
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
     assert "--installed-live-recording-smoke-report" in readiness_command["command"]
@@ -906,7 +906,7 @@ def test_hybrid_release_readiness_runner_can_run_installed_live_recording_smoke(
     assert payload["installedLiveRecordingEnvFile"].endswith(".env")
     assert payload["installedLiveRecordingDefaultStt"] == "soniox"
     assert payload["installedLiveRecordingSonioxMode"] == "realtime"
-    assert payload["installedLiveRecordingAudioEngine"] == "rust-prototype"
+    assert payload["installedLiveRecordingAudioEngine"] == "rust-wasapi"
     assert payload["installedLiveRecordingRustAudioCaptureMode"] == "wasapi"
     assert payload["installedLiveRecordingMicAlwaysOn"] is True
 
@@ -918,7 +918,7 @@ def test_hybrid_release_readiness_runner_can_run_installed_live_recording_smoke(
     assert live_evidence["envFile"].endswith(".env")
     assert live_evidence["defaultStt"] == "soniox"
     assert live_evidence["sonioxMode"] == "realtime"
-    assert live_evidence["audioEngine"] == "rust-prototype"
+    assert live_evidence["audioEngine"] == "rust-wasapi"
     assert live_evidence["rustAudioCaptureMode"] == "wasapi"
     assert live_evidence["rustPrewarmAdoptionRequired"] is True
     assert live_evidence["micAlwaysOn"] is True
@@ -933,7 +933,7 @@ def test_hybrid_release_readiness_runner_can_run_installed_live_recording_smoke(
     assert "-LiveRecordingEnvFile" in live_command["command"]
     assert "-LiveRecordingDefaultStt soniox" in live_command["command"]
     assert "-LiveRecordingSonioxMode realtime" in live_command["command"]
-    assert "-LiveRecordingAudioEngine rust-prototype" in live_command["command"]
+    assert "-LiveRecordingAudioEngine rust-wasapi" in live_command["command"]
     assert "-LiveRecordingRustAudioCaptureMode wasapi" in live_command["command"]
     assert "-LiveRecordingMicAlwaysOn" in live_command["command"]
     assert "-DisableLiveTextInjection" in live_command["command"]

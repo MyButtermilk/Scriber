@@ -18,7 +18,7 @@ from scripts.validate_tauri_updater_metadata import DEFAULT_METADATA, sha256_fil
 
 
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
-RUST_AUDIO_ENGINE = "rust-prototype"
+RUST_AUDIO_ENGINE = "rust-wasapi"
 RUST_AUDIO_FRAME_SOURCE = "rust-frame-pipe"
 REDACTED_TEXT_MARKERS = {"", "[REDACTED]", "[REDACTED_TOKEN]", "***"}
 REDACTED_ENDPOINT_MARKERS = {"", "[REDACTED]", "[REDACTED_ENDPOINT_ID]", "***"}
@@ -2195,8 +2195,8 @@ def validate_recording_hot_path_comparison_report(
     rust_report = reports.get("rust") if isinstance(reports, dict) else {}
     if not isinstance(python_report, dict) or python_report.get("audioEngine") != "python":
         failures.append("recording hot-path comparison Python report must use audioEngine=python")
-    if not isinstance(rust_report, dict) or rust_report.get("audioEngine") != "rust-prototype":
-        failures.append("recording hot-path comparison Rust report must use audioEngine=rust-prototype")
+    if not isinstance(rust_report, dict) or rust_report.get("audioEngine") != "rust-wasapi":
+        failures.append("recording hot-path comparison Rust report must use audioEngine=rust-wasapi")
     python_samples = numeric_field(python_report, "samples") if isinstance(python_report, dict) else None
     rust_samples = numeric_field(rust_report, "samples") if isinstance(rust_report, dict) else None
     if python_samples is None or python_samples < min_samples_per_report:

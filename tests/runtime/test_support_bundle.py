@@ -143,7 +143,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
                     "recordedAt": "2026-06-11T12:00:00Z",
                     "recordedAtUptimeSeconds": 42.5,
                     "diagnostics": {
-                        "engine": "rust-prototype",
+                        "engine": "rust-wasapi",
                         "frameSource": "rust-frame-pipe",
                         "lastHealthFailureReason": "staleCallbacks",
                         "healthRestartThrottleCount": 1,
@@ -207,7 +207,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
                     "sessionToken": "circuit-secret-token",
                 },
                 "prewarm": {
-                    "engine": "rust-prototype",
+                    "engine": "rust-wasapi",
                     "active": True,
                     "prewarmId": "raw-prewarm-id",
                     "prewarmIdHash": "prewarm-hash",
@@ -230,9 +230,9 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
                 },
                 "activeCapture": {
                     "engine": "python",
-                    "requestedEngine": "rust-prototype",
+                    "requestedEngine": "rust-wasapi",
                     "frameSource": "sounddevice",
-                    "engineFallbackReason": "rustPrototypeUnavailable",
+                    "engineFallbackReason": "rustWasapiUnavailable",
                     "nativeEndpointIdHash": "abc123",
                     "sampleRate": 16000,
                     "targetChannels": 1,
@@ -261,7 +261,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
     shell_ipc = payload["textInjection"]["shellIpc"]
     assert "audio-diagnostics.redacted.json" in names
     assert active["engine"] == "python"
-    assert active["requestedEngine"] == "rust-prototype"
+    assert active["requestedEngine"] == "rust-wasapi"
     assert active["frameSource"] == "sounddevice"
     assert active["nativeEndpointIdHash"] == "abc123"
     assert active["droppedFrameCount"] == 3

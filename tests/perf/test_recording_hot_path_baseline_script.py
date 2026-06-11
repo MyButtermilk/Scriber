@@ -106,7 +106,7 @@ def test_recording_hot_path_validate_only_can_require_provider_and_rust_audio(tm
 
     assert payload["ok"] is True
     assert payload["summary"]["complete"] is True
-    assert payload["audioDiagnostics"]["featureFlags"]["audioEngine"] == "rust-prototype"
+    assert payload["audioDiagnostics"]["featureFlags"]["audioEngine"] == "rust-wasapi"
     assert provider_requirement["status"] == "measured"
     assert provider_requirement["providerTranscriptSamples"] == 1
     assert rust_requirement["status"] == "measured"
@@ -337,8 +337,8 @@ def test_recording_hot_path_provider_requirement_rejects_audible_audio_without_p
 def test_recording_hot_path_rust_audio_requirement_checks_active_capture_diagnostics():
     audio_diagnostics = {
         "featureFlags": {
-            "requestedAudioEngine": "rust-prototype",
-            "audioEngine": "rust-prototype",
+            "requestedAudioEngine": "rust-wasapi",
+            "audioEngine": "rust-wasapi",
             "rustAudioRequested": True,
             "rustAudioAvailable": True,
         }
@@ -355,7 +355,7 @@ def test_recording_hot_path_rust_audio_requirement_checks_active_capture_diagnos
                 "audioDiagnosticsDuringRecording": {
                     "microphone": {
                         "activeCapture": {
-                            "engine": "rust-prototype",
+                            "engine": "rust-wasapi",
                             "frameSource": "rust-frame-pipe",
                             "callbackCount": 9,
                             "nativeEndpointIdHash": "redacted",
@@ -379,8 +379,8 @@ def test_recording_hot_path_rust_audio_requirement_checks_active_capture_diagnos
 def test_recording_hot_path_rust_audio_requirement_accepts_always_on_prewarm_adoption():
     audio_diagnostics = {
         "featureFlags": {
-            "requestedAudioEngine": "rust-prototype",
-            "audioEngine": "rust-prototype",
+            "requestedAudioEngine": "rust-wasapi",
+            "audioEngine": "rust-wasapi",
             "rustAudioRequested": True,
             "rustAudioAvailable": True,
         },
@@ -401,7 +401,7 @@ def test_recording_hot_path_rust_audio_requirement_accepts_always_on_prewarm_ado
                     "microphone": {
                         "micAlwaysOn": True,
                         "activeCapture": {
-                            "engine": "rust-prototype",
+                            "engine": "rust-wasapi",
                             "frameSource": "rust-frame-pipe",
                             "callbackCount": 9,
                             "nativeEndpointIdHash": "redacted",
@@ -435,8 +435,8 @@ def test_recording_hot_path_rust_audio_requirement_accepts_always_on_prewarm_ado
 def test_recording_hot_path_rust_audio_requirement_rejects_always_on_without_prewarm_adoption():
     audio_diagnostics = {
         "featureFlags": {
-            "requestedAudioEngine": "rust-prototype",
-            "audioEngine": "rust-prototype",
+            "requestedAudioEngine": "rust-wasapi",
+            "audioEngine": "rust-wasapi",
             "rustAudioRequested": True,
             "rustAudioAvailable": True,
         },
@@ -457,7 +457,7 @@ def test_recording_hot_path_rust_audio_requirement_rejects_always_on_without_pre
                     "microphone": {
                         "micAlwaysOn": True,
                         "activeCapture": {
-                            "engine": "rust-prototype",
+                            "engine": "rust-wasapi",
                             "frameSource": "rust-frame-pipe",
                             "callbackCount": 9,
                             "nativeEndpointIdHash": "redacted",
@@ -481,8 +481,8 @@ def test_recording_hot_path_rust_audio_requirement_rejects_always_on_without_pre
 def test_recording_hot_path_rust_audio_requirement_rejects_raw_prewarm_id():
     audio_diagnostics = {
         "featureFlags": {
-            "requestedAudioEngine": "rust-prototype",
-            "audioEngine": "rust-prototype",
+            "requestedAudioEngine": "rust-wasapi",
+            "audioEngine": "rust-wasapi",
             "rustAudioRequested": True,
             "rustAudioAvailable": True,
         },
@@ -503,7 +503,7 @@ def test_recording_hot_path_rust_audio_requirement_rejects_raw_prewarm_id():
                     "microphone": {
                         "micAlwaysOn": True,
                         "activeCapture": {
-                            "engine": "rust-prototype",
+                            "engine": "rust-wasapi",
                             "frameSource": "rust-frame-pipe",
                             "callbackCount": 9,
                             "nativeEndpointIdHash": "redacted",
@@ -531,8 +531,8 @@ def test_recording_hot_path_rust_audio_requirement_rejects_raw_prewarm_id():
 def test_recording_hot_path_rust_audio_requirement_rejects_mid_session_failure():
     audio_diagnostics = {
         "featureFlags": {
-            "requestedAudioEngine": "rust-prototype",
-            "audioEngine": "rust-prototype",
+            "requestedAudioEngine": "rust-wasapi",
+            "audioEngine": "rust-wasapi",
             "rustAudioRequested": True,
             "rustAudioAvailable": True,
         },
@@ -553,7 +553,7 @@ def test_recording_hot_path_rust_audio_requirement_rejects_mid_session_failure()
                     "microphone": {
                         "micAlwaysOn": True,
                         "activeCapture": {
-                            "engine": "rust-prototype",
+                            "engine": "rust-wasapi",
                             "frameSource": "rust-frame-pipe",
                             "callbackCount": 9,
                             "nativeEndpointIdHash": "redacted",
@@ -582,8 +582,8 @@ def test_recording_hot_path_rust_audio_requirement_rejects_mid_session_failure()
 def test_recording_hot_path_rust_audio_requirement_rejects_python_capture_fallback():
     audio_diagnostics = {
         "featureFlags": {
-            "requestedAudioEngine": "rust-prototype",
-            "audioEngine": "rust-prototype",
+            "requestedAudioEngine": "rust-wasapi",
+            "audioEngine": "rust-wasapi",
             "rustAudioRequested": True,
             "rustAudioAvailable": True,
         }
@@ -620,8 +620,8 @@ def test_recording_hot_path_rust_audio_requirement_rejects_python_capture_fallba
 def test_recording_hot_path_rust_audio_requirement_rejects_open_fallback_circuit():
     audio_diagnostics = {
         "featureFlags": {
-            "requestedAudioEngine": "rust-prototype",
-            "audioEngine": "rust-prototype",
+            "requestedAudioEngine": "rust-wasapi",
+            "audioEngine": "rust-wasapi",
             "rustAudioRequested": True,
             "rustAudioAvailable": True,
         },
@@ -652,7 +652,7 @@ def test_recording_hot_path_rust_audio_requirement_rejects_open_fallback_circuit
                             "remainingSeconds": 12.5,
                         },
                         "activeCapture": {
-                            "engine": "rust-prototype",
+                            "engine": "rust-wasapi",
                             "frameSource": "rust-frame-pipe",
                             "callbackCount": 9,
                             "nativeEndpointIdHash": "redacted",

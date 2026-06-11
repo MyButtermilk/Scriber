@@ -68,7 +68,7 @@ param(
     [string]$LiveRecordingDefaultStt = "",
     [string]$LiveRecordingSonioxMode = "",
     [switch]$DisableLiveTextInjection,
-    [ValidateSet("", "python", "rust-prototype")]
+    [ValidateSet("", "rust-wasapi")]
     [string]$LiveRecordingAudioEngine = "",
     [ValidateSet("", "synthetic", "wasapi")]
     [string]$LiveRecordingRustAudioCaptureMode = "",
@@ -106,8 +106,8 @@ param(
 $ErrorActionPreference = "Stop"
 $DefaultBackendPort = 8765
 
-if ($LiveRecordingRustAudioCaptureMode -and $LiveRecordingAudioEngine -ne "rust-prototype") {
-    throw "-LiveRecordingRustAudioCaptureMode requires -LiveRecordingAudioEngine rust-prototype."
+if ($LiveRecordingRustAudioCaptureMode -and $LiveRecordingAudioEngine -ne "rust-wasapi") {
+    throw "-LiveRecordingRustAudioCaptureMode requires -LiveRecordingAudioEngine rust-wasapi."
 }
 
 function Get-ManagedBackendProcesses {

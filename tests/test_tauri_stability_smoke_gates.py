@@ -444,7 +444,7 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
     assert "$env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = \"1\"" in desktop
     assert "$env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = \"1\"" in desktop
     assert "$env:SCRIBER_MIC_ALWAYS_ON = \"1\"" in desktop
-    assert "-LiveRecordingRustAudioCaptureMode requires -LiveRecordingAudioEngine rust-prototype." in desktop
+    assert "-LiveRecordingRustAudioCaptureMode requires -LiveRecordingAudioEngine rust-wasapi." in desktop
     assert "textInjectionDisabled = $TextInjectionDisabled" in desktop
     assert "liveRecording = $liveRecording" in desktop
     assert "verified = $false" in desktop

@@ -36,7 +36,7 @@ PROVIDER_FINAL_TO_CLIPBOARD_SET_SEGMENT = "provider_final_received_to_clipboard_
 CLIPBOARD_SET_TO_PASTE_SEGMENT = "clipboard_set_to_paste_ms"
 PASTE_TO_FIRST_PASTE_SEGMENT = "paste_to_first_paste_ms"
 TEXT_TARGET_WINDOW_FLAG = "--_text-target-window"
-RUST_AUDIO_ACTIVE_ENGINE = "rust-prototype"
+RUST_AUDIO_ACTIVE_ENGINE = "rust-wasapi"
 RUST_AUDIO_FRAME_SOURCE = "rust-frame-pipe"
 
 

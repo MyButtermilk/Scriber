@@ -75,9 +75,8 @@ Performance/packaging:
 - `tests/perf/test_frontend_vendor_chunk_config.py`
 - `tests/test_tauri_security_gates.py`
 - `tests/test_tauri_stability_smoke_gates.py`
-- Tauri bundle resources include both `backend/` and the opt-in
-  `audio-sidecar/` Rust prototype binary. The sidecar is packaged but not used
-  by default.
+- Tauri bundle resources include both `backend/` and `audio-sidecar/`. The
+  Rust sidecar is the standard live-mic capture/prewarm engine.
 
 ## Installer Builds
 
@@ -232,14 +231,14 @@ Tauri shell IPC can still fail closed for selected devices; that is safer than
 opening the wrong microphone and is not sufficient installed-app evidence.
 The 2026-06-11 Insta360 investigation used this rule: standalone sidecar
 evidence failed closed without a native hash, then the rebuilt Tauri backend
-support bundle proved `prewarm.engine=rust-prototype`, the selected
+support bundle proved `prewarm.engine=rust-wasapi`, the selected
 `Mikrofon (4- Insta360 Link)` label, a matching redacted native endpoint hash,
 and `usedDefaultEndpoint=false`.
 
 Use the recording hot-path benchmark when Rust audio evidence must include the
 actual provider path, not only sidecar frame delivery. The strict provider/Rust
 flags require a final STT provider transcript and verify that
-`/api/runtime/audio-diagnostics` reported an active `rust-prototype`
+`/api/runtime/audio-diagnostics` reported an active `rust-wasapi`
 `rust-frame-pipe` capture during recording. The same gate rejects reports where
 `microphone.rustAudioFallbackCircuit.open` is true, because those runs prove a
 fallback cooldown rather than valid Rust capture evidence. When the Rust report
@@ -256,42 +255,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_basel
 ```
 
 This gate needs real provider credentials, microphone access, and the Rust
-prototype environment, for example `SCRIBER_AUDIO_ENGINE=rust-prototype` plus
+prototype environment, for example `SCRIBER_AUDIO_ENGINE=rust-wasapi` plus
 the WASAPI sidecar feature flags used by the current prototype. Add
 `-RequireRecordingHotPathTextTarget` with a controlled
 `-RecordingHotPathTextTargetFile` when the evidence also needs to prove
 end-to-end text insertion into a target window.
 
-For Rust audio promotion, run the recording hot-path benchmark once with the
-default Python engine and once with `SCRIBER_AUDIO_ENGINE=rust-prototype`, then
-turn both provider-backed reports into the required comparison artifact. Both
-runs must use the same STT provider and the same benchmark configuration;
-provider or configuration mismatches are rejected because they make latency
-deltas ambiguous. The benchmark report now records a `requested` object, and
-the comparison gate requires matching iterations, recording seconds, speech
-prompt, prompt delay, and text-target settings across Python and Rust. The
-dedicated runner defaults to three recording samples per engine, and final
-readiness rejects comparison artifacts with fewer than three Python or Rust
-samples. The Rust report must also prove `micAlwaysOn=true` in its runtime audio
-diagnostics, so provider-backed evidence exercises the same Always-On-Mic path
-intended for default promotion instead of only an on-demand Rust capture path.
-The comparison validator also requires every Rust `rust-frame-pipe` sample to
-include `activeCapture.rustPrewarmAdoption.adopted=true` plus a redacted prewarm
-hash, and it rejects raw `prewarmId` / `prewarm_id` values in that evidence.
-It also requires the `rustMidSessionClean` check, so stale artifacts or Rust
-runs that reported mid-session frame-pipe failures cannot be reused for
-promotion evidence. The same comparison artifact must contain a passing
-`rustFramePipeFlow` check, which requires positive callback, frame-pipe frame,
-and audio-frame counters for each Rust `rust-frame-pipe` sample. It also must
-contain a passing `rustNoDroppedFrames` check, which requires the active Rust
-capture to report `droppedFrameCount=0`, and a passing
-`rustActiveCaptureStable` check, which rejects active-capture watchdog restarts,
-restart throttling, lingering health-failure reasons, or restart errors during
-the provider-backed Rust run.
-It also rejects clear P95 regressions in local audio-owned segments such as
-first audio frame, first audible frame, and stop-to-last-chunk.
-Provider-finalize and total stop-to-text latency remain visible in the report
-but are not used as this local Rust-audio regression gate:
+The provider-backed Python-vs-Rust comparison runner is now historical or for
+pre-promotion builds that still contain Python capture. It was used for the
+2026-06-11 aggressive Rust/WASAPI decision: Rust clearly improved median
+hotkey-to-mic-ready and hotkey-to-first-audio latency, delivered valid
+`rust-frame-pipe` samples, adopted prewarm, reported no dropped frames, and
+kept the fallback circuit closed. Current builds use Rust/WASAPI as the only
+live-mic capture path, so a `SCRIBER_AUDIO_ENGINE=python` request is not a
+product-path selector anymore. Provider-finalize and total stop-to-text latency
+remain visible in reports but are network/STT dominated and do not decide local
+audio capture ownership.
+
+For old builds or comparison archaeology, the runner still exists:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_recording_hot_path_comparison.ps1 `
@@ -304,16 +285,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_recording_hot_pa
   -RecordingHotPathSpeechPrompt "Scriber provider-backed Rust audio validation"
 ```
 
-The runner sets `SCRIBER_AUDIO_ENGINE=python` for the first pass, then
-`SCRIBER_AUDIO_ENGINE=rust-prototype` plus the requested Rust capture mode for
-the second pass. With `-RustAlwaysOnMic`, it also sets
-`SCRIBER_MIC_ALWAYS_ON=1` for the Rust pass. Non-plan comparison runs now fail
-early without `-RustAlwaysOnMic`, because valid Rust promotion evidence requires
-both `rustAlwaysOnMic` and `rustPrewarmAdoption` checks. Use
-`-RecordingHotPathEnvFile` plus explicit provider overrides when the comparison
-must load credentials and provider defaults from a local/release `.env`; the
-runner records only the file path and provider names, never secret values. It
-finally calls:
+The runner sets a legacy `SCRIBER_AUDIO_ENGINE=python` request for the first
+pass, then runs the Rust/WASAPI pass. Use `-RecordingHotPathEnvFile` plus
+explicit provider overrides when the comparison must load credentials and
+provider defaults from a local/release `.env`; the runner records only the file
+path and provider names, never secret values. It finally calls:
 
 ```powershell
 python scripts\validate_recording_hot_path_comparison.py `
@@ -559,7 +535,7 @@ Use the top-level release-readiness runner for final external evidence:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 -PlanOnly
 ```
 
-For a default-path Rust audio promotion decision, use the aggregate gate first:
+For extended Rust/WASAPI release hardening, use the aggregate gate first:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
@@ -567,24 +543,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -PlanOnly
 ```
 
-`-RequireRustAudioPromotionReadiness` turns on the full Rust-audio promotion
+`-RequireRustAudioPromotionReadiness` turns on the full Rust-audio evidence
 bundle without starting long hardware tests by itself. It requires the Rust
 WASAPI sidecar smoke, app-level Always-On-Mic prewarm smoke, installed
-live-recording smoke, provider-backed Python-vs-Rust hot-path comparison,
+live-recording smoke, provider-backed hot-path evidence,
 Rust/WASAPI endpoint inventory in the physical microphone matrix, and native
 device-refresh evidence. It also raises the promotion minima to a 10-minute
 Rust sidecar smoke, 10-minute active app prewarm capture, 30-minute idle prewarm
 window, and 10-minute installed live-recording smoke. For the installed
-live-recording gate it also requires sampled `rust-prototype` /
+live-recording gate it also requires sampled `rust-wasapi` /
 `rust-frame-pipe` audio diagnostics with a closed Rust fallback circuit. The
 app-level prewarm gate requires at least two stop/resume capture cycles. The
-provider-backed comparison artifact must be produced from a Rust pass that used
-`-RustAlwaysOnMic`. Add the matching `-Run...` or `-UseExisting...` flags when
-producing or reusing those reports.
+provider-backed comparison artifact is useful only for old/pre-promotion builds
+that still contain Python capture; current release evidence should focus on
+Rust-only live-recording, prewarm, provider, endpoint, and device-refresh
+reports. Add the matching `-Run...` or `-UseExisting...` flags when producing
+or reusing reports.
 
-When evaluating whether the Rust audio prototype can be promoted, add the
-physical sidecar smoke, Rust endpoint inventory evidence, and native
-DeviceMonitor refresh evidence as hard gates:
+For physical Rust audio hardening, add the sidecar smoke, Rust endpoint
+inventory evidence, and native DeviceMonitor refresh evidence as hard gates:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
@@ -624,8 +601,8 @@ also makes the sidecar smoke artifact required, even without the generic
 `-RequireRustAudioSidecarSmoke` flag. `-RequireRustAudioSidecarSmoke` also makes the
 microphone hardware matrix validator require redacted Rust/WASAPI endpoint
 inventory evidence for every physical device scenario. Without that flag the
-Rust smoke remains visible in the runner plan but optional, so standard
-Python-capture release builds are not blocked by prototype evidence.
+Rust smoke remains visible in the runner plan but optional unless required by
+the release evidence target.
 
 The prewarm sidecar smoke can be added independently with
 `-RunRustAudioPrewarmSidecarSmoke` and
@@ -638,8 +615,7 @@ default Rust audio promotion without the sidecar capture adoption smoke,
 app-wide Always-On-Mic lifecycle integration, and provider-backed transcription
 smokes.
 
-When evaluating a default-path Rust audio promotion, also require installed
-live-mic start/stop stability evidence:
+For installed live-mic start/stop stability evidence, require:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
@@ -661,7 +637,7 @@ stability samples that cover at least half of the expected probe count for the
 requested duration, and verified cleanup. Add
 `-RequireInstalledLiveRecordingRustAudio` when the report is used as Rust
 promotion evidence; that requires every stability sample to include compact
-audio diagnostics proving `audioEngine=rust-prototype`,
+audio diagnostics proving `audioEngine=rust-wasapi`,
 `activeCapture.frameSource=rust-frame-pipe`,
 `activeCapture.rustPrewarmAdoption.adopted=true` with a redacted prewarm hash,
 active callbacks, no frame-pipe sequence/protocol/prebuffer-order errors, and
@@ -683,7 +659,7 @@ proving an on-demand live recording. The same installed report must now include
 `liveRecording.postStopAudioDiagnostics`: after the stop response and idle
 state transition, the smoke polls `/api/runtime/audio-diagnostics` until the
 idle Rust prewarm is active again. Rust promotion validation requires
-`prewarmEngine=rust-prototype`, `prewarmActive=true`, positive
+`prewarmEngine=rust-wasapi`, `prewarmActive=true`, positive
 `prewarmActiveCaptureResumeReadyCount`, zero
 `prewarmActiveCaptureResumeFailedCount`, and non-negative post-stop
 `prewarmLastActiveCaptureResumeGapMs`,
@@ -703,9 +679,9 @@ rejects raw
 installed live-recording artifact. It complements the provider-backed
 Python/Rust hot-path comparison; it does not replace transcript-quality
 evidence. To produce installed Rust-audio evidence, run the installed smoke with
-`-LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode
+`-LiveRecordingAudioEngine rust-wasapi -LiveRecordingRustAudioCaptureMode
 wasapi -LiveRecordingMicAlwaysOn`; the build wrapper exposes the same path as
-`-InstallerLiveRecordingAudioEngine rust-prototype
+`-InstallerLiveRecordingAudioEngine rust-wasapi
 -InstallerLiveRecordingRustAudioCaptureMode wasapi
 -InstallerLiveRecordingMicAlwaysOn`. When the smoke needs provider credentials
 from a local/release env file, pass `-LiveRecordingEnvFile .env` plus an
@@ -844,9 +820,8 @@ The final readiness validator expects evidence for:
 
 - physical microphone hardware matrix,
 - Rust audio sidecar physical smoke, Rust endpoint inventory evidence, and
-  native DeviceMonitor refresh evidence when evaluating the Rust prototype,
-- installed live-recording smoke when evaluating a default-path Rust audio
-  promotion,
+  native DeviceMonitor refresh evidence when hardening the Rust/WASAPI path,
+- installed live-recording smoke for Rust/WASAPI release evidence,
 - Tauri text-injection safe target smoke before promoting Tauri/Rust injection
   beyond opt-in,
 - Tauri text-injection target-app matrix before changing text-injection

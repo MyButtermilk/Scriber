@@ -153,11 +153,12 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
                 "through the shared sidecar client."
             ),
             (
-                "The wasapi mode uses SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1 and starts "
-                "a real passive WASAPI idle capture stream."
+                "The wasapi mode starts a real passive WASAPI idle capture stream; "
+                "normal WASAPI capture is enabled by default."
             ),
+            "Use SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE=1 only for unavailable-path tests.",
             "This smoke does not yet prove buffered WASAPI audio adoption into active capture.",
-            "Keep SCRIBER_AUDIO_ENGINE=python as default unless promotion gates pass.",
+            "Scriber now uses Rust/WASAPI as the standard live-mic capture path.",
         ],
         "exampleCommand": (
             "python scripts/smoke_rust_audio_prewarm_sidecar.py "
@@ -178,7 +179,7 @@ def write_payload(payload: dict[str, Any], output: str = "") -> None:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Smoke-test the opt-in Rust audio prewarm sidecar lifecycle.",
+        description="Smoke-test the Rust audio prewarm sidecar lifecycle.",
     )
     parser.add_argument("--sidecar-exe", default="", help="Path to scriber-audio-sidecar(.exe).")
     parser.add_argument("--mode", choices=["wasapi", "synthetic"], default="synthetic")

@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 import src.microphone as microphone
-from src.microphone import PythonSoundDeviceFrameSource, RustPrototypeFrameSource
+from src.microphone import RustPrototypeFrameSource
 from src.runtime.audio_frame_pipe import (
     AUDIO_FRAME_FLAG_PREBUFFER,
     AudioFrameHeader,
@@ -51,7 +51,7 @@ class _FakeStreamHandle:
 
 
 class _FakeRustFrameSource:
-    engine = "rust-prototype"
+    engine = "rust-wasapi"
     name = "fake-rust-frame-source"
 
     def __init__(self) -> None:
@@ -85,130 +85,6 @@ class _FakeRustFrameSource:
             "frameSource": self.name,
             "streamActive": self.stream.active,
         }
-
-
-def test_python_sounddevice_frame_source_opens_configured_device_with_stable_capture_channels():
-    _FakeInputStream.instances.clear()
-    fake_sd = types.SimpleNamespace(
-        query_devices=lambda device=None, kind=None: {
-            "name": "Array Mic",
-            "max_input_channels": 4,
-        },
-        InputStream=lambda **kwargs: _FakeInputStream(**kwargs),
-    )
-
-    source = PythonSoundDeviceFrameSource(
-        sample_rate=16000,
-        target_channels=1,
-        block_size=512,
-        device="3",
-        sd_module=fake_sd,
-    )
-
-    source.open(lambda *_args: None)
-    source.start()
-
-    stream = _FakeInputStream.instances[-1]
-    assert source.engine == "python"
-    assert source.name == "sounddevice"
-    assert source.device_index == 3
-    assert source.target_channels == 1
-    assert source.capture_channels == 4
-    assert stream.kwargs["device"] == 3
-    assert stream.kwargs["channels"] == 4
-    assert stream.kwargs["samplerate"] == 16000
-    assert stream.active is True
-    assert source.diagnostic_snapshot()["frameSource"] == "sounddevice"
-
-
-def test_python_sounddevice_frame_source_falls_back_to_default_when_configured_open_fails():
-    _FakeInputStream.instances.clear()
-
-    def input_stream(**kwargs):
-        if kwargs.get("device") == 7:
-            raise RuntimeError("device busy")
-        return _FakeInputStream(**kwargs)
-
-    fake_sd = types.SimpleNamespace(
-        query_devices=lambda device=None, kind=None: {
-            "name": "Default Mic" if device is None else "Busy Mic",
-            "max_input_channels": 2,
-        },
-        InputStream=input_stream,
-    )
-
-    source = PythonSoundDeviceFrameSource(
-        sample_rate=16000,
-        target_channels=1,
-        block_size=512,
-        device="7",
-        sd_module=fake_sd,
-    )
-
-    source.open(lambda *_args: None)
-
-    stream = _FakeInputStream.instances[-1]
-    assert source.device_index is None
-    assert source.capture_channels == 2
-    assert source.fallback_reason == "configuredDeviceOpenFailed"
-    assert stream.kwargs["device"] is None
-    assert stream.kwargs["channels"] == 2
-
-
-def test_python_sounddevice_frame_source_stop_can_pause_or_close_stream():
-    _FakeInputStream.instances.clear()
-    fake_sd = types.SimpleNamespace(
-        query_devices=lambda device=None, kind=None: {
-            "name": "Default Mic",
-            "max_input_channels": 1,
-        },
-        InputStream=lambda **kwargs: _FakeInputStream(**kwargs),
-    )
-
-    source = PythonSoundDeviceFrameSource(
-        sample_rate=16000,
-        target_channels=1,
-        block_size=512,
-        device="default",
-        sd_module=fake_sd,
-    )
-
-    source.open(lambda *_args: None)
-    source.start()
-    stream = _FakeInputStream.instances[-1]
-
-    source.stop(close=False)
-    assert stream.stop_calls == 1
-    assert stream.closed is False
-    assert source.stream is stream
-
-    source.stop(close=True)
-    assert stream.stop_calls == 2
-    assert stream.closed is True
-    assert source.stream is None
-
-
-@pytest.mark.parametrize(
-    ("requested", "expected"),
-    [
-        ("", None),
-        ("default", None),
-        (None, None),
-        ("5", 5),
-    ],
-)
-def test_python_sounddevice_frame_source_device_index_parsing(requested, expected):
-    fake_sd = types.SimpleNamespace()
-    source = PythonSoundDeviceFrameSource(
-        sample_rate=16000,
-        target_channels=1,
-        block_size=512,
-        device=requested,
-        sd_module=fake_sd,
-    )
-
-    assert source._parse_device_index() == expected
-
 
 def test_rust_audio_default_without_favorite_uses_windows_default(monkeypatch):
     monkeypatch.setattr(microphone.Config, "MIC_DEVICE", "default", raising=False)
@@ -553,7 +429,7 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     assert commands[0][1]["prebufferMs"] == 400
     assert commands[0][1]["prewarmId"] == "prewarm-1"
     assert commands[-1][0] == "audioCaptureStop"
-    assert source.engine == "rust-prototype"
+    assert source.engine == "rust-wasapi"
     assert source.name == "rust-frame-pipe"
     assert source.callback_count == 1
     assert calls[0][1] == 512
@@ -1093,20 +969,10 @@ def test_rust_audio_device_selection_payload_maps_portaudio_index_to_native_hash
     assert "SWD" not in str(payload)
 
 
-@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
 @pytest.mark.asyncio
-async def test_microphone_input_falls_back_to_python_when_rust_capture_unavailable(monkeypatch):
+async def test_microphone_input_raises_when_rust_capture_unavailable(monkeypatch):
     _FakeInputStream.instances.clear()
-    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
-
-    fake_sd = types.SimpleNamespace(
-        query_devices=lambda device=None, kind=None: {
-            "name": "Default Mic",
-            "max_input_channels": 1,
-        },
-        InputStream=lambda **kwargs: _FakeInputStream(**kwargs),
-    )
-    monkeypatch.setattr(microphone, "sd", fake_sd)
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
     monkeypatch.setattr(
         microphone,
         "call_shell_ipc",
@@ -1126,21 +992,20 @@ async def test_microphone_input_falls_back_to_python_when_rust_capture_unavailab
 
     mic._drain_queue = fake_drain_queue
 
-    await mic.start(microphone.StartFrame())
+    with pytest.raises(RuntimeError, match="Rust audio capture start failed"):
+        await mic.start(microphone.StartFrame())
 
     snapshot = mic.diagnostic_snapshot()
-    assert snapshot["requestedEngine"] == "rust-prototype"
-    assert snapshot["engine"] == "python"
-    assert snapshot["frameSource"] == "sounddevice"
-    assert snapshot["engineFallbackReason"].startswith("rustPrototypeFallback:")
-    assert _FakeInputStream.instances[-1].active is True
-
-    await mic.stop(microphone.EndFrame())
+    assert snapshot["requestedEngine"] == "rust-wasapi"
+    assert snapshot["engine"] != "python"
+    assert snapshot["frameSource"] != "sounddevice"
+    assert snapshot["engineFallbackReason"].startswith("rustCaptureFailed:")
+    assert _FakeInputStream.instances == []
 
 
 @pytest.mark.asyncio
 async def test_rust_prototype_does_not_adopt_python_prewarm_when_always_on(monkeypatch):
-    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
     monkeypatch.setattr(microphone, "HAS_SOUNDDEVICE", True)
     fake_source = _FakeRustFrameSource()
 
@@ -1151,7 +1016,7 @@ async def test_rust_prototype_does_not_adopt_python_prewarm_when_always_on(monke
 
         def attach_active_capture(self, *_args, **_kwargs):
             self.attach_calls += 1
-            raise AssertionError("Rust prototype must not adopt Python prewarm")
+            raise AssertionError("Rust WASAPI must not adopt Python prewarm")
 
         def pause_for_active_capture(self) -> None:
             self.pause_calls += 1
@@ -1180,21 +1045,21 @@ async def test_rust_prototype_does_not_adopt_python_prewarm_when_always_on(monke
     assert prewarm.pause_calls == 1
     assert fake_source.open_calls == 1
     assert fake_source.start_calls == 1
-    assert snapshot["requestedEngine"] == "rust-prototype"
-    assert snapshot["engine"] == "rust-prototype"
+    assert snapshot["requestedEngine"] == "rust-wasapi"
+    assert snapshot["engine"] == "rust-wasapi"
     assert snapshot["usingPrewarmStream"] is False
-    assert snapshot["prewarmAdoptionSkippedReason"] == "engine:rust-prototype"
+    assert snapshot["prewarmAdoptionSkippedReason"] == "engine:rust-wasapi"
 
 
 @pytest.mark.asyncio
 async def test_rust_prototype_adopts_rust_prewarm_id_when_always_on(monkeypatch):
-    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
     monkeypatch.setattr(microphone, "HAS_SOUNDDEVICE", True)
     fake_source = _FakeRustFrameSource()
     created_prewarm_ids: list[str] = []
 
     class FakeRustPrewarmManager:
-        engine = "rust-prototype"
+        engine = "rust-wasapi"
 
         def __init__(self) -> None:
             self.attach_calls = 0
@@ -1203,7 +1068,7 @@ async def test_rust_prototype_adopts_rust_prewarm_id_when_always_on(monkeypatch)
         def attach_active_capture(self, *_args, **_kwargs):
             self.attach_calls += 1
             return {
-                "engine": "rust-prototype",
+                "engine": "rust-wasapi",
                 "prewarmId": "prewarm-rust-1",
                 "signature": {
                     "sample_rate": 16000,
@@ -1243,8 +1108,8 @@ async def test_rust_prototype_adopts_rust_prewarm_id_when_always_on(monkeypatch)
     assert prewarm.attach_calls == 1
     assert prewarm.pause_calls == 0
     assert created_prewarm_ids == ["prewarm-rust-1"]
-    assert snapshot["requestedEngine"] == "rust-prototype"
-    assert snapshot["engine"] == "rust-prototype"
+    assert snapshot["requestedEngine"] == "rust-wasapi"
+    assert snapshot["engine"] == "rust-wasapi"
     assert snapshot["usingPrewarmStream"] is False
     assert snapshot["prewarmAdoptionSkippedReason"] == ""
     assert snapshot["rustPrewarmAdoption"]["adopted"] is True

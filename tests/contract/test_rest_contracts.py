@@ -219,7 +219,7 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
             "prebufferMs": 400,
             "prewarm": {
                 "configured": True,
-                "engine": "rust-prototype",
+                "engine": "rust-wasapi",
                 "active": True,
                 "hasStream": True,
                 "prewarmIdHash": "prewarm-hash",
@@ -289,8 +289,8 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
             },
             "activeCapture": {
                 "running": True,
-                "engine": "rust-prototype",
-                "requestedEngine": "rust-prototype",
+                "engine": "rust-wasapi",
+                "requestedEngine": "rust-wasapi",
                 "frameSource": "rust-frame-pipe",
                 "hasStream": True,
                 "streamActive": True,
@@ -327,7 +327,7 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
                 "midSessionFailureReason": "",
                 "lastRustAudioMidSessionFailureReason": "",
                 "source": {
-                    "engine": "rust-prototype",
+                    "engine": "rust-wasapi",
                     "frameSource": "rust-frame-pipe",
                     "hasStream": False,
                     "streamActive": False,
@@ -346,7 +346,7 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
                 "recordedAt": "2026-06-11T12:00:00Z",
                 "recordedAtUptimeSeconds": 12.5,
                 "diagnostics": {
-                    "engine": "rust-prototype",
+                    "engine": "rust-wasapi",
                     "frameSource": "rust-frame-pipe",
                     "streamActive": True,
                     "lastHealthFailureReason": "staleCallbacks",

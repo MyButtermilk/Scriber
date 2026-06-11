@@ -126,97 +126,42 @@ PySide6 footprint:
 
 Rust audio:
 
-- `SCRIBER_AUDIO_ENGINE=rust-prototype` is request-only.
-- The current branch has frame-source boundaries, diagnostics, shared
-  frame-pipe protocol helpers, a sidecar skeleton, and a Tauri stdio sidecar
-  lifecycle client. It also has an explicit synthetic sidecar frame-pipe
-  transport harness for plumbing tests and an explicit
-  `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` WASAPI capture prototype with redacted
-  native-endpoint-hash selection. The sidecar is now bundled as an installed
-  resource, but it remains opt-in. Python-side Rust diagnostics include
-  frame-pipe read counters, sequence/protocol error counts, first-frame read
-  timing, reader end reason, and stop-health fields for support bundles.
-  Passive Rust WASAPI probes now use the same redacted native endpoint hash
-  contract as active Rust capture, so selected-device probe evidence is no
-  longer default-only. Rust/WASAPI endpoint inventory is now exposed through
-  private shell IPC and preferred by audio diagnostics for private
-  PortAudio-to-native mapping before PyCAW fallback. The hardware matrix
-  scripts now persist that redacted endpoint inventory as acceptance evidence
-  and can fail promotion if it is missing or falls back away from `rust-wasapi`.
-  The Python Rust frame reader also tracks `SAF1` prebuffer/live frame counts
-  and rejects prebuffer-after-live interleaving. Always-on startup no longer
-  adopts the Python prewarm stream when `SCRIBER_AUDIO_ENGINE=rust-prototype`
-  is requested. A Rust prewarm manager now exists behind the same app-wide
-  Always-On-Mic lifecycle for the explicit Rust prototype: it keeps
-  `audioPrewarmStart` alive while idle and passes the `prewarmId` into the next
-  Rust capture for sidecar-local buffered-frame adoption. The app-level smoke
-  `scripts/smoke_rust_audio_app_prewarm.py` now verifies that the Python
-  manager/source lifecycle performs this handoff against the real sidecar and
-  resumes idle prewarm after capture. It also keeps unfavorited default-device
-  requests as `devicePreference=default` with no native endpoint hash, so the
-  Rust WASAPI sidecar opens the real Windows default capture endpoint directly.
-  Non-default Rust capture without a native endpoint hash still fails closed.
-  The Rust prewarm manager now prevents a resolved favorite microphone from
-  silently falling back to the Windows default endpoint, and it can use the
-  private Tauri shell-IPC `audioEndpointInventory` payload as a fallback native
-  endpoint source when Python/PyCAW inventory is empty. A 2026-06-11 targeted
-  Insta360 favorite-mic smoke showed why this matters: the previous standalone
-  path resolved `Mikrofon (4- Insta360 Link)` to PortAudio index `11` but still
-  opened `Microphone (Jabra Engage 75)` as the default endpoint, leaving the
-  Insta360 privacy light off. Source and unit tests now fail closed instead of
-  opening the wrong device. The rebuilt Tauri backend was also smoke-tested via
-  support-bundle diagnostics, which showed Rust prewarm active for
-  `Mikrofon (4- Insta360 Link)` with `device_preference=11`, a matching
-  redacted native endpoint hash, and `usedDefaultEndpoint=false`.
-  The hybrid release-readiness runner can require this app-level smoke via
-  `-RequireRustAudioAppPrewarmSmoke`. It can also require explicit app-level
-  Rust Always-On-Mic durations with `-MinRustAudioAppPrewarmDurationSec` and
-  `-MinRustAudioAppPrewarmPrewarmDurationSec` plus repeated stop/resume cycles
-  with `-MinRustAudioAppPrewarmCaptureCycles`, so the 10-minute active-capture
-  / 30-minute idle-prewarm promotion target is machine-checkable. Default-path
-  Rust promotion can now also require installed live-recording start/stop
-  stability through `-RequireInstalledLiveRecordingSmoke` and
-  `-MinInstalledLiveRecordingDurationSec`; this gates the app/installer path
-  separately from provider-backed transcript quality and now validates managed
-  Tauri runtime metadata plus stability-sample coverage for the requested
-  recording duration. The aggregate Rust promotion gate also requires
-  installed live-recording Rust-audio sample evidence, so installed reports must
-  prove `rust-prototype` / `rust-frame-pipe` active capture, adopted Rust
-  prewarm evidence, a closed fallback circuit, and `micAlwaysOn=true` instead
-  of only proving generic on-demand live-mic stability.
-  The recording hot-path benchmark now has strict provider/Rust promotion
-  flags: `--require-provider-transcript` requires a final STT provider segment,
-  and `--require-rust-audio-engine` verifies active `rust-prototype`
-  `rust-frame-pipe` capture diagnostics during recording. It also rejects open
-  Rust fallback-circuit diagnostics, so a cooldown fallback cannot pass as Rust
-  capture evidence. The hybrid baseline runner exposes those checks as
-  `-RequireRecordingHotPathProviderTranscript` and
-  `-RequireRecordingHotPathRustAudio`. When `micAlwaysOn=true` is present in
-  the Rust hot-path report, the `rust_audio_engine` requirement also requires
-  adopted Rust prewarm evidence before the report can be marked measured.
-  `scripts/validate_recording_hot_path_comparison.py` now turns separate
-  provider-backed Python and Rust hot-path reports into a required promotion
-  artifact, and `run_hybrid_release_readiness.ps1` can gate it with
-  `-RequireRecordingHotPathComparison`. The comparison validator also requires
-  the same STT provider, the same benchmark configuration, active
-  `micAlwaysOn=true` Rust evidence, adopted Rust prewarm evidence on every
-  `rust-frame-pipe` sample, and rejects an open Rust fallback circuit in the
-  Rust report. Final readiness now also requires at least three samples per
-  engine, so one-shot comparison artifacts are not acceptable Rust promotion
-  evidence. The same artifact now also fails Rust promotion when local
-  audio-owned P95 hot-path segments regress clearly against Python, or when
-  Rust frame-pipe callback/audio-frame counters are missing or empty, when Rust
-  dropped-frame evidence is non-zero or missing, or when Rust active-capture
-  watchdog restart/throttle evidence appears during the provider-backed run;
-  the provider-finalize and total stop-to-text values stay diagnostic-only
-  because they are network/provider dominated.
-  `scripts/run_recording_hot_path_comparison.ps1` now orchestrates the Python
-  pass, Rust-prototype pass, and comparison artifact creation for real
-  provider-backed A/B runs, defaulting to three recording samples per engine
-  and a 50 ms max P95 regression tolerance for local audio-owned segments. The
-  aggregate release-readiness runner can now produce that artifact directly
-  with `-RunRecordingHotPathComparison`, using `-RustAlwaysOnMic`, before final
-  validation.
+- Rust/WASAPI sidecar capture is now the standard live-mic capture and
+  Always-On-Mic prewarm path. The Python `sounddevice` capture/prewarm path was
+  removed from normal app use after the 2026-06-11 short provider-backed A/B
+  comparison showed clearly better Rust median mic-ready and first-audio
+  latency with valid frame-pipe flow, adopted prewarm, no dropped frames, and a
+  closed fallback circuit.
+- Python still owns recording state, Pipecat/provider flow, persistence,
+  diagnostics aggregation, and REST/WebSocket contracts. `sounddevice` may still
+  be present for microphone listing and PortAudio-to-native endpoint mapping
+  helpers, but it must not be used as live capture fallback.
+- `SCRIBER_AUDIO_ENGINE` remains only as diagnostic compatibility. Normal WASAPI
+  capture/prewarm is available without `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1`;
+  `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` is test-only, and
+  `SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE=1` forces unavailable behavior for
+  tests.
+- Rust/WASAPI endpoint inventory is exposed through private shell IPC and is
+  preferred for private PortAudio-to-native mapping before PyCAW fallback.
+  Default-device requests are passed as `devicePreference=default` with no
+  native endpoint hash. Favorite/non-default microphones use redacted native
+  endpoint hashes and fail closed if no hash can be resolved, so the sidecar
+  does not silently open the Windows default microphone.
+- Rust diagnostics include frame-pipe read counters, sequence/protocol errors,
+  prebuffer/live frame counts, first-frame read timing, reader end reason,
+  endpoint-selection details, stop-health fields, prewarm status, restart
+  counters, and a bounded redacted `recentEvents` timeline for short
+  microphone privacy-indicator interruptions.
+- The 2026-06-11 targeted Insta360 investigation fixed a Python/Rust endpoint
+  hash mismatch by preferring Tauri shell-IPC endpoint inventory for active
+  capture and prewarm. A Rust-only provider-backed smoke then passed with Azure
+  MAI, `rust-wasapi` / `rust-frame-pipe`, adopted prewarm, no dropped frames,
+  selected Insta360 endpoint hash `51112d9ccdd3a140`, and about 126 ms
+  hotkey-to-first-audio.
+- Still open: longer physical Always-On-Mic evidence, dock/USB/default-device
+  matrix evidence, selected-device regression evidence, signing/updater
+  publication evidence, and release hardening around sidecar restart/cooldown
+  behavior.
   Rust Always-On-Mic prewarm now has an `audioPrewarmStatus` path through
   Shell IPC and the audio sidecar. The Python Rust prewarm watchdog uses that
   status instead of treating a cached `prewarmId` as sufficient proof of an
@@ -229,7 +174,7 @@ Rust audio:
   post-start idle sessions are now recorded explicitly as
   `missingPrewarmSession` for Rust and `missingPrewarmStream` for the Python
   fallback, while first startup activation is not counted as a restart. This
-  still needs long physical evidence before default promotion.
+  still needs longer physical evidence for release hardening.
   `scripts/run_hybrid_release_readiness.ps1` now exposes
   `-RequireRustAudioPromotionReadiness` as the aggregate default-promotion
   gate; it bundles Rust sidecar capture, app-level Always-On-Mic prewarm,
@@ -267,7 +212,7 @@ Rust audio:
   A targeted 2026-06-11 favorite-mic investigation fixed a Python/Rust endpoint
   hash mismatch by preferring the private Tauri shell-IPC endpoint inventory
   for Rust active capture and prewarm. A Rust-only provider-backed smoke then
-  passed with Azure MAI, `rust-prototype` / `rust-frame-pipe`, no Python
+  passed with Azure MAI, `rust-wasapi` / `rust-frame-pipe`, no Python
   fallback, adopted prewarm, no dropped frames, selected Insta360 endpoint hash
   `51112d9ccdd3a140`, and about 126 ms hotkey-to-first-audio. The sidecar now
   starts the new WASAPI capture before stopping prewarm and exposes
@@ -281,10 +226,10 @@ Rust audio:
   required. Actually running the long physical Always-On-Mic and hardware
   matrix evidence, repeated provider-backed Python/Rust comparison artifacts
   using the aggregate gate, signing/updater publication evidence, and the final
-  promotion decision are still open before default promotion. The first
-  one-sample Python/Rust comparison after the endpoint fix proved active Rust
-  capture and prewarm adoption, but still failed the strict local audio-owned
-  latency no-regression gate, so more A/B evidence is required.
+  release hardening are still open. The first one-sample Python/Rust comparison
+  after the endpoint fix proved active Rust capture and prewarm adoption but
+  failed the old strict local audio-owned P95 no-regression gate; that gate is
+  retained only as conservative evidence for old/pre-promotion comparisons.
 
 Tauri text injection:
 
@@ -318,7 +263,7 @@ Tauri text injection:
   Stop in the popup.
 - Rust frame-pipe failures after the first callback now open a short
   fallback-on-next-session circuit. The current utterance is not switched to
-  Python mid-stream, but the next requested Rust-prototype recording uses
+  Python mid-stream, but the next requested rust-wasapi recording uses
   Python during the cooldown and records the circuit-open reason in diagnostics.
   `/api/runtime/audio-diagnostics` exposes that circuit globally, so support
   bundles can explain the fallback even after the failed recording has stopped.
@@ -327,8 +272,7 @@ Tauri text injection:
   `midSessionFailureReason` evidence or unexpectedly ended frame-pipe readers,
   so a report with a hidden Rust stream break cannot pass as default-promotion
   evidence.
-- Effective runtime audio engine remains Python until a measured Rust prototype
-  proves meaningful latency, stability, and maintainability gains.
+- Effective runtime audio engine is Rust/WASAPI for live microphone capture.
 
 Local ASR packaging:
 

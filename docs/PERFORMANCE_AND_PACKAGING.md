@@ -40,8 +40,9 @@ Startup and imports:
 
 Live mic:
 
-- Optional idle mic prewarm keeps a PortAudio stream ready.
-- Rolling prebuffer can prepend the latest audio frames when recording starts.
+- Rust/WASAPI sidecar capture is now the standard live-mic capture path.
+- Always-On-Mic uses the Rust prewarm manager and can prepend adopted sidecar
+  prebuffer frames when recording starts.
 - Device-name/favorite resolution has a short TTL cache.
 - Device refresh is deferred while a recording stream is active.
 - Audio-level UI work is throttled to about 60 Hz.
@@ -215,9 +216,8 @@ Required prerequisites before any Rust path becomes default:
 1. Feature flags and rollback switches:
    - `SCRIBER_NATIVE_DEVICE_EVENTS=auto|0|1`
    - `SCRIBER_INJECT_METHOD=auto|paste|sendinput|type|tauri`
-   - `SCRIBER_AUDIO_ENGINE=python|rust-prototype`
-   - Defaults stay on current behavior until installed Windows acceptance gates
-     pass.
+   - `SCRIBER_AUDIO_ENGINE` is diagnostic compatibility only; it no longer
+     selects Python capture. Rust/WASAPI is the live-mic capture default.
 2. Private shell IPC for backend-initiated shell work:
    - Tauri commands cover frontend-to-shell calls, but live text injection
      originates inside the Python pipeline.
@@ -258,7 +258,7 @@ Recommended sequence:
 Do not remove `pycaw`/`comtypes`, `keyboard`/`pyautogui`/Tkinter fallbacks, or
 `sounddevice` until the relevant Rust replacement has passed installed Windows
 smokes and physical-device coverage. For audio capture, keep `sounddevice`
-available even after a Rust prototype exists unless a later release plan proves
+available even after the Rust/WASAPI path exists unless a later release plan proves
 there is no support or compatibility loss.
 
 ### 1. Windows Audio Device Events
@@ -679,54 +679,57 @@ Current code exploration:
 - `src/pipeline.py` instantiates `MicrophoneInput`, passes prewarm manager, and
   flushes the pipeline on stop.
 
-Target:
+Current decision:
 
-- Do not rewrite the full audio path first.
-- Build a measured Rust capture prototype that can run beside the Python path.
-- Only promote it if it improves stability or start latency without weakening
-  provider compatibility, diagnostics, or testability.
-- A Rust engine must feed Python the same effective downstream contract as the
-  current `MicrophoneInput`: 16 kHz mono PCM `i16` frames that become
-  `InputAudioRawFrame` with expected sample rate and channel count.
+- Rust/WASAPI sidecar capture is the default and only live microphone capture
+  path after the 2026-06-11 short provider-backed A/B comparison.
+- The comparison did not pass the historical strict P95 no-regression gate
+  because first-audible-frame P95 was noisy, but it satisfied the chosen
+  aggressive decision rule: Rust was clearly faster for median mic-ready and
+  first-audio latency, delivered frames, adopted prewarm, used the correct
+  endpoint path, reported no dropped frames, and kept the fallback circuit
+  closed.
+- Python still owns recording state, Pipecat/provider flow, persistence,
+  diagnostics aggregation, and REST/WebSocket contracts. It no longer owns live
+  microphone capture or idle prewarm.
+- Sounddevice/PortAudio may remain as helper infrastructure for microphone
+  listing and PortAudio-to-native endpoint mapping until those surfaces are
+  fully native. It must not be used as a live-capture fallback.
+- The Rust sidecar must feed Python the same downstream contract:
+  16 kHz mono PCM `i16` frames that become `InputAudioRawFrame` with expected
+  sample rate and channel count.
 
 Ownership boundary:
 
-- Rust prototype may own WASAPI stream open/start/stop, native endpoint
+- Rust owns WASAPI stream open/start/stop, native endpoint
   selection for the selected engine, callback/frame timestamps, drop counting,
-  native capture restart attempts, optional rolling prebuffer for the Rust
-  engine, and binary PCM transport to Python.
+  native capture restart attempts, rolling prebuffer, and binary PCM transport
+  to Python.
 - Python keeps provider pipeline, Pipecat transport semantics, VAD/analyzer
   ownership, recording state, REST/WebSocket contracts, transcript persistence,
   text-injection trigger flow, user-facing microphone list and favorite/default
-  semantics, support-bundle aggregation, and the default `sounddevice` engine
-  until promotion gates pass.
+  semantics, and support-bundle aggregation.
 
 Missing prerequisites:
 
 1. Engine-neutral Python frame-source boundary:
-   - Implemented on `codex/rust-expansion-plan`: `src/microphone.py` now has an
-     internal `AudioFrameSource` boundary and a behavior-preserving
-     `PythonSoundDeviceFrameSource`.
-   - `MicrophoneInput` still defaults to Python `sounddevice`, keeps prewarm
-     adoption unchanged, and exposes `engine`, `requestedEngine`,
-     `frameSource`, `engineFallbackReason`, `droppedFrameCount`, and a nested
-     source diagnostic snapshot.
-   - `SCRIBER_AUDIO_ENGINE=rust-prototype` is still request-only. It now tries
-     the prototype frame-pipe reader, then falls back to Python `sounddevice`
-     before the first frame if Rust capture is unavailable or unhealthy.
-   - Implemented: Python idle prewarm adoption is now engine-scoped. When
-     `SCRIBER_AUDIO_ENGINE=rust-prototype` is requested with always-on mic
-     enabled, the Python prewarm manager is paused instead of adopted, so
-     active capture still exercises the Rust frame-source path. Diagnostics
-     expose `prewarmAdoptionSkippedReason` for this gate.
-   - Added Python source contract tests for configured-device open, default
-     fallback, pause/close lifecycle, device-index parsing, frame-pipe reading,
-     Rust-unavailable fallback, and Rust-requested always-on startup without
-     Python-prewarm adoption. Existing microphone, prewarm, pipeline-stop, and
-     runtime lifecycle tests pass.
+   - Implemented and promoted: `src/microphone.py` keeps the
+     `AudioFrameSource` boundary but now creates the Rust frame-pipe source for
+     live microphone capture.
+   - `PythonSoundDeviceFrameSource`, Python idle prewarm adoption, and
+     first-frame fallback to Python were removed from the normal product path.
+   - `MicrophoneInput` exposes `engine`, `requestedEngine`, `frameSource`,
+     `engineFallbackReason`, `droppedFrameCount`, and nested Rust source
+     diagnostics. If Rust capture cannot deliver frames, recording fails
+     visibly instead of silently switching engines.
+   - `SCRIBER_AUDIO_ENGINE` is retained as a backwards-compatible diagnostic
+     input and no longer selects Python capture.
+   - Focused source contract tests cover device-index parsing, frame-pipe
+     reading, Rust-unavailable failure, and Always-On-Mic startup without
+     Python-prewarm adoption.
 2. Native endpoint identity mapping:
    - Implemented on `codex/rust-expansion-plan` as a private diagnostic and
-     prototype mapping layer in `src/audio_devices.py`.
+     Rust/WASAPI mapping layer in `src/audio_devices.py`.
    - Current user-facing device IDs remain Python/PortAudio names.
    - `hash_native_endpoint_id`, `NativeEndpointEntry`, and
      `InputEndpointMapping` connect normalized PortAudio names to hashed native
@@ -734,7 +737,7 @@ Missing prerequisites:
    - `/api/runtime/audio-diagnostics` includes
      `microphone.nativeEndpointMapping`; `/api/microphones` is unchanged and
      never exposes raw IMMDevice IDs.
-   - Implemented for the Rust/WASAPI prototype: Python can pass a redacted
+   - Implemented for Rust/WASAPI: Python can pass a redacted
      `nativeEndpointIdHash` derived from the private mapping into
      `audioCaptureStart`; the sidecar hashes IMMDevice IDs with the same
      SHA-256/16-hex convention and selects the matching capture endpoint when
@@ -756,12 +759,12 @@ Missing prerequisites:
    - Partly implemented on `codex/rust-expansion-plan`: support bundles now
      include `audio-diagnostics.redacted.json`, sourced from
      `/api/runtime/audio-diagnostics`.
-   - Active Python capture diagnostics include `engine`, `requestedEngine`,
+   - Active capture diagnostics include `engine`, `requestedEngine`,
      `frameSource`, `sampleRate`, `targetChannels`, `captureChannels`,
      `blockSize`, `droppedFrameCount`, and last-callback age.
    - Native endpoint mapping diagnostics now include hashed native endpoint
      candidates when an inventory provider is available.
-   - Implemented for the Rust prototype: active-capture
+   - Implemented for Rust/WASAPI: active-capture
      `nativeEndpointIdHash`, sidecar PID, stop exit status, sidecar uptime,
      writer connection state, frames/bytes written, writer error, reader-thread
      liveness, and sidecar restart count are exposed through the nested
@@ -775,7 +778,7 @@ Missing prerequisites:
      stop-to-prewarm-ready gap metrics, restart/resume counters, status timing,
      recent event metadata, and rejection of raw `prewarmId` / `prewarm_id`
      fields.
-   - Implemented for the Rust prototype: Python reader diagnostics now include
+   - Implemented for Rust/WASAPI: Python reader diagnostics now include
      frame-pipe frames read, audio frames read, bytes read, sequence/protocol
      error counters, last frame metadata, first-frame read timing, reader end
      reason, and callback-drop counts before protocol failure.
@@ -803,8 +806,8 @@ Missing prerequisites:
    - Still open: physical support-bundle evidence from long real-device runs.
 4. Audio frame-pipe protocol:
    - Implemented on `codex/rust-expansion-plan` as shared Rust/Python protocol
-     helpers, a Python `RustPrototypeFrameSource`, an opt-in sidecar synthetic
-     frame-pipe writer, and an opt-in WASAPI writer with default or
+     helpers, a Python `RustPrototypeFrameSource`, a test-only synthetic
+     frame-pipe writer, and the default WASAPI writer with default or
      redacted-hash endpoint selection.
    - Rust owns `Frontend/src-tauri/src/audio_frame_pipe.rs`; Python owns
      `src/runtime/audio_frame_pipe.py`.
@@ -819,46 +822,44 @@ Missing prerequisites:
      private Windows named pipe and writes synthetic silence frames in the shared
      `SAF1` protocol. This proves transport and lifecycle plumbing only; it is
      not a microphone capture engine.
-   - With `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1`, the sidecar opens either the
-     Windows default capture endpoint or a selected endpoint by redacted native
-     endpoint hash through WASAPI shared mode, converts supported float/PCM mix
-     formats to requested `pcm_i16_le` blocks, and writes those frames through
-     the same `SAF1` protocol. This remains a prototype path.
+   - For normal app runs, the sidecar opens either the Windows default capture
+     endpoint or a selected endpoint by redacted native endpoint hash through
+     WASAPI shared mode, converts supported float/PCM mix formats to requested
+     `pcm_i16_le` blocks, and writes those frames through the same `SAF1`
+     protocol. `SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE=1` is test-only for
+     forcing the unavailable path.
 5. Audio capture control protocol:
-   - Partly implemented as private shell IPC commands `audioCaptureStart`,
+   - Implemented as private shell IPC commands `audioCaptureStart`,
      `audioCaptureStop`, `audioPrewarmStart`, and `audioPrewarmStop`.
    - Current Rust shell implementation validates the start/stop payloads, calls
      the Tauri-side sidecar client when an allowlisted sidecar executable is
      available, and otherwise returns explicit `audioCaptureUnavailable`.
-   - Python treats that explicit failure as a before-first-frame fallback to the
-     existing `sounddevice` engine.
+   - Python treats that explicit failure as a recording failure with diagnostics;
+     the Python `sounddevice` capture fallback has been removed.
 6. Rust audio sidecar process skeleton:
-   - Partly implemented as separate Cargo binary `scriber-audio-sidecar` in
+   - Implemented as separate Cargo binary `scriber-audio-sidecar` in
      `Frontend/src-tauri/src/audio_sidecar.rs`.
    - The binary supports `--self-test` plus `--stdio` JSON-lines commands:
      `ping`, `capabilities`, `captureStart`, `captureStop`, `prewarmStart`,
      `prewarmStop`, and `shutdown`.
-   - The sidecar reports the shared audio frame protocol, returns explicit
-     `audioCaptureUnavailable` by default, and can run an explicit synthetic
-     frame-pipe transport harness through
-     `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` or an explicit WASAPI capture
-     prototype through `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1`. The WASAPI
-     prototype can select a specific endpoint by redacted native endpoint hash;
-     without a hash, non-default capture requests fail before first frame so
-     Python can safely fall back to `sounddevice`.
-   - Implemented: the sidecar also has a synthetic idle prewarm harness behind
+   - The sidecar reports the shared audio frame protocol and runs WASAPI capture
+     by default. The synthetic frame-pipe transport harness remains available
+     through `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` for tests. WASAPI can
+     select a specific endpoint by redacted native endpoint hash; without a
+     hash, non-default capture requests fail before first frame so the wrong
+     Windows default microphone is not opened silently.
+   - Implemented: the sidecar also has an idle prewarm harness behind
      `prewarmStart`/`prewarmStop`. It keeps a long-lived sidecar process,
      reports `prewarmId`, counts observed and buffered frames, and returns
-     stop-health fields. It is lifecycle evidence only; WASAPI idle stream
-     adoption is still open.
+     stop-health fields.
    - Implemented: `-BundleRustAudioSidecar` builds
      `scriber-audio-sidecar --release`, copies it into
      `Frontend\src-tauri\resources\audio-sidecar`, and the NSIS bundle includes
      that resource.
    - Implemented: selected endpoint capture by redacted native endpoint hash,
      plus endpoint-selection diagnostics in sidecar responses.
-   - Still open: physical favorite/dock/USB smokes, prewarm/watchdog parity,
-     long physical-device smokes, and any default promotion decision.
+   - Still open: more physical favorite/dock/USB smokes and long
+     physical-device evidence for edge cases.
 7. Tauri audio sidecar client:
    - Partly implemented in `Frontend/src-tauri/src/audio_sidecar_client.rs`.
    - Discovers only allowlisted sidecar executable names, with
@@ -876,23 +877,22 @@ Missing prerequisites:
      `resources\audio-sidecar` in addition to development/env override paths.
    - `audioCaptureStart`/`audioCaptureStop` route through the client, expose
      successful sidecar fields such as `streamId` and `framePipe` at the top
-     level for Python, and keep capture unavailable by default unless an
-     explicit sidecar capture flag is set.
+     level for Python. The obsolete unavailable-by-default prototype behavior
+     was removed when Rust/WASAPI became the standard capture path.
    - `audioPrewarmStart`/`audioPrewarmStop` now route through the same client
-     and preserve synthetic prewarm stop-health fields. The commands remain
-     private prototype plumbing and are not yet wired to Python always-on
-     adoption.
+     and preserve prewarm stop-health fields. The commands remain private
+     shell IPC, and Python uses them through the Rust prewarm manager.
 
 Implementation plan:
 
 1. Refactor without Rust:
-   - Introduce the internal frame-source boundary.
-   - Keep `SCRIBER_AUDIO_ENGINE=python`.
-   - Preserve all current tests and installed live-mic smoke behavior.
+   - Completed historically: introduced the internal frame-source boundary.
+   - Superseded: `SCRIBER_AUDIO_ENGINE=python` no longer selects Python capture.
+   - Preserve installed live-mic smoke behavior with the Rust/WASAPI default.
 2. Add a passive Windows-only WASAPI probe:
    - Implemented on `codex/rust-expansion-plan` as private shell IPC command
      `audioProbe`.
-   - Runs only when `SCRIBER_AUDIO_ENGINE=rust-prototype` or
+   - Runs as a native diagnostic when requested by runtime diagnostics or when
      `SCRIBER_RUST_AUDIO_PROBE=1` is set.
    - Rust probes the Windows default capture endpoint through WASAPI, activates
      `IAudioClient`, reads mix format/device period, attempts shared-mode
@@ -902,36 +902,34 @@ Implementation plan:
    - Implemented: the probe can use a selected redacted native endpoint hash
      instead of probing only the Windows default endpoint, and refuses to report
      a non-default request as a default success when no native hash is available.
-   - The probe does not feed the provider pipeline, does not become an active
-     capture engine, and reports `callbackCount=0`, `droppedFrameCount=0`, and
+   - The probe does not feed the provider pipeline and reports
+     `callbackCount=0`, `droppedFrameCount=0`, and
      `closeStatus=closed`.
    - Still open: real callback-based passive observation if needed and installed
      physical-device evidence.
-3. Add active capture prototype without prewarm:
-   - Partly implemented: Python can start a Rust capture attempt through private
+3. Add active capture without prewarm:
+   - Implemented: Python can start Rust capture through private
      shell IPC and receive frames through the binary frame-pipe reader.
-   - Partly implemented: a separate Rust audio sidecar binary exists for crash
+   - Implemented: a separate Rust audio sidecar binary exists for crash
      isolation and exposes a JSON-lines control protocol.
-   - Partly implemented: Tauri can discover an allowlisted sidecar executable
+   - Implemented: Tauri can discover an allowlisted sidecar executable
      and perform stdio command handshakes outside the WebView/UI thread.
-   - Partly implemented: Tauri keeps successful sidecar capture processes alive
+   - Implemented: Tauri keeps successful sidecar capture processes alive
      by `streamId` and drains them on capture stop, backend restart, and shell
      exit.
-   - Partly implemented: an explicit synthetic sidecar mode creates a private
+   - Implemented: the synthetic sidecar mode creates a private
      Windows named pipe and writes valid `pcm_i16_le` `SAF1` frames through the
-     same lifecycle path Python will use for real capture.
-   - Partly implemented: an explicit
-     `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1` sidecar mode opens the requested
-     native endpoint when a redacted hash is available, otherwise the Windows
-     default endpoint for true default requests, and writes real PCM frames into
-     that same frame-pipe lifecycle.
-   - Partly implemented: Python now sends redacted native endpoint hints for
+     same lifecycle path Python uses for real capture.
+   - Implemented: WASAPI sidecar capture opens the requested native endpoint
+     when a redacted hash is available, otherwise the Windows default endpoint
+     for true default requests, and writes real PCM frames into that same
+     frame-pipe lifecycle.
+   - Implemented: Python sends redacted native endpoint hints for
      the selected PortAudio device; the sidecar selects the matching WASAPI
      capture endpoint by hash and refuses unsafe non-default fallback when no
      hash is available.
-   - Still open: prove the long-lived path with physical real-WASAPI sessions,
-     favorite restore behavior, dock/USB/default-device transitions, and
-     provider-backed transcription smokes.
+   - Still open: more physical evidence for favorite restore behavior,
+     dock/USB/default-device transitions, and longer provider-backed sessions.
    - Implemented: `scripts/smoke_rust_audio_sidecar.py` records reusable JSON
      evidence for default WASAPI capture, selected native endpoint hash capture,
      first-frame timing, frame counts, sequence gaps, stop health, and sidecar
@@ -971,10 +969,10 @@ Implementation plan:
      reported `observedDurationSec=10.009`, verified the selected hash, and
      also had no sequence gaps or prebuffer-after-live frames. This is strong
      sidecar evidence, but it does not replace the remaining physical matrix,
-     provider-backed transcription, always-on prewarm parity, and default
-     promotion gates.
-   - If Rust fails before the first frame, Python falls back to Python capture
-     for that session.
+     provider-backed transcription and always-on prewarm evidence. It is now
+     part of the standard live-mic capture path.
+   - If Rust fails before the first frame, recording fails visibly with
+     diagnostics; the Python capture fallback has been removed.
    - Implemented: if Rust stalls mid-session after audio has started, Python
      records `midSessionFailureReason`, opens a short fallback circuit for the
      next requested Rust session, and does not splice Python capture into the
@@ -997,7 +995,7 @@ Implementation plan:
    - Start request includes sample rate, channels, block size, device preference
      (`default`, `favorite`, `portAudioLabel`, or `nativeEndpointHash`), and
      `prebufferMs`.
-   - Implemented for the opt-in WASAPI prototype: successful sidecar responses
+   - Implemented for WASAPI capture: successful sidecar responses
      include stream id, format, capture channels, hashed native endpoint id,
      endpoint-selection details, frame pipe, and resampler metadata.
    - Implemented: stop responses preserve sidecar health fields through Tauri
@@ -1018,7 +1016,7 @@ Implementation plan:
      frames, exposes prebuffer/live counters, and treats prebuffer-after-live as
      a protocol failure.
    - Partly implemented: Python now sends the configured bounded
-     `MIC_PREBUFFER_MS` value as `prebufferMs` when starting the Rust prototype
+     `MIC_PREBUFFER_MS` value as `prebufferMs` when starting the Rust WASAPI
      frame source, and diagnostics expose the requested value.
    - Partly implemented: synthetic Rust sidecar capture emits correctly flagged
      prebuffer frames before live frames when `prebufferMs` is requested, and
@@ -1028,8 +1026,8 @@ Implementation plan:
      leading frames as prebuffer and exposes writer-side prebuffer/live counts.
      This validates frame ordering and promotion evidence, but it is not yet a
      full idle always-on Rust prewarm stream.
-   - Implemented: the active Rust prototype no longer adopts the Python
-     always-on prewarm stream. This prevents `SCRIBER_AUDIO_ENGINE=rust-prototype`
+   - Implemented: the active Rust WASAPI path no longer adopts the Python
+     always-on prewarm stream. This prevents `SCRIBER_AUDIO_ENGINE=rust-wasapi`
      plus `SCRIBER_MIC_ALWAYS_ON=1` from silently taking the Python capture path
      before Rust evidence can be collected.
    - Implemented: a Rust prewarm sidecar lifecycle harness exists behind
@@ -1044,7 +1042,7 @@ Implementation plan:
      frames into the capture frame pipe as leading `AUDIO_FRAME_FLAG_PREBUFFER`
      frames before live WASAPI or synthetic frames.
    - Implemented: the backend now selects a Rust idle-prewarm manager when
-     `SCRIBER_AUDIO_ENGINE=rust-prototype` is requested. With
+     `SCRIBER_AUDIO_ENGINE=rust-wasapi` is requested. With
      `SCRIBER_MIC_ALWAYS_ON=1`, it keeps a Rust `audioPrewarmStart` session
      during idle, hands the `prewarmId` to the next Rust `audioCaptureStart`,
      and lets the sidecar adopt buffered frames locally. The Python
@@ -1116,10 +1114,10 @@ Implementation plan:
      stability-sample coverage for the requested duration, and zero
      non-recording samples during active capture. A configured minimum duration
      now makes the installed live-recording report required even without the
-     generic `-RequireInstalledLiveRecordingSmoke` flag. This is a default-path
-     app/installer gate. For Rust default promotion, the runner also sets
+     generic `-RequireInstalledLiveRecordingSmoke` flag. This is the live-mic
+     app/installer gate. For Rust/WASAPI release evidence, the runner also sets
      `-RequireInstalledLiveRecordingRustAudio`, which requires every stability
-     sample to include compact audio diagnostics proving `rust-prototype`
+     sample to include compact audio diagnostics proving `rust-wasapi`
      `rust-frame-pipe` capture, adopted Rust prewarm evidence via
      `activeCapture.rustPrewarmAdoption.adopted=true` plus a redacted prewarm
      hash, active callbacks, closed fallback circuit, and clean frame-pipe
@@ -1127,7 +1125,7 @@ Implementation plan:
      enables `-InstalledLiveRecordingMicAlwaysOn`, and the validator requires
      `liveRecording.micAlwaysOn=true` plus
      `audioDiagnostics.microphone.micAlwaysOn=true` in every stability sample.
-     Installed Rust promotion evidence therefore proves the Always-On-Mic path,
+     Installed Rust evidence therefore proves the Always-On-Mic path,
      not only an on-demand live recording. The installed smoke now also records
      `liveRecording.postStopAudioDiagnostics` after Stop and idle-state
      confirmation, and Rust promotion validation requires the idle Rust prewarm
@@ -1145,10 +1143,10 @@ Implementation plan:
      latency still require the separate Python/Rust hot-path comparison
      artifact.
    - Implemented: installed live-recording smoke runners can now request
-     `SCRIBER_AUDIO_ENGINE=rust-prototype` plus the explicit Rust sidecar
-     capture mode via `-LiveRecordingAudioEngine rust-prototype
+     `SCRIBER_AUDIO_ENGINE=rust-wasapi` plus the explicit Rust sidecar
+     capture mode via `-LiveRecordingAudioEngine rust-wasapi
      -LiveRecordingRustAudioCaptureMode wasapi -LiveRecordingMicAlwaysOn` on the desktop/installer smoke
-     and `-InstallerLiveRecordingAudioEngine rust-prototype
+     and `-InstallerLiveRecordingAudioEngine rust-wasapi
      -InstallerLiveRecordingRustAudioCaptureMode wasapi
      -InstallerLiveRecordingMicAlwaysOn` on the build wrapper.
      This makes the installed Rust-audio report producer explicit instead of
@@ -1210,8 +1208,8 @@ Implementation plan:
      `framePipeFirstFrameReadMs=10.186`, and successful idle-prewarm resume.
      The same run showed `endpointSelection.mode=default` and
      `usedDefaultEndpoint=true`.
-   - Implemented: for the opt-in Rust prototype, an unfavorited default
-     microphone request is passed through to the Rust sidecar as
+   - Implemented: an unfavorited default microphone request is passed through
+     to the Rust sidecar as
      `devicePreference=default` with no native endpoint hash. Rust then opens
      the real Windows default capture endpoint with WASAPI, which matches the
      visible Windows microphone privacy indicator. Explicit or favorite
@@ -1234,7 +1232,7 @@ Implementation plan:
      backend was then verified with
      `tmp\rust-promotion-evidence\20260611-161011\tauri-insta360-rust-prewarm-smoke.json`.
      The support-bundle `audio-diagnostics.redacted.json` showed
-     `favoriteMic=Mikrofon (4- Insta360 Link)`, `prewarm.engine=rust-prototype`,
+     `favoriteMic=Mikrofon (4- Insta360 Link)`, `prewarm.engine=rust-wasapi`,
      `prewarm.active=true`, `signature.device_preference=11`,
      `signature.port_audio_label=Mikrofon (4- Insta360 Link)`,
      matching `native_endpoint_id_hash=51112d9ccdd3a140`, and
@@ -1245,7 +1243,7 @@ Implementation plan:
      live-recording smoke passed with
      `tmp\rust-promotion-evidence\installed-live-recording-rust-wasapi-alwayson-30s-default-endpoint-fix-v2.json`.
      It verified 30 seconds of installed `tauri-supervised` recording with
-     `SCRIBER_AUDIO_ENGINE=rust-prototype`, `frameSource=rust-frame-pipe`,
+     `SCRIBER_AUDIO_ENGINE=rust-wasapi`, `frameSource=rust-frame-pipe`,
      increasing callback and frame-pipe counters, no sequence/protocol/prebuffer
      ordering errors, `rustAudioFallbackCircuit.open=false`, and
      `sourceEndpointSelectionMode=default` /
@@ -1254,7 +1252,7 @@ Implementation plan:
      provider-backed Rust evidence gate. `--require-provider-transcript`
      requires a final STT provider transcript, and `--require-rust-audio-engine`
      verifies that `/api/runtime/audio-diagnostics` saw an active
-     `rust-prototype` `rust-frame-pipe` capture during recording. The hybrid
+     `rust-wasapi` `rust-frame-pipe` capture during recording. The hybrid
      baseline runner exposes these as
      `-RequireRecordingHotPathProviderTranscript` and
      `-RequireRecordingHotPathRustAudio`.
@@ -1272,7 +1270,7 @@ Implementation plan:
      default, requires provider transcript evidence from the same STT provider
      in both reports, requires the same benchmark configuration through the
      report-level `requested` object, requires active
-     `rust-prototype`/`rust-frame-pipe` capture in the Rust report, rejects an
+     `rust-wasapi`/`rust-frame-pipe` capture in the Rust report, rejects an
      open Rust fallback circuit in that report, requires `micAlwaysOn=true`
      evidence in the Rust report, requires each Rust `rust-frame-pipe` sample to
      prove `activeCapture.rustPrewarmAdoption.adopted=true` with a redacted
@@ -1309,11 +1307,12 @@ Implementation plan:
      network/STT provider latency.
    - Implemented: `scripts/run_recording_hot_path_comparison.ps1` orchestrates
      the full provider-backed A/B evidence path. It runs
-     `measure_hybrid_baseline.ps1` once with `SCRIBER_AUDIO_ENGINE=python`, once
-     with `SCRIBER_AUDIO_ENGINE=rust-prototype` and the requested Rust capture
-     mode, and with `-RustAlwaysOnMic` it sets `SCRIBER_MIC_ALWAYS_ON=1` for the
-     Rust pass before calling the comparison validator to produce
-     `recording-hot-path-python-rust-comparison.json`.
+     `measure_hybrid_baseline.ps1` once with a legacy
+     `SCRIBER_AUDIO_ENGINE=python` request and once with Rust/WASAPI, then calls
+     the comparison validator to produce
+     `recording-hot-path-python-rust-comparison.json`. This remains useful for
+     historical/pre-promotion builds that still contain Python capture. Current
+     builds ignore the legacy Python request for live capture.
      Non-plan runs now fail early without `-RustAlwaysOnMic`, because the
      comparison validator requires both Always-On-Mic and adopted Rust prewarm
      evidence.
@@ -1342,17 +1341,13 @@ Implementation plan:
      rejects forced per-poll refresh when native device-refresh evidence is
      required, so Rust promotion evidence cannot be satisfied by the legacy
      polling diagnostic mode.
-   - Still open: actually running the long physical Always-On-Mic evidence with
-     the Rust manager, device-refresh pause/resume matrix evidence, real
-     provider-backed Python/Rust comparison runs using the new gate, signing /
-     updater publication evidence, and final promotion decision gates. The
-     readiness runner now has
-     `-RequireRustAudioPromotionReadiness` as a single aggregate switch for the
-     final default-path decision; it makes the sidecar, app prewarm, installed
-     live-recording, provider-comparison, Rust endpoint inventory, and native
-     device-refresh evidence mandatory, and raises the relevant duration minima
-     to 10-minute active / 30-minute idle-prewarm promotion values.
-   - Keep Python prewarm as default path.
+   - Still open: more long physical Always-On-Mic evidence with the Rust
+     manager, device-refresh pause/resume matrix evidence, signing/updater
+     publication evidence, and release hardening of the current Rust default.
+     The historical `-RequireRustAudioPromotionReadiness` aggregate switch still
+     documents the full evidence bundle and can be reused as an extended
+     regression gate.
+   - Rust prewarm is the default path.
 6. Add watchdog and restart parity:
    - Mirror existing Python active-capture and prewarm diagnostics: stream
    active, callback count, last frame age, last status/error, dropped frames,
@@ -1379,15 +1374,14 @@ Implementation plan:
    - Implemented: Rust frame-pipe failures after the first callback now record
      `midSessionFailureReason`. When the active-capture watchdog observes such
      a source-owned Rust failure, it opens a short Rust fallback circuit. The
-     current recording still does not splice to Python mid-utterance, but the
-     next `SCRIBER_AUDIO_ENGINE=rust-prototype` session falls back to Python
-     during the cooldown and records
-     `rustPrototypeCircuitOpen:<reason>` in diagnostics.
+     current recording still does not splice to another engine mid-utterance.
+     The next live-mic session fails fast while the short Rust circuit is open
+     and records `rustCircuitOpen:<reason>` in diagnostics.
    - Implemented: `/api/runtime/audio-diagnostics` also exposes the global
      fallback circuit as `microphone.rustAudioFallbackCircuit`, even when there
      is no active pipeline. Support bundles preserve the same redacted circuit
-     state, so a post-failure idle bundle can prove why the next requested Rust
-     recording used Python.
+     state, so a post-failure idle bundle can explain why the next recording was
+     blocked before capture.
    - Implemented: Rust Always-On-Mic prewarm now has a real status path. Tauri
      and the audio sidecar expose `audioPrewarmStatus`; the Python
      `RustAudioPrewarmManager` watchdog queries it instead of trusting a cached
@@ -1403,9 +1397,8 @@ Implementation plan:
      `maxActiveCaptureStopToReadyMs`, so the visible off/on gap after a user
      stops an active recording is measured instead of inferred. The watchdog
      now also records and logs `missingPrewarmSession` when a previously active
-     Rust idle session disappears before a status query can be made, and the
-     Python prewarm fallback records the analogous `missingPrewarmStream`
-     condition. The initial startup activation is not counted as a health
+     Rust idle session disappears before a status query can be made. The initial
+     startup activation is not counted as a health
      restart, so these counters point to real post-start interruptions. The
      app watchdog now snapshots recovered idle-prewarm restarts under
      `watchdog.lastWarning` when `healthRestartCount` increases, even if
@@ -1440,7 +1433,7 @@ Implementation plan:
      clients for a short handoff window, not a same-stream transfer.
    - Provider-backed Rust-only evidence on 2026-06-11:
      `tmp\rust-promotion-evidence\rust-only-provider-after-overlap-handoff-provider-confirm-recording-hot-path-1.json`
-     passed with Azure MAI provider transcript, `engine=rust-prototype`,
+     passed with Azure MAI provider transcript, `engine=rust-wasapi`,
      `frameSource=rust-frame-pipe`, no Python fallback, no dropped frames,
      favorite mic `Mikrofon (4- Insta360 Link)`, active endpoint hash
      `51112d9ccdd3a140`, adopted prewarm, and
@@ -1468,7 +1461,7 @@ Implementation plan:
      required before promotion.
 8. Promote to default only if physical hardware tests show fewer interruptions
    or a meaningful latency win. Otherwise keep Python as default and retain the
-   Rust prototype for future investigation.
+   Rust/WASAPI path for future investigation.
 
 Acceptance gates:
 
@@ -1480,12 +1473,13 @@ Acceptance gates:
 - New Python `AudioFrameSource` contract tests, Rust frame-source fallback
   tests, diagnostics schema tests, and support-bundle redaction tests.
 - Installed live-mic smoke with visible waveform and successful transcription.
-- For final Rust-audio default promotion only: run
+- For extended Rust-audio regression evidence: run
   `scripts\run_hybrid_release_readiness.ps1 -RequireRustAudioPromotionReadiness`
-  with either matching `-Run...` flags or validated existing reports. This is
-  the canonical aggregate gate before changing defaults; individual Rust gates
-  remain available for focused investigations.
-- For Rust audio promotion only: 10-minute physical WASAPI sidecar smoke via
+  with either matching `-Run...` flags or validated existing reports. This was
+  the canonical aggregate gate before changing defaults and is still useful as
+  a broad release hardening gate; individual Rust gates remain available for
+  focused investigations.
+- For Rust audio sidecar hardening: 10-minute physical WASAPI sidecar smoke via
   `scripts\run_hybrid_release_readiness.ps1 -RunRustAudioSidecarSmoke
   -RequireRustAudioSidecarSmoke`, including default capture, selected native
   endpoint hash capture, requested prebuffer delivery, no prebuffer-after-live
@@ -1504,9 +1498,9 @@ Acceptance gates:
   or via the readiness runner flags `-RunRustAudioPrewarmSidecarSmoke` and
   `-RequireRustAudioPrewarmSidecarSmoke` proves prewarm sidecar start/stop
   plumbing and stop-health counters. Add `-RustAudioPrewarmSidecarMode wasapi`
-  to the runner for the real passive WASAPI idle stream. This is not sufficient
-  for default promotion because it does not prove app-wide Always-On-Mic
-  lifecycle integration or provider-backed transcription.
+  to the runner for the real passive WASAPI idle stream. Pair it with app-level
+  Always-On-Mic lifecycle and provider-backed transcription evidence when
+  hardening a release.
 - Physical mic matrix across built-in, USB, Bluetooth, docked, undocked, and
   Windows default-device changes, with `--require-rust-endpoint-inventory` and
   `--require-device-refresh-evidence` validation for Rust promotion. The matrix
@@ -1530,14 +1524,16 @@ Acceptance gates:
 
 Rollback:
 
-- Default remains `SCRIBER_AUDIO_ENGINE=python`.
-- `SCRIBER_AUDIO_ENGINE=rust-prototype` is opt-in.
-- If the Rust audio sidecar fails before first audio frame, Python capture can
-  be used for that recording.
-- If Rust capture fails mid-recording, report the engine failure and preserve
-  diagnostics. Do not silently corrupt frame ordering by switching engines
-  mid-stream.
-- The Python `sounddevice` path remains packaged and tested.
+- The old Python `sounddevice` capture/prewarm implementation was removed from
+  the normal product path. Rolling back capture now means reverting the Rust
+  promotion change, not toggling an environment variable.
+- `SCRIBER_AUDIO_ENGINE` is diagnostic compatibility only and does not select
+  Python capture.
+- If the Rust audio sidecar fails before first audio frame, the recording fails
+  visibly and preserves diagnostics. Do not silently corrupt frame ordering by
+  switching engines mid-stream.
+- Keep `sounddevice` packaged only for remaining microphone listing and
+  PortAudio-to-native endpoint mapping helpers until those are fully native.
 
 Risks:
 
@@ -1558,16 +1554,15 @@ Risks:
 The best path forward is to keep the hybrid architecture:
 
 - Rust/Tauri for desktop shell, process supervision, hotkey, autostart, tray,
-  updater, native device event hints, optional native text injection, and
-  Windows integration.
-- Python for recording state, microphone list semantics, PortAudio refresh,
-  provider pipeline, Pipecat frame flow, media preparation, persistence,
-  REST/WebSocket contracts, diagnostics aggregation, and current default audio
-  capture.
+  updater, native device event hints, native WASAPI live capture/prewarm,
+  optional native text injection, and Windows integration.
+- Python for recording state, microphone list semantics, PortAudio refresh and
+  endpoint mapping helpers, provider pipeline, Pipecat frame flow, media
+  preparation, persistence, REST/WebSocket contracts, and diagnostics
+  aggregation.
 - React for the app UI.
 
-Near-term Rust work should reduce native Windows fragility and improve
-diagnostics without changing user-visible workflows. Audio capture should remain
-a measured prototype until it beats the current Python path on real installed
-Windows hardware without losing prewarm, provider, overlay, diagnostics,
-support-bundle, or fallback behavior.
+Near-term Rust work should harden the promoted WASAPI path: selected-device
+evidence, dock/USB/default-device transitions, longer Always-On-Mic runs,
+restart diagnostics, and eventually moving more device-listing/mapping helpers
+out of `sounddevice`.

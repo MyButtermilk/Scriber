@@ -789,7 +789,7 @@ def write_recording_hot_path_comparison_report(
                     },
                     "rust": {
                         "provider": "azure_mai",
-                        "audioEngine": "rust-prototype",
+                        "audioEngine": "rust-wasapi",
                         "samples": samples,
                         "requested": rust_requested,
                         "micAlwaysOn": rust_always_on_ok,
@@ -1470,7 +1470,7 @@ def test_validate_release_readiness_accepts_installed_live_recording_rust_audio_
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",
@@ -1510,7 +1510,7 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_withou
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",
@@ -1544,7 +1544,7 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_withou
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",
@@ -1579,7 +1579,7 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_withou
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",
@@ -1615,7 +1615,7 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_withou
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",
@@ -1650,7 +1650,7 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_with_c
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",
@@ -1690,7 +1690,7 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_with_c
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",
@@ -1725,7 +1725,7 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_with_l
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",
@@ -1759,7 +1759,7 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_with_m
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",
@@ -1797,7 +1797,7 @@ def test_validate_release_readiness_rejects_stale_installed_live_recording_rust_
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",
@@ -1856,7 +1856,7 @@ def test_validate_release_readiness_rejects_python_installed_live_recording_when
 
     assert result["ok"] is False
     live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
-    assert any("audioEngine must be rust-prototype" in failure for failure in live_check["failures"])
+    assert any("audioEngine must be rust-wasapi" in failure for failure in live_check["failures"])
 
 
 def test_validate_release_readiness_rejects_installed_live_recording_without_rust_audio_diagnostics(tmp_path: Path) -> None:
@@ -1894,7 +1894,7 @@ def test_validate_release_readiness_rejects_installed_live_recording_with_open_r
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",
@@ -1927,7 +1927,7 @@ def test_validate_release_readiness_rejects_installed_live_recording_redaction_l
     write_installed_live_recording_smoke_report(
         live_recording_report,
         duration_sec=600,
-        audio_engine="rust-prototype",
+        audio_engine="rust-wasapi",
         rust_audio_requested=True,
         rust_audio_available=True,
         frame_source="rust-frame-pipe",

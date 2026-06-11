@@ -635,11 +635,11 @@ def build_input_endpoint_mappings(
     sample_rate: int = 16000,
     channels: int = 1,
 ) -> list[InputEndpointMapping]:
-    """Build private PortAudio-to-native endpoint mappings for diagnostics/prototypes.
+    """Build private PortAudio-to-native endpoint mappings for diagnostics.
 
     This does not change the public microphone API. It is intentionally based on
-    normalized names and hashed native endpoint IDs so a future WASAPI prototype
-    can reason about candidates without persisting raw IMMDevice IDs.
+    normalized names and hashed native endpoint IDs so the Rust/WASAPI path can
+    reason about candidates without persisting raw IMMDevice IDs.
     """
     microphones = list_unique_input_microphones(
         sd,

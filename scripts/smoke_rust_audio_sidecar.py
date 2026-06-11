@@ -455,7 +455,7 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
             "Build scriber-audio-sidecar first with cargo build --bin scriber-audio-sidecar.",
             "Run on Windows for WASAPI capture evidence.",
             "Use --duration-sec 600 for the 10-minute physical stability gate.",
-            "Keep SCRIBER_AUDIO_ENGINE=python as default unless promotion gates pass.",
+            "Scriber now uses Rust/WASAPI as the standard live-mic capture path.",
         ],
         "exampleCommand": (
             "python scripts/smoke_rust_audio_sidecar.py "
@@ -475,7 +475,7 @@ def write_payload(payload: dict[str, Any], output: str = "") -> None:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Smoke-test the opt-in Rust audio sidecar frame-pipe path.",
+        description="Smoke-test the Rust audio sidecar frame-pipe path.",
     )
     parser.add_argument("--sidecar-exe", default="", help="Path to scriber-audio-sidecar(.exe).")
     parser.add_argument("--mode", choices=["wasapi", "synthetic"], default="wasapi")

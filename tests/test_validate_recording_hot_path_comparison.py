@@ -48,7 +48,7 @@ def recording_report(
             "matchingSamples": sample_count,
         }
     active_capture = {
-        "engine": "rust-prototype" if rust_capture else "python",
+        "engine": "rust-wasapi" if rust_capture else "python",
         "frameSource": "rust-frame-pipe" if rust_capture else "sounddevice",
         "callbackCount": 12,
         "droppedFrameCount": rust_dropped_frame_count,
@@ -74,7 +74,7 @@ def recording_report(
         frame_pipe_frames_read = 12 if rust_frame_pipe_flow else 0
         frame_pipe_audio_frames_read = 1920 if rust_frame_pipe_flow else 0
         active_capture["source"] = {
-            "engine": "rust-prototype",
+            "engine": "rust-wasapi",
             "frameSource": "rust-frame-pipe",
             "callbackCount": 12 if rust_frame_pipe_flow else 0,
             "droppedFrameCount": rust_dropped_frame_count,
@@ -142,8 +142,8 @@ def recording_report(
             "featureFlags": {
                 "audioEngine": engine,
                 "requestedAudioEngine": engine,
-                "rustAudioRequested": engine == "rust-prototype",
-                "rustAudioAvailable": engine == "rust-prototype",
+                "rustAudioRequested": engine == "rust-wasapi",
+                "rustAudioAvailable": engine == "rust-wasapi",
             },
             "provider": {
                 "configured": provider_label,
@@ -172,12 +172,12 @@ def recording_report(
 def test_recording_hot_path_comparison_accepts_provider_backed_rust_evidence() -> None:
     result = build_comparison(
         recording_report(engine="python"),
-        recording_report(engine="rust-prototype", rust_capture=True),
+        recording_report(engine="rust-wasapi", rust_capture=True),
     )
 
     assert result["ok"] is True
     assert result["reports"]["python"]["audioEngine"] == "python"
-    assert result["reports"]["rust"]["audioEngine"] == "rust-prototype"
+    assert result["reports"]["rust"]["audioEngine"] == "rust-wasapi"
     assert result["reports"]["rust"]["micAlwaysOn"] is True
     assert result["reports"]["rust"]["rustPrewarmAdopted"] is True
     assert result["summary"]["completeSegmentCount"] > 0
@@ -189,7 +189,7 @@ def test_recording_hot_path_comparison_accepts_provider_backed_rust_evidence() -
 def test_recording_hot_path_comparison_rejects_missing_provider_transcript() -> None:
     result = build_comparison(
         recording_report(engine="python", provider=False),
-        recording_report(engine="rust-prototype", rust_capture=True),
+        recording_report(engine="rust-wasapi", rust_capture=True),
     )
 
     assert result["ok"] is False
@@ -200,7 +200,7 @@ def test_recording_hot_path_comparison_rejects_mismatched_provider() -> None:
     result = build_comparison(
         recording_report(engine="python", provider_label="azure_mai"),
         recording_report(
-            engine="rust-prototype",
+            engine="rust-wasapi",
             provider_label="deepgram",
             rust_capture=True,
         ),
@@ -217,7 +217,7 @@ def test_recording_hot_path_comparison_rejects_mismatched_provider() -> None:
 def test_recording_hot_path_comparison_rejects_mismatched_recording_config() -> None:
     result = build_comparison(
         recording_report(engine="python", record_seconds=2.0),
-        recording_report(engine="rust-prototype", rust_capture=True, record_seconds=3.0),
+        recording_report(engine="rust-wasapi", rust_capture=True, record_seconds=3.0),
     )
 
     assert result["ok"] is False
@@ -233,7 +233,7 @@ def test_recording_hot_path_comparison_rejects_mismatched_recording_config() -> 
 def test_recording_hot_path_comparison_rejects_too_few_samples() -> None:
     result = build_comparison(
         recording_report(engine="python", sample_count=1),
-        recording_report(engine="rust-prototype", rust_capture=True, sample_count=1),
+        recording_report(engine="rust-wasapi", rust_capture=True, sample_count=1),
         min_samples_per_report=3,
     )
 
@@ -249,15 +249,15 @@ def test_recording_hot_path_comparison_rejects_too_few_samples() -> None:
 def test_recording_hot_path_comparison_rejects_rust_fallback_to_python_capture() -> None:
     result = build_comparison(
         recording_report(engine="python"),
-        recording_report(engine="rust-prototype", rust_capture=False),
+        recording_report(engine="rust-wasapi", rust_capture=False),
     )
 
     assert result["ok"] is False
-    assert "Rust report must prove active rust-prototype rust-frame-pipe capture" in result["failures"]
+    assert "Rust report must prove active rust-wasapi rust-frame-pipe capture" in result["failures"]
 
 
 def test_recording_hot_path_comparison_rejects_audio_owned_latency_regression() -> None:
-    rust_report = recording_report(engine="rust-prototype", rust_capture=True)
+    rust_report = recording_report(engine="rust-wasapi", rust_capture=True)
     for sample in rust_report["samples"]:
         sample["segments"]["hotkey_received_to_first_audio_frame_ms"] = 260.0
 
@@ -283,7 +283,7 @@ def test_recording_hot_path_comparison_rejects_open_rust_fallback_circuit() -> N
     result = build_comparison(
         recording_report(engine="python"),
         recording_report(
-            engine="rust-prototype",
+            engine="rust-wasapi",
             rust_capture=True,
             fallback_circuit_open=True,
         ),
@@ -300,7 +300,7 @@ def test_recording_hot_path_comparison_rejects_rust_mid_session_failure() -> Non
     result = build_comparison(
         recording_report(engine="python"),
         recording_report(
-            engine="rust-prototype",
+            engine="rust-wasapi",
             rust_capture=True,
             rust_mid_session_failure_reason="pipeClosed",
             rust_frame_pipe_reader_end_reason="pipeClosed",
@@ -319,7 +319,7 @@ def test_recording_hot_path_comparison_rejects_empty_rust_frame_pipe_flow() -> N
     result = build_comparison(
         recording_report(engine="python"),
         recording_report(
-            engine="rust-prototype",
+            engine="rust-wasapi",
             rust_capture=True,
             rust_frame_pipe_flow=False,
         ),
@@ -338,7 +338,7 @@ def test_recording_hot_path_comparison_rejects_dropped_rust_frames() -> None:
     result = build_comparison(
         recording_report(engine="python"),
         recording_report(
-            engine="rust-prototype",
+            engine="rust-wasapi",
             rust_capture=True,
             rust_dropped_frame_count=2,
         ),
@@ -356,7 +356,7 @@ def test_recording_hot_path_comparison_rejects_unstable_rust_active_capture() ->
     result = build_comparison(
         recording_report(engine="python"),
         recording_report(
-            engine="rust-prototype",
+            engine="rust-wasapi",
             rust_capture=True,
             active_capture_health_restart_count=1,
             active_capture_health_restart_throttle_count=1,
@@ -381,7 +381,7 @@ def test_recording_hot_path_comparison_rejects_rust_without_always_on_mic() -> N
     result = build_comparison(
         recording_report(engine="python"),
         recording_report(
-            engine="rust-prototype",
+            engine="rust-wasapi",
             rust_capture=True,
             mic_always_on=False,
         ),
@@ -402,7 +402,7 @@ def test_recording_hot_path_comparison_rejects_rust_without_prewarm_adoption() -
     result = build_comparison(
         recording_report(engine="python"),
         recording_report(
-            engine="rust-prototype",
+            engine="rust-wasapi",
             rust_capture=True,
             rust_prewarm_adopted=False,
         ),
@@ -425,7 +425,7 @@ def test_recording_hot_path_comparison_rejects_raw_prewarm_id() -> None:
     result = build_comparison(
         recording_report(engine="python"),
         recording_report(
-            engine="rust-prototype",
+            engine="rust-wasapi",
             rust_capture=True,
             rust_prewarm_raw_id=True,
         ),
@@ -443,7 +443,7 @@ def test_recording_hot_path_comparison_rejects_raw_prewarm_id() -> None:
 
 def test_recording_hot_path_comparison_rejects_unredacted_input_reports() -> None:
     python_report = recording_report(engine="python")
-    rust_report = recording_report(engine="rust-prototype", rust_capture=True)
+    rust_report = recording_report(engine="rust-wasapi", rust_capture=True)
     python_report["audioDiagnostics"]["sessionToken"] = "raw-python-token"
     active_capture = rust_report["samples"][0]["audioDiagnosticsDuringRecording"]["microphone"]["activeCapture"]
     active_capture["endpointId"] = r"SWD\MMDEVAPI\{0.0.1.00000000}.{raw-hot-path-device}"
@@ -480,7 +480,7 @@ def test_recording_hot_path_comparison_cli_writes_artifact(tmp_path: Path) -> No
     output = tmp_path / "comparison.json"
     python_report.write_text(json.dumps(recording_report(engine="python")), encoding="utf-8")
     rust_report.write_text(
-        json.dumps(recording_report(engine="rust-prototype", rust_capture=True)),
+        json.dumps(recording_report(engine="rust-wasapi", rust_capture=True)),
         encoding="utf-8",
     )
 

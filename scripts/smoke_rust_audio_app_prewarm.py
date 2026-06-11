@@ -96,7 +96,7 @@ class ShellIpcSidecarAdapter:
 
 
 def configure_runtime(args: argparse.Namespace) -> None:
-    os.environ["SCRIBER_AUDIO_ENGINE"] = "rust-prototype"
+    os.environ["SCRIBER_AUDIO_ENGINE"] = "rust-wasapi"
     os.environ["SCRIBER_MIC_ALWAYS_ON"] = "1"
     Config.MIC_ALWAYS_ON = True
     Config.SAMPLE_RATE = int(args.sample_rate)
@@ -304,7 +304,7 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         "requirements": [
             "Build scriber-audio-sidecar first with cargo build --bin scriber-audio-sidecar.",
             (
-                "Run with SCRIBER_AUDIO_ENGINE=rust-prototype semantics; this smoke "
+                "Run with SCRIBER_AUDIO_ENGINE=rust-wasapi semantics; this smoke "
                 "uses RustAudioPrewarmManager plus RustPrototypeFrameSource."
             ),
             (

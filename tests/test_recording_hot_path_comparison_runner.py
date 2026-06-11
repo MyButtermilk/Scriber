@@ -114,7 +114,7 @@ def test_recording_hot_path_comparison_runner_plan_only_wires_python_and_rust_ru
     comparison_command = commands["comparisonValidation"]["command"]
 
     assert commands["pythonRecordingHotPath"]["environment"]["SCRIBER_AUDIO_ENGINE"] == "python"
-    assert commands["rustRecordingHotPath"]["environment"]["SCRIBER_AUDIO_ENGINE"] == "rust-prototype"
+    assert commands["rustRecordingHotPath"]["environment"]["SCRIBER_AUDIO_ENGINE"] == "rust-wasapi"
     assert commands["rustRecordingHotPath"]["environment"]["SCRIBER_RUST_AUDIO_WASAPI_CAPTURE"] == "1"
     assert commands["rustRecordingHotPath"]["environment"]["SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE"] == ""
     assert commands["rustRecordingHotPath"]["environment"]["SCRIBER_MIC_ALWAYS_ON"] == "1"

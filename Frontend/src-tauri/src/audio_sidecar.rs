@@ -58,6 +58,7 @@ const SIDECAR_PROTOCOL_VERSION: &str = "1";
 const SIDECAR_NAME: &str = "scriber-audio-sidecar";
 const SYNTHETIC_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE";
 const WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE";
+const DISABLE_WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE";
 const WAVE_FORMAT_IEEE_FLOAT_TAG: u16 = 3;
 const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xfffe;
 #[cfg(windows)]
@@ -229,7 +230,7 @@ impl AudioSidecarState {
                 request_id,
                 false,
                 "audioCaptureUnavailable",
-                "Rust audio capture is disabled; set SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1 for the WASAPI prototype or SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1 for the transport harness",
+                "Rust audio capture is unavailable",
                 started,
                 json!({
                     "sidecar": SIDECAR_NAME,
@@ -293,7 +294,7 @@ impl AudioSidecarState {
                 request_id,
                 false,
                 "audioPrewarmUnavailable",
-                "Rust audio prewarm is disabled; set SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1 for the WASAPI prototype or SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1 for the synthetic prewarm harness",
+                "Rust audio prewarm is unavailable",
                 started,
                 json!({
                     "sidecar": SIDECAR_NAME,
@@ -795,7 +796,13 @@ fn synthetic_capture_enabled() -> bool {
 }
 
 fn wasapi_capture_enabled() -> bool {
-    env_flag_enabled(env::var(WASAPI_CAPTURE_ENV).ok().as_deref())
+    if env_flag_enabled(env::var(DISABLE_WASAPI_CAPTURE_ENV).ok().as_deref()) {
+        return false;
+    }
+    if synthetic_capture_enabled() {
+        return env_flag_enabled(env::var(WASAPI_CAPTURE_ENV).ok().as_deref());
+    }
+    true
 }
 
 fn env_flag_enabled(raw: Option<&str>) -> bool {
@@ -2228,16 +2235,53 @@ fn bounded_string(payload: &Value, key: &str, default: &str, max_chars: usize) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{MutexGuard, OnceLock};
+
+    static AUDIO_ENV_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old_value: Option<String>,
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.old_value {
+                    Some(value) => env::set_var(self.key, value),
+                    None => env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    fn audio_env_test_lock() -> MutexGuard<'static, ()> {
+        AUDIO_ENV_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("audio env test lock poisoned")
+    }
+
+    fn set_audio_test_env(key: &'static str, value: &str) -> EnvVarGuard {
+        let old_value = env::var(key).ok();
+        unsafe {
+            env::set_var(key, value);
+        }
+        EnvVarGuard { key, old_value }
+    }
 
     #[test]
     fn sidecar_self_test_reports_protocol_and_frame_contract() {
+        let _lock = audio_env_test_lock();
+        let _enable_default_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "0");
+        let _disable_synthetic = set_audio_test_env(SYNTHETIC_CAPTURE_ENV, "0");
         let payload = self_test_payload();
 
         assert_eq!(payload["sidecar"], SIDECAR_NAME);
         assert_eq!(payload["ok"], true);
         assert_eq!(payload["protocolVersion"], SIDECAR_PROTOCOL_VERSION);
-        assert_eq!(payload["capabilities"]["captureAvailable"], false);
-        assert_eq!(payload["capabilities"]["prewarmAvailable"], false);
+        assert_eq!(payload["capabilities"]["captureAvailable"], true);
+        assert_eq!(payload["capabilities"]["prewarmAvailable"], true);
         assert_eq!(
             payload["capabilities"]["syntheticFramePipeEnv"],
             SYNTHETIC_CAPTURE_ENV
@@ -2266,6 +2310,9 @@ mod tests {
 
     #[test]
     fn sidecar_capture_start_returns_explicit_unavailable_payload() {
+        let _lock = audio_env_test_lock();
+        let _disable_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "1");
+        let _disable_synthetic = set_audio_test_env(SYNTHETIC_CAPTURE_ENV, "0");
         let request = json!({
             "protocolVersion": SIDECAR_PROTOCOL_VERSION,
             "requestId": "r-capture",
@@ -2298,6 +2345,9 @@ mod tests {
 
     #[test]
     fn sidecar_prewarm_start_returns_explicit_unavailable_payload() {
+        let _lock = audio_env_test_lock();
+        let _disable_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "1");
+        let _disable_synthetic = set_audio_test_env(SYNTHETIC_CAPTURE_ENV, "0");
         let request = json!({
             "protocolVersion": SIDECAR_PROTOCOL_VERSION,
             "requestId": "r-prewarm",
@@ -2498,10 +2548,14 @@ mod tests {
     }
 
     #[test]
-    fn wasapi_capture_env_flag_uses_same_explicit_opt_in_contract() {
+    fn wasapi_capture_is_enabled_by_default_unless_disabled() {
+        let _lock = audio_env_test_lock();
+        let _enable_default_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "0");
+        let _disable_synthetic = set_audio_test_env(SYNTHETIC_CAPTURE_ENV, "0");
         assert!(!env_flag_enabled(Some("off")));
         assert!(env_flag_enabled(Some("true")));
         assert!(env_flag_enabled(Some("on")));
+        assert!(wasapi_capture_enabled());
     }
 
     #[cfg(windows)]

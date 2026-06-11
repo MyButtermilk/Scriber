@@ -1,16 +1,17 @@
 <#
 .SYNOPSIS
-Builds provider-backed Python-vs-Rust recording hot-path comparison evidence.
+Builds provider-backed Python-vs-Rust recording hot-path comparison evidence for
+pre-promotion or historical builds.
 
 .DESCRIPTION
-Runs the installed Tauri app through measure_hybrid_baseline.ps1 once with the
-default Python audio engine and once with the opt-in Rust audio prototype, then
-validates both recording hot-path reports with
-validate_recording_hot_path_comparison.py.
+Runs the installed Tauri app through measure_hybrid_baseline.ps1 once with a
+legacy Python-engine request and once with Rust/WASAPI, then validates both
+recording hot-path reports with validate_recording_hot_path_comparison.py.
 
-This script is evidence orchestration only. It requires a built app, microphone
-access, provider credentials, and explicit Rust prototype feature flags for the
-Rust pass. It does not promote Rust audio to the default engine.
+Current Scriber builds use Rust/WASAPI as the only live-mic capture path, so the
+legacy Python request is useful only when comparing against a build that still
+contains Python capture. For current builds, use Rust-only live-recording,
+prewarm, and provider smokes as release evidence.
 #>
 
 param(
@@ -288,7 +289,7 @@ function Invoke-BaselineWithEnvironment {
     try {
         Apply-RecordingHotPathProviderEnvironment -Snapshot $envSnapshot
         Set-ScopedEnvironmentVariable -Snapshot $envSnapshot -Name "SCRIBER_AUDIO_ENGINE" -Value $AudioEngine
-        if ($AudioEngine -eq "rust-prototype") {
+        if ($AudioEngine -eq "rust-wasapi") {
             if ($RustCaptureMode -eq "wasapi") {
                 Set-ScopedEnvironmentVariable -Snapshot $envSnapshot -Name "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE" -Value "1"
                 Set-ScopedEnvironmentVariable -Snapshot $envSnapshot -Name "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE" -Value $null
@@ -303,7 +304,7 @@ function Invoke-BaselineWithEnvironment {
             Set-ScopedEnvironmentVariable -Snapshot $envSnapshot -Name "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE" -Value $null
             Set-ScopedEnvironmentVariable -Snapshot $envSnapshot -Name "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE" -Value $null
         }
-        if ($AudioEngine -ne "rust-prototype" -or -not $RustAlwaysOnMic) {
+        if ($AudioEngine -ne "rust-wasapi" -or -not $RustAlwaysOnMic) {
             Set-ScopedEnvironmentVariable -Snapshot $envSnapshot -Name "SCRIBER_MIC_ALWAYS_ON" -Value $null
         }
 
@@ -405,7 +406,7 @@ $plan = [pscustomobject]@{
         [pscustomobject]@{
             name = "rustRecordingHotPath"
             environment = [pscustomobject]@{
-                SCRIBER_AUDIO_ENGINE = "rust-prototype"
+                SCRIBER_AUDIO_ENGINE = "rust-wasapi"
                 SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = $(if ($RustCaptureMode -eq "wasapi") { "1" } else { "" })
                 SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = $(if ($RustCaptureMode -eq "synthetic") { "1" } else { "" })
                 SCRIBER_MIC_ALWAYS_ON = $(if ($RustAlwaysOnMic) { "1" } else { "" })
@@ -429,7 +430,7 @@ if (-not (Test-Path -LiteralPath $PythonHotPathReport -PathType Leaf)) {
     throw "Python recording hot-path report was not found: $PythonHotPathReport"
 }
 
-Invoke-BaselineWithEnvironment -Label "Rust recording hot-path" -AudioEngine "rust-prototype" -OutputPath $RustBaselineOutput -RequireRustAudio $true
+Invoke-BaselineWithEnvironment -Label "Rust recording hot-path" -AudioEngine "rust-wasapi" -OutputPath $RustBaselineOutput -RequireRustAudio $true
 if (-not (Test-Path -LiteralPath $RustHotPathReport -PathType Leaf)) {
     throw "Rust recording hot-path report was not found: $RustHotPathReport"
 }

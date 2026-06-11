@@ -63,7 +63,7 @@ from src.runtime.shell_ipc import (
     diagnostic_snapshot as shell_ipc_diagnostic_snapshot,
 )
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs
-from src.mic_prewarm import MicrophonePrewarmManager, RustAudioPrewarmManager
+from src.mic_prewarm import RustAudioPrewarmManager
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
 from src.runtime.debug_logs import clear_debug_logs, collect_debug_logs
@@ -296,26 +296,21 @@ def _session_token_required() -> bool:
 
 
 def _audio_engine_feature_flags() -> dict[str, Any]:
-    requested = (os.getenv(_AUDIO_ENGINE_ENV, "python") or "python").strip().lower() or "python"
-    if requested == "rust":
-        requested = "rust-prototype"
-    if requested not in {"python", "rust-prototype"}:
-        requested = "python"
-
-    rust_requested = requested == "rust-prototype"
+    raw_requested = (os.getenv(_AUDIO_ENGINE_ENV, "rust-wasapi") or "").strip().lower()
+    requested = "rust-wasapi"
     # Active Rust capture is driven through the Tauri shell IPC sidecar. The
-    # legacy module-level flag is kept for older harnesses, but installed
-    # Tauri runs should report Rust as available when the private IPC bridge is
-    # present; the activeCapture diagnostics still prove whether the sidecar
-    # actually delivered frames for a recording.
+    # legacy module-level flag is kept for older harnesses. Python capture is no
+    # longer a fallback path; activeCapture diagnostics prove whether the sidecar
+    # delivered frames for a recording.
     rust_available = bool(_RUST_AUDIO_PROTOTYPE_AVAILABLE or shell_ipc_available())
-    effective = "rust-prototype" if rust_requested and rust_available else "python"
 
     return {
-        "audioEngine": effective,
+        "audioEngine": "rust-wasapi",
         "requestedAudioEngine": requested,
-        "rustAudioRequested": rust_requested,
+        "rawRequestedAudioEngine": raw_requested,
+        "rustAudioRequested": True,
         "rustAudioAvailable": rust_available,
+        "pythonAudioFallbackAvailable": False,
     }
 
 
@@ -394,9 +389,7 @@ def _rust_audio_fallback_circuit_diagnostics() -> dict[str, Any]:
 
 
 def _create_mic_prewarm_manager() -> Any:
-    if _audio_engine_feature_flags()["rustAudioRequested"]:
-        return RustAudioPrewarmManager()
-    return MicrophonePrewarmManager()
+    return RustAudioPrewarmManager()
 
 
 def _bounded_hint_string(value: Any, *, default: str = "") -> str:

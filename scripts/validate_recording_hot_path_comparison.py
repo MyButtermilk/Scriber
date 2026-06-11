@@ -681,7 +681,7 @@ def build_comparison(
                 "hasRustFramePipe": has_rust_frame_pipe(rust_report),
                 "activeCaptureSamples": len(active_capture_samples(rust_report)),
             },
-            "Rust report must prove active rust-prototype rust-frame-pipe capture",
+            "Rust report must prove active rust-wasapi rust-frame-pipe capture",
         )
         circuits = rust_fallback_circuits(rust_report)
         add_check(

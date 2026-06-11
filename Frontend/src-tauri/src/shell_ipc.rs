@@ -483,7 +483,7 @@ fn audio_capture_shell_payload(
         }),
     };
     if let Some(object) = payload.as_object_mut() {
-        object.insert("engine".to_string(), json!("rust-prototype"));
+        object.insert("engine".to_string(), json!("rust-wasapi"));
         object.insert("available".to_string(), json!(result.success));
         object.insert(
             "requestedFormat".to_string(),
@@ -518,7 +518,7 @@ fn audio_prewarm_shell_payload(
         }),
     };
     if let Some(object) = payload.as_object_mut() {
-        object.insert("engine".to_string(), json!("rust-prototype"));
+        object.insert("engine".to_string(), json!("rust-wasapi"));
         object.insert("available".to_string(), json!(result.success));
         object.insert(
             "requestedFormat".to_string(),
@@ -552,7 +552,7 @@ fn audio_capture_stop_shell_payload(
         }),
     };
     if let Some(object) = payload.as_object_mut() {
-        object.insert("engine".to_string(), json!("rust-prototype"));
+        object.insert("engine".to_string(), json!("rust-wasapi"));
         object
             .entry("stopped".to_string())
             .or_insert_with(|| json!(false));
@@ -580,7 +580,7 @@ fn audio_prewarm_stop_shell_payload(
         }),
     };
     if let Some(object) = payload.as_object_mut() {
-        object.insert("engine".to_string(), json!("rust-prototype"));
+        object.insert("engine".to_string(), json!("rust-wasapi"));
         object
             .entry("stopped".to_string())
             .or_insert_with(|| json!(false));
@@ -608,7 +608,7 @@ fn audio_prewarm_status_shell_payload(
         }),
     };
     if let Some(object) = payload.as_object_mut() {
-        object.insert("engine".to_string(), json!("rust-prototype"));
+        object.insert("engine".to_string(), json!("rust-wasapi"));
         object
             .entry("active".to_string())
             .or_insert_with(|| json!(false));
@@ -2400,7 +2400,7 @@ mod tests {
         assert_eq!(value["requestId"], "r-audio-start");
         assert_eq!(value["success"], false);
         assert_eq!(value["errorCode"], "audioCaptureUnavailable");
-        assert_eq!(value["payload"]["engine"], "rust-prototype");
+        assert_eq!(value["payload"]["engine"], "rust-wasapi");
         assert_eq!(
             value["payload"]["requestedFormat"]["prewarmId"],
             "prewarm-adopt-1"
@@ -2441,7 +2441,7 @@ mod tests {
             "unexpected prewarm start error: {}",
             value["errorCode"]
         );
-        assert_eq!(value["payload"]["engine"], "rust-prototype");
+        assert_eq!(value["payload"]["engine"], "rust-wasapi");
         assert_eq!(value["payload"]["requestedFormat"]["prebufferMs"], 400);
         assert_eq!(
             value["payload"]["frameProtocol"]["sampleFormat"],
@@ -2522,7 +2522,7 @@ mod tests {
 
         let payload = super::audio_prewarm_stop_shell_payload(result.payload.clone(), &result);
 
-        assert_eq!(payload["engine"], "rust-prototype");
+        assert_eq!(payload["engine"], "rust-wasapi");
         assert_eq!(payload["stopped"], true);
         assert_eq!(payload["prewarmId"], "prewarm-1");
         assert_eq!(payload["totalBlocksObserved"], 8);
@@ -2556,7 +2556,7 @@ mod tests {
 
         let payload = super::audio_prewarm_status_shell_payload(result.payload.clone(), &result);
 
-        assert_eq!(payload["engine"], "rust-prototype");
+        assert_eq!(payload["engine"], "rust-wasapi");
         assert_eq!(payload["active"], true);
         assert_eq!(payload["prewarmId"], "prewarm-1");
         assert_eq!(payload["reason"], "active");
@@ -2593,7 +2593,7 @@ mod tests {
 
         let payload = super::audio_capture_stop_shell_payload(result.payload.clone(), &result);
 
-        assert_eq!(payload["engine"], "rust-prototype");
+        assert_eq!(payload["engine"], "rust-wasapi");
         assert_eq!(payload["stopped"], true);
         assert_eq!(payload["framesWritten"], 42);
         assert_eq!(payload["bytesWritten"], 13_440);

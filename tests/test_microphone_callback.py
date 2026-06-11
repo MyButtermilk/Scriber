@@ -1,12 +1,10 @@
 import asyncio
-import queue
 import types
 
 import numpy as np
 import pytest
 
 import src.microphone as microphone
-from pipecat.frames.frames import EndFrame, StartFrame
 
 
 class _FakeStream:
@@ -52,104 +50,6 @@ async def test_audio_callback_throttles_visualizer_work_to_sixty_hz(monkeypatch)
     assert mic._audio_level_interval == pytest.approx(1.0 / 60.0)
     assert len(levels) == 2
     assert mic._queue.qsize() == 4
-
-
-@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
-@pytest.mark.asyncio
-async def test_microphone_input_adopts_prewarmed_stream(monkeypatch):
-    class _FakePrewarmManager:
-        def __init__(self):
-            self.callback = None
-            self.attached = 0
-            self.detached = 0
-            self.paused = 0
-
-        def attach_active_capture(self, callback, **_kwargs):
-            self.callback = callback
-            self.attached += 1
-            return {
-                "capture_channels": 1,
-                "device_index": 7,
-                "prebuffer_frames": [(np.full((512, 1), 250, dtype=np.int16), 512, {"pre": 1}, None)],
-                "prebuffer_ms": 32.0,
-            }
-
-        def pause_for_active_capture(self):
-            self.paused += 1
-
-        def detach_active_capture(self, callback=None):
-            self.detached += 1
-            if callback is not None:
-                assert callback is self.callback
-            self.callback = None
-            return True
-
-    fake_sd = types.SimpleNamespace(
-        InputStream=lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("prewarmed stream adoption should not open InputStream")
-        )
-    )
-    monkeypatch.setattr(microphone, "sd", fake_sd)
-
-    manager = _FakePrewarmManager()
-    ready = []
-    mic = microphone.MicrophoneInput(
-        sample_rate=16000,
-        channels=1,
-        block_size=512,
-        keep_alive=True,
-        prewarm_manager=manager,
-        on_ready=lambda: ready.append(True),
-    )
-    consumed = []
-
-    def fake_create_audio_task():
-        return None
-
-    async def fake_drain_queue():
-        while True:
-            try:
-                item = await asyncio.to_thread(mic._queue.get, True, 0.1)
-            except queue.Empty:
-                continue
-            if item is None:
-                break
-            consumed.append(item)
-
-    mic._create_audio_task = fake_create_audio_task
-    mic._drain_queue = fake_drain_queue
-
-    await mic.start(StartFrame())
-
-    assert manager.attached == 1
-    assert manager.paused == 0
-    assert mic._using_prewarm_stream is True
-    assert ready == [True]
-
-    for _ in range(50):
-        if consumed:
-            break
-        await asyncio.sleep(0.01)
-
-    assert consumed == [np.full((512, 1), 250, dtype=np.int16).tobytes()]
-
-    assert manager.callback is not None
-    data = np.full((512, 1), 1000, dtype=np.int16)
-    manager.callback(data, 512, None, None)
-    for _ in range(50):
-        if len(consumed) >= 2:
-            break
-        await asyncio.sleep(0.01)
-
-    assert consumed == [
-        np.full((512, 1), 250, dtype=np.int16).tobytes(),
-        data.tobytes(),
-    ]
-
-    await mic.stop(EndFrame())
-
-    assert manager.detached == 1
-    assert mic._using_prewarm_stream is False
 
 
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
@@ -244,7 +144,7 @@ def test_microphone_watchdog_reports_stale_stream_when_restart_is_throttled(monk
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
 def test_microphone_watchdog_reopens_inactive_owned_frame_source():
     class _FakeOwnedFrameSource:
-        engine = "rust-prototype"
+        engine = "rust-wasapi"
         name = "rust-frame-pipe"
         target_channels = 1
         capture_channels = 1
@@ -291,7 +191,7 @@ def test_microphone_watchdog_reopens_inactive_owned_frame_source():
     assert source.stop_calls == [False]
     assert source.start_calls == 1
     snapshot = mic.diagnostic_snapshot()
-    assert snapshot["engine"] == "rust-prototype"
+    assert snapshot["engine"] == "rust-wasapi"
     assert snapshot["streamActive"] is True
     assert snapshot["healthRestartCount"] == 1
     assert snapshot["lastHealthCheckReason"] == "rust_reader_closed"
@@ -302,7 +202,7 @@ def test_microphone_watchdog_reopens_inactive_owned_frame_source():
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
 def test_microphone_watchdog_opens_rust_fallback_circuit_for_next_session(monkeypatch):
     class _FakeRustFrameSource:
-        engine = "rust-prototype"
+        engine = "rust-wasapi"
         name = "rust-frame-pipe"
         target_channels = 1
         capture_channels = 1
@@ -333,7 +233,7 @@ def test_microphone_watchdog_opens_rust_fallback_circuit_for_next_session(monkey
 
     microphone._reset_rust_audio_fallback_circuit()
     monkeypatch.setenv("SCRIBER_RUST_AUDIO_FAILURE_COOLDOWN_SEC", "30")
-    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
     monkeypatch.setattr(microphone.time, "monotonic", lambda: 100.0)
 
     try:
@@ -358,50 +258,17 @@ def test_microphone_watchdog_opens_rust_fallback_circuit_for_next_session(monkey
         assert source.stop_calls == [False]
         assert source.start_calls == 1
         assert snapshot["lastRustAudioMidSessionFailureReason"] == "pipeClosed"
-        assert snapshot["engineFallbackReason"] == "rustPrototypeMidSessionFailure:pipeClosed"
+        assert snapshot["engineFallbackReason"] == "rustWasapiMidSessionFailure:pipeClosed"
         assert snapshot["rustAudioFallbackCircuitOpen"] is True
         assert snapshot["rustAudioFallbackCircuitReason"] == "pipeClosed"
         assert snapshot["rustAudioFallbackCircuitRemainingSeconds"] == pytest.approx(30.0)
 
         next_mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
-        next_source = next_mic._create_frame_source()
-
-        assert next_source.engine == "python"
-        assert (
-            next_mic._audio_engine_fallback_reason
-            == "rustPrototypeCircuitOpen:pipeClosed"
-        )
+        with pytest.raises(RuntimeError, match="fallback circuit is open"):
+            next_mic._create_frame_source()
+        assert next_mic._audio_engine_fallback_reason == "rustCircuitOpen:pipeClosed"
     finally:
         microphone._reset_rust_audio_fallback_circuit()
-
-
-@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
-def test_microphone_external_error_detaches_adopted_prewarm_stream():
-    class _FakePrewarmManager:
-        def __init__(self):
-            self.detached = 0
-
-        def detach_active_capture(self, callback=None):
-            self.detached += 1
-            return True
-
-    manager = _FakePrewarmManager()
-    mic = microphone.MicrophoneInput(
-        sample_rate=16000,
-        channels=1,
-        block_size=512,
-        keep_alive=True,
-        prewarm_manager=manager,
-    )
-    mic._running = True
-    mic._using_prewarm_stream = True
-    mic._prewarm_callback = object()
-
-    mic.force_stop_from_external_error(reason="provider_connection_error")
-
-    assert mic._running is False
-    assert mic._using_prewarm_stream is False
-    assert manager.detached == 1
 
 
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")

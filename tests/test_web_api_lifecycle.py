@@ -70,11 +70,12 @@ class _FakeMicPrewarmManager:
 
 
 class _FakeRustMicPrewarmManager(_FakeMicPrewarmManager):
-    engine = "rust-prototype"
+    engine = "rust-wasapi"
     instances: list["_FakeRustMicPrewarmManager"] = []
 
 
 class _RecoveringFakeMicPrewarmManager(_FakeMicPrewarmManager):
+    engine = "rust-wasapi"
     instances: list["_RecoveringFakeMicPrewarmManager"] = []
 
     def __init__(self):
@@ -303,12 +304,12 @@ async def test_controller_starts_idle_mic_prewarm_when_enabled(monkeypatch, tmp_
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
-    monkeypatch.setattr(web_api, "MicrophonePrewarmManager", _FakeMicPrewarmManager)
-    _FakeMicPrewarmManager.instances.clear()
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
 
     ctl = ScriberWebController(asyncio.get_running_loop())
     await _wait_for_prewarm_task(ctl)
-    manager = _FakeMicPrewarmManager.instances[-1]
+    manager = _FakeRustMicPrewarmManager.instances[-1]
 
     assert manager.resume_calls == 1
     assert manager.active is True
@@ -326,7 +327,7 @@ async def test_controller_uses_rust_idle_prewarm_manager_for_rust_audio_engine(
 ):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
-    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
     monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
     _FakeRustMicPrewarmManager.instances.clear()
@@ -337,7 +338,7 @@ async def test_controller_uses_rust_idle_prewarm_manager_for_rust_audio_engine(
 
     assert manager.resume_calls == 1
     assert manager.active is True
-    assert getattr(ctl._mic_prewarm, "engine") == "rust-prototype"
+    assert getattr(ctl._mic_prewarm, "engine") == "rust-wasapi"
 
     ctl.shutdown()
 
@@ -348,11 +349,11 @@ async def test_update_settings_toggles_idle_mic_prewarm(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
     monkeypatch.setattr(web_api.Config, "persist_to_env_file", MagicMock())
-    monkeypatch.setattr(web_api, "MicrophonePrewarmManager", _FakeMicPrewarmManager)
-    _FakeMicPrewarmManager.instances.clear()
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
 
     ctl = ScriberWebController(asyncio.get_running_loop())
-    manager = _FakeMicPrewarmManager.instances[-1]
+    manager = _FakeRustMicPrewarmManager.instances[-1]
 
     await ctl.update_settings({"micAlwaysOn": True})
 
@@ -376,12 +377,12 @@ async def test_mic_watchdog_checks_idle_prewarm(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setenv("SCRIBER_MIC_WATCHDOG_INTERVAL_SEC", "0")
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
-    monkeypatch.setattr(web_api, "MicrophonePrewarmManager", _FakeMicPrewarmManager)
-    _FakeMicPrewarmManager.instances.clear()
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
 
     ctl = ScriberWebController(asyncio.get_running_loop())
     await _wait_for_prewarm_task(ctl)
-    manager = _FakeMicPrewarmManager.instances[-1]
+    manager = _FakeRustMicPrewarmManager.instances[-1]
     manager.active = False
 
     await ctl._run_mic_watchdog_check()
@@ -399,7 +400,7 @@ async def test_mic_watchdog_persists_idle_prewarm_recovery_snapshot(monkeypatch,
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setenv("SCRIBER_MIC_WATCHDOG_INTERVAL_SEC", "0")
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
-    monkeypatch.setattr(web_api, "MicrophonePrewarmManager", _RecoveringFakeMicPrewarmManager)
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _RecoveringFakeMicPrewarmManager)
     _RecoveringFakeMicPrewarmManager.instances.clear()
 
     ctl = ScriberWebController(asyncio.get_running_loop())
@@ -467,7 +468,7 @@ async def test_mic_watchdog_persists_last_active_warning_snapshot(monkeypatch, t
         def audio_diagnostics(self):
             return {
                 "running": True,
-                "engine": "rust-prototype",
+                "engine": "rust-wasapi",
                 "frameSource": "rust-frame-pipe",
                 "streamActive": True,
                 "lastHealthFailureReason": "staleCallbacks",
@@ -605,9 +606,9 @@ async def test_runtime_and_health_contract_include_sidecar_fields():
     assert runtime["capabilities"]["rest"] is True
     assert runtime["capabilities"]["websocket"] is True
     assert runtime["capabilities"]["exports"] == ["pdf", "docx"]
-    assert runtime["featureFlags"]["audioEngine"] == "python"
-    assert runtime["featureFlags"]["requestedAudioEngine"] == "python"
-    assert runtime["featureFlags"]["rustAudioRequested"] is False
+    assert runtime["featureFlags"]["audioEngine"] == "rust-wasapi"
+    assert runtime["featureFlags"]["requestedAudioEngine"] == "rust-wasapi"
+    assert runtime["featureFlags"]["rustAudioRequested"] is True
     assert runtime["featureFlags"]["rustAudioAvailable"] is False
     assert runtime["featureFlags"]["nativeDeviceEvents"] == "auto"
     assert runtime["featureFlags"]["requestedNativeDeviceEvents"] == "auto"
@@ -690,16 +691,16 @@ async def test_health_and_runtime_do_not_run_audio_import_diagnostics(monkeypatc
 
 @pytest.mark.asyncio
 async def test_runtime_reports_rust_audio_as_requested_until_prototype_exists(monkeypatch):
-    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
 
     runtime = ctl.get_runtime_info()
 
-    assert runtime["featureFlags"]["requestedAudioEngine"] == "rust-prototype"
+    assert runtime["featureFlags"]["requestedAudioEngine"] == "rust-wasapi"
     assert runtime["featureFlags"]["rustAudioRequested"] is True
     assert runtime["featureFlags"]["rustAudioAvailable"] is False
-    assert runtime["featureFlags"]["audioEngine"] == "python"
+    assert runtime["featureFlags"]["audioEngine"] == "rust-wasapi"
 
 
 @pytest.mark.asyncio
@@ -748,7 +749,7 @@ async def test_audio_diagnostics_include_private_native_endpoint_mapping(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_audio_diagnostics_do_not_run_rust_probe_unless_requested(monkeypatch):
+async def test_audio_diagnostics_reports_rust_probe_unavailable_without_shell_ipc(monkeypatch):
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.delenv("SCRIBER_AUDIO_ENGINE", raising=False)
     monkeypatch.delenv("SCRIBER_RUST_AUDIO_PROBE", raising=False)
@@ -761,8 +762,8 @@ async def test_audio_diagnostics_do_not_run_rust_probe_unless_requested(monkeypa
     finally:
         ctl.shutdown()
 
-    assert audio["microphone"]["rustAudioProbe"]["requested"] is False
-    assert audio["microphone"]["rustAudioProbe"]["reason"] == "notRequested"
+    assert audio["microphone"]["rustAudioProbe"]["requested"] is True
+    assert audio["microphone"]["rustAudioProbe"]["reason"] == "shellIpcUnavailable"
     web_api.call_shell_ipc.assert_not_called()
 
 
@@ -805,11 +806,23 @@ async def test_audio_diagnostics_prefers_rust_native_endpoint_inventory_for_mapp
                 "errorCode": None,
                 "fallbackReason": None,
             }
+        if command == "audioProbe":
+            return {
+                "success": True,
+                "payload": {
+                    "engine": "rust-wasapi",
+                    "available": True,
+                    "source": "rust-wasapi",
+                    "selectedNativeEndpointIdHash": "rust-hash",
+                },
+                "errorCode": None,
+                "fallbackReason": None,
+            }
         assert command == "audioEndpointInventory"
         return {
             "success": True,
             "payload": {
-                "engine": "rust-prototype",
+                "engine": "rust-wasapi",
                 "inventoryKind": "wasapi-capture-endpoints",
                 "available": True,
                 "source": "rust-wasapi",
@@ -874,7 +887,7 @@ async def test_audio_diagnostics_skip_rust_probe_without_shell_ipc(monkeypatch):
 @pytest.mark.asyncio
 async def test_audio_diagnostics_runs_rust_probe_when_requested(monkeypatch):
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
-    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
     monkeypatch.setattr(web_api.Config, "MIC_BLOCK_SIZE", 640, raising=False)
     monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
     def fake_shell_ipc(command, payload=None, **kwargs):
@@ -891,7 +904,7 @@ async def test_audio_diagnostics_runs_rust_probe_when_requested(monkeypatch):
         return {
             "success": True,
             "payload": {
-                "engine": "rust-prototype",
+                "engine": "rust-wasapi",
                 "probeKind": "wasapi-passive",
                 "available": True,
                 "endpointIdHash": "redacted-endpoint",
@@ -930,7 +943,7 @@ async def test_audio_diagnostics_runs_rust_probe_when_requested(monkeypatch):
 @pytest.mark.asyncio
 async def test_audio_diagnostics_rust_probe_sends_selected_native_endpoint_hash(monkeypatch):
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
-    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-prototype")
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
     monkeypatch.setattr(web_api.Config, "MIC_DEVICE", "Dock Mic, Windows WASAPI", raising=False)
     monkeypatch.setattr(web_api.Config, "FAVORITE_MIC", "Dock Mic, Windows WASAPI", raising=False)
     _install_fake_sounddevice_module(
@@ -975,7 +988,7 @@ async def test_audio_diagnostics_rust_probe_sends_selected_native_endpoint_hash(
         return {
             "success": True,
             "payload": {
-                "engine": "rust-prototype",
+                "engine": "rust-wasapi",
                 "probeKind": "wasapi-passive",
                 "available": True,
                 "endpointIdHash": "dock-hash",
@@ -1380,13 +1393,13 @@ async def test_start_listening_passes_idle_prewarm_without_closing_it(monkeypatc
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
-    monkeypatch.setattr(web_api, "MicrophonePrewarmManager", _FakeMicPrewarmManager)
-    _FakeMicPrewarmManager.instances.clear()
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
     _PrewarmAwarePipeline.instances.clear()
 
     ctl = ScriberWebController(asyncio.get_running_loop())
     await _wait_for_prewarm_task(ctl)
-    manager = _FakeMicPrewarmManager.instances[-1]
+    manager = _FakeRustMicPrewarmManager.instances[-1]
 
     with (
         patch("src.web_api.ScriberPipeline", _PrewarmAwarePipeline),

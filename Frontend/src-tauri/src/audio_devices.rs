@@ -698,7 +698,7 @@ fn native_endpoint_inventory_payload(
     duration_ms: f64,
 ) -> Value {
     json!({
-        "engine": "rust-prototype",
+        "engine": "rust-wasapi",
         "inventoryKind": "wasapi-capture-endpoints",
         "available": available,
         "source": "rust-wasapi",
@@ -779,7 +779,7 @@ fn passive_audio_probe_payload(
     extra: Value,
 ) -> Value {
     let mut payload = json!({
-        "engine": "rust-prototype",
+        "engine": "rust-wasapi",
         "probeKind": "wasapi-passive",
         "available": available,
         "errorCode": if error_code.is_empty() { Value::Null } else { Value::String(error_code.to_string()) },
@@ -1296,7 +1296,7 @@ mod tests {
             }),
         );
 
-        assert_eq!(payload["engine"], "rust-prototype");
+        assert_eq!(payload["engine"], "rust-wasapi");
         assert_eq!(payload["probeKind"], "wasapi-passive");
         assert_eq!(payload["available"], true);
         assert_eq!(payload["endpointIdHash"], "abc123");
