@@ -505,8 +505,10 @@ Implementation status on `codex/rust-expansion-plan`:
   clipboard restore with the clipboard sequence number.
 - Hardened the private Tauri shell IPC pipe with an explicit protected Windows
   DACL. The pipe still uses a per-process random name, a per-session token, and
-  `PIPE_REJECT_REMOTE_CLIENTS`; access is limited to the owner, LocalSystem, and
-  built-in administrators instead of relying on the default security descriptor.
+  `PIPE_REJECT_REMOTE_CLIENTS`. When the current logon SID is available, access
+  is limited to that logon session plus LocalSystem and built-in administrators;
+  otherwise it falls back to owner, LocalSystem, and built-in administrators
+  instead of relying on the default security descriptor.
 - Replaced ownerless clipboard access in the Tauri text-injection path with a
   short-lived message-only `ScriberClipboardOwner` window. `injectText` now
   calls `OpenClipboard(hwnd)` for read, set, and delayed restore operations
@@ -534,9 +536,8 @@ Implementation status on `codex/rust-expansion-plan`:
   `--require-tauri-text-injection-smoke`. The report must be real evidence, not
   `--validate-only`, and must show `injectText` success, target text arrival,
   and `clipboard_set` plus `paste` markers.
-- Still open: installed target-app smoke matrix, packaging smoke evidence,
-  optional current-session SID hardening beyond the owner/admin/system DACL,
-  and default-path decision based on installed evidence.
+- Still open: installed target-app smoke matrix, packaging smoke evidence, and
+  default-path decision based on installed evidence.
 
 Tauri injection default blockers:
 

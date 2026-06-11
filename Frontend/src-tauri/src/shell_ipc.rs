@@ -19,7 +19,8 @@ use crate::audio_sidecar_client::{audio_sidecar_executable_available, call_audio
 const API_VERSION: &str = "1";
 const MAX_REQUEST_BYTES: usize = 512 * 1024;
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
-const SHELL_IPC_PIPE_SECURITY_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)";
+const SHELL_IPC_PIPE_SECURITY_FALLBACK_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)";
+const SE_GROUP_LOGON_ID_MASK: u32 = 0xC000_0000;
 const MAX_INJECT_TEXT_BYTES: usize = 384 * 1024;
 const DEFAULT_CLIPBOARD_RETRIES: u32 = 5;
 const DEFAULT_CLIPBOARD_RETRY_DELAY_MS: u64 = 5;
@@ -1528,8 +1529,115 @@ impl Drop for PipeSecurityAttributes {
     }
 }
 
-fn shell_ipc_pipe_security_sddl() -> &'static str {
-    SHELL_IPC_PIPE_SECURITY_SDDL
+fn shell_ipc_pipe_security_sddl(logon_sid: Option<&str>) -> String {
+    match logon_sid {
+        Some(sid) if !sid.trim().is_empty() => {
+            format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{sid})")
+        }
+        _ => SHELL_IPC_PIPE_SECURITY_FALLBACK_SDDL.to_string(),
+    }
+}
+
+#[cfg(windows)]
+struct TokenHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for TokenHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                let _ = windows_sys::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn sid_to_string(sid: windows_sys::Win32::Security::PSID) -> Result<String, String> {
+    use std::ptr;
+    use windows_sys::Win32::{
+        Foundation::{GetLastError, LocalFree},
+        Security::Authorization::ConvertSidToStringSidW,
+    };
+
+    let mut string_sid: windows_sys::core::PWSTR = ptr::null_mut();
+    let converted = unsafe { ConvertSidToStringSidW(sid, &mut string_sid) };
+    if converted == 0 || string_sid.is_null() {
+        return Err(format!("ConvertSidToStringSidW failed with {}", unsafe {
+            GetLastError()
+        }));
+    }
+
+    let mut len = 0usize;
+    unsafe {
+        while *string_sid.add(len) != 0 {
+            len += 1;
+        }
+    }
+    let value = unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(string_sid, len)) };
+    unsafe {
+        let _ = LocalFree(string_sid as _);
+    }
+    Ok(value)
+}
+
+#[cfg(windows)]
+fn current_logon_sid_string() -> Result<String, String> {
+    use std::ptr;
+    use windows_sys::Win32::{
+        Foundation::{GetLastError, HANDLE},
+        Security::{GetTokenInformation, TokenGroups, TOKEN_GROUPS, TOKEN_QUERY},
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
+
+    let mut token: HANDLE = ptr::null_mut();
+    let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+    if opened == 0 || token.is_null() {
+        return Err(format!("OpenProcessToken failed with {}", unsafe {
+            GetLastError()
+        }));
+    }
+    let token = TokenHandle(token);
+
+    let mut needed = 0u32;
+    unsafe {
+        let _ = GetTokenInformation(token.0, TokenGroups, ptr::null_mut(), 0, &mut needed);
+    }
+    if needed == 0 {
+        return Err(format!(
+            "GetTokenInformation(TokenGroups) returned zero size with {}",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    let mut buffer = vec![0u8; needed as usize];
+    let read = unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenGroups,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        )
+    };
+    if read == 0 {
+        return Err(format!(
+            "GetTokenInformation(TokenGroups) failed with {}",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    let groups = buffer.as_ptr().cast::<TOKEN_GROUPS>();
+    let group_count = unsafe { (*groups).GroupCount as usize };
+    let first_group = unsafe { (*groups).Groups.as_ptr() };
+    for index in 0..group_count {
+        let group = unsafe { *first_group.add(index) };
+        if (group.Attributes & SE_GROUP_LOGON_ID_MASK) == SE_GROUP_LOGON_ID_MASK {
+            return sid_to_string(group.Sid);
+        }
+    }
+
+    Err("current token does not include a logon SID group".to_string())
 }
 
 #[cfg(windows)]
@@ -1545,7 +1653,9 @@ fn create_shell_ipc_security_attributes() -> Result<PipeSecurityAttributes, Stri
         },
     };
 
-    let sddl: Vec<u16> = OsStr::new(shell_ipc_pipe_security_sddl())
+    let logon_sid = current_logon_sid_string().ok();
+    let sddl_text = shell_ipc_pipe_security_sddl(logon_sid.as_deref());
+    let sddl: Vec<u16> = OsStr::new(&sddl_text)
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
@@ -1824,7 +1934,7 @@ mod tests {
 
     #[test]
     fn shell_ipc_pipe_security_sddl_is_restricted() {
-        let sddl = shell_ipc_pipe_security_sddl();
+        let sddl = shell_ipc_pipe_security_sddl(None);
 
         assert!(sddl.starts_with("D:P"));
         assert!(sddl.contains("(A;;GA;;;SY)"));
@@ -1833,6 +1943,16 @@ mod tests {
         assert!(!sddl.contains("WD"));
         assert!(!sddl.contains("AU"));
         assert!(!sddl.contains("IU"));
+    }
+
+    #[test]
+    fn shell_ipc_pipe_security_sddl_can_use_logon_sid() {
+        let sddl = shell_ipc_pipe_security_sddl(Some("S-1-5-5-123-456"));
+
+        assert!(sddl.contains("(A;;GA;;;SY)"));
+        assert!(sddl.contains("(A;;GA;;;BA)"));
+        assert!(sddl.contains("(A;;GA;;;S-1-5-5-123-456)"));
+        assert!(!sddl.contains("(A;;GA;;;OW)"));
     }
 
     #[test]

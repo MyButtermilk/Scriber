@@ -188,13 +188,14 @@ Tauri text injection:
 
 - `SCRIBER_INJECT_METHOD=tauri` remains strict opt-in. The current branch has
   the private Shell IPC `injectText` command, redacted support-bundle
-  diagnostics, Python marker forwarding, explicit protected pipe DACL, and
-  message-only clipboard owner HWND usage, plus safe-target smoke support for
-  `--method tauri`. The hybrid release-readiness runner can require the safe
-  target evidence with `-RequireTauriTextInjectionSmoke`, which validates real
-  Shell IPC success plus `clipboard_set`/`paste` markers. Manual target-app
-  matrix evidence across Notepad, Office, browsers, Electron, elevated windows,
-  and Remote Desktop is still open before any default-path decision.
+  diagnostics, Python marker forwarding, explicit protected pipe DACL with
+  current-logon-SID hardening when available, and message-only clipboard owner
+  HWND usage, plus safe-target smoke support for `--method tauri`. The hybrid
+  release-readiness runner can require the safe target evidence with
+  `-RequireTauriTextInjectionSmoke`, which validates real Shell IPC success plus
+  `clipboard_set`/`paste` markers. Manual target-app matrix evidence across
+  Notepad, Office, browsers, Electron, elevated windows, and Remote Desktop is
+  still open before any default-path decision.
 - Active-capture watchdog diagnostics now distinguish missing streams, inactive
   streams, no-callback-after-start, stale-callback stalls, and restart-throttle
   suppression. Stale active streams report unhealthy during throttle windows so
