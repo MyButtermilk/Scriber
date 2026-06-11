@@ -339,6 +339,9 @@ Support bundle smoke verifies:
 - support-bundle text redaction removes raw Scriber Shell IPC named-pipe paths
   from env files and logs; the installed support-bundle smoke injects a dummy
   Shell IPC pipe path and fails if any raw `scriber-shell-*` pipe remains,
+- support-bundle text redaction removes raw Windows `SWD\MMDEVAPI\...` native
+  audio endpoint IDs from logs; the installed smoke injects a dummy endpoint ID
+  and fails if the raw endpoint survives,
 - restoration of runtime `.env` and `settings.json` after the test.
 
 Other available installed smokes include:

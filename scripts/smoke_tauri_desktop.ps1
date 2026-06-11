@@ -992,7 +992,9 @@ function Test-SupportBundle {
         "support-bundle-bearer-secret"
     )
     $dummyShellPipe = "\\.\pipe\scriber-shell-support-bundle-smoke"
+    $dummyEndpointId = "SWD\MMDEVAPI\{0.0.1.00000000}.{support-bundle-capture-smoke}"
     $shellPipePattern = '(?i)(?:\\\\){1,2}\.(?:\\){1,2}pipe(?:\\){1,2}scriber-shell-[A-Za-z0-9_.-]+'
+    $endpointIdPattern = '(?i)SWD(?:\\+|#)+MMDEVAPI(?:\\+|#)+[^\s"'',;<>]+'
 
     $envPath = Join-Path $RuntimeDataDir ".env"
     $settingsPath = Join-Path $RuntimeDataDir "settings.json"
@@ -1022,7 +1024,7 @@ function Test-SupportBundle {
             -Encoding UTF8
         Set-Content `
             -LiteralPath (Join-Path $logsPath "support-bundle-secret-smoke.log") `
-            -Value "OPENAI_API_KEY=$($secretValues[2]) Authorization: Bearer $($secretValues[3]) pipe=$dummyShellPipe" `
+            -Value "OPENAI_API_KEY=$($secretValues[2]) Authorization: Bearer $($secretValues[3]) pipe=$dummyShellPipe endpoint=$dummyEndpointId" `
             -Encoding UTF8
 
         $uri = "http://127.0.0.1:$Port/api/runtime/support-bundle"
@@ -1078,11 +1080,17 @@ function Test-SupportBundle {
         if ($combined.Contains($dummyShellPipe) -or ([regex]::IsMatch($combined, $shellPipePattern))) {
             throw "Support bundle leaked a raw Shell IPC pipe name."
         }
+        if ($combined.Contains($dummyEndpointId) -or $combined.Contains("support-bundle-capture-smoke") -or ([regex]::IsMatch($combined, $endpointIdPattern))) {
+            throw "Support bundle leaked a raw native audio endpoint ID."
+        }
         if (-not $combined.Contains("[REDACTED]")) {
             throw "Support bundle did not contain any redaction marker."
         }
         if (-not $combined.Contains("[REDACTED_PIPE]")) {
             throw "Support bundle did not contain the Shell IPC pipe redaction marker."
+        }
+        if (-not $combined.Contains("[REDACTED_ENDPOINT_ID]")) {
+            throw "Support bundle did not contain the native audio endpoint redaction marker."
         }
         $audioDiagnostics = $zip.entryTexts["audio-diagnostics.redacted.json"] | ConvertFrom-Json
         if (-not $audioDiagnostics.microphone.nativeDeviceEvents) {

@@ -32,6 +32,10 @@ _SHELL_IPC_PIPE_RE = re.compile(
     r"(?:\\\\){1,2}\.(?:\\){1,2}pipe(?:\\){1,2}scriber-shell-[A-Za-z0-9_.-]+",
     re.IGNORECASE,
 )
+_NATIVE_AUDIO_ENDPOINT_RE = re.compile(
+    r"SWD(?:\\+|#)+MMDEVAPI(?:\\+|#)+[^\s\"',;<>]+",
+    re.IGNORECASE,
+)
 _MAX_LOG_BYTES = 750_000
 
 
@@ -70,6 +74,7 @@ def redact_text(text: str) -> str:
     redacted = _BEARER_RE.sub("Bearer [REDACTED]", redacted)
     redacted = _OPENAI_STYLE_SECRET_RE.sub("[REDACTED]", redacted)
     redacted = _SHELL_IPC_PIPE_RE.sub("[REDACTED_PIPE]", redacted)
+    redacted = _NATIVE_AUDIO_ENDPOINT_RE.sub("[REDACTED_ENDPOINT_ID]", redacted)
     return redacted
 
 

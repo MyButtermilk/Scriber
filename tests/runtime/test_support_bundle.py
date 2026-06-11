@@ -10,9 +10,12 @@ def test_redaction_helpers_hide_sensitive_values():
     assert "plain" in redact_text("mode=plain")
     pipe_name = r"\\.\pipe\scriber-shell-secret"
     escaped_pipe_name = pipe_name.replace("\\", "\\\\")
+    endpoint_id = r"SWD\MMDEVAPI\{0.0.1.00000000}.{secret-capture-device}"
+    escaped_endpoint_id = endpoint_id.replace("\\", "\\\\")
     redacted = redact_text(
         f"OPENAI_API_KEY=sk-abcdefghijklmnop Authorization: Bearer token-value "
-        f"pipe={pipe_name} escaped={escaped_pipe_name}"
+        f"pipe={pipe_name} escaped={escaped_pipe_name} "
+        f"endpoint={endpoint_id} escapedEndpoint={escaped_endpoint_id}"
     )
 
     assert "sk-abcdefghijklmnop" not in redacted
@@ -20,8 +23,13 @@ def test_redaction_helpers_hide_sensitive_values():
     assert pipe_name not in redacted
     assert escaped_pipe_name not in redacted
     assert "scriber-shell-secret" not in redacted
+    assert endpoint_id not in redacted
+    assert escaped_endpoint_id not in redacted
+    assert "SWD" not in redacted
+    assert "secret-capture-device" not in redacted
     assert "[REDACTED]" in redacted
     assert "[REDACTED_PIPE]" in redacted
+    assert "[REDACTED_ENDPOINT_ID]" in redacted
 
     mapping = redact_mapping(
         {
@@ -45,6 +53,7 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     monkeypatch.setenv("OPENAI_API_KEY", "sk-abcdefghijklmnop")
     monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "session-secret-value")
     shell_pipe = r"\\.\pipe\scriber-shell-bundle"
+    raw_endpoint_id = r"SWD\MMDEVAPI\{0.0.1.00000000}.{support-bundle-capture}"
     monkeypatch.setenv("SCRIBER_SHELL_IPC_PIPE", shell_pipe)
     monkeypatch.setattr(support_bundle, "repo_root", lambda: repo_dir)
 
@@ -57,7 +66,7 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
         encoding="utf-8",
     )
     (logs_dir / "latest.log").write_text(
-        f"\x00\x00OPENAI_API_KEY=log-secret-value Authorization: Bearer bearer-secret pipe={shell_pipe}\n",
+        f"\x00\x00OPENAI_API_KEY=log-secret-value Authorization: Bearer bearer-secret pipe={shell_pipe} endpoint={raw_endpoint_id}\n",
         encoding="utf-8",
     )
 
@@ -99,10 +108,13 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     assert "bearer-secret" not in combined
     assert shell_pipe not in combined
     assert "scriber-shell-bundle" not in combined
+    assert raw_endpoint_id not in combined
+    assert "support-bundle-capture" not in combined
     assert "private transcript text" not in combined
     assert "\x00" not in combined
     assert "[REDACTED]" in combined
     assert "[REDACTED_PIPE]" in combined
+    assert "[REDACTED_ENDPOINT_ID]" in combined
 
 
 def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_path):
