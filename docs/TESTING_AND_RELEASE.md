@@ -322,7 +322,8 @@ promotion evidence merely because the watchdog recovered before the final
 snapshot.
 
 For Always-On-Mic promotion evidence, make the app-level smoke a long run and
-require the same durations in final validation:
+require the same durations plus repeated stop/resume capture cycles in final
+validation:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
@@ -330,13 +331,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RequireRustAudioAppPrewarmSmoke `
   -RustAudioAppPrewarmDurationSec 600 `
   -RustAudioAppPrewarmPrewarmDurationSec 1800 `
+  -RustAudioAppPrewarmCaptureCycles 2 `
   -MinRustAudioAppPrewarmDurationSec 600 `
-  -MinRustAudioAppPrewarmPrewarmDurationSec 1800
+  -MinRustAudioAppPrewarmPrewarmDurationSec 1800 `
+  -MinRustAudioAppPrewarmCaptureCycles 2
 ```
 
-Supplying either app-prewarm minimum duration also makes the app-prewarm smoke
-artifact required, even without the generic `-RequireRustAudioAppPrewarmSmoke`
-flag.
+Supplying either app-prewarm minimum duration or the minimum capture-cycle count
+also makes the app-prewarm smoke artifact required, even without the generic
+`-RequireRustAudioAppPrewarmSmoke` flag. `-RequireRustAudioPromotionReadiness`
+sets the capture-cycle minimum to `2`, so promotion evidence must prove that
+Always-On-Mic resumes after at least two active recording stop events.
 
 The top-level release-readiness runner can also produce and validate the
 lifecycle report when explicit lifecycle evidence is wanted:
@@ -463,6 +468,7 @@ Rust sidecar smoke, 10-minute active app prewarm capture, 30-minute idle prewarm
 window, and 10-minute installed live-recording smoke. For the installed
 live-recording gate it also requires sampled `rust-prototype` /
 `rust-frame-pipe` audio diagnostics with a closed Rust fallback circuit. The
+app-level prewarm gate requires at least two stop/resume capture cycles. The
 provider-backed comparison artifact must be produced from a Rust pass that used
 `-RustAlwaysOnMic`. Add the matching `-Run...` or `-UseExisting...` flags when
 producing or reusing those reports.

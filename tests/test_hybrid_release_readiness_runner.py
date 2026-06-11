@@ -387,12 +387,15 @@ def test_hybrid_release_readiness_runner_plans_required_long_rust_audio_app_prew
     assert "smoke_rust_audio_app_prewarm.py" in app_evidence["producer"]
     assert app_evidence["durationSec"] == 600
     assert app_evidence["prewarmDurationSec"] == 1800
+    assert app_evidence["captureCycles"] == 1
     assert app_evidence["minDurationSec"] == 600
     assert app_evidence["minPrewarmDurationSec"] == 1800
+    assert app_evidence["minCaptureCycles"] == 0
     app_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioAppPrewarmSmoke")
     assert "smoke_rust_audio_app_prewarm.py" in app_command["command"]
     assert "--duration-sec 600" in app_command["command"]
     assert "--prewarm-duration-sec 1800" in app_command["command"]
+    assert "--capture-cycles 1" in app_command["command"]
     assert "--sidecar-exe" in app_command["command"]
     matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
     matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "microphoneMatrixValidation")
@@ -432,6 +435,7 @@ def test_hybrid_release_readiness_runner_treats_app_prewarm_min_duration_as_requ
     assert app_evidence["producer"] == "required external report"
     assert app_evidence["minDurationSec"] == 600
     assert app_evidence["minPrewarmDurationSec"] == 1800
+    assert app_evidence["minCaptureCycles"] == 0
     app_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioAppPrewarmSmoke")
     assert "required external report" in app_command["command"]
     matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
@@ -442,6 +446,33 @@ def test_hybrid_release_readiness_runner_treats_app_prewarm_min_duration_as_requ
     assert "--require-rust-audio-app-prewarm-smoke" not in readiness_command["command"]
     assert "--min-rust-audio-app-prewarm-duration-sec 600" in readiness_command["command"]
     assert "--min-rust-audio-app-prewarm-prewarm-duration-sec 1800" in readiness_command["command"]
+
+
+def test_hybrid_release_readiness_runner_treats_app_prewarm_min_cycles_as_required(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-MinRustAudioAppPrewarmCaptureCycles",
+        "2",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    app_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "rustAudioAppPrewarmSmoke")
+    assert app_evidence["required"] is True
+    assert app_evidence["producer"] == "required external report"
+    assert app_evidence["minCaptureCycles"] == 2
+    app_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioAppPrewarmSmoke")
+    assert "required external report" in app_command["command"]
+    readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    assert "--rust-audio-app-prewarm-report" in readiness_command["command"]
+    assert "--min-rust-audio-app-prewarm-cycles 2" in readiness_command["command"]
 
 
 def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_comparison(tmp_path: Path) -> None:
@@ -655,8 +686,10 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert payload["rustAudioSidecarPrewarmBeforeCapture"] is True
     assert payload["rustAudioAppPrewarmDurationSec"] == 600
     assert payload["rustAudioAppPrewarmPrewarmDurationSec"] == 1800
+    assert payload["rustAudioAppPrewarmCaptureCycles"] == 2
     assert payload["minRustAudioAppPrewarmDurationSec"] == 600
     assert payload["minRustAudioAppPrewarmPrewarmDurationSec"] == 1800
+    assert payload["minRustAudioAppPrewarmCaptureCycles"] == 2
     assert payload["minInstalledLiveRecordingDurationSec"] == 600
 
     by_name = {entry["name"]: entry for entry in payload["requiredEvidence"]}
@@ -669,6 +702,8 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert by_name["rustAudioAppPrewarmSmoke"]["producer"] == "required external report"
     assert by_name["rustAudioAppPrewarmSmoke"]["durationSec"] == 600
     assert by_name["rustAudioAppPrewarmSmoke"]["prewarmDurationSec"] == 1800
+    assert by_name["rustAudioAppPrewarmSmoke"]["captureCycles"] == 2
+    assert by_name["rustAudioAppPrewarmSmoke"]["minCaptureCycles"] == 2
     assert by_name["recordingHotPathPythonRustComparison"]["required"] is True
     assert by_name["recordingHotPathPythonRustComparison"]["rustAlwaysOnMicRequired"] is True
     assert "inputReportRedaction" in by_name["recordingHotPathPythonRustComparison"]["notes"]
@@ -697,6 +732,7 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert "--require-rust-audio-app-prewarm-smoke" in readiness_command
     assert "--min-rust-audio-app-prewarm-duration-sec 600" in readiness_command
     assert "--min-rust-audio-app-prewarm-prewarm-duration-sec 1800" in readiness_command
+    assert "--min-rust-audio-app-prewarm-cycles 2" in readiness_command
     assert "--require-installed-live-recording-smoke" in readiness_command
     assert "--require-installed-live-recording-rust-audio" in readiness_command
     assert "--min-installed-live-recording-duration-sec 600" in readiness_command

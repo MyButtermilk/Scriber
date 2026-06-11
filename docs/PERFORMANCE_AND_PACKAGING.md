@@ -1044,10 +1044,12 @@ Implementation plan:
      `RustAudioPrewarmManager`, waits for idle buffering, attaches
      `RustPrototypeFrameSource` with the adopted `prewarmId`, validates
      prebuffer-before-live ordering, resumes idle prewarm after capture, and
-     redacts raw prewarm IDs in the report. The default smoke ignores locally
-     configured favorite microphones so release evidence covers the stable
-     Windows default endpoint; `--honor-favorite-mic` is reserved for targeted
-     selected-device investigations.
+     redacts raw prewarm IDs in the report. It can now run repeated
+     prewarm-adoption / capture / stop / idle-resume cycles with
+     `--capture-cycles`, preserving each cycle in the evidence report. The
+     default smoke ignores locally configured favorite microphones so release
+     evidence covers the stable Windows default endpoint; `--honor-favorite-mic`
+     is reserved for targeted selected-device investigations.
    - Implemented: the hybrid release-readiness runner and validator can consume
      the app-level report through `-RunRustAudioAppPrewarmSmoke`,
      `-UseExistingRustAudioAppPrewarmReport`, and
@@ -1058,11 +1060,16 @@ Implementation plan:
    - Implemented: final readiness can also require long app-level Rust
      Always-On-Mic evidence with
      `-MinRustAudioAppPrewarmDurationSec` and
-     `-MinRustAudioAppPrewarmPrewarmDurationSec`. This makes the 10-minute
-     active-capture / 30-minute idle-prewarm promotion target
-     machine-checkable instead of relying on a short smoke report. Supplying
-     either app-prewarm minimum duration now makes the app-prewarm report
-     required even without the generic `-RequireRustAudioAppPrewarmSmoke` flag.
+     `-MinRustAudioAppPrewarmPrewarmDurationSec`, and it can require repeated
+     stop/resume coverage with `-MinRustAudioAppPrewarmCaptureCycles`. This
+     makes the 10-minute active-capture / 30-minute idle-prewarm promotion
+     target machine-checkable instead of relying on a short smoke report.
+     Supplying either app-prewarm minimum duration or minimum capture-cycle
+     count now makes the app-prewarm report required even without the generic
+     `-RequireRustAudioAppPrewarmSmoke` flag. The aggregate
+     `-RequireRustAudioPromotionReadiness` gate raises the cycle requirement to
+     two, so promotion evidence must prove idle-prewarm resume after repeated
+     active recording stops.
    - Implemented: final readiness can require an installed live-recording smoke
      with `-RequireInstalledLiveRecordingSmoke` and
      `-MinInstalledLiveRecordingDurationSec`. The validator accepts reports from

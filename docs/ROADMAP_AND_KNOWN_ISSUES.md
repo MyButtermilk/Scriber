@@ -155,7 +155,8 @@ Rust audio:
   The hybrid release-readiness runner can require this app-level smoke via
   `-RequireRustAudioAppPrewarmSmoke`. It can also require explicit app-level
   Rust Always-On-Mic durations with `-MinRustAudioAppPrewarmDurationSec` and
-  `-MinRustAudioAppPrewarmPrewarmDurationSec`, so the 10-minute active-capture
+  `-MinRustAudioAppPrewarmPrewarmDurationSec` plus repeated stop/resume cycles
+  with `-MinRustAudioAppPrewarmCaptureCycles`, so the 10-minute active-capture
   / 30-minute idle-prewarm promotion target is machine-checkable. Default-path
   Rust promotion can now also require installed live-recording start/stop
   stability through `-RequireInstalledLiveRecordingSmoke` and
@@ -179,9 +180,10 @@ Rust audio:
   provider-backed Python and Rust hot-path reports into a required promotion
   artifact, and `run_hybrid_release_readiness.ps1` can gate it with
   `-RequireRecordingHotPathComparison`. The comparison validator also requires
-  the same STT provider in both reports and rejects an open Rust fallback
-  circuit in the Rust report. Final readiness now also requires at least three
-  samples per engine, so one-shot comparison artifacts are not acceptable Rust
+  the same STT provider, the same benchmark configuration, active
+  `micAlwaysOn=true` Rust evidence, and rejects an open Rust fallback circuit
+  in the Rust report. Final readiness now also requires at least three samples
+  per engine, so one-shot comparison artifacts are not acceptable Rust
   promotion evidence. The same artifact now also fails Rust promotion when
   local audio-owned P95 hot-path segments regress clearly against Python; the
   provider-finalize and total stop-to-text values stay diagnostic-only because
@@ -205,10 +207,12 @@ Rust audio:
   gate; it bundles Rust sidecar capture, app-level Always-On-Mic prewarm,
   installed live-recording stability, provider-backed Python-vs-Rust
   comparison, Rust endpoint inventory, and native device-refresh evidence with
-  the required 10-minute active / 30-minute idle-prewarm minimums. When sidecar
-  prewarm adoption is part of that gate, reused sidecar reports now must pass
-  explicit `--require-rust-audio-sidecar-prewarm-adoption` validation instead
-  of relying on the report's own requested flags.
+  the required 10-minute active / 30-minute idle-prewarm minimums. It also
+  requires at least two app-level prewarm/capture/stop/resume cycles so a
+  single successful resume cannot hide repeated Stop-button failures. When
+  sidecar prewarm adoption is part of that gate, reused sidecar reports now
+  must pass explicit `--require-rust-audio-sidecar-prewarm-adoption` validation
+  instead of relying on the report's own requested flags.
   A local physical Windows WASAPI sidecar smoke passed on 2026-06-10 with
   600.004 seconds observed default capture, selected native-endpoint-hash
   capture, no sequence gaps, matching reader/writer frame counts, and no

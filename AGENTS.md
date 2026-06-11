@@ -356,7 +356,7 @@ python scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 1 --preb
 Rust audio app-level prewarm adoption smoke:
 
 ```powershell
-python scripts\smoke_rust_audio_app_prewarm.py --mode wasapi --duration-sec 1 --prewarm-duration-sec 1 --prebuffer-ms 400 --output tmp\rust-audio-app-prewarm-wasapi-smoke.json
+python scripts\smoke_rust_audio_app_prewarm.py --mode wasapi --duration-sec 1 --prewarm-duration-sec 1 --capture-cycles 1 --prebuffer-ms 400 --output tmp\rust-audio-app-prewarm-wasapi-smoke.json
 ```
 
 This verifies the Python `RustAudioPrewarmManager` plus
@@ -390,8 +390,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RequireRustAudioAppPrewarmSmoke `
   -RustAudioAppPrewarmDurationSec 600 `
   -RustAudioAppPrewarmPrewarmDurationSec 1800 `
+  -RustAudioAppPrewarmCaptureCycles 2 `
   -MinRustAudioAppPrewarmDurationSec 600 `
-  -MinRustAudioAppPrewarmPrewarmDurationSec 1800
+  -MinRustAudioAppPrewarmPrewarmDurationSec 1800 `
+  -MinRustAudioAppPrewarmCaptureCycles 2
 ```
 
 These Rust smokes must not be used alone to promote Rust audio to default.
@@ -417,6 +419,7 @@ Python-vs-Rust provider-backed comparison artifact:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_recording_hot_path_comparison.ps1 `
+  -RustAlwaysOnMic `
   -RecordingHotPathIterations 3 `
   -RecordingHotPathSeconds 3 `
   -RecordingHotPathSpeechPrompt "Scriber provider-backed Rust audio validation"
@@ -446,7 +449,8 @@ Use this aggregate gate before any default Rust-audio promotion. It makes the
 Rust sidecar smoke, app-level Always-On-Mic prewarm smoke, installed live
 recording smoke, provider-backed Python-vs-Rust comparison, Rust endpoint
 inventory, and native device-refresh evidence mandatory, and raises the
-promotion minima to 10-minute active / 30-minute idle-prewarm evidence.
+promotion minima to 10-minute active / 30-minute idle-prewarm evidence plus at
+least two app-level prewarm/capture/stop/resume cycles.
 The installed live-recording report must also prove sampled
 `rust-prototype`/`rust-frame-pipe` active capture with a closed Rust fallback
 circuit; generic Python live-mic stability is not enough for Rust promotion.

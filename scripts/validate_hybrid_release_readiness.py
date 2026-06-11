@@ -91,6 +91,7 @@ def validate_release_readiness(
     min_rust_audio_duration_sec: float = 0.0,
     min_rust_audio_app_prewarm_duration_sec: float = 0.0,
     min_rust_audio_app_prewarm_prewarm_duration_sec: float = 0.0,
+    min_rust_audio_app_prewarm_cycles: int = 0,
     min_installed_live_recording_duration_sec: float = 0.0,
     expected_authenticode_publisher: str = "",
     require_authenticode_timestamp: bool = False,
@@ -154,6 +155,7 @@ def validate_release_readiness(
         require_rust_audio_app_prewarm_smoke
         or min_rust_audio_app_prewarm_duration_sec > 0
         or min_rust_audio_app_prewarm_prewarm_duration_sec > 0
+        or min_rust_audio_app_prewarm_cycles > 0
         or rust_audio_app_prewarm_report is not None
     ):
         checks.append(
@@ -162,6 +164,7 @@ def validate_release_readiness(
                 required=require_rust_audio_app_prewarm_smoke,
                 min_duration_sec=min_rust_audio_app_prewarm_duration_sec,
                 min_prewarm_duration_sec=min_rust_audio_app_prewarm_prewarm_duration_sec,
+                min_capture_cycles=min_rust_audio_app_prewarm_cycles,
             )
         )
     if (
@@ -781,15 +784,22 @@ def validate_rust_audio_app_prewarm_report(
     required: bool,
     min_duration_sec: float = 0.0,
     min_prewarm_duration_sec: float = 0.0,
+    min_capture_cycles: int = 0,
 ) -> ReadinessCheck:
     failures: list[str] = []
-    effective_required = bool(required or min_duration_sec > 0 or min_prewarm_duration_sec > 0)
+    effective_required = bool(
+        required
+        or min_duration_sec > 0
+        or min_prewarm_duration_sec > 0
+        or min_capture_cycles > 0
+    )
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
         "required": effective_required,
         "requireRustAudioAppPrewarmSmoke": required,
         "minDurationSec": min_duration_sec,
         "minPrewarmDurationSec": min_prewarm_duration_sec,
+        "minCaptureCycles": min_capture_cycles,
     }
     if report_path is None:
         if effective_required:
@@ -811,6 +821,12 @@ def validate_rust_audio_app_prewarm_report(
     if not isinstance(summary, dict):
         failures.append("Rust audio app prewarm smoke summary must be an object")
         summary = {}
+    cycles = report.get("cycles")
+    if cycles is None:
+        cycles = []
+    if cycles and not isinstance(cycles, list):
+        failures.append("Rust audio app prewarm smoke cycles must be a list when present")
+        cycles = []
     manager_start = report.get("managerStart")
     if not isinstance(manager_start, dict):
         failures.append("Rust audio app prewarm smoke managerStart must be an object")
@@ -846,6 +862,7 @@ def validate_rust_audio_app_prewarm_report(
             "mode": report.get("mode", ""),
             "requested": requested,
             "summary": summary,
+            "cycleCount": len(cycles),
         }
     )
     if report.get("ok") is not True:
@@ -870,6 +887,16 @@ def validate_rust_audio_app_prewarm_report(
         failures.append(
             f"Rust audio app prewarm smoke prewarmDurationSec must be at least {min_prewarm_duration_sec:g}"
         )
+    requested_cycles = numeric_field(requested, "captureCycles")
+    if min_capture_cycles > 0:
+        if requested_cycles is None or requested_cycles < min_capture_cycles:
+            failures.append(
+                f"Rust audio app prewarm smoke requested.captureCycles must be at least {min_capture_cycles}"
+            )
+        if len(cycles) < min_capture_cycles:
+            failures.append(
+                f"Rust audio app prewarm smoke cycles must include at least {min_capture_cycles} entries"
+            )
     if manager_start.get("active") is not True:
         failures.append("Rust audio app prewarm smoke managerStart.active must be true")
     if not str(manager_start.get("prewarmIdHash") or ""):
@@ -945,6 +972,77 @@ def validate_rust_audio_app_prewarm_report(
         failures.append("Rust audio app prewarm smoke summary.sequenceErrorCount must be 0")
     if numeric_field(summary, "protocolErrorCount") != 0:
         failures.append("Rust audio app prewarm smoke summary.protocolErrorCount must be 0")
+    summary_cycle_count = numeric_field(summary, "captureCycleCount")
+    if min_capture_cycles > 0 and (
+        summary_cycle_count is None or summary_cycle_count < min_capture_cycles
+    ):
+        failures.append(
+            f"Rust audio app prewarm smoke summary.captureCycleCount must be at least {min_capture_cycles}"
+        )
+
+    for index, cycle in enumerate(cycles, start=1):
+        if not isinstance(cycle, dict):
+            failures.append(f"Rust audio app prewarm smoke cycles[{index - 1}] must be an object")
+            continue
+        cycle_label = f"cycles[{index - 1}]"
+        cycle_adoption = cycle.get("managerAdoption")
+        if not isinstance(cycle_adoption, dict):
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.managerAdoption must be an object")
+            cycle_adoption = {}
+        if not str(cycle_adoption.get("prewarmIdHash") or ""):
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.managerAdoption.prewarmIdHash is required"
+            )
+        cycle_source = cycle.get("sourceFinal")
+        if not isinstance(cycle_source, dict):
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.sourceFinal must be an object")
+            cycle_source = {}
+        cycle_adopted = cycle_source.get("adoptedPrewarm")
+        if not isinstance(cycle_adopted, dict):
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.adoptedPrewarm must be an object"
+            )
+            cycle_adopted = {}
+        if cycle_adopted.get("adopted") is not True:
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.adoptedPrewarm.adopted must be true"
+            )
+        if numeric_field(cycle_adopted, "blocks") is None or numeric_field(cycle_adopted, "blocks") <= 0:
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.adoptedPrewarm.blocks must be positive"
+            )
+        if not str(cycle_source.get("nativeEndpointIdHash") or ""):
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.nativeEndpointIdHash is required"
+            )
+        if cycle_source.get("lastError") not in (None, ""):
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.lastError must be empty"
+            )
+        if numeric_field(cycle_source, "callbackCount") is None or numeric_field(cycle_source, "callbackCount") <= 0:
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.callbackCount must be positive"
+            )
+        if numeric_field(cycle_source, "framePipePrebufferFramesRead") is None or numeric_field(cycle_source, "framePipePrebufferFramesRead") <= 0:
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.framePipePrebufferFramesRead must be positive"
+            )
+        if numeric_field(cycle_source, "framePipeLiveFramesRead") is None or numeric_field(cycle_source, "framePipeLiveFramesRead") <= 0:
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.framePipeLiveFramesRead must be positive"
+            )
+        if numeric_field(cycle_source, "framePipePrebufferAfterLiveCount") != 0:
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.framePipePrebufferAfterLiveCount must be 0"
+            )
+        if numeric_field(cycle_source, "framePipeSequenceErrorCount") != 0:
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.framePipeSequenceErrorCount must be 0"
+            )
+        if numeric_field(cycle_source, "framePipeProtocolErrorCount") != 0:
+            failures.append(
+                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.framePipeProtocolErrorCount must be 0"
+            )
 
     return ReadinessCheck("rustAudioAppPrewarmSmoke", not failures, failures, details)
 
@@ -2219,6 +2317,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--min-rust-audio-duration-sec", type=float, default=0.0)
     parser.add_argument("--min-rust-audio-app-prewarm-duration-sec", type=float, default=0.0)
     parser.add_argument("--min-rust-audio-app-prewarm-prewarm-duration-sec", type=float, default=0.0)
+    parser.add_argument("--min-rust-audio-app-prewarm-cycles", type=int, default=0)
     parser.add_argument("--min-installed-live-recording-duration-sec", type=float, default=0.0)
     parser.add_argument("--expected-authenticode-publisher", default="")
     parser.add_argument("--require-authenticode-timestamp", action="store_true")
@@ -2259,6 +2358,7 @@ def main(argv: list[str]) -> int:
         min_rust_audio_duration_sec=args.min_rust_audio_duration_sec,
         min_rust_audio_app_prewarm_duration_sec=args.min_rust_audio_app_prewarm_duration_sec,
         min_rust_audio_app_prewarm_prewarm_duration_sec=args.min_rust_audio_app_prewarm_prewarm_duration_sec,
+        min_rust_audio_app_prewarm_cycles=args.min_rust_audio_app_prewarm_cycles,
         min_installed_live_recording_duration_sec=args.min_installed_live_recording_duration_sec,
         expected_authenticode_publisher=args.expected_authenticode_publisher,
         require_authenticode_timestamp=args.require_authenticode_timestamp,

@@ -38,8 +38,10 @@ param(
     [double]$RustAudioAppPrewarmDurationSec = 1,
     [double]$RustAudioAppPrewarmPrewarmDurationSec = 1,
     [int]$RustAudioAppPrewarmPrebufferMs = 400,
+    [int]$RustAudioAppPrewarmCaptureCycles = 1,
     [double]$MinRustAudioAppPrewarmDurationSec = 0,
     [double]$MinRustAudioAppPrewarmPrewarmDurationSec = 0,
+    [int]$MinRustAudioAppPrewarmCaptureCycles = 0,
     [switch]$RustAudioAppPrewarmHonorFavoriteMic,
     [string]$InstalledLiveRecordingSmokeReport = "",
     [string]$InstalledLiveRecordingInstallerPath = "",
@@ -252,13 +254,19 @@ if ($RequireRustAudioPromotionReadiness) {
     if ($MinRustAudioAppPrewarmPrewarmDurationSec -lt 1800) {
         $MinRustAudioAppPrewarmPrewarmDurationSec = 1800
     }
+    if ($RustAudioAppPrewarmCaptureCycles -lt 2) {
+        $RustAudioAppPrewarmCaptureCycles = 2
+    }
+    if ($MinRustAudioAppPrewarmCaptureCycles -lt 2) {
+        $MinRustAudioAppPrewarmCaptureCycles = 2
+    }
     if ($MinInstalledLiveRecordingDurationSec -lt 600) {
         $MinInstalledLiveRecordingDurationSec = 600
     }
 }
 
 $effectiveRequireRustAudioSidecarSmoke = [bool]($RequireRustAudioSidecarSmoke -or $RustAudioSidecarPrewarmBeforeCapture)
-$effectiveRequireRustAudioAppPrewarmSmoke = [bool]($RequireRustAudioAppPrewarmSmoke -or ($MinRustAudioAppPrewarmDurationSec -gt 0) -or ($MinRustAudioAppPrewarmPrewarmDurationSec -gt 0))
+$effectiveRequireRustAudioAppPrewarmSmoke = [bool]($RequireRustAudioAppPrewarmSmoke -or ($MinRustAudioAppPrewarmDurationSec -gt 0) -or ($MinRustAudioAppPrewarmPrewarmDurationSec -gt 0) -or ($MinRustAudioAppPrewarmCaptureCycles -gt 0))
 $effectiveRequireInstalledLiveRecordingSmoke = [bool]($RequireInstalledLiveRecordingSmoke -or $RequireInstalledLiveRecordingRustAudio -or ($MinInstalledLiveRecordingDurationSec -gt 0))
 if ($RequireInstalledLiveRecordingRustAudio -and -not $InstalledLiveRecordingAudioEngine) {
     $InstalledLiveRecordingAudioEngine = "rust-prototype"
@@ -385,6 +393,8 @@ $rustAudioAppPrewarmArgs = @(
     ([string]$RustAudioAppPrewarmDurationSec),
     "--prewarm-duration-sec",
     ([string]$RustAudioAppPrewarmPrewarmDurationSec),
+    "--capture-cycles",
+    ([string]$RustAudioAppPrewarmCaptureCycles),
     "--prebuffer-ms",
     ([string]$RustAudioAppPrewarmPrebufferMs),
     "--output",
@@ -477,6 +487,9 @@ if ($MinRustAudioAppPrewarmDurationSec -gt 0) {
 }
 if ($MinRustAudioAppPrewarmPrewarmDurationSec -gt 0) {
     $readinessArgs += @("--min-rust-audio-app-prewarm-prewarm-duration-sec", ([string]$MinRustAudioAppPrewarmPrewarmDurationSec))
+}
+if ($MinRustAudioAppPrewarmCaptureCycles -gt 0) {
+    $readinessArgs += @("--min-rust-audio-app-prewarm-cycles", ([string]$MinRustAudioAppPrewarmCaptureCycles))
 }
 if ($RequireInstalledLiveRecordingSmoke -or $RequireInstalledLiveRecordingRustAudio -or $MinInstalledLiveRecordingDurationSec -gt 0 -or (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf)) {
     $readinessArgs += @("--installed-live-recording-smoke-report", $InstalledLiveRecordingSmokeReport)
@@ -607,11 +620,13 @@ $requiredEvidence = @(
         mode = $RustAudioAppPrewarmMode
         durationSec = $RustAudioAppPrewarmDurationSec
         prewarmDurationSec = $RustAudioAppPrewarmPrewarmDurationSec
+        captureCycles = $RustAudioAppPrewarmCaptureCycles
         prebufferMs = $RustAudioAppPrewarmPrebufferMs
         minDurationSec = $MinRustAudioAppPrewarmDurationSec
         minPrewarmDurationSec = $MinRustAudioAppPrewarmPrewarmDurationSec
+        minCaptureCycles = $MinRustAudioAppPrewarmCaptureCycles
         honorFavoriteMic = [bool]$RustAudioAppPrewarmHonorFavoriteMic
-        notes = "Optional Rust promotion evidence. WASAPI mode validates the app-level RustAudioPrewarmManager to RustPrototypeFrameSource handoff, adopted prebuffer frames before live frames, and idle-prewarm resume after capture. Default release evidence should keep honorFavoriteMic=false."
+        notes = "Optional Rust promotion evidence. WASAPI mode validates the app-level RustAudioPrewarmManager to RustPrototypeFrameSource handoff, adopted prebuffer frames before live frames, and idle-prewarm resume after capture. Rust promotion requires repeated stop/resume capture cycles. Default release evidence should keep honorFavoriteMic=false."
     },
     [pscustomobject]@{
         name = "recordingHotPathPythonRustComparison"
@@ -709,8 +724,10 @@ $plan = [pscustomobject]@{
     rustAudioAppPrewarmDurationSec = $RustAudioAppPrewarmDurationSec
     rustAudioAppPrewarmPrewarmDurationSec = $RustAudioAppPrewarmPrewarmDurationSec
     rustAudioAppPrewarmPrebufferMs = $RustAudioAppPrewarmPrebufferMs
+    rustAudioAppPrewarmCaptureCycles = $RustAudioAppPrewarmCaptureCycles
     minRustAudioAppPrewarmDurationSec = $MinRustAudioAppPrewarmDurationSec
     minRustAudioAppPrewarmPrewarmDurationSec = $MinRustAudioAppPrewarmPrewarmDurationSec
+    minRustAudioAppPrewarmCaptureCycles = $MinRustAudioAppPrewarmCaptureCycles
     rustAudioAppPrewarmHonorFavoriteMic = [bool]$RustAudioAppPrewarmHonorFavoriteMic
     installedLiveRecordingSmokeReport = $InstalledLiveRecordingSmokeReport
     installedLiveRecordingInstallerPath = $InstalledLiveRecordingInstallerPath
