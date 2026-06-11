@@ -240,6 +240,9 @@ if ($RequireRustAudioPromotionReadiness) {
     }
 }
 
+$effectiveRequireRustAudioSidecarSmoke = [bool]($RequireRustAudioSidecarSmoke -or $RustAudioSidecarPrewarmBeforeCapture)
+$effectiveRequireRustAudioAppPrewarmSmoke = [bool]($RequireRustAudioAppPrewarmSmoke -or ($MinRustAudioAppPrewarmDurationSec -gt 0) -or ($MinRustAudioAppPrewarmPrewarmDurationSec -gt 0))
+
 $matrixArgs = @(
     "scripts\validate_microphone_hardware_matrix.py",
     "--input-dir",
@@ -247,11 +250,11 @@ $matrixArgs = @(
     "--output",
     $MatrixValidationOutput
 )
-$effectiveRequireRustEndpointInventory = [bool]($RequireRustEndpointInventory -or $RequireRustAudioSidecarSmoke -or $RequireRustAudioAppPrewarmSmoke)
+$effectiveRequireRustEndpointInventory = [bool]($RequireRustEndpointInventory -or $effectiveRequireRustAudioSidecarSmoke -or $effectiveRequireRustAudioAppPrewarmSmoke)
 if ($effectiveRequireRustEndpointInventory) {
     $matrixArgs += "--require-rust-endpoint-inventory"
 }
-$effectiveRequireDeviceRefreshEvidence = [bool]($RequireDeviceRefreshEvidence -or $RequireRustAudioSidecarSmoke -or $RequireRustAudioAppPrewarmSmoke)
+$effectiveRequireDeviceRefreshEvidence = [bool]($RequireDeviceRefreshEvidence -or $effectiveRequireRustAudioSidecarSmoke -or $effectiveRequireRustAudioAppPrewarmSmoke)
 if ($effectiveRequireDeviceRefreshEvidence) {
     $matrixArgs += "--require-device-refresh-evidence"
 }
@@ -378,7 +381,7 @@ $readinessArgs = @(
     "--output",
     $OutputPath
 )
-if ($RequireRustAudioSidecarSmoke -or $RunRustAudioSidecarSmoke -or $UseExistingRustAudioSidecarReport) {
+if ($effectiveRequireRustAudioSidecarSmoke -or $RunRustAudioSidecarSmoke -or $UseExistingRustAudioSidecarReport) {
     $readinessArgs += @("--rust-audio-sidecar-report", $RustAudioSidecarReport)
 }
 if ($RequireRustAudioSidecarSmoke) {
@@ -393,7 +396,7 @@ if ($RequireRustAudioPrewarmSidecarSmoke -or $RunRustAudioPrewarmSidecarSmoke -o
 if ($RequireRustAudioPrewarmSidecarSmoke) {
     $readinessArgs += "--require-rust-audio-prewarm-sidecar-smoke"
 }
-if ($RequireRustAudioAppPrewarmSmoke -or $RunRustAudioAppPrewarmSmoke -or $UseExistingRustAudioAppPrewarmReport) {
+if ($effectiveRequireRustAudioAppPrewarmSmoke -or $RunRustAudioAppPrewarmSmoke -or $UseExistingRustAudioAppPrewarmReport) {
     $readinessArgs += @("--rust-audio-app-prewarm-report", $RustAudioAppPrewarmReport)
 }
 if ($RequireRustAudioAppPrewarmSmoke) {
@@ -502,9 +505,9 @@ $requiredEvidence = @(
     },
     [pscustomobject]@{
         name = "rustAudioSidecarSmoke"
-        required = [bool]$RequireRustAudioSidecarSmoke
+        required = $effectiveRequireRustAudioSidecarSmoke
         external = $false
-        producer = $(if ($UseExistingRustAudioSidecarReport) { "existing report" } elseif ($RunRustAudioSidecarSmoke) { "scripts\smoke_rust_audio_sidecar.py" } elseif ($RequireRustAudioSidecarSmoke) { "required external report" } else { "not requested" })
+        producer = $(if ($UseExistingRustAudioSidecarReport) { "existing report" } elseif ($RunRustAudioSidecarSmoke) { "scripts\smoke_rust_audio_sidecar.py" } elseif ($effectiveRequireRustAudioSidecarSmoke) { "required external report" } else { "not requested" })
         report = $RustAudioSidecarReport
         durationSec = $RustAudioSidecarDurationSec
         selectedDurationSec = $RustAudioSidecarSelectedDurationSec
@@ -527,9 +530,9 @@ $requiredEvidence = @(
     },
     [pscustomobject]@{
         name = "rustAudioAppPrewarmSmoke"
-        required = [bool]$RequireRustAudioAppPrewarmSmoke
+        required = $effectiveRequireRustAudioAppPrewarmSmoke
         external = $false
-        producer = $(if ($UseExistingRustAudioAppPrewarmReport) { "existing report" } elseif ($RunRustAudioAppPrewarmSmoke) { "scripts\smoke_rust_audio_app_prewarm.py" } elseif ($RequireRustAudioAppPrewarmSmoke) { "required external report" } else { "not requested" })
+        producer = $(if ($UseExistingRustAudioAppPrewarmReport) { "existing report" } elseif ($RunRustAudioAppPrewarmSmoke) { "scripts\smoke_rust_audio_app_prewarm.py" } elseif ($effectiveRequireRustAudioAppPrewarmSmoke) { "required external report" } else { "not requested" })
         report = $RustAudioAppPrewarmReport
         mode = $RustAudioAppPrewarmMode
         durationSec = $RustAudioAppPrewarmDurationSec
@@ -680,7 +683,7 @@ $plan = [pscustomobject]@{
         },
         [pscustomobject]@{
             name = "rustAudioSidecarSmoke"
-            command = $(if ($UseExistingRustAudioSidecarReport) { "reuse $RustAudioSidecarReport" } elseif ($RunRustAudioSidecarSmoke) { "python " + (Convert-ToDisplayCommand -CommandArgs $rustAudioSidecarArgs) } elseif ($RequireRustAudioSidecarSmoke) { "required external report: produce with scripts\smoke_rust_audio_sidecar.py or pass -RunRustAudioSidecarSmoke / -UseExistingRustAudioSidecarReport" } else { "not requested" })
+            command = $(if ($UseExistingRustAudioSidecarReport) { "reuse $RustAudioSidecarReport" } elseif ($RunRustAudioSidecarSmoke) { "python " + (Convert-ToDisplayCommand -CommandArgs $rustAudioSidecarArgs) } elseif ($effectiveRequireRustAudioSidecarSmoke) { "required external report: produce with scripts\smoke_rust_audio_sidecar.py or pass -RunRustAudioSidecarSmoke / -UseExistingRustAudioSidecarReport" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "rustAudioPrewarmSidecarSmoke"
@@ -688,7 +691,7 @@ $plan = [pscustomobject]@{
         },
         [pscustomobject]@{
             name = "rustAudioAppPrewarmSmoke"
-            command = $(if ($UseExistingRustAudioAppPrewarmReport) { "reuse $RustAudioAppPrewarmReport" } elseif ($RunRustAudioAppPrewarmSmoke) { "python " + (Convert-ToDisplayCommand -CommandArgs $rustAudioAppPrewarmArgs) } elseif ($RequireRustAudioAppPrewarmSmoke) { "required external report: produce with scripts\smoke_rust_audio_app_prewarm.py or pass -RunRustAudioAppPrewarmSmoke / -UseExistingRustAudioAppPrewarmReport" } else { "not requested" })
+            command = $(if ($UseExistingRustAudioAppPrewarmReport) { "reuse $RustAudioAppPrewarmReport" } elseif ($RunRustAudioAppPrewarmSmoke) { "python " + (Convert-ToDisplayCommand -CommandArgs $rustAudioAppPrewarmArgs) } elseif ($effectiveRequireRustAudioAppPrewarmSmoke) { "required external report: produce with scripts\smoke_rust_audio_app_prewarm.py or pass -RunRustAudioAppPrewarmSmoke / -UseExistingRustAudioAppPrewarmReport" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "recordingHotPathPythonRustComparison"
@@ -765,8 +768,8 @@ try {
         Invoke-Checked -Label "Rust audio sidecar smoke" -Command {
             python @rustAudioSidecarArgs
         }
-    } elseif ($RequireRustAudioSidecarSmoke) {
-        throw "-RequireRustAudioSidecarSmoke requires -RunRustAudioSidecarSmoke or -UseExistingRustAudioSidecarReport."
+    } elseif ($effectiveRequireRustAudioSidecarSmoke) {
+        throw "Rust audio sidecar evidence is required; pass -RunRustAudioSidecarSmoke or -UseExistingRustAudioSidecarReport."
     }
 
     if ($UseExistingRustAudioPrewarmSidecarReport) {
@@ -785,8 +788,8 @@ try {
         Invoke-Checked -Label "Rust audio app prewarm smoke" -Command {
             python @rustAudioAppPrewarmArgs
         }
-    } elseif ($RequireRustAudioAppPrewarmSmoke) {
-        throw "-RequireRustAudioAppPrewarmSmoke requires -RunRustAudioAppPrewarmSmoke or -UseExistingRustAudioAppPrewarmReport."
+    } elseif ($effectiveRequireRustAudioAppPrewarmSmoke) {
+        throw "Rust audio app prewarm evidence is required; pass -RunRustAudioAppPrewarmSmoke or -UseExistingRustAudioAppPrewarmReport."
     }
 
     if ($UseExistingAuthenticodeReport) {

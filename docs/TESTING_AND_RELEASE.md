@@ -310,6 +310,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -MinRustAudioAppPrewarmPrewarmDurationSec 1800
 ```
 
+Supplying either app-prewarm minimum duration also makes the app-prewarm smoke
+artifact required, even without the generic `-RequireRustAudioAppPrewarmSmoke`
+flag.
+
 The top-level release-readiness runner can also produce and validate the
 lifecycle report when explicit lifecycle evidence is wanted:
 
@@ -472,7 +476,9 @@ sidecar stop-health metrics. When `-RustAudioSidecarPrewarmBeforeCapture` is
 set, the validator also requires positive adopted prewarm blocks in the default
 capture, and the runner passes
 `--require-rust-audio-sidecar-prewarm-adoption` so reused sidecar reports cannot
-silently skip that evidence. `-RequireRustAudioSidecarSmoke` also makes the
+silently skip that evidence. Supplying `-RustAudioSidecarPrewarmBeforeCapture`
+also makes the sidecar smoke artifact required, even without the generic
+`-RequireRustAudioSidecarSmoke` flag. `-RequireRustAudioSidecarSmoke` also makes the
 microphone hardware matrix validator require redacted Rust/WASAPI endpoint
 inventory evidence for every physical device scenario. Without that flag the
 Rust smoke remains visible in the runner plan but optional, so standard

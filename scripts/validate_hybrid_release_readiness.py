@@ -132,6 +132,7 @@ def validate_release_readiness(
     if (
         require_rust_audio_sidecar_smoke
         or require_rust_audio_sidecar_prewarm_adoption
+        or min_rust_audio_duration_sec > 0
         or rust_audio_sidecar_report is not None
     ):
         checks.append(
@@ -149,7 +150,12 @@ def validate_release_readiness(
                 required=require_rust_audio_prewarm_sidecar_smoke,
             )
         )
-    if require_rust_audio_app_prewarm_smoke or rust_audio_app_prewarm_report is not None:
+    if (
+        require_rust_audio_app_prewarm_smoke
+        or min_rust_audio_app_prewarm_duration_sec > 0
+        or min_rust_audio_app_prewarm_prewarm_duration_sec > 0
+        or rust_audio_app_prewarm_report is not None
+    ):
         checks.append(
             validate_rust_audio_app_prewarm_report(
                 rust_audio_app_prewarm_report,
@@ -484,14 +490,16 @@ def validate_rust_audio_sidecar_report(
     require_prewarm_adoption: bool = False,
 ) -> ReadinessCheck:
     failures: list[str] = []
+    effective_required = bool(required or require_prewarm_adoption or min_duration_sec > 0)
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
-        "required": required,
+        "required": effective_required,
+        "requireRustAudioSidecarSmoke": required,
         "minDurationSec": min_duration_sec,
         "requirePrewarmAdoption": require_prewarm_adoption,
     }
     if report_path is None:
-        if required or require_prewarm_adoption:
+        if effective_required:
             failures.append("Rust audio sidecar smoke report is required")
         return ReadinessCheck("rustAudioSidecarSmoke", not failures, failures, details)
 
@@ -775,14 +783,16 @@ def validate_rust_audio_app_prewarm_report(
     min_prewarm_duration_sec: float = 0.0,
 ) -> ReadinessCheck:
     failures: list[str] = []
+    effective_required = bool(required or min_duration_sec > 0 or min_prewarm_duration_sec > 0)
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
-        "required": required,
+        "required": effective_required,
+        "requireRustAudioAppPrewarmSmoke": required,
         "minDurationSec": min_duration_sec,
         "minPrewarmDurationSec": min_prewarm_duration_sec,
     }
     if report_path is None:
-        if required:
+        if effective_required:
             failures.append("Rust audio app prewarm smoke report is required")
         return ReadinessCheck("rustAudioAppPrewarmSmoke", not failures, failures, details)
 

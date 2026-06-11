@@ -2301,6 +2301,31 @@ def test_validate_release_readiness_rejects_missing_required_rust_audio_app_prew
     assert "Rust audio app prewarm smoke report is required" in app_check["failures"]
 
 
+def test_validate_release_readiness_rejects_missing_rust_audio_app_prewarm_report_when_min_duration_is_set(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        min_rust_audio_app_prewarm_duration_sec=600,
+        min_rust_audio_app_prewarm_prewarm_duration_sec=1800,
+    )
+
+    assert result["ok"] is False
+    app_check = next(check for check in result["checks"] if check["name"] == "rustAudioAppPrewarmSmoke")
+    assert app_check["details"]["required"] is True
+    assert app_check["details"]["requireRustAudioAppPrewarmSmoke"] is False
+    assert app_check["details"]["minDurationSec"] == 600
+    assert app_check["details"]["minPrewarmDurationSec"] == 1800
+    assert "Rust audio app prewarm smoke report is required" in app_check["failures"]
+
+
 def test_validate_release_readiness_rejects_short_rust_audio_app_prewarm_smoke(tmp_path: Path) -> None:
     hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
@@ -2482,6 +2507,29 @@ def test_validate_release_readiness_rejects_missing_required_rust_audio_sidecar_
 
     assert result["ok"] is False
     rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    assert "Rust audio sidecar smoke report is required" in rust_audio_check["failures"]
+
+
+def test_validate_release_readiness_rejects_missing_rust_audio_sidecar_report_when_min_duration_is_set(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        min_rust_audio_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    rust_audio_check = next(check for check in result["checks"] if check["name"] == "rustAudioSidecarSmoke")
+    assert rust_audio_check["details"]["required"] is True
+    assert rust_audio_check["details"]["requireRustAudioSidecarSmoke"] is False
+    assert rust_audio_check["details"]["minDurationSec"] == 600
     assert "Rust audio sidecar smoke report is required" in rust_audio_check["failures"]
 
 

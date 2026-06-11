@@ -1027,6 +1027,8 @@ Implementation plan:
      evidence to the physical sidecar smoke with
      `-RustAudioSidecarPrewarmBeforeCapture`; the validator rejects such reports
      when the default capture does not show positive adopted prewarm blocks.
+     Supplying this flag now makes the sidecar smoke report required even
+     without the generic `-RequireRustAudioSidecarSmoke` flag.
    - Implemented: `scripts/smoke_rust_audio_app_prewarm.py` exercises the
      app-level Python lifecycle around the real sidecar. It starts
      `RustAudioPrewarmManager`, waits for idle buffering, attaches
@@ -1048,7 +1050,9 @@ Implementation plan:
      `-MinRustAudioAppPrewarmDurationSec` and
      `-MinRustAudioAppPrewarmPrewarmDurationSec`. This makes the 10-minute
      active-capture / 30-minute idle-prewarm promotion target
-     machine-checkable instead of relying on a short smoke report.
+     machine-checkable instead of relying on a short smoke report. Supplying
+     either app-prewarm minimum duration now makes the app-prewarm report
+     required even without the generic `-RequireRustAudioAppPrewarmSmoke` flag.
    - Implemented: final readiness can require an installed live-recording smoke
      with `-RequireInstalledLiveRecordingSmoke` and
      `-MinInstalledLiveRecordingDurationSec`. The validator accepts reports from

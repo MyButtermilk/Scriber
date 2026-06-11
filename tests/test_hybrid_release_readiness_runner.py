@@ -275,6 +275,36 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_sidecar_smoke
     assert "--require-rust-audio-sidecar-prewarm-adoption" in readiness_command["command"]
 
 
+def test_hybrid_release_readiness_runner_treats_sidecar_prewarm_adoption_as_required(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RustAudioSidecarPrewarmBeforeCapture",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    rust_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "rustAudioSidecarSmoke")
+    assert rust_evidence["required"] is True
+    assert rust_evidence["requirePrewarmAdoption"] is True
+    assert rust_evidence["producer"] == "required external report"
+    rust_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioSidecarSmoke")
+    assert "required external report" in rust_command["command"]
+    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
+    assert matrix_evidence["requireRustEndpointInventory"] is True
+    assert matrix_evidence["requireDeviceRefreshEvidence"] is True
+    readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    assert "--rust-audio-sidecar-report" in readiness_command["command"]
+    assert "--require-rust-audio-sidecar-smoke" not in readiness_command["command"]
+    assert "--require-rust-audio-sidecar-prewarm-adoption" in readiness_command["command"]
+
+
 def test_hybrid_release_readiness_runner_plans_required_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
     sidecar_exe = tmp_path / "scriber-audio-sidecar.exe"
     result = run_powershell(
@@ -377,6 +407,41 @@ def test_hybrid_release_readiness_runner_plans_required_long_rust_audio_app_prew
     assert "--min-rust-audio-app-prewarm-prewarm-duration-sec 1800" in readiness_command["command"]
     assert "--require-rust-endpoint-inventory" in readiness_command["command"]
     assert "--require-device-refresh-evidence" in readiness_command["command"]
+
+
+def test_hybrid_release_readiness_runner_treats_app_prewarm_min_duration_as_required(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-MinRustAudioAppPrewarmDurationSec",
+        "600",
+        "-MinRustAudioAppPrewarmPrewarmDurationSec",
+        "1800",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    app_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "rustAudioAppPrewarmSmoke")
+    assert app_evidence["required"] is True
+    assert app_evidence["producer"] == "required external report"
+    assert app_evidence["minDurationSec"] == 600
+    assert app_evidence["minPrewarmDurationSec"] == 1800
+    app_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioAppPrewarmSmoke")
+    assert "required external report" in app_command["command"]
+    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
+    assert matrix_evidence["requireRustEndpointInventory"] is True
+    assert matrix_evidence["requireDeviceRefreshEvidence"] is True
+    readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    assert "--rust-audio-app-prewarm-report" in readiness_command["command"]
+    assert "--require-rust-audio-app-prewarm-smoke" not in readiness_command["command"]
+    assert "--min-rust-audio-app-prewarm-duration-sec 600" in readiness_command["command"]
+    assert "--min-rust-audio-app-prewarm-prewarm-duration-sec 1800" in readiness_command["command"]
 
 
 def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_comparison(tmp_path: Path) -> None:
