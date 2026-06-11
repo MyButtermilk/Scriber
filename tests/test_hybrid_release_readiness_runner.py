@@ -685,6 +685,9 @@ def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_compa
     assert "same STT provider" in comparison_evidence["notes"]
     assert "inputReportRedaction" in comparison_evidence["notes"]
     assert "sameRecordingConfig" in comparison_evidence["notes"]
+    assert comparison_evidence["rustPrewarmAdoptionRequired"] is True
+    assert "rustPrewarmAdoption" in comparison_evidence["notes"]
+    assert "adopted Rust prewarm evidence" in comparison_evidence["notes"]
     assert "active rust-frame-pipe capture" in comparison_evidence["notes"]
     assert "fallback-circuit" in comparison_evidence["notes"]
     comparison_command = next(
@@ -729,6 +732,7 @@ def test_hybrid_release_readiness_runner_can_plan_recording_hot_path_comparison_
     assert comparison_evidence["required"] is True
     assert comparison_evidence["external"] is False
     assert comparison_evidence["producer"] == "scripts\\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic"
+    assert comparison_evidence["rustPrewarmAdoptionRequired"] is True
     assert comparison_evidence["iterations"] == 4
     assert comparison_evidence["recordSeconds"] == 3
     assert comparison_evidence["timeoutSec"] == 90
@@ -832,6 +836,8 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
     live_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke")
     assert live_evidence["required"] is True
     assert live_evidence["requireRustAudio"] is True
+    assert live_evidence["rustPrewarmAdoptionRequired"] is True
+    assert "adopted Rust prewarm evidence" in live_evidence["notes"]
     assert "-InstallerLiveRecordingAudioEngine rust-prototype" in live_evidence["producer"]
     assert "-LiveRecordingRustAudioCaptureMode wasapi" in live_evidence["producer"]
     live_command = next(entry for entry in payload["commands"] if entry["name"] == "installedLiveRecordingSmoke")
@@ -879,6 +885,7 @@ def test_hybrid_release_readiness_runner_can_run_installed_live_recording_smoke(
     assert live_evidence["installerPath"].endswith("Scriber_0.1.0_x64-setup.exe")
     assert live_evidence["audioEngine"] == "rust-prototype"
     assert live_evidence["rustAudioCaptureMode"] == "wasapi"
+    assert live_evidence["rustPrewarmAdoptionRequired"] is True
     assert live_evidence["disableTextInjection"] is True
 
     live_command = next(entry for entry in payload["commands"] if entry["name"] == "installedLiveRecordingSmoke")
@@ -945,12 +952,15 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert by_name["rustAudioAppPrewarmSmoke"]["minCaptureCycles"] == 2
     assert by_name["recordingHotPathPythonRustComparison"]["required"] is True
     assert by_name["recordingHotPathPythonRustComparison"]["rustAlwaysOnMicRequired"] is True
+    assert by_name["recordingHotPathPythonRustComparison"]["rustPrewarmAdoptionRequired"] is True
     assert "inputReportRedaction" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert "sameRecordingConfig" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert "rustAlwaysOnMic" in by_name["recordingHotPathPythonRustComparison"]["notes"]
+    assert "rustPrewarmAdoption" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert by_name["installedLiveRecordingSmoke"]["required"] is True
     assert by_name["installedLiveRecordingSmoke"]["minDurationSec"] == 600
     assert by_name["installedLiveRecordingSmoke"]["requireRustAudio"] is True
+    assert by_name["installedLiveRecordingSmoke"]["rustPrewarmAdoptionRequired"] is True
     assert by_name["physicalMicrophoneMatrix"]["requireRustEndpointInventory"] is True
     assert by_name["physicalMicrophoneMatrix"]["requireDeviceRefreshEvidence"] is True
 

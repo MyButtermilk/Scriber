@@ -919,11 +919,12 @@ $requiredEvidence = @(
         producer = $(if ($UseExistingRecordingHotPathComparisonReport) { "existing report" } elseif ($RunRecordingHotPathComparison) { "scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic" } elseif ($RequireRecordingHotPathComparison) { "required external report: scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic, or scripts\validate_recording_hot_path_comparison.py over existing provider-backed Python and Rust reports with Always-On-Mic evidence" } else { "not requested" })
         report = $RecordingHotPathComparisonReport
         rustAlwaysOnMicRequired = $true
+        rustPrewarmAdoptionRequired = $true
         iterations = $RecordingHotPathIterations
         recordSeconds = $RecordingHotPathSeconds
         timeoutSec = $RecordingHotPathTimeoutSec
         rustCaptureMode = $RecordingHotPathRustCaptureMode
-        notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires passing inputReportRedaction, sameRecordingConfig, and rustAlwaysOnMic checks, requires at least three samples per engine, requires provider transcript evidence with the same STT provider in both reports, requires active rust-frame-pipe capture in the Rust report, rejects open Rust fallback-circuit evidence, and rejects clear P95 regressions in local audio-owned hot-path segments."
+        notes = "Required for Rust audio promotion. Compares provider-backed Python and rust-prototype recording hot-path reports, rejects validate-only artifacts, requires passing inputReportRedaction, sameRecordingConfig, rustAlwaysOnMic, and rustPrewarmAdoption checks, requires at least three samples per engine, requires provider transcript evidence with the same STT provider in both reports, requires active rust-frame-pipe capture with adopted Rust prewarm evidence in the Rust report, rejects open Rust fallback-circuit evidence, and rejects clear P95 regressions in local audio-owned hot-path segments."
     },
     [pscustomobject]@{
         name = "installedLiveRecordingSmoke"
@@ -938,9 +939,10 @@ $requiredEvidence = @(
         audioEngine = $InstalledLiveRecordingAudioEngine
         rustAudioCaptureMode = $InstalledLiveRecordingRustAudioCaptureMode
         requireRustAudio = [bool]$RequireInstalledLiveRecordingRustAudio
+        rustPrewarmAdoptionRequired = [bool]$RequireInstalledLiveRecordingRustAudio
         micAlwaysOn = [bool]$InstalledLiveRecordingMicAlwaysOn
         disableTextInjection = [bool]$InstalledLiveRecordingDisableTextInjection
-        notes = "Required for Rust audio promotion before changing the default live-mic path. Validates installed app live recording start/stop state, non-recording sample leakage, stability samples, cleanup, and, when requireRustAudio=true, sampled rust-prototype/rust-frame-pipe capture with a closed fallback circuit; provider-backed transcription quality remains covered by recordingHotPathPythonRustComparison."
+        notes = "Required for Rust audio promotion before changing the default live-mic path. Validates installed app live recording start/stop state, non-recording sample leakage, stability samples, cleanup, and, when requireRustAudio=true, sampled rust-prototype/rust-frame-pipe capture with adopted Rust prewarm evidence and a closed fallback circuit; provider-backed transcription quality remains covered by recordingHotPathPythonRustComparison."
     },
     [pscustomobject]@{
         name = "tauriTextInjectionSmoke"
