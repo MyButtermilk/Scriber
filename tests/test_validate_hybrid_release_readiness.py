@@ -757,6 +757,7 @@ def write_recording_hot_path_comparison_report(
     rust_prewarm_adoption_ok: bool = True,
     rust_mid_session_clean_ok: bool = True,
     rust_frame_pipe_flow_ok: bool = True,
+    rust_no_dropped_frames_ok: bool = True,
     rust_active_capture_stable_ok: bool = True,
 ) -> None:
     requested = {
@@ -851,6 +852,14 @@ def write_recording_hot_path_comparison_report(
                         "details": {
                             "checkedRustFramePipeSamples": samples,
                             "missingOrEmptySampleCount": 0 if rust_frame_pipe_flow_ok else samples,
+                        },
+                    },
+                    {
+                        "name": "rustNoDroppedFrames",
+                        "ok": rust_no_dropped_frames_ok,
+                        "details": {
+                            "checkedRustFramePipeSamples": samples,
+                            "droppedFrameSampleCount": 0 if rust_no_dropped_frames_ok else samples,
                         },
                     },
                     {
@@ -2701,6 +2710,31 @@ def test_validate_release_readiness_rejects_recording_hot_path_without_frame_pip
     assert "recording hot-path comparison check failed: rustFramePipeFlow" in comparison_check["failures"]
 
 
+def test_validate_release_readiness_rejects_recording_hot_path_with_dropped_rust_frames(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
+    write_recording_hot_path_comparison_report(comparison_report, rust_no_dropped_frames_ok=False)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        recording_hot_path_comparison_report=comparison_report,
+        require_recording_hot_path_comparison=True,
+    )
+
+    assert result["ok"] is False
+    comparison_check = next(
+        check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
+    )
+    assert "recording hot-path comparison check failed: rustNoDroppedFrames" in comparison_check["failures"]
+
+
 def test_validate_release_readiness_rejects_unstable_recording_hot_path_active_capture(tmp_path: Path) -> None:
     hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
@@ -2927,6 +2961,38 @@ def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_
         check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
     )
     assert "recording hot-path comparison is missing check: rustFramePipeFlow" in comparison_check["failures"]
+
+
+def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_no_dropped_frames_check(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
+    write_recording_hot_path_comparison_report(comparison_report)
+    payload = json.loads(comparison_report.read_text(encoding="utf-8"))
+    payload["checks"] = [
+        check
+        for check in payload["checks"]
+        if check.get("name") != "rustNoDroppedFrames"
+    ]
+    comparison_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        recording_hot_path_comparison_report=comparison_report,
+        require_recording_hot_path_comparison=True,
+    )
+
+    assert result["ok"] is False
+    comparison_check = next(
+        check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
+    )
+    assert "recording hot-path comparison is missing check: rustNoDroppedFrames" in comparison_check["failures"]
 
 
 def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_active_capture_stable_check(tmp_path: Path) -> None:

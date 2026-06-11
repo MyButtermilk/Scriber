@@ -278,6 +278,39 @@ def rust_frame_pipe_flow_check(report: dict[str, Any]) -> tuple[bool, dict[str, 
     }
 
 
+def rust_no_dropped_frames_check(report: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    checked = 0
+    failing: list[dict[str, Any]] = []
+    sample_details: list[dict[str, Any]] = []
+    for capture in active_capture_samples(report):
+        if (
+            capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE
+            or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE
+        ):
+            continue
+        checked += 1
+        source = capture.get("source")
+        source_dropped = _int_value(source.get("droppedFrameCount")) if isinstance(source, dict) else None
+        detail = {
+            "droppedFrameCount": _int_value(capture.get("droppedFrameCount")),
+            "sourceDroppedFrameCount": source_dropped,
+        }
+        if len(sample_details) < 5:
+            sample_details.append(detail)
+        if (
+            detail["droppedFrameCount"] is None
+            or detail["droppedFrameCount"] != 0
+            or (source_dropped is not None and source_dropped != 0)
+        ):
+            failing.append(detail)
+    return checked > 0 and not failing, {
+        "checkedRustFramePipeSamples": checked,
+        "droppedFrameSampleCount": len(failing),
+        "samples": sample_details,
+        "failures": failing[:5],
+    }
+
+
 def rust_active_capture_stable_check(report: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     checked = 0
     failing: list[dict[str, Any]] = []
@@ -673,6 +706,13 @@ def build_comparison(
             frame_pipe_flow,
             frame_pipe_flow_details,
             "Rust report must prove frame-pipe callbacks and audio frames flowed",
+        )
+        no_dropped_frames, no_dropped_frames_details = rust_no_dropped_frames_check(rust_report)
+        add_check(
+            "rustNoDroppedFrames",
+            no_dropped_frames,
+            no_dropped_frames_details,
+            "Rust report must prove no active-capture frames were dropped",
         )
         active_capture_stable, active_capture_details = rust_active_capture_stable_check(rust_report)
         add_check(

@@ -687,6 +687,7 @@ def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_compa
     assert "sameRecordingConfig" in comparison_evidence["notes"]
     assert "rustMidSessionClean" in comparison_evidence["notes"]
     assert "rustFramePipeFlow" in comparison_evidence["notes"]
+    assert "rustNoDroppedFrames" in comparison_evidence["notes"]
     assert "rustActiveCaptureStable" in comparison_evidence["notes"]
     assert comparison_evidence["rustPrewarmAdoptionRequired"] is True
     assert "rustPrewarmAdoption" in comparison_evidence["notes"]
@@ -961,6 +962,7 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert "rustAlwaysOnMic" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert "rustMidSessionClean" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert "rustFramePipeFlow" in by_name["recordingHotPathPythonRustComparison"]["notes"]
+    assert "rustNoDroppedFrames" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert "rustActiveCaptureStable" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert "rustPrewarmAdoption" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert by_name["installedLiveRecordingSmoke"]["required"] is True

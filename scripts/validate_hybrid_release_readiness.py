@@ -2219,6 +2219,7 @@ def validate_recording_hot_path_comparison_report(
         "rustFallbackCircuitClosed",
         "rustMidSessionClean",
         "rustFramePipeFlow",
+        "rustNoDroppedFrames",
         "rustActiveCaptureStable",
         "rustAlwaysOnMic",
         "rustPrewarmAdoption",

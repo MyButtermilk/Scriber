@@ -24,6 +24,7 @@ def recording_report(
     rust_mid_session_failure_reason: str = "",
     rust_frame_pipe_reader_end_reason: str = "running",
     rust_frame_pipe_flow: bool = True,
+    rust_dropped_frame_count: int = 0,
     active_capture_health_restart_count: int = 0,
     active_capture_health_restart_throttle_count: int = 0,
     active_capture_last_health_failure_reason: str = "",
@@ -50,6 +51,7 @@ def recording_report(
         "engine": "rust-prototype" if rust_capture else "python",
         "frameSource": "rust-frame-pipe" if rust_capture else "sounddevice",
         "callbackCount": 12,
+        "droppedFrameCount": rust_dropped_frame_count,
         "nativeEndpointIdHash": "hash" if rust_capture else None,
         "healthRestartCount": active_capture_health_restart_count,
         "healthRestartThrottleCount": active_capture_health_restart_throttle_count,
@@ -75,6 +77,7 @@ def recording_report(
             "engine": "rust-prototype",
             "frameSource": "rust-frame-pipe",
             "callbackCount": 12 if rust_frame_pipe_flow else 0,
+            "droppedFrameCount": rust_dropped_frame_count,
             "framePipeFramesRead": frame_pipe_frames_read,
             "framePipeAudioFramesRead": frame_pipe_audio_frames_read,
         }
@@ -329,6 +332,24 @@ def test_recording_hot_path_comparison_rejects_empty_rust_frame_pipe_flow() -> N
     assert check["details"]["missingOrEmptySampleCount"] == 3
     assert check["details"]["failures"][0]["framePipeFramesRead"] == 0
     assert check["details"]["failures"][0]["framePipeAudioFramesRead"] == 0
+
+
+def test_recording_hot_path_comparison_rejects_dropped_rust_frames() -> None:
+    result = build_comparison(
+        recording_report(engine="python"),
+        recording_report(
+            engine="rust-prototype",
+            rust_capture=True,
+            rust_dropped_frame_count=2,
+        ),
+    )
+
+    assert result["ok"] is False
+    assert "Rust report must prove no active-capture frames were dropped" in result["failures"]
+    check = next(item for item in result["checks"] if item["name"] == "rustNoDroppedFrames")
+    assert check["ok"] is False
+    assert check["details"]["droppedFrameSampleCount"] == 3
+    assert check["details"]["failures"][0]["droppedFrameCount"] == 2
 
 
 def test_recording_hot_path_comparison_rejects_unstable_rust_active_capture() -> None:
