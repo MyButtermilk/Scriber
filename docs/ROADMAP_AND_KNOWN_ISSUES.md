@@ -179,7 +179,9 @@ Rust audio:
   Rust fallback-circuit diagnostics, so a cooldown fallback cannot pass as Rust
   capture evidence. The hybrid baseline runner exposes those checks as
   `-RequireRecordingHotPathProviderTranscript` and
-  `-RequireRecordingHotPathRustAudio`.
+  `-RequireRecordingHotPathRustAudio`. When `micAlwaysOn=true` is present in
+  the Rust hot-path report, the `rust_audio_engine` requirement also requires
+  adopted Rust prewarm evidence before the report can be marked measured.
   `scripts/validate_recording_hot_path_comparison.py` now turns separate
   provider-backed Python and Rust hot-path reports into a required promotion
   artifact, and `run_hybrid_release_readiness.ps1` can gate it with

@@ -1178,6 +1178,10 @@ Implementation plan:
      `microphone.rustAudioFallbackCircuit.open` is true in the report-level or
      during-recording diagnostics, so a run that fell back to Python during the
      Rust cooldown cannot be used as promotion evidence.
+     When the Rust hot-path report shows `micAlwaysOn=true`, the
+     `rust_audio_engine` requirement now also requires redacted
+     `activeCapture.rustPrewarmAdoption` evidence before it is marked
+     `measured`.
    - Implemented: `scripts/validate_recording_hot_path_comparison.py` builds a
      machine-checkable Python-vs-Rust provider-backed comparison artifact from
      two recording hot-path reports. It rejects validate-only evidence by

@@ -373,6 +373,159 @@ def test_recording_hot_path_rust_audio_requirement_checks_active_capture_diagnos
     assert rust_requirement["status"] == "measured"
     assert rust_requirement["matchingSamples"] == 1
     assert rust_requirement["activeCaptures"][0]["nativeEndpointIdHash"] == "redacted"
+    assert rust_requirement["prewarmAdoptionRequired"] is False
+
+
+def test_recording_hot_path_rust_audio_requirement_accepts_always_on_prewarm_adoption():
+    audio_diagnostics = {
+        "featureFlags": {
+            "requestedAudioEngine": "rust-prototype",
+            "audioEngine": "rust-prototype",
+            "rustAudioRequested": True,
+            "rustAudioAvailable": True,
+        },
+        "microphone": {
+            "micAlwaysOn": True,
+        },
+    }
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_first_paste_ms": 82.5,
+                },
+                "audioDiagnosticsDuringRecording": {
+                    "microphone": {
+                        "micAlwaysOn": True,
+                        "activeCapture": {
+                            "engine": "rust-prototype",
+                            "frameSource": "rust-frame-pipe",
+                            "callbackCount": 9,
+                            "nativeEndpointIdHash": "redacted",
+                            "rustPrewarmAdoption": {
+                                "adopted": True,
+                                "prewarmIdHash": "prewarm-hash",
+                            },
+                        },
+                    }
+                },
+            }
+        ],
+        require_rust_audio_engine=True,
+        audio_diagnostics=audio_diagnostics,
+    )
+
+    rust_requirement = summary["requirements"]["rust_audio_engine"]
+    assert summary["complete"] is True
+    assert rust_requirement["status"] == "measured"
+    assert rust_requirement["micAlwaysOn"] is True
+    assert rust_requirement["prewarmAdoptionRequired"] is True
+    assert rust_requirement["prewarmAdoptionSamples"] == 1
+    assert rust_requirement["activeCaptures"][0]["rustPrewarmAdoption"] == {
+        "present": True,
+        "adopted": True,
+        "hasPrewarmIdHash": True,
+        "hasRawPrewarmId": False,
+    }
+
+
+def test_recording_hot_path_rust_audio_requirement_rejects_always_on_without_prewarm_adoption():
+    audio_diagnostics = {
+        "featureFlags": {
+            "requestedAudioEngine": "rust-prototype",
+            "audioEngine": "rust-prototype",
+            "rustAudioRequested": True,
+            "rustAudioAvailable": True,
+        },
+        "microphone": {
+            "micAlwaysOn": True,
+        },
+    }
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_first_paste_ms": 82.5,
+                },
+                "audioDiagnosticsDuringRecording": {
+                    "microphone": {
+                        "micAlwaysOn": True,
+                        "activeCapture": {
+                            "engine": "rust-prototype",
+                            "frameSource": "rust-frame-pipe",
+                            "callbackCount": 9,
+                            "nativeEndpointIdHash": "redacted",
+                        },
+                    }
+                },
+            }
+        ],
+        require_rust_audio_engine=True,
+        audio_diagnostics=audio_diagnostics,
+    )
+
+    rust_requirement = summary["requirements"]["rust_audio_engine"]
+    assert summary["complete"] is False
+    assert rust_requirement["status"] == "missing_prewarm_adoption"
+    assert rust_requirement["matchingSamples"] == 1
+    assert rust_requirement["prewarmAdoptionRequired"] is True
+    assert rust_requirement["prewarmAdoptionSamples"] == 0
+
+
+def test_recording_hot_path_rust_audio_requirement_rejects_raw_prewarm_id():
+    audio_diagnostics = {
+        "featureFlags": {
+            "requestedAudioEngine": "rust-prototype",
+            "audioEngine": "rust-prototype",
+            "rustAudioRequested": True,
+            "rustAudioAvailable": True,
+        },
+        "microphone": {
+            "micAlwaysOn": True,
+        },
+    }
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_first_paste_ms": 82.5,
+                },
+                "audioDiagnosticsDuringRecording": {
+                    "microphone": {
+                        "micAlwaysOn": True,
+                        "activeCapture": {
+                            "engine": "rust-prototype",
+                            "frameSource": "rust-frame-pipe",
+                            "callbackCount": 9,
+                            "nativeEndpointIdHash": "redacted",
+                            "rustPrewarmAdoption": {
+                                "adopted": True,
+                                "prewarmIdHash": "prewarm-hash",
+                                "prewarmId": "raw-prewarm-id",
+                            },
+                        },
+                    }
+                },
+            }
+        ],
+        require_rust_audio_engine=True,
+        audio_diagnostics=audio_diagnostics,
+    )
+
+    rust_requirement = summary["requirements"]["rust_audio_engine"]
+    assert summary["complete"] is False
+    assert rust_requirement["status"] == "raw_prewarm_id"
+    assert rust_requirement["rawPrewarmIdSamples"] == 1
+    assert rust_requirement["activeCaptures"][0]["rustPrewarmAdoption"]["hasRawPrewarmId"] is True
 
 
 def test_recording_hot_path_rust_audio_requirement_rejects_python_capture_fallback():

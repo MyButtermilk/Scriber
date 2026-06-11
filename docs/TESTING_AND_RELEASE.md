@@ -227,7 +227,10 @@ flags require a final STT provider transcript and verify that
 `/api/runtime/audio-diagnostics` reported an active `rust-prototype`
 `rust-frame-pipe` capture during recording. The same gate rejects reports where
 `microphone.rustAudioFallbackCircuit.open` is true, because those runs prove a
-fallback cooldown rather than valid Rust capture evidence:
+fallback cooldown rather than valid Rust capture evidence. When the Rust report
+shows `micAlwaysOn=true`, the individual benchmark summary also requires
+redacted `rustPrewarmAdoption` evidence before `rust_audio_engine` is marked
+`measured`:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_baseline.ps1 `

@@ -516,6 +516,14 @@ def rust_audio_requirement(
     active_captures: list[dict[str, Any]] = []
     fallback_circuits: list[dict[str, Any]] = []
     matching_samples = 0
+    mic_always_on_samples = 0
+    prewarm_adoption_samples = 0
+    raw_prewarm_id_samples = 0
+    report_microphone = (audio_diagnostics or {}).get("microphone") or {}
+    report_mic_always_on = (
+        isinstance(report_microphone, dict)
+        and report_microphone.get("micAlwaysOn") is True
+    )
     report_circuit = ((audio_diagnostics or {}).get("microphone") or {}).get(
         "rustAudioFallbackCircuit"
     )
@@ -533,6 +541,9 @@ def rust_audio_requirement(
         if not isinstance(during, dict):
             continue
         microphone = during.get("microphone") or {}
+        sample_mic_always_on = isinstance(microphone, dict) and microphone.get("micAlwaysOn") is True
+        if sample_mic_always_on:
+            mic_always_on_samples += 1
         during_circuit = microphone.get("rustAudioFallbackCircuit")
         if isinstance(during_circuit, dict):
             fallback_circuits.append(
@@ -546,6 +557,15 @@ def rust_audio_requirement(
         active = microphone.get("activeCapture") or {}
         if not isinstance(active, dict) or not active:
             continue
+        adoption = active.get("rustPrewarmAdoption")
+        adoption_is_object = isinstance(adoption, dict)
+        adoption_has_hash = False
+        adoption_adopted = False
+        adoption_has_raw_id = False
+        if adoption_is_object:
+            adoption_has_hash = bool(adoption.get("prewarmIdHash") or adoption.get("prewarm_idHash"))
+            adoption_adopted = adoption.get("adopted") is True
+            adoption_has_raw_id = "prewarmId" in adoption or "prewarm_id" in adoption
         active_captures.append(
             {
                 "engine": active.get("engine"),
@@ -554,6 +574,12 @@ def rust_audio_requirement(
                 "nativeEndpointIdHash": active.get("nativeEndpointIdHash"),
                 "requestedPrewarmIdHash": active.get("requestedPrewarmIdHash"),
                 "adoptedPrewarm": active.get("adoptedPrewarm"),
+                "rustPrewarmAdoption": {
+                    "present": adoption_is_object,
+                    "adopted": adoption_adopted,
+                    "hasPrewarmIdHash": adoption_has_hash,
+                    "hasRawPrewarmId": adoption_has_raw_id,
+                },
                 "engineFallbackReason": active.get("engineFallbackReason"),
                 "rustAudioFallbackCircuitOpen": active.get("rustAudioFallbackCircuitOpen"),
                 "rustAudioFallbackCircuitReason": active.get("rustAudioFallbackCircuitReason"),
@@ -564,11 +590,18 @@ def rust_audio_requirement(
             and active.get("frameSource") == RUST_AUDIO_FRAME_SOURCE
         ):
             matching_samples += 1
+            if adoption_is_object and adoption_adopted and adoption_has_hash and not adoption_has_raw_id:
+                prewarm_adoption_samples += 1
+            if adoption_has_raw_id:
+                raw_prewarm_id_samples += 1
 
     status = "measured"
     fallback_circuit_open = any(circuit.get("open") is True for circuit in fallback_circuits)
+    prewarm_adoption_required = report_mic_always_on or mic_always_on_samples > 0
     if fallback_circuit_open:
         status = "fallback_circuit_open"
+    elif raw_prewarm_id_samples > 0:
+        status = "raw_prewarm_id"
     elif matching_samples <= 0:
         if not rust_requested:
             status = "not_requested"
@@ -576,6 +609,8 @@ def rust_audio_requirement(
             status = "unavailable"
         else:
             status = "missing_active_rust_capture"
+    elif prewarm_adoption_required and prewarm_adoption_samples < matching_samples:
+        status = "missing_prewarm_adoption"
 
     return {
         "status": status,
@@ -585,6 +620,11 @@ def rust_audio_requirement(
         "rustAudioRequested": rust_requested,
         "rustAudioAvailable": rust_available,
         "matchingSamples": matching_samples,
+        "micAlwaysOn": report_mic_always_on or mic_always_on_samples > 0,
+        "micAlwaysOnSamples": mic_always_on_samples,
+        "prewarmAdoptionRequired": prewarm_adoption_required,
+        "prewarmAdoptionSamples": prewarm_adoption_samples,
+        "rawPrewarmIdSamples": raw_prewarm_id_samples,
         "activeCaptureSamples": len(active_captures),
         "activeCaptures": active_captures[:5],
         "fallbackCircuitOpen": fallback_circuit_open,
