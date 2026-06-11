@@ -58,6 +58,7 @@ pub fn call_audio_sidecar_command(command: &str, payload: Value) -> AudioSidecar
         "captureStart" => return start_audio_sidecar_capture(payload),
         "captureStop" => return stop_audio_sidecar_capture(payload),
         "prewarmStart" => return start_audio_sidecar_prewarm(payload),
+        "prewarmStatus" => return status_audio_sidecar_prewarm(payload),
         "prewarmStop" => return stop_audio_sidecar_prewarm(payload),
         _ => {}
     }
@@ -520,6 +521,158 @@ fn stop_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
         object.insert("sidecarPathHash".to_string(), json!(path_hash));
     }
     result
+}
+
+fn status_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
+    let prewarm_id = payload_prewarm_id(&payload);
+    if prewarm_id.is_empty() {
+        return AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "active": false,
+                "prewarmId": "",
+                "reason": "missingPrewarmId",
+            }),
+            executable_available: audio_sidecar_executable_available(),
+            executable_path_hash: None,
+            pid: None,
+        };
+    }
+
+    let mut sessions = active_audio_prewarm_sidecars().lock().unwrap();
+    if !sessions.contains_key(&prewarm_id) {
+        let executable_available = audio_sidecar_executable_available();
+        let reason = if executable_available {
+            "noActivePrewarm"
+        } else {
+            "noRustAudioSidecar"
+        };
+        return AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "active": false,
+                "prewarmId": prewarm_id,
+                "reason": reason,
+            }),
+            executable_available,
+            executable_path_hash: None,
+            pid: None,
+        };
+    }
+
+    let exited = {
+        let sidecar = sessions.get_mut(&prewarm_id).unwrap();
+        match sidecar.child.try_wait() {
+            Ok(Some(status)) => Some((status, sidecar.path_hash.clone(), sidecar.pid)),
+            Ok(None) => None,
+            Err(err) => {
+                let path_hash = sidecar.path_hash.clone();
+                let pid = sidecar.pid;
+                let mut result = unavailable_result(
+                    "audioSidecarStatusFailed",
+                    format!("Rust audio prewarm status check failed: {err}"),
+                    json!({
+                        "sidecar": AUDIO_SIDECAR_NAME,
+                        "active": false,
+                        "prewarmId": prewarm_id,
+                        "reason": "prewarmStatusFailed",
+                    }),
+                    path_hash,
+                    Some(pid),
+                );
+                if let Some(object) = result.payload.as_object_mut() {
+                    object.insert("sidecarPid".to_string(), json!(pid));
+                }
+                return result;
+            }
+        }
+    };
+    if let Some((status, path_hash, pid)) = exited {
+        let _ = sessions.remove(&prewarm_id);
+        return AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "active": false,
+                "prewarmId": prewarm_id,
+                "reason": "prewarmProcessExited",
+                "exitStatus": status.code(),
+                "sidecarPid": pid,
+                "sidecarPathHash": path_hash,
+            }),
+            executable_available: true,
+            executable_path_hash: path_hash,
+            pid: Some(pid),
+        };
+    }
+
+    let request_id = Uuid::new_v4().simple().to_string();
+    let request = sidecar_request(
+        &request_id,
+        "prewarmStatus",
+        json!({
+            "prewarmId": prewarm_id,
+        }),
+    );
+
+    let mut remove_after_status_error = false;
+    let response = {
+        let sidecar = sessions.get_mut(&prewarm_id).unwrap();
+        let path_hash = sidecar.path_hash.clone();
+        let pid = Some(sidecar.pid);
+        if let Err(err) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
+            let _ = sidecar.child.kill();
+            let _ = sidecar.child.wait();
+            remove_after_status_error = true;
+            unavailable_result(
+                "audioSidecarWriteFailed",
+                err,
+                json!({
+                    "sidecar": AUDIO_SIDECAR_NAME,
+                    "active": false,
+                    "prewarmId": prewarm_id,
+                    "reason": "prewarmStatusWriteFailed",
+                }),
+                path_hash,
+                pid,
+            )
+        } else {
+            match read_sidecar_response_line(&mut sidecar.stdout) {
+                Ok(line) => parse_sidecar_response(&line, &request_id, path_hash.clone(), pid),
+                Err(result) => {
+                    let _ = sidecar.child.kill();
+                    let _ = sidecar.child.wait();
+                    remove_after_status_error = true;
+                    with_process_identity(result, path_hash, pid)
+                }
+            }
+        }
+    };
+
+    if remove_after_status_error {
+        let _ = sessions.remove(&prewarm_id);
+    }
+
+    if response.success
+        && !response
+            .payload
+            .get("active")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        if let Some(mut sidecar) = sessions.remove(&prewarm_id) {
+            stop_prewarm_sidecar_process(&prewarm_id, &mut sidecar, "prewarmStatusInactive");
+        }
+    }
+    response
 }
 
 fn call_audio_sidecar_command_once(
@@ -1100,6 +1253,15 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.payload["stopped"], false);
+        assert_eq!(result.payload["reason"], "missingPrewarmId");
+    }
+
+    #[test]
+    fn audio_sidecar_prewarm_status_without_prewarm_id_is_idempotent() {
+        let result = call_audio_sidecar_command("prewarmStatus", json!({}));
+
+        assert!(result.success);
+        assert_eq!(result.payload["active"], false);
         assert_eq!(result.payload["reason"], "missingPrewarmId");
     }
 

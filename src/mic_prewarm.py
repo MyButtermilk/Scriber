@@ -572,6 +572,21 @@ class RustAudioPrewarmManager:
         self._adoption_count = 0
         self._last_adopted_prewarm_id_hash: str | None = None
         self._last_stop_payload: dict[str, Any] = {}
+        self._last_status_payload: dict[str, Any] = {}
+        self._last_start_attempt_at = 0.0
+        self._last_start_duration_ms: float | None = None
+        self._last_start_response_ms: float | None = None
+        self._last_start_success = False
+        self._last_stop_at = 0.0
+        self._last_stop_reason = ""
+        self._last_stop_response_ms: float | None = None
+        self._last_stop_success = False
+        self._last_stop_error = ""
+        self._last_health_check_at = 0.0
+        self._last_health_check_reason = ""
+        self._last_health_check_active: bool | None = None
+        self._last_health_response_ms: float | None = None
+        self._last_health_error = ""
 
     @property
     def is_active(self) -> bool:
@@ -604,6 +619,32 @@ class RustAudioPrewarmManager:
                 "adoptionCount": self._adoption_count,
                 "lastAdoptedPrewarmIdHash": self._last_adopted_prewarm_id_hash,
                 "lastError": self._last_error,
+                "lastStartAttemptAgoSeconds": (
+                    round(time.monotonic() - self._last_start_attempt_at, 3)
+                    if self._last_start_attempt_at > 0
+                    else None
+                ),
+                "lastStartDurationMs": self._last_start_duration_ms,
+                "lastStartResponseMs": self._last_start_response_ms,
+                "lastStartSuccess": self._last_start_success,
+                "lastStopAgoSeconds": (
+                    round(time.monotonic() - self._last_stop_at, 3)
+                    if self._last_stop_at > 0
+                    else None
+                ),
+                "lastStopReason": self._last_stop_reason,
+                "lastStopResponseMs": self._last_stop_response_ms,
+                "lastStopSuccess": self._last_stop_success,
+                "lastStopError": self._last_stop_error,
+                "lastHealthCheckAgoSeconds": (
+                    round(time.monotonic() - self._last_health_check_at, 3)
+                    if self._last_health_check_at > 0
+                    else None
+                ),
+                "lastHealthCheckReason": self._last_health_check_reason,
+                "lastHealthCheckActive": self._last_health_check_active,
+                "lastHealthResponseMs": self._last_health_response_ms,
+                "lastHealthError": self._last_health_error,
                 "lastTransition": self._last_transition,
                 "lastTransitionReason": self._last_transition_reason,
                 "lastTransitionAgoSeconds": (
@@ -613,6 +654,7 @@ class RustAudioPrewarmManager:
                 ),
                 "signature": dict(self._stream_signature),
                 "lastStop": self._redacted_stop_payload_locked(),
+                "lastStatus": self._redacted_status_payload_locked(),
                 "start": self._redacted_start_payload_locked(),
             }
 
@@ -648,6 +690,26 @@ class RustAudioPrewarmManager:
             payload["prewarmIdHash"] = self._hash_hint(str(payload.pop("prewarmId") or ""))
         return payload
 
+    def _redacted_status_payload_locked(self) -> dict[str, Any]:
+        payload = dict(self._last_status_payload)
+        if "prewarmId" in payload:
+            payload["prewarmIdHash"] = self._hash_hint(str(payload.pop("prewarmId") or ""))
+        sidecar_payload = payload.get("sidecarPayload")
+        if isinstance(sidecar_payload, dict) and "prewarmId" in sidecar_payload:
+            sidecar_payload = dict(sidecar_payload)
+            sidecar_payload["prewarmIdHash"] = self._hash_hint(
+                str(sidecar_payload.pop("prewarmId") or "")
+            )
+            payload["sidecarPayload"] = sidecar_payload
+        stop_payload = payload.get("stop")
+        if isinstance(stop_payload, dict) and "prewarmId" in stop_payload:
+            stop_payload = dict(stop_payload)
+            stop_payload["prewarmIdHash"] = self._hash_hint(
+                str(stop_payload.pop("prewarmId") or "")
+            )
+            payload["stop"] = stop_payload
+        return payload
+
     def _log_start_error(self, exc: Exception) -> None:
         self._last_error = str(exc)
         now = time.monotonic()
@@ -673,9 +735,20 @@ class RustAudioPrewarmManager:
             if self._prewarm_id:
                 return True
 
+        attempt_started = time.monotonic()
+        shell_started: float | None = None
+        shell_response_ms: float | None = None
+        with self._lock:
+            self._last_start_attempt_at = attempt_started
+            self._last_start_duration_ms = None
+            self._last_start_response_ms = None
+            self._last_start_success = False
+
         try:
             payload = self._build_start_payload()
+            shell_started = time.monotonic()
             response = self._shell_call("audioPrewarmStart", payload, timeout_seconds=2.0)
+            shell_response_ms = round(max(0.0, time.monotonic() - shell_started) * 1000.0, 3)
             response_payload = response.get("payload") if isinstance(response, dict) else None
             if not isinstance(response_payload, dict):
                 response_payload = {}
@@ -701,6 +774,12 @@ class RustAudioPrewarmManager:
                 self._stream_started_at = time.monotonic()
                 self._stream_start_count += 1
                 self._last_error = ""
+                self._last_start_duration_ms = round(
+                    max(0.0, time.monotonic() - attempt_started) * 1000.0,
+                    3,
+                )
+                self._last_start_response_ms = shell_response_ms
+                self._last_start_success = True
                 self._record_transition_locked("started", "start")
             logger.info("Rust mic prewarm session active")
             return True
@@ -709,6 +788,17 @@ class RustAudioPrewarmManager:
                 self._prewarm_id = ""
                 self._prewarm_payload = {}
                 self._stream_signature = {}
+                self._last_start_duration_ms = round(
+                    max(0.0, time.monotonic() - attempt_started) * 1000.0,
+                    3,
+                )
+                if shell_started is not None and shell_response_ms is None:
+                    shell_response_ms = round(
+                        max(0.0, time.monotonic() - shell_started) * 1000.0,
+                        3,
+                    )
+                self._last_start_response_ms = shell_response_ms
+                self._last_start_success = False
             self._log_start_error(exc)
             return False
 
@@ -901,9 +991,66 @@ class RustAudioPrewarmManager:
         with self._lock:
             if self._paused_for_active_capture or self._paused_for_device_refresh:
                 return False
-            active = bool(self._prewarm_id)
+            prewarm_id = self._prewarm_id
+            active = bool(prewarm_id)
+            self._last_health_check_at = time.monotonic()
+            self._last_health_check_reason = reason
+            self._last_health_check_active = active
+            self._last_health_response_ms = None
+            self._last_health_error = ""
         if active:
-            return True
+            status_started = time.monotonic()
+            try:
+                response = self._shell_call(
+                    "audioPrewarmStatus",
+                    {"prewarmId": prewarm_id},
+                    timeout_seconds=1.0,
+                )
+            except Exception as exc:
+                response = {
+                    "success": False,
+                    "errorCode": "audioPrewarmStatusException",
+                    "fallbackReason": str(exc),
+                    "payload": {
+                        "active": False,
+                        "prewarmId": prewarm_id,
+                        "reason": "statusException",
+                    },
+                }
+            response_ms = round(max(0.0, time.monotonic() - status_started) * 1000.0, 3)
+            response_payload = response.get("payload") if isinstance(response, dict) else None
+            if not isinstance(response_payload, dict):
+                response_payload = {}
+            success = bool(response.get("success")) if isinstance(response, dict) else False
+            error_code = str(response.get("errorCode") or "") if isinstance(response, dict) else ""
+            if not success and error_code == "unknownCommand":
+                with self._lock:
+                    self._last_status_payload = dict(response_payload)
+                    self._last_health_response_ms = response_ms
+                    self._last_health_error = "unknownCommand"
+                return True
+            status_active = success and bool(response_payload.get("active"))
+            with self._lock:
+                self._last_status_payload = dict(response_payload)
+                self._last_health_check_active = status_active
+                self._last_health_response_ms = response_ms
+                self._last_health_error = "" if status_active else (
+                    str(response_payload.get("reason") or error_code or "inactive")
+                )
+            if status_active:
+                return True
+            with self._lock:
+                if self._prewarm_id == prewarm_id:
+                    self._prewarm_id = ""
+                    self._prewarm_payload = {}
+                    self._stream_signature = {}
+                self._health_restart_count += 1
+                self._record_transition_locked("watchdog_restart", reason)
+            logger.warning(
+                "Rust mic prewarm session unhealthy; restarting "
+                f"({reason}, status={self._last_health_error or 'inactive'})"
+            )
+            return self.start_if_enabled()
         with self._lock:
             self._health_restart_count += 1
             self._record_transition_locked("watchdog_restart", reason)
@@ -915,25 +1062,40 @@ class RustAudioPrewarmManager:
             self._prewarm_id = ""
             self._prewarm_payload = {}
             self._stream_signature = {}
+            self._last_stop_at = time.monotonic()
+            self._last_stop_reason = reason
+            self._last_stop_response_ms = None
+            self._last_stop_success = False
+            self._last_stop_error = ""
         if not prewarm_id:
             return
+        stop_started = time.monotonic()
         try:
             response = self._shell_call(
                 "audioPrewarmStop",
                 {"prewarmId": prewarm_id},
                 timeout_seconds=1.0,
             )
+            stop_response_ms = round(max(0.0, time.monotonic() - stop_started) * 1000.0, 3)
             response_payload = response.get("payload") if isinstance(response, dict) else None
             if not isinstance(response_payload, dict):
                 response_payload = {}
             with self._lock:
                 self._last_stop_payload = dict(response_payload)
+                self._last_stop_response_ms = stop_response_ms
+                self._last_stop_success = bool(response.get("success", True))
                 self._stream_close_count += 1
                 self._record_transition_locked("closed", reason)
             logger.debug(f"Rust mic prewarm session stopped ({reason})")
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
+                self._last_stop_error = str(exc)
+                self._last_stop_response_ms = round(
+                    max(0.0, time.monotonic() - stop_started) * 1000.0,
+                    3,
+                )
+                self._last_stop_success = False
                 self._stream_close_count += 1
                 self._record_transition_locked("close_error", reason)
             logger.debug(f"Rust mic prewarm stop failed ({reason}): {exc}")

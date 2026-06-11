@@ -193,6 +193,7 @@ impl AudioSidecarState {
             "captureStart" => self.handle_capture_start(request_id, payload, started),
             "captureStop" => self.handle_capture_stop(request_id, payload, started),
             "prewarmStart" => self.handle_prewarm_start(request_id, payload, started),
+            "prewarmStatus" => self.handle_prewarm_status(request_id, payload, started),
             "prewarmStop" => self.handle_prewarm_stop(request_id, payload, started),
             "shutdown" => {
                 self.stop_all_sessions("shutdown");
@@ -342,6 +343,61 @@ impl AudioSidecarState {
             })
         };
         response_payload(request_id, true, "", "", started, stop_payload)
+    }
+
+    fn handle_prewarm_status(
+        &mut self,
+        request_id: &str,
+        payload: &Value,
+        started: Instant,
+    ) -> Value {
+        let prewarm_id = bounded_string(payload, "prewarmId", "", 96);
+        let Some(session) = self.prewarm_sessions.get(&prewarm_id) else {
+            return response_payload(
+                request_id,
+                true,
+                "",
+                "",
+                started,
+                json!({
+                    "sidecar": SIDECAR_NAME,
+                    "active": false,
+                    "prewarmId": prewarm_id,
+                    "reason": "noActivePrewarm",
+                }),
+            );
+        };
+
+        if session.worker_finished() {
+            let stop_payload = self
+                .prewarm_sessions
+                .remove(&prewarm_id)
+                .map(|mut session| session.stop("prewarmStatusWorkerFinished"))
+                .unwrap_or_else(|| {
+                    json!({
+                        "sidecar": SIDECAR_NAME,
+                        "stopped": false,
+                        "prewarmId": prewarm_id,
+                        "reason": "noActivePrewarm",
+                    })
+                });
+            return response_payload(
+                request_id,
+                true,
+                "",
+                "",
+                started,
+                json!({
+                    "sidecar": SIDECAR_NAME,
+                    "active": false,
+                    "prewarmId": prewarm_id,
+                    "reason": "prewarmWorkerFinished",
+                    "stop": stop_payload,
+                }),
+            );
+        }
+
+        response_payload(request_id, true, "", "", started, session.status())
     }
 
     fn start_capture(&mut self, request: CaptureRequest) -> Result<Value, String> {
@@ -617,6 +673,40 @@ impl PrewarmSession {
             "bufferedAudioFrames": stats.buffered_audio_frames,
             "bufferedPayloadBytes": stats.buffered_payload_bytes,
             "prewarmError": stats.error,
+            "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        })
+    }
+
+    fn worker_finished(&self) -> bool {
+        self.join_handle
+            .as_ref()
+            .map(|handle| handle.is_finished())
+            .unwrap_or(true)
+    }
+
+    fn status(&self) -> Value {
+        let (buffered_blocks, buffered_audio_frames, buffered_payload_bytes) = self
+            .buffer
+            .lock()
+            .map(|buffer| {
+                (
+                    buffer.block_count(),
+                    buffer.audio_frame_count(self.block_size),
+                    buffer.payload_bytes(),
+                )
+            })
+            .unwrap_or((0, 0, 0));
+        let worker_finished = self.worker_finished();
+        json!({
+            "sidecar": SIDECAR_NAME,
+            "active": !worker_finished,
+            "prewarmId": self.prewarm_id,
+            "reason": if worker_finished { "prewarmWorkerFinished" } else { "active" },
+            "source": self.source,
+            "workerFinished": worker_finished,
+            "bufferedBlocks": buffered_blocks,
+            "bufferedAudioFrames": buffered_audio_frames,
+            "bufferedPayloadBytes": buffered_payload_bytes,
             "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         })
     }
@@ -2010,6 +2100,7 @@ fn capabilities_payload() -> Value {
             "captureStart",
             "captureStop",
             "prewarmStart",
+            "prewarmStatus",
             "prewarmStop",
             "shutdown"
         ],
@@ -2189,6 +2280,26 @@ mod tests {
         assert_eq!(response["payload"]["requestedFormat"]["prebufferMs"], 2_000);
         assert_eq!(response["payload"]["prewarmAvailable"], false);
         assert_eq!(response["payload"]["wasapiPrewarmAvailable"], false);
+    }
+
+    #[test]
+    fn sidecar_prewarm_status_without_active_session_is_successful() {
+        let request = json!({
+            "protocolVersion": SIDECAR_PROTOCOL_VERSION,
+            "requestId": "r-prewarm-status",
+            "command": "prewarmStatus",
+            "payload": {
+                "prewarmId": "missing-prewarm"
+            }
+        });
+
+        let response = handle_sidecar_request(&request.to_string());
+
+        assert_eq!(response["requestId"], "r-prewarm-status");
+        assert_eq!(response["success"], true);
+        assert_eq!(response["payload"]["active"], false);
+        assert_eq!(response["payload"]["prewarmId"], "missing-prewarm");
+        assert_eq!(response["payload"]["reason"], "noActivePrewarm");
     }
 
     #[test]

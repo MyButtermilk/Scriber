@@ -189,6 +189,13 @@ Rust audio:
   pass, Rust-prototype pass, and comparison artifact creation for real
   provider-backed A/B runs, defaulting to three recording samples per engine
   and a 50 ms max P95 regression tolerance for local audio-owned segments.
+  Rust Always-On-Mic prewarm now has an `audioPrewarmStatus` path through
+  Shell IPC and the audio sidecar. The Python Rust prewarm watchdog uses that
+  status instead of treating a cached `prewarmId` as sufficient proof of an
+  active stream, and audio diagnostics expose redacted status/start/stop/health
+  timings plus inactive reasons and restart counters. This should make short
+  microphone privacy-indicator dropouts visible in support bundles; it still
+  needs long physical evidence before default promotion.
   `scripts/run_hybrid_release_readiness.ps1` now exposes
   `-RequireRustAudioPromotionReadiness` as the aggregate default-promotion
   gate; it bundles Rust sidecar capture, app-level Always-On-Mic prewarm,

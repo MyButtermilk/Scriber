@@ -1225,6 +1225,15 @@ Implementation plan:
      is no active pipeline. Support bundles preserve the same redacted circuit
      state, so a post-failure idle bundle can prove why the next requested Rust
      recording used Python.
+   - Implemented: Rust Always-On-Mic prewarm now has a real status path. Tauri
+     and the audio sidecar expose `audioPrewarmStatus`; the Python
+     `RustAudioPrewarmManager` watchdog queries it instead of trusting a cached
+     `prewarmId`. If the sidecar process exited, the worker finished, or the
+     sidecar reports `active=false`, Python clears stale state and restarts the
+     idle prewarm session. `/api/runtime/audio-diagnostics` now includes
+     redacted status payloads plus start/stop/health response times, last
+     inactive reason, and restart counters, which makes brief microphone
+     privacy-indicator dropouts diagnosable in support bundles.
    - Still open: physical proof that this restart/cooldown policy behaves well
      during real long recordings and dock/USB/default-device transitions.
 7. Run A/B measurements before any promotion:

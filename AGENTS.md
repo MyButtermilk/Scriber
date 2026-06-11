@@ -193,8 +193,13 @@ Packaging and scripts:
   `SCRIBER_AUDIO_ENGINE=rust-prototype` and `SCRIBER_MIC_ALWAYS_ON=1` are both
   enabled, the backend uses a Rust prewarm manager that keeps `audioPrewarmStart`
   alive while idle and passes its `prewarmId` to the next Rust capture. The
-  default app path still uses Python `sounddevice` prewarm. When the opt-in
-  Rust path is explicitly enabled and no favorite/non-default mic is selected,
+  Rust prewarm watchdog must verify live sidecar state with `audioPrewarmStatus`;
+  a cached `prewarmId` alone is not proof that the microphone stream is still
+  active. Status diagnostics must keep prewarm IDs redacted and preserve
+  response time, active/inactive reason, buffered-frame counters, and restart
+  counts so short Windows privacy-indicator dropouts are visible in support
+  bundles. The default app path still uses Python `sounddevice` prewarm. When
+  the opt-in Rust path is explicitly enabled and no favorite/non-default mic is selected,
   keep the request as `devicePreference=default` with no
   `nativeEndpointIdHash`; the Rust sidecar must open the Windows default WASAPI
   capture endpoint directly so the visible microphone privacy indicator matches

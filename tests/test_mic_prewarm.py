@@ -413,3 +413,108 @@ def test_rust_audio_prewarm_manager_pause_stops_sidecar_session(monkeypatch):
     assert commands[-1][1]["prewarmId"] == "prewarm-2"
     assert snapshot["lastStop"]["prewarmIdHash"]
     assert "prewarm-2" not in str(snapshot)
+
+
+def test_rust_audio_prewarm_watchdog_queries_sidecar_status(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
+    monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
+    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": "prewarm-status-ok"}}
+        if command == "audioPrewarmStatus":
+            return {
+                "success": True,
+                "payload": {
+                    "active": True,
+                    "prewarmId": payload["prewarmId"],
+                    "reason": "active",
+                    "bufferedBlocks": 4,
+                },
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+
+    assert manager.start_if_enabled() is True
+    assert manager.ensure_healthy(reason="test-watchdog") is True
+
+    assert [command for command, _payload in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStatus",
+    ]
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["lastHealthCheckReason"] == "test-watchdog"
+    assert snapshot["lastHealthCheckActive"] is True
+    assert snapshot["lastHealthResponseMs"] is not None
+    assert snapshot["lastStatus"]["active"] is True
+    assert snapshot["lastStatus"]["prewarmIdHash"]
+    assert "prewarm-status-ok" not in str(snapshot)
+
+
+def test_rust_audio_prewarm_watchdog_restarts_missing_sidecar_session(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
+    monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
+    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    commands: list[tuple[str, dict]] = []
+    start_ids = iter(["prewarm-old", "prewarm-new"])
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": next(start_ids)}}
+        if command == "audioPrewarmStatus":
+            return {
+                "success": True,
+                "payload": {
+                    "active": False,
+                    "prewarmId": payload["prewarmId"],
+                    "reason": "noActivePrewarm",
+                },
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+
+    assert manager.start_if_enabled() is True
+    assert manager.ensure_healthy(reason="test-watchdog") is True
+
+    assert [command for command, _payload in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStatus",
+        "audioPrewarmStart",
+    ]
+    assert manager.is_active is True
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["healthRestartCount"] == 1
+    assert snapshot["streamStartCount"] == 2
+    assert snapshot["lastHealthCheckActive"] is False
+    assert snapshot["lastHealthError"] == "noActivePrewarm"
+    assert snapshot["lastStatus"]["prewarmIdHash"]
+    assert "prewarm-old" not in str(snapshot)
+    assert "prewarm-new" not in str(snapshot)
