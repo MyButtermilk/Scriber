@@ -189,8 +189,8 @@ Tauri text injection:
 - `SCRIBER_INJECT_METHOD=tauri` remains strict opt-in. The current branch has
   the private Shell IPC `injectText` command, redacted support-bundle
   diagnostics, Python marker forwarding, explicit protected pipe DACL, and
-  safe-target smoke support for `--method tauri`. The hybrid release-readiness
-  runner can require the safe
+  message-only clipboard owner HWND usage, plus safe-target smoke support for
+  `--method tauri`. The hybrid release-readiness runner can require the safe
   target evidence with `-RequireTauriTextInjectionSmoke`, which validates real
   Shell IPC success plus `clipboard_set`/`paste` markers. Manual target-app
   matrix evidence across Notepad, Office, browsers, Electron, elevated windows,

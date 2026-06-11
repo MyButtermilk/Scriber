@@ -1056,6 +1056,114 @@ struct ClipboardOptions {
     retry_delay: Duration,
 }
 
+const CLIPBOARD_OWNER_CLASS: &str = "ScriberClipboardOwner";
+
+#[cfg(windows)]
+struct ClipboardOwnerWindow {
+    hwnd: windows_sys::Win32::Foundation::HWND,
+}
+
+#[cfg(windows)]
+impl ClipboardOwnerWindow {
+    fn create() -> Result<Self, ShellCommandError> {
+        use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
+        use windows_sys::Win32::{
+            Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS},
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{
+                CreateWindowExW, DefWindowProcW, RegisterClassW, HWND_MESSAGE, WNDCLASSW,
+            },
+        };
+
+        unsafe extern "system" fn window_proc(
+            hwnd: windows_sys::Win32::Foundation::HWND,
+            msg: u32,
+            wparam: windows_sys::Win32::Foundation::WPARAM,
+            lparam: windows_sys::Win32::Foundation::LPARAM,
+        ) -> windows_sys::Win32::Foundation::LRESULT {
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+
+        let class_name: Vec<u16> = OsStr::new(CLIPBOARD_OWNER_CLASS)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let hinstance = unsafe { GetModuleHandleW(ptr::null()) };
+        if hinstance.is_null() {
+            return Err(ShellCommandError::new(
+                "clipboardOwnerFailed",
+                "GetModuleHandleW failed while creating clipboard owner",
+            ));
+        }
+
+        let wndclass = WNDCLASSW {
+            style: 0,
+            lpfnWndProc: Some(window_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hinstance,
+            hIcon: ptr::null_mut(),
+            hCursor: ptr::null_mut(),
+            hbrBackground: ptr::null_mut(),
+            lpszMenuName: ptr::null(),
+            lpszClassName: class_name.as_ptr(),
+        };
+        let atom = unsafe { RegisterClassW(&wndclass) };
+        if atom == 0 {
+            let err = unsafe { GetLastError() };
+            if err != ERROR_CLASS_ALREADY_EXISTS {
+                return Err(ShellCommandError::new(
+                    "clipboardOwnerFailed",
+                    format!("RegisterClassW failed while creating clipboard owner: {err}"),
+                ));
+            }
+        }
+
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                class_name.as_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                ptr::null_mut(),
+                hinstance,
+                ptr::null(),
+            )
+        };
+        if hwnd.is_null() {
+            return Err(ShellCommandError::new(
+                "clipboardOwnerFailed",
+                format!(
+                    "CreateWindowExW failed while creating clipboard owner: {}",
+                    unsafe { GetLastError() }
+                ),
+            ));
+        }
+
+        Ok(Self { hwnd })
+    }
+
+    fn hwnd(&self) -> windows_sys::Win32::Foundation::HWND {
+        self.hwnd
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ClipboardOwnerWindow {
+    fn drop(&mut self) {
+        if !self.hwnd.is_null() {
+            unsafe {
+                let _ = windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(self.hwnd);
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
 fn foreground_snapshot() -> Value {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1110,7 +1218,6 @@ fn foreground_snapshot() -> Value {
 
 #[cfg(windows)]
 fn read_clipboard_text(options: &ClipboardOptions) -> Result<Option<String>, ShellCommandError> {
-    use std::ptr;
     use windows_sys::Win32::System::{
         DataExchange::{
             CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
@@ -1119,8 +1226,9 @@ fn read_clipboard_text(options: &ClipboardOptions) -> Result<Option<String>, She
         Ole::CF_UNICODETEXT,
     };
 
+    let owner = ClipboardOwnerWindow::create()?;
     for _ in 0..options.retries.max(1) {
-        if unsafe { OpenClipboard(ptr::null_mut()) } == 0 {
+        if unsafe { OpenClipboard(owner.hwnd()) } == 0 {
             thread::sleep(options.retry_delay);
             continue;
         }
@@ -1188,8 +1296,9 @@ fn set_clipboard_text(text: &str, options: &ClipboardOptions) -> Result<u32, She
     encoded.push(0);
     let byte_len = encoded.len() * mem::size_of::<u16>();
 
+    let owner = ClipboardOwnerWindow::create()?;
     for _ in 0..options.retries.max(1) {
-        if unsafe { OpenClipboard(ptr::null_mut()) } == 0 {
+        if unsafe { OpenClipboard(owner.hwnd()) } == 0 {
             thread::sleep(options.retry_delay);
             continue;
         }
@@ -1724,6 +1833,11 @@ mod tests {
         assert!(!sddl.contains("WD"));
         assert!(!sddl.contains("AU"));
         assert!(!sddl.contains("IU"));
+    }
+
+    #[test]
+    fn clipboard_owner_class_is_named_for_diagnostics() {
+        assert_eq!(super::CLIPBOARD_OWNER_CLASS, "ScriberClipboardOwner");
     }
 
     #[test]

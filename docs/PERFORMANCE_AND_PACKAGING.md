@@ -507,6 +507,10 @@ Implementation status on `codex/rust-expansion-plan`:
   DACL. The pipe still uses a per-process random name, a per-session token, and
   `PIPE_REJECT_REMOTE_CLIENTS`; access is limited to the owner, LocalSystem, and
   built-in administrators instead of relying on the default security descriptor.
+- Replaced ownerless clipboard access in the Tauri text-injection path with a
+  short-lived message-only `ScriberClipboardOwner` window. `injectText` now
+  calls `OpenClipboard(hwnd)` for read, set, and delayed restore operations
+  instead of `OpenClipboard(NULL)`.
 - Added strict `SCRIBER_INJECT_METHOD=tauri` in Python `TextInjector`.
   `auto` intentionally still uses the existing Python paste path until installed
   target-app evidence justifies changing the default.
@@ -532,8 +536,7 @@ Implementation status on `codex/rust-expansion-plan`:
   and `clipboard_set` plus `paste` markers.
 - Still open: installed target-app smoke matrix, packaging smoke evidence,
   optional current-session SID hardening beyond the owner/admin/system DACL,
-  real owner HWND or message-only clipboard owner instead of
-  `OpenClipboard(NULL)`, and default-path decision based on installed evidence.
+  and default-path decision based on installed evidence.
 
 Tauri injection default blockers:
 
