@@ -531,7 +531,11 @@ validator also rejects raw
 `SWD\MMDEVAPI\...` endpoint IDs and raw `\\.\pipe\scriber-*` pipe names in the
 installed live-recording artifact. It complements the provider-backed
 Python/Rust hot-path comparison; it does not replace transcript-quality
-evidence.
+evidence. To produce installed Rust-audio evidence, run the installed smoke with
+`-LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode
+wasapi`; the build wrapper exposes the same path as
+`-InstallerLiveRecordingAudioEngine rust-prototype
+-InstallerLiveRecordingRustAudioCaptureMode wasapi`.
 
 When evaluating whether Tauri/Rust text injection can become more than an
 opt-in path, require safe target-window evidence as well:

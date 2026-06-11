@@ -65,6 +65,11 @@ param(
     [int]$LiveRecordingStartTimeoutSec = 60,
     [int]$LiveRecordingStopTimeoutSec = 60,
     [switch]$DisableLiveTextInjection,
+    [ValidateSet("", "python", "rust-prototype")]
+    [string]$LiveRecordingAudioEngine = "",
+    [ValidateSet("", "synthetic", "wasapi")]
+    [string]$LiveRecordingRustAudioCaptureMode = "",
+    [switch]$LiveRecordingMicAlwaysOn,
     [switch]$KeepAppOpen,
     [switch]$EnableHotkeys,
     [switch]$EnableDeviceMonitor,
@@ -97,6 +102,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $DefaultBackendPort = 8765
+
+if ($LiveRecordingRustAudioCaptureMode -and $LiveRecordingAudioEngine -ne "rust-prototype") {
+    throw "-LiveRecordingRustAudioCaptureMode requires -LiveRecordingAudioEngine rust-prototype."
+}
 
 function Get-ManagedBackendProcesses {
     Get-CimInstance Win32_Process |
@@ -1895,6 +1904,10 @@ $oldScriberMode = $env:SCRIBER_MODE
 $oldScriberDefaultStt = $env:SCRIBER_DEFAULT_STT
 $oldScriberInjectMethod = $env:SCRIBER_INJECT_METHOD
 $oldDisableTextInjection = $env:SCRIBER_DISABLE_TEXT_INJECTION
+$oldAudioEngine = $env:SCRIBER_AUDIO_ENGINE
+$oldRustSyntheticCapture = $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE
+$oldRustWasapiCapture = $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE
+$oldMicAlwaysOn = $env:SCRIBER_MIC_ALWAYS_ON
 $oldScriberAutoSummarize = $env:SCRIBER_AUTO_SUMMARIZE
 $oldBackendStartTimeout = $env:SCRIBER_BACKEND_START_TIMEOUT_MS
 $oldSimulateStartupTimeout = $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE
@@ -1939,6 +1952,21 @@ if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManual
 }
 if ($DisableLiveTextInjection) {
     $env:SCRIBER_DISABLE_TEXT_INJECTION = "1"
+}
+if ($LiveRecordingAudioEngine) {
+    $env:SCRIBER_AUDIO_ENGINE = $LiveRecordingAudioEngine
+}
+if ($LiveRecordingRustAudioCaptureMode) {
+    if ($LiveRecordingRustAudioCaptureMode -eq "synthetic") {
+        $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = "1"
+        $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = $null
+    } elseif ($LiveRecordingRustAudioCaptureMode -eq "wasapi") {
+        $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = "1"
+        $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = $null
+    }
+}
+if ($LiveRecordingMicAlwaysOn) {
+    $env:SCRIBER_MIC_ALWAYS_ON = "1"
 }
 if ($LegacyDataDir) {
     $env:SCRIBER_LEGACY_DATA_DIR = $LegacyDataDir
@@ -2324,6 +2352,10 @@ try {
     $env:SCRIBER_DEFAULT_STT = $oldScriberDefaultStt
     $env:SCRIBER_INJECT_METHOD = $oldScriberInjectMethod
     $env:SCRIBER_DISABLE_TEXT_INJECTION = $oldDisableTextInjection
+    $env:SCRIBER_AUDIO_ENGINE = $oldAudioEngine
+    $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = $oldRustSyntheticCapture
+    $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = $oldRustWasapiCapture
+    $env:SCRIBER_MIC_ALWAYS_ON = $oldMicAlwaysOn
     $env:SCRIBER_AUTO_SUMMARIZE = $oldScriberAutoSummarize
     $env:SCRIBER_BACKEND_START_TIMEOUT_MS = $oldBackendStartTimeout
     $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE = $oldSimulateStartupTimeout

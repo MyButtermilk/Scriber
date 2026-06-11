@@ -431,6 +431,14 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
     assert "nonRecordingSampleCount = $nonRecordingSamples.Count" in desktop
     assert "[switch]$DisableLiveTextInjection" in desktop
     assert "$env:SCRIBER_DISABLE_TEXT_INJECTION = \"1\"" in desktop
+    assert '[string]$LiveRecordingAudioEngine = ""' in desktop
+    assert '[string]$LiveRecordingRustAudioCaptureMode = ""' in desktop
+    assert "[switch]$LiveRecordingMicAlwaysOn" in desktop
+    assert "$env:SCRIBER_AUDIO_ENGINE = $LiveRecordingAudioEngine" in desktop
+    assert "$env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = \"1\"" in desktop
+    assert "$env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = \"1\"" in desktop
+    assert "$env:SCRIBER_MIC_ALWAYS_ON = \"1\"" in desktop
+    assert "-LiveRecordingRustAudioCaptureMode requires -LiveRecordingAudioEngine rust-prototype." in desktop
     assert "textInjectionDisabled = $TextInjectionDisabled" in desktop
     assert "liveRecording = $liveRecording" in desktop
     assert "verified = $false" in desktop
@@ -438,8 +446,14 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
 
     assert "[int]$LiveRecordingDurationSec = 0" in installer
     assert "[switch]$DisableLiveTextInjection" in installer
+    assert '[string]$LiveRecordingAudioEngine = ""' in installer
+    assert '[string]$LiveRecordingRustAudioCaptureMode = ""' in installer
+    assert "[switch]$LiveRecordingMicAlwaysOn" in installer
     assert '"-LiveRecordingDurationSec", $LiveRecordingDurationSec.ToString()' in installer
     assert '"-DisableLiveTextInjection"' in installer
+    assert '"-LiveRecordingAudioEngine", $LiveRecordingAudioEngine' in installer
+    assert '"-LiveRecordingRustAudioCaptureMode", $LiveRecordingRustAudioCaptureMode' in installer
+    assert '"-LiveRecordingMicAlwaysOn"' in installer
     assert "appPid = $smoke.appPid" in installer
     assert "backendPid = $smoke.backendPid" in installer
     assert "backendPort = $smoke.backendPort" in installer
@@ -451,8 +465,14 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
 
     assert "[switch]$RunInstallerLiveRecordingSmoke" in build
     assert "[switch]$InstallerDisableLiveTextInjection" in build
+    assert '[string]$InstallerLiveRecordingAudioEngine = ""' in build
+    assert '[string]$InstallerLiveRecordingRustAudioCaptureMode = ""' in build
+    assert "[switch]$InstallerLiveRecordingMicAlwaysOn" in build
     assert "[int]$InstallerLiveRecordingDurationSec = 0" in build
     assert "$RunInstallerLiveRecordingSmoke" in build
     assert '"-LiveRecordingDurationSec", $liveDuration.ToString()' in build
     assert '"-DisableLiveTextInjection"' in build
+    assert '"-LiveRecordingAudioEngine", $InstallerLiveRecordingAudioEngine' in build
+    assert '"-LiveRecordingRustAudioCaptureMode", $InstallerLiveRecordingRustAudioCaptureMode' in build
+    assert '"-LiveRecordingMicAlwaysOn"' in build
     assert '"-MaxLiveBackendWorkingSetGrowthMB", $InstallerMaxLiveBackendWorkingSetGrowthMB.ToString' in build

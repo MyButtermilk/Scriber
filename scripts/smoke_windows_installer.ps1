@@ -84,6 +84,11 @@ param(
     [int]$LiveRecordingStartTimeoutSec = 60,
     [int]$LiveRecordingStopTimeoutSec = 60,
     [switch]$DisableLiveTextInjection,
+    [ValidateSet("", "python", "rust-prototype")]
+    [string]$LiveRecordingAudioEngine = "",
+    [ValidateSet("", "synthetic", "wasapi")]
+    [string]$LiveRecordingRustAudioCaptureMode = "",
+    [switch]$LiveRecordingMicAlwaysOn,
     [double]$MaxInstalledSizeMB = 0,
     [string]$LegacyDataDir = "",
     [switch]$VerifyLegacyDataMigration,
@@ -535,6 +540,15 @@ function Invoke-InstalledDesktopSmoke {
         $smokeArgs += @("-LiveRecordingStopTimeoutSec", $LiveRecordingStopTimeoutSec.ToString())
         if ($DisableLiveTextInjection) {
             $smokeArgs += "-DisableLiveTextInjection"
+        }
+        if ($LiveRecordingAudioEngine) {
+            $smokeArgs += @("-LiveRecordingAudioEngine", $LiveRecordingAudioEngine)
+        }
+        if ($LiveRecordingRustAudioCaptureMode) {
+            $smokeArgs += @("-LiveRecordingRustAudioCaptureMode", $LiveRecordingRustAudioCaptureMode)
+        }
+        if ($LiveRecordingMicAlwaysOn) {
+            $smokeArgs += "-LiveRecordingMicAlwaysOn"
         }
         if ($MaxLiveBackendWorkingSetGrowthMB -gt 0) {
             $smokeArgs += @("-MaxLiveBackendWorkingSetGrowthMB", $MaxLiveBackendWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))

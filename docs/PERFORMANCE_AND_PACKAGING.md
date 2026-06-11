@@ -1082,6 +1082,14 @@ Implementation plan:
      stability samples, so a stale diagnostics snapshot cannot satisfy the
      long-recording gate. Provider-backed transcript quality and latency still
      require the separate Python/Rust hot-path comparison artifact.
+   - Implemented: installed live-recording smoke runners can now request
+     `SCRIBER_AUDIO_ENGINE=rust-prototype` plus the explicit Rust sidecar
+     capture mode via `-LiveRecordingAudioEngine rust-prototype
+     -LiveRecordingRustAudioCaptureMode wasapi` on the desktop/installer smoke
+     and `-InstallerLiveRecordingAudioEngine rust-prototype
+     -InstallerLiveRecordingRustAudioCaptureMode wasapi` on the build wrapper.
+     This makes the installed Rust-audio report producer explicit instead of
+     relying on manual environment setup.
    - Local evidence from 2026-06-10: a direct Windows WASAPI prewarm smoke
      passed with
      `python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 0.5 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-current.json`.

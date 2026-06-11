@@ -555,7 +555,7 @@ $requiredEvidence = @(
         name = "installedLiveRecordingSmoke"
         required = [bool]($RequireInstalledLiveRecordingSmoke -or $RequireInstalledLiveRecordingRustAudio -or $MinInstalledLiveRecordingDurationSec -gt 0)
         external = $true
-        producer = "scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke, scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec, or scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec over an installed app"
+        producer = $(if ($RequireInstalledLiveRecordingRustAudio) { "scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke -InstallerLiveRecordingAudioEngine rust-prototype -InstallerLiveRecordingRustAudioCaptureMode wasapi, scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi, or scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi over an installed app" } else { "scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke, scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec, or scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec over an installed app" })
         report = $InstalledLiveRecordingSmokeReport
         minDurationSec = $MinInstalledLiveRecordingDurationSec
         requireRustAudio = [bool]$RequireInstalledLiveRecordingRustAudio
@@ -699,7 +699,7 @@ $plan = [pscustomobject]@{
         },
         [pscustomobject]@{
             name = "installedLiveRecordingSmoke"
-            command = $(if (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RequireInstalledLiveRecordingSmoke -or $RequireInstalledLiveRecordingRustAudio -or $MinInstalledLiveRecordingDurationSec -gt 0) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec" } else { "not requested" })
+            command = $(if (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RequireInstalledLiveRecordingRustAudio) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke -InstallerLiveRecordingAudioEngine rust-prototype -InstallerLiveRecordingRustAudioCaptureMode wasapi or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec -LiveRecordingAudioEngine rust-prototype -LiveRecordingRustAudioCaptureMode wasapi" } elseif ($RequireInstalledLiveRecordingSmoke -or $MinInstalledLiveRecordingDurationSec -gt 0) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "tauriTextInjectionSmoke"

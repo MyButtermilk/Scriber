@@ -561,8 +561,12 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
     live_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke")
     assert live_evidence["required"] is True
     assert live_evidence["requireRustAudio"] is True
+    assert "-InstallerLiveRecordingAudioEngine rust-prototype" in live_evidence["producer"]
+    assert "-LiveRecordingRustAudioCaptureMode wasapi" in live_evidence["producer"]
     live_command = next(entry for entry in payload["commands"] if entry["name"] == "installedLiveRecordingSmoke")
     assert "required external report" in live_command["command"]
+    assert "-InstallerLiveRecordingAudioEngine rust-prototype" in live_command["command"]
+    assert "-LiveRecordingRustAudioCaptureMode wasapi" in live_command["command"]
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
     assert "--installed-live-recording-smoke-report" in readiness_command["command"]
     assert "--require-installed-live-recording-smoke" not in readiness_command["command"]

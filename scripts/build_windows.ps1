@@ -82,6 +82,11 @@ param(
     [int]$InstallerLiveRecordingStartTimeoutSec = 60,
     [int]$InstallerLiveRecordingStopTimeoutSec = 60,
     [switch]$InstallerDisableLiveTextInjection,
+    [ValidateSet("", "python", "rust-prototype")]
+    [string]$InstallerLiveRecordingAudioEngine = "",
+    [ValidateSet("", "synthetic", "wasapi")]
+    [string]$InstallerLiveRecordingRustAudioCaptureMode = "",
+    [switch]$InstallerLiveRecordingMicAlwaysOn,
     [switch]$RunInstallerLegacyDataSmoke,
     [switch]$RunInstallerUpgradeSmoke,
     [switch]$RunInstallerUninstallSmoke,
@@ -678,6 +683,15 @@ try {
                     $installerSmokeArgs += @("-LiveRecordingStopTimeoutSec", $InstallerLiveRecordingStopTimeoutSec.ToString())
                     if ($InstallerDisableLiveTextInjection) {
                         $installerSmokeArgs += "-DisableLiveTextInjection"
+                    }
+                    if ($InstallerLiveRecordingAudioEngine) {
+                        $installerSmokeArgs += @("-LiveRecordingAudioEngine", $InstallerLiveRecordingAudioEngine)
+                    }
+                    if ($InstallerLiveRecordingRustAudioCaptureMode) {
+                        $installerSmokeArgs += @("-LiveRecordingRustAudioCaptureMode", $InstallerLiveRecordingRustAudioCaptureMode)
+                    }
+                    if ($InstallerLiveRecordingMicAlwaysOn) {
+                        $installerSmokeArgs += "-LiveRecordingMicAlwaysOn"
                     }
                     if ($InstallerMaxLiveBackendWorkingSetGrowthMB -gt 0) {
                         $installerSmokeArgs += @("-MaxLiveBackendWorkingSetGrowthMB", $InstallerMaxLiveBackendWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
