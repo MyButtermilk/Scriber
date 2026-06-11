@@ -569,6 +569,10 @@ Implementation status on `codex/rust-expansion-plan`:
   success. The matrix reuses the safe-smoke restore gate for every scenario, so
   target-app evidence cannot omit restore diagnostics or hide restore failures.
   It also reuses the foreground redaction gate for every target-app scenario.
+  Tauri injection evidence now must include `deadlineMs` in the redacted Shell
+  IPC response payload, and the validator rejects artifacts whose
+  `timingsMs.total` exceeds that deadline, so stale reports cannot prove the
+  "do not paste after Python timed out" invariant.
 - Still open: actually running the installed target-app smoke matrix, packaging
   smoke evidence, and default-path decision based on installed evidence.
 

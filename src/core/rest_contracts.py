@@ -203,6 +203,7 @@ def _validate_shell_ipc_inject_text_payload(
         if payload.get("preDelayMode") != "auto":
             raise RESTContractError(f"{contract} requires lastResponse.payload.preDelayMode 'auto'")
         _require_number(payload, "requestedPreDelayMs", contract)
+        _require_number(payload, "deadlineMs", contract)
         markers = _require_string_list(payload, "markers", contract)
         if "clipboard_set" not in markers or "paste" not in markers:
             raise RESTContractError(
@@ -214,6 +215,7 @@ def _validate_shell_ipc_inject_text_payload(
         _require_optional_string(payload, "method", contract)
         _require_optional_string(payload, "preDelayMode", contract)
         _require_optional_number(payload, "requestedPreDelayMs", contract)
+        _require_optional_number(payload, "deadlineMs", contract)
         if "markers" in payload:
             _require_string_list(payload, "markers", contract)
         _require_optional_bool(payload, "restoreScheduled", contract)

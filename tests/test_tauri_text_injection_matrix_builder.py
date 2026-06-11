@@ -38,6 +38,7 @@ def valid_tauri_smoke_payload() -> dict:
                     "method": "tauri",
                     "preDelayMode": "auto",
                     "requestedPreDelayMs": 80.0,
+                    "deadlineMs": 2000.0,
                     "markers": ["clipboard_set", "paste"],
                     "restoreScheduled": True,
                     "restore": {

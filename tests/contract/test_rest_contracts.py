@@ -351,6 +351,7 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
                 "dispatch": "ctrlV",
                 "preDelayMode": "auto",
                 "requestedPreDelayMs": 80.0,
+                "deadlineMs": 2000.0,
                 "markers": ["clipboard_set", "paste"],
                 "restoreScheduled": True,
                 "restore": {
@@ -387,6 +388,11 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
 
     invalid = copy.deepcopy(tauri_injection)
     invalid["textInjection"]["shellIpc"]["lastResponse"]["payload"]["preDelayMode"] = "fixed"
+    with pytest.raises(RESTContractError):
+        validate_audio_diagnostics_payload(invalid)
+
+    invalid = copy.deepcopy(tauri_injection)
+    invalid["textInjection"]["shellIpc"]["lastResponse"]["payload"].pop("deadlineMs")
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)
 

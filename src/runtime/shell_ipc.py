@@ -269,6 +269,9 @@ def _inject_text_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
         requested_pre_delay_ms, bool
     ):
         summary["requestedPreDelayMs"] = float(requested_pre_delay_ms)
+    deadline_ms = payload.get("deadlineMs")
+    if isinstance(deadline_ms, (int, float)) and not isinstance(deadline_ms, bool):
+        summary["deadlineMs"] = float(deadline_ms)
     markers = payload.get("markers")
     if isinstance(markers, list):
         summary["markers"] = [

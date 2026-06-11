@@ -1018,6 +1018,7 @@ fn inject_response_payload(
         "dispatch": options.dispatch,
         "preDelayMode": options.pre_delay_mode,
         "requestedPreDelayMs": options.pre_delay_ms,
+        "deadlineMs": options.deadline_ms,
         "markers": markers,
         "restore": restore,
         "restoreScheduled": restore
@@ -2604,6 +2605,42 @@ mod tests {
 
         assert_eq!(err.code, "deadlineBeforeSet");
         assert_eq!(err.payload["partial"], true);
+    }
+
+    #[test]
+    fn inject_response_payload_reports_deadline_budget() {
+        let options = super::InjectTextOptions {
+            text: "hello".to_string(),
+            restore_clipboard: true,
+            restore_delay_ms: 1500,
+            pre_delay_ms: 80,
+            pre_delay_mode: "auto".to_string(),
+            dispatch: "ctrlV".to_string(),
+            max_clipboard_retries: 5,
+            clipboard_retry_delay_ms: 5,
+            deadline_ms: 2000,
+        };
+
+        let payload = super::inject_response_payload(
+            &options,
+            &["clipboard_set", "paste"],
+            80,
+            Some(1.0),
+            Some(2.0),
+            Some(3.0),
+            10.0,
+            json!({
+                "scheduled": true,
+                "attempted": false,
+                "succeeded": null,
+                "skippedReason": "scheduled",
+                "errorCode": null,
+            }),
+            &json!({"available": false}),
+            &json!({"available": false}),
+        );
+
+        assert_eq!(payload["deadlineMs"], 2000);
     }
 
     #[test]

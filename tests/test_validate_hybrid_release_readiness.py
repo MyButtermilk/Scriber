@@ -828,6 +828,7 @@ def write_tauri_text_injection_smoke_report(
     pre_delay_mode: str = "auto",
     requested_pre_delay_ms: float | None = 80.0,
     actual_pre_delay_ms: float | None = 80.0,
+    deadline_ms: float | None = 2000.0,
     restore_scheduled: bool | None = True,
     restore: dict[str, object] | None = None,
 ) -> None:
@@ -846,6 +847,7 @@ def write_tauri_text_injection_smoke_report(
         "dispatch": "ctrlV",
         "preDelayMode": pre_delay_mode,
         "requestedPreDelayMs": requested_pre_delay_ms,
+        "deadlineMs": deadline_ms,
         "markers": markers,
         "restore": restore,
         "foregroundBefore": {
@@ -1630,6 +1632,50 @@ def test_validate_release_readiness_rejects_tauri_text_injection_without_auto_pr
 
     injection_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionSmoke")
     assert "Tauri text injection smoke response preDelayMode must be auto" in injection_check["failures"]
+
+
+def test_validate_release_readiness_rejects_tauri_text_injection_without_deadline(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    injection_report = tmp_path / "tauri-text-injection-smoke.json"
+    write_tauri_text_injection_smoke_report(injection_report, deadline_ms=None)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_smoke_report=injection_report,
+        require_tauri_text_injection_smoke=True,
+    )
+
+    injection_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionSmoke")
+    assert "Tauri text injection smoke response deadlineMs must be positive" in injection_check["failures"]
+
+
+def test_validate_release_readiness_rejects_tauri_text_injection_past_deadline(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    injection_report = tmp_path / "tauri-text-injection-smoke.json"
+    write_tauri_text_injection_smoke_report(injection_report, deadline_ms=5.0)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_smoke_report=injection_report,
+        require_tauri_text_injection_smoke=True,
+    )
+
+    injection_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionSmoke")
+    assert "Tauri text injection smoke timing total must not exceed response deadlineMs" in injection_check["failures"]
 
 
 def test_validate_release_readiness_rejects_tauri_text_injection_without_restore_evidence(tmp_path: Path) -> None:

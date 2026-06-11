@@ -168,6 +168,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
                             "method": "tauri",
                             "preDelayMode": "auto",
                             "requestedPreDelayMs": 80.0,
+                            "deadlineMs": 2000.0,
                             "markers": ["clipboard_set"],
                             "foregroundBefore": {
                                 "available": True,
@@ -260,6 +261,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
     assert shell_ipc["lastErrorCode"] == "missingPasteMarker"
     assert shell_ipc["lastResponse"]["payload"]["preDelayMode"] == "auto"
     assert shell_ipc["lastResponse"]["payload"]["requestedPreDelayMs"] == 80.0
+    assert shell_ipc["lastResponse"]["payload"]["deadlineMs"] == 2000.0
     assert shell_ipc["lastResponse"]["payload"]["foregroundBefore"]["titleHash"] == "title-hash"
 
 

@@ -1352,6 +1352,9 @@ def validate_tauri_text_injection_payload(
     requested_pre_delay_ms = numeric_field(response_payload, "requestedPreDelayMs")
     if requested_pre_delay_ms is None or requested_pre_delay_ms < 0:
         failures.append(f"{label} response requestedPreDelayMs must be non-negative")
+    deadline_ms = numeric_field(response_payload, "deadlineMs")
+    if deadline_ms is None or deadline_ms <= 0:
+        failures.append(f"{label} response deadlineMs must be positive")
     markers = response_payload.get("markers")
     if not isinstance(markers, list) or "clipboard_set" not in markers or "paste" not in markers:
         failures.append(f"{label} response markers must include clipboard_set and paste")
@@ -1365,6 +1368,9 @@ def validate_tauri_text_injection_payload(
             value = timings.get(key)
             if value is None or not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
                 failures.append(f"{label} timing {key} must be non-negative")
+        total = numeric_field(timings, "total")
+        if deadline_ms is not None and total is not None and total > deadline_ms:
+            failures.append(f"{label} timing total must not exceed response deadlineMs")
         if scenario_id in {"word", "outlook"}:
             pre_delay = timings.get("preDelay")
             if (
@@ -1385,6 +1391,7 @@ def validate_tauri_text_injection_payload(
         "targetTextElapsedMs": report.get("targetTextElapsedMs"),
         "preDelayMode": response_payload.get("preDelayMode"),
         "requestedPreDelayMs": response_payload.get("requestedPreDelayMs"),
+        "deadlineMs": response_payload.get("deadlineMs"),
         "shellIpc": shell_ipc,
     }
 
