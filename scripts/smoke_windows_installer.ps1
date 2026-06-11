@@ -83,6 +83,9 @@ param(
     [double]$MaxLiveCpuPercent = 0,
     [int]$LiveRecordingStartTimeoutSec = 60,
     [int]$LiveRecordingStopTimeoutSec = 60,
+    [string]$LiveRecordingEnvFile = "",
+    [string]$LiveRecordingDefaultStt = "",
+    [string]$LiveRecordingSonioxMode = "",
     [switch]$DisableLiveTextInjection,
     [ValidateSet("", "python", "rust-prototype")]
     [string]$LiveRecordingAudioEngine = "",
@@ -538,6 +541,15 @@ function Invoke-InstalledDesktopSmoke {
         $smokeArgs += @("-LiveRecordingProbeIntervalSec", $LiveRecordingProbeIntervalSec.ToString())
         $smokeArgs += @("-LiveRecordingStartTimeoutSec", $LiveRecordingStartTimeoutSec.ToString())
         $smokeArgs += @("-LiveRecordingStopTimeoutSec", $LiveRecordingStopTimeoutSec.ToString())
+        if ($LiveRecordingEnvFile) {
+            $smokeArgs += @("-LiveRecordingEnvFile", $LiveRecordingEnvFile)
+        }
+        if ($LiveRecordingDefaultStt) {
+            $smokeArgs += @("-LiveRecordingDefaultStt", $LiveRecordingDefaultStt)
+        }
+        if ($LiveRecordingSonioxMode) {
+            $smokeArgs += @("-LiveRecordingSonioxMode", $LiveRecordingSonioxMode)
+        }
         if ($DisableLiveTextInjection) {
             $smokeArgs += "-DisableLiveTextInjection"
         }

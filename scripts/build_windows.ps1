@@ -81,6 +81,9 @@ param(
     [double]$InstallerMaxLiveCpuPercent = 0,
     [int]$InstallerLiveRecordingStartTimeoutSec = 60,
     [int]$InstallerLiveRecordingStopTimeoutSec = 60,
+    [string]$InstallerLiveRecordingEnvFile = "",
+    [string]$InstallerLiveRecordingDefaultStt = "",
+    [string]$InstallerLiveRecordingSonioxMode = "",
     [switch]$InstallerDisableLiveTextInjection,
     [ValidateSet("", "python", "rust-prototype")]
     [string]$InstallerLiveRecordingAudioEngine = "",
@@ -681,6 +684,15 @@ try {
                     $installerSmokeArgs += @("-LiveRecordingProbeIntervalSec", $InstallerLiveRecordingProbeIntervalSec.ToString())
                     $installerSmokeArgs += @("-LiveRecordingStartTimeoutSec", $InstallerLiveRecordingStartTimeoutSec.ToString())
                     $installerSmokeArgs += @("-LiveRecordingStopTimeoutSec", $InstallerLiveRecordingStopTimeoutSec.ToString())
+                    if ($InstallerLiveRecordingEnvFile) {
+                        $installerSmokeArgs += @("-LiveRecordingEnvFile", $InstallerLiveRecordingEnvFile)
+                    }
+                    if ($InstallerLiveRecordingDefaultStt) {
+                        $installerSmokeArgs += @("-LiveRecordingDefaultStt", $InstallerLiveRecordingDefaultStt)
+                    }
+                    if ($InstallerLiveRecordingSonioxMode) {
+                        $installerSmokeArgs += @("-LiveRecordingSonioxMode", $InstallerLiveRecordingSonioxMode)
+                    }
                     if ($InstallerDisableLiveTextInjection) {
                         $installerSmokeArgs += "-DisableLiveTextInjection"
                     }

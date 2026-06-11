@@ -431,6 +431,12 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
     assert "nonRecordingSampleCount = $nonRecordingSamples.Count" in desktop
     assert "[switch]$DisableLiveTextInjection" in desktop
     assert "$env:SCRIBER_DISABLE_TEXT_INJECTION = \"1\"" in desktop
+    assert '[string]$LiveRecordingEnvFile = ""' in desktop
+    assert '[string]$LiveRecordingDefaultStt = ""' in desktop
+    assert '[string]$LiveRecordingSonioxMode = ""' in desktop
+    assert "function Read-EnvFileAssignments" in desktop
+    assert "Set-SmokeEnvironmentVariable -Name \"SCRIBER_DEFAULT_STT\" -Value $LiveRecordingDefaultStt" in desktop
+    assert "Set-SmokeEnvironmentVariable -Name \"SCRIBER_SONIOX_MODE\" -Value $LiveRecordingSonioxMode" in desktop
     assert '[string]$LiveRecordingAudioEngine = ""' in desktop
     assert '[string]$LiveRecordingRustAudioCaptureMode = ""' in desktop
     assert "[switch]$LiveRecordingMicAlwaysOn" in desktop
@@ -446,10 +452,16 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
 
     assert "[int]$LiveRecordingDurationSec = 0" in installer
     assert "[switch]$DisableLiveTextInjection" in installer
+    assert '[string]$LiveRecordingEnvFile = ""' in installer
+    assert '[string]$LiveRecordingDefaultStt = ""' in installer
+    assert '[string]$LiveRecordingSonioxMode = ""' in installer
     assert '[string]$LiveRecordingAudioEngine = ""' in installer
     assert '[string]$LiveRecordingRustAudioCaptureMode = ""' in installer
     assert "[switch]$LiveRecordingMicAlwaysOn" in installer
     assert '"-LiveRecordingDurationSec", $LiveRecordingDurationSec.ToString()' in installer
+    assert '"-LiveRecordingEnvFile", $LiveRecordingEnvFile' in installer
+    assert '"-LiveRecordingDefaultStt", $LiveRecordingDefaultStt' in installer
+    assert '"-LiveRecordingSonioxMode", $LiveRecordingSonioxMode' in installer
     assert '"-DisableLiveTextInjection"' in installer
     assert '"-LiveRecordingAudioEngine", $LiveRecordingAudioEngine' in installer
     assert '"-LiveRecordingRustAudioCaptureMode", $LiveRecordingRustAudioCaptureMode' in installer
@@ -467,10 +479,16 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
     assert "[switch]$InstallerDisableLiveTextInjection" in build
     assert '[string]$InstallerLiveRecordingAudioEngine = ""' in build
     assert '[string]$InstallerLiveRecordingRustAudioCaptureMode = ""' in build
+    assert '[string]$InstallerLiveRecordingEnvFile = ""' in build
+    assert '[string]$InstallerLiveRecordingDefaultStt = ""' in build
+    assert '[string]$InstallerLiveRecordingSonioxMode = ""' in build
     assert "[switch]$InstallerLiveRecordingMicAlwaysOn" in build
     assert "[int]$InstallerLiveRecordingDurationSec = 0" in build
     assert "$RunInstallerLiveRecordingSmoke" in build
     assert '"-LiveRecordingDurationSec", $liveDuration.ToString()' in build
+    assert '"-LiveRecordingEnvFile", $InstallerLiveRecordingEnvFile' in build
+    assert '"-LiveRecordingDefaultStt", $InstallerLiveRecordingDefaultStt' in build
+    assert '"-LiveRecordingSonioxMode", $InstallerLiveRecordingSonioxMode' in build
     assert '"-DisableLiveTextInjection"' in build
     assert '"-LiveRecordingAudioEngine", $InstallerLiveRecordingAudioEngine' in build
     assert '"-LiveRecordingRustAudioCaptureMode", $InstallerLiveRecordingRustAudioCaptureMode' in build

@@ -697,8 +697,18 @@ evidence. To produce installed Rust-audio evidence, run the installed smoke with
 wasapi -LiveRecordingMicAlwaysOn`; the build wrapper exposes the same path as
 `-InstallerLiveRecordingAudioEngine rust-prototype
 -InstallerLiveRecordingRustAudioCaptureMode wasapi
--InstallerLiveRecordingMicAlwaysOn`. The release-readiness
-runner can now run the same installed smoke directly with
+-InstallerLiveRecordingMicAlwaysOn`. When the smoke needs provider credentials
+from a local/release env file, pass `-LiveRecordingEnvFile .env` plus an
+explicit provider override such as `-LiveRecordingDefaultStt soniox
+-LiveRecordingSonioxMode realtime`; the installer smoke, build wrapper, and
+release-readiness runner expose the same controls as
+`-InstallerLiveRecordingEnvFile` / `-InstalledLiveRecordingEnvFile` and matching
+provider-mode parameters. Secret values are loaded into the child process
+environment but are not written into the smoke report. When
+`-RequireInstalledLiveRecordingRustAudio` is used, the release-readiness runner
+also enables `-InstalledLiveRecordingMicAlwaysOn` automatically so the produced
+report can satisfy the Rust-promotion validator. The release-readiness runner
+can now run the same installed smoke directly with
 `-RunInstalledLiveRecordingSmoke -InstalledLiveRecordingInstallerPath <setup.exe>
 -RequireInstalledLiveRecordingRustAudio`.
 

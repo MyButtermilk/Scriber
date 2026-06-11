@@ -1153,6 +1153,23 @@ Implementation plan:
      -InstallerLiveRecordingMicAlwaysOn` on the build wrapper.
      This makes the installed Rust-audio report producer explicit instead of
      relying on manual environment setup.
+   - Implemented: installed live-recording smoke runners can now load provider
+     credentials from an explicit env file and override the live STT provider
+     without printing secret values:
+     `-LiveRecordingEnvFile .env -LiveRecordingDefaultStt soniox
+     -LiveRecordingSonioxMode realtime` on desktop/installer smoke,
+     `-InstallerLiveRecordingEnvFile .env
+     -InstallerLiveRecordingDefaultStt soniox
+     -InstallerLiveRecordingSonioxMode realtime` on the build wrapper, and
+     `-InstalledLiveRecordingEnvFile .env
+     -InstalledLiveRecordingDefaultStt soniox
+     -InstalledLiveRecordingSonioxMode realtime` on the release-readiness
+     runner. This closes the previous reproducibility gap where a temporary
+     smoke data directory could fall back to `soniox` without a loaded API key
+     even though the real developer/release environment had credentials.
+     The runner now also sets `-InstalledLiveRecordingMicAlwaysOn` whenever
+     `-RequireInstalledLiveRecordingRustAudio` is used, so producer flags match
+     the validator's Rust-promotion requirements.
    - Implemented: the hybrid readiness runner can now produce the installed
      live-recording artifact directly with `-RunInstalledLiveRecordingSmoke`
      and `-InstalledLiveRecordingInstallerPath`, or reuse an existing artifact

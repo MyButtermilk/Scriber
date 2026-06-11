@@ -77,6 +77,9 @@ param(
     [int]$InstalledLiveRecordingProbeIntervalSec = 5,
     [int]$InstalledLiveRecordingStartTimeoutSec = 60,
     [int]$InstalledLiveRecordingStopTimeoutSec = 90,
+    [string]$InstalledLiveRecordingEnvFile = "",
+    [string]$InstalledLiveRecordingDefaultStt = "",
+    [string]$InstalledLiveRecordingSonioxMode = "",
     [switch]$InstalledLiveRecordingDisableTextInjection,
     [ValidateSet("", "python", "rust-prototype")]
     [string]$InstalledLiveRecordingAudioEngine = "",
@@ -279,6 +282,9 @@ if (-not $InstalledLiveRecordingSmokeReport) {
 if ($InstalledLiveRecordingInstallerPath) {
     $InstalledLiveRecordingInstallerPath = Convert-ToFullPath -Path $InstalledLiveRecordingInstallerPath -Root $RepoRoot
 }
+if ($InstalledLiveRecordingEnvFile) {
+    $InstalledLiveRecordingEnvFile = Convert-ToFullPath -Path $InstalledLiveRecordingEnvFile -Root $RepoRoot
+}
 if (-not $TauriTextInjectionSmokeReport) {
     $TauriTextInjectionSmokeReport = Join-Path $HardwareInputDir "tauri-text-injection-smoke.json"
 } else {
@@ -357,6 +363,9 @@ if ($RequireInstalledLiveRecordingRustAudio -and -not $InstalledLiveRecordingAud
 }
 if ($RequireInstalledLiveRecordingRustAudio -and -not $InstalledLiveRecordingRustAudioCaptureMode) {
     $InstalledLiveRecordingRustAudioCaptureMode = "wasapi"
+}
+if ($RequireInstalledLiveRecordingRustAudio) {
+    $InstalledLiveRecordingMicAlwaysOn = $true
 }
 if ($InstalledLiveRecordingRustAudioCaptureMode -and $InstalledLiveRecordingAudioEngine -ne "rust-prototype") {
     throw "-InstalledLiveRecordingRustAudioCaptureMode requires -InstalledLiveRecordingAudioEngine rust-prototype."
@@ -610,6 +619,15 @@ if ($InstalledLiveRecordingInstallerPath) {
 }
 if ($InstalledLiveRecordingDisableTextInjection) {
     $installedLiveRecordingArgs += "-DisableLiveTextInjection"
+}
+if ($InstalledLiveRecordingEnvFile) {
+    $installedLiveRecordingArgs += @("-LiveRecordingEnvFile", $InstalledLiveRecordingEnvFile)
+}
+if ($InstalledLiveRecordingDefaultStt) {
+    $installedLiveRecordingArgs += @("-LiveRecordingDefaultStt", $InstalledLiveRecordingDefaultStt)
+}
+if ($InstalledLiveRecordingSonioxMode) {
+    $installedLiveRecordingArgs += @("-LiveRecordingSonioxMode", $InstalledLiveRecordingSonioxMode)
 }
 if ($InstalledLiveRecordingAudioEngine) {
     $installedLiveRecordingArgs += @("-LiveRecordingAudioEngine", $InstalledLiveRecordingAudioEngine)
@@ -936,6 +954,9 @@ $requiredEvidence = @(
         durationSec = $effectiveInstalledLiveRecordingDurationSec
         probeIntervalSec = $InstalledLiveRecordingProbeIntervalSec
         installerPath = $InstalledLiveRecordingInstallerPath
+        envFile = $(if ($InstalledLiveRecordingEnvFile) { $InstalledLiveRecordingEnvFile } else { "" })
+        defaultStt = $InstalledLiveRecordingDefaultStt
+        sonioxMode = $InstalledLiveRecordingSonioxMode
         audioEngine = $InstalledLiveRecordingAudioEngine
         rustAudioCaptureMode = $InstalledLiveRecordingRustAudioCaptureMode
         requireRustAudio = [bool]$RequireInstalledLiveRecordingRustAudio
@@ -1039,6 +1060,9 @@ $plan = [pscustomobject]@{
     installedLiveRecordingInstallerPath = $InstalledLiveRecordingInstallerPath
     installedLiveRecordingDurationSec = $effectiveInstalledLiveRecordingDurationSec
     installedLiveRecordingProbeIntervalSec = $InstalledLiveRecordingProbeIntervalSec
+    installedLiveRecordingEnvFile = $InstalledLiveRecordingEnvFile
+    installedLiveRecordingDefaultStt = $InstalledLiveRecordingDefaultStt
+    installedLiveRecordingSonioxMode = $InstalledLiveRecordingSonioxMode
     installedLiveRecordingAudioEngine = $InstalledLiveRecordingAudioEngine
     installedLiveRecordingRustAudioCaptureMode = $InstalledLiveRecordingRustAudioCaptureMode
     installedLiveRecordingMicAlwaysOn = [bool]$InstalledLiveRecordingMicAlwaysOn

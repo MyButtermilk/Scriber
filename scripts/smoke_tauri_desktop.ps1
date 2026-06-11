@@ -64,6 +64,9 @@ param(
     [double]$MaxLiveCpuPercent = 0,
     [int]$LiveRecordingStartTimeoutSec = 60,
     [int]$LiveRecordingStopTimeoutSec = 60,
+    [string]$LiveRecordingEnvFile = "",
+    [string]$LiveRecordingDefaultStt = "",
+    [string]$LiveRecordingSonioxMode = "",
     [switch]$DisableLiveTextInjection,
     [ValidateSet("", "python", "rust-prototype")]
     [string]$LiveRecordingAudioEngine = "",
@@ -738,6 +741,44 @@ function Convert-ToFullPath {
     param([string]$Path)
 
     return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+}
+
+function Read-EnvFileAssignments {
+    param([string]$Path)
+
+    if (-not $Path) {
+        return @()
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Missing LiveRecordingEnvFile: $Path"
+    }
+    $assignments = @()
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith("#")) {
+            continue
+        }
+        $separator = $trimmed.IndexOf("=")
+        if ($separator -le 0) {
+            continue
+        }
+        $name = $trimmed.Substring(0, $separator).Trim()
+        if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+            continue
+        }
+        $value = $trimmed.Substring($separator + 1)
+        if (
+            $value.Length -ge 2 -and
+            (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'")))
+        ) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+        $assignments += [pscustomobject]@{
+            Name = $name
+            Value = $value
+        }
+    }
+    return $assignments
 }
 
 function Assert-UnderRoot {
@@ -1950,6 +1991,15 @@ if ($LiveRecordingDurationSec -gt 0 -and ($SimulateBackendCrash -or $SimulateBac
 if ($LiveRecordingDurationSec -gt 0 -and ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey)) {
     throw "-LiveRecordingDurationSec cannot be combined with global hotkey smoke options because hotkey smokes override STT settings."
 }
+if (($LiveRecordingEnvFile -or $LiveRecordingDefaultStt -or $LiveRecordingSonioxMode) -and $LiveRecordingDurationSec -le 0) {
+    throw "Live recording provider overrides require -LiveRecordingDurationSec."
+}
+if ($LiveRecordingEnvFile) {
+    if (-not (Test-Path -LiteralPath $LiveRecordingEnvFile -PathType Leaf)) {
+        throw "Missing LiveRecordingEnvFile: $LiveRecordingEnvFile"
+    }
+    $LiveRecordingEnvFile = (Resolve-Path -LiteralPath $LiveRecordingEnvFile).Path
+}
 if (($SimulateGlobalHotkey -or $WaitForManualGlobalHotkey) -and ($SimulateBackendCrash -or $SimulateBackendShutdown -or $SimulateBackendStartupTimeout)) {
     throw "-SimulateGlobalHotkey and -WaitForManualGlobalHotkey cannot be combined with -SimulateBackendCrash, -SimulateBackendShutdown, or -SimulateBackendStartupTimeout."
 }
@@ -1997,6 +2047,19 @@ $oldScriberAutoSummarize = $env:SCRIBER_AUTO_SUMMARIZE
 $oldBackendStartTimeout = $env:SCRIBER_BACKEND_START_TIMEOUT_MS
 $oldSimulateStartupTimeout = $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE
 $oldSimulateStartupTimeoutMarker = $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER
+$liveRecordingProviderEnvSnapshot = @{}
+
+function Set-SmokeEnvironmentVariable {
+    param(
+        [string]$Name,
+        [string]$Value
+    )
+
+    if (-not $liveRecordingProviderEnvSnapshot.ContainsKey($Name)) {
+        $liveRecordingProviderEnvSnapshot[$Name] = [Environment]::GetEnvironmentVariable($Name, "Process")
+    }
+    [Environment]::SetEnvironmentVariable($Name, $Value, "Process")
+}
 
 if ($DisableDevFallback) {
     $env:SCRIBER_REPO_ROOT = $null
@@ -2034,6 +2097,17 @@ if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManual
     $env:SCRIBER_DEFAULT_STT = $globalHotkeySmokeConfig.invalidProvider
     $env:SCRIBER_INJECT_METHOD = "type"
     $env:SCRIBER_AUTO_SUMMARIZE = "0"
+}
+if ($LiveRecordingDurationSec -gt 0) {
+    foreach ($assignment in Read-EnvFileAssignments -Path $LiveRecordingEnvFile) {
+        Set-SmokeEnvironmentVariable -Name $assignment.Name -Value $assignment.Value
+    }
+    if ($LiveRecordingDefaultStt) {
+        Set-SmokeEnvironmentVariable -Name "SCRIBER_DEFAULT_STT" -Value $LiveRecordingDefaultStt
+    }
+    if ($LiveRecordingSonioxMode) {
+        Set-SmokeEnvironmentVariable -Name "SCRIBER_SONIOX_MODE" -Value $LiveRecordingSonioxMode
+    }
 }
 if ($DisableLiveTextInjection) {
     $env:SCRIBER_DISABLE_TEXT_INJECTION = "1"
@@ -2447,6 +2521,13 @@ try {
     $env:SCRIBER_BACKEND_START_TIMEOUT_MS = $oldBackendStartTimeout
     $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE = $oldSimulateStartupTimeout
     $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER = $oldSimulateStartupTimeoutMarker
+    foreach ($name in @($liveRecordingProviderEnvSnapshot.Keys)) {
+        [Environment]::SetEnvironmentVariable(
+            $name,
+            $liveRecordingProviderEnvSnapshot[$name],
+            "Process"
+        )
+    }
 
     if ($cleanupFailure) {
         throw $cleanupFailure

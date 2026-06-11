@@ -871,6 +871,12 @@ def test_hybrid_release_readiness_runner_can_run_installed_live_recording_smoke(
         "-RequireInstalledLiveRecordingRustAudio",
         "-InstalledLiveRecordingDurationSec",
         "600",
+        "-InstalledLiveRecordingEnvFile",
+        str(tmp_path / ".env"),
+        "-InstalledLiveRecordingDefaultStt",
+        "soniox",
+        "-InstalledLiveRecordingSonioxMode",
+        "realtime",
         "-InstalledLiveRecordingDisableTextInjection",
     )
 
@@ -879,17 +885,25 @@ def test_hybrid_release_readiness_runner_can_run_installed_live_recording_smoke(
     assert payload["runInstalledLiveRecordingSmoke"] is True
     assert payload["installedLiveRecordingInstallerPath"].endswith("Scriber_0.1.0_x64-setup.exe")
     assert payload["installedLiveRecordingDurationSec"] == 600
+    assert payload["installedLiveRecordingEnvFile"].endswith(".env")
+    assert payload["installedLiveRecordingDefaultStt"] == "soniox"
+    assert payload["installedLiveRecordingSonioxMode"] == "realtime"
     assert payload["installedLiveRecordingAudioEngine"] == "rust-prototype"
     assert payload["installedLiveRecordingRustAudioCaptureMode"] == "wasapi"
+    assert payload["installedLiveRecordingMicAlwaysOn"] is True
 
     live_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke")
     assert live_evidence["required"] is True
     assert live_evidence["external"] is False
     assert live_evidence["producer"] == "scripts\\smoke_windows_installer.ps1"
     assert live_evidence["installerPath"].endswith("Scriber_0.1.0_x64-setup.exe")
+    assert live_evidence["envFile"].endswith(".env")
+    assert live_evidence["defaultStt"] == "soniox"
+    assert live_evidence["sonioxMode"] == "realtime"
     assert live_evidence["audioEngine"] == "rust-prototype"
     assert live_evidence["rustAudioCaptureMode"] == "wasapi"
     assert live_evidence["rustPrewarmAdoptionRequired"] is True
+    assert live_evidence["micAlwaysOn"] is True
     assert live_evidence["disableTextInjection"] is True
 
     live_command = next(entry for entry in payload["commands"] if entry["name"] == "installedLiveRecordingSmoke")
@@ -898,8 +912,12 @@ def test_hybrid_release_readiness_runner_can_run_installed_live_recording_smoke(
     assert "-InstallerPath" in live_command["command"]
     assert "-OutputPath" in live_command["command"]
     assert "-LiveRecordingDurationSec 600" in live_command["command"]
+    assert "-LiveRecordingEnvFile" in live_command["command"]
+    assert "-LiveRecordingDefaultStt soniox" in live_command["command"]
+    assert "-LiveRecordingSonioxMode realtime" in live_command["command"]
     assert "-LiveRecordingAudioEngine rust-prototype" in live_command["command"]
     assert "-LiveRecordingRustAudioCaptureMode wasapi" in live_command["command"]
+    assert "-LiveRecordingMicAlwaysOn" in live_command["command"]
     assert "-DisableLiveTextInjection" in live_command["command"]
 
 
