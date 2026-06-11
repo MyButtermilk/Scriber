@@ -363,6 +363,13 @@ function Convert-AudioDiagnosticsSummary {
                 streamActive = [bool]$activeCapture.streamActive
                 callbackCount = $activeCapture.callbackCount
                 droppedFrameCount = $activeCapture.droppedFrameCount
+                healthRestartCount = $activeCapture.healthRestartCount
+                healthRestartThrottleCount = $activeCapture.healthRestartThrottleCount
+                lastHealthFailureReason = [string]$activeCapture.lastHealthFailureReason
+                lastHealthRestartReason = [string]$activeCapture.lastHealthRestartReason
+                lastHealthRestartError = [string]$activeCapture.lastHealthRestartError
+                lastHealthRestartThrottledReason = [string]$activeCapture.lastHealthRestartThrottledReason
+                lastHealthRestartThrottleRemainingSeconds = $activeCapture.lastHealthRestartThrottleRemainingSeconds
                 nativeEndpointIdHash = [string]$activeCapture.nativeEndpointIdHash
                 sourceFrameSource = if ($source) { [string]$source.frameSource } else { "" }
                 sourceNativeEndpointIdHash = if ($source) { [string]$source.nativeEndpointIdHash } else { "" }

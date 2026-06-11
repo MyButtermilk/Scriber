@@ -1085,8 +1085,13 @@ Implementation plan:
      not only an on-demand live recording. The validator now also requires the Rust
      callback, frame-pipe, and audio-frame counters to increase across
      stability samples, so a stale diagnostics snapshot cannot satisfy the
-     long-recording gate. Provider-backed transcript quality and latency still
-     require the separate Python/Rust hot-path comparison artifact.
+     long-recording gate. Installed Rust-audio samples must also show
+     `activeCapture.healthRestartCount=0`,
+     `activeCapture.healthRestartThrottleCount=0`, and empty active-capture
+     health failure/restart-error fields, so a recovered capture stall cannot
+     pass as stable installed evidence. Provider-backed transcript quality and
+     latency still require the separate Python/Rust hot-path comparison
+     artifact.
    - Implemented: installed live-recording smoke runners can now request
      `SCRIBER_AUDIO_ENGINE=rust-prototype` plus the explicit Rust sidecar
      capture mode via `-LiveRecordingAudioEngine rust-prototype

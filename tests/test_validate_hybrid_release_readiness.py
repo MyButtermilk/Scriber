@@ -759,6 +759,10 @@ def write_installed_live_recording_smoke_report(
     source_endpoint_selection_mode: str = "default",
     source_endpoint_selection_used_default: bool = True,
     mic_always_on: bool = True,
+    active_capture_health_restart_count: int = 0,
+    active_capture_health_restart_throttle_count: int = 0,
+    active_capture_last_health_failure_reason: str = "",
+    active_capture_last_health_restart_error: str = "",
 ) -> None:
     if stability_duration_sec is None:
         stability_duration_sec = duration_sec
@@ -815,6 +819,10 @@ def write_installed_live_recording_smoke_report(
                     "framePipeSequenceErrorCount": frame_pipe_sequence_errors,
                     "framePipeProtocolErrorCount": frame_pipe_protocol_errors,
                     "framePipePrebufferAfterLiveCount": frame_pipe_prebuffer_after_live,
+                    "healthRestartCount": active_capture_health_restart_count,
+                    "healthRestartThrottleCount": active_capture_health_restart_throttle_count,
+                    "lastHealthFailureReason": active_capture_last_health_failure_reason,
+                    "lastHealthRestartError": active_capture_last_health_restart_error,
                 },
                 "rustAudioFallbackCircuit": {
                     "available": True,
@@ -1243,6 +1251,8 @@ def test_validate_release_readiness_accepts_installed_live_recording_rust_audio_
     assert rust_evidence["audioDiagnosticsSampleCount"] == rust_evidence["sampleCount"]
     assert rust_evidence["rustFramePipeSampleCount"] == rust_evidence["sampleCount"]
     assert rust_evidence["fallbackCircuitOpenCount"] == 0
+    assert rust_evidence["activeCaptureHealthRestartSampleCount"] == 0
+    assert rust_evidence["activeCaptureHealthRestartThrottleSampleCount"] == 0
 
 
 def test_validate_release_readiness_rejects_installed_rust_live_recording_without_always_on_mic(tmp_path: Path) -> None:
@@ -1313,6 +1323,115 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_withou
     live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
     failures = "\n".join(live_check["failures"])
     assert "sourceEndpointSelectionMode must be default" in failures
+
+
+def test_validate_release_readiness_rejects_installed_rust_live_recording_with_capture_restarts(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    live_recording_report = tmp_path / "installed-live-recording-smoke.json"
+    write_installed_live_recording_smoke_report(
+        live_recording_report,
+        duration_sec=600,
+        audio_engine="rust-prototype",
+        rust_audio_requested=True,
+        rust_audio_available=True,
+        frame_source="rust-frame-pipe",
+        active_capture_health_restart_count=1,
+        active_capture_health_restart_throttle_count=1,
+        active_capture_last_health_failure_reason="staleCallbacks",
+        active_capture_last_health_restart_error="restart failed",
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        installed_live_recording_smoke_report=live_recording_report,
+        require_installed_live_recording_smoke=True,
+        require_installed_live_recording_rust_audio=True,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    failures = "\n".join(live_check["failures"])
+    rust_evidence = live_check["details"]["rustAudioEvidence"]
+    assert rust_evidence["activeCaptureHealthRestartSampleCount"] == rust_evidence["sampleCount"]
+    assert rust_evidence["activeCaptureHealthRestartThrottleSampleCount"] == rust_evidence["sampleCount"]
+    assert "activeCapture.healthRestartCount must be 0" in failures
+
+
+def test_validate_release_readiness_rejects_installed_rust_live_recording_with_capture_health_failures(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    live_recording_report = tmp_path / "installed-live-recording-smoke.json"
+    write_installed_live_recording_smoke_report(
+        live_recording_report,
+        duration_sec=600,
+        audio_engine="rust-prototype",
+        rust_audio_requested=True,
+        rust_audio_available=True,
+        frame_source="rust-frame-pipe",
+        active_capture_health_restart_throttle_count=1,
+        active_capture_last_health_failure_reason="staleCallbacks",
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        installed_live_recording_smoke_report=live_recording_report,
+        require_installed_live_recording_smoke=True,
+        require_installed_live_recording_rust_audio=True,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    failures = "\n".join(live_check["failures"])
+    assert "activeCapture.healthRestartThrottleCount must be 0" in failures
+
+
+def test_validate_release_readiness_rejects_installed_rust_live_recording_with_lingering_health_failure_reason(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    live_recording_report = tmp_path / "installed-live-recording-smoke.json"
+    write_installed_live_recording_smoke_report(
+        live_recording_report,
+        duration_sec=600,
+        audio_engine="rust-prototype",
+        rust_audio_requested=True,
+        rust_audio_available=True,
+        frame_source="rust-frame-pipe",
+        active_capture_last_health_failure_reason="staleCallbacks",
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        installed_live_recording_smoke_report=live_recording_report,
+        require_installed_live_recording_smoke=True,
+        require_installed_live_recording_rust_audio=True,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    failures = "\n".join(live_check["failures"])
+    assert "activeCapture.lastHealthFailureReason must be empty" in failures
 
 
 def test_validate_release_readiness_rejects_stale_installed_live_recording_rust_audio_counters(tmp_path: Path) -> None:

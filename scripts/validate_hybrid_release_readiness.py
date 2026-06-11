@@ -1186,11 +1186,15 @@ def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict
             "audioDiagnosticsSampleCount": 0,
             "rustFramePipeSampleCount": 0,
             "fallbackCircuitOpenCount": 0,
+            "activeCaptureHealthRestartSampleCount": 0,
+            "activeCaptureHealthRestartThrottleSampleCount": 0,
         }
 
     audio_diagnostics_count = 0
     rust_frame_pipe_count = 0
     fallback_open_count = 0
+    active_capture_health_restart_count = 0
+    active_capture_health_restart_throttle_count = 0
     for sample in samples:
         if not isinstance(sample, dict):
             continue
@@ -1211,12 +1215,21 @@ def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict
             rust_frame_pipe_count += 1
         if isinstance(fallback_circuit, dict) and fallback_circuit.get("open") is True:
             fallback_open_count += 1
+        if isinstance(active_capture, dict):
+            restart_count = numeric_field(active_capture, "healthRestartCount")
+            if restart_count is not None and restart_count > 0:
+                active_capture_health_restart_count += 1
+            restart_throttle_count = numeric_field(active_capture, "healthRestartThrottleCount")
+            if restart_throttle_count is not None and restart_throttle_count > 0:
+                active_capture_health_restart_throttle_count += 1
 
     return {
         "sampleCount": len(samples),
         "audioDiagnosticsSampleCount": audio_diagnostics_count,
         "rustFramePipeSampleCount": rust_frame_pipe_count,
         "fallbackCircuitOpenCount": fallback_open_count,
+        "activeCaptureHealthRestartSampleCount": active_capture_health_restart_count,
+        "activeCaptureHealthRestartThrottleSampleCount": active_capture_health_restart_throttle_count,
     }
 
 
@@ -1280,6 +1293,28 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
             break
         if active_capture.get("streamActive") is not True:
             failures.append(f"installed live recording smoke sample {index} activeCapture.streamActive must be true")
+            break
+        health_restart_count = numeric_field(active_capture, "healthRestartCount")
+        if health_restart_count != 0:
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.healthRestartCount must be 0"
+            )
+            break
+        health_restart_throttle_count = numeric_field(active_capture, "healthRestartThrottleCount")
+        if health_restart_throttle_count != 0:
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.healthRestartThrottleCount must be 0"
+            )
+            break
+        if active_capture.get("lastHealthFailureReason") not in (None, ""):
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.lastHealthFailureReason must be empty"
+            )
+            break
+        if active_capture.get("lastHealthRestartError") not in (None, ""):
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.lastHealthRestartError must be empty"
+            )
             break
         callback_count = numeric_field(active_capture, "callbackCount")
         if callback_count is None or callback_count <= 0:

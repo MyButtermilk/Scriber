@@ -540,7 +540,12 @@ promotion evidence; that requires every stability sample to include compact
 audio diagnostics proving `audioEngine=rust-prototype`,
 `activeCapture.frameSource=rust-frame-pipe`, active callbacks, no frame-pipe
 sequence/protocol/prebuffer-order errors, and
-`rustAudioFallbackCircuit.open=false`. Rust-audio promotion evidence also
+`rustAudioFallbackCircuit.open=false`. The same compact diagnostics must show
+`activeCapture.healthRestartCount=0`,
+`activeCapture.healthRestartThrottleCount=0`, an empty
+`activeCapture.lastHealthFailureReason`, and an empty
+`activeCapture.lastHealthRestartError`, so a recovered active-capture stall does
+not pass as stable installed evidence. Rust-audio promotion evidence also
 requires `liveRecording.micAlwaysOn=true` and
 `audioDiagnostics.microphone.micAlwaysOn=true` in every stability sample, so
 the installed report proves the Always-On-Mic path was active instead of only
