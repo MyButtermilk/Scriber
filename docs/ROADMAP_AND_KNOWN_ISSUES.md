@@ -157,7 +157,9 @@ Rust audio:
   Rust promotion can now also require installed live-recording start/stop
   stability through `-RequireInstalledLiveRecordingSmoke` and
   `-MinInstalledLiveRecordingDurationSec`; this gates the app/installer path
-  separately from provider-backed transcript quality.
+  separately from provider-backed transcript quality and now validates managed
+  Tauri runtime metadata plus stability-sample coverage for the requested
+  recording duration.
   The recording hot-path benchmark now has strict provider/Rust promotion
   flags: `--require-provider-transcript` requires a final STT provider segment,
   and `--require-rust-audio-engine` verifies active `rust-prototype`

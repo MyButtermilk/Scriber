@@ -458,10 +458,13 @@ This validates an existing `installed-live-recording-smoke.json` produced by
 `scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke`,
 `scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec`, or
 `scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec` over an installed
-app. The report must show clean live recording start/stop state, no
-non-recording samples during the recording window, positive stability samples,
-and verified cleanup. It complements the provider-backed Python/Rust hot-path
-comparison; it does not replace transcript-quality evidence.
+app. The report must show a managed `tauri-supervised` runtime, healthy
+`apiVersion=1`/ready state, positive app/backend PID and backend-port metadata,
+clean live recording start/stop state, no non-recording samples during the
+recording window, stability samples that cover at least half of the expected
+probe count for the requested duration, and verified cleanup. It complements
+the provider-backed Python/Rust hot-path comparison; it does not replace
+transcript-quality evidence.
 
 When evaluating whether Tauri/Rust text injection can become more than an
 opt-in path, require safe target-window evidence as well:

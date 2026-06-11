@@ -699,7 +699,12 @@ try {
         audioSidecarExe = $audioSidecarExe
         dataDir = $DataDir
         installSize = $installSize
+        appPid = $smoke.appPid
+        backendPid = $smoke.backendPid
+        backendPort = $smoke.backendPort
         runtimeMode = $smoke.runtimeMode
+        apiVersion = $smoke.apiVersion
+        ready = $smoke.ready
         launchKind = $smoke.launchKind
         externalAttach = $smoke.externalAttach
         portConflict = $smoke.portConflict

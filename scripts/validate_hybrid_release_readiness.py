@@ -910,8 +910,14 @@ def validate_installed_live_recording_smoke_report(
 
     details.update(
         {
+            "appPid": smoke.get("appPid"),
+            "backendPid": smoke.get("backendPid"),
+            "backendPort": smoke.get("backendPort"),
             "runtimeMode": smoke.get("runtimeMode", ""),
+            "apiVersion": smoke.get("apiVersion", ""),
+            "ready": smoke.get("ready"),
             "launchKind": smoke.get("launchKind", ""),
+            "externalAttach": smoke.get("externalAttach"),
             "cleanupVerified": smoke.get("cleanupVerified"),
             "liveRecording": live_recording,
             "stability": stability,
@@ -919,6 +925,27 @@ def validate_installed_live_recording_smoke_report(
     )
     if smoke.get("ok") is not True:
         failures.append("installed live recording smoke report ok must be true")
+    if str(smoke.get("runtimeMode") or "") != "tauri-supervised":
+        failures.append("installed live recording smoke runtimeMode must be tauri-supervised")
+    if str(smoke.get("launchKind") or "") != "managed":
+        failures.append("installed live recording smoke launchKind must be managed")
+    if smoke.get("externalAttach") is True:
+        failures.append("installed live recording smoke must not use an external backend")
+    if smoke.get("ready") is not True:
+        failures.append("installed live recording smoke ready must be true")
+    if str(smoke.get("apiVersion") or "") != "1":
+        failures.append("installed live recording smoke apiVersion must be 1")
+    app_pid = numeric_field(smoke, "appPid")
+    backend_pid = numeric_field(smoke, "backendPid")
+    backend_port = numeric_field(smoke, "backendPort")
+    if app_pid is None or app_pid <= 0:
+        failures.append("installed live recording smoke appPid must be positive")
+    if backend_pid is None or backend_pid <= 0:
+        failures.append("installed live recording smoke backendPid must be positive")
+    if backend_port is None or backend_port <= 0:
+        failures.append("installed live recording smoke backendPort must be positive")
+    if app_pid is not None and backend_pid is not None and app_pid == backend_pid:
+        failures.append("installed live recording smoke appPid and backendPid must differ")
     if smoke.get("cleanupVerified") is not True:
         failures.append("installed live recording smoke cleanupVerified must be true")
     if live_recording.get("verified") is not True:
@@ -959,6 +986,29 @@ def validate_installed_live_recording_smoke_report(
         failures.append(
             f"installed live recording smoke stability.durationSec must be at least {min_duration_sec:g}"
         )
+    stability_backend_pid = numeric_field(stability, "backendPid")
+    if (
+        backend_pid is not None
+        and stability_backend_pid is not None
+        and stability_backend_pid != backend_pid
+    ):
+        failures.append("installed live recording smoke stability.backendPid must match backendPid")
+    probe_interval = numeric_field(stability, "probeIntervalSec") or numeric_field(
+        live_recording,
+        "probeIntervalSec",
+    )
+    if (
+        sample_count is not None
+        and stability_duration is not None
+        and probe_interval is not None
+        and probe_interval > 0
+    ):
+        min_sample_count = max(1, int((stability_duration / probe_interval) * 0.5))
+        if sample_count < min_sample_count:
+            failures.append(
+                "installed live recording smoke stability.sampleCount must cover at least "
+                f"50% of expected probes ({sample_count:g} < {min_sample_count})"
+            )
 
     samples = stability.get("samples")
     if not isinstance(samples, list) or not samples:
@@ -970,11 +1020,31 @@ def validate_installed_live_recording_smoke_report(
                 continue
             recording_state = str(sample.get("recordingState") or "")
             listening = sample.get("listening") is True
+            if sample.get("healthReady") is not True:
+                failures.append(f"installed live recording smoke sample {index} healthReady must be true")
+                break
+            sample_backend_pid = numeric_field(sample, "backendPid")
+            if (
+                backend_pid is not None
+                and sample_backend_pid is not None
+                and sample_backend_pid != backend_pid
+            ):
+                failures.append(f"installed live recording smoke sample {index} backendPid must match backendPid")
+                break
+            sample_elapsed = numeric_field(sample, "elapsedSec")
+            if sample_elapsed is None or sample_elapsed < 0:
+                failures.append(f"installed live recording smoke sample {index} elapsedSec must be non-negative")
+                break
             if recording_state != "recording" and not listening:
                 failures.append(
                     f"installed live recording smoke sample {index} must remain in recording or listening state"
                 )
                 break
+        if stability_duration is not None and samples:
+            last_sample = samples[-1]
+            last_elapsed = numeric_field(last_sample, "elapsedSec") if isinstance(last_sample, dict) else None
+            if last_elapsed is None or last_elapsed < stability_duration * 0.75:
+                failures.append("installed live recording smoke samples must span at least 75% of stability.durationSec")
 
     return ReadinessCheck("installedLiveRecordingSmoke", not failures, failures, details)
 

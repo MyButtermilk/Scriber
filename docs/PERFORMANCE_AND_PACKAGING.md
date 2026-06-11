@@ -1035,11 +1035,13 @@ Implementation plan:
    - Implemented: final readiness can require an installed live-recording smoke
      with `-RequireInstalledLiveRecordingSmoke` and
      `-MinInstalledLiveRecordingDurationSec`. The validator accepts reports from
-     the installed desktop smoke path and requires clean start/stop state,
-     verified cleanup, positive stability samples, and zero non-recording
-     samples during active capture. This is a default-path app/installer gate;
-     provider-backed transcript quality and latency still require the separate
-     Python/Rust hot-path comparison artifact.
+     the installed desktop smoke path and requires a managed `tauri-supervised`
+     runtime, healthy API version/ready state, positive app/backend process and
+     port metadata, clean start/stop state, verified cleanup, sufficient
+     stability-sample coverage for the requested duration, and zero
+     non-recording samples during active capture. This is a default-path
+     app/installer gate; provider-backed transcript quality and latency still
+     require the separate Python/Rust hot-path comparison artifact.
    - Local evidence from 2026-06-10: a direct Windows WASAPI prewarm smoke
      passed with
      `python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 0.5 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-current.json`.

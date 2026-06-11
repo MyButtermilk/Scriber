@@ -680,49 +680,76 @@ def write_installed_live_recording_smoke_report(
     path: Path,
     *,
     ok: bool = True,
+    runtime_mode: str = "tauri-supervised",
+    launch_kind: str = "managed",
+    api_version: str = "1",
+    ready: bool = True,
+    external_attach: bool = False,
+    app_pid: int = 1111,
+    backend_pid: int = 2222,
+    backend_port: int = 8765,
     cleanup_verified: bool = True,
     live_verified: bool = True,
     duration_sec: float = 600,
     stability_duration_sec: float | None = None,
     non_recording_sample_count: int = 0,
-    sample_count: int = 3,
+    sample_count: int | None = None,
+    probe_interval_sec: int = 5,
+    health_ready: bool = True,
     stopped_listening: bool = False,
     started_recording_state: str = "recording",
     stopped_recording_state: str = "idle",
 ) -> None:
     if stability_duration_sec is None:
         stability_duration_sec = duration_sec
+    if sample_count is None:
+        sample_count = max(1, int(stability_duration_sec / max(1, probe_interval_sec)))
     samples = []
     for index in range(max(0, sample_count)):
+        elapsed_sec = (
+            0.0
+            if sample_count <= 1
+            else round((stability_duration_sec / (sample_count - 1)) * index, 2)
+        )
         if non_recording_sample_count > 0 and index == 0:
             samples.append(
                 {
                     "index": index + 1,
+                    "elapsedSec": elapsed_sec,
+                    "backendPid": backend_pid,
                     "recordingState": "idle",
                     "listening": False,
-                    "healthReady": True,
+                    "healthReady": health_ready,
                 }
             )
         else:
             samples.append(
                 {
                     "index": index + 1,
+                    "elapsedSec": elapsed_sec,
+                    "backendPid": backend_pid,
                     "recordingState": "recording",
                     "listening": True,
-                    "healthReady": True,
+                    "healthReady": health_ready,
                 }
             )
     path.write_text(
         json.dumps(
             {
                 "ok": ok,
-                "runtimeMode": "tauri-supervised",
-                "launchKind": "managed",
+                "appPid": app_pid,
+                "backendPid": backend_pid,
+                "backendPort": backend_port,
+                "runtimeMode": runtime_mode,
+                "apiVersion": api_version,
+                "ready": ready,
+                "launchKind": launch_kind,
+                "externalAttach": external_attach,
                 "cleanupVerified": cleanup_verified,
                 "liveRecording": {
                     "verified": live_verified,
                     "durationSec": duration_sec,
-                    "probeIntervalSec": 5,
+                    "probeIntervalSec": probe_interval_sec,
                     "startResponseOk": True,
                     "startedRecordingState": started_recording_state,
                     "startedListening": True,
@@ -734,8 +761,9 @@ def write_installed_live_recording_smoke_report(
                     "stability": {
                         "verified": True,
                         "durationSec": stability_duration_sec,
-                        "probeIntervalSec": 5,
+                        "probeIntervalSec": probe_interval_sec,
                         "sampleCount": sample_count,
+                        "backendPid": backend_pid,
                         "backendWorkingSetPeakGrowthMb": 1.0,
                         "combinedCpuAvgPercent": 1.0,
                         "samples": samples,
@@ -1026,7 +1054,10 @@ def test_validate_release_readiness_accepts_required_installed_live_recording_sm
     assert result["ok"] is True
     live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
     assert live_check["details"]["liveRecording"]["durationSec"] == 600
-    assert live_check["details"]["stability"]["sampleCount"] == 3
+    assert live_check["details"]["runtimeMode"] == "tauri-supervised"
+    assert live_check["details"]["launchKind"] == "managed"
+    assert live_check["details"]["ready"] is True
+    assert live_check["details"]["stability"]["sampleCount"] >= 60
 
 
 def test_validate_release_readiness_rejects_missing_required_installed_live_recording_smoke(tmp_path: Path) -> None:
@@ -1080,6 +1111,76 @@ def test_validate_release_readiness_rejects_weak_installed_live_recording_smoke(
     )
     assert "installed live recording smoke nonRecordingSampleCount must be 0" in live_check["failures"]
     assert any("sample 1 must remain in recording or listening state" in failure for failure in live_check["failures"])
+
+
+def test_validate_release_readiness_rejects_non_installed_live_recording_metadata(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    live_recording_report = tmp_path / "installed-live-recording-smoke.json"
+    write_installed_live_recording_smoke_report(
+        live_recording_report,
+        runtime_mode="dev",
+        launch_kind="external-python",
+        external_attach=True,
+        ready=False,
+        api_version="0",
+        app_pid=2222,
+        backend_pid=2222,
+        backend_port=0,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        installed_live_recording_smoke_report=live_recording_report,
+        require_installed_live_recording_smoke=True,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    failures = live_check["failures"]
+    assert "installed live recording smoke runtimeMode must be tauri-supervised" in failures
+    assert "installed live recording smoke launchKind must be managed" in failures
+    assert "installed live recording smoke must not use an external backend" in failures
+    assert "installed live recording smoke ready must be true" in failures
+    assert "installed live recording smoke apiVersion must be 1" in failures
+    assert "installed live recording smoke backendPort must be positive" in failures
+    assert "installed live recording smoke appPid and backendPid must differ" in failures
+
+
+def test_validate_release_readiness_rejects_sparse_installed_live_recording_samples(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    live_recording_report = tmp_path / "installed-live-recording-smoke.json"
+    write_installed_live_recording_smoke_report(
+        live_recording_report,
+        duration_sec=600,
+        stability_duration_sec=600,
+        sample_count=3,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        installed_live_recording_smoke_report=live_recording_report,
+        require_installed_live_recording_smoke=True,
+        min_installed_live_recording_duration_sec=600,
+    )
+
+    assert result["ok"] is False
+    live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
+    assert any("stability.sampleCount must cover at least 50% of expected probes" in failure for failure in live_check["failures"])
 
 
 def test_validate_release_readiness_accepts_required_tauri_text_injection_smoke(tmp_path: Path) -> None:

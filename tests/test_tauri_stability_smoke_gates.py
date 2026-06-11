@@ -411,6 +411,11 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
     assert "[switch]$DisableLiveTextInjection" in installer
     assert '"-LiveRecordingDurationSec", $LiveRecordingDurationSec.ToString()' in installer
     assert '"-DisableLiveTextInjection"' in installer
+    assert "appPid = $smoke.appPid" in installer
+    assert "backendPid = $smoke.backendPid" in installer
+    assert "backendPort = $smoke.backendPort" in installer
+    assert "apiVersion = $smoke.apiVersion" in installer
+    assert "ready = $smoke.ready" in installer
     assert "liveRecording = $smoke.liveRecording" in installer
 
     assert "[switch]$RunInstallerLiveRecordingSmoke" in build
