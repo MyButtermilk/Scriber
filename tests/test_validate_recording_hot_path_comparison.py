@@ -19,6 +19,8 @@ def recording_report(
     sample_count: int = 3,
     record_seconds: float = 2.0,
     mic_always_on: bool | None = None,
+    rust_prewarm_adopted: bool = True,
+    rust_prewarm_raw_id: bool = False,
 ) -> dict:
     if mic_always_on is None:
         mic_always_on = bool(rust_capture)
@@ -37,6 +39,27 @@ def recording_report(
             "status": "measured",
             "matchingSamples": sample_count,
         }
+    active_capture = {
+        "engine": "rust-prototype" if rust_capture else "python",
+        "frameSource": "rust-frame-pipe" if rust_capture else "sounddevice",
+        "callbackCount": 12,
+        "nativeEndpointIdHash": "hash" if rust_capture else None,
+    }
+    if rust_capture:
+        rust_adoption = {
+            "adopted": rust_prewarm_adopted,
+            "prewarmIdHash": "prewarm-hash" if rust_prewarm_adopted else "",
+            "signature": {
+                "device_preference": "default",
+                "sample_rate": 16000,
+                "target_channels": 1,
+                "block_size": 160,
+            },
+        }
+        if rust_prewarm_raw_id:
+            rust_adoption["prewarmId"] = "raw-prewarm-id"
+        active_capture["rustPrewarmAdoption"] = rust_adoption
+
     sample = {
         "ok": True,
         "segments": {
@@ -63,12 +86,7 @@ def recording_report(
                     "reason": "pipeClosed" if fallback_circuit_open else "",
                     "remainingSeconds": 12.5 if fallback_circuit_open else None,
                 },
-                "activeCapture": {
-                    "engine": "rust-prototype" if rust_capture else "python",
-                    "frameSource": "rust-frame-pipe" if rust_capture else "sounddevice",
-                    "callbackCount": 12,
-                    "nativeEndpointIdHash": "hash" if rust_capture else None,
-                }
+                "activeCapture": active_capture,
             }
         },
     }
@@ -133,6 +151,7 @@ def test_recording_hot_path_comparison_accepts_provider_backed_rust_evidence() -
     assert result["reports"]["python"]["audioEngine"] == "python"
     assert result["reports"]["rust"]["audioEngine"] == "rust-prototype"
     assert result["reports"]["rust"]["micAlwaysOn"] is True
+    assert result["reports"]["rust"]["rustPrewarmAdopted"] is True
     assert result["summary"]["completeSegmentCount"] > 0
     first_audio = result["segments"]["hotkey_received_to_first_audio_frame_ms"]
     assert first_audio["rustMinusPythonP95Ms"] == -40.0
@@ -268,6 +287,49 @@ def test_recording_hot_path_comparison_rejects_rust_without_always_on_mic() -> N
     assert check["ok"] is False
     assert check["details"]["micAlwaysOnSnapshotCount"] == 0
     assert result["reports"]["rust"]["micAlwaysOn"] is False
+
+
+def test_recording_hot_path_comparison_rejects_rust_without_prewarm_adoption() -> None:
+    result = build_comparison(
+        recording_report(engine="python"),
+        recording_report(
+            engine="rust-prototype",
+            rust_capture=True,
+            rust_prewarm_adopted=False,
+        ),
+    )
+
+    assert result["ok"] is False
+    assert (
+        "Rust report must prove adopted Rust prewarm evidence during provider-backed comparison"
+        in result["failures"]
+    )
+    check = next(item for item in result["checks"] if item["name"] == "rustPrewarmAdoption")
+    assert check["ok"] is False
+    assert check["details"]["framePipeSampleCount"] == 3
+    assert check["details"]["adoptedSampleCount"] == 0
+    assert check["details"]["missingOrWeakSampleCount"] == 3
+    assert result["reports"]["rust"]["rustPrewarmAdopted"] is False
+
+
+def test_recording_hot_path_comparison_rejects_raw_prewarm_id() -> None:
+    result = build_comparison(
+        recording_report(engine="python"),
+        recording_report(
+            engine="rust-prototype",
+            rust_capture=True,
+            rust_prewarm_raw_id=True,
+        ),
+    )
+
+    assert result["ok"] is False
+    assert (
+        "Rust report must prove adopted Rust prewarm evidence during provider-backed comparison"
+        in result["failures"]
+    )
+    check = next(item for item in result["checks"] if item["name"] == "rustPrewarmAdoption")
+    assert check["ok"] is False
+    assert check["details"]["rawPrewarmIdSampleCount"] == 3
 
 
 def test_recording_hot_path_comparison_rejects_unredacted_input_reports() -> None:

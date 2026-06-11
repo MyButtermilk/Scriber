@@ -431,7 +431,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\measure_hybrid_basel
 This requires real provider credentials, microphone access, and explicit Rust
 audio prototype environment flags. It proves the STT provider emitted a final
 transcript and the active recording diagnostics used `rust-prototype` with the
-`rust-frame-pipe` source, but it does not replace long physical matrix evidence.
+`rust-frame-pipe` source. Promotion evidence must also prove adopted Rust
+prewarm via `activeCapture.rustPrewarmAdoption` with a redacted prewarm hash;
+on-demand Rust capture alone does not replace long physical matrix evidence.
 
 Python-vs-Rust provider-backed comparison artifact:
 
@@ -458,6 +460,8 @@ Use `-RunRecordingHotPathComparison` on the aggregate runner when provider
 credentials and the app under test are available; it invokes
 `scripts\run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic` before final
 validation.
+The comparison artifact must contain passing `rustAlwaysOnMic` and
+`rustPrewarmAdoption` checks for Rust audio promotion.
 
 Rust audio promotion readiness gate:
 

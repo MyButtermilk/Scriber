@@ -185,11 +185,12 @@ Rust audio:
   artifact, and `run_hybrid_release_readiness.ps1` can gate it with
   `-RequireRecordingHotPathComparison`. The comparison validator also requires
   the same STT provider, the same benchmark configuration, active
-  `micAlwaysOn=true` Rust evidence, and rejects an open Rust fallback circuit
-  in the Rust report. Final readiness now also requires at least three samples
-  per engine, so one-shot comparison artifacts are not acceptable Rust
-  promotion evidence. The same artifact now also fails Rust promotion when
-  local audio-owned P95 hot-path segments regress clearly against Python; the
+  `micAlwaysOn=true` Rust evidence, adopted Rust prewarm evidence on every
+  `rust-frame-pipe` sample, and rejects an open Rust fallback circuit in the
+  Rust report. Final readiness now also requires at least three samples per
+  engine, so one-shot comparison artifacts are not acceptable Rust promotion
+  evidence. The same artifact now also fails Rust promotion when local
+  audio-owned P95 hot-path segments regress clearly against Python; the
   provider-finalize and total stop-to-text values stay diagnostic-only because
   they are network/provider dominated.
   `scripts/run_recording_hot_path_comparison.ps1` now orchestrates the Python

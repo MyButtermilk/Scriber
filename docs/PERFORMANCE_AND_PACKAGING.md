@@ -1186,7 +1186,9 @@ Implementation plan:
      report-level `requested` object, requires active
      `rust-prototype`/`rust-frame-pipe` capture in the Rust report, rejects an
      open Rust fallback circuit in that report, requires `micAlwaysOn=true`
-     evidence in the Rust report, and records segment deltas such as
+     evidence in the Rust report, requires each Rust `rust-frame-pipe` sample to
+     prove `activeCapture.rustPrewarmAdoption.adopted=true` with a redacted
+     prewarm hash and no raw prewarm ID, and records segment deltas such as
      hotkey-to-first-frame, provider-finalize, and stop-to-text-injection.
      The final readiness validator and
      `scripts/run_hybrid_release_readiness.ps1` can require this artifact with
@@ -1194,17 +1196,18 @@ Implementation plan:
      `-RequireRecordingHotPathComparison`.
      The final readiness validator now requires the comparison artifact's
      `sameProvider`, `sameRecordingConfig`, `rustFallbackCircuitClosed`, and
-     `rustAlwaysOnMic` checks alongside `rustAudioEngine`, and it requires at
-     least three samples per engine plus no clear P95 regression in local
-     audio-owned segments.
+     `rustAlwaysOnMic` checks alongside `rustAudioEngine` and
+     `rustPrewarmAdoption`, and it requires at least three samples per engine
+     plus no clear P95 regression in local audio-owned segments.
      This gate cannot be bypassed by passing a stale, one-shot, mismatched, or
      clearly slower comparison schema.
      The comparison validator also rejects unredacted source reports containing
      raw `SWD\MMDEVAPI\...` endpoint IDs, raw `\\.\pipe\scriber-*` pipe names,
      or non-redacted token fields, so sensitive hot-path evidence cannot become
      promotion input. Final hybrid readiness requires that
-     `inputReportRedaction` check to be present and passing, so stale
-     comparison artifacts from before this gate fail Rust promotion.
+     `inputReportRedaction` and `rustPrewarmAdoption` checks to be present and
+     passing, so stale comparison artifacts from before this gate fail Rust
+     promotion.
      Provider-finalize and total stop-to-text values remain reported but are not
      part of the local-audio regression gate because they are dominated by
      network/STT provider latency.

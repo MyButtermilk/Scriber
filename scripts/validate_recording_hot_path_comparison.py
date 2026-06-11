@@ -183,6 +183,64 @@ def has_rust_frame_pipe(report: dict[str, Any]) -> bool:
     )
 
 
+def rust_prewarm_adoption_check(report: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    frame_pipe_samples = 0
+    adopted_samples = 0
+    missing_samples: list[dict[str, Any]] = []
+    raw_id_samples: list[dict[str, Any]] = []
+    sample_details: list[dict[str, Any]] = []
+
+    for sample in report_samples(report):
+        during = sample.get("audioDiagnosticsDuringRecording")
+        if not isinstance(during, dict):
+            continue
+        active = ((during.get("microphone") or {}).get("activeCapture") or {})
+        if not isinstance(active, dict) or not active:
+            continue
+        if (
+            active.get("engine") != RUST_AUDIO_ACTIVE_ENGINE
+            or active.get("frameSource") != RUST_AUDIO_FRAME_SOURCE
+        ):
+            continue
+
+        frame_pipe_samples += 1
+        source = f"sample:{sample.get('iteration')}"
+        adoption = active.get("rustPrewarmAdoption")
+        adoption_is_object = isinstance(adoption, dict)
+        has_hash = False
+        adopted = False
+        has_raw_id = False
+        if adoption_is_object:
+            has_hash = bool(adoption.get("prewarmIdHash") or adoption.get("prewarm_idHash"))
+            adopted = adoption.get("adopted") is True
+            has_raw_id = "prewarmId" in adoption or "prewarm_id" in adoption
+
+        detail = {
+            "source": source,
+            "adoptionObject": adoption_is_object,
+            "adopted": adopted,
+            "hasPrewarmIdHash": has_hash,
+            "hasRawPrewarmId": has_raw_id,
+        }
+        if len(sample_details) < 5:
+            sample_details.append(detail)
+        if has_raw_id:
+            raw_id_samples.append(detail)
+        if adoption_is_object and adopted and has_hash and not has_raw_id:
+            adopted_samples += 1
+        else:
+            missing_samples.append(detail)
+
+    ok = frame_pipe_samples > 0 and adopted_samples == frame_pipe_samples and not raw_id_samples
+    return ok, {
+        "framePipeSampleCount": frame_pipe_samples,
+        "adoptedSampleCount": adopted_samples,
+        "missingOrWeakSampleCount": len(missing_samples),
+        "rawPrewarmIdSampleCount": len(raw_id_samples),
+        "samples": sample_details,
+    }
+
+
 def _normalized_windows_identifier(value: str) -> str:
     normalized = str(value).lower().replace("/", "\\")
     for _ in range(6):
@@ -470,6 +528,13 @@ def build_comparison(
             always_on_details,
             "Rust report must prove MIC always-on was enabled during provider-backed comparison",
         )
+        prewarm_adoption_ok, prewarm_adoption_details = rust_prewarm_adoption_check(rust_report)
+        add_check(
+            "rustPrewarmAdoption",
+            prewarm_adoption_ok,
+            prewarm_adoption_details,
+            "Rust report must prove adopted Rust prewarm evidence during provider-backed comparison",
+        )
 
     if require_python_engine:
         engine = audio_engine(python_report)
@@ -528,6 +593,7 @@ def build_comparison(
                 "samples": len(report_samples(rust_report)),
                 "requested": comparable_recording_config(rust_report) or {},
                 "micAlwaysOn": rust_always_on_mic_check(rust_report)[0],
+                "rustPrewarmAdopted": rust_prewarm_adoption_check(rust_report)[0],
             },
         },
         "segments": segments,
