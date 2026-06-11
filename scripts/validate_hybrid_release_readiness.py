@@ -801,10 +801,12 @@ def validate_recording_hot_path_comparison_report(
     *,
     required: bool,
 ) -> ReadinessCheck:
+    min_samples_per_report = 3
     failures: list[str] = []
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
         "required": required,
+        "minSamplesPerReport": min_samples_per_report,
     }
     if report_path is None:
         if required:
@@ -854,9 +856,20 @@ def validate_recording_hot_path_comparison_report(
         failures.append("recording hot-path comparison Python report must use audioEngine=python")
     if not isinstance(rust_report, dict) or rust_report.get("audioEngine") != "rust-prototype":
         failures.append("recording hot-path comparison Rust report must use audioEngine=rust-prototype")
+    python_samples = numeric_field(python_report, "samples") if isinstance(python_report, dict) else None
+    rust_samples = numeric_field(rust_report, "samples") if isinstance(rust_report, dict) else None
+    if python_samples is None or python_samples < min_samples_per_report:
+        failures.append(
+            f"recording hot-path comparison Python report must include at least {min_samples_per_report} samples"
+        )
+    if rust_samples is None or rust_samples < min_samples_per_report:
+        failures.append(
+            f"recording hot-path comparison Rust report must include at least {min_samples_per_report} samples"
+        )
 
     for check_name in (
         "physicalReports",
+        "sampleCount",
         "providerTranscript",
         "sameProvider",
         "rustAudioEngine",

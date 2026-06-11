@@ -545,6 +545,7 @@ def write_recording_hot_path_comparison_report(
     rust_ok: bool = True,
     fallback_circuit_ok: bool = True,
     same_provider_ok: bool = True,
+    samples: int = 3,
 ) -> None:
     path.write_text(
         json.dumps(
@@ -553,13 +554,22 @@ def write_recording_hot_path_comparison_report(
                 "ok": ok,
                 "failures": [] if ok else ["comparison failed"],
                 "reports": {
-                    "python": {"provider": "azure_mai", "audioEngine": "python", "samples": 1},
-                    "rust": {"provider": "azure_mai", "audioEngine": "rust-prototype", "samples": 1},
+                    "python": {"provider": "azure_mai", "audioEngine": "python", "samples": samples},
+                    "rust": {"provider": "azure_mai", "audioEngine": "rust-prototype", "samples": samples},
                 },
                 "checks": [
                     {"name": "pythonReportOk", "ok": True, "details": {}},
                     {"name": "rustReportOk", "ok": True, "details": {}},
                     {"name": "physicalReports", "ok": True, "details": {}},
+                    {
+                        "name": "sampleCount",
+                        "ok": samples >= 3,
+                        "details": {
+                            "pythonSamples": samples,
+                            "rustSamples": samples,
+                            "minSamplesPerReport": 3,
+                        },
+                    },
                     {"name": "providerTranscript", "ok": True, "details": {}},
                     {
                         "name": "sameProvider",
@@ -726,6 +736,33 @@ def test_validate_release_readiness_rejects_weak_recording_hot_path_comparison(t
         check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
     )
     assert "recording hot-path comparison check failed: rustAudioEngine" in comparison_check["failures"]
+
+
+def test_validate_release_readiness_rejects_too_few_recording_hot_path_samples(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
+    write_recording_hot_path_comparison_report(comparison_report, samples=1)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        recording_hot_path_comparison_report=comparison_report,
+        require_recording_hot_path_comparison=True,
+    )
+
+    assert result["ok"] is False
+    comparison_check = next(
+        check for check in result["checks"] if check["name"] == "recordingHotPathPythonRustComparison"
+    )
+    assert "recording hot-path comparison check failed: sampleCount" in comparison_check["failures"]
+    assert "recording hot-path comparison Python report must include at least 3 samples" in comparison_check["failures"]
+    assert "recording hot-path comparison Rust report must include at least 3 samples" in comparison_check["failures"]
 
 
 def test_validate_release_readiness_rejects_open_rust_fallback_circuit_comparison(tmp_path: Path) -> None:

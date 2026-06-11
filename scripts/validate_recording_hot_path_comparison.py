@@ -169,6 +169,7 @@ def build_comparison(
     require_rust_audio: bool = True,
     require_python_engine: bool = True,
     allow_validate_only: bool = False,
+    min_samples_per_report: int = 1,
 ) -> dict[str, Any]:
     failures: list[str] = []
     checks: list[dict[str, Any]] = []
@@ -189,6 +190,19 @@ def build_comparison(
         rust_report.get("ok") is True,
         {"ok": rust_report.get("ok"), "schemaVersion": rust_report.get("schemaVersion")},
         "Rust recording hot-path report ok must be true",
+    )
+    python_sample_count = len(report_samples(python_report))
+    rust_sample_count = len(report_samples(rust_report))
+    min_samples = max(1, int(min_samples_per_report))
+    add_check(
+        "sampleCount",
+        python_sample_count >= min_samples and rust_sample_count >= min_samples,
+        {
+            "pythonSamples": python_sample_count,
+            "rustSamples": rust_sample_count,
+            "minSamplesPerReport": min_samples,
+        },
+        f"Python and Rust reports must each include at least {min_samples} sample(s)",
     )
     if not allow_validate_only:
         add_check(
@@ -309,6 +323,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--no-require-provider-transcript", action="store_true")
     parser.add_argument("--no-require-rust-audio", action="store_true")
     parser.add_argument("--no-require-python-engine", action="store_true")
+    parser.add_argument("--min-samples-per-report", type=int, default=1)
     return parser.parse_args(argv)
 
 
@@ -330,6 +345,7 @@ def main(argv: list[str] | None = None) -> int:
         require_rust_audio=not args.no_require_rust_audio,
         require_python_engine=not args.no_require_python_engine,
         allow_validate_only=args.allow_validate_only,
+        min_samples_per_report=args.min_samples_per_report,
     )
     write_result(result, args.output)
     return 0 if result.get("ok") else 1

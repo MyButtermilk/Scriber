@@ -23,7 +23,7 @@ param(
     [string]$PythonPath = "",
     [string]$BackendExePath = "",
     [string]$LegacyDataDir = "",
-    [int]$RecordingHotPathIterations = 1,
+    [int]$RecordingHotPathIterations = 3,
     [double]$RecordingHotPathSeconds = 2.0,
     [int]$RecordingHotPathTimeoutSec = 60,
     [string]$RecordingHotPathSpeechPrompt = "Scriber provider-backed Rust audio validation",
@@ -275,6 +275,8 @@ $comparisonArgs = @(
     $PythonHotPathReport,
     "--rust-report",
     $RustHotPathReport,
+    "--min-samples-per-report",
+    ([string]$RecordingHotPathIterations),
     "--output",
     $ComparisonOutput
 )

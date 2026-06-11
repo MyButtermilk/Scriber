@@ -241,7 +241,9 @@ For Rust audio promotion, run the recording hot-path benchmark once with the
 default Python engine and once with `SCRIBER_AUDIO_ENGINE=rust-prototype`, then
 turn both provider-backed reports into the required comparison artifact. Both
 runs must use the same STT provider; provider mismatches are rejected because
-they make latency deltas ambiguous:
+they make latency deltas ambiguous. The dedicated runner defaults to three
+recording samples per engine, and final readiness rejects comparison artifacts
+with fewer than three Python or Rust samples:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_recording_hot_path_comparison.ps1 `
@@ -258,6 +260,7 @@ the second pass, and finally calls:
 python scripts\validate_recording_hot_path_comparison.py `
   --python-report tmp\hybrid-baseline\python-recording-hot-path-baseline-recording-hot-path-1.json `
   --rust-report tmp\hybrid-baseline\rust-recording-hot-path-baseline-recording-hot-path-1.json `
+  --min-samples-per-report 3 `
   --output tmp\hybrid-baseline\recording-hot-path-python-rust-comparison.json
 ```
 

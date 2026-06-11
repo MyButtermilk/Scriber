@@ -119,6 +119,7 @@ def test_recording_hot_path_comparison_runner_plan_only_wires_python_and_rust_ru
     assert "validate_recording_hot_path_comparison.py" in comparison_command
     assert "--python-report" in comparison_command
     assert "--rust-report" in comparison_command
+    assert "--min-samples-per-report 2" in comparison_command
     assert "--output" in comparison_command
 
 
@@ -139,6 +140,9 @@ def test_recording_hot_path_comparison_runner_plan_only_can_select_synthetic_cap
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
+    commands = {entry["name"]: entry for entry in payload["commands"]}
+    assert "-RecordingHotPathIterations 3" in commands["pythonRecordingHotPath"]["command"]
+    assert "--min-samples-per-report 3" in commands["comparisonValidation"]["command"]
     rust_env = next(entry for entry in payload["commands"] if entry["name"] == "rustRecordingHotPath")[
         "environment"
     ]

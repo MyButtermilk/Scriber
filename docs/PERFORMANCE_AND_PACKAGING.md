@@ -1044,14 +1044,17 @@ Implementation plan:
      `-RequireRecordingHotPathComparison`.
      The final readiness validator now requires the comparison artifact's
      `sameProvider` and `rustFallbackCircuitClosed` checks alongside
-     `rustAudioEngine`, so this gate cannot be bypassed by passing a stale
-     comparison schema.
+     `rustAudioEngine`, and it requires at least three samples per engine, so
+     this gate cannot be bypassed by passing a stale or one-shot comparison
+     schema.
    - Implemented: `scripts/run_recording_hot_path_comparison.ps1` orchestrates
      the full provider-backed A/B evidence path. It runs
      `measure_hybrid_baseline.ps1` once with `SCRIBER_AUDIO_ENGINE=python`, once
      with `SCRIBER_AUDIO_ENGINE=rust-prototype` and the requested Rust capture
      mode, then calls the comparison validator to produce
      `recording-hot-path-python-rust-comparison.json`.
+     The runner defaults to three recording samples per engine and passes that
+     as the minimum accepted sample count to the validator.
    - Still open: actually running the long physical Always-On-Mic evidence with
      the Rust manager, device-refresh pause/resume matrix evidence, real
      provider-backed Python/Rust comparison runs using the new gate, and final

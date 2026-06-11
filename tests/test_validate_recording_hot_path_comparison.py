@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import sys
@@ -15,6 +16,7 @@ def recording_report(
     provider: bool = True,
     rust_capture: bool = False,
     fallback_circuit_open: bool = False,
+    sample_count: int = 3,
 ) -> dict:
     requirements = {
         "hotkey_to_recording_state": {"status": "measured"},
@@ -24,12 +26,12 @@ def recording_report(
     if provider:
         requirements["provider_transcript"] = {
             "status": "measured",
-            "providerTranscriptSamples": 1,
+            "providerTranscriptSamples": sample_count,
         }
     if rust_capture:
         requirements["rust_audio_engine"] = {
             "status": "measured",
-            "matchingSamples": 1,
+            "matchingSamples": sample_count,
         }
     sample = {
         "ok": True,
@@ -63,6 +65,12 @@ def recording_report(
             }
         },
     }
+    samples = []
+    for index in range(sample_count):
+        item = copy.deepcopy(sample)
+        item["iteration"] = index + 1
+        samples.append(item)
+
     return {
         "schemaVersion": 1,
         "ok": True,
@@ -90,7 +98,7 @@ def recording_report(
             "complete": True,
             "requirements": requirements,
         },
-        "samples": [sample],
+        "samples": samples,
     }
 
 
@@ -135,6 +143,22 @@ def test_recording_hot_path_comparison_rejects_mismatched_provider() -> None:
     assert check["ok"] is False
     assert check["details"]["pythonProvider"] == "azure_mai"
     assert check["details"]["rustProvider"] == "deepgram"
+
+
+def test_recording_hot_path_comparison_rejects_too_few_samples() -> None:
+    result = build_comparison(
+        recording_report(engine="python", sample_count=1),
+        recording_report(engine="rust-prototype", rust_capture=True, sample_count=1),
+        min_samples_per_report=3,
+    )
+
+    assert result["ok"] is False
+    assert "Python and Rust reports must each include at least 3 sample(s)" in result["failures"]
+    check = next(item for item in result["checks"] if item["name"] == "sampleCount")
+    assert check["ok"] is False
+    assert check["details"]["pythonSamples"] == 1
+    assert check["details"]["rustSamples"] == 1
+    assert check["details"]["minSamplesPerReport"] == 3
 
 
 def test_recording_hot_path_comparison_rejects_rust_fallback_to_python_capture() -> None:
