@@ -476,6 +476,22 @@ text arrival, `injectText` Shell IPC success, and both `clipboard_set` and
 Outlook, browser, Electron, elevated, and Remote Desktop target-app evidence is
 still required before changing defaults.
 
+For a default-path decision, require the full installed target-app matrix:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RequireTauriTextInjectionMatrix
+```
+
+This validates `tauri-text-injection-matrix.json`, an aggregate artifact whose
+`scenarios` list contains real Tauri `injectText` reports. Required scenario
+IDs are `notepad`, `word`, `outlook`, `browser-input`,
+`browser-contenteditable`, `electron`, `elevated-target`, `elevated-scriber`,
+`clipboard-text`, `clipboard-non-text`, `clipboard-locked`,
+`restore-user-copy`, and `restore-same-text-copy`. `remote-desktop` is optional
+when unavailable, but if present it must pass the same Shell IPC, target text,
+and marker checks.
+
 The microphone matrix can also be run directly with the same Rust inventory
 gate:
 
@@ -498,6 +514,8 @@ The final readiness validator expects evidence for:
   promotion,
 - Tauri text-injection safe target smoke before promoting Tauri/Rust injection
   beyond opt-in,
+- Tauri text-injection target-app matrix before changing text-injection
+  defaults,
 - media preparation smoke,
 - runtime dependency footprint,
 - signed updater publication,
@@ -516,6 +534,7 @@ Common generated evidence:
 - `release-metadata\runtime-dependency-footprint.json`
 - `tmp\rust-audio-sidecar-smoke.json`
 - `tmp\rust-audio-prewarm-sidecar-smoke.json`
+- `tmp\hybrid-baseline\tauri-text-injection-matrix.json`
 - `tmp\frontend-browser-smoke.json`
 - `tmp\installer-smoke\`
 

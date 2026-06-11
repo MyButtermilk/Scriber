@@ -46,6 +46,8 @@ param(
     [double]$MinInstalledLiveRecordingDurationSec = 0,
     [string]$TauriTextInjectionSmokeReport = "",
     [switch]$RequireTauriTextInjectionSmoke,
+    [string]$TauriTextInjectionMatrixReport = "",
+    [switch]$RequireTauriTextInjectionMatrix,
     [switch]$RequireRustAudioSidecarSmoke,
     [switch]$RunRustAudioSidecarSmoke,
     [switch]$UseExistingRustAudioSidecarReport,
@@ -182,6 +184,11 @@ if (-not $TauriTextInjectionSmokeReport) {
     $TauriTextInjectionSmokeReport = Join-Path $HardwareInputDir "tauri-text-injection-smoke.json"
 } else {
     $TauriTextInjectionSmokeReport = Convert-ToFullPath -Path $TauriTextInjectionSmokeReport -Root $RepoRoot
+}
+if (-not $TauriTextInjectionMatrixReport) {
+    $TauriTextInjectionMatrixReport = Join-Path $HardwareInputDir "tauri-text-injection-matrix.json"
+} else {
+    $TauriTextInjectionMatrixReport = Convert-ToFullPath -Path $TauriTextInjectionMatrixReport -Root $RepoRoot
 }
 if (-not $OutputPath) {
     $OutputPath = Join-Path $HardwareInputDir "hybrid-release-readiness.json"
@@ -373,6 +380,12 @@ if ($RequireTauriTextInjectionSmoke -or (Test-Path -LiteralPath $TauriTextInject
 if ($RequireTauriTextInjectionSmoke) {
     $readinessArgs += "--require-tauri-text-injection-smoke"
 }
+if ($RequireTauriTextInjectionMatrix -or (Test-Path -LiteralPath $TauriTextInjectionMatrixReport -PathType Leaf)) {
+    $readinessArgs += @("--tauri-text-injection-matrix-report", $TauriTextInjectionMatrixReport)
+}
+if ($RequireTauriTextInjectionMatrix) {
+    $readinessArgs += "--require-tauri-text-injection-matrix"
+}
 if ($RequireRecordingHotPathComparison -or (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf)) {
     $readinessArgs += @("--recording-hot-path-comparison-report", $RecordingHotPathComparisonReport)
 }
@@ -502,6 +515,14 @@ $requiredEvidence = @(
         notes = "Required before considering Rust/Tauri text injection as a default path. Validates safe target-window injection, strict SCRIBER_INJECT_METHOD=tauri, Shell IPC injectText success, clipboard_set and paste markers, and redacted diagnostics. Manual target-app matrix evidence is still required before default promotion."
     },
     [pscustomobject]@{
+        name = "tauriTextInjectionMatrix"
+        required = [bool]$RequireTauriTextInjectionMatrix
+        external = $true
+        producer = "Aggregate real installed target-app matrix reports from scripts\smoke_text_injection_target.py --method tauri and manual target-app runs"
+        report = $TauriTextInjectionMatrixReport
+        notes = "Required before changing text-injection defaults. The matrix must cover Notepad, Word, Outlook, browser input, browser contenteditable, Electron, elevated-target, elevated-Scriber, clipboard text/non-text/locked, restore user-copy, and same-text restore scenarios; Remote Desktop is optional when unavailable."
+    },
+    [pscustomobject]@{
         name = "publishedUpdaterManifest"
         required = $true
         external = $true
@@ -561,6 +582,7 @@ $plan = [pscustomobject]@{
     installedLiveRecordingSmokeReport = $InstalledLiveRecordingSmokeReport
     minInstalledLiveRecordingDurationSec = $MinInstalledLiveRecordingDurationSec
     tauriTextInjectionSmokeReport = $TauriTextInjectionSmokeReport
+    tauriTextInjectionMatrixReport = $TauriTextInjectionMatrixReport
     recordingHotPathComparisonReport = $RecordingHotPathComparisonReport
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
@@ -579,6 +601,7 @@ $plan = [pscustomobject]@{
     requireRustAudioAppPrewarmSmoke = [bool]$RequireRustAudioAppPrewarmSmoke
     requireInstalledLiveRecordingSmoke = [bool]$RequireInstalledLiveRecordingSmoke
     requireTauriTextInjectionSmoke = [bool]$RequireTauriTextInjectionSmoke
+    requireTauriTextInjectionMatrix = [bool]$RequireTauriTextInjectionMatrix
     requireRecordingHotPathComparison = [bool]$RequireRecordingHotPathComparison
     useExistingUpdaterPublicationReport = [bool]$UseExistingUpdaterPublicationReport
     requiredEvidence = $requiredEvidence
@@ -622,6 +645,10 @@ $plan = [pscustomobject]@{
         [pscustomobject]@{
             name = "tauriTextInjectionSmoke"
             command = $(if (Test-Path -LiteralPath $TauriTextInjectionSmokeReport -PathType Leaf) { "reuse $TauriTextInjectionSmokeReport" } elseif ($RequireTauriTextInjectionSmoke) { "required external report: produce with scripts\smoke_text_injection_target.py --method tauri from a Tauri-managed backend environment" } else { "not requested" })
+        },
+        [pscustomobject]@{
+            name = "tauriTextInjectionMatrix"
+            command = $(if (Test-Path -LiteralPath $TauriTextInjectionMatrixReport -PathType Leaf) { "reuse $TauriTextInjectionMatrixReport" } elseif ($RequireTauriTextInjectionMatrix) { "required external report: aggregate installed target-app matrix evidence into tauri-text-injection-matrix.json" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "authenticodeValidation"

@@ -88,6 +88,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
         "recordingHotPathPythonRustComparison",
         "installedLiveRecordingSmoke",
         "tauriTextInjectionSmoke",
+        "tauriTextInjectionMatrix",
         "authenticodeValidation",
         "hybridReleaseReadiness",
     ]
@@ -105,6 +106,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
         "recordingHotPathPythonRustComparison",
         "installedLiveRecordingSmoke",
         "tauriTextInjectionSmoke",
+        "tauriTextInjectionMatrix",
         "publishedUpdaterManifest",
         "authenticodeSignatures",
         "hybridReleaseReadinessAggregate",
@@ -172,9 +174,15 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert injection_evidence["report"].endswith("tauri-text-injection-smoke.json")
     assert "smoke_text_injection_target.py --method tauri" in injection_evidence["producer"]
     assert "clipboard_set and paste markers" in injection_evidence["notes"]
-    publication_evidence = payload["requiredEvidence"][10]
+    injection_matrix_evidence = payload["requiredEvidence"][10]
+    assert injection_matrix_evidence["required"] is False
+    assert injection_matrix_evidence["external"] is True
+    assert injection_matrix_evidence["report"].endswith("tauri-text-injection-matrix.json")
+    assert "target-app matrix" in injection_matrix_evidence["producer"]
+    assert "same-text restore" in injection_matrix_evidence["notes"]
+    publication_evidence = payload["requiredEvidence"][11]
     assert "final redirect URL" in publication_evidence["notes"]
-    authenticode_evidence = payload["requiredEvidence"][11]
+    authenticode_evidence = payload["requiredEvidence"][12]
     assert authenticode_evidence["expectedPublisher"] == "Scriber Publisher"
     assert authenticode_evidence["requireTimestamp"] is True
     assert "validate_microphone_hardware_matrix.py" in payload["commands"][0]["command"]
@@ -191,13 +199,14 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert payload["commands"][7]["command"] == "not requested"
     assert payload["commands"][8]["command"] == "not requested"
     assert payload["commands"][9]["command"] == "not requested"
-    assert "validate_windows_authenticode.ps1" in payload["commands"][10]["command"]
-    assert "validate_hybrid_release_readiness.py" in payload["commands"][11]["command"]
-    assert "--media-preparation-report" in payload["commands"][11]["command"]
-    assert "media-preparation-smoke.json" in payload["commands"][11]["command"]
-    assert "--runtime-dependency-footprint-report" in payload["commands"][11]["command"]
-    assert "runtime-dependency-footprint.json" in payload["commands"][11]["command"]
-    assert "--require-authenticode-timestamp" in payload["commands"][11]["command"]
+    assert payload["commands"][10]["command"] == "not requested"
+    assert "validate_windows_authenticode.ps1" in payload["commands"][11]["command"]
+    assert "validate_hybrid_release_readiness.py" in payload["commands"][12]["command"]
+    assert "--media-preparation-report" in payload["commands"][12]["command"]
+    assert "media-preparation-smoke.json" in payload["commands"][12]["command"]
+    assert "--runtime-dependency-footprint-report" in payload["commands"][12]["command"]
+    assert "runtime-dependency-footprint.json" in payload["commands"][12]["command"]
+    assert "--require-authenticode-timestamp" in payload["commands"][12]["command"]
     assert written == payload
 
 
@@ -445,6 +454,35 @@ def test_hybrid_release_readiness_runner_plans_required_tauri_text_injection_smo
     assert "--require-tauri-text-injection-smoke" in readiness_command["command"]
 
 
+def test_hybrid_release_readiness_runner_plans_required_tauri_text_injection_matrix(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RequireTauriTextInjectionMatrix",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "tauriTextInjectionMatrix")
+    assert matrix_evidence["required"] is True
+    assert matrix_evidence["external"] is True
+    assert matrix_evidence["report"].endswith("tauri-text-injection-matrix.json")
+    assert "manual target-app runs" in matrix_evidence["producer"]
+    assert "Notepad, Word, Outlook" in matrix_evidence["notes"]
+    matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "tauriTextInjectionMatrix")
+    assert "required external report" in matrix_command["command"]
+    assert "target-app matrix evidence" in matrix_command["command"]
+    readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    assert "--tauri-text-injection-matrix-report" in readiness_command["command"]
+    assert "--require-tauri-text-injection-matrix" in readiness_command["command"]
+
+
 def test_hybrid_release_readiness_runner_requires_authenticode_paths_before_backend_work(tmp_path: Path) -> None:
     result = run_powershell(
         "-NoProfile",
@@ -490,5 +528,6 @@ def test_hybrid_release_readiness_runner_can_reuse_existing_external_reports(tmp
     assert payload["commands"][7]["command"] == "not requested"
     assert payload["commands"][8]["command"] == "not requested"
     assert payload["commands"][9]["command"] == "not requested"
-    assert "reuse" in payload["commands"][10]["command"]
-    assert "authenticode.json" in payload["commands"][10]["command"]
+    assert payload["commands"][10]["command"] == "not requested"
+    assert "reuse" in payload["commands"][11]["command"]
+    assert "authenticode.json" in payload["commands"][11]["command"]

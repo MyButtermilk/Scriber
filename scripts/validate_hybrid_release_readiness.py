@@ -19,6 +19,26 @@ from scripts.validate_tauri_updater_metadata import DEFAULT_METADATA, sha256_fil
 
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
+REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS: dict[str, str] = {
+    "notepad": "Notepad plain text target",
+    "word": "Microsoft Word document target",
+    "outlook": "Microsoft Outlook compose target",
+    "browser-input": "Browser text input target",
+    "browser-contenteditable": "Browser contenteditable target",
+    "electron": "Electron application target",
+    "elevated-target": "Elevated target with normal Scriber",
+    "elevated-scriber": "Elevated Scriber with normal target",
+    "clipboard-text": "Existing text clipboard restore path",
+    "clipboard-non-text": "Existing non-text clipboard handling",
+    "clipboard-locked": "Clipboard locked by another process",
+    "restore-user-copy": "User copy during restore delay",
+    "restore-same-text-copy": "User copy of same text during restore delay",
+}
+
+OPTIONAL_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS: dict[str, str] = {
+    "remote-desktop": "Remote Desktop target, when available",
+}
+
 
 @dataclass(frozen=True)
 class ReadinessCheck:
@@ -51,12 +71,14 @@ def validate_release_readiness(
     rust_audio_app_prewarm_report: Path | None = None,
     installed_live_recording_smoke_report: Path | None = None,
     tauri_text_injection_smoke_report: Path | None = None,
+    tauri_text_injection_matrix_report: Path | None = None,
     recording_hot_path_comparison_report: Path | None = None,
     require_rust_audio_sidecar_smoke: bool = False,
     require_rust_audio_prewarm_sidecar_smoke: bool = False,
     require_rust_audio_app_prewarm_smoke: bool = False,
     require_installed_live_recording_smoke: bool = False,
     require_tauri_text_injection_smoke: bool = False,
+    require_tauri_text_injection_matrix: bool = False,
     require_recording_hot_path_comparison: bool = False,
     min_rust_audio_duration_sec: float = 0.0,
     min_rust_audio_app_prewarm_duration_sec: float = 0.0,
@@ -122,6 +144,13 @@ def validate_release_readiness(
             validate_tauri_text_injection_smoke_report(
                 tauri_text_injection_smoke_report,
                 required=require_tauri_text_injection_smoke,
+            )
+        )
+    if require_tauri_text_injection_matrix or tauri_text_injection_matrix_report is not None:
+        checks.append(
+            validate_tauri_text_injection_matrix_report(
+                tauri_text_injection_matrix_report,
+                required=require_tauri_text_injection_matrix,
             )
         )
     if require_recording_hot_path_comparison or recording_hot_path_comparison_report is not None:
@@ -942,85 +971,199 @@ def validate_tauri_text_injection_smoke_report(
     if not report:
         return ReadinessCheck("tauriTextInjectionSmoke", False, failures, details)
 
+    details.update(validate_tauri_text_injection_payload(report, failures, "Tauri text injection smoke"))
+    return ReadinessCheck("tauriTextInjectionSmoke", not failures, failures, details)
+
+
+def validate_tauri_text_injection_payload(
+    report: dict[str, Any],
+    failures: list[str],
+    label: str,
+) -> dict[str, Any]:
     shell_ipc = report.get("shellIpc")
     if not isinstance(shell_ipc, dict):
-        failures.append("Tauri text injection smoke shellIpc must be an object")
+        failures.append(f"{label} shellIpc must be an object")
         shell_ipc = {}
     last_response = shell_ipc.get("lastResponse")
     if not isinstance(last_response, dict):
-        failures.append("Tauri text injection smoke shellIpc.lastResponse must be an object")
+        failures.append(f"{label} shellIpc.lastResponse must be an object")
         last_response = {}
     response_payload = last_response.get("payload")
     if not isinstance(response_payload, dict):
-        failures.append("Tauri text injection smoke shellIpc.lastResponse.payload must be an object")
+        failures.append(f"{label} shellIpc.lastResponse.payload must be an object")
         response_payload = {}
+
+    if report.get("ok") is not True:
+        failures.append(f"{label} report ok must be true")
+    if report.get("validateOnly") is True:
+        failures.append(f"{label} report must not be validate-only evidence")
+    if str(report.get("schemaVersion") or "") != "1":
+        failures.append(f"{label} schemaVersion must be 1")
+    if str(report.get("method") or "") != "tauri":
+        failures.append(f"{label} method must be tauri")
+    if str(report.get("status") or "") != "passed":
+        failures.append(f"{label} status must be passed")
+    if report.get("callbackVerified") is not True:
+        failures.append(f"{label} callbackVerified must be true")
+    if report.get("targetTextVerified") is not True:
+        failures.append(f"{label} targetTextVerified must be true")
+    if str(report.get("targetError") or ""):
+        failures.append(f"{label} targetError must be empty")
+    if numeric_field(report, "expectedChars") is None or numeric_field(report, "expectedChars") <= 0:
+        failures.append(f"{label} expectedChars must be positive")
+    if numeric_field(report, "callbackElapsedMs") is None or numeric_field(report, "callbackElapsedMs") < 0:
+        failures.append(f"{label} callbackElapsedMs must be non-negative")
+    if numeric_field(report, "targetTextElapsedMs") is None or numeric_field(report, "targetTextElapsedMs") < 0:
+        failures.append(f"{label} targetTextElapsedMs must be non-negative")
+
+    target_focus = report.get("targetFocus")
+    if not isinstance(target_focus, dict):
+        failures.append(f"{label} targetFocus must be an object")
+        target_focus = {}
+    if target_focus.get("attempted") is True and target_focus.get("ok") is not True:
+        failures.append(f"{label} targetFocus.ok must be true when focus was attempted")
+
+    if shell_ipc.get("available") is not True:
+        failures.append(f"{label} shellIpc.available must be true")
+    if shell_ipc.get("lastCommand") != "injectText":
+        failures.append(f"{label} shellIpc.lastCommand must be injectText")
+    if shell_ipc.get("lastSuccess") is not True:
+        failures.append(f"{label} shellIpc.lastSuccess must be true")
+    if shell_ipc.get("lastErrorCode") not in (None, ""):
+        failures.append(f"{label} shellIpc.lastErrorCode must be empty")
+    if last_response.get("success") is not True:
+        failures.append(f"{label} shellIpc.lastResponse.success must be true")
+
+    if response_payload.get("method") != "tauri":
+        failures.append(f"{label} shellIpc response method must be tauri")
+    markers = response_payload.get("markers")
+    if not isinstance(markers, list) or "clipboard_set" not in markers or "paste" not in markers:
+        failures.append(f"{label} response markers must include clipboard_set and paste")
+    timings = response_payload.get("timingsMs")
+    if not isinstance(timings, dict):
+        failures.append(f"{label} response timingsMs must be an object")
+    else:
+        for key in ("clipboardSet", "pasteDispatch", "total"):
+            value = timings.get(key)
+            if value is None or not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+                failures.append(f"{label} timing {key} must be non-negative")
+
+    return {
+        "schemaVersion": report.get("schemaVersion"),
+        "method": report.get("method", ""),
+        "status": report.get("status", ""),
+        "callbackElapsedMs": report.get("callbackElapsedMs"),
+        "targetTextElapsedMs": report.get("targetTextElapsedMs"),
+        "shellIpc": shell_ipc,
+    }
+
+
+def validate_tauri_text_injection_matrix_report(
+    report_path: Path | None,
+    *,
+    required: bool,
+) -> ReadinessCheck:
+    failures: list[str] = []
+    details: dict[str, Any] = {
+        "report": str(report_path) if report_path else "",
+        "required": required,
+        "requiredScenarioIds": list(REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS),
+        "optionalScenarioIds": list(OPTIONAL_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS),
+    }
+    if report_path is None:
+        if required:
+            failures.append("Tauri text injection matrix report is required")
+        return ReadinessCheck("tauriTextInjectionMatrix", not failures, failures, details)
+
+    report = read_json_object(report_path, failures, "Tauri text injection matrix report")
+    if not report:
+        return ReadinessCheck("tauriTextInjectionMatrix", False, failures, details)
+
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list) or not scenarios:
+        failures.append("Tauri text injection matrix scenarios must be a non-empty list")
+        scenarios = []
 
     details.update(
         {
             "schemaVersion": report.get("schemaVersion"),
             "method": report.get("method", ""),
-            "status": report.get("status", ""),
-            "callbackElapsedMs": report.get("callbackElapsedMs"),
-            "targetTextElapsedMs": report.get("targetTextElapsedMs"),
-            "shellIpc": shell_ipc,
+            "scenarioCount": len(scenarios),
+            "ok": report.get("ok"),
         }
     )
     if report.get("ok") is not True:
-        failures.append("Tauri text injection smoke report ok must be true")
+        failures.append("Tauri text injection matrix report ok must be true")
     if report.get("validateOnly") is True:
-        failures.append("Tauri text injection smoke report must not be validate-only evidence")
+        failures.append("Tauri text injection matrix report must not be validate-only evidence")
     if str(report.get("schemaVersion") or "") != "1":
-        failures.append("Tauri text injection smoke schemaVersion must be 1")
+        failures.append("Tauri text injection matrix schemaVersion must be 1")
     if str(report.get("method") or "") != "tauri":
-        failures.append("Tauri text injection smoke method must be tauri")
-    if str(report.get("status") or "") != "passed":
-        failures.append("Tauri text injection smoke status must be passed")
-    if report.get("callbackVerified") is not True:
-        failures.append("Tauri text injection smoke callbackVerified must be true")
-    if report.get("targetTextVerified") is not True:
-        failures.append("Tauri text injection smoke targetTextVerified must be true")
-    if str(report.get("targetError") or ""):
-        failures.append("Tauri text injection smoke targetError must be empty")
-    if numeric_field(report, "expectedChars") is None or numeric_field(report, "expectedChars") <= 0:
-        failures.append("Tauri text injection smoke expectedChars must be positive")
-    if numeric_field(report, "callbackElapsedMs") is None or numeric_field(report, "callbackElapsedMs") < 0:
-        failures.append("Tauri text injection smoke callbackElapsedMs must be non-negative")
-    if numeric_field(report, "targetTextElapsedMs") is None or numeric_field(report, "targetTextElapsedMs") < 0:
-        failures.append("Tauri text injection smoke targetTextElapsedMs must be non-negative")
+        failures.append("Tauri text injection matrix method must be tauri")
 
-    target_focus = report.get("targetFocus")
-    if not isinstance(target_focus, dict):
-        failures.append("Tauri text injection smoke targetFocus must be an object")
-        target_focus = {}
-    if target_focus.get("attempted") is True and target_focus.get("ok") is not True:
-        failures.append("Tauri text injection smoke targetFocus.ok must be true when focus was attempted")
+    covered_ids: set[str] = set()
+    duplicate_ids: set[str] = set()
+    valid_count = 0
+    unsupported: dict[str, str] = {}
+    for index, scenario in enumerate(scenarios, start=1):
+        if not isinstance(scenario, dict):
+            failures.append(f"Tauri text injection matrix scenario {index} must be an object")
+            continue
+        scenario_id = str(scenario.get("id") or scenario.get("scenario") or "").strip()
+        if not scenario_id:
+            failures.append(f"Tauri text injection matrix scenario {index} id is required")
+            continue
+        if scenario_id in covered_ids:
+            duplicate_ids.add(scenario_id)
+            failures.append(f"Tauri text injection matrix scenario {scenario_id} is duplicated")
+            continue
+        covered_ids.add(scenario_id)
 
-    if shell_ipc.get("available") is not True:
-        failures.append("Tauri text injection smoke shellIpc.available must be true")
-    if shell_ipc.get("lastCommand") != "injectText":
-        failures.append("Tauri text injection smoke shellIpc.lastCommand must be injectText")
-    if shell_ipc.get("lastSuccess") is not True:
-        failures.append("Tauri text injection smoke shellIpc.lastSuccess must be true")
-    if shell_ipc.get("lastErrorCode") not in (None, ""):
-        failures.append("Tauri text injection smoke shellIpc.lastErrorCode must be empty")
-    if last_response.get("success") is not True:
-        failures.append("Tauri text injection smoke shellIpc.lastResponse.success must be true")
+        if scenario.get("unsupported") is True:
+            reason = str(scenario.get("unsupportedReason") or "").strip()
+            if scenario_id in REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS:
+                failures.append(
+                    f"Tauri text injection matrix required scenario {scenario_id} cannot be marked unsupported"
+                )
+            elif not reason:
+                failures.append(
+                    f"Tauri text injection matrix optional scenario {scenario_id} unsupportedReason is required"
+                )
+            else:
+                unsupported[scenario_id] = reason
+            continue
 
-    if response_payload.get("method") != "tauri":
-        failures.append("Tauri text injection smoke shellIpc response method must be tauri")
-    markers = response_payload.get("markers")
-    if not isinstance(markers, list) or "clipboard_set" not in markers or "paste" not in markers:
-        failures.append("Tauri text injection smoke response markers must include clipboard_set and paste")
-    timings = response_payload.get("timingsMs")
-    if not isinstance(timings, dict):
-        failures.append("Tauri text injection smoke response timingsMs must be an object")
-    else:
-        for key in ("clipboardSet", "pasteDispatch", "total"):
-            value = timings.get(key)
-            if value is None or not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-                failures.append(f"Tauri text injection smoke timing {key} must be non-negative")
+        scenario_report = scenario.get("report")
+        if not isinstance(scenario_report, dict):
+            scenario_report = scenario
+        before = len(failures)
+        validate_tauri_text_injection_payload(
+            scenario_report,
+            failures,
+            f"Tauri text injection matrix scenario {scenario_id}",
+        )
+        if len(failures) == before:
+            valid_count += 1
 
-    return ReadinessCheck("tauriTextInjectionSmoke", not failures, failures, details)
+    missing = [
+        scenario_id
+        for scenario_id in REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS
+        if scenario_id not in covered_ids
+    ]
+    if missing:
+        failures.append(
+            "Tauri text injection matrix is missing required scenario(s): " + ", ".join(missing)
+        )
+
+    details.update(
+        {
+            "coveredScenarioIds": sorted(covered_ids),
+            "duplicateScenarioIds": sorted(duplicate_ids),
+            "validScenarioCount": valid_count,
+            "unsupportedOptionalScenarios": unsupported,
+        }
+    )
+    return ReadinessCheck("tauriTextInjectionMatrix", not failures, failures, details)
 
 
 def validate_recording_hot_path_comparison_report(
@@ -1425,12 +1568,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--rust-audio-app-prewarm-report", default="")
     parser.add_argument("--installed-live-recording-smoke-report", default="")
     parser.add_argument("--tauri-text-injection-smoke-report", default="")
+    parser.add_argument("--tauri-text-injection-matrix-report", default="")
     parser.add_argument("--recording-hot-path-comparison-report", default="")
     parser.add_argument("--require-rust-audio-sidecar-smoke", action="store_true")
     parser.add_argument("--require-rust-audio-prewarm-sidecar-smoke", action="store_true")
     parser.add_argument("--require-rust-audio-app-prewarm-smoke", action="store_true")
     parser.add_argument("--require-installed-live-recording-smoke", action="store_true")
     parser.add_argument("--require-tauri-text-injection-smoke", action="store_true")
+    parser.add_argument("--require-tauri-text-injection-matrix", action="store_true")
     parser.add_argument("--require-recording-hot-path-comparison", action="store_true")
     parser.add_argument("--min-rust-audio-duration-sec", type=float, default=0.0)
     parser.add_argument("--min-rust-audio-app-prewarm-duration-sec", type=float, default=0.0)
@@ -1459,12 +1604,14 @@ def main(argv: list[str]) -> int:
         rust_audio_app_prewarm_report=parse_optional_path(args.rust_audio_app_prewarm_report),
         installed_live_recording_smoke_report=parse_optional_path(args.installed_live_recording_smoke_report),
         tauri_text_injection_smoke_report=parse_optional_path(args.tauri_text_injection_smoke_report),
+        tauri_text_injection_matrix_report=parse_optional_path(args.tauri_text_injection_matrix_report),
         recording_hot_path_comparison_report=parse_optional_path(args.recording_hot_path_comparison_report),
         require_rust_audio_sidecar_smoke=args.require_rust_audio_sidecar_smoke,
         require_rust_audio_prewarm_sidecar_smoke=args.require_rust_audio_prewarm_sidecar_smoke,
         require_rust_audio_app_prewarm_smoke=args.require_rust_audio_app_prewarm_smoke,
         require_installed_live_recording_smoke=args.require_installed_live_recording_smoke,
         require_tauri_text_injection_smoke=args.require_tauri_text_injection_smoke,
+        require_tauri_text_injection_matrix=args.require_tauri_text_injection_matrix,
         require_recording_hot_path_comparison=args.require_recording_hot_path_comparison,
         min_rust_audio_duration_sec=args.min_rust_audio_duration_sec,
         min_rust_audio_app_prewarm_duration_sec=args.min_rust_audio_app_prewarm_duration_sec,

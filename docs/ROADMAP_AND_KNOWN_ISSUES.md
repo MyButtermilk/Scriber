@@ -193,9 +193,11 @@ Tauri text injection:
   HWND usage, plus safe-target smoke support for `--method tauri`. The hybrid
   release-readiness runner can require the safe target evidence with
   `-RequireTauriTextInjectionSmoke`, which validates real Shell IPC success plus
-  `clipboard_set`/`paste` markers. Manual target-app matrix evidence across
-  Notepad, Office, browsers, Electron, elevated windows, and Remote Desktop is
-  still open before any default-path decision.
+  `clipboard_set`/`paste` markers. It can also require the full installed
+  target-app matrix with `-RequireTauriTextInjectionMatrix`. Actually running
+  and attaching that matrix evidence across Notepad, Office, browsers,
+  Electron, elevated windows, clipboard edge cases, and Remote Desktop is still
+  open before any default-path decision.
 - Active-capture watchdog diagnostics now distinguish missing streams, inactive
   streams, no-callback-after-start, stale-callback stalls, and restart-throttle
   suppression. Stale active streams report unhealthy during throttle windows so

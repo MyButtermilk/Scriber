@@ -6,7 +6,10 @@ import sys
 from hashlib import sha256
 from pathlib import Path
 
-from scripts.validate_hybrid_release_readiness import validate_release_readiness
+from scripts.validate_hybrid_release_readiness import (
+    REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS,
+    validate_release_readiness,
+)
 from scripts.validate_tauri_updater_metadata import sha256_file
 
 
@@ -778,6 +781,50 @@ def write_tauri_text_injection_smoke_report(
     )
 
 
+def write_tauri_text_injection_matrix_report(
+    path: Path,
+    *,
+    scenario_ids: list[str] | None = None,
+    weak_scenario: str = "",
+    validate_only: bool = False,
+) -> None:
+    scenario_ids = scenario_ids or list(REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS)
+    scenarios = []
+    for scenario_id in scenario_ids:
+        smoke_path = path.parent / f"tauri-text-injection-{scenario_id}.json"
+        write_tauri_text_injection_smoke_report(
+            smoke_path,
+            ok=scenario_id != weak_scenario,
+            shell_ipc_available=scenario_id != weak_scenario,
+            markers=["clipboard_set"] if scenario_id == weak_scenario else None,
+        )
+        scenarios.append(
+            {
+                "id": scenario_id,
+                "label": REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS.get(scenario_id, scenario_id),
+                "report": json.loads(smoke_path.read_text(encoding="utf-8")),
+            }
+        )
+
+    path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "generatedAtUtc": "2026-06-11T12:00:00Z",
+                "method": "tauri",
+                "ok": True,
+                "validateOnly": validate_only,
+                "scenarios": scenarios,
+                "summary": {
+                    "scenarioCount": len(scenarios),
+                    "requiredScenarioCount": len(REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_complete_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
     hardware_dir = tmp_path / "hardware"
     write_full_hardware_matrix(hardware_dir)
@@ -1022,6 +1069,90 @@ def test_validate_release_readiness_rejects_weak_tauri_text_injection_smoke(tmp_
         "Tauri text injection smoke response markers must include clipboard_set and paste"
         in injection_check["failures"]
     )
+
+
+def test_validate_release_readiness_accepts_required_tauri_text_injection_matrix(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    matrix_report = tmp_path / "tauri-text-injection-matrix.json"
+    write_tauri_text_injection_matrix_report(matrix_report)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_matrix_report=matrix_report,
+        require_tauri_text_injection_matrix=True,
+    )
+
+    assert result["ok"] is True
+    matrix_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionMatrix")
+    assert matrix_check["details"]["validScenarioCount"] == len(REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS)
+    assert "notepad" in matrix_check["details"]["coveredScenarioIds"]
+    assert "restore-same-text-copy" in matrix_check["details"]["coveredScenarioIds"]
+
+
+def test_validate_release_readiness_rejects_missing_required_tauri_text_injection_matrix(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        require_tauri_text_injection_matrix=True,
+    )
+
+    assert result["ok"] is False
+    matrix_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionMatrix")
+    assert "Tauri text injection matrix report is required" in matrix_check["failures"]
+
+
+def test_validate_release_readiness_rejects_weak_tauri_text_injection_matrix(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    matrix_report = tmp_path / "tauri-text-injection-matrix.json"
+    scenario_ids = list(REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS)
+    scenario_ids.remove("outlook")
+    write_tauri_text_injection_matrix_report(
+        matrix_report,
+        scenario_ids=scenario_ids,
+        weak_scenario="word",
+        validate_only=True,
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_matrix_report=matrix_report,
+        require_tauri_text_injection_matrix=True,
+    )
+
+    assert result["ok"] is False
+    matrix_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionMatrix")
+    assert "Tauri text injection matrix report must not be validate-only evidence" in matrix_check["failures"]
+    assert (
+        "Tauri text injection matrix scenario word shellIpc.available must be true"
+        in matrix_check["failures"]
+    )
+    assert (
+        "Tauri text injection matrix scenario word response markers must include clipboard_set and paste"
+        in matrix_check["failures"]
+    )
+    assert any("missing required scenario(s): outlook" in failure for failure in matrix_check["failures"])
 
 
 def test_validate_release_readiness_rejects_missing_required_recording_hot_path_comparison(tmp_path: Path) -> None:

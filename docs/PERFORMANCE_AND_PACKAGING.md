@@ -536,8 +536,16 @@ Implementation status on `codex/rust-expansion-plan`:
   `--require-tauri-text-injection-smoke`. The report must be real evidence, not
   `--validate-only`, and must show `injectText` success, target text arrival,
   and `clipboard_set` plus `paste` markers.
-- Still open: installed target-app smoke matrix, packaging smoke evidence, and
-  default-path decision based on installed evidence.
+- Added a stronger Tauri text-injection matrix readiness gate:
+  `-RequireTauriTextInjectionMatrix` /
+  `--require-tauri-text-injection-matrix`. The matrix artifact must aggregate
+  real installed target-app reports for Notepad, Word, Outlook, browser input,
+  browser contenteditable, Electron, elevated-target, elevated-Scriber,
+  clipboard text/non-text/locked, restore user-copy, and same-text restore
+  scenarios. Remote Desktop is optional when unavailable but is validated if
+  present.
+- Still open: actually running the installed target-app smoke matrix, packaging
+  smoke evidence, and default-path decision based on installed evidence.
 
 Tauri injection default blockers:
 
@@ -560,6 +568,9 @@ Tauri injection default blockers:
   clipboard locked by another app, user copies during restore delay, same-text
   user copy, Notepad, Word, Outlook, browser input, browser contenteditable,
   Electron, elevated target, elevated Scriber, and Remote Desktop if supported.
+  For default-promotion evidence, aggregate those results into
+  `tauri-text-injection-matrix.json` and require
+  `-RequireTauriTextInjectionMatrix`.
 - Support bundles should surface the last Tauri injection fields:
   `textInjection.method`, `shellIpc.available`, `lastCommand`, `lastErrorCode`,
   `fallbackReason`, `restoreScheduled`, `restore.succeeded`,
