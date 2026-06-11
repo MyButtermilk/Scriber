@@ -458,6 +458,24 @@ non-recording samples during the recording window, positive stability samples,
 and verified cleanup. It complements the provider-backed Python/Rust hot-path
 comparison; it does not replace transcript-quality evidence.
 
+When evaluating whether Tauri/Rust text injection can become more than an
+opt-in path, require safe target-window evidence as well:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RequireTauriTextInjectionSmoke
+```
+
+This validates an existing `tauri-text-injection-smoke.json` from
+`scripts\smoke_text_injection_target.py --method tauri`. That smoke must be run
+from a Tauri-managed backend environment so `SCRIBER_SHELL_IPC_PIPE`,
+`SCRIBER_SHELL_IPC_TOKEN`, and `SCRIBER_SHELL_IPC_API_VERSION` are present. The
+artifact must not be validate-only evidence; it must show safe target-window
+text arrival, `injectText` Shell IPC success, and both `clipboard_set` and
+`paste` markers. It is only the safe target gate. Manual Notepad, Word,
+Outlook, browser, Electron, elevated, and Remote Desktop target-app evidence is
+still required before changing defaults.
+
 The microphone matrix can also be run directly with the same Rust inventory
 gate:
 
@@ -478,6 +496,8 @@ The final readiness validator expects evidence for:
   evaluating the Rust prototype,
 - installed live-recording smoke when evaluating a default-path Rust audio
   promotion,
+- Tauri text-injection safe target smoke before promoting Tauri/Rust injection
+  beyond opt-in,
 - media preparation smoke,
 - runtime dependency footprint,
 - signed updater publication,

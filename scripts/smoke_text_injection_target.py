@@ -248,6 +248,7 @@ def run_injection_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "targetFile": str(target_path),
             "targetTitle": args.target_title,
             "targetFocus": focus_result,
+            "shellIpc": shell_ipc_snapshot(),
         }
     )
     return result
@@ -271,16 +272,30 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             "targetFile": "",
             "targetTitle": args.target_title,
             "targetFocus": {"attempted": False, "validateOnly": True},
+            "shellIpc": shell_ipc_snapshot(),
             "validateOnly": True,
         }
     )
     return result
 
 
+def shell_ipc_snapshot() -> dict[str, Any]:
+    try:
+        from src.runtime.shell_ipc import diagnostic_snapshot
+
+        snapshot = diagnostic_snapshot()
+        return snapshot if isinstance(snapshot, dict) else {}
+    except Exception as exc:
+        return {
+            "available": False,
+            "snapshotError": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Smoke test real OS text injection into a safe target window.")
     parser.add_argument("--text", default="Scriber injection smoke target text.")
-    parser.add_argument("--method", choices=["paste", "sendinput", "type", "auto"], default="paste")
+    parser.add_argument("--method", choices=["paste", "sendinput", "type", "auto", "tauri"], default="paste")
     parser.add_argument("--output", default="")
     parser.add_argument("--target-file", default="")
     parser.add_argument("--target-title", default="Scriber Injection Smoke Target")

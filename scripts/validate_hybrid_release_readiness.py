@@ -50,11 +50,13 @@ def validate_release_readiness(
     rust_audio_prewarm_sidecar_report: Path | None = None,
     rust_audio_app_prewarm_report: Path | None = None,
     installed_live_recording_smoke_report: Path | None = None,
+    tauri_text_injection_smoke_report: Path | None = None,
     recording_hot_path_comparison_report: Path | None = None,
     require_rust_audio_sidecar_smoke: bool = False,
     require_rust_audio_prewarm_sidecar_smoke: bool = False,
     require_rust_audio_app_prewarm_smoke: bool = False,
     require_installed_live_recording_smoke: bool = False,
+    require_tauri_text_injection_smoke: bool = False,
     require_recording_hot_path_comparison: bool = False,
     min_rust_audio_duration_sec: float = 0.0,
     min_rust_audio_app_prewarm_duration_sec: float = 0.0,
@@ -113,6 +115,13 @@ def validate_release_readiness(
                 installed_live_recording_smoke_report,
                 required=require_installed_live_recording_smoke,
                 min_duration_sec=min_installed_live_recording_duration_sec,
+            )
+        )
+    if require_tauri_text_injection_smoke or tauri_text_injection_smoke_report is not None:
+        checks.append(
+            validate_tauri_text_injection_smoke_report(
+                tauri_text_injection_smoke_report,
+                required=require_tauri_text_injection_smoke,
             )
         )
     if require_recording_hot_path_comparison or recording_hot_path_comparison_report is not None:
@@ -914,6 +923,106 @@ def validate_installed_live_recording_smoke_report(
     return ReadinessCheck("installedLiveRecordingSmoke", not failures, failures, details)
 
 
+def validate_tauri_text_injection_smoke_report(
+    report_path: Path | None,
+    *,
+    required: bool,
+) -> ReadinessCheck:
+    failures: list[str] = []
+    details: dict[str, Any] = {
+        "report": str(report_path) if report_path else "",
+        "required": required,
+    }
+    if report_path is None:
+        if required:
+            failures.append("Tauri text injection smoke report is required")
+        return ReadinessCheck("tauriTextInjectionSmoke", not failures, failures, details)
+
+    report = read_json_object(report_path, failures, "Tauri text injection smoke report")
+    if not report:
+        return ReadinessCheck("tauriTextInjectionSmoke", False, failures, details)
+
+    shell_ipc = report.get("shellIpc")
+    if not isinstance(shell_ipc, dict):
+        failures.append("Tauri text injection smoke shellIpc must be an object")
+        shell_ipc = {}
+    last_response = shell_ipc.get("lastResponse")
+    if not isinstance(last_response, dict):
+        failures.append("Tauri text injection smoke shellIpc.lastResponse must be an object")
+        last_response = {}
+    response_payload = last_response.get("payload")
+    if not isinstance(response_payload, dict):
+        failures.append("Tauri text injection smoke shellIpc.lastResponse.payload must be an object")
+        response_payload = {}
+
+    details.update(
+        {
+            "schemaVersion": report.get("schemaVersion"),
+            "method": report.get("method", ""),
+            "status": report.get("status", ""),
+            "callbackElapsedMs": report.get("callbackElapsedMs"),
+            "targetTextElapsedMs": report.get("targetTextElapsedMs"),
+            "shellIpc": shell_ipc,
+        }
+    )
+    if report.get("ok") is not True:
+        failures.append("Tauri text injection smoke report ok must be true")
+    if report.get("validateOnly") is True:
+        failures.append("Tauri text injection smoke report must not be validate-only evidence")
+    if str(report.get("schemaVersion") or "") != "1":
+        failures.append("Tauri text injection smoke schemaVersion must be 1")
+    if str(report.get("method") or "") != "tauri":
+        failures.append("Tauri text injection smoke method must be tauri")
+    if str(report.get("status") or "") != "passed":
+        failures.append("Tauri text injection smoke status must be passed")
+    if report.get("callbackVerified") is not True:
+        failures.append("Tauri text injection smoke callbackVerified must be true")
+    if report.get("targetTextVerified") is not True:
+        failures.append("Tauri text injection smoke targetTextVerified must be true")
+    if str(report.get("targetError") or ""):
+        failures.append("Tauri text injection smoke targetError must be empty")
+    if numeric_field(report, "expectedChars") is None or numeric_field(report, "expectedChars") <= 0:
+        failures.append("Tauri text injection smoke expectedChars must be positive")
+    if numeric_field(report, "callbackElapsedMs") is None or numeric_field(report, "callbackElapsedMs") < 0:
+        failures.append("Tauri text injection smoke callbackElapsedMs must be non-negative")
+    if numeric_field(report, "targetTextElapsedMs") is None or numeric_field(report, "targetTextElapsedMs") < 0:
+        failures.append("Tauri text injection smoke targetTextElapsedMs must be non-negative")
+
+    target_focus = report.get("targetFocus")
+    if not isinstance(target_focus, dict):
+        failures.append("Tauri text injection smoke targetFocus must be an object")
+        target_focus = {}
+    if target_focus.get("attempted") is True and target_focus.get("ok") is not True:
+        failures.append("Tauri text injection smoke targetFocus.ok must be true when focus was attempted")
+
+    if shell_ipc.get("available") is not True:
+        failures.append("Tauri text injection smoke shellIpc.available must be true")
+    if shell_ipc.get("lastCommand") != "injectText":
+        failures.append("Tauri text injection smoke shellIpc.lastCommand must be injectText")
+    if shell_ipc.get("lastSuccess") is not True:
+        failures.append("Tauri text injection smoke shellIpc.lastSuccess must be true")
+    if shell_ipc.get("lastErrorCode") not in (None, ""):
+        failures.append("Tauri text injection smoke shellIpc.lastErrorCode must be empty")
+    if last_response.get("success") is not True:
+        failures.append("Tauri text injection smoke shellIpc.lastResponse.success must be true")
+
+    if response_payload.get("method") != "tauri":
+        failures.append("Tauri text injection smoke shellIpc response method must be tauri")
+    markers = response_payload.get("markers")
+    if not isinstance(markers, list) or "clipboard_set" not in markers or "paste" not in markers:
+        failures.append("Tauri text injection smoke response markers must include clipboard_set and paste")
+    timings = response_payload.get("timingsMs")
+    if not isinstance(timings, dict):
+        failures.append("Tauri text injection smoke response timingsMs must be an object")
+    else:
+        for key in ("clipboardSet", "pasteDispatch", "total"):
+            value = timings.get(key)
+            if value is None or not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+                failures.append(f"Tauri text injection smoke timing {key} must be non-negative")
+
+    return ReadinessCheck("tauriTextInjectionSmoke", not failures, failures, details)
+
+
 def validate_recording_hot_path_comparison_report(
     report_path: Path | None,
     *,
@@ -1315,11 +1424,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--rust-audio-prewarm-sidecar-report", default="")
     parser.add_argument("--rust-audio-app-prewarm-report", default="")
     parser.add_argument("--installed-live-recording-smoke-report", default="")
+    parser.add_argument("--tauri-text-injection-smoke-report", default="")
     parser.add_argument("--recording-hot-path-comparison-report", default="")
     parser.add_argument("--require-rust-audio-sidecar-smoke", action="store_true")
     parser.add_argument("--require-rust-audio-prewarm-sidecar-smoke", action="store_true")
     parser.add_argument("--require-rust-audio-app-prewarm-smoke", action="store_true")
     parser.add_argument("--require-installed-live-recording-smoke", action="store_true")
+    parser.add_argument("--require-tauri-text-injection-smoke", action="store_true")
     parser.add_argument("--require-recording-hot-path-comparison", action="store_true")
     parser.add_argument("--min-rust-audio-duration-sec", type=float, default=0.0)
     parser.add_argument("--min-rust-audio-app-prewarm-duration-sec", type=float, default=0.0)
@@ -1347,11 +1458,13 @@ def main(argv: list[str]) -> int:
         rust_audio_prewarm_sidecar_report=parse_optional_path(args.rust_audio_prewarm_sidecar_report),
         rust_audio_app_prewarm_report=parse_optional_path(args.rust_audio_app_prewarm_report),
         installed_live_recording_smoke_report=parse_optional_path(args.installed_live_recording_smoke_report),
+        tauri_text_injection_smoke_report=parse_optional_path(args.tauri_text_injection_smoke_report),
         recording_hot_path_comparison_report=parse_optional_path(args.recording_hot_path_comparison_report),
         require_rust_audio_sidecar_smoke=args.require_rust_audio_sidecar_smoke,
         require_rust_audio_prewarm_sidecar_smoke=args.require_rust_audio_prewarm_sidecar_smoke,
         require_rust_audio_app_prewarm_smoke=args.require_rust_audio_app_prewarm_smoke,
         require_installed_live_recording_smoke=args.require_installed_live_recording_smoke,
+        require_tauri_text_injection_smoke=args.require_tauri_text_injection_smoke,
         require_recording_hot_path_comparison=args.require_recording_hot_path_comparison,
         min_rust_audio_duration_sec=args.min_rust_audio_duration_sec,
         min_rust_audio_app_prewarm_duration_sec=args.min_rust_audio_app_prewarm_duration_sec,

@@ -44,6 +44,8 @@ param(
     [string]$InstalledLiveRecordingSmokeReport = "",
     [switch]$RequireInstalledLiveRecordingSmoke,
     [double]$MinInstalledLiveRecordingDurationSec = 0,
+    [string]$TauriTextInjectionSmokeReport = "",
+    [switch]$RequireTauriTextInjectionSmoke,
     [switch]$RequireRustAudioSidecarSmoke,
     [switch]$RunRustAudioSidecarSmoke,
     [switch]$UseExistingRustAudioSidecarReport,
@@ -175,6 +177,11 @@ if (-not $InstalledLiveRecordingSmokeReport) {
     $InstalledLiveRecordingSmokeReport = Join-Path $HardwareInputDir "installed-live-recording-smoke.json"
 } else {
     $InstalledLiveRecordingSmokeReport = Convert-ToFullPath -Path $InstalledLiveRecordingSmokeReport -Root $RepoRoot
+}
+if (-not $TauriTextInjectionSmokeReport) {
+    $TauriTextInjectionSmokeReport = Join-Path $HardwareInputDir "tauri-text-injection-smoke.json"
+} else {
+    $TauriTextInjectionSmokeReport = Convert-ToFullPath -Path $TauriTextInjectionSmokeReport -Root $RepoRoot
 }
 if (-not $OutputPath) {
     $OutputPath = Join-Path $HardwareInputDir "hybrid-release-readiness.json"
@@ -360,6 +367,12 @@ if ($RequireInstalledLiveRecordingSmoke) {
 if ($MinInstalledLiveRecordingDurationSec -gt 0) {
     $readinessArgs += @("--min-installed-live-recording-duration-sec", ([string]$MinInstalledLiveRecordingDurationSec))
 }
+if ($RequireTauriTextInjectionSmoke -or (Test-Path -LiteralPath $TauriTextInjectionSmokeReport -PathType Leaf)) {
+    $readinessArgs += @("--tauri-text-injection-smoke-report", $TauriTextInjectionSmokeReport)
+}
+if ($RequireTauriTextInjectionSmoke) {
+    $readinessArgs += "--require-tauri-text-injection-smoke"
+}
 if ($RequireRecordingHotPathComparison -or (Test-Path -LiteralPath $RecordingHotPathComparisonReport -PathType Leaf)) {
     $readinessArgs += @("--recording-hot-path-comparison-report", $RecordingHotPathComparisonReport)
 }
@@ -481,6 +494,14 @@ $requiredEvidence = @(
         notes = "Required for Rust audio promotion before changing the default live-mic path. Validates installed app live recording start/stop state, non-recording sample leakage, stability samples, and cleanup; provider-backed transcription quality remains covered by recordingHotPathPythonRustComparison."
     },
     [pscustomobject]@{
+        name = "tauriTextInjectionSmoke"
+        required = [bool]$RequireTauriTextInjectionSmoke
+        external = $true
+        producer = "scripts\smoke_text_injection_target.py --method tauri in a Tauri-managed backend environment with shell IPC variables"
+        report = $TauriTextInjectionSmokeReport
+        notes = "Required before considering Rust/Tauri text injection as a default path. Validates safe target-window injection, strict SCRIBER_INJECT_METHOD=tauri, Shell IPC injectText success, clipboard_set and paste markers, and redacted diagnostics. Manual target-app matrix evidence is still required before default promotion."
+    },
+    [pscustomobject]@{
         name = "publishedUpdaterManifest"
         required = $true
         external = $true
@@ -539,6 +560,7 @@ $plan = [pscustomobject]@{
     rustAudioAppPrewarmHonorFavoriteMic = [bool]$RustAudioAppPrewarmHonorFavoriteMic
     installedLiveRecordingSmokeReport = $InstalledLiveRecordingSmokeReport
     minInstalledLiveRecordingDurationSec = $MinInstalledLiveRecordingDurationSec
+    tauriTextInjectionSmokeReport = $TauriTextInjectionSmokeReport
     recordingHotPathComparisonReport = $RecordingHotPathComparisonReport
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport
@@ -556,6 +578,7 @@ $plan = [pscustomobject]@{
     requireRustAudioPrewarmSidecarSmoke = [bool]$RequireRustAudioPrewarmSidecarSmoke
     requireRustAudioAppPrewarmSmoke = [bool]$RequireRustAudioAppPrewarmSmoke
     requireInstalledLiveRecordingSmoke = [bool]$RequireInstalledLiveRecordingSmoke
+    requireTauriTextInjectionSmoke = [bool]$RequireTauriTextInjectionSmoke
     requireRecordingHotPathComparison = [bool]$RequireRecordingHotPathComparison
     useExistingUpdaterPublicationReport = [bool]$UseExistingUpdaterPublicationReport
     requiredEvidence = $requiredEvidence
@@ -595,6 +618,10 @@ $plan = [pscustomobject]@{
         [pscustomobject]@{
             name = "installedLiveRecordingSmoke"
             command = $(if (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RequireInstalledLiveRecordingSmoke -or $MinInstalledLiveRecordingDurationSec -gt 0) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec" } else { "not requested" })
+        },
+        [pscustomobject]@{
+            name = "tauriTextInjectionSmoke"
+            command = $(if (Test-Path -LiteralPath $TauriTextInjectionSmokeReport -PathType Leaf) { "reuse $TauriTextInjectionSmokeReport" } elseif ($RequireTauriTextInjectionSmoke) { "required external report: produce with scripts\smoke_text_injection_target.py --method tauri from a Tauri-managed backend environment" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "authenticodeValidation"
@@ -704,6 +731,7 @@ try {
     rustAudioPrewarmSidecarReport = $RustAudioPrewarmSidecarReport
     rustAudioAppPrewarmReport = $RustAudioAppPrewarmReport
     installedLiveRecordingSmokeReport = $InstalledLiveRecordingSmokeReport
+    tauriTextInjectionSmokeReport = $TauriTextInjectionSmokeReport
     recordingHotPathComparisonReport = $RecordingHotPathComparisonReport
     updaterPublicationReport = $UpdaterPublicationReport
     authenticodeReport = $AuthenticodeReport

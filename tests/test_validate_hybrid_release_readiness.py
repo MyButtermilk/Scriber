@@ -685,6 +685,99 @@ def write_installed_live_recording_smoke_report(
     )
 
 
+def write_tauri_text_injection_smoke_report(
+    path: Path,
+    *,
+    ok: bool = True,
+    method: str = "tauri",
+    validate_only: bool = False,
+    shell_ipc_available: bool = True,
+    markers: list[str] | None = None,
+    target_text_verified: bool = True,
+) -> None:
+    if markers is None:
+        markers = ["clipboard_set", "paste"]
+    path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "generatedAtUtc": "2026-06-11T12:00:00Z",
+                "method": method,
+                "status": "passed" if ok else "failed",
+                "ok": ok,
+                "callbackVerified": ok,
+                "targetTextVerified": target_text_verified,
+                "callbackElapsedMs": 12.5,
+                "targetTextElapsedMs": 35.0,
+                "capturedChars": 42 if target_text_verified else 0,
+                "targetError": "",
+                "expectedChars": 42,
+                "targetFile": "C:/tmp/scriber-target.txt",
+                "targetTitle": "Scriber Injection Smoke Target",
+                "targetFocus": {
+                    "attempted": True,
+                    "ok": True,
+                    "coordinateMode": "window-relative",
+                },
+                "shellIpc": {
+                    "available": shell_ipc_available,
+                    "pipeConfigured": True,
+                    "tokenConfigured": True,
+                    "apiVersion": "1",
+                    "pipeNameHash": "pipe-hash",
+                    "lastCommand": "injectText",
+                    "lastSuccess": ok,
+                    "lastError": None,
+                    "lastErrorCode": None,
+                    "lastFallbackReason": None,
+                    "lastCommandAgoSeconds": 0.1,
+                    "lastResponse": {
+                        "success": ok,
+                        "errorCode": None,
+                        "fallbackReason": None,
+                        "timingsMs": {"total": 12.0},
+                        "payload": {
+                            "method": method,
+                            "dispatch": "ctrlV",
+                            "markers": markers,
+                            "restoreScheduled": True,
+                            "restore": {
+                                "scheduled": True,
+                                "attempted": False,
+                                "succeeded": None,
+                                "skippedReason": "scheduled",
+                                "errorCode": None,
+                            },
+                            "foregroundBefore": {
+                                "available": True,
+                                "windowHash": "win-hash",
+                                "titleHash": "title-hash",
+                                "processIdHash": "pid-hash",
+                            },
+                            "foregroundAfter": {
+                                "available": True,
+                                "windowHash": "win-hash",
+                                "titleHash": "title-hash",
+                                "processIdHash": "pid-hash",
+                            },
+                            "foregroundChanged": False,
+                            "timingsMs": {
+                                "clipboardRead": 1.0,
+                                "clipboardSet": 2.0,
+                                "preDelay": 80.0,
+                                "pasteDispatch": 3.0,
+                                "total": 10.0,
+                            },
+                        },
+                    },
+                },
+                "validateOnly": validate_only,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_complete_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
     hardware_dir = tmp_path / "hardware"
     write_full_hardware_matrix(hardware_dir)
@@ -852,6 +945,83 @@ def test_validate_release_readiness_rejects_weak_installed_live_recording_smoke(
     )
     assert "installed live recording smoke nonRecordingSampleCount must be 0" in live_check["failures"]
     assert any("sample 1 must remain in recording or listening state" in failure for failure in live_check["failures"])
+
+
+def test_validate_release_readiness_accepts_required_tauri_text_injection_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    injection_report = tmp_path / "tauri-text-injection-smoke.json"
+    write_tauri_text_injection_smoke_report(injection_report)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_smoke_report=injection_report,
+        require_tauri_text_injection_smoke=True,
+    )
+
+    assert result["ok"] is True
+    injection_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionSmoke")
+    assert injection_check["details"]["method"] == "tauri"
+    assert injection_check["details"]["shellIpc"]["lastCommand"] == "injectText"
+
+
+def test_validate_release_readiness_rejects_missing_required_tauri_text_injection_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        require_tauri_text_injection_smoke=True,
+    )
+
+    assert result["ok"] is False
+    injection_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionSmoke")
+    assert "Tauri text injection smoke report is required" in injection_check["failures"]
+
+
+def test_validate_release_readiness_rejects_weak_tauri_text_injection_smoke(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    injection_report = tmp_path / "tauri-text-injection-smoke.json"
+    write_tauri_text_injection_smoke_report(
+        injection_report,
+        validate_only=True,
+        shell_ipc_available=False,
+        markers=["clipboard_set"],
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_smoke_report=injection_report,
+        require_tauri_text_injection_smoke=True,
+    )
+
+    assert result["ok"] is False
+    injection_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionSmoke")
+    assert "Tauri text injection smoke report must not be validate-only evidence" in injection_check["failures"]
+    assert "Tauri text injection smoke shellIpc.available must be true" in injection_check["failures"]
+    assert (
+        "Tauri text injection smoke response markers must include clipboard_set and paste"
+        in injection_check["failures"]
+    )
 
 
 def test_validate_release_readiness_rejects_missing_required_recording_hot_path_comparison(tmp_path: Path) -> None:

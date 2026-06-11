@@ -35,6 +35,35 @@ def test_text_injection_smoke_validate_only_writes_artifact(tmp_path: Path) -> N
     assert payload["callbackVerified"] is True
     assert payload["targetTextVerified"] is True
     assert payload["targetFocus"] == {"attempted": False, "validateOnly": True}
+    assert "shellIpc" in payload
+    assert payload["validateOnly"] is True
+
+
+def test_text_injection_smoke_validate_only_accepts_tauri_method(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    output_path = tmp_path / "text-injection-tauri-smoke.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/smoke_text_injection_target.py",
+            "--validate-only",
+            "--method",
+            "tauri",
+            "--output",
+            str(output_path),
+        ],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["ok"] is True
+    assert payload["method"] == "tauri"
+    assert "available" in payload["shellIpc"]
     assert payload["validateOnly"] is True
 
 
@@ -79,6 +108,8 @@ def test_text_injection_smoke_uses_real_injector_and_safe_target_window() -> Non
     assert "TEXT_TARGET_WINDOW_FLAG" in script
     assert "click_target_window" in script
     assert "targetFocus" in script
+    assert '"tauri"' in script
+    assert "shell_ipc_snapshot" in script
     assert "--skip-target-click" in script
     assert "mouse_event" in script
     assert "callback_without_target_text" in script

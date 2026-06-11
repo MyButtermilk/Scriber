@@ -518,6 +518,14 @@ Implementation status on `codex/rust-expansion-plan`:
   consistency, NUL rejection, and deadline failure payloads, plus Python unit/
   contract coverage for shell IPC diagnostics, strict Tauri injection marker
   forwarding, and response protocol validation.
+- Implemented the first promotion evidence hook for the safe target-window
+  path: `scripts/smoke_text_injection_target.py` now accepts `--method tauri`
+  and records the redacted Shell IPC diagnostic snapshot in its JSON artifact.
+  The hybrid release-readiness runner and validator can require that artifact
+  with `-RequireTauriTextInjectionSmoke` /
+  `--require-tauri-text-injection-smoke`. The report must be real evidence, not
+  `--validate-only`, and must show `injectText` success, target text arrival,
+  and `clipboard_set` plus `paste` markers.
 - Still open: installed target-app smoke matrix, packaging smoke evidence,
   explicit pipe DACL/current-session security descriptor, real owner HWND or
   message-only clipboard owner instead of `OpenClipboard(NULL)`, and
