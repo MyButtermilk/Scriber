@@ -348,6 +348,10 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "Support bundle endpoint allowed an unauthenticated request" in desktop
     assert "support-bundle-secret-smoke.log" in desktop
     assert "Support bundle leaked a secret value" in desktop
+    assert "scriber-shell-support-bundle-smoke" in desktop
+    assert "Support bundle leaked a raw Shell IPC pipe name" in desktop
+    assert "[REDACTED_PIPE]" in desktop
+    assert "Support bundle did not contain the Shell IPC pipe redaction marker" in desktop
     assert "audio-diagnostics.redacted.json" in desktop
     assert "microphone.nativeDeviceEvents" in desktop
     assert "microphone.rustAudioFallbackCircuit" in desktop
