@@ -1155,7 +1155,12 @@ Acceptance gates:
   validation for Rust promotion.
 - No feature loss for provider streaming, final transcript injection, overlay,
   audio diagnostics, support bundles, and fallback settings.
-- Backend restart and Tauri exit clean up the Rust audio sidecar.
+- Backend restart and Tauri exit clean up the Rust audio sidecar. Cleanup now
+  uses bounded waits; if a Rust audio sidecar does not exit after
+  `captureStop`/`prewarmStop` plus `shutdown`, Tauri kills it instead of
+  hanging backend restart or shell exit. Stop diagnostics expose
+  `sidecarKilledAfterTimeout` and `sidecarWaitError` through Python audio
+  diagnostics/support bundles.
 
 Rollback:
 

@@ -1983,6 +1983,8 @@ mod tests {
                 "prewarmError": null,
                 "sidecarUptimeMs": 123,
                 "exitStatus": 0,
+                "sidecarKilledAfterTimeout": false,
+                "sidecarWaitError": null,
                 "sidecarPid": 9876,
             }),
             executable_available: true,
@@ -1999,6 +2001,8 @@ mod tests {
         assert_eq!(payload["bufferedAudioFrames"], 2048);
         assert_eq!(payload["sidecarUptimeMs"], 123);
         assert_eq!(payload["exitStatus"], 0);
+        assert_eq!(payload["sidecarKilledAfterTimeout"], false);
+        assert!(payload["sidecarWaitError"].is_null());
         assert_eq!(payload["sidecar"]["pid"], 9876);
         assert_eq!(payload["sidecarPayload"]["prewarmId"], "prewarm-1");
     }
@@ -2019,6 +2023,8 @@ mod tests {
                 "writerError": null,
                 "sidecarUptimeMs": 123,
                 "exitStatus": 0,
+                "sidecarKilledAfterTimeout": false,
+                "sidecarWaitError": null,
                 "sidecarPid": 9876,
             }),
             executable_available: true,
@@ -2034,6 +2040,8 @@ mod tests {
         assert_eq!(payload["bytesWritten"], 13_440);
         assert_eq!(payload["sidecarUptimeMs"], 123);
         assert_eq!(payload["exitStatus"], 0);
+        assert_eq!(payload["sidecarKilledAfterTimeout"], false);
+        assert!(payload["sidecarWaitError"].is_null());
         assert_eq!(payload["sidecar"]["pid"], 9876);
         assert_eq!(payload["sidecarPayload"]["streamId"], "stream-1");
     }

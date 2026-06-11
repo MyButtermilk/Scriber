@@ -431,6 +431,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.sidecar_pid = None
         self.sidecar_exit_status = None
         self.sidecar_uptime_ms = None
+        self.sidecar_killed_after_timeout = None
+        self.sidecar_wait_error = None
         self.sidecar_connected = None
         self.sidecar_frames_written = None
         self.sidecar_prebuffer_frames_written = None
@@ -620,6 +622,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
     def _record_sidecar_stop(self, payload: dict) -> None:
         self.sidecar_exit_status = payload.get("exitStatus")
         self.sidecar_uptime_ms = payload.get("sidecarUptimeMs")
+        self.sidecar_killed_after_timeout = payload.get("sidecarKilledAfterTimeout")
+        self.sidecar_wait_error = payload.get("sidecarWaitError")
         self.sidecar_connected = payload.get("connected")
         self.sidecar_frames_written = payload.get("framesWritten")
         self.sidecar_prebuffer_frames_written = payload.get("prebufferFramesWritten")
@@ -650,6 +654,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "sidecarPid": self.sidecar_pid,
             "sidecarExitStatus": self.sidecar_exit_status,
             "sidecarUptimeMs": self.sidecar_uptime_ms,
+            "sidecarKilledAfterTimeout": self.sidecar_killed_after_timeout,
+            "sidecarWaitError": self.sidecar_wait_error,
             "sidecarConnected": self.sidecar_connected,
             "sidecarFramesWritten": self.sidecar_frames_written,
             "sidecarPrebufferFramesWritten": self.sidecar_prebuffer_frames_written,

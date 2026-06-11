@@ -264,6 +264,8 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
                     "writerError": None,
                     "sidecarUptimeMs": 55,
                     "exitStatus": 0,
+                    "sidecarKilledAfterTimeout": False,
+                    "sidecarWaitError": None,
                 },
             }
         raise AssertionError(command)
@@ -314,6 +316,8 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     assert snapshot["sidecarLiveFramesWritten"] == 2
     assert snapshot["sidecarBytesWritten"] == 3072
     assert snapshot["sidecarUptimeMs"] == 55
+    assert snapshot["sidecarKilledAfterTimeout"] is False
+    assert snapshot["sidecarWaitError"] is None
     assert snapshot["sidecarStopReason"] == "captureStop"
     assert snapshot["framePipeFramesRead"] == 1
     assert snapshot["framePipeAudioFramesRead"] == 512

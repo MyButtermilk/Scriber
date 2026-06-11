@@ -340,6 +340,7 @@ Other available installed smokes include:
 - worker crash recovery,
 - occupied default port fallback,
 - controlled worker shutdown and supervisor recovery,
+- bounded Rust audio sidecar cleanup on backend restart and shell exit,
 - external backend attach,
 - startup-timeout replacement,
 - idle stability,

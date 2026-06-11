@@ -4,9 +4,10 @@ use std::{
     env,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     sync::{Mutex, OnceLock},
-    time::Instant,
+    thread,
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
@@ -16,6 +17,8 @@ use std::os::windows::process::CommandExt;
 const AUDIO_SIDECAR_EXE_ENV: &str = "SCRIBER_AUDIO_SIDECAR_EXE";
 const AUDIO_SIDECAR_PROTOCOL_VERSION: &str = "1";
 const AUDIO_SIDECAR_NAME: &str = "scriber-audio-sidecar";
+const SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1_500);
+const SIDECAR_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -26,6 +29,13 @@ struct ActiveAudioSidecar {
     path_hash: Option<String>,
     pid: u32,
     started_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct SidecarExitInfo {
+    status: Option<ExitStatus>,
+    killed_after_timeout: bool,
+    wait_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -346,7 +356,7 @@ fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
         Err(result) => with_process_identity(result, path_hash.clone(), pid),
     };
     let _ = write_sidecar_json_line(&mut sidecar.stdin, &shutdown_request());
-    let status = sidecar.child.wait().ok();
+    let exit = wait_for_sidecar_exit_or_kill(&mut sidecar.child, SIDECAR_SHUTDOWN_TIMEOUT);
     if let Some(object) = result.payload.as_object_mut() {
         object.insert(
             "sidecarUptimeMs".to_string(),
@@ -358,8 +368,9 @@ fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
         );
         object.insert(
             "exitStatus".to_string(),
-            json!(status.as_ref().and_then(|value| value.code())),
+            json!(exit.status.as_ref().and_then(|value| value.code())),
         );
+        insert_sidecar_exit_info_fields(object, &exit);
         object.insert("sidecarPid".to_string(), json!(sidecar.pid));
         object.insert("sidecarPathHash".to_string(), json!(path_hash));
     }
@@ -449,7 +460,7 @@ fn stop_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
         Err(result) => with_process_identity(result, path_hash.clone(), pid),
     };
     let _ = write_sidecar_json_line(&mut sidecar.stdin, &shutdown_request());
-    let status = sidecar.child.wait().ok();
+    let exit = wait_for_sidecar_exit_or_kill(&mut sidecar.child, SIDECAR_SHUTDOWN_TIMEOUT);
     if let Some(object) = result.payload.as_object_mut() {
         object.insert(
             "sidecarUptimeMs".to_string(),
@@ -461,8 +472,9 @@ fn stop_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
         );
         object.insert(
             "exitStatus".to_string(),
-            json!(status.as_ref().and_then(|value| value.code())),
+            json!(exit.status.as_ref().and_then(|value| value.code())),
         );
+        insert_sidecar_exit_info_fields(object, &exit);
         object.insert("sidecarPid".to_string(), json!(sidecar.pid));
         object.insert("sidecarPathHash".to_string(), json!(path_hash));
     }
@@ -510,9 +522,9 @@ fn call_audio_sidecar_command_once(
         }
         Err(result) => with_process_identity(result, path_hash.clone(), Some(sidecar.pid)),
     };
-    let status = sidecar.child.wait().ok();
+    let exit = wait_for_sidecar_exit_or_kill(&mut sidecar.child, SIDECAR_SHUTDOWN_TIMEOUT);
     if response.error_code.as_deref() == Some("audioSidecarEmptyResponse") {
-        return with_exit_status(response, status.as_ref().and_then(|value| value.code()));
+        return with_exit_status(response, &exit);
     }
     response
 }
@@ -665,7 +677,7 @@ fn stop_sidecar_process_with_command(
         );
     }
     let _ = write_sidecar_json_line(&mut sidecar.stdin, &shutdown_request());
-    let _ = sidecar.child.wait();
+    let _ = wait_for_sidecar_exit_or_kill(&mut sidecar.child, SIDECAR_SHUTDOWN_TIMEOUT);
 }
 
 fn with_process_identity(
@@ -679,12 +691,69 @@ fn with_process_identity(
     result
 }
 
+fn wait_for_sidecar_exit_or_kill(child: &mut Child, timeout: Duration) -> SidecarExitInfo {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return SidecarExitInfo {
+                    status: Some(status),
+                    killed_after_timeout: false,
+                    wait_error: None,
+                };
+            }
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let kill_error = child.kill().err().map(|err| err.to_string());
+                    let wait_result = child.wait();
+                    return SidecarExitInfo {
+                        status: wait_result.ok(),
+                        killed_after_timeout: true,
+                        wait_error: kill_error,
+                    };
+                }
+                thread::sleep(SIDECAR_SHUTDOWN_POLL_INTERVAL.min(timeout));
+            }
+            Err(err) => {
+                let kill_error = child.kill().err().map(|kill_err| kill_err.to_string());
+                let _ = child.wait();
+                return SidecarExitInfo {
+                    status: None,
+                    killed_after_timeout: true,
+                    wait_error: Some(match kill_error {
+                        Some(kill_err) => format!("{err}; kill failed: {kill_err}"),
+                        None => err.to_string(),
+                    }),
+                };
+            }
+        }
+    }
+}
+
+fn insert_sidecar_exit_info_fields(
+    object: &mut serde_json::Map<String, Value>,
+    exit: &SidecarExitInfo,
+) {
+    object.insert(
+        "sidecarKilledAfterTimeout".to_string(),
+        json!(exit.killed_after_timeout),
+    );
+    object.insert(
+        "sidecarWaitError".to_string(),
+        json!(exit.wait_error.as_deref()),
+    );
+}
+
 fn with_exit_status(
     mut result: AudioSidecarCallResult,
-    exit_status: Option<i32>,
+    exit: &SidecarExitInfo,
 ) -> AudioSidecarCallResult {
     if let Some(object) = result.payload.as_object_mut() {
-        object.insert("exitStatus".to_string(), json!(exit_status));
+        object.insert(
+            "exitStatus".to_string(),
+            json!(exit.status.as_ref().and_then(|value| value.code())),
+        );
+        insert_sidecar_exit_info_fields(object, exit);
     }
     result
 }
@@ -899,6 +968,43 @@ mod tests {
         dir
     }
 
+    #[cfg(windows)]
+    fn long_running_test_process() -> Command {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "ping -n 30 127.0.0.1 >NUL"]);
+        command
+    }
+
+    #[cfg(not(windows))]
+    fn long_running_test_process() -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30"]);
+        command
+    }
+
+    #[cfg(windows)]
+    fn quick_exit_test_process(exit_code: i32) -> Command {
+        let mut command = Command::new("cmd");
+        command.args(["/C", &format!("exit /B {exit_code}")]);
+        command
+    }
+
+    #[cfg(not(windows))]
+    fn quick_exit_test_process(exit_code: i32) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", &format!("exit {exit_code}")]);
+        command
+    }
+
+    fn spawn_test_process(mut command: Command) -> Child {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        hide_child_console_window(&mut command);
+        command.spawn().unwrap()
+    }
+
     #[test]
     fn audio_sidecar_executable_lookup_uses_allowlisted_names() {
         let dir = unique_test_dir("lookup");
@@ -959,6 +1065,28 @@ mod tests {
     #[test]
     fn audio_sidecar_shutdown_without_active_sessions_is_noop() {
         assert_eq!(shutdown_all_audio_sidecars("test"), 0);
+    }
+
+    #[test]
+    fn sidecar_wait_reports_clean_process_exit() {
+        let mut child = spawn_test_process(quick_exit_test_process(7));
+
+        let exit = wait_for_sidecar_exit_or_kill(&mut child, Duration::from_secs(5));
+
+        assert!(!exit.killed_after_timeout);
+        assert_eq!(exit.status.and_then(|status| status.code()), Some(7));
+        assert_eq!(exit.wait_error, None);
+    }
+
+    #[test]
+    fn sidecar_wait_kills_process_after_timeout() {
+        let mut child = spawn_test_process(long_running_test_process());
+
+        let exit = wait_for_sidecar_exit_or_kill(&mut child, Duration::from_millis(20));
+
+        assert!(exit.killed_after_timeout);
+        assert_eq!(exit.wait_error, None);
+        assert!(child.try_wait().unwrap().is_some());
     }
 
     #[test]
