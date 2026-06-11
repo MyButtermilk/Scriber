@@ -309,6 +309,65 @@ function Invoke-TimedRestGet {
     }
 }
 
+function Convert-AudioDiagnosticsSummary {
+    param([object]$AudioDiagnostics)
+
+    $featureFlags = $AudioDiagnostics.featureFlags
+    $microphone = $AudioDiagnostics.microphone
+    $activeCapture = if ($microphone) { $microphone.activeCapture } else { $null }
+    $source = if ($activeCapture) { $activeCapture.source } else { $null }
+    $fallbackCircuit = if ($microphone) { $microphone.rustAudioFallbackCircuit } else { $null }
+
+    return [pscustomobject]@{
+        apiVersion = [string]$AudioDiagnostics.apiVersion
+        runtimeMode = [string]$AudioDiagnostics.runtimeMode
+        pid = $AudioDiagnostics.pid
+        recordingState = [string]$AudioDiagnostics.recordingState
+        featureFlags = [pscustomobject]@{
+            audioEngine = [string]$featureFlags.audioEngine
+            requestedAudioEngine = [string]$featureFlags.requestedAudioEngine
+            rustAudioRequested = [bool]$featureFlags.rustAudioRequested
+            rustAudioAvailable = [bool]$featureFlags.rustAudioAvailable
+        }
+        activeCapture = if ($activeCapture) {
+            [pscustomobject]@{
+                running = [bool]$activeCapture.running
+                engine = [string]$activeCapture.engine
+                requestedEngine = [string]$activeCapture.requestedEngine
+                frameSource = [string]$activeCapture.frameSource
+                engineFallbackReason = [string]$activeCapture.engineFallbackReason
+                hasStream = [bool]$activeCapture.hasStream
+                streamActive = [bool]$activeCapture.streamActive
+                callbackCount = $activeCapture.callbackCount
+                droppedFrameCount = $activeCapture.droppedFrameCount
+                nativeEndpointIdHash = [string]$activeCapture.nativeEndpointIdHash
+                sourceFrameSource = if ($source) { [string]$source.frameSource } else { "" }
+                sourceNativeEndpointIdHash = if ($source) { [string]$source.nativeEndpointIdHash } else { "" }
+                framePipeFramesRead = $activeCapture.framePipeFramesRead
+                framePipeAudioFramesRead = $activeCapture.framePipeAudioFramesRead
+                framePipeSequenceErrorCount = $activeCapture.framePipeSequenceErrorCount
+                framePipeProtocolErrorCount = $activeCapture.framePipeProtocolErrorCount
+                framePipePrebufferAfterLiveCount = $activeCapture.framePipePrebufferAfterLiveCount
+                sidecarPid = $activeCapture.sidecarPid
+                sidecarConnected = $activeCapture.sidecarConnected
+            }
+        } else {
+            $null
+        }
+        rustAudioFallbackCircuit = if ($fallbackCircuit) {
+            [pscustomobject]@{
+                available = [bool]$fallbackCircuit.available
+                open = [bool]$fallbackCircuit.open
+                reason = [string]$fallbackCircuit.reason
+                remainingSeconds = $fallbackCircuit.remainingSeconds
+                cooldownSeconds = $fallbackCircuit.cooldownSeconds
+            }
+        } else {
+            $null
+        }
+    }
+}
+
 function Get-ProcessTotalCpuSeconds {
     param([int[]]$ProcessIds)
 
@@ -351,7 +410,8 @@ function Test-RuntimeStability {
         [int]$DurationSec,
         [int]$ProbeIntervalSec,
         [double]$MaxWorkingSetGrowthMB = 0,
-        [double]$MaxIdleCpuPercent = 0
+        [double]$MaxIdleCpuPercent = 0,
+        [bool]$CollectAudioDiagnostics = $false
     )
 
     if ($DurationSec -le 0) {
@@ -392,6 +452,12 @@ function Test-RuntimeStability {
         if (-not ($state.recordingState -and $state.status)) {
             throw "Stability smoke state probe returned unexpected payload."
         }
+        $audioDiagnosticsProbe = $null
+        $audioDiagnosticsSummary = $null
+        if ($CollectAudioDiagnostics) {
+            $audioDiagnosticsProbe = Invoke-TimedRestGet -Uri "http://127.0.0.1:$Port/api/runtime/audio-diagnostics" -Headers $headers
+            $audioDiagnosticsSummary = Convert-AudioDiagnosticsSummary -AudioDiagnostics $audioDiagnosticsProbe.payload
+        }
 
         $currentCpuSampleAt = Get-Date
         $currentCpuTotals = Get-ProcessTotalCpuSeconds -ProcessIds @([int]$AppProcess.Id, $BackendPid)
@@ -426,6 +492,8 @@ function Test-RuntimeStability {
             combinedCpuPercent = $combinedCpuPercent
             healthMs = $healthProbe.elapsedMs
             stateMs = $stateProbe.elapsedMs
+            audioDiagnosticsMs = if ($audioDiagnosticsProbe) { $audioDiagnosticsProbe.elapsedMs } else { $null }
+            audioDiagnostics = $audioDiagnosticsSummary
             healthReady = [bool]$health.ready
             status = [string]$state.status
             recordingState = [string]$state.recordingState
@@ -523,7 +591,8 @@ function Test-LiveRecordingStability {
             -DurationSec $DurationSec `
             -ProbeIntervalSec $ProbeIntervalSec `
             -MaxWorkingSetGrowthMB $MaxWorkingSetGrowthMB `
-            -MaxIdleCpuPercent $MaxCpuPercent
+            -MaxIdleCpuPercent $MaxCpuPercent `
+            -CollectAudioDiagnostics $true
         $nonRecordingSamples = @(
             $stability.samples |
                 Where-Object { ([string]$_.recordingState -ne "recording") -and -not ([bool]$_.listening) }

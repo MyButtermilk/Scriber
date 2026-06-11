@@ -161,7 +161,10 @@ Rust audio:
   `-MinInstalledLiveRecordingDurationSec`; this gates the app/installer path
   separately from provider-backed transcript quality and now validates managed
   Tauri runtime metadata plus stability-sample coverage for the requested
-  recording duration.
+  recording duration. The aggregate Rust promotion gate also requires
+  installed live-recording Rust-audio sample evidence, so installed reports must
+  prove `rust-prototype` / `rust-frame-pipe` active capture with a closed
+  fallback circuit instead of only proving generic live-mic stability.
   The recording hot-path benchmark now has strict provider/Rust promotion
   flags: `--require-provider-transcript` requires a final STT provider segment,
   and `--require-rust-audio-engine` verifies active `rust-prototype`

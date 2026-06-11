@@ -413,8 +413,11 @@ live-recording smoke, provider-backed Python-vs-Rust hot-path comparison,
 Rust/WASAPI endpoint inventory in the physical microphone matrix, and native
 device-refresh evidence. It also raises the promotion minima to a 10-minute
 Rust sidecar smoke, 10-minute active app prewarm capture, 30-minute idle prewarm
-window, and 10-minute installed live-recording smoke. Add the matching `-Run...`
-or `-UseExisting...` flags when producing or reusing those reports.
+window, and 10-minute installed live-recording smoke. For the installed
+live-recording gate it also requires sampled `rust-prototype` /
+`rust-frame-pipe` audio diagnostics with a closed Rust fallback circuit. Add the
+matching `-Run...` or `-UseExisting...` flags when producing or reusing those
+reports.
 
 When evaluating whether the Rust audio prototype can be promoted, add the
 physical sidecar smoke, Rust endpoint inventory evidence, and native
@@ -484,9 +487,15 @@ app. The report must show a managed `tauri-supervised` runtime, healthy
 `apiVersion=1`/ready state, positive app/backend PID and backend-port metadata,
 clean live recording start/stop state, no non-recording samples during the
 recording window, stability samples that cover at least half of the expected
-probe count for the requested duration, and verified cleanup. It complements
-the provider-backed Python/Rust hot-path comparison; it does not replace
-transcript-quality evidence.
+probe count for the requested duration, and verified cleanup. Add
+`-RequireInstalledLiveRecordingRustAudio` when the report is used as Rust
+promotion evidence; that requires every stability sample to include compact
+audio diagnostics proving `audioEngine=rust-prototype`,
+`activeCapture.frameSource=rust-frame-pipe`, active callbacks, no frame-pipe
+sequence/protocol/prebuffer-order errors, and
+`rustAudioFallbackCircuit.open=false`. It complements the provider-backed
+Python/Rust hot-path comparison; it does not replace transcript-quality
+evidence.
 
 When evaluating whether Tauri/Rust text injection can become more than an
 opt-in path, require safe target-window evidence as well:

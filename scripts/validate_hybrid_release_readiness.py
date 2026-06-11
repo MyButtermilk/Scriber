@@ -18,6 +18,8 @@ from scripts.validate_tauri_updater_metadata import DEFAULT_METADATA, sha256_fil
 
 
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+RUST_AUDIO_ENGINE = "rust-prototype"
+RUST_AUDIO_FRAME_SOURCE = "rust-frame-pipe"
 
 REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS: dict[str, str] = {
     "notepad": "Notepad plain text target",
@@ -80,6 +82,7 @@ def validate_release_readiness(
     require_tauri_text_injection_smoke: bool = False,
     require_tauri_text_injection_matrix: bool = False,
     require_recording_hot_path_comparison: bool = False,
+    require_installed_live_recording_rust_audio: bool = False,
     require_rust_endpoint_inventory: bool = False,
     require_device_refresh_evidence: bool = False,
     require_rust_audio_sidecar_prewarm_adoption: bool = False,
@@ -153,12 +156,17 @@ def validate_release_readiness(
                 min_prewarm_duration_sec=min_rust_audio_app_prewarm_prewarm_duration_sec,
             )
         )
-    if require_installed_live_recording_smoke or installed_live_recording_smoke_report is not None:
+    if (
+        require_installed_live_recording_smoke
+        or require_installed_live_recording_rust_audio
+        or installed_live_recording_smoke_report is not None
+    ):
         checks.append(
             validate_installed_live_recording_smoke_report(
                 installed_live_recording_smoke_report,
                 required=require_installed_live_recording_smoke,
                 min_duration_sec=min_installed_live_recording_duration_sec,
+                require_rust_audio=require_installed_live_recording_rust_audio,
             )
         )
     if require_tauri_text_injection_smoke or tauri_text_injection_smoke_report is not None:
@@ -889,15 +897,17 @@ def validate_installed_live_recording_smoke_report(
     *,
     required: bool,
     min_duration_sec: float = 0.0,
+    require_rust_audio: bool = False,
 ) -> ReadinessCheck:
     failures: list[str] = []
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
         "required": required,
         "minDurationSec": min_duration_sec,
+        "requireRustAudio": require_rust_audio,
     }
     if report_path is None:
-        if required:
+        if required or require_rust_audio:
             failures.append("Installed live recording smoke report is required")
         return ReadinessCheck("installedLiveRecordingSmoke", not failures, failures, details)
 
@@ -933,6 +943,9 @@ def validate_installed_live_recording_smoke_report(
             "cleanupVerified": smoke.get("cleanupVerified"),
             "liveRecording": live_recording,
             "stability": stability,
+            "rustAudioEvidence": summarize_installed_live_recording_rust_audio_evidence(
+                stability.get("samples") if isinstance(stability, dict) else None
+            ),
         }
     )
     if smoke.get("ok") is not True:
@@ -1057,8 +1070,142 @@ def validate_installed_live_recording_smoke_report(
             last_elapsed = numeric_field(last_sample, "elapsedSec") if isinstance(last_sample, dict) else None
             if last_elapsed is None or last_elapsed < stability_duration * 0.75:
                 failures.append("installed live recording smoke samples must span at least 75% of stability.durationSec")
+        if require_rust_audio:
+            failures.extend(validate_installed_live_recording_rust_audio_samples(samples))
 
     return ReadinessCheck("installedLiveRecordingSmoke", not failures, failures, details)
+
+
+def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict[str, Any]:
+    if not isinstance(samples, list):
+        return {
+            "sampleCount": 0,
+            "audioDiagnosticsSampleCount": 0,
+            "rustFramePipeSampleCount": 0,
+            "fallbackCircuitOpenCount": 0,
+        }
+
+    audio_diagnostics_count = 0
+    rust_frame_pipe_count = 0
+    fallback_open_count = 0
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        diagnostics = sample.get("audioDiagnostics")
+        if not isinstance(diagnostics, dict):
+            continue
+        audio_diagnostics_count += 1
+        feature_flags = diagnostics.get("featureFlags")
+        active_capture = diagnostics.get("activeCapture")
+        fallback_circuit = diagnostics.get("rustAudioFallbackCircuit")
+        if (
+            isinstance(feature_flags, dict)
+            and isinstance(active_capture, dict)
+            and feature_flags.get("audioEngine") == RUST_AUDIO_ENGINE
+            and active_capture.get("engine") == RUST_AUDIO_ENGINE
+            and active_capture.get("frameSource") == RUST_AUDIO_FRAME_SOURCE
+        ):
+            rust_frame_pipe_count += 1
+        if isinstance(fallback_circuit, dict) and fallback_circuit.get("open") is True:
+            fallback_open_count += 1
+
+    return {
+        "sampleCount": len(samples),
+        "audioDiagnosticsSampleCount": audio_diagnostics_count,
+        "rustFramePipeSampleCount": rust_frame_pipe_count,
+        "fallbackCircuitOpenCount": fallback_open_count,
+    }
+
+
+def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[str]:
+    failures: list[str] = []
+    if not isinstance(samples, list) or not samples:
+        return ["installed live recording smoke Rust audio evidence requires stability samples"]
+
+    for index, sample in enumerate(samples, start=1):
+        if not isinstance(sample, dict):
+            failures.append(f"installed live recording smoke sample {index} must be an object")
+            break
+        diagnostics = sample.get("audioDiagnostics")
+        if not isinstance(diagnostics, dict):
+            failures.append(f"installed live recording smoke sample {index} audioDiagnostics must be an object")
+            break
+        feature_flags = diagnostics.get("featureFlags")
+        if not isinstance(feature_flags, dict):
+            failures.append(f"installed live recording smoke sample {index} audioDiagnostics.featureFlags must be an object")
+            break
+        if feature_flags.get("audioEngine") != RUST_AUDIO_ENGINE:
+            failures.append(
+                f"installed live recording smoke sample {index} audioEngine must be {RUST_AUDIO_ENGINE}"
+            )
+            break
+        if feature_flags.get("rustAudioRequested") is not True:
+            failures.append(f"installed live recording smoke sample {index} rustAudioRequested must be true")
+            break
+        if feature_flags.get("rustAudioAvailable") is not True:
+            failures.append(f"installed live recording smoke sample {index} rustAudioAvailable must be true")
+            break
+
+        active_capture = diagnostics.get("activeCapture")
+        if not isinstance(active_capture, dict):
+            failures.append(f"installed live recording smoke sample {index} activeCapture must be an object")
+            break
+        if active_capture.get("running") is not True:
+            failures.append(f"installed live recording smoke sample {index} activeCapture.running must be true")
+            break
+        if active_capture.get("engine") != RUST_AUDIO_ENGINE:
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.engine must be {RUST_AUDIO_ENGINE}"
+            )
+            break
+        if active_capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE:
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.frameSource must be {RUST_AUDIO_FRAME_SOURCE}"
+            )
+            break
+        if active_capture.get("streamActive") is not True:
+            failures.append(f"installed live recording smoke sample {index} activeCapture.streamActive must be true")
+            break
+        if numeric_field(active_capture, "callbackCount") is None or numeric_field(active_capture, "callbackCount") <= 0:
+            failures.append(f"installed live recording smoke sample {index} activeCapture.callbackCount must be positive")
+            break
+        if numeric_field(active_capture, "framePipeFramesRead") is None or numeric_field(active_capture, "framePipeFramesRead") <= 0:
+            failures.append(f"installed live recording smoke sample {index} framePipeFramesRead must be positive")
+            break
+        if numeric_field(active_capture, "framePipeAudioFramesRead") is None or numeric_field(active_capture, "framePipeAudioFramesRead") <= 0:
+            failures.append(f"installed live recording smoke sample {index} framePipeAudioFramesRead must be positive")
+            break
+        if not str(active_capture.get("nativeEndpointIdHash") or active_capture.get("sourceNativeEndpointIdHash") or ""):
+            failures.append(f"installed live recording smoke sample {index} nativeEndpointIdHash is required")
+            break
+        if numeric_field(active_capture, "framePipeSequenceErrorCount") != 0:
+            failures.append(
+                f"installed live recording smoke sample {index} framePipeSequenceErrorCount must be 0"
+            )
+            break
+        if numeric_field(active_capture, "framePipeProtocolErrorCount") != 0:
+            failures.append(
+                f"installed live recording smoke sample {index} framePipeProtocolErrorCount must be 0"
+            )
+            break
+        if numeric_field(active_capture, "framePipePrebufferAfterLiveCount") != 0:
+            failures.append(
+                f"installed live recording smoke sample {index} framePipePrebufferAfterLiveCount must be 0"
+            )
+            break
+
+        fallback_circuit = diagnostics.get("rustAudioFallbackCircuit")
+        if not isinstance(fallback_circuit, dict):
+            failures.append(f"installed live recording smoke sample {index} rustAudioFallbackCircuit must be an object")
+            break
+        if fallback_circuit.get("available") is not True:
+            failures.append(f"installed live recording smoke sample {index} rustAudioFallbackCircuit.available must be true")
+            break
+        if fallback_circuit.get("open") is True:
+            failures.append(f"installed live recording smoke sample {index} rustAudioFallbackCircuit.open must be false")
+            break
+
+    return failures
 
 
 def validate_tauri_text_injection_smoke_report(
@@ -1683,6 +1830,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--require-rust-audio-prewarm-sidecar-smoke", action="store_true")
     parser.add_argument("--require-rust-audio-app-prewarm-smoke", action="store_true")
     parser.add_argument("--require-installed-live-recording-smoke", action="store_true")
+    parser.add_argument("--require-installed-live-recording-rust-audio", action="store_true")
     parser.add_argument("--require-tauri-text-injection-smoke", action="store_true")
     parser.add_argument("--require-tauri-text-injection-matrix", action="store_true")
     parser.add_argument("--require-recording-hot-path-comparison", action="store_true")
@@ -1722,6 +1870,7 @@ def main(argv: list[str]) -> int:
         require_rust_audio_prewarm_sidecar_smoke=args.require_rust_audio_prewarm_sidecar_smoke,
         require_rust_audio_app_prewarm_smoke=args.require_rust_audio_app_prewarm_smoke,
         require_installed_live_recording_smoke=args.require_installed_live_recording_smoke,
+        require_installed_live_recording_rust_audio=args.require_installed_live_recording_rust_audio,
         require_tauri_text_injection_smoke=args.require_tauri_text_injection_smoke,
         require_tauri_text_injection_matrix=args.require_tauri_text_injection_matrix,
         require_recording_hot_path_comparison=args.require_recording_hot_path_comparison,

@@ -403,6 +403,9 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
 
     assert "[int]$LiveRecordingDurationSec = 0" in desktop
     assert "function Test-LiveRecordingStability" in desktop
+    assert "function Convert-AudioDiagnosticsSummary" in desktop
+    assert "/api/runtime/audio-diagnostics" in desktop
+    assert "-CollectAudioDiagnostics $true" in desktop
     assert "Invoke-LiveMicStart" in desktop
     assert "Invoke-LiveMicStop" in desktop
     assert "nonRecordingSampleCount = $nonRecordingSamples.Count" in desktop

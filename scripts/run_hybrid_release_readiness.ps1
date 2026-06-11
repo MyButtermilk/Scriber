@@ -43,6 +43,7 @@ param(
     [switch]$RustAudioAppPrewarmHonorFavoriteMic,
     [string]$InstalledLiveRecordingSmokeReport = "",
     [switch]$RequireInstalledLiveRecordingSmoke,
+    [switch]$RequireInstalledLiveRecordingRustAudio,
     [double]$MinInstalledLiveRecordingDurationSec = 0,
     [string]$TauriTextInjectionSmokeReport = "",
     [switch]$RequireTauriTextInjectionSmoke,
@@ -215,6 +216,7 @@ if ($RequireRustAudioPromotionReadiness) {
     $RustAudioSidecarPrewarmBeforeCapture = $true
     $RequireRustAudioAppPrewarmSmoke = $true
     $RequireInstalledLiveRecordingSmoke = $true
+    $RequireInstalledLiveRecordingRustAudio = $true
     $RequireRecordingHotPathComparison = $true
     $RequireRustEndpointInventory = $true
     $RequireDeviceRefreshEvidence = $true
@@ -403,11 +405,14 @@ if ($MinRustAudioAppPrewarmDurationSec -gt 0) {
 if ($MinRustAudioAppPrewarmPrewarmDurationSec -gt 0) {
     $readinessArgs += @("--min-rust-audio-app-prewarm-prewarm-duration-sec", ([string]$MinRustAudioAppPrewarmPrewarmDurationSec))
 }
-if ($RequireInstalledLiveRecordingSmoke -or $MinInstalledLiveRecordingDurationSec -gt 0 -or (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf)) {
+if ($RequireInstalledLiveRecordingSmoke -or $RequireInstalledLiveRecordingRustAudio -or $MinInstalledLiveRecordingDurationSec -gt 0 -or (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf)) {
     $readinessArgs += @("--installed-live-recording-smoke-report", $InstalledLiveRecordingSmokeReport)
 }
 if ($RequireInstalledLiveRecordingSmoke) {
     $readinessArgs += "--require-installed-live-recording-smoke"
+}
+if ($RequireInstalledLiveRecordingRustAudio) {
+    $readinessArgs += "--require-installed-live-recording-rust-audio"
 }
 if ($MinInstalledLiveRecordingDurationSec -gt 0) {
     $readinessArgs += @("--min-installed-live-recording-duration-sec", ([string]$MinInstalledLiveRecordingDurationSec))
@@ -550,7 +555,8 @@ $requiredEvidence = @(
         producer = "scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke, scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec, or scripts\smoke_tauri_desktop.ps1 -LiveRecordingDurationSec over an installed app"
         report = $InstalledLiveRecordingSmokeReport
         minDurationSec = $MinInstalledLiveRecordingDurationSec
-        notes = "Required for Rust audio promotion before changing the default live-mic path. Validates installed app live recording start/stop state, non-recording sample leakage, stability samples, and cleanup; provider-backed transcription quality remains covered by recordingHotPathPythonRustComparison."
+        requireRustAudio = [bool]$RequireInstalledLiveRecordingRustAudio
+        notes = "Required for Rust audio promotion before changing the default live-mic path. Validates installed app live recording start/stop state, non-recording sample leakage, stability samples, cleanup, and, when requireRustAudio=true, sampled rust-prototype/rust-frame-pipe capture with a closed fallback circuit; provider-backed transcription quality remains covered by recordingHotPathPythonRustComparison."
     },
     [pscustomobject]@{
         name = "tauriTextInjectionSmoke"
@@ -647,6 +653,7 @@ $plan = [pscustomobject]@{
     requireRustAudioAppPrewarmSmoke = [bool]$RequireRustAudioAppPrewarmSmoke
     requireRustAudioPromotionReadiness = [bool]$RequireRustAudioPromotionReadiness
     requireInstalledLiveRecordingSmoke = [bool]$RequireInstalledLiveRecordingSmoke
+    requireInstalledLiveRecordingRustAudio = [bool]$RequireInstalledLiveRecordingRustAudio
     requireTauriTextInjectionSmoke = [bool]$RequireTauriTextInjectionSmoke
     requireTauriTextInjectionMatrix = [bool]$RequireTauriTextInjectionMatrix
     requireRecordingHotPathComparison = [bool]$RequireRecordingHotPathComparison
@@ -689,7 +696,7 @@ $plan = [pscustomobject]@{
         },
         [pscustomobject]@{
             name = "installedLiveRecordingSmoke"
-            command = $(if (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RequireInstalledLiveRecordingSmoke -or $MinInstalledLiveRecordingDurationSec -gt 0) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec" } else { "not requested" })
+            command = $(if (Test-Path -LiteralPath $InstalledLiveRecordingSmokeReport -PathType Leaf) { "reuse $InstalledLiveRecordingSmokeReport" } elseif ($RequireInstalledLiveRecordingSmoke -or $RequireInstalledLiveRecordingRustAudio -or $MinInstalledLiveRecordingDurationSec -gt 0) { "required external report: produce with scripts\build_windows.ps1 -RunInstallerLiveRecordingSmoke or scripts\smoke_windows_installer.ps1 -LiveRecordingDurationSec" } else { "not requested" })
         },
         [pscustomobject]@{
             name = "tauriTextInjectionSmoke"

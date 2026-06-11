@@ -169,6 +169,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     assert live_recording_evidence["required"] is False
     assert live_recording_evidence["external"] is True
     assert live_recording_evidence["report"].endswith("installed-live-recording-smoke.json")
+    assert live_recording_evidence["requireRustAudio"] is False
     assert live_recording_evidence["producer"].startswith("scripts\\build_windows.ps1 -RunInstallerLiveRecordingSmoke")
     assert "non-recording sample leakage" in live_recording_evidence["notes"]
     injection_evidence = payload["requiredEvidence"][9]
@@ -446,6 +447,34 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
     assert "--min-installed-live-recording-duration-sec 600" in readiness_command["command"]
 
 
+def test_hybrid_release_readiness_runner_plans_required_installed_live_recording_rust_audio(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RequireInstalledLiveRecordingRustAudio",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["requireInstalledLiveRecordingSmoke"] is False
+    assert payload["requireInstalledLiveRecordingRustAudio"] is True
+    live_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke")
+    assert live_evidence["required"] is False
+    assert live_evidence["requireRustAudio"] is True
+    live_command = next(entry for entry in payload["commands"] if entry["name"] == "installedLiveRecordingSmoke")
+    assert "required external report" in live_command["command"]
+    readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
+    assert "--installed-live-recording-smoke-report" in readiness_command["command"]
+    assert "--require-installed-live-recording-smoke" not in readiness_command["command"]
+    assert "--require-installed-live-recording-rust-audio" in readiness_command["command"]
+
+
 def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tmp_path: Path) -> None:
     result = run_powershell(
         "-NoProfile",
@@ -471,6 +500,7 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert payload["requireRustAudioSidecarSmoke"] is True
     assert payload["requireRustAudioAppPrewarmSmoke"] is True
     assert payload["requireInstalledLiveRecordingSmoke"] is True
+    assert payload["requireInstalledLiveRecordingRustAudio"] is True
     assert payload["requireRecordingHotPathComparison"] is True
     assert payload["requireRustEndpointInventory"] is True
     assert payload["requireDeviceRefreshEvidence"] is True
@@ -495,6 +525,7 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert by_name["recordingHotPathPythonRustComparison"]["required"] is True
     assert by_name["installedLiveRecordingSmoke"]["required"] is True
     assert by_name["installedLiveRecordingSmoke"]["minDurationSec"] == 600
+    assert by_name["installedLiveRecordingSmoke"]["requireRustAudio"] is True
     assert by_name["physicalMicrophoneMatrix"]["requireRustEndpointInventory"] is True
     assert by_name["physicalMicrophoneMatrix"]["requireDeviceRefreshEvidence"] is True
 
@@ -515,6 +546,7 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert "--min-rust-audio-app-prewarm-duration-sec 600" in readiness_command
     assert "--min-rust-audio-app-prewarm-prewarm-duration-sec 1800" in readiness_command
     assert "--require-installed-live-recording-smoke" in readiness_command
+    assert "--require-installed-live-recording-rust-audio" in readiness_command
     assert "--min-installed-live-recording-duration-sec 600" in readiness_command
     assert "--require-recording-hot-path-comparison" in readiness_command
     assert "--require-rust-endpoint-inventory" in readiness_command
