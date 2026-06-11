@@ -162,6 +162,101 @@ def _validate_audio_capture_diagnostics(
         _validate_audio_capture_diagnostics(source, contract, f"{path}.source")
 
 
+def _reject_raw_prewarm_id_fields(payload: dict[str, Any], contract: str, path: str) -> None:
+    for raw_key in ("prewarmId", "prewarm_id"):
+        if raw_key in payload:
+            raise RESTContractError(f"{contract} must not expose raw '{path}.{raw_key}'")
+    for key, value in payload.items():
+        child_path = f"{path}.{key}"
+        if isinstance(value, dict):
+            _reject_raw_prewarm_id_fields(value, contract, child_path)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                if isinstance(item, dict):
+                    _reject_raw_prewarm_id_fields(item, contract, f"{child_path}[{index}]")
+
+
+def _validate_prewarm_diagnostics(
+    payload: Any,
+    contract: str,
+    path: str = "microphone.prewarm",
+) -> None:
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} requires object-or-null '{path}'")
+
+    _reject_raw_prewarm_id_fields(payload, contract, path)
+    _require_optional_bool(payload, "configured", contract)
+    _require_optional_string(payload, "engine", contract)
+    _require_optional_bool(payload, "active", contract)
+    _require_optional_bool(payload, "hasStream", contract)
+    _require_optional_string(payload, "prewarmIdHash", contract)
+    _require_optional_bool(payload, "activeCaptureAttached", contract)
+    _require_optional_bool(payload, "pausedForActiveCapture", contract)
+    _require_optional_bool(payload, "pausedForDeviceRefresh", contract)
+    _require_optional_number(payload, "streamStartedAgoSeconds", contract)
+    _require_optional_int(payload, "streamStartCount", contract)
+    _require_optional_int(payload, "streamCloseCount", contract)
+    _require_optional_int(payload, "healthRestartCount", contract)
+    _require_optional_int(payload, "deviceRefreshPauseCount", contract)
+    _require_optional_int(payload, "deviceRefreshResumeCount", contract)
+    _require_optional_int(payload, "activeCapturePauseCount", contract)
+    _require_optional_int(payload, "activeCaptureResumeCount", contract)
+    _require_optional_int(payload, "activeCaptureResumeReadyCount", contract)
+    _require_optional_int(payload, "activeCaptureResumeFailedCount", contract)
+    _require_optional_number(payload, "lastActiveCaptureResumeGapMs", contract)
+    _require_optional_number(payload, "lastActiveCaptureStopToReadyMs", contract)
+    _require_optional_number(payload, "maxActiveCaptureStopToReadyMs", contract)
+    _require_optional_int(payload, "adoptionCount", contract)
+    _require_optional_string(payload, "lastAdoptedPrewarmIdHash", contract)
+    _require_optional_number(payload, "lastActiveCaptureDetachAgoSeconds", contract)
+    _require_optional_number(payload, "lastActiveCaptureResumeAttemptAgoSeconds", contract)
+    _require_optional_string(payload, "lastError", contract)
+    _require_optional_number(payload, "lastStartAttemptAgoSeconds", contract)
+    _require_optional_number(payload, "lastStartDurationMs", contract)
+    _require_optional_number(payload, "lastStartResponseMs", contract)
+    _require_optional_bool(payload, "lastStartSuccess", contract)
+    _require_optional_number(payload, "lastStopAgoSeconds", contract)
+    _require_optional_string(payload, "lastStopReason", contract)
+    _require_optional_number(payload, "lastStopResponseMs", contract)
+    _require_optional_bool(payload, "lastStopSuccess", contract)
+    _require_optional_string(payload, "lastStopError", contract)
+    _require_optional_number(payload, "lastHealthCheckAgoSeconds", contract)
+    _require_optional_string(payload, "lastHealthCheckReason", contract)
+    _require_optional_bool(payload, "lastHealthCheckActive", contract)
+    _require_optional_number(payload, "lastHealthResponseMs", contract)
+    _require_optional_string(payload, "lastHealthError", contract)
+    _require_optional_string(payload, "lastTransition", contract)
+    _require_optional_string(payload, "lastTransitionReason", contract)
+    _require_optional_number(payload, "lastTransitionAgoSeconds", contract)
+
+    for nested_key in ("lastStop", "lastStatus", "start"):
+        nested = payload.get(nested_key)
+        if nested is None:
+            continue
+        if nested_key == "lastStatus" and isinstance(nested, str):
+            continue
+        if not isinstance(nested, dict):
+            raise RESTContractError(f"{contract} requires object-or-null '{path}.{nested_key}'")
+        _reject_raw_prewarm_id_fields(nested, contract, f"{path}.{nested_key}")
+
+    recent_events = payload.get("recentEvents")
+    if recent_events is not None:
+        if not isinstance(recent_events, list):
+            raise RESTContractError(f"{contract} requires list-or-null '{path}.recentEvents'")
+        for index, event in enumerate(recent_events):
+            if not isinstance(event, dict):
+                raise RESTContractError(f"{contract} requires object entries in '{path}.recentEvents'")
+            _reject_raw_prewarm_id_fields(event, contract, f"{path}.recentEvents[{index}]")
+            _require_optional_string(event, "event", contract)
+            _require_optional_string(event, "reason", contract)
+            _require_optional_number(event, "ageSeconds", contract)
+            _require_optional_string(event, "prewarmIdHash", contract)
+            _require_optional_number(event, "activeCaptureResumeGapMs", contract)
+            _require_optional_number(event, "activeCaptureStopToReadyMs", contract)
+
+
 def _validate_redacted_foreground(payload: Any, contract: str, path: str) -> None:
     if payload is None:
         return
@@ -382,6 +477,7 @@ def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
     _require_bool(microphone, "micAlwaysOn", contract)
     _require_bool(microphone, "idlePrewarmActive", contract)
     _require_int(microphone, "prebufferMs", contract)
+    _validate_prewarm_diagnostics(microphone.get("prewarm"), contract)
     native_device_events = _require_dict(microphone, "nativeDeviceEvents", contract)
     _require_bool(native_device_events, "shellIpcAvailable", contract)
     _require_optional_bool(native_device_events, "available", contract)

@@ -41,7 +41,7 @@ _MAX_LOG_BYTES = 750_000
 
 def is_sensitive_key(key: str) -> bool:
     key_str = str(key)
-    if key_str.casefold() == "endpointid":
+    if key_str.casefold() in {"endpointid", "prewarmid", "prewarm_id"}:
         return True
     return bool(_SENSITIVE_KEY_RE.search(key_str))
 

@@ -206,6 +206,28 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
                     "cooldownSeconds": 60.0,
                     "sessionToken": "circuit-secret-token",
                 },
+                "prewarm": {
+                    "engine": "rust-prototype",
+                    "active": True,
+                    "prewarmId": "raw-prewarm-id",
+                    "prewarmIdHash": "prewarm-hash",
+                    "lastActiveCaptureResumeGapMs": 12.0,
+                    "lastActiveCaptureStopToReadyMs": 18.0,
+                    "maxActiveCaptureStopToReadyMs": 18.0,
+                    "lastStatus": {
+                        "active": True,
+                        "prewarm_id": "raw-prewarm-id-2",
+                        "prewarmIdHash": "status-hash",
+                    },
+                    "recentEvents": [
+                        {
+                            "event": "started",
+                            "reason": "start",
+                            "prewarmId": "raw-prewarm-id-3",
+                            "prewarmIdHash": "event-hash",
+                        }
+                    ],
+                },
                 "activeCapture": {
                     "engine": "python",
                     "requestedEngine": "rust-prototype",
@@ -234,6 +256,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
     active = payload["microphone"]["activeCapture"]
     native_events = payload["microphone"]["nativeDeviceEvents"]
     circuit = payload["microphone"]["rustAudioFallbackCircuit"]
+    prewarm = payload["microphone"]["prewarm"]
     watchdog = payload["watchdog"]["lastWarning"]
     shell_ipc = payload["textInjection"]["shellIpc"]
     assert "audio-diagnostics.redacted.json" in names
@@ -253,6 +276,13 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
     assert circuit["reason"] == "pipeClosed"
     assert circuit["sessionToken"] == "[REDACTED]"
     assert "circuit-secret-token" not in combined
+    assert prewarm["active"] is True
+    assert prewarm["prewarmId"] == "[REDACTED]"
+    assert prewarm["prewarmIdHash"] == "prewarm-hash"
+    assert prewarm["lastStatus"]["prewarm_id"] == "[REDACTED]"
+    assert prewarm["recentEvents"][0]["prewarmId"] == "[REDACTED]"
+    assert prewarm["lastActiveCaptureStopToReadyMs"] == 18.0
+    assert "raw-prewarm-id" not in combined
     assert native_events["registered"] is True
     assert native_events["lastEvent"]["endpointId"] == "[REDACTED]"
     assert native_events["lastEvent"]["endpointIdHash"] == "event-hash"

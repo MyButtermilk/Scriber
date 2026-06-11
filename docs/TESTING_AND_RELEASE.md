@@ -413,6 +413,9 @@ Support bundle smoke verifies:
   callback liveness evidence,
 - Rust audio fallback-circuit diagnostics are present and redacted; when the
   circuit is open, the smoke requires reason and remaining-cooldown evidence,
+- Rust Always-On-Mic prewarm diagnostics are covered by the REST contract and
+  support-bundle redaction: stop-to-prewarm-ready gap metrics must stay typed,
+  while raw `prewarmId` / `prewarm_id` values are rejected or redacted,
 - redacted audio/text-injection diagnostics, including the latest sanitized
   Tauri `injectText` attempt when present, and Shell IPC transport failures do
   not leak raw pipe names or session tokens,

@@ -770,6 +770,11 @@ Missing prerequisites:
      validates the optional `microphone.activeCapture` schema, including nested
      Rust `source` diagnostics and bounded-cleanup fields
      `sidecarKilledAfterTimeout` and `sidecarWaitError`.
+   - Implemented: the same REST contract validates optional
+     `microphone.prewarm` diagnostics, including Rust Always-On-Mic
+     stop-to-prewarm-ready gap metrics, restart/resume counters, status timing,
+     recent event metadata, and rejection of raw `prewarmId` / `prewarm_id`
+     fields.
    - Implemented for the Rust prototype: Python reader diagnostics now include
      frame-pipe frames read, audio frames read, bytes read, sequence/protocol
      error counters, last frame metadata, first-frame read timing, reader end
@@ -784,6 +789,9 @@ Missing prerequisites:
      bundles include this snapshot through `audio-diagnostics.redacted.json`,
      so short live/Always-On-Mic interruptions remain diagnosable after the
      recording has stopped.
+   - Implemented: support-bundle redaction now treats raw `prewarmId` and
+     `prewarm_id` JSON keys as sensitive while preserving already-redacted
+     hash fields such as `prewarmIdHash`.
    - Still open: durable mid-session failure policy and physical support-bundle
      evidence from long real-device runs.
 4. Audio frame-pipe protocol:

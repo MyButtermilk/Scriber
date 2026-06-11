@@ -217,6 +217,64 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
             "micAlwaysOn": False,
             "idlePrewarmActive": False,
             "prebufferMs": 400,
+            "prewarm": {
+                "configured": True,
+                "engine": "rust-prototype",
+                "active": True,
+                "hasStream": True,
+                "prewarmIdHash": "prewarm-hash",
+                "activeCaptureAttached": False,
+                "pausedForActiveCapture": False,
+                "pausedForDeviceRefresh": False,
+                "streamStartedAgoSeconds": 0.25,
+                "streamStartCount": 2,
+                "streamCloseCount": 1,
+                "healthRestartCount": 0,
+                "deviceRefreshPauseCount": 0,
+                "deviceRefreshResumeCount": 0,
+                "activeCapturePauseCount": 1,
+                "activeCaptureResumeCount": 1,
+                "activeCaptureResumeReadyCount": 1,
+                "activeCaptureResumeFailedCount": 0,
+                "lastActiveCaptureResumeGapMs": 12.0,
+                "lastActiveCaptureStopToReadyMs": 18.0,
+                "maxActiveCaptureStopToReadyMs": 18.0,
+                "adoptionCount": 1,
+                "lastAdoptedPrewarmIdHash": "adopted-hash",
+                "lastActiveCaptureDetachAgoSeconds": 0.4,
+                "lastActiveCaptureResumeAttemptAgoSeconds": 0.3,
+                "lastError": "",
+                "lastStartAttemptAgoSeconds": 0.25,
+                "lastStartDurationMs": 9.0,
+                "lastStartResponseMs": 8.5,
+                "lastStartSuccess": True,
+                "lastStopAgoSeconds": 1.0,
+                "lastStopReason": "active_capture",
+                "lastStopResponseMs": 4.0,
+                "lastStopSuccess": True,
+                "lastStopError": "",
+                "lastHealthCheckAgoSeconds": 0.1,
+                "lastHealthCheckReason": "watchdog",
+                "lastHealthCheckActive": True,
+                "lastHealthResponseMs": 3.0,
+                "lastHealthError": "",
+                "lastTransition": "started",
+                "lastTransitionReason": "start",
+                "lastTransitionAgoSeconds": 0.25,
+                "lastStop": {"prewarmIdHash": "stop-hash"},
+                "lastStatus": {"active": True, "prewarmIdHash": "status-hash"},
+                "start": {"prewarmIdHash": "start-hash"},
+                "recentEvents": [
+                    {
+                        "event": "started",
+                        "reason": "start",
+                        "ageSeconds": 0.25,
+                        "prewarmIdHash": "prewarm-hash",
+                        "activeCaptureResumeGapMs": 12.0,
+                        "activeCaptureStopToReadyMs": 18.0,
+                    }
+                ],
+            },
             "nativeDeviceEvents": {
                 "shellIpcAvailable": False,
                 "available": False,
@@ -438,6 +496,18 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
                 "streamActive": "yes",
             },
         },
+    }
+    with pytest.raises(RESTContractError):
+        validate_audio_diagnostics_payload(invalid)
+
+    invalid = copy.deepcopy(valid)
+    invalid["microphone"]["prewarm"]["activeCaptureResumeReadyCount"] = "1"
+    with pytest.raises(RESTContractError):
+        validate_audio_diagnostics_payload(invalid)
+
+    invalid = copy.deepcopy(valid)
+    invalid["microphone"]["prewarm"]["lastStatus"]["sidecarPayload"] = {
+        "prewarmId": "raw-prewarm-id"
     }
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)
