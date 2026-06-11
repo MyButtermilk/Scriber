@@ -685,6 +685,7 @@ def test_hybrid_release_readiness_runner_plans_required_recording_hot_path_compa
     assert "same STT provider" in comparison_evidence["notes"]
     assert "inputReportRedaction" in comparison_evidence["notes"]
     assert "sameRecordingConfig" in comparison_evidence["notes"]
+    assert "rustMidSessionClean" in comparison_evidence["notes"]
     assert comparison_evidence["rustPrewarmAdoptionRequired"] is True
     assert "rustPrewarmAdoption" in comparison_evidence["notes"]
     assert "adopted Rust prewarm evidence" in comparison_evidence["notes"]
@@ -956,6 +957,7 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert "inputReportRedaction" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert "sameRecordingConfig" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert "rustAlwaysOnMic" in by_name["recordingHotPathPythonRustComparison"]["notes"]
+    assert "rustMidSessionClean" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert "rustPrewarmAdoption" in by_name["recordingHotPathPythonRustComparison"]["notes"]
     assert by_name["installedLiveRecordingSmoke"]["required"] is True
     assert by_name["installedLiveRecordingSmoke"]["minDurationSec"] == 600

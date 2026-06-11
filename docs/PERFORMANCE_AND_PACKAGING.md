@@ -1228,18 +1228,19 @@ Implementation plan:
      `-RequireRecordingHotPathComparison`.
      The final readiness validator now requires the comparison artifact's
      `sameProvider`, `sameRecordingConfig`, `rustFallbackCircuitClosed`, and
-     `rustAlwaysOnMic` checks alongside `rustAudioEngine` and
-     `rustPrewarmAdoption`, and it requires at least three samples per engine
-     plus no clear P95 regression in local audio-owned segments.
+     `rustAlwaysOnMic` checks alongside `rustAudioEngine`,
+     `rustMidSessionClean`, and `rustPrewarmAdoption`, and it requires at least
+     three samples per engine plus no clear P95 regression in local audio-owned
+     segments.
      This gate cannot be bypassed by passing a stale, one-shot, mismatched, or
      clearly slower comparison schema.
      The comparison validator also rejects unredacted source reports containing
      raw `SWD\MMDEVAPI\...` endpoint IDs, raw `\\.\pipe\scriber-*` pipe names,
      or non-redacted token fields, so sensitive hot-path evidence cannot become
      promotion input. Final hybrid readiness requires that
-     `inputReportRedaction` and `rustPrewarmAdoption` checks to be present and
-     passing, so stale comparison artifacts from before this gate fail Rust
-     promotion.
+     `inputReportRedaction`, `rustMidSessionClean`, and
+     `rustPrewarmAdoption` checks be present and passing, so stale comparison
+     artifacts from before this gate fail Rust promotion.
      Provider-finalize and total stop-to-text values remain reported but are not
      part of the local-audio regression gate because they are dominated by
      network/STT provider latency.

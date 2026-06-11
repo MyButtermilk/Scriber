@@ -263,6 +263,9 @@ intended for default promotion instead of only an on-demand Rust capture path.
 The comparison validator also requires every Rust `rust-frame-pipe` sample to
 include `activeCapture.rustPrewarmAdoption.adopted=true` plus a redacted prewarm
 hash, and it rejects raw `prewarmId` / `prewarm_id` values in that evidence.
+It also requires the `rustMidSessionClean` check, so stale artifacts or Rust
+runs that reported mid-session frame-pipe failures cannot be reused for
+promotion evidence.
 It also rejects clear P95 regressions in local audio-owned segments such as
 first audio frame, first audible frame, and stop-to-last-chunk.
 Provider-finalize and total stop-to-text latency remain visible in the report
@@ -297,9 +300,9 @@ promotion evidence. Raw `SWD\MMDEVAPI\...` endpoint IDs, raw
 `\\.\pipe\scriber-*` pipe names, and non-redacted token fields in either the
 Python or Rust hot-path report fail the comparison gate. Final hybrid
 readiness also requires the resulting comparison artifact to contain a passing
-`inputReportRedaction`, `rustAlwaysOnMic`, and `rustPrewarmAdoption` checks, so
-stale comparison artifacts created before those gates cannot be reused for Rust
-promotion.
+`inputReportRedaction`, `rustAlwaysOnMic`, `rustMidSessionClean`, and
+`rustPrewarmAdoption` checks, so stale comparison artifacts created before those
+gates cannot be reused for Rust promotion.
 
 The final readiness runner can require that artifact:
 
