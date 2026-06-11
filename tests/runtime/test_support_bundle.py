@@ -110,6 +110,22 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
         app_state={"recordingState": "idle"},
         audio_diagnostics={
             "apiVersion": "1",
+            "watchdog": {
+                "enabled": True,
+                "lastWarning": {
+                    "message": "Live microphone watchdog could not verify active capture",
+                    "recordedAt": "2026-06-11T12:00:00Z",
+                    "recordedAtUptimeSeconds": 42.5,
+                    "diagnostics": {
+                        "engine": "rust-prototype",
+                        "frameSource": "rust-frame-pipe",
+                        "lastHealthFailureReason": "staleCallbacks",
+                        "healthRestartThrottleCount": 1,
+                        "lastHealthRestartThrottledReason": "watchdog:staleCallbacks",
+                        "sessionToken": "watchdog-secret-token",
+                    },
+                },
+            },
             "textInjection": {
                 "method": "tauri",
                 "shellIpc": {
@@ -179,6 +195,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
 
     active = payload["microphone"]["activeCapture"]
     native_events = payload["microphone"]["nativeDeviceEvents"]
+    watchdog = payload["watchdog"]["lastWarning"]
     shell_ipc = payload["textInjection"]["shellIpc"]
     assert "audio-diagnostics.redacted.json" in names
     assert active["engine"] == "python"
@@ -188,6 +205,11 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
     assert active["droppedFrameCount"] == 3
     assert active["sessionToken"] == "[REDACTED]"
     assert "audio-secret-token" not in combined
+    assert watchdog["message"] == "Live microphone watchdog could not verify active capture"
+    assert watchdog["diagnostics"]["lastHealthFailureReason"] == "staleCallbacks"
+    assert watchdog["diagnostics"]["healthRestartThrottleCount"] == 1
+    assert watchdog["diagnostics"]["sessionToken"] == "[REDACTED]"
+    assert "watchdog-secret-token" not in combined
     assert native_events["registered"] is True
     assert native_events["lastEvent"]["endpointIdHash"] == "event-hash"
     assert shell_ipc["lastCommand"] == "injectText"

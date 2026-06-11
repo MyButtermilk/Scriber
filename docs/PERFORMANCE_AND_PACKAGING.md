@@ -702,6 +702,12 @@ Missing prerequisites:
      distinguish `SAF1` prebuffer frames from live frames, track prebuffer/live
      audio-frame counts and first live sequence, and reject prebuffer frames
      that arrive after live frames.
+   - Implemented: `/api/runtime/audio-diagnostics` now retains the latest mic
+     watchdog warning snapshot under `watchdog.lastWarning`, including the
+     redacted active-capture diagnostics that caused the warning. Support
+     bundles include this snapshot through `audio-diagnostics.redacted.json`,
+     so short live/Always-On-Mic interruptions remain diagnosable after the
+     recording has stopped.
    - Still open: durable mid-session failure policy and physical support-bundle
      evidence from long real-device runs.
 4. Audio frame-pipe protocol:

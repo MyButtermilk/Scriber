@@ -222,6 +222,26 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
                 "reason": "shellIpcUnavailable",
             },
         },
+        "watchdog": {
+            "enabled": True,
+            "intervalSeconds": 5.0,
+            "callbackGapSeconds": 15.0,
+            "taskRunning": False,
+            "lastWarning": {
+                "message": "Live microphone watchdog could not verify active capture",
+                "recordedAt": "2026-06-11T12:00:00Z",
+                "recordedAtUptimeSeconds": 12.5,
+                "diagnostics": {
+                    "engine": "rust-prototype",
+                    "frameSource": "rust-frame-pipe",
+                    "streamActive": True,
+                    "lastHealthFailureReason": "staleCallbacks",
+                    "healthRestartThrottleCount": 1,
+                    "lastHealthRestartThrottledReason": "watchdog:staleCallbacks",
+                    "lastHealthRestartThrottleRemainingSeconds": 2.5,
+                },
+            },
+        },
         "textInjection": {
             "method": "auto",
             "disabled": False,
@@ -259,5 +279,19 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
 
     invalid = dict(valid)
     invalid["textInjection"] = {**valid["textInjection"], "disabled": "no"}
+    with pytest.raises(RESTContractError):
+        validate_audio_diagnostics_payload(invalid)
+
+    invalid = dict(valid)
+    invalid["watchdog"] = {
+        **valid["watchdog"],
+        "lastWarning": {
+            **valid["watchdog"]["lastWarning"],
+            "diagnostics": {
+                **valid["watchdog"]["lastWarning"]["diagnostics"],
+                "healthRestartThrottleCount": "1",
+            },
+        },
+    }
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)

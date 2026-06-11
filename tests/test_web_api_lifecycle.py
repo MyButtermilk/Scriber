@@ -390,6 +390,62 @@ async def test_mic_watchdog_checks_active_pipeline(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_mic_watchdog_persists_last_active_warning_snapshot(monkeypatch, tmp_path):
+    class _FakePipeline:
+        def __init__(self):
+            self.health_calls = []
+
+        def ensure_audio_health(self, **kwargs):
+            self.health_calls.append(kwargs)
+            return False
+
+        def audio_diagnostics(self):
+            return {
+                "running": True,
+                "engine": "rust-prototype",
+                "frameSource": "rust-frame-pipe",
+                "streamActive": True,
+                "lastHealthFailureReason": "staleCallbacks",
+                "healthRestartThrottleCount": 1,
+                "lastHealthRestartThrottledReason": "watchdog:staleCallbacks",
+            }
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_MIC_WATCHDOG_INTERVAL_SEC", "0")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    pipeline = _FakePipeline()
+    ctl._pipeline = pipeline
+    ctl._is_listening = True
+
+    await ctl._run_mic_watchdog_check()
+
+    watchdog = ctl.get_audio_diagnostics()["watchdog"]
+    last_warning = watchdog["lastWarning"]
+    assert last_warning["message"] == "Live microphone watchdog could not verify active capture"
+    assert last_warning["recordedAt"]
+    assert last_warning["recordedAtUptimeSeconds"] >= 0
+    assert last_warning["diagnostics"]["lastHealthFailureReason"] == "staleCallbacks"
+    assert last_warning["diagnostics"]["healthRestartThrottleCount"] == 1
+    assert (
+        last_warning["diagnostics"]["lastHealthRestartThrottledReason"]
+        == "watchdog:staleCallbacks"
+    )
+
+    last_warning["diagnostics"]["lastHealthFailureReason"] = "mutated"
+    assert (
+        ctl.get_audio_diagnostics()["watchdog"]["lastWarning"]["diagnostics"][
+            "lastHealthFailureReason"
+        ]
+        == "staleCallbacks"
+    )
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_recording_state_transition_broadcasts_state_snapshot(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")

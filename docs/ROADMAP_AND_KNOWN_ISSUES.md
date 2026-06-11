@@ -173,7 +173,9 @@ Rust audio:
   streams, no-callback-after-start, stale-callback stalls, and restart-throttle
   suppression. Stale active streams report unhealthy during throttle windows so
   long physical evidence can show short interruptions instead of silently
-  treating them as healthy.
+  treating them as healthy. `/api/runtime/audio-diagnostics` and support
+  bundles also retain the latest mic-watchdog warning snapshot, so a brief
+  interruption remains visible after the capture has already ended.
 - Effective runtime audio engine remains Python until a measured Rust prototype
   proves meaningful latency, stability, and maintainability gains.
 

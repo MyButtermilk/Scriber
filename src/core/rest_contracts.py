@@ -221,6 +221,36 @@ def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:
     _require_optional_string(native_device_events, "reason", contract)
     _require_optional_string(native_device_events, "effectiveMode", contract)
 
+    watchdog = _require_dict(payload, "watchdog", contract)
+    _require_bool(watchdog, "enabled", contract)
+    _require_number(watchdog, "intervalSeconds", contract)
+    _require_number(watchdog, "callbackGapSeconds", contract)
+    _require_bool(watchdog, "taskRunning", contract)
+    last_warning = watchdog.get("lastWarning")
+    if last_warning is not None:
+        if not isinstance(last_warning, dict):
+            raise RESTContractError(f"{contract} requires object-or-null 'watchdog.lastWarning'")
+        _require_string(last_warning, "message", contract)
+        _require_string(last_warning, "recordedAt", contract)
+        _require_number(last_warning, "recordedAtUptimeSeconds", contract)
+        diagnostics = last_warning.get("diagnostics")
+        if diagnostics is not None:
+            if not isinstance(diagnostics, dict):
+                raise RESTContractError(
+                    f"{contract} requires object-or-null 'watchdog.lastWarning.diagnostics'"
+                )
+            _require_optional_string(diagnostics, "engine", contract)
+            _require_optional_string(diagnostics, "frameSource", contract)
+            _require_optional_bool(diagnostics, "streamActive", contract)
+            _require_optional_string(diagnostics, "lastHealthFailureReason", contract)
+            _require_optional_int(diagnostics, "healthRestartThrottleCount", contract)
+            _require_optional_string(diagnostics, "lastHealthRestartThrottledReason", contract)
+            _require_optional_number(
+                diagnostics,
+                "lastHealthRestartThrottleRemainingSeconds",
+                contract,
+            )
+
     text_injection = _require_dict(payload, "textInjection", contract)
     _require_string(text_injection, "method", contract)
     _require_bool(text_injection, "disabled", contract)

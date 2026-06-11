@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import hmac
 import importlib
 import ipaddress
@@ -1296,6 +1297,7 @@ class ScriberWebController:
         self._mic_prewarm_task: Optional[asyncio.Task] = None
         self._mic_watchdog_task: Optional[asyncio.Task] = None
         self._last_mic_watchdog_warning_at = 0.0
+        self._last_mic_watchdog_warning_snapshot: dict[str, Any] | None = None
         try:
             self._mic_watchdog_interval_seconds = max(
                 0.0,
@@ -1760,11 +1762,25 @@ class ScriberWebController:
 
     def _log_mic_watchdog_warning(self, message: str, *, diagnostics: dict[str, Any] | None = None) -> None:
         now = time.monotonic()
+        self._last_mic_watchdog_warning_snapshot = {
+            "message": str(message or ""),
+            "recordedAt": datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "recordedAtUptimeSeconds": round(max(0.0, now - self._started_at_monotonic), 3),
+            "diagnostics": copy.deepcopy(diagnostics) if isinstance(diagnostics, dict) else None,
+        }
         if now - self._last_mic_watchdog_warning_at < 15.0:
             logger.debug(f"{message}: {diagnostics}")
             return
         self._last_mic_watchdog_warning_at = now
         logger.warning(f"{message}: {diagnostics}")
+
+    def _mic_watchdog_last_warning_diagnostics(self) -> dict[str, Any] | None:
+        if not isinstance(self._last_mic_watchdog_warning_snapshot, dict):
+            return None
+        return copy.deepcopy(self._last_mic_watchdog_warning_snapshot)
 
     async def _run_mic_watchdog_check(self) -> None:
         if self._is_stopping:
@@ -2520,6 +2536,7 @@ class ScriberWebController:
                     self._mic_watchdog_task is not None
                     and not self._mic_watchdog_task.done()
                 ),
+                "lastWarning": self._mic_watchdog_last_warning_diagnostics(),
             },
             "textInjection": {
                 "method": str(getattr(Config, "INJECT_METHOD", "auto") or "auto"),
