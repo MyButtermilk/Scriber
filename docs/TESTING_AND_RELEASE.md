@@ -547,8 +547,11 @@ from a Tauri-managed backend environment so `SCRIBER_SHELL_IPC_PIPE`,
 `SCRIBER_SHELL_IPC_TOKEN`, and `SCRIBER_SHELL_IPC_API_VERSION` are present. The
 artifact must not be validate-only evidence; it must show safe target-window
 text arrival, `injectText` Shell IPC success, and both `clipboard_set` and
-`paste` markers. The validator also rejects raw Shell IPC pipe names and
-unredacted token-like values in the report. It is only the safe target gate.
+`paste` markers. It must also include structured clipboard restore evidence:
+`restoreScheduled` must match `restore.scheduled`, restore status fields must be
+typed, and restore errors or disabled restore do not satisfy release evidence.
+The validator also rejects raw Shell IPC pipe names and unredacted token-like
+values in the report. It is only the safe target gate.
 Manual Notepad, Word,
 Outlook, browser, Electron, elevated, and Remote Desktop target-app evidence is
 still required before changing defaults.
@@ -571,8 +574,10 @@ when unavailable, but if present it must pass the same Shell IPC, target text,
 and marker checks. Every scenario must also prove `preDelayMode=auto` in the
 redacted Shell IPC payload, and the Word/Outlook scenarios must show a positive
 applied `timingsMs.preDelay` so default evidence proves the Rust foreground
-policy, not Python-side title heuristics. The same redaction gate rejects raw
-Shell IPC pipe names and unredacted token-like values in every scenario report.
+policy, not Python-side title heuristics. Every scenario must also carry the
+same structured restore evidence as the safe smoke; restore errors or disabled
+restore fail the matrix. The same redaction gate rejects raw Shell IPC pipe
+names and unredacted token-like values in every scenario report.
 
 The microphone matrix can also be run directly with the same Rust promotion
 gates:

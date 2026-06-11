@@ -552,7 +552,9 @@ Implementation status on `codex/rust-expansion-plan`:
   with `-RequireTauriTextInjectionSmoke` /
   `--require-tauri-text-injection-smoke`. The report must be real evidence, not
   `--validate-only`, and must show `injectText` success, target text arrival,
-  and `clipboard_set` plus `paste` markers.
+  and `clipboard_set` plus `paste` markers. It now also must include structured
+  clipboard restore evidence; missing restore fields, restore errors, or
+  disabled restore fail promotion evidence.
 - Added a stronger Tauri text-injection matrix readiness gate:
   `-RequireTauriTextInjectionMatrix` /
   `--require-tauri-text-injection-matrix`. The matrix artifact must aggregate
@@ -562,7 +564,8 @@ Implementation status on `codex/rust-expansion-plan`:
   scenarios. Remote Desktop is optional when unavailable but is validated if
   present. `scripts/build_tauri_text_injection_matrix.py` builds the aggregate
   from the individual scenario reports and validates it before returning
-  success.
+  success. The matrix reuses the safe-smoke restore gate for every scenario, so
+  target-app evidence cannot omit restore diagnostics or hide restore failures.
 - Still open: actually running the installed target-app smoke matrix, packaging
   smoke evidence, and default-path decision based on installed evidence.
 

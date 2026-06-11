@@ -828,9 +828,49 @@ def write_tauri_text_injection_smoke_report(
     pre_delay_mode: str = "auto",
     requested_pre_delay_ms: float | None = 80.0,
     actual_pre_delay_ms: float | None = 80.0,
+    restore_scheduled: bool | None = True,
+    restore: dict[str, object] | None = None,
 ) -> None:
     if markers is None:
         markers = ["clipboard_set", "paste"]
+    if restore is None:
+        restore = {
+            "scheduled": True,
+            "attempted": False,
+            "succeeded": None,
+            "skippedReason": "scheduled",
+            "errorCode": None,
+        }
+    payload: dict[str, object] = {
+        "method": method,
+        "dispatch": "ctrlV",
+        "preDelayMode": pre_delay_mode,
+        "requestedPreDelayMs": requested_pre_delay_ms,
+        "markers": markers,
+        "restore": restore,
+        "foregroundBefore": {
+            "available": True,
+            "windowHash": "win-hash",
+            "titleHash": "title-hash",
+            "processIdHash": "pid-hash",
+        },
+        "foregroundAfter": {
+            "available": True,
+            "windowHash": "win-hash",
+            "titleHash": "title-hash",
+            "processIdHash": "pid-hash",
+        },
+        "foregroundChanged": False,
+        "timingsMs": {
+            "clipboardRead": 1.0,
+            "clipboardSet": 2.0,
+            "preDelay": actual_pre_delay_ms,
+            "pasteDispatch": 3.0,
+            "total": 10.0,
+        },
+    }
+    if restore_scheduled is not None:
+        payload["restoreScheduled"] = restore_scheduled
     path.write_text(
         json.dumps(
             {
@@ -871,39 +911,7 @@ def write_tauri_text_injection_smoke_report(
                         "fallbackReason": None,
                         "timingsMs": {"total": 12.0},
                         "payload": {
-                            "method": method,
-                            "dispatch": "ctrlV",
-                            "preDelayMode": pre_delay_mode,
-                            "requestedPreDelayMs": requested_pre_delay_ms,
-                            "markers": markers,
-                            "restoreScheduled": True,
-                            "restore": {
-                                "scheduled": True,
-                                "attempted": False,
-                                "succeeded": None,
-                                "skippedReason": "scheduled",
-                                "errorCode": None,
-                            },
-                            "foregroundBefore": {
-                                "available": True,
-                                "windowHash": "win-hash",
-                                "titleHash": "title-hash",
-                                "processIdHash": "pid-hash",
-                            },
-                            "foregroundAfter": {
-                                "available": True,
-                                "windowHash": "win-hash",
-                                "titleHash": "title-hash",
-                                "processIdHash": "pid-hash",
-                            },
-                            "foregroundChanged": False,
-                            "timingsMs": {
-                                "clipboardRead": 1.0,
-                                "clipboardSet": 2.0,
-                                "preDelay": actual_pre_delay_ms,
-                                "pasteDispatch": 3.0,
-                                "total": 10.0,
-                            },
+                            **payload,
                         },
                     },
                 },
@@ -1624,6 +1632,35 @@ def test_validate_release_readiness_rejects_tauri_text_injection_without_auto_pr
     assert "Tauri text injection smoke response preDelayMode must be auto" in injection_check["failures"]
 
 
+def test_validate_release_readiness_rejects_tauri_text_injection_without_restore_evidence(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    injection_report = tmp_path / "tauri-text-injection-smoke.json"
+    write_tauri_text_injection_smoke_report(
+        injection_report,
+        restore_scheduled=None,
+        restore={},
+    )
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_smoke_report=injection_report,
+        require_tauri_text_injection_smoke=True,
+    )
+
+    injection_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionSmoke")
+    failures = "\n".join(injection_check["failures"])
+    assert "response restoreScheduled must be boolean" in failures
+    assert "response restore.scheduled must be boolean" in failures
+    assert "response restore.attempted must be boolean" in failures
+
+
 def test_validate_release_readiness_rejects_tauri_text_injection_redaction_leaks(tmp_path: Path) -> None:
     hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
     injection_report = tmp_path / "tauri-text-injection-smoke.json"
@@ -1802,6 +1839,45 @@ def test_validate_release_readiness_rejects_word_matrix_without_positive_pre_del
     assert (
         "Tauri text injection matrix scenario word timing preDelay must be positive for Word/Outlook scenario"
         in matrix_check["failures"]
+    )
+
+
+def test_validate_release_readiness_rejects_matrix_restore_failure(tmp_path: Path) -> None:
+    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    matrix_report = tmp_path / "tauri-text-injection-matrix.json"
+    write_tauri_text_injection_matrix_report(matrix_report)
+    payload = json.loads(matrix_report.read_text(encoding="utf-8"))
+    clipboard_text = next(scenario for scenario in payload["scenarios"] if scenario["id"] == "clipboard-text")
+    clipboard_text["report"]["shellIpc"]["lastResponse"]["payload"]["restoreScheduled"] = False
+    clipboard_text["report"]["shellIpc"]["lastResponse"]["payload"]["restore"] = {
+        "scheduled": False,
+        "attempted": True,
+        "succeeded": False,
+        "skippedReason": "restoreFailed",
+        "errorCode": "clipboardSetFailed",
+    }
+    matrix_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_release_readiness(
+        hardware_input_dir=hardware_dir,
+        updater_metadata=metadata,
+        updater_artifact_dir=artifact_dir,
+        sha256sums=sums,
+        media_preparation_report=media_preparation_report,
+        runtime_dependency_footprint_report=runtime_dependency_footprint_report,
+        updater_publication_report=publication_report,
+        authenticode_report=authenticode_report,
+        tauri_text_injection_matrix_report=matrix_report,
+        require_tauri_text_injection_matrix=True,
+    )
+
+    matrix_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionMatrix")
+    failures = "\n".join(matrix_check["failures"])
+    assert "Tauri text injection matrix scenario clipboard-text response restore.errorCode must be empty" in failures
+    assert "Tauri text injection matrix scenario clipboard-text response restore.succeeded must not be false" in failures
+    assert (
+        "Tauri text injection matrix scenario clipboard-text response restore.skippedReason must not be restoreFailed"
+        in failures
     )
 
 

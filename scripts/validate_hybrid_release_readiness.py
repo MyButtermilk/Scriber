@@ -1355,6 +1355,7 @@ def validate_tauri_text_injection_payload(
     markers = response_payload.get("markers")
     if not isinstance(markers, list) or "clipboard_set" not in markers or "paste" not in markers:
         failures.append(f"{label} response markers must include clipboard_set and paste")
+    validate_tauri_text_injection_restore(response_payload, failures, label)
     timings = response_payload.get("timingsMs")
     if not isinstance(timings, dict):
         failures.append(f"{label} response timingsMs must be an object")
@@ -1385,6 +1386,46 @@ def validate_tauri_text_injection_payload(
         "requestedPreDelayMs": response_payload.get("requestedPreDelayMs"),
         "shellIpc": shell_ipc,
     }
+
+
+def validate_tauri_text_injection_restore(
+    response_payload: dict[str, Any],
+    failures: list[str],
+    label: str,
+) -> None:
+    restore_scheduled = response_payload.get("restoreScheduled")
+    if not isinstance(restore_scheduled, bool):
+        failures.append(f"{label} response restoreScheduled must be boolean")
+
+    restore = response_payload.get("restore")
+    if not isinstance(restore, dict):
+        failures.append(f"{label} response restore must be an object")
+        return
+
+    scheduled = restore.get("scheduled")
+    if not isinstance(scheduled, bool):
+        failures.append(f"{label} response restore.scheduled must be boolean")
+    elif isinstance(restore_scheduled, bool) and restore_scheduled != scheduled:
+        failures.append(f"{label} response restoreScheduled must match restore.scheduled")
+
+    attempted = restore.get("attempted")
+    if not isinstance(attempted, bool):
+        failures.append(f"{label} response restore.attempted must be boolean")
+    succeeded = restore.get("succeeded")
+    if succeeded is not None and not isinstance(succeeded, bool):
+        failures.append(f"{label} response restore.succeeded must be boolean or null")
+
+    skipped_reason = restore.get("skippedReason")
+    if skipped_reason is not None and not isinstance(skipped_reason, str):
+        failures.append(f"{label} response restore.skippedReason must be string or null")
+        skipped_reason = ""
+    error_code = restore.get("errorCode")
+    if error_code not in (None, ""):
+        failures.append(f"{label} response restore.errorCode must be empty")
+    if succeeded is False:
+        failures.append(f"{label} response restore.succeeded must not be false")
+    if skipped_reason in {"disabled", "restoreFailed", "restoreReadFailed", "clipboardReadFailed"}:
+        failures.append(f"{label} response restore.skippedReason must not be {skipped_reason}")
 
 
 def _looks_like_raw_shell_pipe(value: str) -> bool:
