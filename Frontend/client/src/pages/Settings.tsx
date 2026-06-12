@@ -15,6 +15,7 @@ import {
   apiUrl,
   getAutostartStatus,
   refreshGlobalHotkey,
+  setGlobalHotkeyCaptureActive,
   setAutostartEnabled as setDesktopAutostartEnabled,
 } from "@/lib/backend";
 import type {
@@ -655,6 +656,9 @@ export default function Settings() {
     if (!isRecordingHotkey) {
       return;
     }
+    void setGlobalHotkeyCaptureActive(true).catch((error) => {
+      console.debug("Could not suspend global hotkey while recording shortcut.", error);
+    });
     const focusFrame = window.requestAnimationFrame(() => {
       hotkeyCaptureRef.current?.focus();
     });
@@ -665,6 +669,9 @@ export default function Settings() {
     return () => {
       window.cancelAnimationFrame(focusFrame);
       window.removeEventListener("keydown", handleWindowKeyDown, true);
+      void setGlobalHotkeyCaptureActive(false).catch((error) => {
+        console.debug("Could not resume global hotkey after recording shortcut.", error);
+      });
     };
   }, [handleHotkeyRecord, isRecordingHotkey]);
 
@@ -1005,8 +1012,9 @@ export default function Settings() {
   const handleSaveHotkey = async () => {
     try {
       const updated = await updateSettings({ hotkey });
-      await refreshGlobalHotkey();
       setHotkey(updated.hotkey || hotkey);
+      await setGlobalHotkeyCaptureActive(false);
+      await refreshGlobalHotkey();
       toast({
         title: "Saved",
         description: "Hotkey updated.",

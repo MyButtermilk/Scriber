@@ -197,6 +197,14 @@ export async function refreshGlobalHotkey(): Promise<void> {
   await invoke("refresh_global_hotkey");
 }
 
+export async function setGlobalHotkeyCaptureActive(active: boolean): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_global_hotkey_capture_active", { active });
+}
+
 export function wsUrl(path: string): string {
   const base = backendBaseUrl || window.location.origin;
   const wsBase = base.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");

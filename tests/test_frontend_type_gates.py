@@ -182,6 +182,11 @@ def test_settings_hotkey_recorder_uses_window_capture_listener() -> None:
 
     assert "function hotkeyDisplayFromKeyboardEvent" in source
     assert "const hotkeyCaptureRef = useRef<HTMLDivElement | null>(null);" in source
+    assert "setGlobalHotkeyCaptureActive," in source
+    assert "void setGlobalHotkeyCaptureActive(true).catch" in source
+    assert "void setGlobalHotkeyCaptureActive(false).catch" in source
+    assert "await setGlobalHotkeyCaptureActive(false);" in source
+    assert "await refreshGlobalHotkey();" in source
     assert "hotkeyCaptureRef.current?.focus()" in source
     assert 'window.addEventListener("keydown", handleWindowKeyDown, true)' in source
     assert 'window.removeEventListener("keydown", handleWindowKeyDown, true)' in source

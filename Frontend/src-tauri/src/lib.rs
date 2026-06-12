@@ -128,6 +128,7 @@ pub struct DesktopHotkeyStatus {
     hotkey: String,
     mode: String,
     message: String,
+    capture_suspended: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,6 +271,7 @@ struct DesktopHotkeyStateInner {
     available: bool,
     message: String,
     last_dispatched_at: Option<Instant>,
+    capture_suspended: bool,
 }
 
 impl DesktopHotkeyState {
@@ -281,6 +283,7 @@ impl DesktopHotkeyState {
                 available: false,
                 message: "Global hotkey not initialized".to_string(),
                 last_dispatched_at: None,
+                capture_suspended: false,
             }),
         }
     }
@@ -294,6 +297,7 @@ impl DesktopHotkeyState {
                 hotkey: state.registered_hotkey.clone().unwrap_or_default(),
                 mode: state.mode.clone(),
                 message: state.message.clone(),
+                capture_suspended: state.capture_suspended,
             })
             .unwrap_or_else(|_| DesktopHotkeyStatus {
                 registered: false,
@@ -301,6 +305,7 @@ impl DesktopHotkeyState {
                 hotkey: String::new(),
                 mode: "toggle".to_string(),
                 message: "Global hotkey state lock is poisoned".to_string(),
+                capture_suspended: false,
             })
     }
 
@@ -310,6 +315,8 @@ impl DesktopHotkeyState {
             state.mode = mode;
             state.available = true;
             state.message = message;
+            state.capture_suspended = false;
+            state.last_dispatched_at = None;
         }
     }
 
@@ -319,11 +326,34 @@ impl DesktopHotkeyState {
             state.mode = mode;
             state.available = available;
             state.message = message;
+            state.last_dispatched_at = None;
+        }
+    }
+
+    fn is_capture_suspended(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|state| state.capture_suspended)
+            .unwrap_or(false)
+    }
+
+    fn set_capture_suspended(&self, suspended: bool, message: String) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.capture_suspended = suspended;
+            state.available = true;
+            state.message = message;
+            if suspended {
+                state.registered_hotkey = None;
+                state.last_dispatched_at = None;
+            }
         }
     }
 
     fn action_for_event(&self, event_state: ShortcutState, now: Instant) -> Option<&'static str> {
         let mut state = self.inner.lock().ok()?;
+        if state.capture_suspended {
+            return None;
+        }
         match event_state {
             ShortcutState::Pressed => {
                 if state
@@ -611,6 +641,29 @@ fn refresh_global_hotkey(app: AppHandle) -> Result<DesktopHotkeyStatus, String> 
 }
 
 #[tauri::command]
+fn set_global_hotkey_capture_active(
+    app: AppHandle,
+    active: bool,
+) -> Result<DesktopHotkeyStatus, String> {
+    let hotkey_state = app.state::<DesktopHotkeyState>();
+    if active {
+        app.global_shortcut()
+            .unregister_all()
+            .map_err(|err| format!("Could not suspend global hotkey capture: {err}"))?;
+        let message = "Global hotkey suspended while recording a new shortcut".to_string();
+        write_shell_log(&message);
+        hotkey_state.set_capture_suspended(true, message);
+        return Ok(hotkey_state.status());
+    }
+
+    hotkey_state.set_capture_suspended(
+        false,
+        "Global hotkey capture finished; refreshing registration".to_string(),
+    );
+    refresh_global_hotkey_for_app(&app)
+}
+
+#[tauri::command]
 fn set_desktop_window_chrome_theme(app: AppHandle, theme: String) -> Result<(), String> {
     let theme = DesktopWindowChromeTheme::parse(&theme)?;
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
@@ -796,6 +849,7 @@ pub fn run() {
             set_desktop_autostart,
             global_hotkey_status,
             refresh_global_hotkey,
+            set_global_hotkey_capture_active,
             set_desktop_window_chrome_theme
         ])
         .build(tauri::generate_context!())
@@ -849,9 +903,7 @@ fn apply_default_desktop_autostart<R: Runtime>(app: &AppHandle<R>) {
             write_shell_log("desktop autostart enabled by install default");
         }
         Err(err) => {
-            write_shell_log(&format!(
-                "desktop autostart install default skipped: {err}"
-            ));
+            write_shell_log(&format!("desktop autostart install default skipped: {err}"));
         }
     }
 }
@@ -879,7 +931,9 @@ fn desktop_autostart_user_choice_path<R: Runtime>(app: &AppHandle<R>) -> Option<
 
 fn persist_desktop_autostart_user_choice<R: Runtime>(app: &AppHandle<R>, enabled: bool) {
     let Some(path) = desktop_autostart_user_choice_path(app) else {
-        write_shell_log("desktop autostart user preference not persisted: app data directory unavailable");
+        write_shell_log(
+            "desktop autostart user preference not persisted: app data directory unavailable",
+        );
         return;
     };
     if let Some(parent) = path.parent() {
@@ -892,7 +946,9 @@ fn persist_desktop_autostart_user_choice<R: Runtime>(app: &AppHandle<R>, enabled
     }
     let value: &[u8] = if enabled { b"enabled\n" } else { b"disabled\n" };
     if let Err(err) = fs::write(path, value) {
-        write_shell_log(&format!("desktop autostart user preference write failed: {err}"));
+        write_shell_log(&format!(
+            "desktop autostart user preference write failed: {err}"
+        ));
     }
 }
 
@@ -1656,6 +1712,15 @@ fn refresh_global_hotkey_for_app(app: &AppHandle) -> Result<DesktopHotkeyStatus,
             "toggle".to_string(),
             false,
             format!("Global hotkey disabled via {TAURI_GLOBAL_HOTKEY_ENV}"),
+        );
+        return Ok(hotkey_state.status());
+    }
+
+    if hotkey_state.is_capture_suspended() {
+        let _ = app.global_shortcut().unregister_all();
+        hotkey_state.set_capture_suspended(
+            true,
+            "Global hotkey suspended while recording a new shortcut".to_string(),
         );
         return Ok(hotkey_state.status());
     }
@@ -2748,6 +2813,42 @@ mod tests {
             state.action_for_event(ShortcutState::Released, now + HOTKEY_DISPATCH_DEBOUNCE),
             None
         );
+        assert_eq!(
+            state.action_for_event(
+                ShortcutState::Pressed,
+                now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1)
+            ),
+            Some("/api/live-mic/toggle")
+        );
+    }
+
+    #[test]
+    fn desktop_hotkey_capture_suspension_blocks_dispatch() {
+        let state = DesktopHotkeyState::new();
+        state.set_registered(
+            "ctrl+alt+s".to_string(),
+            "toggle".to_string(),
+            "registered".to_string(),
+        );
+        let now = Instant::now();
+
+        state.set_capture_suspended(true, "suspended".to_string());
+        let suspended_status = state.status();
+        assert!(suspended_status.capture_suspended);
+        assert!(!suspended_status.registered);
+        assert_eq!(state.action_for_event(ShortcutState::Pressed, now), None);
+        assert_eq!(
+            state.action_for_event(ShortcutState::Released, now + Duration::from_millis(25)),
+            None
+        );
+
+        state.set_capture_suspended(false, "resuming".to_string());
+        state.set_registered(
+            "ctrl+alt+s".to_string(),
+            "toggle".to_string(),
+            "registered".to_string(),
+        );
+        assert!(!state.status().capture_suspended);
         assert_eq!(
             state.action_for_event(
                 ShortcutState::Pressed,
