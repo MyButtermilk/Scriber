@@ -976,11 +976,6 @@ class ScriberPipeline:
             if not _get_api_key("speechmatics"): raise ValueError("Speechmatics API Key is missing.")
             return SpeechmaticsSTTService(api_key=_get_api_key("speechmatics"))
         
-        elif self.service_name == "aws":
-            # Lazy import - only loaded when AWS is used
-            from pipecat.services.aws.stt import AWSTranscribeSTTService
-            return AWSTranscribeSTTService()
-
         elif self.service_name == "onnx_local":
             from src.onnx_local_service import OnnxLocalBufferedSTTService, OnnxLocalSTTService
             if for_file:

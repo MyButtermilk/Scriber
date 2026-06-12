@@ -705,6 +705,11 @@ def test_validate_default_stt_service_rejects_unknown():
         web_api._validate_default_stt_service("not-a-provider")
 
 
+def test_validate_default_stt_service_rejects_removed_aws_provider():
+    with pytest.raises(ValueError):
+        web_api._validate_default_stt_service("aws")
+
+
 def test_validate_summarization_model_accepts_known_prefixes():
     assert web_api._validate_summarization_model("gemini-flash-latest") == "gemini-flash-latest"
     assert web_api._validate_summarization_model("gemini-3.5-flash") == "gemini-3.5-flash"

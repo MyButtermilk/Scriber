@@ -219,11 +219,15 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "$ReuseSidecarIfUnchanged = $true" in build
     assert "$SkipPythonTests = $true" in build
     assert "$UseProfileBFfmpeg = $true" in build
+    assert "$PrunePySide6Translations = $true" in build
+    assert "$PrunePySide6UnusedPlugins = $true" in build
+    assert "$PrunePySide6SoftwareOpenGl = $true" not in build
     assert "if ($UseProfileBFfmpeg)" in build
     assert "$RunMediaPreparationSmoke = $true" in build
     assert "$RunRuntimeDependencyFootprint = $true" in build
     assert "$MaxBackendRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 325 } else { 500 }" in build
     assert "$MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 10 } else { 210 }" in build
+    assert "$MaxPySide6RuntimeDependencyMB = 65" in build
     assert "if (-not $SkipChecks -and -not $SkipPythonTests)" in build
     assert "if (-not $SkipChecks -and -not $SkipFrontendTypeCheck)" in build
 
@@ -250,8 +254,12 @@ def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> N
     assert '"-MediaToolsDir"' in workflow
     assert "$env:SCRIBER_RELEASE_MEDIA_TOOLS_DIR" in workflow
     assert '"-ValidateSlimMediaTools"' in workflow
+    assert '"-PrunePySide6Translations"' in workflow
+    assert '"-PrunePySide6UnusedPlugins"' in workflow
+    assert '"-PrunePySide6SoftwareOpenGl"' not in workflow
     assert '"325"' in workflow
     assert '"10"' in workflow
+    assert '"65"' in workflow
     assert "choco install ffmpeg" not in workflow
     assert "prepare_gyan_ffmpeg_essentials.ps1" not in workflow
     assert '"-RunMediaPreparationSmoke"' in workflow

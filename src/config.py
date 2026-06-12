@@ -138,7 +138,6 @@ class Config:
         "gladia": "Gladia",
         "groq": "Groq",
         "speechmatics": "Speechmatics",
-        "aws": "AWS Transcribe",
         "onnx_local": "Local (ONNX)",
         "nemo_local": "Local (NeMo)",
     }

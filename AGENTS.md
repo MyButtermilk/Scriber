@@ -250,6 +250,10 @@ Packaging and scripts:
 - Azure MAI upload preparation is latency-first: existing MP3 uploads directly,
   non-MP3 inputs are transcoded to mono 64k MP3, and live PCM buffers are encoded
   to MP3 before upload. Do not restore WAV upload without measured provider need.
+- AWS Transcribe is no longer a supported frontend/backend provider. Keep
+  `boto3`, `botocore`, `s3transfer`, `aioboto3`, `aiobotocore`, and Pipecat AWS
+  service modules out of the standard sidecar unless AWS support is explicitly
+  reintroduced.
 - FFmpeg Profile B is the standard Windows bundled media-tool path. Gyan
   Essentials is explicit fallback only.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`

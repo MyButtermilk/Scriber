@@ -55,8 +55,10 @@ Debug/support:
 Packaging/performance:
 
 - Profile B ffmpeg is the default Windows media-tool profile.
-- Installer size dropped to about `102.98 MiB` with no intended feature loss.
+- Installer size dropped to about `88.31 MiB`; installed app smoke is about
+  `242.72 MiB`.
 - SciPy is absent from the standard sidecar.
+- AWS Transcribe and AWS SDK packages are absent from the standard sidecar.
 - Sidecar reuse cache reduces repeated local installer build time.
 
 Docs:
@@ -121,8 +123,10 @@ Provider latency:
 PySide6 footprint:
 
 - PySide6 remains required for the native overlay.
-- Translation/plugin/software-OpenGL pruning is possible only after installed
-  overlay smoke evidence.
+- Qt translations and unused Qt plugins are pruned in fast local and release
+  builds.
+- Qt software OpenGL remains bundled; remove it only after installed overlay
+  smoke evidence across relevant Windows display modes.
 
 Rust audio:
 

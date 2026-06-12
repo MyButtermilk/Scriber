@@ -1,7 +1,15 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { isTauriRuntime } from "@/lib/backend";
 
 type Theme = "dark" | "light" | "system";
+type ResolvedTheme = "dark" | "light";
+
+type ThemeTransitionOptions = {
+    origin?: {
+        x: number;
+        y: number;
+    };
+};
 
 type ThemeProviderProps = {
     children: React.ReactNode;
@@ -11,8 +19,8 @@ type ThemeProviderProps = {
 
 type ThemeProviderState = {
     theme: Theme;
-    setTheme: (theme: Theme) => void;
-    resolvedTheme: "dark" | "light";
+    setTheme: (theme: Theme, options?: ThemeTransitionOptions) => void;
+    resolvedTheme: ResolvedTheme;
 };
 
 const initialState: ThemeProviderState = {
@@ -22,8 +30,124 @@ const initialState: ThemeProviderState = {
 };
 
 const ThemeProviderContext = createContext<ThemeProviderState>(initialState);
+const THEME_TRANSITION_DURATION_MS = 760;
+const THEME_REVEAL_OVERLAY_CLASS = "theme-reveal-overlay";
 
-async function applyDesktopWindowTheme(theme: "dark" | "light") {
+type ViewTransition = {
+    ready: Promise<void>;
+    finished: Promise<void>;
+};
+
+type DocumentWithViewTransition = Document & {
+    startViewTransition?: (updateCallback: () => void) => ViewTransition;
+};
+
+function resolveEffectiveTheme(theme: Theme): ResolvedTheme {
+    if (theme === "system") {
+        return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    return theme;
+}
+
+function applyThemeClass(theme: ResolvedTheme) {
+    const root = window.document.documentElement;
+    root.classList.remove("light", "dark");
+    root.classList.add(theme);
+    root.style.colorScheme = theme;
+}
+
+function circularThemeReveal(origin: { x: number; y: number }, transition: ViewTransition) {
+    const endRadius = Math.hypot(
+        Math.max(origin.x, window.innerWidth - origin.x),
+        Math.max(origin.y, window.innerHeight - origin.y),
+    );
+    const clipPath = [
+        `circle(0px at ${origin.x}px ${origin.y}px)`,
+        `circle(${endRadius}px at ${origin.x}px ${origin.y}px)`,
+    ];
+
+    void transition.ready.then(() => {
+        window.document.documentElement.animate(
+            { clipPath },
+            {
+                duration: THEME_TRANSITION_DURATION_MS,
+                easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+                pseudoElement: "::view-transition-new(root)",
+            },
+        );
+    });
+}
+
+function getVisibleThemeToggleOrigin(): { x: number; y: number } | undefined {
+    const toggles = Array.from(window.document.querySelectorAll<HTMLElement>(".magic-theme-toggle"));
+    let chosenRect: DOMRect | undefined;
+
+    for (const toggle of toggles) {
+        const rect = toggle.getBoundingClientRect();
+        const style = window.getComputedStyle(toggle);
+        if (
+            rect.width <= 0 ||
+            rect.height <= 0 ||
+            style.display === "none" ||
+            style.visibility === "hidden"
+        ) {
+            continue;
+        }
+
+        if (
+            !chosenRect ||
+            rect.bottom > chosenRect.bottom ||
+            (rect.bottom === chosenRect.bottom && rect.left < chosenRect.left)
+        ) {
+            chosenRect = rect;
+        }
+    }
+
+    if (!chosenRect) return undefined;
+    return {
+        x: chosenRect.left + chosenRect.width / 2,
+        y: chosenRect.top + chosenRect.height / 2,
+    };
+}
+
+function fallbackCircularThemeReveal(
+    origin: { x: number; y: number },
+    nextTheme: ResolvedTheme,
+    commitTheme: () => void,
+) {
+    window.document
+        .querySelectorAll(`.${THEME_REVEAL_OVERLAY_CLASS}`)
+        .forEach((overlay) => overlay.remove());
+
+    const endRadius = Math.hypot(
+        Math.max(origin.x, window.innerWidth - origin.x),
+        Math.max(origin.y, window.innerHeight - origin.y),
+    );
+    const overlay = window.document.createElement("div");
+    overlay.className = THEME_REVEAL_OVERLAY_CLASS;
+    overlay.style.background = nextTheme === "dark" ? "#1a1d23" : "#e5e7eb";
+    overlay.style.clipPath = `circle(0px at ${origin.x}px ${origin.y}px)`;
+    overlay.style.transition = `clip-path ${THEME_TRANSITION_DURATION_MS}ms cubic-bezier(0.16, 1, 0.3, 1)`;
+    window.document.body.appendChild(overlay);
+    let committed = false;
+    const commitOnce = () => {
+        if (committed) return;
+        committed = true;
+        commitTheme();
+    };
+
+    window.requestAnimationFrame(() => {
+        overlay.style.clipPath = `circle(${endRadius}px at ${origin.x}px ${origin.y}px)`;
+    });
+    const commitTimeout = window.setTimeout(commitOnce, Math.round(THEME_TRANSITION_DURATION_MS * 0.62));
+    window.setTimeout(() => {
+        window.clearTimeout(commitTimeout);
+        commitOnce();
+        overlay.remove();
+    }, THEME_TRANSITION_DURATION_MS + 80);
+}
+
+async function applyDesktopWindowTheme(theme: ResolvedTheme) {
     if (!isTauriRuntime()) return;
     const failures: unknown[] = [];
     try {
@@ -58,23 +182,11 @@ export function ThemeProvider({
     const [theme, setTheme] = useState<Theme>(
         () => (localStorage.getItem(storageKey) as Theme) || defaultTheme
     );
-    const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("dark");
+    const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
 
     useEffect(() => {
-        const root = window.document.documentElement;
-
-        root.classList.remove("light", "dark");
-
-        let effectiveTheme: "dark" | "light";
-        if (theme === "system") {
-            effectiveTheme = window.matchMedia("(prefers-color-scheme: dark)").matches
-                ? "dark"
-                : "light";
-        } else {
-            effectiveTheme = theme;
-        }
-
-        root.classList.add(effectiveTheme);
+        const effectiveTheme = resolveEffectiveTheme(theme);
+        applyThemeClass(effectiveTheme);
         setResolvedTheme(effectiveTheme);
         void applyDesktopWindowTheme(effectiveTheme);
     }, [theme]);
@@ -85,10 +197,8 @@ export function ThemeProvider({
 
         const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
         const handleChange = (e: MediaQueryListEvent) => {
-            const root = window.document.documentElement;
-            root.classList.remove("light", "dark");
             const newTheme = e.matches ? "dark" : "light";
-            root.classList.add(newTheme);
+            applyThemeClass(newTheme);
             setResolvedTheme(newTheme);
             void applyDesktopWindowTheme(newTheme);
         };
@@ -97,14 +207,45 @@ export function ThemeProvider({
         return () => mediaQuery.removeEventListener("change", handleChange);
     }, [theme]);
 
-    const value = {
+    const updateTheme = useCallback((nextTheme: Theme, options?: ThemeTransitionOptions) => {
+        localStorage.setItem(storageKey, nextTheme);
+
+        const nextResolvedTheme = resolveEffectiveTheme(nextTheme);
+        const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        const documentWithViewTransition = window.document as DocumentWithViewTransition;
+        const startViewTransition = documentWithViewTransition.startViewTransition?.bind(documentWithViewTransition);
+        const transitionOrigin = options?.origin ?? getVisibleThemeToggleOrigin();
+
+        if (!transitionOrigin || prefersReducedMotion) {
+            setTheme(nextTheme);
+            return;
+        }
+
+        const commitTheme = () => {
+            applyThemeClass(nextResolvedTheme);
+            setResolvedTheme(nextResolvedTheme);
+            setTheme(nextTheme);
+        };
+
+        if (!startViewTransition) {
+            fallbackCircularThemeReveal(transitionOrigin, nextResolvedTheme, commitTheme);
+            void applyDesktopWindowTheme(nextResolvedTheme);
+            return;
+        }
+
+        const transition = startViewTransition(() => {
+            commitTheme();
+        });
+
+        circularThemeReveal(transitionOrigin, transition);
+        void applyDesktopWindowTheme(nextResolvedTheme);
+    }, [storageKey]);
+
+    const value = useMemo(() => ({
         theme,
-        setTheme: (theme: Theme) => {
-            localStorage.setItem(storageKey, theme);
-            setTheme(theme);
-        },
+        setTheme: updateTheme,
         resolvedTheme,
-    };
+    }), [theme, updateTheme, resolvedTheme]);
 
     return (
         <ThemeProviderContext.Provider {...props} value={value}>

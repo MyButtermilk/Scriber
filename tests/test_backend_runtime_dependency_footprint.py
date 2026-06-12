@@ -49,7 +49,7 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
     assert report["summary"]["totalMb"] > 0
     assert report["summary"]["missingRequiredPaths"] == []
     assert report["summary"]["componentMissingRequiredPaths"] == []
-    assert set(report["dependencies"]) == {"scipy", "onnxruntime"}
+    assert set(report["dependencies"]) == {"scipy", "onnxruntime", "awsSdk"}
     assert set(report["components"]) == {
         "backend",
         "internal",
@@ -61,6 +61,9 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
     assert report["dependencies"]["scipy"]["expectedPresent"] is False
     assert report["dependencies"]["scipy"]["totalMb"] == 0
     assert report["dependencies"]["scipy"]["missingRequiredPaths"] == []
+    assert report["dependencies"]["awsSdk"]["expectedPresent"] is False
+    assert report["dependencies"]["awsSdk"]["totalMb"] == 0
+    assert report["dependencies"]["awsSdk"]["missingRequiredPaths"] == []
     assert report["dependencies"]["onnxruntime"]["missingRequiredPaths"] == []
     assert report["dependencies"]["onnxruntime"]["topFiles"][0]["path"].startswith(
         "onnxruntime"
@@ -122,6 +125,19 @@ def test_runtime_dependency_footprint_fails_when_scipy_is_bundled(tmp_path: Path
     assert report["ok"] is False
     assert report["dependencies"]["scipy"]["unexpectedPresent"] is True
     assert "scipy" in report["summary"]["unexpectedPresentDependencies"]
+
+
+def test_runtime_dependency_footprint_fails_when_aws_sdk_is_bundled(tmp_path: Path) -> None:
+    sidecar = write_fake_sidecar(tmp_path / "scriber-backend")
+    botocore_path = sidecar / "_internal" / "botocore" / "auth.py"
+    botocore_path.parent.mkdir(parents=True, exist_ok=True)
+    botocore_path.write_bytes(b"b" * 1024)
+
+    report = build_report(sidecar)
+
+    assert report["ok"] is False
+    assert report["dependencies"]["awsSdk"]["unexpectedPresent"] is True
+    assert "awsSdk" in report["summary"]["unexpectedPresentDependencies"]
 
 
 def test_runtime_dependency_footprint_fails_on_prunable_onnxruntime_data(tmp_path: Path) -> None:
@@ -191,11 +207,16 @@ def test_windows_build_and_release_workflow_can_emit_runtime_dependency_footprin
     assert "--max-google-grpc-mb" in build
     assert "--max-pillow-mb" in build
     assert "if ($FastLocalInstaller)" in build
+    assert "$PrunePySide6Translations = $true" in build
+    assert "$PrunePySide6UnusedPlugins = $true" in build
+    assert "$MaxPySide6RuntimeDependencyMB = 65" in build
     assert "$MaxPillowRuntimeDependencyMB = 6" in build
     assert "$runtimeDependencyFootprint[\"path\"] = $runtimeDependencyFootprintPath" in build
     assert "runtimeDependencyFootprint = $runtimeDependencyFootprint" in build
 
     assert '"-RunRuntimeDependencyFootprint"' in workflow
+    assert '"-PrunePySide6Translations"' in workflow
+    assert '"-PrunePySide6UnusedPlugins"' in workflow
     assert '"-MaxScipyRuntimeDependencyMB"' in workflow
     assert '"-MaxOnnxRuntimeDependencyMB"' in workflow
     assert '"-MaxPythonRuntimeDependencyMB"' in workflow

@@ -223,6 +223,8 @@ if ($FastLocalInstaller) {
     $SkipSmoke = $true
     $RunMediaPreparationSmoke = $true
     $RunRuntimeDependencyFootprint = $true
+    $PrunePySide6Translations = $true
+    $PrunePySide6UnusedPlugins = $true
     if (-not $MediaToolsDir) {
         $UseProfileBFfmpeg = $true
         $ValidateSlimMediaTools = $true
@@ -247,7 +249,7 @@ if ($FastLocalInstaller) {
         $MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 10 } else { 210 }
     }
     if ($MaxPySide6RuntimeDependencyMB -le 0) {
-        $MaxPySide6RuntimeDependencyMB = 80
+        $MaxPySide6RuntimeDependencyMB = 65
     }
     if ($MaxGoogleGrpcRuntimeDependencyMB -le 0) {
         $MaxGoogleGrpcRuntimeDependencyMB = 15

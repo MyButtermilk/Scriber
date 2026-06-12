@@ -117,6 +117,8 @@ interface WebSocketProviderProps {
     children: React.ReactNode;
     /** WebSocket endpoint path, e.g. "/ws" */
     path?: string;
+    /** Start the connection only after backend readiness is known */
+    enabled?: boolean;
     /** Enable auto-reconnection (default: true) */
     autoReconnect?: boolean;
     /** Base delay between reconnection attempts in ms (default: 1000) */
@@ -137,6 +139,7 @@ interface WebSocketProviderProps {
 export function WebSocketProvider({
     children,
     path = "/ws",
+    enabled = true,
     autoReconnect = true,
     reconnectDelay = 1000,
     maxReconnectAttempts = Infinity,
@@ -158,6 +161,13 @@ export function WebSocketProvider({
     }, []);
 
     const connect = useCallback(() => {
+        if (!enabled) {
+            setIsConnected(false);
+            wsRef.current = null;
+            clearReconnectTimeout();
+            return;
+        }
+
         if (isBackendSessionTokenRequired() && !backendSessionToken) {
             setIsConnected(false);
             wsRef.current = null;
@@ -226,7 +236,7 @@ export function WebSocketProvider({
         } catch (error) {
             console.error("WebSocket connection error:", error);
         }
-    }, [path, reconnectDelay, maxReconnectAttempts, clearReconnectTimeout]);
+    }, [path, enabled, reconnectDelay, maxReconnectAttempts, clearReconnectTimeout]);
 
     const send = useCallback((data: unknown) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -243,7 +253,17 @@ export function WebSocketProvider({
 
     // Initial connection and cleanup
     useEffect(() => {
-        shouldReconnectRef.current = autoReconnect;
+        shouldReconnectRef.current = autoReconnect && enabled;
+        if (!enabled) {
+            clearReconnectTimeout();
+            if (wsRef.current) {
+                wsRef.current.close();
+                wsRef.current = null;
+            }
+            setIsConnected(false);
+            return;
+        }
+
         connect();
 
         return () => {
@@ -254,10 +274,13 @@ export function WebSocketProvider({
                 wsRef.current = null;
             }
         };
-    }, [connect, autoReconnect, clearReconnectTimeout]);
+    }, [connect, enabled, autoReconnect, clearReconnectTimeout]);
 
     useEffect(() => {
         const handleAuthStateChange = () => {
+            if (!enabled) {
+                return;
+            }
             if (isBackendSessionTokenRequired() && !backendSessionToken) {
                 shouldReconnectRef.current = false;
                 clearReconnectTimeout();
@@ -274,7 +297,7 @@ export function WebSocketProvider({
         };
         window.addEventListener(BACKEND_SESSION_TOKEN_REQUIRED_EVENT, handleAuthStateChange);
         return () => window.removeEventListener(BACKEND_SESSION_TOKEN_REQUIRED_EVENT, handleAuthStateChange);
-    }, [autoReconnect, clearReconnectTimeout, connect]);
+    }, [enabled, autoReconnect, clearReconnectTimeout, connect]);
 
     const value: WebSocketContextValue = useMemo(() => ({
         isConnected,

@@ -70,7 +70,6 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "speechmatics", label: "Speechmatics" },
   { value: "elevenlabs", label: "ElevenLabs" },
   { value: "google", label: "Google Cloud STT" },
-  { value: "aws", label: "AWS Transcribe" },
 ] as const;
 
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
@@ -101,7 +100,6 @@ const API_KEY_HELP_LINKS = {
   groq: { href: "https://console.groq.com/keys", label: "Groq API keys" },
   speechmatics: { href: "https://portal.speechmatics.com/", label: "Speechmatics portal" },
   googleCloud: { href: "https://console.cloud.google.com/apis/credentials", label: "Google Cloud credentials" },
-  aws: { href: "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html", label: "AWS access keys" },
 } as const;
 
 type ApiKeyHelpKey = keyof typeof API_KEY_HELP_LINKS;
@@ -229,7 +227,6 @@ export default function Settings() {
   const [groqKey, setGroqKey] = useState("");
   const [speechmaticsKey, setSpeechmaticsKey] = useState("");
   const [googleApplicationCredentials, setGoogleApplicationCredentials] = useState("");
-  const [awsKey, setAwsKey] = useState("");
 
   const [customVocabulary, setCustomVocabulary] = useState("");
   const [summarizationPrompt, setSummarizationPrompt] = useState("");
@@ -248,7 +245,6 @@ export default function Settings() {
   const [showGladiaKey, setShowGladiaKey] = useState(false);
   const [showGroqKey, setShowGroqKey] = useState(false);
   const [showSpeechmaticsKey, setShowSpeechmaticsKey] = useState(false);
-  const [showAwsKey, setShowAwsKey] = useState(false);
 
   const [hotkey, setHotkey] = useState("Ctrl + Shift + S");
   const [recordingMode, setRecordingMode] = useState("press_hold");
@@ -351,12 +347,6 @@ export default function Settings() {
         return hasValue(googleApplicationCredentials)
           ? null
           : { label: "Google Cloud credentials JSON path", helpKey: "googleCloud" as const };
-      case "aws":
-        return {
-          label: "AWS credentials from the standard AWS environment or credential store",
-          helpKey: "aws" as const,
-          externalOnly: true,
-        };
       default:
         return null;
     }
@@ -563,9 +553,6 @@ export default function Settings() {
 
   const handleSaveApiKey = async (provider: string) => {
     try {
-      if (provider === "AWS") {
-        throw new Error("AWS credentials are not managed yet (use standard AWS env vars).");
-      }
       const apiKeys: Record<string, string> = {};
       if (provider === "OpenAI") apiKeys.openai = openAIKey;
       if (provider === "Deepgram") apiKeys.deepgram = deepgramKey;
@@ -2679,35 +2666,6 @@ export default function Settings() {
                   <p className="text-xs text-muted-foreground">Used by Google Cloud STT via the GOOGLE_APPLICATION_CREDENTIALS path.</p>
                 </div>
 
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="aws">AWS Access Key ID (Transcribe)</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showAwsKey ? "text" : "password"}
-                        value={awsKey}
-                        onChange={(e) => setAwsKey(e.target.value)}
-                        placeholder="Enter your AWS Access Key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowAwsKey(!showAwsKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showAwsKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['AWS'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('AWS')}
-                      className={savedKeys['AWS'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['AWS'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['AWS'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
               </div>
             </AccordionContent>
           </div>

@@ -6205,8 +6205,6 @@ def _prewarm_stt_service(service_name: str) -> None:
             from pipecat.services.groq.stt import GroqSTTService  # noqa: F401
         elif service_name == "speechmatics":
             from pipecat.services.speechmatics.stt import SpeechmaticsSTTService  # noqa: F401
-        elif service_name == "aws":
-            from pipecat.services.aws.stt import AWSTranscribeSTTService  # noqa: F401
         elif service_name in {"mistral", "mistral_async"}:
             from src.mistral_stt import MistralRealtimeSTTService, MistralAsyncProcessor  # noqa: F401
         elif service_name in {"smallest", "smallest_async"}:

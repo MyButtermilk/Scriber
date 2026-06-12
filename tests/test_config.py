@@ -36,6 +36,10 @@ class TestConfig(unittest.TestCase):
         self.assertIn("azure_mai", Config.SERVICE_API_KEY_MAP)
         self.assertIn("azure_mai", Config.SERVICE_LABELS)
 
+    def test_aws_transcribe_is_not_supported(self):
+        self.assertNotIn("aws", Config.SERVICE_API_KEY_MAP)
+        self.assertNotIn("aws", Config.SERVICE_LABELS)
+
     def test_soniox_async_default_model_is_v5(self):
         self.assertEqual(Config.DEFAULT_SONIOX_ASYNC_MODEL, "stt-async-v5")
 

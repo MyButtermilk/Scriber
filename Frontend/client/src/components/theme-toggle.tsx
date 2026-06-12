@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import { Monitor } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -16,6 +17,16 @@ export function ThemeToggle({ align = "compact" }: ThemeToggleProps) {
     const { theme, resolvedTheme, setTheme } = useTheme();
     const isDark = resolvedTheme === "dark";
 
+    const handleToggleClick = (event: MouseEvent<HTMLButtonElement>) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        setTheme(isDark ? "light" : "dark", {
+            origin: {
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2,
+            },
+        });
+    };
+
     return (
         <div className={cn("flex items-center gap-1", align === "edge" && "w-full px-1.5")}>
             <button
@@ -25,7 +36,7 @@ export function ThemeToggle({ align = "compact" }: ThemeToggleProps) {
                 aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
                 title={isDark ? "Dark mode active" : "Light mode active"}
                 className={`magic-theme-toggle ${isDark ? "is-dark" : ""}`}
-                onClick={() => setTheme(isDark ? "light" : "dark")}
+                onClick={handleToggleClick}
             >
                 <span className="sr-only">
                     {isDark ? "Dark mode is active" : "Light mode is active"}

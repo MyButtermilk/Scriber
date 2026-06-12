@@ -393,7 +393,7 @@ def validate_runtime_dependency_footprint_report(report_path: Path | None) -> Re
     failures: list[str] = []
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
-        "trackedDependencies": ["scipy", "onnxruntime"],
+        "trackedDependencies": ["scipy", "onnxruntime", "awsSdk"],
     }
     if report_path is None:
         failures.append("runtime dependency footprint report is required")

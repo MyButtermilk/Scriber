@@ -1,24 +1,27 @@
 # Performance And Packaging
 
-Last verified: 2026-06-11
+Last verified: 2026-06-12
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
 
 ## Current Baseline
 
-Latest validated local Profile B installer build from 2026-06-09:
+Latest validated local Profile B installer build from 2026-06-12:
 
-- Installer: about `102.98 MiB`.
-- Installed app: about `267.28 MiB`.
-- Backend resource tree: about `254.42 MiB`.
+- Installer: about `88.31 MiB`.
+- Installed app: about `242.72 MiB`.
+- Backend resource tree: about `227.77 MiB`.
 - Installed media tools: about `5.84 MiB`.
 - Profile B portable media-tool build: about `4.98 MiB` for `ffmpeg.exe`,
   `ffprobe.exe`, and required runtime DLLs.
-- Python tests: `465 passed`.
-- Frontend type check and build passed.
+- PySide6 runtime component: about `62.70 MiB`.
+- AWS SDK footprint: absent, `0.00 MiB`.
+- Targeted package/provider-removal tests: `188 passed`.
+- Frontend type check passed.
 - Installed frontend smoke passed.
 - Installed media-preparation smoke passed `5/5`.
+- Installed uninstall smoke passed.
 - Real installed file and YouTube workflow smoke previously passed `2/2` for
   the Profile B path with `https://www.youtube.com/watch?v=0wEjbSYNUM8`.
 
@@ -170,15 +173,19 @@ Current packaging choices:
 - ONNXRuntime remains because Pipecat Silero VAD needs it.
 - SciPy, Torch, NeMo, ONNX-ASR, ONNX tooling, numba, llvmlite, and unused
   ONNXRuntime tooling are excluded from the standard sidecar.
+- AWS Transcribe is no longer exposed in frontend or backend settings. The
+  standard sidecar excludes `boto3`, `botocore`, `s3transfer`, `aioboto3`,
+  `aiobotocore`, and Pipecat AWS service modules.
 - Pillow AVIF binaries are excluded.
 
-PySide6 size experiments are allowed only with installed overlay smoke evidence:
+PySide6 size reduction:
 
-- prune translations,
-- prune unused plugins,
-- prune software OpenGL DLL.
+- Qt translations and unused Qt plugins are pruned from fast local and release
+  installer builds.
+- `opengl32sw.dll` remains bundled as the Qt software OpenGL fallback.
 
-Do not make those default without proving that the native overlay still works.
+Do not prune the software OpenGL DLL by default without installed overlay smoke
+evidence across relevant Windows display modes.
 
 ## Remaining Performance Opportunities
 
@@ -190,14 +197,15 @@ Highest-value current opportunities:
   rerenders from status/history WebSocket events.
 - Keep investigating UI responsive behavior at narrow widths.
 - Add longer installed idle/live stability runs with CPU and memory budgets.
-- Consider PySide6 pruning only after visible overlay smoke coverage is robust.
+- Consider pruning Qt software OpenGL only after visible overlay smoke coverage
+  is robust across relevant Windows display modes.
 
 Lower-value or risky opportunities:
 
 - yt-dlp extractor filtering. This is risky and should not be default.
 - Removing ffprobe. This is an explicit experiment only.
-- Rust audio engine. Treat as requested-only until a measured prototype beats
-  the current Python audio path without maintainability loss.
+- Moving more provider or pipeline work into Rust. Capture/prewarm are already
+  Rust/WASAPI; further migration needs measured benefit and rollback gates.
 
 ## Rust Expansion Plan
 

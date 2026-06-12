@@ -13,6 +13,8 @@ import { REST_API_VERSION, type BackendHealthResponse } from "@/lib/api-types";
 interface BackendStatus {
     isOnline: boolean;
     isChecking: boolean;
+    hasConnected: boolean;
+    checkCount: number;
     lastChecked: Date | null;
     error: string | null;
     checkNow: () => Promise<boolean>;
@@ -37,6 +39,8 @@ const ONLINE_CHECK_INTERVAL_MS = 30000; // Check every 30 seconds when online
 export function BackendStatusProvider({ children }: { children: ReactNode }) {
     const [isOnline, setIsOnline] = useState(true); // Assume online initially
     const [isChecking, setIsChecking] = useState(false);
+    const [hasConnected, setHasConnected] = useState(false);
+    const [checkCount, setCheckCount] = useState(0);
     const [lastChecked, setLastChecked] = useState<Date | null>(null);
     const [error, setError] = useState<string | null>(null);
 
@@ -59,6 +63,7 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
                     }
 
                     setIsOnline(true);
+                    setHasConnected(true);
                     setError(null);
                     setLastChecked(new Date());
                     void reportFrontendReady().catch((readyError) => {
@@ -110,6 +115,9 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
                 }
             }
             setIsOnline(online);
+            if (online) {
+                setHasConnected(true);
+            }
             setError(online ? null : `Server returned ${res.status}`);
             setLastChecked(new Date());
             return online;
@@ -129,6 +137,7 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
             setLastChecked(new Date());
             return false;
         } finally {
+            setCheckCount((count) => count + 1);
             setIsChecking(false);
         }
     }, []);
@@ -163,6 +172,8 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
             value={{
                 isOnline,
                 isChecking,
+                hasConnected,
+                checkCount,
                 lastChecked,
                 error,
                 checkNow: checkHealth,

@@ -7,6 +7,18 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, co
 
 repo_root = Path(os.environ.get("SCRIBER_REPO_ROOT", Path.cwd())).resolve()
 
+
+def exclude_datas(datas, excluded_destination_prefixes):
+    excluded = tuple(prefix.replace("\\", "/").rstrip("/") + "/" for prefix in excluded_destination_prefixes)
+    filtered = []
+    for source, destination in datas:
+        normalized_destination = str(destination).replace("\\", "/").rstrip("/") + "/"
+        if normalized_destination.startswith(excluded):
+            continue
+        filtered.append((source, destination))
+    return filtered
+
+
 hiddenimports = [
     "src.assemblyai_async_stt",
     "src.azure_mai_stt",
@@ -31,7 +43,6 @@ hiddenimports = [
     "pipecat.services.gladia.stt",
     "pipecat.services.groq.stt",
     "pipecat.services.speechmatics.stt",
-    "pipecat.services.aws.stt",
     "pipecat.services.elevenlabs.stt",
 ]
 
@@ -69,6 +80,8 @@ for package in ("pipecat", "google", "yt_dlp"):
         datas += collect_data_files(package)
     except Exception:
         pass
+
+datas = exclude_datas(datas, ("pipecat/services/aws",))
 
 try:
     # ONNXRuntime runtime DLLs are handled by collect_dynamic_libs(). Keep legal
@@ -116,6 +129,12 @@ a = Analysis(
         "onnxruntime.transformers",
         "PIL.AvifImagePlugin",
         "PIL._avif",
+        "aioboto3",
+        "aiobotocore",
+        "boto3",
+        "botocore",
+        "s3transfer",
+        "pipecat.services.aws",
         "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
         "nemo",
         "nemo_toolkit",

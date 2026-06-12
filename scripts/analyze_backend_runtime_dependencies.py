@@ -43,6 +43,13 @@ DEPENDENCY_GROUPS: dict[str, dict[str, Any]] = {
         "expectedPresent": True,
         "reason": "Pipecat Silero VAD native runtime",
     },
+    "awsSdk": {
+        "paths": ("boto3", "botocore", "s3transfer", "aioboto3", "aiobotocore"),
+        "requiredPaths": (),
+        "disallowedPaths": ("boto3", "botocore", "s3transfer", "aioboto3", "aiobotocore"),
+        "expectedPresent": False,
+        "reason": "AWS Transcribe provider is not part of the standard app",
+    },
 }
 
 COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
@@ -327,6 +334,13 @@ def build_report(
             internal_dir=internal_dir,
             top_files_limit=top_files_limit,
             max_mb=max_onnxruntime_mb,
+        ),
+        "awsSdk": summarize_dependency(
+            "awsSdk",
+            DEPENDENCY_GROUPS["awsSdk"],
+            internal_dir=internal_dir,
+            top_files_limit=top_files_limit,
+            max_mb=None,
         ),
     }
     components = {

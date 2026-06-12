@@ -314,6 +314,15 @@ def write_runtime_dependency_footprint_report(path: Path, *, ok: bool = True) ->
                         "disallowedPaths": [],
                         "paths": [{"path": "onnxruntime", "exists": True}],
                     },
+                    "awsSdk": {
+                        "name": "awsSdk",
+                        "expectedPresent": False,
+                        "unexpectedPresent": False,
+                        "totalMb": 0,
+                        "missingRequiredPaths": [],
+                        "disallowedPaths": [],
+                        "paths": [{"path": "botocore", "exists": False}],
+                    },
                 },
             }
         ),

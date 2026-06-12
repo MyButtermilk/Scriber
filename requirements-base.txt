@@ -1,4 +1,4 @@
-pipecat-ai[google,assemblyai,silero,deepgram,openai,azure,gladia,groq,speechmatics,aws,elevenlabs]
+pipecat-ai[google,assemblyai,silero,deepgram,openai,azure,gladia,groq,speechmatics,elevenlabs]
 sounddevice
 pycaw
 keyboard

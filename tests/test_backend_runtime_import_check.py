@@ -36,6 +36,8 @@ def test_standard_requirements_include_audio_runtime_dependencies():
 
     assert "scipy" not in requirements
     assert "onnxruntime" in requirements
+    assert all("aws" not in line for line in requirements)
+    assert all("boto" not in line for line in requirements)
 
 
 def test_backend_worker_import_does_not_eagerly_import_web_api():
@@ -97,6 +99,7 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert "collect_dynamic_libs" in spec
     assert '"onnxruntime"' in spec
     assert '"pipecat.audio.vad.silero"' in spec
+    assert '"pipecat.services.aws.stt"' not in spec
     assert '"pyloudnorm.meter"' in spec
     assert '"scipy",' in spec
     assert '"scipy.signal"' not in spec
@@ -116,6 +119,11 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"scipy",' in spec.split("excludes=[", 1)[1]
     assert '"PIL.AvifImagePlugin",' in spec.split("excludes=[", 1)[1]
     assert '"PIL._avif",' in spec.split("excludes=[", 1)[1]
+    assert '"boto3",' in spec.split("excludes=[", 1)[1]
+    assert '"botocore",' in spec.split("excludes=[", 1)[1]
+    assert '"s3transfer",' in spec.split("excludes=[", 1)[1]
+    assert '"pipecat.services.aws",' in spec.split("excludes=[", 1)[1]
+    assert 'exclude_datas(datas, ("pipecat/services/aws",))' in spec
     assert "_internal\\onnxruntime" in build_script
     assert "_internal\\onnxruntime\\capi" in build_script
     assert "_internal\\scipy" not in build_script

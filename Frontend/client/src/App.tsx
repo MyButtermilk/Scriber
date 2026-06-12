@@ -4,7 +4,7 @@ import { queryClient } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ThemeProvider } from "@/components/theme-provider";
-import { BackendStatusProvider } from "@/hooks/use-backend-status";
+import { BackendStatusProvider, useBackendStatus } from "@/hooks/use-backend-status";
 import { useDeviceChangeRefresh } from "@/hooks/use-device-change-refresh";
 import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
 import { WebSocketProvider } from "@/contexts/WebSocketContext";
@@ -62,6 +62,18 @@ function Router() {
   );
 }
 
+function RuntimeShell() {
+  const { isOnline, checkCount } = useBackendStatus();
+  const websocketEnabled = isOnline && checkCount > 0;
+
+  return (
+    <WebSocketProvider path="/ws" autoReconnect={true} reconnectDelay={1000} enabled={websocketEnabled}>
+      <BackendOfflineBanner />
+      <Router />
+    </WebSocketProvider>
+  );
+}
+
 function App() {
   const [backendBaseReady, setBackendBaseReady] = useState(!isTauriRuntime());
 
@@ -91,12 +103,8 @@ function App() {
     <ThemeProvider defaultTheme="system" storageKey="scriber-theme">
       <QueryClientProvider client={queryClient}>
         <BackendStatusProvider>
-          {/* PERFORMANCE: Single WebSocket connection shared across all pages */}
-          <WebSocketProvider path="/ws" autoReconnect={true} reconnectDelay={1000}>
-            <Toaster />
-            <BackendOfflineBanner />
-            <Router />
-          </WebSocketProvider>
+          <Toaster />
+          <RuntimeShell />
         </BackendStatusProvider>
       </QueryClientProvider>
     </ThemeProvider>

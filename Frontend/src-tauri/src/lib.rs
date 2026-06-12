@@ -693,9 +693,9 @@ fn desktop_window_chrome_colors(theme: DesktopWindowChromeTheme) -> (u32, u32, u
             rgb_to_colorref(31, 34, 40),
         ),
         DesktopWindowChromeTheme::Light => (
-            rgb_to_colorref(231, 235, 242),
+            rgb_to_colorref(229, 231, 235),
             rgb_to_colorref(9, 17, 32),
-            rgb_to_colorref(205, 213, 225),
+            rgb_to_colorref(229, 231, 235),
         ),
     }
 }
@@ -2541,6 +2541,16 @@ mod tests {
     #[test]
     fn rgb_to_colorref_uses_windows_bgr_order() {
         assert_eq!(super::rgb_to_colorref(0x11, 0x22, 0x33), 0x00332211);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn light_window_chrome_matches_light_app_shell() {
+        let (caption_color, _text_color, border_color) =
+            super::desktop_window_chrome_colors(super::DesktopWindowChromeTheme::Light);
+        let app_shell_light = super::rgb_to_colorref(0xe5, 0xe7, 0xeb);
+        assert_eq!(caption_color, app_shell_light);
+        assert_eq!(border_color, app_shell_light);
     }
 
     #[test]

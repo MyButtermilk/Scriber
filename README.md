@@ -44,7 +44,7 @@ calm place to capture it, understand it, and reuse it.
 
 Cloud and local provider paths currently cover Soniox, Microsoft Azure MAI,
 Azure Speech, OpenAI, Deepgram, AssemblyAI, Mistral, Gladia, Groq,
-Speechmatics, Smallest AI, ElevenLabs/fal.ai, Google, AWS, ONNX, and NeMo.
+Speechmatics, Smallest AI, ElevenLabs/fal.ai, Google, ONNX, and NeMo.
 
 ## Screenshots
 
@@ -202,9 +202,13 @@ Frontend\src-tauri\target\release\bundle\nsis\
 
 Recent local release evidence:
 
-- Installer size: about 103 MiB.
-- Installed app size in smoke: about 269 MiB.
+- Installer size: about 88 MiB.
+- Installed app size in smoke: about 243 MiB.
+- Backend resource tree: about 228 MiB.
 - Bundled Profile B ffmpeg/ffprobe media tools: about 5.84 MiB installed.
+- AWS Transcribe support and AWS SDK packages are not part of the standard app.
+- Fast local and release builds prune PySide6 translations and unused Qt
+  plugins while keeping the native overlay available.
 - Installed frontend and media-preparation smokes pass in the standard local
   build flow.
 
