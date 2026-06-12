@@ -167,6 +167,10 @@ Common environment values:
 - `SCRIBER_HOTKEY`, `SCRIBER_MODE`: desktop hotkey behavior.
 - `SCRIBER_MIC_ALWAYS_ON`: enables idle mic prewarm when set to `1`.
 - `SCRIBER_MIC_PREBUFFER_MS`: rolling prebuffer duration, capped in config.
+- `SCRIBER_SONIOX_ASYNC_MODEL`: default `stt-async-v5` for Soniox Async
+  file/YouTube transcription.
+- `SCRIBER_SONIOX_RT_MODEL`: default `stt-rt-v4` for Soniox realtime live
+  transcription.
 - `SCRIBER_AZURE_MAI_MODEL`: default `mai-transcribe-1.5`.
 - `SCRIBER_CUSTOM_VOCAB`: custom vocabulary, sent as Azure MAI `phraseList`
   for `mai-transcribe-1.5`.

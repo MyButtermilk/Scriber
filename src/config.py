@@ -50,6 +50,9 @@ def _save_json_settings(settings: dict) -> None:
 _json_settings = _load_json_settings()
 
 class Config:
+    DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v5"
+    DEFAULT_SONIOX_RT_MODEL = "stt-rt-v4"
+
     # API Keys
     SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
     MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
@@ -75,8 +78,8 @@ class Config:
     HOTKEY = os.getenv("SCRIBER_HOTKEY", "ctrl+alt+s")
     DEFAULT_STT_SERVICE = os.getenv("SCRIBER_DEFAULT_STT", "soniox")
     SONIOX_MODE = os.getenv("SCRIBER_SONIOX_MODE", "realtime").lower()  # realtime | async
-    SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", "stt-async-v4")
-    SONIOX_RT_MODEL = os.getenv("SCRIBER_SONIOX_RT_MODEL", "stt-rt-v4")
+    SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", DEFAULT_SONIOX_ASYNC_MODEL)
+    SONIOX_RT_MODEL = os.getenv("SCRIBER_SONIOX_RT_MODEL", DEFAULT_SONIOX_RT_MODEL)
     MISTRAL_RT_MODEL = os.getenv("SCRIBER_MISTRAL_RT_MODEL", "voxtral-mini-transcribe-realtime-2602")
     MISTRAL_ASYNC_MODEL = os.getenv("SCRIBER_MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")

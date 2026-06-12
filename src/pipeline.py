@@ -128,7 +128,7 @@ class SonioxAsyncProcessor(FrameProcessor):
         self,
         api_key: str,
         custom_vocab: str = "",
-        model: str = "stt-async-v4",
+        model: str = "stt-async-v5",
         session: aiohttp.ClientSession = None,
         on_progress: Optional[Callable[[str], None]] = None,
         enable_speaker_diarization: bool = False,
@@ -1478,7 +1478,7 @@ class ScriberPipeline:
 
             headers = {"Authorization": f"Bearer {api_key}"}
             base_url = "https://api.soniox.com/v1"
-            model = Config.SONIOX_ASYNC_MODEL or "stt-async-v4"
+            model = Config.SONIOX_ASYNC_MODEL or Config.DEFAULT_SONIOX_ASYNC_MODEL
             file_id = None
             transcription_id = None
 

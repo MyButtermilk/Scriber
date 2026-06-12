@@ -223,6 +223,14 @@ Desktop runtime stores writable data under `SCRIBER_DATA_DIR`:
 
 The installed app must not rely on writing to the install directory.
 
+## Provider Boundary
+
+Provider selection is owned by backend configuration and persisted settings.
+Soniox is the default STT family: realtime live transcription uses
+`stt-rt-v4`, while Soniox Async file and YouTube transcription defaults to
+`stt-async-v5`. `SCRIBER_SONIOX_ASYNC_MODEL` remains an escape hatch for
+provider compatibility, but older Soniox async models are not release defaults.
+
 ## Media Boundary
 
 Media work is centralized around resolved ffmpeg/ffprobe tools:
