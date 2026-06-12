@@ -175,6 +175,21 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "@media (max-width: 720px)" in css
 
 
+def test_settings_hotkey_recorder_uses_window_capture_listener() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function hotkeyDisplayFromKeyboardEvent" in source
+    assert "const hotkeyCaptureRef = useRef<HTMLDivElement | null>(null);" in source
+    assert "hotkeyCaptureRef.current?.focus()" in source
+    assert 'window.addEventListener("keydown", handleWindowKeyDown, true)' in source
+    assert 'window.removeEventListener("keydown", handleWindowKeyDown, true)' in source
+    assert 'event.key === "Escape"' in source
+    assert 'aria-label="Hotkey capture area"' in source
+    assert "onKeyDown={handleHotkeyRecord}" not in source
+
+
 def test_desktop_chrome_is_dom_rendered_without_duplicate_branding() -> None:
     tauri_config = json.loads(
         (REPO_ROOT / "Frontend" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")

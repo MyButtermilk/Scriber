@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { useState, useEffect, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -73,6 +73,48 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
 ] as const;
 
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
+
+type HotkeyCaptureEvent = Pick<
+  KeyboardEvent,
+  "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "shiftKey"
+> & {
+  preventDefault?: () => void;
+  stopPropagation?: () => void;
+};
+
+const HOTKEY_MODIFIER_KEYS = new Set(["Alt", "Control", "Meta", "OS", "Shift"]);
+const HOTKEY_SPECIAL_KEYS: Record<string, string> = {
+  " ": "Space",
+  ArrowDown: "Down",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
+  ArrowUp: "Up",
+  Esc: "Escape",
+};
+
+function hotkeyDisplayFromKeyboardEvent(event: HotkeyCaptureEvent): string {
+  let key = event.key || "";
+  if (!key || key === "Unidentified") {
+    if (event.code?.startsWith("Key")) {
+      key = event.code.slice(3);
+    } else if (event.code?.startsWith("Digit")) {
+      key = event.code.slice(5);
+    }
+  }
+  if (!key || HOTKEY_MODIFIER_KEYS.has(key)) {
+    return "";
+  }
+
+  const keys: string[] = [];
+  if (event.ctrlKey) keys.push("Ctrl");
+  if (event.shiftKey) keys.push("Shift");
+  if (event.altKey) keys.push("Alt");
+  if (event.metaKey) keys.push("Meta");
+
+  const displayKey = HOTKEY_SPECIAL_KEYS[key] || (key.length === 1 ? key.toUpperCase() : key);
+  keys.push(displayKey);
+  return keys.join(" + ");
+}
 
 const SUMMARIZATION_MODEL_OPTIONS = [
   { value: "gemini-flash-latest", label: "Gemini Flash Latest (Recommended)" },
@@ -249,6 +291,7 @@ export default function Settings() {
   const [hotkey, setHotkey] = useState("Ctrl + Shift + S");
   const [recordingMode, setRecordingMode] = useState("press_hold");
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
+  const hotkeyCaptureRef = useRef<HTMLDivElement | null>(null);
   const { toast } = useToast();
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
 
@@ -595,21 +638,35 @@ export default function Settings() {
     }
   };
 
-  const handleHotkeyRecord = (e: React.KeyboardEvent) => {
-    e.preventDefault();
-    const keys = [];
-    if (e.ctrlKey) keys.push("Ctrl");
-    if (e.shiftKey) keys.push("Shift");
-    if (e.altKey) keys.push("Alt");
-    if (e.metaKey) keys.push("Meta");
-    if (e.key && !["Control", "Shift", "Alt", "Meta"].includes(e.key)) {
-      keys.push(e.key.toUpperCase());
+  const handleHotkeyRecord = useCallback((event: HotkeyCaptureEvent) => {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    if (event.key === "Escape") {
+      setIsRecordingHotkey(false);
+      return;
     }
+    const nextHotkey = hotkeyDisplayFromKeyboardEvent(event);
+    if (nextHotkey) {
+      setHotkey(nextHotkey);
+    }
+  }, []);
 
-    if (keys.length > 0) {
-      setHotkey(keys.join(" + "));
+  useEffect(() => {
+    if (!isRecordingHotkey) {
+      return;
     }
-  };
+    const focusFrame = window.requestAnimationFrame(() => {
+      hotkeyCaptureRef.current?.focus();
+    });
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      handleHotkeyRecord(event);
+    };
+    window.addEventListener("keydown", handleWindowKeyDown, true);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", handleWindowKeyDown, true);
+    };
+  }, [handleHotkeyRecord, isRecordingHotkey]);
 
   const handleMicDeviceChange = async (deviceId: string) => {
     setSelectedDeviceId(deviceId);
@@ -1920,11 +1977,12 @@ export default function Settings() {
                         </DialogDescription>
                       </DialogHeader>
                       <div
+                        ref={hotkeyCaptureRef}
                         className="flex items-center justify-center h-32 border-2 border-dashed rounded-lg bg-secondary/20 outline-none focus:border-primary focus:bg-primary/5 transition-colors"
                         tabIndex={0}
-                        onKeyDown={handleHotkeyRecord}
+                        aria-label="Hotkey capture area"
                       >
-                        <p className="text-lg font-medium text-primary animate-pulse">Press keys now...</p>
+                        <p className="text-lg font-medium text-primary animate-pulse">{hotkey}</p>
                       </div>
                       <div className="flex justify-end gap-2">
                         <Button variant="ghost" onClick={() => setIsRecordingHotkey(false)}>Cancel</Button>
