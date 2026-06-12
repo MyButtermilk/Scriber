@@ -1,98 +1,154 @@
 # Scriber
 
-Last verified: 2026-06-09
+Scriber is a Windows desktop app that turns speech, videos, and recordings into
+usable text.
 
-Scriber is a Windows-first AI transcription app for live dictation, YouTube
-transcription, file transcription, transcript history, summaries, and PDF/DOCX
-export.
+Press one hotkey to dictate into any app. Paste a YouTube link and get notes
+without watching the full video again. Drop in a meeting recording and turn it
+into a searchable transcript, summary, and export.
 
-The current primary runtime is:
+Scriber is for people who collect a lot of spoken information and want one
+calm place to capture it, understand it, and reuse it.
 
-- Tauri 2 desktop shell for the installed Windows app.
-- React 19 + Vite 7 frontend.
-- Python `aiohttp` backend sidecar on loopback.
-- SQLite runtime data under the configured app data directory.
+[Download for Windows](https://github.com/MyButtermilk/Scriber/releases) |
+[What it can do](#what-it-can-do) | [Developer setup](#for-developers)
 
-Legacy Tkinter/Python desktop paths still exist as maintenance fallback, but new
-desktop work should target the Tauri runtime.
+![Scriber live microphone transcription](docs/screenshots/live_mic.png)
 
-## Current Status
+## Why Use Scriber?
 
-The hybrid Tauri/Python runtime is the active implementation:
+| What you need | What Scriber does |
+| --- | --- |
+| Fast dictation | Press the global hotkey, speak, stop, and Scriber pastes the result where you were working. |
+| Long-form video notes | Paste or search a YouTube URL, then get a transcript and summary in one place. |
+| File transcription | Drop in audio or video files and let Scriber prepare the media, transcribe it, and save the result. |
+| Searchable memory | Keep microphone, YouTube, and file transcripts in one local history with search and detail views. |
+| Better handoff | Export transcripts and summaries to PDF or DOCX. |
+| Practical troubleshooting | Use the built-in console and support bundle when something needs diagnosing. |
 
-- The Rust shell starts or attaches to a Scriber backend through `/api/health`.
-- Managed workers receive a per-run `SCRIBER_SESSION_TOKEN`; REST and WebSocket
-  calls are token protected except for health readiness.
-- The Tauri shell owns Windows single-instance startup, autostart, global
-  hotkey registration, tray lifecycle actions, and worker crash recovery.
-- The backend owns recording state, provider calls, transcript persistence,
-  jobs, device enumeration, media preparation, logs, and support bundles.
-- The frontend reports `/api/runtime/frontend-ready` after it proves that the
-  actual WebView can reach the runtime backend.
+## What It Can Do
 
-Recent completed work:
-
-- Native Windows microphone change notifications with polling fallback.
-- Recording-aware PortAudio refresh and guarded device enumeration.
-- Optional always-on mic prewarm with a rolling prebuffer.
-- Canvas/RAF waveform rendering and about 60 Hz audio-level throttling.
-- Lazy provider imports and cached analyzer setup.
-- Buffered live transcript appends to avoid repeated full-string rebuilds.
-- Paginated and virtualized transcript history lists.
-- Token-protected debug console with filters, clear-log support, copy-visible
-  logs, and redacted support bundles.
-- Azure MAI Transcribe defaulting to `mai-transcribe-1.5`; custom vocabulary is
-  sent as `phraseList` for that model.
-- Azure MAI upload preparation uses low-latency MP3 encoding instead of WAV.
-- FFmpeg Profile B is the default no-feature-loss bundled media-tool profile.
-- Fast local installer builds can reuse the unchanged PyInstaller sidecar.
-
-Latest validated local build evidence from 2026-06-09:
-
-- Python tests: `465 passed`.
-- Frontend type check: `npm run check` passed.
-- Frontend build: `npm run build` passed.
-- Fast local NSIS installer with Profile B passed installed frontend and media
-  preparation smokes.
-- Installer: about `102.98 MiB`.
-- Installed app: about `267.28 MiB`.
-- Backend resource tree: about `254.42 MiB`.
-- Installed bundled media tools: about `5.84 MiB`.
-
-## Features
-
-- Live microphone dictation with global hotkey.
-- Toggle and push-to-talk recording modes.
-- Native overlay for recording, transcribing, and audio visualization.
-- Microphone selection, favorite microphone fallback, and device hotplug refresh.
+- Live microphone dictation with a global Windows hotkey.
+- Optional mic pre-warming for faster recording starts.
+- Native recording overlay with waveform visualization.
 - YouTube search, URL lookup, download, transcription, and summarization.
-- File upload transcription for audio and video inputs.
-- Transcript history with type filters, search, detail view, delete, summarize,
-  cancel, and export.
-- PDF and DOCX export.
-- Provider routing, retry scheduling, and circuit-breaker support.
-- Debug console and redacted support bundle creation in the installed app.
+- Audio and video file transcription with bundled ffmpeg/ffprobe.
+- Transcript history with search, filters, detail pages, delete, cancel,
+  summarize, and export actions.
+- Provider configuration from the Settings UI, including direct "Get key" links
+  for supported cloud services.
+- Windows autostart, tray integration, single-instance behavior, and backend
+  recovery through the Tauri desktop shell.
+- Debug console with filters, log clearing, visible-log copy, and redacted
+  support bundle download.
 
-Provider coverage includes Soniox, Mistral, AssemblyAI, Azure MAI, OpenAI,
-Deepgram, Gladia, Groq, Speechmatics, ElevenLabs, Google, AWS, Smallest, ONNX,
-and NeMo paths. Verify a provider in code before changing its contract because
-some providers have realtime, async, or local-model-specific behavior.
+Cloud and local provider paths currently cover Soniox, Microsoft Azure MAI,
+Azure Speech, OpenAI, Deepgram, AssemblyAI, Mistral, Gladia, Groq,
+Speechmatics, Smallest AI, ElevenLabs/fal.ai, Google, AWS, ONNX, and NeMo.
 
 ## Screenshots
 
-![Live Mic](docs/screenshots/live_mic.png)
+### Speak Once, Use It Anywhere
 
-![YouTube](docs/screenshots/youtube.png)
+Scriber is designed around a simple live microphone flow: start recording,
+watch the input, stop, then use the transcript immediately.
 
-![File Upload](docs/screenshots/file_upload.png)
+![Live microphone view](docs/screenshots/live_mic.png)
 
-![Transcript Detail](docs/screenshots/transcript_detail.png)
+### Turn YouTube Into Notes
 
-![Settings](docs/screenshots/settings.png)
+Search YouTube or paste a URL, transcribe the video, and keep the output in the
+same history as your live recordings.
 
-## Quick Start
+![YouTube transcription view](docs/screenshots/youtube.png)
 
-### Windows Dev Startup
+### Import Meetings, Calls, and Recordings
+
+Drop an audio or video file into Scriber. The app handles media preparation and
+stores the transcript with your other work.
+
+![File transcription view](docs/screenshots/file_upload.png)
+
+### Read, Summarize, Export
+
+Transcript detail pages keep the source, transcript, summary, and export
+actions together.
+
+![Transcript detail view](docs/screenshots/transcript_detail.png)
+
+### Configure Once
+
+Choose your microphone, model, language, hotkey, autostart behavior, and API
+keys from one Settings screen.
+
+![Settings view](docs/screenshots/settings.png)
+
+## Install
+
+Scriber is Windows-first.
+
+1. Download the latest Windows installer from
+   [GitHub Releases](https://github.com/MyButtermilk/Scriber/releases).
+2. Run the installer.
+3. Open Scriber from the Start Menu or tray.
+4. Go to Settings and add the API key for the provider you want to use.
+
+The installed app includes the desktop shell, Python backend sidecar, Rust audio
+sidecar, and bundled media tools. No optional installer components are required
+for the current feature set.
+
+## First Run Checklist
+
+1. Open Settings.
+2. Pick your transcription model.
+3. Use the built-in "Get key" link next to the provider field if you still need
+   an API key.
+4. Select your preferred microphone.
+5. Decide whether mic pre-warming should stay enabled.
+6. Try a short live recording before using Scriber in a meeting or workflow.
+
+If no cloud STT credentials are saved yet, Settings shows a clear warning for
+the selected provider. Local model paths can be used where configured, but most
+users should start with a cloud provider for the simplest setup.
+
+## How Scriber Works
+
+Scriber is a desktop app with three cooperating parts:
+
+- A Tauri 2 Windows shell owns the tray, global hotkey, autostart, single
+  instance behavior, backend supervision, and native shell integration.
+- A React frontend provides the Live Mic, YouTube, File, Console, Settings, and
+  Transcript views.
+- A Python backend sidecar handles recording state, providers, media
+  preparation, transcript storage, logs, support bundles, and API routes.
+
+Live microphone capture uses a Rust/WASAPI audio sidecar. The Python backend
+receives the captured frames and routes transcription work to the selected STT
+provider or local model path.
+
+Runtime data is stored in the user data directory, not in the install folder.
+That includes settings, transcripts, downloads, logs, and support bundles.
+
+## Privacy And Data
+
+Scriber runs its UI and backend locally on loopback. Your transcript database
+and runtime files stay on your machine unless a selected cloud provider needs
+audio or text to perform transcription or summarization.
+
+Support bundles redact known secret patterns such as API keys, bearer tokens,
+session tokens, and similar credentials.
+
+## For Developers
+
+### Requirements
+
+- Windows 10 or newer for the primary desktop runtime.
+- Python 3.13.
+- Node.js/npm.
+- Rust toolchain.
+- Git.
+
+### Start In Dev Mode
 
 ```powershell
 git clone https://github.com/MyButtermilk/Scriber.git
@@ -100,11 +156,7 @@ cd Scriber
 .\start.bat
 ```
 
-`start.bat` prepares the Python environment, creates an initial `.env` when
-needed, starts the backend, and starts the web UI when Node dependencies are
-available.
-
-### Manual Backend
+Manual backend:
 
 ```powershell
 python -m venv venv
@@ -113,13 +165,7 @@ pip install -r requirements.txt
 python -m src.web_api
 ```
 
-Backend default:
-
-- Host: `127.0.0.1`
-- Port: `8765`
-- Health: `http://127.0.0.1:8765/api/health`
-
-### Manual Frontend
+Manual frontend:
 
 ```powershell
 cd Frontend
@@ -127,18 +173,16 @@ npm install
 npm run dev:client
 ```
 
-Frontend dev default:
-
-- `http://localhost:5000`
-
-### Tauri Dev
+Tauri dev shell:
 
 ```powershell
 cd Frontend
 npm run tauri:dev
 ```
 
-### Fast Local Installer
+## Build A Windows Installer
+
+Fast local installer build:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
@@ -150,38 +194,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -RunInstallerMediaPreparationSmoke
 ```
 
-The generated NSIS setup is under:
+The NSIS installer is written to:
 
 ```text
 Frontend\src-tauri\target\release\bundle\nsis\
 ```
 
-## Configuration
+Recent local release evidence:
 
-Common environment values:
+- Installer size: about 103 MiB.
+- Installed app size in smoke: about 269 MiB.
+- Bundled Profile B ffmpeg/ffprobe media tools: about 5.84 MiB installed.
+- Installed frontend and media-preparation smokes pass in the standard local
+  build flow.
 
-- `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`: backend bind address.
-- `SCRIBER_DATA_DIR`: writable runtime data directory.
-- `SCRIBER_SESSION_TOKEN`: local API/WebSocket token in managed runtime.
-- `SCRIBER_SERVICE`: active transcription provider.
-- `SCRIBER_HOTKEY`, `SCRIBER_MODE`: desktop hotkey behavior.
-- `SCRIBER_MIC_ALWAYS_ON`: enables idle mic prewarm when set to `1`.
-- `SCRIBER_MIC_PREBUFFER_MS`: rolling prebuffer duration, capped in config.
-- `SCRIBER_SONIOX_ASYNC_MODEL`: default `stt-async-v5` for Soniox Async
-  file/YouTube transcription.
-- `SCRIBER_SONIOX_RT_MODEL`: default `stt-rt-v4` for Soniox realtime live
-  transcription.
-- `SCRIBER_AZURE_MAI_MODEL`: default `mai-transcribe-1.5`.
-- `SCRIBER_CUSTOM_VOCAB`: custom vocabulary, sent as Azure MAI `phraseList`
-  for `mai-transcribe-1.5`.
-- `SCRIBER_MEDIA_TOOLS_DIR`: explicit ffmpeg/ffprobe directory override.
+## Test
 
-Runtime data in desktop mode is stored under `SCRIBER_DATA_DIR`, including
-settings, `.env`, transcripts, downloads, logs, and support bundles.
-
-## Tests
-
-Run from the repository root unless noted.
+Run from the repository root unless stated otherwise.
 
 ```powershell
 python -m pytest
@@ -202,7 +231,9 @@ Useful focused gates:
 
 ```powershell
 python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
-python scripts\smoke_media_preparation.py --media-tools-dir Frontend\src-tauri\target\release\backend\tools\ffmpeg
+```
+
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
   -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe `
   -VerifyFrontend `
@@ -211,50 +242,51 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_instal
   -VerifyUninstall
 ```
 
-## Documentation
-
-Active documentation is intentionally small:
-
-- `AGENTS.md`: editing guide for future agents.
-- `docs/ARCHITECTURE.md`: current runtime and code architecture.
-- `docs/PERFORMANCE_AND_PACKAGING.md`: implemented performance work,
-  packaging decisions, installer size, and remaining optimization ideas.
-- `docs/TESTING_AND_RELEASE.md`: tests, smokes, release flow, and CI gates.
-- `docs/ROADMAP_AND_KNOWN_ISSUES.md`: current open issues and prioritized
-  next work.
-
-Old implementation journals, partial plans, and superseded analysis files were
-removed during the 2026-06-09 documentation consolidation. Prefer the current
-code over historical notes when there is a conflict.
-
 ## Troubleshooting
 
 ### Backend Not Available
 
-Check the Tauri debug console first. In installed builds, backend and shell logs
-are under the runtime data directory in `logs\`. Use the in-app support bundle
-when reporting startup or backend issues.
+Open the installed desktop app rather than a raw browser tab. The desktop shell
+passes a private session token to the frontend. If the backend still does not
+come up, open the Console tab or create a support bundle.
 
-Useful checks:
+### Missing API Keys
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:8765/api/health
-```
+Open Settings and check the API Configuration section. Scriber warns when the
+selected provider does not have credentials yet and links to the relevant
+provider key page.
+
+### YouTube Or File Transcription Fails
+
+The Windows installer bundles ffmpeg and ffprobe. In development mode, make
+sure the bundled media tools were built or set `SCRIBER_MEDIA_TOOLS_DIR`,
+`SCRIBER_FFMPEG_PATH`, or `SCRIBER_FFPROBE_PATH`.
 
 ### Microphone Changes
 
-Device changes are backend-authoritative. The browser/WebView can send a
-best-effort hint, but PortAudio enumeration is guarded and refreshes are deferred
-while a recording stream is active.
-
-### Missing YouTube or File Media Support
-
-The installed Windows package should bundle Profile B ffmpeg/ffprobe. For dev
-mode, set `SCRIBER_MEDIA_TOOLS_DIR`, `SCRIBER_FFMPEG_PATH`, or make ffmpeg and
-ffprobe available on `PATH`.
+Scriber listens for native Windows device events and uses sparse polling as a
+fallback. If you dock, undock, or attach a USB microphone, the device list
+should refresh without constant aggressive polling.
 
 ### Slow Stop-To-Text
 
-For cloud STT providers, most stop-to-final-text latency can be provider
-finalization and network roundtrip. Use hot-path metrics before optimizing local
-code.
+For cloud STT providers, the final delay after stopping is often the provider
+finalization and network roundtrip. Use the debug console and hot-path metrics
+before assuming the local app is the bottleneck.
+
+## Documentation
+
+The active documentation set is intentionally small:
+
+- `AGENTS.md`: editing guide for future agents.
+- `docs/ARCHITECTURE.md`: current runtime architecture and ownership
+  boundaries.
+- `docs/PERFORMANCE_AND_PACKAGING.md`: implemented performance work,
+  packaging decisions, installer size, and remaining optimization ideas.
+- `docs/TESTING_AND_RELEASE.md`: test commands, smoke gates, installer builds,
+  signing, and updater status.
+- `docs/ROADMAP_AND_KNOWN_ISSUES.md`: current open issues and prioritized next
+  work.
+
+When code and prose disagree, trust the code and update the docs in the same
+change.
