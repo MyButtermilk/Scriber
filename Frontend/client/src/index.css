@@ -329,19 +329,20 @@ html:has(body[data-scroll-locked]) {
   justify-content: flex-end;
   background: hsl(var(--sidebar));
   color: hsl(var(--foreground));
-  border-bottom: 1px solid hsl(var(--border) / 0.32);
   user-select: none;
 }
 
 .desktop-titlebar__drag-region {
   min-width: 0;
   flex: 1 1 auto;
+  -webkit-app-region: drag;
 }
 
 .desktop-titlebar__controls {
   display: flex;
   align-items: stretch;
   flex: 0 0 auto;
+  -webkit-app-region: no-drag;
 }
 
 .desktop-titlebar__button {
@@ -355,6 +356,7 @@ html:has(body[data-scroll-locked]) {
   background: transparent;
   color: hsl(var(--foreground) / 0.86);
   outline: none;
+  -webkit-app-region: no-drag;
   transition: background-color 0.08s ease-out, color 0.08s ease-out;
 }
 

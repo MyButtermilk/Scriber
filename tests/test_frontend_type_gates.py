@@ -177,12 +177,17 @@ def test_desktop_chrome_is_dom_rendered_without_duplicate_branding() -> None:
     assert "DesktopTitleBar" in layout_source
     assert "data-tauri-drag-region" in titlebar_source
     assert "getCurrentWindow" in titlebar_source
+    assert "startDragging" in titlebar_source
+    assert "handleDragPointerDown" in titlebar_source
     assert "minimize" in titlebar_source
     assert "toggleMaximize" in titlebar_source
     assert "close" in titlebar_source
     assert "Scriber" not in titlebar_source
     assert ".desktop-titlebar" in css
     assert "background: hsl(var(--sidebar));" in css
+    assert "border-bottom: 1px solid hsl(var(--border) / 0.32);" not in css
+    assert "-webkit-app-region: drag;" in css
+    assert "-webkit-app-region: no-drag;" in css
 
 
 def test_theme_reveal_controls_desktop_chrome_and_card_repaints() -> None:

@@ -1,4 +1,5 @@
 import { Minus, Square, X } from "lucide-react";
+import type { MouseEvent } from "react";
 import { useCallback } from "react";
 import { isTauriRuntime } from "@/lib/backend";
 import { cn } from "@/lib/utils";
@@ -7,9 +8,10 @@ type TauriWindowControls = {
     minimize: () => Promise<void>;
     toggleMaximize: () => Promise<void>;
     close: () => Promise<void>;
+    startDragging: () => Promise<void>;
 };
 
-type WindowCommand = keyof TauriWindowControls;
+type WindowCommand = "minimize" | "toggleMaximize" | "close";
 
 async function runWindowCommand(command: WindowCommand) {
     if (!isTauriRuntime()) return;
@@ -19,6 +21,16 @@ async function runWindowCommand(command: WindowCommand) {
         await currentWindow[command]();
     } catch (error) {
         console.debug("Window chrome command failed.", error);
+    }
+}
+
+async function startWindowDrag() {
+    if (!isTauriRuntime()) return;
+    try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await (getCurrentWindow() as TauriWindowControls).startDragging();
+    } catch (error) {
+        console.debug("Window drag command failed.", error);
     }
 }
 
@@ -35,16 +47,26 @@ export function DesktopTitleBar() {
         void runWindowCommand("close");
     }, []);
 
+    const handleDragPointerDown = useCallback((event: MouseEvent<HTMLDivElement>) => {
+        if (event.button !== 0 || event.detail > 1) return;
+        void startWindowDrag();
+    }, []);
+
     if (!isTauriRuntime()) return null;
 
     return (
-        <div className="desktop-titlebar hidden md:flex" data-tauri-drag-region="true">
+        <div className="desktop-titlebar hidden md:flex">
             <div
                 className="desktop-titlebar__drag-region"
-                data-tauri-drag-region="true"
+                data-tauri-drag-region=""
                 onDoubleClick={handleMaximize}
+                onMouseDown={handleDragPointerDown}
             />
-            <div className="desktop-titlebar__controls" aria-label="Window controls">
+            <div
+                className="desktop-titlebar__controls"
+                aria-label="Window controls"
+                onMouseDown={(event) => event.stopPropagation()}
+            >
                 <button
                     type="button"
                     aria-label="Minimize window"
