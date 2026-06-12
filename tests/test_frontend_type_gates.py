@@ -60,6 +60,20 @@ def test_startup_screen_handles_managed_backend_starting_state() -> None:
     assert "Starting Scriber" in banner_source
 
 
+def test_frontend_uses_current_svg_logo_asset() -> None:
+    index_html = (REPO_ROOT / "Frontend" / "client" / "index.html").read_text(encoding="utf-8")
+    favicon_svg = (REPO_ROOT / "Frontend" / "client" / "public" / "favicon.svg").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'type="image/svg+xml"' in index_html
+    assert 'href="/favicon.svg"' in index_html
+    assert 'href="/favicon.png"' not in index_html
+    assert 'viewBox="5 99.4 118 76"' in favicon_svg
+    assert "#253037" in favicon_svg
+    assert "#CFAF6A" in favicon_svg
+
+
 def test_settings_microphones_use_shared_api_types() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
         encoding="utf-8"
@@ -165,6 +179,11 @@ def test_desktop_chrome_is_dom_rendered_without_duplicate_branding() -> None:
     tauri_config = json.loads(
         (REPO_ROOT / "Frontend" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
     )
+    tauri_capabilities = json.loads(
+        (REPO_ROOT / "Frontend" / "src-tauri" / "capabilities" / "default.json").read_text(
+            encoding="utf-8"
+        )
+    )
     layout_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx"
     ).read_text(encoding="utf-8")
@@ -174,6 +193,11 @@ def test_desktop_chrome_is_dom_rendered_without_duplicate_branding() -> None:
     css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
 
     assert tauri_config["app"]["windows"][0]["decorations"] is False
+    permissions = set(tauri_capabilities["permissions"])
+    assert "core:window:allow-close" in permissions
+    assert "core:window:allow-minimize" in permissions
+    assert "core:window:allow-start-dragging" in permissions
+    assert "core:window:allow-toggle-maximize" in permissions
     assert "DesktopTitleBar" in layout_source
     assert "data-tauri-drag-region" in titlebar_source
     assert "getCurrentWindow" in titlebar_source
