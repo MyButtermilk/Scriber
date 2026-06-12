@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
+import { isTauriRuntime } from "@/lib/backend";
 
 type Theme = "dark" | "light" | "system";
 
@@ -21,6 +22,16 @@ const initialState: ThemeProviderState = {
 };
 
 const ThemeProviderContext = createContext<ThemeProviderState>(initialState);
+
+async function applyDesktopWindowTheme(theme: "dark" | "light") {
+    if (!isTauriRuntime()) return;
+    try {
+        const { setTheme } = await import("@tauri-apps/api/app");
+        await setTheme(theme);
+    } catch {
+        // Best effort only. Browser/dev mode and older shells can ignore this.
+    }
+}
 
 export function ThemeProvider({
     children,
@@ -49,6 +60,7 @@ export function ThemeProvider({
 
         root.classList.add(effectiveTheme);
         setResolvedTheme(effectiveTheme);
+        void applyDesktopWindowTheme(effectiveTheme);
     }, [theme]);
 
     // Listen for system theme changes
@@ -62,6 +74,7 @@ export function ThemeProvider({
             const newTheme = e.matches ? "dark" : "light";
             root.classList.add(newTheme);
             setResolvedTheme(newTheme);
+            void applyDesktopWindowTheme(newTheme);
         };
 
         mediaQuery.addEventListener("change", handleChange);

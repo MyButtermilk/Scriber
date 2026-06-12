@@ -1,11 +1,11 @@
-import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronDown, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power, Key, Settings2, Star, Download, Trash2, Loader2, RefreshCw } from "lucide-react";
+import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronDown, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power, Key, Settings2, Star, Download, Trash2, Loader2, RefreshCw, ExternalLink, AlertTriangle } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -85,6 +85,55 @@ const SUMMARIZATION_MODEL_OPTIONS = [
   { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini" },
   { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano" },
 ] as const;
+
+const API_KEY_HELP_LINKS = {
+  openai: { href: "https://platform.openai.com/api-keys", label: "OpenAI keys" },
+  deepgram: { href: "https://console.deepgram.com/", label: "Deepgram console" },
+  assemblyai: { href: "https://www.assemblyai.com/dashboard", label: "AssemblyAI dashboard" },
+  gemini: { href: "https://aistudio.google.com/app/apikey", label: "Google AI Studio" },
+  youtube: { href: "https://console.cloud.google.com/apis/credentials", label: "Google Cloud credentials" },
+  soniox: { href: "https://console.soniox.com/", label: "Soniox console" },
+  smallest: { href: "https://app.smallest.ai/", label: "Smallest AI console" },
+  mistral: { href: "https://console.mistral.ai/api-keys", label: "Mistral API keys" },
+  fal: { href: "https://fal.ai/dashboard/keys", label: "fal.ai keys" },
+  azure: { href: "https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices", label: "Azure Speech resource" },
+  gladia: { href: "https://app.gladia.io/api-keys", label: "Gladia API keys" },
+  groq: { href: "https://console.groq.com/keys", label: "Groq API keys" },
+  speechmatics: { href: "https://portal.speechmatics.com/", label: "Speechmatics portal" },
+  googleCloud: { href: "https://console.cloud.google.com/apis/credentials", label: "Google Cloud credentials" },
+  aws: { href: "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html", label: "AWS access keys" },
+} as const;
+
+type ApiKeyHelpKey = keyof typeof API_KEY_HELP_LINKS;
+
+function ApiKeyLink({ helpKey, children = "Get key" }: { helpKey: ApiKeyHelpKey; children?: ReactNode }) {
+  const help = API_KEY_HELP_LINKS[helpKey];
+  return (
+    <a
+      href={help.href}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      title={help.label}
+    >
+      {children}
+      <ExternalLink className="h-3 w-3" aria-hidden="true" />
+    </a>
+  );
+}
+
+function ApiKeyLabel({ children, helpKey }: { children: ReactNode; helpKey: ApiKeyHelpKey }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <Label>{children}</Label>
+      <ApiKeyLink helpKey={helpKey} />
+    </div>
+  );
+}
+
+function hasValue(value: string | undefined): boolean {
+  return Boolean((value || "").trim());
+}
 
 function LanguageFlag({ value, className }: { value: string; className?: string }) {
   if (value === "auto") {
@@ -178,6 +227,8 @@ export default function Settings() {
   const [azureMaiModel, setAzureMaiModel] = useState("mai-transcribe-1.5");
   const [gladiaKey, setGladiaKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
+  const [speechmaticsKey, setSpeechmaticsKey] = useState("");
+  const [googleApplicationCredentials, setGoogleApplicationCredentials] = useState("");
   const [awsKey, setAwsKey] = useState("");
 
   const [customVocabulary, setCustomVocabulary] = useState("");
@@ -196,6 +247,7 @@ export default function Settings() {
   const [showAzureMaiKey, setShowAzureMaiKey] = useState(false);
   const [showGladiaKey, setShowGladiaKey] = useState(false);
   const [showGroqKey, setShowGroqKey] = useState(false);
+  const [showSpeechmaticsKey, setShowSpeechmaticsKey] = useState(false);
   const [showAwsKey, setShowAwsKey] = useState(false);
 
   const [hotkey, setHotkey] = useState("Ctrl + Shift + S");
@@ -237,6 +289,94 @@ export default function Settings() {
   const [nemoMessage, setNemoMessage] = useState("");
   const [nemoModels, setNemoModels] = useState<NemoModelInfo[]>([]);
   const [nemoModel, setNemoModel] = useState("");
+
+  const selectedModelLabel =
+    TRANSCRIPTION_MODEL_OPTIONS.find((option) => option.value === transcriptionModel)?.label ||
+    transcriptionModel;
+
+  const selectedCredentialRequirement = (() => {
+    switch (transcriptionModel) {
+      case "soniox-realtime":
+      case "soniox-async":
+        return hasValue(sonioxKey)
+          ? null
+          : { label: "Soniox API key", helpKey: "soniox" as const };
+      case "mistral-realtime":
+      case "mistral-async":
+        return hasValue(mistralKey)
+          ? null
+          : { label: "Mistral API key", helpKey: "mistral" as const };
+      case "smallest-realtime":
+      case "smallest-async":
+        return hasValue(smallestKey)
+          ? null
+          : { label: "Smallest AI API key", helpKey: "smallest" as const };
+      case "assemblyai":
+        return hasValue(assemblyAIKey)
+          ? null
+          : { label: "AssemblyAI API key", helpKey: "assemblyai" as const };
+      case "deepgram":
+        return hasValue(deepgramKey)
+          ? null
+          : { label: "Deepgram API key", helpKey: "deepgram" as const };
+      case "openai":
+        return hasValue(openAIKey)
+          ? null
+          : { label: "OpenAI API key", helpKey: "openai" as const };
+      case "azure":
+        return hasValue(azureKey) && hasValue(azureRegion)
+          ? null
+          : { label: "Azure Speech key and region", helpKey: "azure" as const };
+      case "azure_mai":
+        return hasValue(azureMaiKey) && hasValue(azureMaiRegion)
+          ? null
+          : { label: "Azure MAI Speech key and region", helpKey: "azure" as const };
+      case "gladia":
+        return hasValue(gladiaKey)
+          ? null
+          : { label: "Gladia API key", helpKey: "gladia" as const };
+      case "groq":
+        return hasValue(groqKey)
+          ? null
+          : { label: "Groq API key", helpKey: "groq" as const };
+      case "speechmatics":
+        return hasValue(speechmaticsKey)
+          ? null
+          : { label: "Speechmatics API key", helpKey: "speechmatics" as const };
+      case "elevenlabs":
+        return hasValue(elevenLabsKey)
+          ? null
+          : { label: "fal.ai API key for ElevenLabs", helpKey: "fal" as const };
+      case "google":
+        return hasValue(googleApplicationCredentials)
+          ? null
+          : { label: "Google Cloud credentials JSON path", helpKey: "googleCloud" as const };
+      case "aws":
+        return {
+          label: "AWS credentials from the standard AWS environment or credential store",
+          helpKey: "aws" as const,
+          externalOnly: true,
+        };
+      default:
+        return null;
+    }
+  })();
+
+  const hasAnyManagedCloudSttCredential = [
+    sonioxKey,
+    mistralKey,
+    smallestKey,
+    assemblyAIKey,
+    deepgramKey,
+    openAIKey,
+    azureKey,
+    azureMaiKey,
+    gladiaKey,
+    groqKey,
+    speechmaticsKey,
+    elevenLabsKey,
+    googleApplicationCredentials,
+  ].some(hasValue);
 
   const loadOnnxModels = useCallback(async () => {
     try {
@@ -353,6 +493,8 @@ export default function Settings() {
         setAzureMaiModel(keys.azureMaiModel || "mai-transcribe-1.5");
         setGladiaKey(keys.gladia || "");
         setGroqKey(keys.groq || "");
+        setSpeechmaticsKey(keys.speechmatics || "");
+        setGoogleApplicationCredentials(keys.googleApplicationCredentials || "");
 
         setInputDevices(mics.devices || []);
 
@@ -443,6 +585,8 @@ export default function Settings() {
       }
       if (provider === "Gladia") apiKeys.gladia = gladiaKey;
       if (provider === "Groq") apiKeys.groq = groqKey;
+      if (provider === "Speechmatics") apiKeys.speechmatics = speechmaticsKey;
+      if (provider === "Google Cloud") apiKeys.googleApplicationCredentials = googleApplicationCredentials;
 
       await updateSettings({ apiKeys });
 
@@ -2027,8 +2171,38 @@ export default function Settings() {
             </AccordionTrigger>
             <AccordionContent>
               <div className="px-6 pb-6 space-y-4">
+                {selectedCredentialRequirement && (
+                  <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 p-4 text-sm text-amber-900 dark:text-amber-100">
+                    <div className="flex gap-3">
+                      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
+                      <div className="space-y-1.5">
+                        <p className="font-semibold">
+                          {selectedModelLabel} needs credentials before transcription will work.
+                        </p>
+                        <p className="text-amber-900/80 dark:text-amber-100/80">
+                          {"externalOnly" in selectedCredentialRequirement
+                            ? `Configure ${selectedCredentialRequirement.label}, or choose a local model such as ONNX/NeMo if you want to run without a cloud key.`
+                            : `Add ${selectedCredentialRequirement.label} below, or choose a local model such as ONNX/NeMo if you want to run without a cloud key.`}
+                        </p>
+                        <ApiKeyLink helpKey={selectedCredentialRequirement.helpKey}>
+                          Open setup page
+                        </ApiKeyLink>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {!hasAnyManagedCloudSttCredential && (
+                  <div className="rounded-xl border border-border bg-muted/45 p-4 text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">No cloud STT credentials are saved yet.</p>
+                    <p className="mt-1">
+                      Live microphone, file, and YouTube transcription need a key for the selected cloud provider. YouTube search and metadata also need a YouTube Data API key.
+                    </p>
+                  </div>
+                )}
+
                 <div className="space-y-2">
-                  <Label>OpenAI API Key</Label>
+                  <ApiKeyLabel helpKey="openai">OpenAI API Key</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2058,7 +2232,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>Deepgram API Key</Label>
+                  <ApiKeyLabel helpKey="deepgram">Deepgram API Key</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2088,7 +2262,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>AssemblyAI API Key (Universal-3-Pro)</Label>
+                  <ApiKeyLabel helpKey="assemblyai">AssemblyAI API Key (Universal-3-Pro)</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2118,7 +2292,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>Gemini API Key</Label>
+                  <ApiKeyLabel helpKey="gemini">Gemini API Key</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2148,7 +2322,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>YouTube API Key</Label>
+                  <ApiKeyLabel helpKey="youtube">YouTube API Key</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2175,11 +2349,11 @@ export default function Settings() {
                       {savedKeys["YouTube"] ? "Saved" : "Save"}
                     </Button>
                   </div>
-                  <p className="text-xs text-muted-foreground">Used for the Youtube tab (search / metadata).</p>
+                  <p className="text-xs text-muted-foreground">Used for the Youtube tab (search / metadata). Enable the YouTube Data API v3 on the same Google Cloud project.</p>
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>Soniox API Key</Label>
+                  <ApiKeyLabel helpKey="soniox">Soniox API Key</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2209,7 +2383,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>Smallest AI API Key</Label>
+                  <ApiKeyLabel helpKey="smallest">Smallest AI API Key</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2239,7 +2413,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>Mistral API Key</Label>
+                  <ApiKeyLabel helpKey="mistral">Mistral API Key</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2269,7 +2443,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>ElevenLabs API Key (via Fal.ai)</Label>
+                  <ApiKeyLabel helpKey="fal">ElevenLabs API Key (via Fal.ai)</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2299,7 +2473,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>Azure Speech Key</Label>
+                  <ApiKeyLabel helpKey="azure">Azure Speech Key</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2340,7 +2514,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>Azure MAI Speech Key</Label>
+                  <ApiKeyLabel helpKey="azure">Azure MAI Speech Key</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2395,7 +2569,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>Gladia API Key</Label>
+                  <ApiKeyLabel helpKey="gladia">Gladia API Key</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2425,7 +2599,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>Groq API Key</Label>
+                  <ApiKeyLabel helpKey="groq">Groq API Key</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input
@@ -2455,7 +2629,58 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2 pt-2">
-                  <Label>AWS Access Key ID (Transcribe)</Label>
+                  <ApiKeyLabel helpKey="speechmatics">Speechmatics API Key</ApiKeyLabel>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Input
+                        type={showSpeechmaticsKey ? "text" : "password"}
+                        value={speechmaticsKey}
+                        onChange={(e) => setSpeechmaticsKey(e.target.value)}
+                        placeholder="Enter your Speechmatics key"
+                        className="font-mono text-sm pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowSpeechmaticsKey(!showSpeechmaticsKey)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      >
+                        {showSpeechmaticsKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <Button
+                      variant={savedKeys['Speechmatics'] ? "default" : "outline"}
+                      onClick={() => handleSaveApiKey('Speechmatics')}
+                      className={savedKeys['Speechmatics'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
+                    >
+                      {savedKeys['Speechmatics'] ? <Check className="w-4 h-4 mr-2" /> : null}
+                      {savedKeys['Speechmatics'] ? "Saved" : "Save"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2">
+                  <ApiKeyLabel helpKey="googleCloud">Google Cloud credentials JSON path</ApiKeyLabel>
+                  <div className="flex gap-2">
+                    <Input
+                      value={googleApplicationCredentials}
+                      onChange={(e) => setGoogleApplicationCredentials(e.target.value)}
+                      placeholder="C:\\path\\to\\service-account.json"
+                      className="font-mono text-sm"
+                    />
+                    <Button
+                      variant={savedKeys['Google Cloud'] ? "default" : "outline"}
+                      onClick={() => handleSaveApiKey('Google Cloud')}
+                      className={savedKeys['Google Cloud'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
+                    >
+                      {savedKeys['Google Cloud'] ? <Check className="w-4 h-4 mr-2" /> : null}
+                      {savedKeys['Google Cloud'] ? "Saved" : "Save"}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Used by Google Cloud STT via the GOOGLE_APPLICATION_CREDENTIALS path.</p>
+                </div>
+
+                <div className="space-y-2 pt-2">
+                  <ApiKeyLabel helpKey="aws">AWS Access Key ID (Transcribe)</ApiKeyLabel>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Input

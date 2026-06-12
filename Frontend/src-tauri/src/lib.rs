@@ -64,7 +64,7 @@ const TAURI_GLOBAL_HOTKEY_ENV: &str = "SCRIBER_TAURI_GLOBAL_HOTKEY";
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstance";
 const AUTOSTART_REGISTRY_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const AUTOSTART_REGISTRY_VALUE: &str = "Scriber";
-const AUTOSTART_DEFAULT_MARKER_FILE: &str = "desktop-autostart-default-applied";
+const AUTOSTART_USER_CHOICE_FILE: &str = "desktop-autostart-user-choice";
 const AUTOSTART_DEFAULT_ENV: &str = "SCRIBER_DESKTOP_AUTOSTART_DEFAULT";
 const HOTKEY_DISPATCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -566,8 +566,9 @@ fn get_desktop_autostart() -> DesktopAutostartStatus {
 }
 
 #[tauri::command]
-fn set_desktop_autostart(enabled: bool) -> Result<DesktopAutostartStatus, String> {
+fn set_desktop_autostart(app: AppHandle, enabled: bool) -> Result<DesktopAutostartStatus, String> {
     set_desktop_autostart_enabled(enabled)?;
+    persist_desktop_autostart_user_choice(&app, enabled);
     Ok(desktop_autostart_status())
 }
 
@@ -707,29 +708,27 @@ fn apply_default_desktop_autostart<R: Runtime>(app: &AppHandle<R>) {
         return;
     }
 
-    match default_autostart_marker_path(app) {
-        Some(marker_path) => {
-            if marker_path.exists() {
-                return;
-            }
-            match set_desktop_autostart_enabled(true) {
-                Ok(()) => {
-                    if let Some(parent) = marker_path.parent() {
-                        let _ = fs::create_dir_all(parent);
-                    }
-                    let _ = fs::write(&marker_path, b"applied\n");
-                    write_shell_log("desktop autostart enabled by first-run default");
-                }
-                Err(err) => {
-                    write_shell_log(&format!(
-                        "desktop autostart first-run default skipped: {err}"
-                    ));
-                }
-            }
+    match desktop_autostart_user_choice_path(app) {
+        Some(choice_path) if choice_path.exists() => {
+            write_shell_log("desktop autostart default skipped: user preference exists");
+            return;
         }
-        None => write_shell_log(
-            "desktop autostart first-run default skipped: app data directory unavailable",
-        ),
+        Some(_) => {}
+        None => {
+            write_shell_log("desktop autostart default skipped: app data directory unavailable");
+            return;
+        }
+    }
+
+    match set_desktop_autostart_enabled(true) {
+        Ok(()) => {
+            write_shell_log("desktop autostart enabled by install default");
+        }
+        Err(err) => {
+            write_shell_log(&format!(
+                "desktop autostart install default skipped: {err}"
+            ));
+        }
     }
 }
 
@@ -747,11 +746,30 @@ fn env_flag_enabled(value: &str) -> bool {
     )
 }
 
-fn default_autostart_marker_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+fn desktop_autostart_user_choice_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     app.path()
         .app_data_dir()
         .ok()
-        .map(|dir| dir.join(AUTOSTART_DEFAULT_MARKER_FILE))
+        .map(|dir| dir.join(AUTOSTART_USER_CHOICE_FILE))
+}
+
+fn persist_desktop_autostart_user_choice<R: Runtime>(app: &AppHandle<R>, enabled: bool) {
+    let Some(path) = desktop_autostart_user_choice_path(app) else {
+        write_shell_log("desktop autostart user preference not persisted: app data directory unavailable");
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            write_shell_log(&format!(
+                "desktop autostart user preference directory failed: {err}"
+            ));
+            return;
+        }
+    }
+    let value: &[u8] = if enabled { b"enabled\n" } else { b"disabled\n" };
+    if let Err(err) = fs::write(path, value) {
+        write_shell_log(&format!("desktop autostart user preference write failed: {err}"));
+    }
 }
 
 fn install_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
