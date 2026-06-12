@@ -4,7 +4,9 @@
   "description": "Default capabilities for the Scriber desktop window",
   "windows": ["main"],
   "permissions": [
+    "core:app:allow-set-app-theme",
     "core:app:allow-version",
+    "core:window:allow-set-theme",
     "process:allow-restart",
     "updater:allow-check",
     "updater:allow-download-and-install"

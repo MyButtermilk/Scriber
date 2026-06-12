@@ -25,11 +25,27 @@ const ThemeProviderContext = createContext<ThemeProviderState>(initialState);
 
 async function applyDesktopWindowTheme(theme: "dark" | "light") {
     if (!isTauriRuntime()) return;
+    const failures: unknown[] = [];
     try {
-        const { setTheme } = await import("@tauri-apps/api/app");
-        await setTheme(theme);
-    } catch {
-        // Best effort only. Browser/dev mode and older shells can ignore this.
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().setTheme(theme);
+    } catch (error) {
+        failures.push(error);
+    }
+    try {
+        const { setTheme: setAppTheme } = await import("@tauri-apps/api/app");
+        await setAppTheme(theme);
+    } catch (error) {
+        failures.push(error);
+    }
+    try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("set_desktop_window_chrome_theme", { theme });
+    } catch (error) {
+        failures.push(error);
+    }
+    if (failures.length === 3) {
+        console.debug("Desktop window theme update failed.", failures[0]);
     }
 }
 

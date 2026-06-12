@@ -23,6 +23,11 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 #[cfg(windows)]
+use windows::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
+    DWMWA_USE_IMMERSIVE_DARK_MODE,
+};
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, GlobalFree, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
     ERROR_SUCCESS, HANDLE,
@@ -123,6 +128,29 @@ pub struct DesktopHotkeyStatus {
     hotkey: String,
     mode: String,
     message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopWindowChromeTheme {
+    Light,
+    Dark,
+}
+
+impl DesktopWindowChromeTheme {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "light" => Ok(Self::Light),
+            "dark" => Ok(Self::Dark),
+            other => Err(format!("unsupported desktop window theme '{other}'")),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
 }
 
 struct BackendState {
@@ -582,6 +610,101 @@ fn refresh_global_hotkey(app: AppHandle) -> Result<DesktopHotkeyStatus, String> 
     refresh_global_hotkey_for_app(&app)
 }
 
+#[tauri::command]
+fn set_desktop_window_chrome_theme(app: AppHandle, theme: String) -> Result<(), String> {
+    let theme = DesktopWindowChromeTheme::parse(&theme)?;
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return Err("main window not found".to_string());
+    };
+    apply_desktop_window_chrome_theme(&window, theme)
+}
+
+fn apply_desktop_window_chrome_theme<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    theme: DesktopWindowChromeTheme,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        apply_windows_desktop_window_chrome_theme(window, theme)?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, theme);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn apply_windows_desktop_window_chrome_theme<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    theme: DesktopWindowChromeTheme,
+) -> Result<(), String> {
+    let hwnd = window
+        .hwnd()
+        .map_err(|err| format!("failed to get main window handle: {err}"))?;
+    let use_dark_mode: i32 = if theme == DesktopWindowChromeTheme::Dark {
+        1
+    } else {
+        0
+    };
+    let (caption_color, text_color, border_color) = desktop_window_chrome_colors(theme);
+
+    unsafe {
+        set_dwm_window_attribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &use_dark_mode)
+            .map_err(|err| format!("failed to set DWM dark mode: {err}"))?;
+        set_dwm_window_attribute(hwnd, DWMWA_CAPTION_COLOR, &caption_color)
+            .map_err(|err| format!("failed to set DWM caption color: {err}"))?;
+        set_dwm_window_attribute(hwnd, DWMWA_TEXT_COLOR, &text_color)
+            .map_err(|err| format!("failed to set DWM text color: {err}"))?;
+        set_dwm_window_attribute(hwnd, DWMWA_BORDER_COLOR, &border_color)
+            .map_err(|err| format!("failed to set DWM border color: {err}"))?;
+    }
+
+    write_shell_log(&format!(
+        "desktop window chrome theme applied: {}",
+        theme.as_str()
+    ));
+    Ok(())
+}
+
+#[cfg(windows)]
+unsafe fn set_dwm_window_attribute<T>(
+    hwnd: windows::Win32::Foundation::HWND,
+    attribute: windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE,
+    value: &T,
+) -> windows::core::Result<()> {
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            attribute,
+            value as *const T as *const core::ffi::c_void,
+            std::mem::size_of::<T>() as u32,
+        )
+    }
+}
+
+#[cfg(windows)]
+fn desktop_window_chrome_colors(theme: DesktopWindowChromeTheme) -> (u32, u32, u32) {
+    match theme {
+        // COLORREF is 0x00bbggrr, so keep the helper in RGB order.
+        DesktopWindowChromeTheme::Dark => (
+            rgb_to_colorref(31, 34, 40),
+            rgb_to_colorref(245, 247, 250),
+            rgb_to_colorref(31, 34, 40),
+        ),
+        DesktopWindowChromeTheme::Light => (
+            rgb_to_colorref(231, 235, 242),
+            rgb_to_colorref(9, 17, 32),
+            rgb_to_colorref(205, 213, 225),
+        ),
+    }
+}
+
+#[cfg(windows)]
+fn rgb_to_colorref(red: u8, green: u8, blue: u8) -> u32 {
+    u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16)
+}
+
 pub fn run() {
     let single_instance_guard = match acquire_single_instance_guard(SINGLE_INSTANCE_MUTEX_NAME) {
         Ok(guard) => guard,
@@ -672,7 +795,8 @@ pub fn run() {
             get_desktop_autostart,
             set_desktop_autostart,
             global_hotkey_status,
-            refresh_global_hotkey
+            refresh_global_hotkey,
+            set_desktop_window_chrome_theme
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Scriber desktop shell");
@@ -2398,6 +2522,25 @@ mod tests {
         assert!(!should_refresh_hotkey_after_backend_ready(false, false));
         assert!(!should_refresh_hotkey_after_backend_ready(true, true));
         assert!(should_refresh_hotkey_after_backend_ready(true, false));
+    }
+
+    #[test]
+    fn desktop_window_chrome_theme_parser_accepts_light_and_dark() {
+        assert_eq!(
+            super::DesktopWindowChromeTheme::parse("light").unwrap(),
+            super::DesktopWindowChromeTheme::Light
+        );
+        assert_eq!(
+            super::DesktopWindowChromeTheme::parse(" DARK ").unwrap(),
+            super::DesktopWindowChromeTheme::Dark
+        );
+        assert!(super::DesktopWindowChromeTheme::parse("sepia").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rgb_to_colorref_uses_windows_bgr_order() {
+        assert_eq!(super::rgb_to_colorref(0x11, 0x22, 0x33), 0x00332211);
     }
 
     #[test]
