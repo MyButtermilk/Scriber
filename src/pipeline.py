@@ -746,6 +746,7 @@ class ScriberPipeline:
         audio_input = self.audio_input
         if not audio_input:
             return
+        resume_prewarm = bool(Config.MIC_ALWAYS_ON and self.mic_prewarm_manager is not None)
         async with self._audio_cleanup_lock:
             audio_input = self.audio_input
             if not audio_input:
@@ -759,6 +760,11 @@ class ScriberPipeline:
                 logger.debug(f"Audio input cleanup warning: {exc}")
             finally:
                 self.audio_input = None
+        if resume_prewarm:
+            try:
+                await asyncio.to_thread(self.mic_prewarm_manager.resume_after_active_capture)
+            except Exception as exc:
+                logger.debug(f"Mic prewarm resume after audio cleanup warning: {exc}")
 
     def audio_diagnostics(self) -> dict[str, Any] | None:
         audio_input = self.audio_input
