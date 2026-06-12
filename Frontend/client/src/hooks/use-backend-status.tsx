@@ -14,6 +14,8 @@ interface BackendStatus {
     isOnline: boolean;
     isChecking: boolean;
     hasConnected: boolean;
+    backendStarting: boolean;
+    backendMessage: string | null;
     checkCount: number;
     lastChecked: Date | null;
     error: string | null;
@@ -36,10 +38,25 @@ const BackendStatusContext = createContext<BackendStatus | null>(null);
 const CHECK_INTERVAL_MS = 5000; // Check every 5 seconds when offline
 const ONLINE_CHECK_INTERVAL_MS = 30000; // Check every 30 seconds when online
 
+function isManagedBackendStarting(status: TauriBackendStatus): boolean {
+    if (!status.managed || !status.running || status.ready) {
+        return false;
+    }
+
+    const message = status.message.toLowerCase();
+    return (
+        message.includes("starting") ||
+        message.includes("process started") ||
+        message.includes("restarting")
+    );
+}
+
 export function BackendStatusProvider({ children }: { children: ReactNode }) {
     const [isOnline, setIsOnline] = useState(true); // Assume online initially
     const [isChecking, setIsChecking] = useState(false);
     const [hasConnected, setHasConnected] = useState(false);
+    const [backendStarting, setBackendStarting] = useState(false);
+    const [backendMessage, setBackendMessage] = useState<string | null>(null);
     const [checkCount, setCheckCount] = useState(0);
     const [lastChecked, setLastChecked] = useState<Date | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -55,13 +72,16 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
                     if (status.baseUrl) {
                         setBackendBaseUrl(status.baseUrl);
                     }
+                    setBackendMessage(status.message || null);
                     if (!status.ready) {
+                        setBackendStarting(isManagedBackendStarting(status));
                         setIsOnline(false);
                         setError(status.message || (status.running ? "Backend is starting" : "Backend is not running"));
                         setLastChecked(new Date());
                         return false;
                     }
 
+                    setBackendStarting(false);
                     setIsOnline(true);
                     setHasConnected(true);
                     setError(null);
@@ -85,6 +105,8 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
 
             const health = res.ok ? ((await res.json()) as BackendHealthResponse) : null;
             const online = health?.apiVersion === REST_API_VERSION && health.ok === true && health.ready === true;
+            setBackendStarting(false);
+            setBackendMessage(null);
             if (online) {
                 if (!isTauriRuntime() && !backendSessionToken) {
                     const authController = new AbortController();
@@ -122,6 +144,8 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
             setLastChecked(new Date());
             return online;
         } catch (err) {
+            setBackendStarting(false);
+            setBackendMessage(null);
             setIsOnline(false);
             if (err instanceof Error) {
                 if (err.name === "AbortError") {
@@ -173,6 +197,8 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
                 isOnline,
                 isChecking,
                 hasConnected,
+                backendStarting,
+                backendMessage,
                 checkCount,
                 lastChecked,
                 error,

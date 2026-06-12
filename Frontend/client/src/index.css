@@ -194,6 +194,16 @@ html {
   contain: strict;
 }
 
+html[data-theme-reveal-active="true"] *,
+html[data-theme-reveal-active="true"] *::before,
+html[data-theme-reveal-active="true"] *::after {
+  transition-property: opacity, transform, filter !important;
+}
+
+html[data-theme-reveal-active="true"] .theme-reveal-overlay {
+  transition-property: clip-path !important;
+}
+
 html:has(body[data-scroll-locked]) {
   overflow-y: scroll;
 }
@@ -309,6 +319,59 @@ html:has(body[data-scroll-locked]) {
   .transcript-content {
     @apply text-lg leading-relaxed text-foreground/90;
   }
+}
+
+.desktop-titlebar {
+  height: 34px;
+  min-height: 34px;
+  width: 100%;
+  align-items: stretch;
+  justify-content: flex-end;
+  background: hsl(var(--sidebar));
+  color: hsl(var(--foreground));
+  border-bottom: 1px solid hsl(var(--border) / 0.32);
+  user-select: none;
+}
+
+.desktop-titlebar__drag-region {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.desktop-titlebar__controls {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+.desktop-titlebar__button {
+  width: 46px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.86);
+  outline: none;
+  transition: background-color 0.08s ease-out, color 0.08s ease-out;
+}
+
+.desktop-titlebar__button:hover,
+.desktop-titlebar__button:focus-visible {
+  background: hsl(var(--accent) / 0.82);
+  color: hsl(var(--foreground));
+}
+
+.desktop-titlebar__button:focus-visible {
+  box-shadow: inset 0 0 0 1px hsl(var(--ring) / 0.65);
+}
+
+.desktop-titlebar__button--close:hover,
+.desktop-titlebar__button--close:focus-visible {
+  background: hsl(0 72% 50%);
+  color: #ffffff;
 }
 
 /* ============================================

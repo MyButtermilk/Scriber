@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -34,6 +35,29 @@ def test_tauri_backend_status_trusts_supervisor_readiness() -> None:
     assert "Tauri backend supervisor check failed; falling back to HTTP health probe." in source
     assert "void reportFrontendReady().catch" in source
     assert "return true;" in source[source.index('invoke<TauriBackendStatus>("ensure_backend_running")'):]
+
+
+def test_startup_screen_handles_managed_backend_starting_state() -> None:
+    hook_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-backend-status.tsx"
+    ).read_text(encoding="utf-8")
+    banner_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "BackendOfflineBanner.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "backendStarting: boolean;" in hook_source
+    assert "backendMessage: string | null;" in hook_source
+    assert "function isManagedBackendStarting" in hook_source
+    assert "!status.managed || !status.running || status.ready" in hook_source
+    assert "message.includes(\"starting\")" in hook_source
+    assert "message.includes(\"process started\")" in hook_source
+    assert "setBackendStarting(isManagedBackendStarting(status));" in hook_source
+
+    assert "\"Managed backend is starting\"" in banner_source
+    assert "backendStarting || (!startupGraceElapsed && isStartupRecoverable)" in banner_source
+    assert "checkCount < 3" not in banner_source
+    assert "Backend Not Available" in banner_source
+    assert "Starting Scriber" in banner_source
 
 
 def test_settings_microphones_use_shared_api_types() -> None:
@@ -135,6 +159,48 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "grid-template-columns: repeat(5, minmax(2.25rem, 1fr))" in css
     assert ".settings-page .mic-device-dropdown-header" in css
     assert "@media (max-width: 720px)" in css
+
+
+def test_desktop_chrome_is_dom_rendered_without_duplicate_branding() -> None:
+    tauri_config = json.loads(
+        (REPO_ROOT / "Frontend" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+    )
+    layout_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx"
+    ).read_text(encoding="utf-8")
+    titlebar_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "DesktopTitleBar.tsx"
+    ).read_text(encoding="utf-8")
+    css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
+
+    assert tauri_config["app"]["windows"][0]["decorations"] is False
+    assert "DesktopTitleBar" in layout_source
+    assert "data-tauri-drag-region" in titlebar_source
+    assert "getCurrentWindow" in titlebar_source
+    assert "minimize" in titlebar_source
+    assert "toggleMaximize" in titlebar_source
+    assert "close" in titlebar_source
+    assert "Scriber" not in titlebar_source
+    assert ".desktop-titlebar" in css
+    assert "background: hsl(var(--sidebar));" in css
+
+
+def test_theme_reveal_controls_desktop_chrome_and_card_repaints() -> None:
+    provider_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "theme-provider.tsx"
+    ).read_text(encoding="utf-8")
+    css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
+
+    assert 'THEME_REVEAL_ACTIVE_DATASET_KEY = "themeRevealActive"' in provider_source
+    assert "deferredDesktopThemeRef" in provider_source
+    assert "setThemeRevealActive(true)" in provider_source
+    assert "setThemeRevealActive(false)" in provider_source
+    assert "void transition.finished.then(finishReveal, finishReveal)" in provider_source
+    assert "window.setTimeout(finishReveal, THEME_TRANSITION_DURATION_MS + 140)" in provider_source
+    assert "void fallbackCircularThemeReveal(transitionOrigin, nextResolvedTheme, commitTheme)" in provider_source
+    assert 'html[data-theme-reveal-active="true"] *' in css
+    assert "transition-property: opacity, transform, filter !important;" in css
+    assert 'html[data-theme-reveal-active="true"] .theme-reveal-overlay' in css
 
 
 def test_transcript_detail_uses_typed_rest_queries() -> None:

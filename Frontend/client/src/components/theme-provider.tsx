@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { isTauriRuntime } from "@/lib/backend";
 
 type Theme = "dark" | "light" | "system";
@@ -32,6 +32,7 @@ const initialState: ThemeProviderState = {
 const ThemeProviderContext = createContext<ThemeProviderState>(initialState);
 const THEME_TRANSITION_DURATION_MS = 760;
 const THEME_REVEAL_OVERLAY_CLASS = "theme-reveal-overlay";
+const THEME_REVEAL_ACTIVE_DATASET_KEY = "themeRevealActive";
 
 type ViewTransition = {
     ready: Promise<void>;
@@ -56,6 +57,15 @@ function applyThemeClass(theme: ResolvedTheme) {
     root.style.colorScheme = theme;
 }
 
+function setThemeRevealActive(active: boolean) {
+    const root = window.document.documentElement;
+    if (active) {
+        root.dataset[THEME_REVEAL_ACTIVE_DATASET_KEY] = "true";
+        return;
+    }
+    delete root.dataset[THEME_REVEAL_ACTIVE_DATASET_KEY];
+}
+
 function circularThemeReveal(origin: { x: number; y: number }, transition: ViewTransition) {
     const endRadius = Math.hypot(
         Math.max(origin.x, window.innerWidth - origin.x),
@@ -75,6 +85,8 @@ function circularThemeReveal(origin: { x: number; y: number }, transition: ViewT
                 pseudoElement: "::view-transition-new(root)",
             },
         );
+    }).catch(() => {
+        // A skipped transition is acceptable; the theme class has already been committed.
     });
 }
 
@@ -114,7 +126,7 @@ function fallbackCircularThemeReveal(
     origin: { x: number; y: number },
     nextTheme: ResolvedTheme,
     commitTheme: () => void,
-) {
+): Promise<void> {
     window.document
         .querySelectorAll(`.${THEME_REVEAL_OVERLAY_CLASS}`)
         .forEach((overlay) => overlay.remove());
@@ -129,22 +141,26 @@ function fallbackCircularThemeReveal(
     overlay.style.clipPath = `circle(0px at ${origin.x}px ${origin.y}px)`;
     overlay.style.transition = `clip-path ${THEME_TRANSITION_DURATION_MS}ms cubic-bezier(0.16, 1, 0.3, 1)`;
     window.document.body.appendChild(overlay);
-    let committed = false;
-    const commitOnce = () => {
-        if (committed) return;
-        committed = true;
-        commitTheme();
-    };
 
-    window.requestAnimationFrame(() => {
-        overlay.style.clipPath = `circle(${endRadius}px at ${origin.x}px ${origin.y}px)`;
+    return new Promise((resolve) => {
+        let committed = false;
+        const commitOnce = () => {
+            if (committed) return;
+            committed = true;
+            commitTheme();
+        };
+
+        window.requestAnimationFrame(() => {
+            overlay.style.clipPath = `circle(${endRadius}px at ${origin.x}px ${origin.y}px)`;
+        });
+        const commitTimeout = window.setTimeout(commitOnce, Math.round(THEME_TRANSITION_DURATION_MS * 0.62));
+        window.setTimeout(() => {
+            window.clearTimeout(commitTimeout);
+            commitOnce();
+            overlay.remove();
+            resolve();
+        }, THEME_TRANSITION_DURATION_MS + 80);
     });
-    const commitTimeout = window.setTimeout(commitOnce, Math.round(THEME_TRANSITION_DURATION_MS * 0.62));
-    window.setTimeout(() => {
-        window.clearTimeout(commitTimeout);
-        commitOnce();
-        overlay.remove();
-    }, THEME_TRANSITION_DURATION_MS + 80);
 }
 
 async function applyDesktopWindowTheme(theme: ResolvedTheme) {
@@ -183,11 +199,16 @@ export function ThemeProvider({
         () => (localStorage.getItem(storageKey) as Theme) || defaultTheme
     );
     const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
+    const deferredDesktopThemeRef = useRef<ResolvedTheme | null>(null);
+    const revealGenerationRef = useRef(0);
 
     useEffect(() => {
         const effectiveTheme = resolveEffectiveTheme(theme);
         applyThemeClass(effectiveTheme);
         setResolvedTheme(effectiveTheme);
+        if (deferredDesktopThemeRef.current === effectiveTheme) {
+            return;
+        }
         void applyDesktopWindowTheme(effectiveTheme);
     }, [theme]);
 
@@ -227,18 +248,37 @@ export function ThemeProvider({
             setTheme(nextTheme);
         };
 
+        const beginReveal = () => {
+            const revealGeneration = revealGenerationRef.current + 1;
+            revealGenerationRef.current = revealGeneration;
+            deferredDesktopThemeRef.current = nextResolvedTheme;
+            setThemeRevealActive(true);
+
+            return () => {
+                if (revealGenerationRef.current !== revealGeneration) return;
+                setThemeRevealActive(false);
+                if (deferredDesktopThemeRef.current === nextResolvedTheme) {
+                    deferredDesktopThemeRef.current = null;
+                }
+                void applyDesktopWindowTheme(nextResolvedTheme);
+            };
+        };
+
         if (!startViewTransition) {
-            fallbackCircularThemeReveal(transitionOrigin, nextResolvedTheme, commitTheme);
-            void applyDesktopWindowTheme(nextResolvedTheme);
+            const finishReveal = beginReveal();
+            void fallbackCircularThemeReveal(transitionOrigin, nextResolvedTheme, commitTheme)
+                .finally(finishReveal);
             return;
         }
 
+        const finishReveal = beginReveal();
         const transition = startViewTransition(() => {
             commitTheme();
         });
 
         circularThemeReveal(transitionOrigin, transition);
-        void applyDesktopWindowTheme(nextResolvedTheme);
+        void transition.finished.then(finishReveal, finishReveal);
+        window.setTimeout(finishReveal, THEME_TRANSITION_DURATION_MS + 140);
     }, [storageKey]);
 
     const value = useMemo(() => ({

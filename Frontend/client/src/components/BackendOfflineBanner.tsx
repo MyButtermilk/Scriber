@@ -6,13 +6,23 @@ import { Button } from "@/components/ui/button";
 const STARTUP_GRACE_MS = 9000;
 const STARTUP_RECOVERABLE_ERRORS = new Set([
     "Backend is starting",
+    "Managed backend process started",
+    "Managed backend is starting",
     "Backend is not running",
     "Connection timed out",
     "Connection failed",
 ]);
 
 export function BackendOfflineBanner() {
-    const { isOnline, isChecking, hasConnected, checkCount, error, checkNow } = useBackendStatus();
+    const {
+        isOnline,
+        isChecking,
+        hasConnected,
+        backendStarting,
+        backendMessage,
+        error,
+        checkNow,
+    } = useBackendStatus();
     const [startupGraceElapsed, setStartupGraceElapsed] = useState(false);
 
     useEffect(() => {
@@ -34,7 +44,10 @@ export function BackendOfflineBanner() {
     }
 
     const isStartupRecoverable = !error || STARTUP_RECOVERABLE_ERRORS.has(error);
-    const showStartup = !hasConnected && !startupGraceElapsed && checkCount < 3 && isStartupRecoverable;
+    const showStartup = !hasConnected && (backendStarting || (!startupGraceElapsed && isStartupRecoverable));
+    const startupDetail = backendStarting
+        ? (backendMessage || "Managed backend is starting")
+        : "Connecting to the local API";
 
     if (showStartup) {
         return (
@@ -64,7 +77,7 @@ export function BackendOfflineBanner() {
                             </div>
                             <div className="mt-4 flex items-center justify-center gap-2 text-xs font-medium text-muted-foreground">
                                 <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                                Connecting to the local API
+                                {startupDetail}
                             </div>
                         </div>
                     </div>
