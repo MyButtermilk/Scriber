@@ -29,7 +29,13 @@ def test_tauri_default_capability_is_minimal() -> None:
 
     assert capability["windows"] == ["main"]
     assert capability["permissions"] == [
+        "core:app:allow-set-app-theme",
         "core:app:allow-version",
+        "core:window:allow-close",
+        "core:window:allow-minimize",
+        "core:window:allow-set-theme",
+        "core:window:allow-start-dragging",
+        "core:window:allow-toggle-maximize",
         "process:allow-restart",
         "updater:allow-check",
         "updater:allow-download-and-install",
