@@ -29,6 +29,7 @@ _last_fallback_reason: str | None = None
 _last_success: bool | None = None
 _last_command_at: float | None = None
 _last_response_summary: dict[str, Any] | None = None
+_transport_lock = threading.Lock()
 
 
 def available() -> bool:
@@ -366,14 +367,22 @@ def _call_shell_ipc_windows(pipe_name: str, request_line: str, timeout_seconds: 
 
     def worker() -> None:
         try:
-            result_queue.put((True, _send_request_over_pipe(pipe_name, request_line)), block=False)
+            deadline = time.monotonic() + max(0.05, timeout_seconds)
+            if not _transport_lock.acquire(timeout=max(0.01, timeout_seconds)):
+                raise TimeoutError("shell IPC transport busy")
+            try:
+                remaining = max(0.05, deadline - time.monotonic())
+                response = _send_request_over_pipe(pipe_name, request_line, remaining)
+            finally:
+                _transport_lock.release()
+            result_queue.put((True, response), block=False)
         except Exception as exc:
             result_queue.put((False, f"{type(exc).__name__}: {exc}"), block=False)
 
     thread = threading.Thread(target=worker, name="scriber-shell-ipc", daemon=True)
     thread.start()
     try:
-        ok, result = result_queue.get(timeout=timeout_seconds)
+        ok, result = result_queue.get(timeout=timeout_seconds + 0.05)
     except queue.Empty as exc:
         raise TimeoutError(f"shell IPC timed out after {timeout_seconds:.3f}s") from exc
     if not ok:
@@ -381,7 +390,17 @@ def _call_shell_ipc_windows(pipe_name: str, request_line: str, timeout_seconds: 
     return result
 
 
-def _send_request_over_pipe(pipe_name: str, request_line: str) -> str:
+def _send_request_over_pipe(
+    pipe_name: str,
+    request_line: str,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> str:
+    if os.name == "nt":
+        return _send_request_over_pipe_windows(pipe_name, request_line, timeout_seconds)
+    return _send_request_over_pipe_file(pipe_name, request_line)
+
+
+def _send_request_over_pipe_file(pipe_name: str, request_line: str) -> str:
     with open(pipe_name, "r+b", buffering=0) as pipe:
         pipe.write(request_line.encode("utf-8"))
         chunks: list[bytes] = []
@@ -393,6 +412,89 @@ def _send_request_over_pipe(pipe_name: str, request_line: str) -> str:
                 break
             chunks.append(chunk)
         return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _send_request_over_pipe_windows(
+    pipe_name: str,
+    request_line: str,
+    timeout_seconds: float,
+) -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    generic_read = 0x80000000
+    generic_write = 0x40000000
+    open_existing = 3
+    file_attribute_normal = 0x80
+    invalid_handle_value = ctypes.c_void_p(-1).value
+    error_more_data = 234
+    error_broken_pipe = 109
+    buffer_size = 4096
+    timeout_ms = max(1, int(max(0.05, timeout_seconds) * 1000))
+
+    kernel32.WaitNamedPipeW.restype = wintypes.BOOL
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.WriteFile.restype = wintypes.BOOL
+    kernel32.ReadFile.restype = wintypes.BOOL
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    if not kernel32.WaitNamedPipeW(wintypes.LPCWSTR(pipe_name), wintypes.DWORD(timeout_ms)):
+        raise OSError(ctypes.get_last_error(), "WaitNamedPipeW failed")
+
+    handle = kernel32.CreateFileW(
+        wintypes.LPCWSTR(pipe_name),
+        wintypes.DWORD(generic_read | generic_write),
+        wintypes.DWORD(0),
+        None,
+        wintypes.DWORD(open_existing),
+        wintypes.DWORD(file_attribute_normal),
+        None,
+    )
+    if handle == invalid_handle_value:
+        raise OSError(ctypes.get_last_error(), "CreateFileW failed")
+
+    try:
+        request_bytes = request_line.encode("utf-8")
+        written = wintypes.DWORD(0)
+        ok = kernel32.WriteFile(
+            wintypes.HANDLE(handle),
+            ctypes.c_char_p(request_bytes),
+            wintypes.DWORD(len(request_bytes)),
+            ctypes.byref(written),
+            None,
+        )
+        if not ok or int(written.value) != len(request_bytes):
+            raise OSError(ctypes.get_last_error(), "WriteFile failed")
+
+        chunks: list[bytes] = []
+        while True:
+            buffer = ctypes.create_string_buffer(buffer_size)
+            bytes_read = wintypes.DWORD(0)
+            ok = kernel32.ReadFile(
+                wintypes.HANDLE(handle),
+                buffer,
+                wintypes.DWORD(buffer_size),
+                ctypes.byref(bytes_read),
+                None,
+            )
+            error = 0 if ok else ctypes.get_last_error()
+            if ok or error == error_more_data:
+                if bytes_read.value:
+                    chunks.append(buffer.raw[: bytes_read.value])
+                    combined = b"".join(chunks)
+                    newline_at = combined.find(b"\n")
+                    if newline_at >= 0:
+                        return combined[:newline_at].decode("utf-8", errors="replace")
+                if ok:
+                    break
+                continue
+            if error == error_broken_pipe:
+                break
+            raise OSError(error, "ReadFile failed")
+        return b"".join(chunks).decode("utf-8", errors="replace")
+    finally:
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
 
 
 def _reset_diagnostics_for_tests() -> None:

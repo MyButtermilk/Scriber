@@ -72,6 +72,8 @@ const AUTOSTART_REGISTRY_VALUE: &str = "Scriber";
 const AUTOSTART_USER_CHOICE_FILE: &str = "desktop-autostart-user-choice";
 const AUTOSTART_DEFAULT_ENV: &str = "SCRIBER_DESKTOP_AUTOSTART_DEFAULT";
 const HOTKEY_DISPATCH_DEBOUNCE: Duration = Duration::from_millis(250);
+const NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS: u64 = 1000;
+const NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL: Duration = Duration::from_secs(900);
 const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_ID: &str = "scriber-tray";
 const MENU_ITEM_SHOW_WINDOW: &str = "scriber-show-window";
@@ -320,6 +322,18 @@ impl DesktopHotkeyState {
         }
     }
 
+    fn is_registered_config(&self, hotkey: &str, mode: &str) -> bool {
+        self.inner
+            .lock()
+            .map(|state| {
+                state.available
+                    && !state.capture_suspended
+                    && state.registered_hotkey.as_deref() == Some(hotkey)
+                    && state.mode == mode
+            })
+            .unwrap_or(false)
+    }
+
     fn set_unregistered(&self, mode: String, available: bool, message: String) {
         if let Ok(mut state) = self.inner.lock() {
             state.registered_hotkey = None;
@@ -378,6 +392,36 @@ impl DesktopHotkeyState {
                 }
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct NativeDeviceObserveOnlyLogState {
+    observed_count: u64,
+    last_logged_at: Option<Instant>,
+}
+
+impl NativeDeviceObserveOnlyLogState {
+    fn maybe_summary(
+        &mut self,
+        event: &audio_devices::NativeDeviceEvent,
+        now: Instant,
+    ) -> Option<String> {
+        self.observed_count = self.observed_count.saturating_add(1);
+        let count_due = self.observed_count == 1
+            || self.observed_count % NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS == 0;
+        let time_due = self
+            .last_logged_at
+            .map(|last| now.duration_since(last) >= NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL)
+            .unwrap_or(true);
+        if !count_due && !time_due {
+            return None;
+        }
+        self.last_logged_at = Some(now);
+        Some(format!(
+            "native device events observed summary mode=observe-only count={} last_kind={} flow={} role={} endpoint_hash={}",
+            self.observed_count, event.event_kind, event.flow, event.role, event.endpoint_id_hash
+        ))
     }
 }
 
@@ -1744,6 +1788,10 @@ fn refresh_global_hotkey_for_app(app: &AppHandle) -> Result<DesktopHotkeyStatus,
         return Ok(hotkey_state.status());
     }
 
+    if hotkey_state.is_registered_config(&config.hotkey, &config.mode) {
+        return Ok(hotkey_state.status());
+    }
+
     app.global_shortcut()
         .unregister_all()
         .map_err(|err| format!("Could not clear previous global shortcuts: {err}"))?;
@@ -1836,12 +1884,12 @@ fn start_native_device_event_monitor_for_app(
     let mode = audio_devices::native_device_events_mode_from_env(raw_mode.as_deref());
     let post_hints = mode == audio_devices::NativeDeviceEventsMode::Enabled;
     let app_for_event = app.clone();
+    let mut observe_only_log_state = NativeDeviceObserveOnlyLogState::default();
     let on_event = move |event: audio_devices::NativeDeviceEvent| {
         if !post_hints {
-            write_shell_log(&format!(
-                "native device event observed kind={} flow={} role={} endpoint_hash={} (observe-only)",
-                event.event_kind, event.flow, event.role, event.endpoint_id_hash
-            ));
+            if let Some(message) = observe_only_log_state.maybe_summary(&event, Instant::now()) {
+                write_shell_log(&message);
+            }
             return;
         }
 
@@ -2517,11 +2565,12 @@ mod tests {
         normalize_hotkey_mode, parse_loopback_backend_url, recent_transcript_label,
         resolve_session_token, sanitize_menu_label, shell_ipc, shell_ipc_env_pairs,
         should_refresh_hotkey_after_backend_ready, should_show_window_for_tray_click,
-        split_http_response, DesktopHotkeyState, RecentTranscriptMenuEntry, AUTOSTART_DEFAULT_ENV,
-        BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, HOTKEY_DISPATCH_DEBOUNCE,
-        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
-        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW, SESSION_TOKEN_ENV,
-        SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
+        split_http_response, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
+        RecentTranscriptMenuEntry, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
+        BACKEND_START_TIMEOUT_ENV, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX,
+        MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
+        SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
     };
     use std::{
         fs,
@@ -2859,6 +2908,24 @@ mod tests {
     }
 
     #[test]
+    fn desktop_hotkey_state_detects_already_registered_config() {
+        let state = DesktopHotkeyState::new();
+        assert!(!state.is_registered_config("ctrl+alt+s", "toggle"));
+
+        state.set_registered(
+            "ctrl+alt+s".to_string(),
+            "toggle".to_string(),
+            "registered".to_string(),
+        );
+        assert!(state.is_registered_config("ctrl+alt+s", "toggle"));
+        assert!(!state.is_registered_config("ctrl+shift+s", "toggle"));
+        assert!(!state.is_registered_config("ctrl+alt+s", "push_to_talk"));
+
+        state.set_capture_suspended(true, "suspended".to_string());
+        assert!(!state.is_registered_config("ctrl+alt+s", "toggle"));
+    }
+
+    #[test]
     fn desktop_hotkey_push_to_talk_maps_press_and_release_to_backend_endpoints() {
         let state = DesktopHotkeyState::new();
         state.set_registered(
@@ -2876,6 +2943,54 @@ mod tests {
             state.action_for_event(ShortcutState::Released, now + Duration::from_millis(25)),
             Some("/api/live-mic/stop")
         );
+    }
+
+    #[test]
+    fn native_device_observe_only_log_state_summarizes_noisy_events() {
+        let mut state = NativeDeviceObserveOnlyLogState::default();
+        let event = super::audio_devices::NativeDeviceEvent::new(
+            "property_value_changed",
+            "capture",
+            "unknown",
+            "hash",
+        );
+        let start = Instant::now();
+
+        let first = state.maybe_summary(&event, start).unwrap();
+        assert!(first.contains("count=1"));
+        assert!(first.contains("last_kind=property_value_changed"));
+
+        assert!(state
+            .maybe_summary(
+                &event,
+                start + NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL - Duration::from_millis(1)
+            )
+            .is_none());
+        let by_interval = state
+            .maybe_summary(
+                &event,
+                start + NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL + Duration::from_millis(1),
+            )
+            .unwrap();
+        assert!(by_interval.contains("count=3"));
+
+        for i in 4..NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS {
+            assert!(state
+                .maybe_summary(
+                    &event,
+                    start + NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL + Duration::from_millis(i),
+                )
+                .is_none());
+        }
+        let by_count = state
+            .maybe_summary(
+                &event,
+                start
+                    + NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL
+                    + Duration::from_millis(NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS),
+            )
+            .unwrap();
+        assert!(by_count.contains("count=1000"));
     }
 
     #[test]

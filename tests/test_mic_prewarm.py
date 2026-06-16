@@ -413,6 +413,59 @@ def test_rust_audio_prewarm_watchdog_queries_sidecar_status(monkeypatch):
     assert "prewarm-status-ok" not in str(snapshot)
 
 
+def test_rust_audio_prewarm_watchdog_keeps_session_on_transport_error(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
+    monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
+    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": "prewarm-transport"}}
+        if command == "audioPrewarmStatus":
+            return {
+                "success": False,
+                "errorCode": "transportError",
+                "fallbackReason": "RuntimeError: OSError: [Errno 22] Invalid argument",
+                "payload": {},
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+
+    assert manager.start_if_enabled() is True
+    assert manager.ensure_healthy(reason="test-watchdog") is True
+
+    assert [command for command, _payload in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStatus",
+    ]
+    assert manager.is_active is True
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["healthRestartCount"] == 0
+    assert snapshot["streamStartCount"] == 1
+    assert snapshot["lastHealthCheckActive"] is True
+    assert "Invalid argument" in snapshot["lastHealthError"]
+    assert any(
+        event["event"] == "health_status_unknown"
+        and event["errorCode"] == "transportError"
+        for event in snapshot["recentEvents"]
+    )
+    assert "prewarm-transport" not in str(snapshot)
+
+
 def test_rust_audio_prewarm_watchdog_restarts_missing_sidecar_session(monkeypatch):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
     monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)

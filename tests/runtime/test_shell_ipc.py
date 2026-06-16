@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 from src.runtime import shell_ipc
 
@@ -248,3 +250,41 @@ def test_shell_ipc_call_rejects_api_version_mismatch(monkeypatch):
     assert response["success"] is False
     assert response["errorCode"] == "transportError"
     assert "apiVersion mismatch" in response["fallbackReason"]
+
+
+def test_shell_ipc_windows_transport_serializes_requests(monkeypatch):
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+    results: list[str] = []
+    errors: list[BaseException] = []
+
+    def fake_send(pipe_name: str, request_line: str, timeout_seconds: float) -> str:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+            return json.dumps({"pipeName": pipe_name, "requestLine": request_line})
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(shell_ipc, "_send_request_over_pipe", fake_send)
+
+    def call_transport() -> None:
+        try:
+            results.append(shell_ipc._call_shell_ipc_windows("pipe", "request\n", 1.0))
+        except BaseException as exc:  # pragma: no cover - failure diagnostic
+            errors.append(exc)
+
+    threads = [threading.Thread(target=call_transport) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(results) == 2
+    assert max_active == 1

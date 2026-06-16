@@ -47,6 +47,11 @@ _RAW_IDENTIFIER_KEYS = {
     "streamid",
     "stream_id",
 }
+_TRANSIENT_HEALTH_STATUS_ERRORS = {
+    "audioPrewarmStatusException",
+    "transportError",
+    "unavailable",
+}
 
 
 def _hash_diagnostic_hint(value: str | None) -> str | None:
@@ -771,6 +776,30 @@ class RustAudioPrewarmManager:
                         errorCode="unknownCommand",
                         responseMs=response_ms,
                     )
+                return True
+            if not success and error_code in _TRANSIENT_HEALTH_STATUS_ERRORS:
+                health_error = str(
+                    response.get("fallbackReason")
+                    or response_payload.get("reason")
+                    or error_code
+                    or "statusUnknown"
+                )
+                with self._lock:
+                    self._last_status_payload = dict(response_payload)
+                    self._last_health_check_active = True
+                    self._last_health_response_ms = response_ms
+                    self._last_health_error = health_error
+                    self._record_event_locked(
+                        "health_status_unknown",
+                        reason,
+                        errorCode=error_code,
+                        healthError=health_error,
+                        responseMs=response_ms,
+                    )
+                logger.debug(
+                    "Rust mic prewarm status unavailable; keeping existing session "
+                    f"({reason}, status={error_code})"
+                )
                 return True
             status_active = success and bool(response_payload.get("active"))
             with self._lock:
