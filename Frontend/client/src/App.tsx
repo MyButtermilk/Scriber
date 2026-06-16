@@ -7,8 +7,10 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { BackendStatusProvider, useBackendStatus } from "@/hooks/use-backend-status";
 import { useDeviceChangeRefresh } from "@/hooks/use-device-change-refresh";
 import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
-import { WebSocketProvider } from "@/contexts/WebSocketContext";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { useSharedWebSocket, WebSocketProvider, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
+import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
+import { useToast } from "@/hooks/use-toast";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri } from "@/lib/backend";
 
 // Keep default route eager for fastest first paint, lazy-load heavier routes.
@@ -62,12 +64,42 @@ function Router() {
   );
 }
 
+function RecordingErrorToastBridge() {
+  const { toast } = useToast();
+
+  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
+    if (msg.type === "error") {
+      showRecordingErrorToast(toast, msg);
+      return;
+    }
+    if (msg.type === "session_finished" && String(msg.session?.status || "").toLowerCase() === "failed") {
+      const content = String(msg.session?.content || "");
+      const match = content.match(/\[Error\]\s*([^\n]+)/i);
+      const message = match?.[1]?.trim() || "Live mic transcription failed. Check the selected provider and try again.";
+      const recordingError = recordingErrorToastMessageFromPayload({
+        type: "error",
+        apiVersion: msg.apiVersion,
+        message,
+        title: "Recording Error",
+        sessionId: msg.sessionId || (msg.session?.id != null ? String(msg.session.id) : undefined),
+      });
+      if (recordingError) {
+        showRecordingErrorToast(toast, recordingError);
+      }
+    }
+  }, [toast]);
+
+  useSharedWebSocket(handleWsMessage);
+  return null;
+}
+
 function RuntimeShell() {
-  const { isOnline, checkCount } = useBackendStatus();
-  const websocketEnabled = isOnline && checkCount > 0;
+  const { isOnline } = useBackendStatus();
+  const websocketEnabled = isOnline;
 
   return (
     <WebSocketProvider path="/ws" autoReconnect={true} reconnectDelay={1000} enabled={websocketEnabled}>
+      <RecordingErrorToastBridge />
       <BackendOfflineBanner />
       <Router />
     </WebSocketProvider>

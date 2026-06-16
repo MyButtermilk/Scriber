@@ -4033,11 +4033,11 @@ class ScriberWebController:
             logger.error(f"Emergency stop error: {e}")
             self._resume_idle_mic_prewarm_after_capture()
 
-    async def stop_listening(self) -> None:
+    async def stop_listening(self) -> ProviderUserError | None:
         # Acquire lock for entire operation - no parallel start/stop allowed
         async with self._listening_lock:
             if not self._is_listening:
-                return
+                return None
             
             # Mark that we're stopping
             self._is_stopping = True
@@ -4204,6 +4204,7 @@ class ScriberWebController:
         if retrigger_hotkey_toggle:
             logger.info("Applying deferred hotkey event after stop completed.")
             await self.start_listening()
+        return stop_error_info
 
     async def toggle_listening(self) -> None:
         # Quick check without lock - if operation in progress, ignore
@@ -5138,7 +5139,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def stop_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        await ctl.stop_listening()
+        stop_error = await ctl.stop_listening()
+        if stop_error is not None:
+            return web.json_response(
+                version_event_payload(ctl._provider_error_event_from_info(stop_error)),
+                status=400,
+            )
         return web.json_response(ctl.get_state())
 
     async def toggle_live(request: web.Request):

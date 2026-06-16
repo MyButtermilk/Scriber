@@ -1260,7 +1260,7 @@ async def test_stop_listening_marks_failed_when_stop_raises():
         patch("src.web_api.show_transcribing_overlay"),
         patch("src.web_api.hide_recording_overlay"),
     ):
-        await ctl.stop_listening()
+        stop_error = await ctl.stop_listening()
 
     error_payloads = [
         call.args[0]
@@ -1269,6 +1269,9 @@ async def test_stop_listening_marks_failed_when_stop_raises():
     ]
 
     assert rec.status == "failed"
+    assert stop_error is not None
+    assert stop_error.provider == "azure_mai"
+    assert stop_error.code == "ServiceUnavailable"
     assert error_payloads
     assert (
         error_payloads[-1]["message"]

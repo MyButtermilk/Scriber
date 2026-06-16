@@ -12,6 +12,7 @@ type ToastFn = (args: {
 }) => void;
 
 let lastToastKey = "";
+let lastToastDescription = "";
 let lastToastAt = 0;
 
 function cleanText(value: unknown): string {
@@ -64,11 +65,12 @@ export function showRecordingErrorToast(toast: ToastFn, msg: RecordingErrorToast
     ].join("|");
     const now = Date.now();
 
-    if (key === lastToastKey && now - lastToastAt < 2500) {
+    if ((key === lastToastKey || baseDescription === lastToastDescription) && now - lastToastAt < 2500) {
         return;
     }
 
     lastToastKey = key;
+    lastToastDescription = baseDescription;
     lastToastAt = now;
     toast({
         title,
