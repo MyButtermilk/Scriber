@@ -8,7 +8,6 @@ import { Input } from "@/components/ui/input";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { useLocation } from "wouter";
-import { motion, useReducedMotion } from "framer-motion";
 import type { BackendStateResponse } from "@/lib/api-types";
 
 const DELETE_GLITCH_DURATION_MS = 1200;
@@ -49,7 +48,6 @@ function coerceRecordingState(value: unknown, fallback: LiveRecordingState = "id
 // Memoized TranscriptCard to prevent unnecessary re-renders
 interface TranscriptCardProps {
   item: Transcript;
-  index: number;
   viewMode: "list" | "grid";
   isDeleting: boolean;
   isCopying: boolean;
@@ -61,7 +59,6 @@ interface TranscriptCardProps {
 
 const TranscriptCard = memo(function TranscriptCard({
   item,
-  index,
   viewMode,
   isDeleting,
   isCopying,
@@ -70,7 +67,6 @@ const TranscriptCard = memo(function TranscriptCard({
   onNavigate,
   onHover,
 }: TranscriptCardProps) {
-  const prefersReducedMotion = useReducedMotion();
   const durationClass = "duration-[1200ms]";
   const listLayoutClasses = `grid transition-[grid-template-rows,margin-bottom] ease-in-out ${durationClass} ${isDeleting
     ? "grid-rows-[0fr] mb-0 overflow-hidden"
@@ -83,13 +79,7 @@ const TranscriptCard = memo(function TranscriptCard({
     }`;
 
   return (
-    <motion.div
-      layout="position"
-      transition={{
-        layout: { duration: prefersReducedMotion ? 0 : 0.45, ease: "easeInOut" },
-      }}
-      className={layoutClasses}
-    >
+    <div className={layoutClasses}>
       <Card
         className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} p-4 rounded-[20px] cursor-pointer group ${visualClasses}`}
         onClick={() => onNavigate(item.id)}
@@ -175,7 +165,7 @@ const TranscriptCard = memo(function TranscriptCard({
             </div>
           )}
       </Card>
-    </motion.div>
+    </div>
   );
 });
 
@@ -1002,10 +992,9 @@ export default function LiveMic() {
                 hasMore={transcriptsQuery.hasNextPage}
                 isLoadingMore={transcriptsQuery.isFetchingNextPage}
                 onLoadMore={() => transcriptsQuery.fetchNextPage()}
-                renderItem={(item, index) => (
+                renderItem={(item) => (
                   <TranscriptCard
                     item={item}
-                    index={index}
                     viewMode={viewMode}
                     isDeleting={deletingId === item.id}
                     isCopying={copyingId === item.id}
