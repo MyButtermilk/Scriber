@@ -51,6 +51,7 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
         "onnxruntime",
         "awsSdk",
         "pythonGuiRuntime",
+        "unusedProviderSdks",
     }
     assert set(report["components"]) == {
         "backend",
@@ -70,6 +71,9 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
     assert report["dependencies"]["pythonGuiRuntime"]["expectedPresent"] is False
     assert report["dependencies"]["pythonGuiRuntime"]["totalMb"] == 0
     assert report["dependencies"]["pythonGuiRuntime"]["missingRequiredPaths"] == []
+    assert report["dependencies"]["unusedProviderSdks"]["expectedPresent"] is False
+    assert report["dependencies"]["unusedProviderSdks"]["totalMb"] == 0
+    assert report["dependencies"]["unusedProviderSdks"]["missingRequiredPaths"] == []
     assert report["dependencies"]["onnxruntime"]["missingRequiredPaths"] == []
     assert report["dependencies"]["onnxruntime"]["topFiles"][0]["path"].startswith(
         "onnxruntime"
@@ -168,6 +172,24 @@ def test_runtime_dependency_footprint_fails_when_legacy_gui_runtime_is_bundled(t
         "pythonGuiRuntime:_internal\\customtkinter"
         in report["summary"]["componentDisallowedPaths"]
     )
+
+
+def test_runtime_dependency_footprint_fails_when_unused_provider_sdk_is_bundled(tmp_path: Path) -> None:
+    sidecar = write_fake_sidecar(tmp_path / "scriber-backend")
+    gemini = sidecar / "_internal" / "google" / "generativeai" / "__init__.py"
+    gemini.parent.mkdir(parents=True, exist_ok=True)
+    gemini.write_bytes(b"g")
+    groq = sidecar / "_internal" / "groq" / "__init__.py"
+    groq.parent.mkdir(parents=True, exist_ok=True)
+    groq.write_bytes(b"g")
+
+    report = build_report(sidecar)
+
+    assert report["ok"] is False
+    assert report["dependencies"]["unusedProviderSdks"]["unexpectedPresent"] is True
+    assert "unusedProviderSdks" in report["summary"]["unexpectedPresentDependencies"]
+    assert "unusedProviderSdks:google\\generativeai" in report["summary"]["disallowedPaths"]
+    assert "unusedProviderSdks:groq" in report["summary"]["disallowedPaths"]
 
 
 def test_runtime_dependency_footprint_fails_on_prunable_onnxruntime_data(tmp_path: Path) -> None:

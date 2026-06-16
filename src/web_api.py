@@ -58,6 +58,7 @@ from src.data.latency_metrics_store import LatencyMetricsStore
 from src.runtime.paths import app_root, data_dir, downloads_dir, is_frozen, logs_dir, repo_root
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args, webm_opus_transcode_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
+from src.runtime.provider_dependencies import import_provider_runtime_module
 from src.runtime.shell_ipc import (
     available as shell_ipc_available,
     call_shell_ipc,
@@ -6248,21 +6249,21 @@ def _prewarm_stt_service(service_name: str) -> None:
         if service_name == "assemblyai":
             from src.assemblyai_async_stt import AssemblyAIUniversal3ProAsyncProcessor  # noqa: F401
         elif service_name == "google":
-            from pipecat.services.google.stt import GoogleSTTService  # noqa: F401
+            import_provider_runtime_module("google", "pipecat.services.google.stt")
         elif service_name == "elevenlabs":
-            from pipecat.services.elevenlabs.stt import ElevenLabsSTTService  # noqa: F401
+            import_provider_runtime_module("elevenlabs", "pipecat.services.elevenlabs.stt")
         elif service_name == "deepgram":
-            from pipecat.services.deepgram.stt import DeepgramSTTService  # noqa: F401
+            import_provider_runtime_module("deepgram", "pipecat.services.deepgram.stt")
         elif service_name == "openai":
-            from pipecat.services.openai.stt import OpenAISTTService  # noqa: F401
+            import_provider_runtime_module("openai", "pipecat.services.openai.stt")
         elif service_name == "azure":
-            from pipecat.services.azure.stt import AzureSTTService  # noqa: F401
+            import_provider_runtime_module("azure", "pipecat.services.azure.stt")
         elif service_name == "gladia":
-            from pipecat.services.gladia.stt import GladiaSTTService  # noqa: F401
+            import_provider_runtime_module("gladia", "pipecat.services.gladia.stt")
         elif service_name == "groq":
-            from pipecat.services.groq.stt import GroqSTTService  # noqa: F401
+            import_provider_runtime_module("groq", "pipecat.services.groq.stt")
         elif service_name == "speechmatics":
-            from pipecat.services.speechmatics.stt import SpeechmaticsSTTService  # noqa: F401
+            import_provider_runtime_module("speechmatics", "pipecat.services.speechmatics.stt")
         elif service_name in {"mistral", "mistral_async"}:
             from src.mistral_stt import MistralRealtimeSTTService, MistralAsyncProcessor  # noqa: F401
         elif service_name in {"smallest", "smallest_async"}:

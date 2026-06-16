@@ -243,6 +243,14 @@ Soniox is the default STT family: realtime live transcription uses
 `SCRIBER_SONIOX_ASYNC_MODEL` remain escape hatches for provider compatibility,
 but older Soniox realtime and async models are not release defaults.
 
+The standard sidecar keeps runtime support for every provider exposed in
+Settings, but the dependency boundary is explicit. Google Cloud STT is packaged
+through `google-cloud-speech`; Gemini summarization uses direct HTTP and does
+not require the Google GenAI SDKs. Groq STT uses Pipecat's OpenAI-compatible
+client path and does not require the separate Groq SDK. Build-time runtime
+import checks cover the offered provider modules, and the footprint analyzer
+rejects unused provider SDKs if PyInstaller pulls them back in.
+
 ## Media Boundary
 
 Media work is centralized around resolved ffmpeg/ffprobe tools:

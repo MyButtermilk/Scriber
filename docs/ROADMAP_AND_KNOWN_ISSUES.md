@@ -127,6 +127,14 @@ Legacy GUI footprint:
 - Runtime dependency footprint gates reject PySide6, customtkinter, and Tk
   reintroduction in the packaged backend.
 
+Provider runtime footprint:
+
+- Supported cloud-provider runtime modules stay covered by the frozen runtime
+  import check.
+- The standard sidecar excludes unused Google GenAI/TTS SDKs and the unused
+  Groq SDK; footprint gates fail if those SDKs reappear in the packaged
+  backend.
+
 Rust audio:
 
 - Rust/WASAPI sidecar capture is now the standard live-mic capture and

@@ -27,6 +27,12 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "onnxruntime" in required_modules
     assert "pipecat.audio.vad.silero" in required_modules
     assert "src.web_api" in required_modules
+    assert "pipecat.services.soniox.stt" in required_modules
+    assert "pipecat.services.deepgram.stt" in required_modules
+    assert "pipecat.services.google.stt" in required_modules
+    assert "pipecat.services.azure.stt" in required_modules
+    assert "pipecat.services.speechmatics.stt" in required_modules
+    assert "src.azure_mai_stt" in required_modules
 
 
 def test_standard_requirements_include_audio_runtime_dependencies():
@@ -36,6 +42,9 @@ def test_standard_requirements_include_audio_runtime_dependencies():
 
     assert "scipy" not in requirements
     assert "onnxruntime" in requirements
+    assert "google-cloud-speech<3,>=2.33.0" in requirements
+    assert "google-generativeai" not in requirements
+    assert "groq" not in "\n".join(requirements)
     assert "PySide6-Essentials" not in requirements
     assert "customtkinter" not in requirements
     assert "pystray" not in requirements
@@ -103,6 +112,7 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"onnxruntime"' in spec
     assert '"pipecat.audio.vad.silero"' in spec
     assert '"pipecat.services.aws.stt"' not in spec
+    assert '"pipecat.services.soniox.stt"' in spec
     assert '"pyloudnorm.meter"' in spec
     assert '"scipy",' in spec
     assert '"scipy.signal"' not in spec
@@ -128,6 +138,10 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"tkinter",' in spec.split("excludes=[", 1)[1]
     assert '"customtkinter",' in spec.split("excludes=[", 1)[1]
     assert '"pystray",' in spec.split("excludes=[", 1)[1]
+    assert '"google.generativeai",' in spec.split("excludes=[", 1)[1]
+    assert '"google.cloud.texttospeech",' in spec.split("excludes=[", 1)[1]
+    assert '"google.genai",' in spec.split("excludes=[", 1)[1]
+    assert '"groq",' in spec.split("excludes=[", 1)[1]
     assert '"boto3",' in spec.split("excludes=[", 1)[1]
     assert '"botocore",' in spec.split("excludes=[", 1)[1]
     assert '"s3transfer",' in spec.split("excludes=[", 1)[1]

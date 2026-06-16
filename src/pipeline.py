@@ -30,6 +30,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from src.runtime.media_tools import find_media_tool
+from src.runtime.provider_dependencies import import_provider_runtime_module
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs
 
 try:
@@ -105,9 +106,11 @@ class _AnalyzerCache:
             cls._smart_turn_analyzer = None
             logger.debug("Analyzer cache cleared")
 
+_SONIOX_IMPORT_ERROR: BaseException | None = None
 try:
     from pipecat.services.soniox.stt import SonioxSTTService, SonioxInputParams, SonioxContextObject
-except ImportError:
+except Exception as exc:
+    _SONIOX_IMPORT_ERROR = exc
     SonioxSTTService = None
     SonioxInputParams = None
     SonioxContextObject = None
@@ -538,6 +541,18 @@ def _selected_language():
     return lang if lang else None
 
 
+def _load_soniox_realtime_classes():
+    global SonioxSTTService, SonioxInputParams, SonioxContextObject, _SONIOX_IMPORT_ERROR
+    if SonioxSTTService:
+        return SonioxSTTService, SonioxInputParams, SonioxContextObject
+    module = import_provider_runtime_module("soniox", "pipecat.services.soniox.stt")
+    SonioxSTTService = getattr(module, "SonioxSTTService", None)
+    SonioxInputParams = getattr(module, "SonioxInputParams", None)
+    SonioxContextObject = getattr(module, "SonioxContextObject", None)
+    _SONIOX_IMPORT_ERROR = None
+    return SonioxSTTService, SonioxInputParams, SonioxContextObject
+
+
 def _normalize_device_name(name: str) -> str:
     return normalize_device_name(name)
 
@@ -838,29 +853,30 @@ class ScriberPipeline:
                     on_progress=self.on_progress,
                     enable_speaker_diarization=False,  # Disabled for live mic
                 )
-            if not SonioxSTTService: raise ImportError("SonioxSTTService not available.")
+            soniox_service_cls, soniox_input_params_cls, soniox_context_cls = _load_soniox_realtime_classes()
+            if not soniox_service_cls: raise RuntimeError("SonioxSTTService not available.")
             lang_hint = _selected_language()
             # Use Soniox v5 realtime by default; SCRIBER_SONIOX_RT_MODEL remains an override.
             rt_model = Config.SONIOX_RT_MODEL
             # Build params with model and context
-            if Config.CUSTOM_VOCAB and SonioxContextObject:
+            if Config.CUSTOM_VOCAB and soniox_context_cls:
                 terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
                 if terms:
                     logger.info(f"Applying custom vocabulary: {terms}")
-                    params = SonioxInputParams(
+                    params = soniox_input_params_cls(
                         model=rt_model,
-                        context=SonioxContextObject(terms=terms),
+                        context=soniox_context_cls(terms=terms),
                         language_hints=[lang_hint] if lang_hint else None,
-                    ) if SonioxInputParams else _SonioxParamsFallback(context=SonioxContextObject(terms=terms))
+                    ) if soniox_input_params_cls else _SonioxParamsFallback(context=soniox_context_cls(terms=terms))
                 else:
-                    params = SonioxInputParams(model=rt_model, language_hints=[lang_hint] if lang_hint else None) if SonioxInputParams else _SonioxParamsFallback()
+                    params = soniox_input_params_cls(model=rt_model, language_hints=[lang_hint] if lang_hint else None) if soniox_input_params_cls else _SonioxParamsFallback()
             else:
-                params = SonioxInputParams(model=rt_model, language_hints=[lang_hint] if lang_hint else None) if SonioxInputParams else _SonioxParamsFallback()
+                params = soniox_input_params_cls(model=rt_model, language_hints=[lang_hint] if lang_hint else None) if soniox_input_params_cls else _SonioxParamsFallback()
             # vad_force_turn_endpoint=True disables automatic endpoint detection which would
             # otherwise close the WebSocket connection when speech pauses are detected.
             # This keeps the connection alive for the entire recording session.
             logger.info(f"Creating SonioxSTTService with vad_force_turn_endpoint=True (endpoint detection DISABLED)")
-            return SonioxSTTService(api_key=_get_api_key("soniox"), params=params, vad_force_turn_endpoint=True)
+            return soniox_service_cls(api_key=_get_api_key("soniox"), params=params, vad_force_turn_endpoint=True)
 
         elif self.service_name in ("mistral", "mistral_async"):
             if not _get_api_key("mistral"):
@@ -924,12 +940,13 @@ class ScriberPipeline:
         
         elif self.service_name == "google":
             # Lazy import - only loaded when Google is used
-            from pipecat.services.google.stt import GoogleSTTService
-            return GoogleSTTService()
+            module = import_provider_runtime_module("google", "pipecat.services.google.stt")
+            return module.GoogleSTTService()
         
         elif self.service_name == "elevenlabs":
             # Lazy import - only loaded when ElevenLabs is used
-            from pipecat.services.elevenlabs.stt import ElevenLabsSTTService
+            module = import_provider_runtime_module("elevenlabs", "pipecat.services.elevenlabs.stt")
+            ElevenLabsSTTService = module.ElevenLabsSTTService
             if not _get_api_key("elevenlabs"): raise ValueError("ElevenLabs API Key is missing.")
             
             # Configure language for ElevenLabs STT
@@ -945,13 +962,15 @@ class ScriberPipeline:
         
         elif self.service_name == "deepgram":
             # Lazy import - only loaded when Deepgram is used
-            from pipecat.services.deepgram.stt import DeepgramSTTService
+            module = import_provider_runtime_module("deepgram", "pipecat.services.deepgram.stt")
+            DeepgramSTTService = module.DeepgramSTTService
             if not _get_api_key("deepgram"): raise ValueError("Deepgram API Key is missing.")
             return DeepgramSTTService(api_key=_get_api_key("deepgram"))
         
         elif self.service_name == "openai":
             # Lazy import - only loaded when OpenAI is used
-            from pipecat.services.openai.stt import OpenAISTTService
+            module = import_provider_runtime_module("openai", "pipecat.services.openai.stt")
+            OpenAISTTService = module.OpenAISTTService
             if not _get_api_key("openai"): raise ValueError("OpenAI API Key is missing.")
             return OpenAISTTService(
                 api_key=_get_api_key("openai"),
@@ -962,7 +981,8 @@ class ScriberPipeline:
         
         elif self.service_name == "azure":
             # Lazy import - only loaded when Azure is used
-            from pipecat.services.azure.stt import AzureSTTService
+            module = import_provider_runtime_module("azure", "pipecat.services.azure.stt")
+            AzureSTTService = module.AzureSTTService
             if not Config.AZURE_SPEECH_KEY or not Config.AZURE_SPEECH_REGION: raise ValueError("Azure Speech Key or Region is missing.")
             lang = Language.EN_US if Config.LANGUAGE == "en" else _selected_language()
             return AzureSTTService(api_key=Config.AZURE_SPEECH_KEY, region=Config.AZURE_SPEECH_REGION, language=lang)
@@ -982,19 +1002,22 @@ class ScriberPipeline:
         
         elif self.service_name == "gladia":
             # Lazy import - only loaded when Gladia is used
-            from pipecat.services.gladia.stt import GladiaSTTService
+            module = import_provider_runtime_module("gladia", "pipecat.services.gladia.stt")
+            GladiaSTTService = module.GladiaSTTService
             if not _get_api_key("gladia"): raise ValueError("Gladia API Key is missing.")
             return GladiaSTTService(api_key=_get_api_key("gladia"), aiohttp_session=session)
         
         elif self.service_name == "groq":
             # Lazy import - only loaded when Groq is used
-            from pipecat.services.groq.stt import GroqSTTService
+            module = import_provider_runtime_module("groq", "pipecat.services.groq.stt")
+            GroqSTTService = module.GroqSTTService
             if not _get_api_key("groq"): raise ValueError("Groq API Key is missing.")
             return GroqSTTService(api_key=_get_api_key("groq"), aiohttp_session=session, language=_selected_language())
         
         elif self.service_name == "speechmatics":
             # Lazy import - only loaded when Speechmatics is used
-            from pipecat.services.speechmatics.stt import SpeechmaticsSTTService
+            module = import_provider_runtime_module("speechmatics", "pipecat.services.speechmatics.stt")
+            SpeechmaticsSTTService = module.SpeechmaticsSTTService
             if not _get_api_key("speechmatics"): raise ValueError("Speechmatics API Key is missing.")
             return SpeechmaticsSTTService(api_key=_get_api_key("speechmatics"))
         

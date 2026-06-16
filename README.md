@@ -209,6 +209,8 @@ Recent local release evidence:
 - AWS Transcribe support and AWS SDK packages are not part of the standard app.
 - The recording overlay is rendered by Tauri; PySide6/Tk overlay runtimes are
   not part of the standard backend sidecar.
+- Supported provider SDKs are bundled explicitly; unused Google GenAI/TTS and
+  Groq SDKs are kept out of the standard backend sidecar.
 - Installed frontend and media-preparation smokes pass in the standard local
   build flow.
 

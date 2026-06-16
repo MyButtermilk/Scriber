@@ -256,6 +256,12 @@ Packaging and scripts:
   `boto3`, `botocore`, `s3transfer`, `aioboto3`, `aiobotocore`, and Pipecat AWS
   service modules out of the standard sidecar unless AWS support is explicitly
   reintroduced.
+- Standard provider packaging uses explicit SDK dependencies instead of broad
+  Pipecat provider extras. Keep `google-generativeai`, `google-genai`,
+  Google Cloud Text-to-Speech, and the unused Groq SDK out of the standard
+  sidecar unless a product path is reintroduced that actually imports them.
+  Gemini summarization uses direct HTTP, Google Cloud STT uses
+  `google-cloud-speech`, and Groq STT uses the OpenAI-compatible Pipecat path.
 - FFmpeg Profile B is the standard Windows bundled media-tool path. Gyan
   Essentials is explicit fallback only.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`

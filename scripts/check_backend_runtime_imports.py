@@ -10,13 +10,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
+from src.runtime.provider_dependencies import STANDARD_PROVIDER_RUNTIME_IMPORTS
+
+
+CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pyloudnorm", "local Pipecat loudness compatibility dependency"),
     ("onnxruntime", "Silero VAD native runtime dependency"),
     ("pipecat.frames.frames", "Pipecat startup dependency"),
     ("pipecat.audio.vad.vad_analyzer", "Pipecat VAD startup dependency"),
     ("pipecat.audio.vad.silero", "Silero VAD startup dependency"),
     ("src.web_api", "backend API entry point"),
+)
+REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
+    *CORE_RUNTIME_IMPORTS,
+    *STANDARD_PROVIDER_RUNTIME_IMPORTS,
 )
 
 

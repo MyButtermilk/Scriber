@@ -8,6 +8,7 @@ from typing import Any
 
 from src.config import Config
 from src.core.error_taxonomy import ErrorCategory, classify_error_message, is_retryable, user_message_for_category
+from src.runtime.provider_dependencies import ProviderRuntimeDependencyError
 
 
 @dataclass(frozen=True)
@@ -48,13 +49,24 @@ _KNOWN_CODES = (
 
 
 def provider_user_error(provider: str | None, error: Exception | str) -> ProviderUserError:
+    dependency_error = error if isinstance(error, ProviderRuntimeDependencyError) else None
     raw = _error_text(error)
     payload = _parse_payload(raw)
-    normalized_provider = _normalize_provider(provider, raw)
+    normalized_provider = _normalize_provider(provider or getattr(dependency_error, "provider", None), raw)
     label = _provider_label(normalized_provider)
     combined = _combined_text(raw, payload)
     status = _status_code(raw, payload)
     code = _public_error_code(raw, payload, status=status)
+
+    if dependency_error:
+        return _make_error(
+            normalized_provider,
+            label,
+            ErrorCategory.CONFIG_INVALID,
+            f"{label} runtime is missing from this Scriber build. Reinstall Scriber or switch transcription provider.",
+            code="missing_provider_runtime",
+            retryable=False,
+        )
 
     if _has(combined, "api key is missing", "api_key is missing", "missing api key"):
         return _make_error(

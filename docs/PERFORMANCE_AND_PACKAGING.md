@@ -172,8 +172,9 @@ No-feature-loss constraints:
 - ffmpeg and ffprobe remain bundled in the standard installer.
 - PySide6, customtkinter, and Tk overlay runtimes remain absent from the
   standard sidecar; the installed overlay is Tauri-owned.
-- Provider dependencies remain bundled when the provider is still supported by
-  backend or UI configuration.
+- Provider runtime support remains bundled when the provider is still supported
+  by backend or UI configuration, but provider SDKs are explicit rather than
+  broad Pipecat extras.
 - Local ASR packaging remains separate from the standard cloud-provider sidecar.
 
 Current packaging choices:
@@ -185,9 +186,15 @@ Current packaging choices:
 - AWS Transcribe is no longer exposed in frontend or backend settings. The
   standard sidecar excludes `boto3`, `botocore`, `s3transfer`, `aioboto3`,
   `aiobotocore`, and Pipecat AWS service modules.
+- Gemini summaries use direct HTTP, so `google-generativeai`, `google-genai`,
+  Google Cloud Text-to-Speech, and the unused Groq SDK are excluded from the
+  standard sidecar. Google Cloud STT remains supported through
+  `google-cloud-speech`; Groq STT remains supported through the
+  OpenAI-compatible Pipecat path.
 - Pillow AVIF binaries are excluded.
 - Runtime dependency footprint gates reject SciPy, AWS SDK packages, PySide6,
-  customtkinter, and Tk reintroduction in the packaged backend.
+  customtkinter, Tk, and unused provider SDK reintroduction in the packaged
+  backend.
 
 ## Remaining Performance Opportunities
 

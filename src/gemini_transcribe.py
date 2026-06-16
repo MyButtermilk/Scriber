@@ -2,9 +2,8 @@ import os
 import sys
 from loguru import logger
 
-# This script demonstrates how one might use Google Gemini for audio transcription
-# as an "offline" or "batch" alternative to the streaming pipeline.
-# It requires the `google-generativeai` library.
+# Source-only diagnostic demo for Gemini audio transcription. The optional
+# `google-generativeai` SDK is not part of the standard Scriber installer.
 
 def transcribe_audio_with_gemini(audio_path: str):
     """
@@ -13,7 +12,7 @@ def transcribe_audio_with_gemini(audio_path: str):
     try:
         import google.generativeai as genai
     except ImportError:
-        logger.error("google-generativeai not installed.")
+        logger.error("Optional google-generativeai package is not installed.")
         return
 
     api_key = os.getenv("GOOGLE_API_KEY")

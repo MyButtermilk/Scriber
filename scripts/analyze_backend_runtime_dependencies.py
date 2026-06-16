@@ -57,6 +57,27 @@ DEPENDENCY_GROUPS: dict[str, dict[str, Any]] = {
         "expectedPresent": False,
         "reason": "Installed desktop overlay and shell UI are owned by Tauri/Rust",
     },
+    "unusedProviderSdks": {
+        "paths": (
+            "google/generativeai",
+            "google/ai/generativelanguage",
+            "google/cloud/texttospeech",
+            "google/genai",
+            "googleapiclient",
+            "groq",
+        ),
+        "requiredPaths": (),
+        "disallowedPaths": (
+            "google/generativeai",
+            "google/ai/generativelanguage",
+            "google/cloud/texttospeech",
+            "google/genai",
+            "googleapiclient",
+            "groq",
+        ),
+        "expectedPresent": False,
+        "reason": "Standard sidecar uses direct HTTP or OpenAI-compatible paths instead of unused provider SDKs",
+    },
 }
 
 COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
@@ -93,8 +114,8 @@ COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
     },
     "googleGrpc": {
         "paths": ("_internal/google", "_internal/grpc"),
-        "requiredPaths": ("_internal/google", "_internal/grpc"),
-        "reason": "Google/Gemini/Pipecat provider runtime support",
+        "requiredPaths": ("_internal/grpc",),
+        "reason": "Google Cloud STT gRPC runtime support; Google Python modules may be embedded in the PYZ archive",
     },
     "pillow": {
         "paths": ("_internal/PIL",),
@@ -354,6 +375,13 @@ def build_report(
         "pythonGuiRuntime": summarize_dependency(
             "pythonGuiRuntime",
             DEPENDENCY_GROUPS["pythonGuiRuntime"],
+            internal_dir=internal_dir,
+            top_files_limit=top_files_limit,
+            max_mb=None,
+        ),
+        "unusedProviderSdks": summarize_dependency(
+            "unusedProviderSdks",
+            DEPENDENCY_GROUPS["unusedProviderSdks"],
             internal_dir=internal_dir,
             top_files_limit=top_files_limit,
             max_mb=None,

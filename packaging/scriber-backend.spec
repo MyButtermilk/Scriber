@@ -32,8 +32,8 @@ hiddenimports = [
     "onnxruntime",
     "pipecat.audio.vad.silero",
     "yt_dlp",
+    "pipecat.services.soniox.stt",
     "pipecat.services.google.stt",
-    "pipecat.services.assemblyai.stt",
     "pipecat.services.deepgram.stt",
     "pipecat.services.openai.stt",
     "pipecat.services.azure.stt",
@@ -68,7 +68,7 @@ assets_dir = repo_root / "src" / "assets"
 if assets_dir.exists():
     datas.append((str(assets_dir), "src/assets"))
 
-for package in ("pipecat", "google", "yt_dlp"):
+for package in ("pipecat", "yt_dlp"):
     try:
         datas += collect_data_files(package)
     except Exception:
@@ -132,6 +132,14 @@ a = Analysis(
         "tk",
         "customtkinter",
         "pystray",
+        "google.generativeai",
+        "google.ai.generativelanguage",
+        "google.cloud.texttospeech",
+        "google.genai",
+        "googleapiclient",
+        "google_auth_httplib2",
+        "httplib2",
+        "groq",
         "aioboto3",
         "aiobotocore",
         "boto3",
