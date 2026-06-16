@@ -51,7 +51,7 @@ _json_settings = _load_json_settings()
 
 class Config:
     DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v5"
-    DEFAULT_SONIOX_RT_MODEL = "stt-rt-v4"
+    DEFAULT_SONIOX_RT_MODEL = "stt-rt-v5"
 
     # API Keys
     SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")

@@ -58,7 +58,16 @@ export type ScriberWebSocketMessage =
         actions?: InputWarningAction[];
     })
     | (BaseWsMessage & { type: "transcript"; text: string; content?: string; isFinal: boolean })
-    | (BaseWsMessage & { type: "error"; message: string })
+    | (BaseWsMessage & {
+        type: "error";
+        message: string;
+        title?: string;
+        provider?: string;
+        providerLabel?: string;
+        category?: string;
+        code?: string;
+        retryable?: boolean;
+    })
     | (BaseWsMessage & {
         type: "history_updated";
         transcriptId?: string;

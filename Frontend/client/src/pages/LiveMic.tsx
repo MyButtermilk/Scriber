@@ -445,6 +445,7 @@ const GlossyMicButton = memo(function GlossyMicButton({
 import { useQueryClient } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
+import { showRecordingErrorToast } from "@/lib/recording-error-toast";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonList } from "@/components/ui/skeleton-card";
 import { QueryErrorState } from "@/components/ui/query-error-state";
@@ -684,12 +685,7 @@ export default function LiveMic() {
         if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
           break;
         }
-        toast({
-          title: "Recording Error",
-          description: msg.message || "An error occurred during recording.",
-          variant: "destructive",
-          duration: 6000,
-        });
+        showRecordingErrorToast(toast, msg);
         audioLevelRef.current = 0;
         setRecordingState("idle");
         setIsRecording(false);

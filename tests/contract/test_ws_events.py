@@ -40,6 +40,16 @@ def test_ws_event_builders_match_contract():
         ),
         transcript_event("hello", True, session_id="s1"),
         error_event("failed", session_id="s1"),
+        error_event(
+            "Soniox rejected the API key. Check the Soniox key in Settings.",
+            title="Soniox API key issue",
+            provider="soniox",
+            provider_label="Soniox",
+            category="auth_invalid",
+            code="401",
+            retryable=False,
+            session_id="s1",
+        ),
         history_updated_event(),
         history_updated_event(
             transcript_id="t1",
@@ -110,6 +120,8 @@ def test_ws_contract_validation_rejects_invalid_payload():
         validate_event_payload(version_event_payload({"type": "transcript", "text": "hello", "isFinal": "yes"}))
     with pytest.raises(WSContractError):
         validate_event_payload(version_event_payload({"type": "error", "message": 42}))
+    with pytest.raises(WSContractError):
+        validate_event_payload(version_event_payload({"type": "error", "message": "failed", "retryable": "yes"}))
     with pytest.raises(WSContractError):
         validate_event_payload(version_event_payload({"type": "input_warning", "active": True, "message": "m", "code": 1}))
     with pytest.raises(WSContractError):

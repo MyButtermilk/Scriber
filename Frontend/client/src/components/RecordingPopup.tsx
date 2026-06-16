@@ -6,6 +6,7 @@ import { Square, Loader2 } from "lucide-react";
 import { wsUrl, apiUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
+import { showRecordingErrorToast } from "@/lib/recording-error-toast";
 
 const BAR_COUNT = 56; // ~30% reduction from 80
 
@@ -256,12 +257,7 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
                 // Handle recording errors - hide popup and show error toast
                 setIsRecording(false);
                 setIsTranscribing(false);
-                toast({
-                    title: "Recording Error",
-                    description: msg.message || "An error occurred during recording.",
-                    variant: "destructive",
-                    duration: 6000,
-                });
+                showRecordingErrorToast(toast, msg);
                 break;
             case "audio_level":
                 if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {

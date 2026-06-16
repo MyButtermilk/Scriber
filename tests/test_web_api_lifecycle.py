@@ -1270,8 +1270,18 @@ async def test_stop_listening_marks_failed_when_stop_raises():
 
     assert rec.status == "failed"
     assert error_payloads
-    assert error_payloads[-1]["message"] == "STT service is temporarily unavailable. Please try again shortly."
-    assert "[Error] STT service is temporarily unavailable. Please try again shortly." in rec.content
+    assert (
+        error_payloads[-1]["message"]
+        == "Microsoft MAI Transcribe is temporarily unavailable. Retry shortly; if it repeats, check the Azure region and service status."
+    )
+    assert error_payloads[-1]["provider"] == "azure_mai"
+    assert error_payloads[-1]["providerLabel"] == "Microsoft MAI Transcribe"
+    assert error_payloads[-1]["category"] == "transient_provider"
+    assert error_payloads[-1]["code"] == "ServiceUnavailable"
+    assert (
+        "[Error] Microsoft MAI Transcribe is temporarily unavailable. Retry shortly; if it repeats, check the Azure region and service status."
+        in rec.content
+    )
     assert ctl._status == "Error"
     assert rec in ctl._history
 

@@ -241,8 +241,9 @@ Packaging and scripts:
 - Soniox Async defaults to `stt-async-v5`. Keep
   `SCRIBER_SONIOX_ASYNC_MODEL` as an override for temporary compatibility, but
   do not restore `stt-async-v4` as the code default.
-- Soniox realtime live transcription remains on `stt-rt-v4` until Soniox ships
-  a production realtime v5 model and the app has been validated against it.
+- Soniox realtime live transcription defaults to `stt-rt-v5`. Keep
+  `SCRIBER_SONIOX_RT_MODEL` as an override for temporary compatibility, but do
+  not restore `stt-rt-v4` as the code default.
 - Azure MAI defaults to `mai-transcribe-1.5`.
 - Keep `SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1` available as region/resource
   fallback.

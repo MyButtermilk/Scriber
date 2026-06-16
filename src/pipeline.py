@@ -188,6 +188,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 )
             except Exception as e:
                 logger.error(f"Soniox async transcription failed: {e}")
+                await self.push_frame(ErrorFrame(error=f"soniox async error: {e}"), direction)
             await self.push_frame(frame, direction)
             self._reset_buffer()
         else:
@@ -839,7 +840,7 @@ class ScriberPipeline:
                 )
             if not SonioxSTTService: raise ImportError("SonioxSTTService not available.")
             lang_hint = _selected_language()
-            # Use stt-rt-v4 model for realtime transcription
+            # Use Soniox v5 realtime by default; SCRIBER_SONIOX_RT_MODEL remains an override.
             rt_model = Config.SONIOX_RT_MODEL
             # Build params with model and context
             if Config.CUSTOM_VOCAB and SonioxContextObject:

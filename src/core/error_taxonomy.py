@@ -11,6 +11,7 @@ class ErrorCategory(str, Enum):
     DEVICE_UNAVAILABLE = "device_unavailable"
     DEVICE_PERMISSION = "device_permission"
     CONFIG_INVALID = "config_invalid"
+    AUDIO_INVALID = "audio_invalid"
     PROVIDER_LIMIT = "provider_limit"
     INTERNAL_BUG = "internal_bug"
 
@@ -23,6 +24,7 @@ _CATEGORY_TO_USER_MESSAGE: dict[ErrorCategory, str] = {
     ErrorCategory.DEVICE_UNAVAILABLE: "Selected microphone is not available. Please reconnect it or choose another input device.",
     ErrorCategory.DEVICE_PERMISSION: "Microphone access is blocked. Please grant microphone permissions and retry.",
     ErrorCategory.CONFIG_INVALID: "Invalid configuration detected. Please verify your settings.",
+    ErrorCategory.AUDIO_INVALID: "Audio could not be processed. Please retry with a clearer or longer recording.",
     ErrorCategory.PROVIDER_LIMIT: "Provider rate limit or quota reached. Please wait or switch provider.",
     ErrorCategory.INTERNAL_BUG: "Recording failed due to an internal error. Please retry.",
 }
@@ -45,6 +47,19 @@ def classify_error_message(message: str) -> ErrorCategory:
         return ErrorCategory.DEVICE_PERMISSION
     if any(token in text for token in ("device unavailable", "no default input", "invalid device")):
         return ErrorCategory.DEVICE_UNAVAILABLE
+    if any(
+        token in text
+        for token in (
+            "audio could not be processed",
+            "corrupt or unsupported",
+            "unsupported audio",
+            "unprocessable entity",
+            "asr_unprocessable_entity",
+            "data-0000",
+            "unable to read the entire client request",
+        )
+    ):
+        return ErrorCategory.AUDIO_INVALID
     if any(token in text for token in ("timeout", "timed out", "connection", "websocket", "handshake", "dns")):
         return ErrorCategory.TRANSIENT_NETWORK
     if any(token in text for token in ("rate limit", "429", "too many requests")):
@@ -62,6 +77,7 @@ def classify_error_message(message: str) -> ErrorCategory:
             "no stt provider is currently available",
             "circuit open",
             "circuits are open",
+            "cannot continue request",
         )
     ):
         return ErrorCategory.TRANSIENT_PROVIDER

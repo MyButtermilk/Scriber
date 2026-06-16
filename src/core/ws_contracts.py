@@ -86,8 +86,32 @@ def transcript_event(text: str, is_final: bool, *, session_id: str | None = None
     )
 
 
-def error_event(message: str, *, session_id: str | None = None) -> dict[str, Any]:
-    return _optional_session({"type": "error", "message": str(message)}, session_id)
+def error_event(
+    message: str,
+    *,
+    title: str | None = None,
+    provider: str | None = None,
+    provider_label: str | None = None,
+    category: str | None = None,
+    code: str | None = None,
+    retryable: bool | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"type": "error", "message": str(message)}
+    optional_strings = {
+        "title": title,
+        "provider": provider,
+        "providerLabel": provider_label,
+        "category": category,
+        "code": code,
+    }
+    for field, value in optional_strings.items():
+        normalized = str(value or "").strip()
+        if normalized:
+            payload[field] = normalized
+    if retryable is not None:
+        payload["retryable"] = bool(retryable)
+    return _optional_session(payload, session_id)
 
 
 def history_updated_event(
@@ -205,6 +229,11 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
         _require_bool(payload, "isFinal", event_type)
     elif event_type == "error":
         _require_string(payload, "message", event_type)
+        for field in ("title", "provider", "providerLabel", "category", "code"):
+            if field in payload and not isinstance(payload.get(field), str):
+                raise WSContractError(f"error event requires string '{field}' when present")
+        if "retryable" in payload and not isinstance(payload.get("retryable"), bool):
+            raise WSContractError("error event requires bool 'retryable' when present")
     elif event_type == "history_updated":
         for field in ("transcriptId", "transcriptType", "status", "step", "summaryStatus", "updatedAt", "reason"):
             if field in payload and not isinstance(payload.get(field), str):

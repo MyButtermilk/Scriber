@@ -43,6 +43,9 @@ class TestConfig(unittest.TestCase):
     def test_soniox_async_default_model_is_v5(self):
         self.assertEqual(Config.DEFAULT_SONIOX_ASYNC_MODEL, "stt-async-v5")
 
+    def test_soniox_realtime_default_model_is_v5(self):
+        self.assertEqual(Config.DEFAULT_SONIOX_RT_MODEL, "stt-rt-v5")
+
 
 def test_bootstrap_runtime_env_reads_only_path_keys(monkeypatch, tmp_path):
     data_dir = tmp_path / "data"
@@ -99,3 +102,12 @@ def test_persist_to_env_file_includes_soniox_async_v5_default(monkeypatch, tmp_p
     Config.persist_to_env_file(str(target))
 
     assert "SCRIBER_SONIOX_ASYNC_MODEL=stt-async-v5" in target.read_text(encoding="utf-8")
+
+
+def test_persist_to_env_file_includes_soniox_realtime_v5_default(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "SONIOX_RT_MODEL", Config.DEFAULT_SONIOX_RT_MODEL)
+
+    Config.persist_to_env_file(str(target))
+
+    assert "SCRIBER_SONIOX_RT_MODEL=stt-rt-v5" in target.read_text(encoding="utf-8")

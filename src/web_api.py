@@ -32,10 +32,11 @@ from src.audio_devices import (
 from src.config import Config
 from src.device_monitor import DeviceMonitor, devices_contain_name
 from src.core.provider_capabilities import supports_direct_file_upload
-from src.core.error_taxonomy import classify_error_message, is_retryable, user_message_for_category
+from src.core.error_taxonomy import classify_error_message, is_retryable
 from src.core.hot_path_tracer import HotPathTracer
 from src.core.logging_setup import emit_event, setup_logging
 from src.core.provider_circuit_breaker import ProviderCircuitBreaker
+from src.core.provider_errors import ProviderUserError, provider_user_error
 from src.core.rest_contracts import REST_API_VERSION, RESTContractError, validate_frontend_ready_request_payload
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
 from src.core.ws_contracts import (
@@ -2900,6 +2901,28 @@ class ScriberWebController:
         payload = transcript_event(text, bool(is_final), session_id=session_id)
         self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self.broadcast(payload)))
 
+    def _provider_user_error(self, error: Exception | str, *, provider: str | None = None) -> ProviderUserError:
+        return provider_user_error(provider or self._active_provider, error)
+
+    def _provider_error_event(
+        self,
+        error: Exception | str,
+        *,
+        provider: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        info = self._provider_user_error(error, provider=provider)
+        return error_event(
+            info.message,
+            title=info.title,
+            provider=info.provider,
+            provider_label=info.provider_label,
+            category=info.category.value,
+            code=info.code,
+            retryable=info.retryable,
+            session_id=session_id,
+        )
+
     def _on_pipeline_done(self, task: asyncio.Task, *, session_id: str | None = None) -> None:
         # Ignore completions from tasks that are no longer the active live pipeline.
         # This prevents stale callbacks from clobbering a newer session's state.
@@ -2923,9 +2946,9 @@ class ScriberWebController:
                 self._clear_hot_path_tracer(session_id)
             self._resume_idle_mic_prewarm_after_capture()
         
-        async def _broadcast_error(error_msg: str):
+        async def _broadcast_error(payload: dict[str, Any]):
             """Broadcast error to frontend."""
-            await self.broadcast(error_event(error_msg, session_id=session_id))
+            await self.broadcast(payload)
         
         try:
             task.result()
@@ -2933,15 +2956,18 @@ class ScriberWebController:
             pass
         except Exception as exc:  # pragma: no cover - runtime dependent        
             logger.error(f"Pipeline error: {exc}")
-            self._record_provider_failure(self._active_provider or "", exc)
+            provider_used = self._active_provider
+            self._record_provider_failure(provider_used or "", exc)
             self._set_recording_state(RecordingState.FAILED, context="_on_pipeline_done_error")
             self._set_status("Error", session_id=session_id)
             # Hide overlay when pipeline fails to prevent it staying stuck at "Preparing..."
             self._overlay_audio_enabled = False
             hide_recording_overlay()
             
-            category = classify_error_message(str(exc))
-            user_msg = user_message_for_category(category)
+            info = self._provider_user_error(exc, provider=provider_used)
+            category = info.category
+            user_msg = info.message
+            error_payload = self._provider_error_event(exc, provider=provider_used, session_id=session_id)
             logger.warning(f"Pipeline task failure category={category.value}: {exc}")
             self._emit_workflow_event(
                 message=f"Pipeline task failed: {user_msg}",
@@ -2956,12 +2982,12 @@ class ScriberWebController:
                 milestone=True,
                 outcome="failure",
                 error_category=category.value,
-                meta={"error": str(exc)},
+                meta={"error": str(exc), "provider_error_code": info.code},
             )
             
             # Broadcast error to frontend
             self._loop.call_soon_threadsafe(
-                lambda msg=user_msg: asyncio.create_task(_broadcast_error(msg))
+                lambda payload=error_payload: asyncio.create_task(_broadcast_error(payload))
             )
             
             failed_current = None
@@ -3797,14 +3823,17 @@ class ScriberWebController:
                 if session_id != self._session_id:
                     return
                 logger.error(f"Pipeline error callback: {error_msg}")
-                self._record_provider_failure(self._active_provider or "", error_msg)
+                provider_used = self._active_provider
+                self._record_provider_failure(provider_used or "", error_msg)
                 self._set_recording_state(RecordingState.FAILED, context="pipeline_error")
                 self._set_status("Error")
                 self._overlay_audio_enabled = False
                 hide_recording_overlay()
 
-                category = classify_error_message(error_msg)
-                user_msg = user_message_for_category(category)
+                info = self._provider_user_error(error_msg, provider=provider_used)
+                category = info.category
+                user_msg = info.message
+                error_payload = self._provider_error_event(error_msg, provider=provider_used, session_id=session_id)
                 logger.warning(f"Pipeline error category={category.value}: {error_msg}")
                 self._emit_workflow_event(
                     message=f"Pipeline error: {user_msg}",
@@ -3819,12 +3848,12 @@ class ScriberWebController:
                     milestone=True,
                     outcome="failure",
                     error_category=category.value,
-                    meta={"error": error_msg},
+                    meta={"error": error_msg, "provider_error_code": info.code},
                 )
 
                 # Broadcast error to frontend and stop the pipeline
                 def schedule_cleanup():
-                    asyncio.create_task(self.broadcast(error_event(user_msg, session_id=session_id)))
+                    asyncio.create_task(self.broadcast(error_payload))
                     # Schedule pipeline stop to clean up properly
                     asyncio.create_task(self._emergency_stop_pipeline(session_id=session_id))
 
@@ -3861,6 +3890,8 @@ class ScriberWebController:
             try:
                 live_provider = self._select_available_provider()
             except Exception as exc:
+                provider_used = self._active_provider or Config.DEFAULT_STT_SERVICE
+                info = self._provider_user_error(exc, provider=provider_used)
                 self._set_recording_state(RecordingState.FAILED, context="start_listening_provider_select")
                 self._set_status("Error")
                 self._overlay_audio_enabled = False
@@ -3874,7 +3905,7 @@ class ScriberWebController:
                 self._clear_hot_path_tracer(session_id)
                 if failed:
                     failed.finish("failed")
-                    failed.append_final_text(f"[Error] {exc}")
+                    failed.append_final_text(f"[Error] {info.message}")
                     self._add_to_history(failed)
                     await self._save_transcript_to_db_async(failed)
                     await self._broadcast_history_updated(record=failed, reason="session_failed")
@@ -3886,13 +3917,13 @@ class ScriberWebController:
                     level="ERROR",
                     session_id=session_id,
                     record=rec,
-                    provider=self._active_provider,
+                    provider=provider_used,
                     milestone=True,
                     outcome="failure",
-                    error_category=classify_error_message(str(exc)).value,
-                    meta={"error": str(exc)},
+                    error_category=info.category.value,
+                    meta={"error": str(exc), "provider_error_code": info.code},
                 )
-                await self.broadcast(error_event(str(exc), session_id=session_id))
+                await self.broadcast(self._provider_error_event(exc, provider=provider_used, session_id=session_id))
                 return
 
             self._active_provider = live_provider
@@ -4055,11 +4086,12 @@ class ScriberWebController:
             await self.broadcast(transcribing_payload)
 
         stop_error: Exception | None = None
+        stop_error_info: ProviderUserError | None = None
         retrigger_hotkey_toggle = False
         try:
             if pipeline:
                 await pipeline.stop()
-                self._record_provider_success(self._active_provider or "")
+                self._record_provider_success(provider_used or "")
              
             # Now that pipeline has stopped and transcription callback has fired,
             # clear _current to prevent any further modifications
@@ -4080,10 +4112,11 @@ class ScriberWebController:
                     pass
         except Exception as exc:
             stop_error = exc
-            self._record_provider_failure(self._active_provider or "", exc)
+            stop_error_info = self._provider_user_error(exc, provider=provider_used)
+            self._record_provider_failure(provider_used or "", exc)
             logger.exception("Error while stopping live pipeline")
-            category = classify_error_message(str(exc))
-            user_msg = user_message_for_category(category)
+            category = stop_error_info.category
+            user_msg = stop_error_info.message
             self._emit_workflow_event(
                 message=f"Live mic stop failed: {user_msg}",
                 event="api.session.failed",
@@ -4096,11 +4129,11 @@ class ScriberWebController:
                 milestone=True,
                 outcome="failure",
                 error_category=category.value,
-                meta={"error": str(exc)},
+                meta={"error": str(exc), "provider_error_code": stop_error_info.code},
             )
             self._overlay_audio_enabled = False
             hide_recording_overlay()
-            error_payload = error_event(user_msg, session_id=session_id)
+            error_payload = self._provider_error_event(exc, provider=provider_used, session_id=session_id)
             await self.broadcast(error_payload)
         finally:
             async with self._listening_lock:
@@ -4125,7 +4158,8 @@ class ScriberWebController:
             if current:
                 current.finish("failed" if stop_error else "completed")
                 if stop_error:
-                    err_line = f"[Error] {user_message_for_category(classify_error_message(str(stop_error)))}"
+                    info = stop_error_info or self._provider_user_error(stop_error, provider=provider_used)
+                    err_line = f"[Error] {info.message}"
                     current.append_final_text(err_line)
                 self._add_to_history(current)
                 await self._save_transcript_to_db_async(current)
@@ -4150,7 +4184,9 @@ class ScriberWebController:
                     milestone=True,
                     duration_ms=duration_ms,
                     outcome="success" if not stop_error else "failure",
-                    error_category=classify_error_message(str(stop_error)).value if stop_error else None,
+                    error_category=(stop_error_info or self._provider_user_error(stop_error, provider=provider_used)).category.value
+                    if stop_error
+                    else None,
                 )
             self._mark_hot_path(session_id, "session_finished")
             self._emit_hot_path_report_once(session_id, required_marker=None)
