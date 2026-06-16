@@ -73,7 +73,8 @@ async def test_stop_times_out_and_cancels():
     pipeline._start_done.clear()
     pipeline.task = _DummyTask(pipeline._start_done, set_done_on_stop=False)
 
-    await pipeline.stop(timeout_secs=0.01)
+    with pytest.raises(RuntimeError, match="Transcription did not finish within"):
+        await pipeline.stop(timeout_secs=0.01)
 
     assert pipeline.task.stop_when_done_called is True
     assert pipeline.task.cancel_called is True

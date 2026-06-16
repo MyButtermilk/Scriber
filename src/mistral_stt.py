@@ -409,6 +409,7 @@ class MistralAsyncProcessor(FrameProcessor):
                         )
             except Exception as exc:
                 logger.error(f"Mistral async transcription failed: {exc}")
+                await self.push_frame(ErrorFrame(error=f"mistral async error: {exc}"), direction)
             finally:
                 self._reset_buffer()
             await self.push_frame(frame, direction)

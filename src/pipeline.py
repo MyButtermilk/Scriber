@@ -631,25 +631,34 @@ def _resolve_mic_device(device_name: str) -> str:
 
 
 class ConnectionErrorHandlerProcessor(FrameProcessor):
-    """Catches connection errors (e.g., Soniox websocket timeout) and triggers cleanup."""
+    """Records provider errors and triggers capture cleanup for connection failures."""
 
     def __init__(
         self,
         on_error: Optional[Callable[[str], None]] = None,
         cleanup_callback: Optional[Callable[[], None]] = None,
+        on_provider_error: Optional[Callable[[str], None]] = None,
     ):
         super().__init__()
         self.on_error = on_error
         self.cleanup_callback = cleanup_callback
+        self.on_provider_error = on_provider_error
         self._error_triggered = False
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
 
-        # Catch ErrorFrames and handle connection errors
+        # Catch STT ErrorFrames. All provider errors are terminal for the active
+        # live recording; connection failures additionally stop capture early.
         if isinstance(frame, ErrorFrame) and not self._error_triggered:
             error_msg = str(frame.error) if hasattr(frame, 'error') else str(frame)
             error_lower = error_msg.lower()
+
+            if self.on_provider_error:
+                try:
+                    self.on_provider_error(error_msg)
+                except Exception as e:
+                    logger.warning(f"Provider error callback failed: {e}")
 
             # Check for connection-related errors
             is_connection_error = (
@@ -738,9 +747,15 @@ class ScriberPipeline:
         self.runner = None
         self.audio_input = None
         self.is_active = False
+        self._terminal_error: str | None = None
         self._audio_cleanup_lock = asyncio.Lock()
         self._start_done = asyncio.Event()
         self._start_done.set()
+
+    def _record_terminal_error(self, error_msg: str) -> None:
+        normalized = str(error_msg or "").strip()
+        if normalized and not self._terminal_error:
+            self._terminal_error = normalized
 
     async def _cleanup_audio_input(self) -> None:
         audio_input = self.audio_input
@@ -1025,6 +1040,7 @@ class ScriberPipeline:
         if self.is_active:
             return
         logger.info(f"Starting Scriber Pipeline with {self.service_name}")
+        self._terminal_error = None
         self._start_done.clear()
         try:
             async with aiohttp.ClientSession() as session:
@@ -1111,6 +1127,7 @@ class ScriberPipeline:
                 error_handler = ConnectionErrorHandlerProcessor(
                     on_error=self.on_error,
                     cleanup_callback=sync_cleanup,
+                    on_provider_error=self._record_terminal_error,
                 )
 
                 steps = [self.audio_input, stt_service, error_handler]
@@ -1148,12 +1165,14 @@ class ScriberPipeline:
 
         except (ValueError, ImportError) as e:
             logger.error(f"Configuration error: {e}")
+            self._record_terminal_error(str(e))
             self.is_active = False
             if self.on_status_change:
                 self.on_status_change(f"Error: {e}")
             raise
         except Exception as e:
             logger.error(f"Error starting pipeline: {e}")
+            self._record_terminal_error(str(e))
             self.is_active = False
             if self.on_status_change:
                 self.on_status_change("Error")
@@ -1635,11 +1654,15 @@ class ScriberPipeline:
         if self.task and self.task.has_finished():
             self.is_active = False
             if self.on_status_change:
-                self.on_status_change("Stopped")
+                self.on_status_change("Error" if self._terminal_error else "Stopped")
             await self._cleanup_audio_input()
+            if self._terminal_error:
+                raise RuntimeError(self._terminal_error)
             return
         if not self.is_active:
             await self._cleanup_audio_input()
+            if self._terminal_error:
+                raise RuntimeError(self._terminal_error)
             return
         logger.info("Stopping Scriber Pipeline")
 
@@ -1783,6 +1806,9 @@ class ScriberPipeline:
             await asyncio.wait_for(self._start_done.wait(), timeout=wait_timeout)
         except asyncio.TimeoutError:
             logger.warning(f"Timeout while stopping pipeline (>{wait_timeout}s); forcing cancel")
+            self._record_terminal_error(
+                f"Transcription did not finish within {wait_timeout:g} seconds."
+            )
             if self.task and not self.task.has_finished():
                 try:
                     await self.task.cancel(reason="stop timeout")
@@ -1830,4 +1856,6 @@ class ScriberPipeline:
         await self._cleanup_audio_input()
         self.is_active = False
         if self.on_status_change:
-            self.on_status_change("Stopped")
+            self.on_status_change("Error" if self._terminal_error else "Stopped")
+        if self._terminal_error:
+            raise RuntimeError(self._terminal_error)

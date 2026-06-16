@@ -1232,10 +1232,13 @@ async def test_emergency_stop_clears_state_and_stopping_flag():
 
 
 class _StopFailPipeline:
-    service_name = "openai"
+    service_name = "azure_mai"
 
     async def stop(self):
-        raise RuntimeError("stop failed")
+        raise RuntimeError(
+            "azure mai error: Azure MAI transcription failed (503): "
+            "MAI service returned an error: ServiceUnavailable - no healthy upstream"
+        )
 
 
 @pytest.mark.asyncio
@@ -1252,15 +1255,23 @@ async def test_stop_listening_marks_failed_when_stop_raises():
     ctl._pipeline_task = None
 
     with (
-        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock,
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
         patch("src.web_api.show_transcribing_overlay"),
         patch("src.web_api.hide_recording_overlay"),
     ):
         await ctl.stop_listening()
 
+    error_payloads = [
+        call.args[0]
+        for call in broadcast_mock.await_args_list
+        if call.args and call.args[0].get("type") == "error"
+    ]
+
     assert rec.status == "failed"
-    assert "[Error] stop failed" in rec.content
+    assert error_payloads
+    assert error_payloads[-1]["message"] == "STT service is temporarily unavailable. Please try again shortly."
+    assert "[Error] STT service is temporarily unavailable. Please try again shortly." in rec.content
     assert ctl._status == "Error"
     assert rec in ctl._history
 

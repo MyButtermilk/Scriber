@@ -4082,8 +4082,10 @@ class ScriberWebController:
             stop_error = exc
             self._record_provider_failure(self._active_provider or "", exc)
             logger.exception("Error while stopping live pipeline")
+            category = classify_error_message(str(exc))
+            user_msg = user_message_for_category(category)
             self._emit_workflow_event(
-                message="Live mic stop failed",
+                message=f"Live mic stop failed: {user_msg}",
                 event="api.session.failed",
                 workflow="live_mic",
                 stage="session_stop",
@@ -4093,12 +4095,12 @@ class ScriberWebController:
                 provider=provider_used,
                 milestone=True,
                 outcome="failure",
-                error_category=classify_error_message(str(exc)).value,
+                error_category=category.value,
                 meta={"error": str(exc)},
             )
             self._overlay_audio_enabled = False
             hide_recording_overlay()
-            error_payload = error_event(f"Failed to stop recording cleanly: {exc}", session_id=session_id)
+            error_payload = error_event(user_msg, session_id=session_id)
             await self.broadcast(error_payload)
         finally:
             async with self._listening_lock:
@@ -4123,7 +4125,7 @@ class ScriberWebController:
             if current:
                 current.finish("failed" if stop_error else "completed")
                 if stop_error:
-                    err_line = f"[Error] {stop_error}"
+                    err_line = f"[Error] {user_message_for_category(classify_error_message(str(stop_error)))}"
                     current.append_final_text(err_line)
                 self._add_to_history(current)
                 await self._save_transcript_to_db_async(current)
