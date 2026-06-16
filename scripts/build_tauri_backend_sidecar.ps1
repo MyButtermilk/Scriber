@@ -35,9 +35,6 @@ param(
     [switch]$ValidateSlimMediaTools,
     [switch]$ReuseSidecarIfUnchanged,
     [string]$SidecarCacheRoot = "",
-    [switch]$PrunePySide6Translations,
-    [switch]$PrunePySide6UnusedPlugins,
-    [switch]$PrunePySide6SoftwareOpenGl,
     [switch]$BundleRustAudioSidecar,
     [switch]$CopyToTauriRelease
 )
@@ -200,10 +197,7 @@ function Get-SidecarInputManifest {
         [bool]$UseProfileB,
         [bool]$UseGyanEssentials,
         [bool]$SkipFfprobe,
-        [bool]$ValidateSlimBundle,
-        [bool]$PruneTranslations,
-        [bool]$PrunePlugins,
-        [bool]$PruneSoftwareOpenGl
+        [bool]$ValidateSlimBundle
     )
 
     $pythonVersion = (& $Python -c "import sys; print(sys.version)" 2>$null) -join "`n"
@@ -234,9 +228,6 @@ function Get-SidecarInputManifest {
             useGyanFfmpegEssentials = $UseGyanEssentials
             skipBundledFfprobe = $SkipFfprobe
             validateSlimMediaTools = $ValidateSlimBundle
-            prunePySide6Translations = $PruneTranslations
-            prunePySide6UnusedPlugins = $PrunePlugins
-            prunePySide6SoftwareOpenGl = $PruneSoftwareOpenGl
         }
         files = Get-InputFileEntries -Root $Root -RelativePaths $inputPaths
         tools = $tools
@@ -312,79 +303,6 @@ function Copy-RustAudioSidecarToTauriRelease {
     }
 }
 
-function Remove-SidecarPath {
-    param(
-        [string]$SidecarDir,
-        [string]$RelativePath,
-        [string]$Reason,
-        [System.Collections.Generic.List[object]]$Removed
-    )
-
-    $path = Join-Path $SidecarDir $RelativePath
-    if (-not (Test-Path -LiteralPath $path)) {
-        return
-    }
-    Assert-UnderRoot -Root $SidecarDir -Path $path -Label "PySide6 prune target"
-    if (Test-Path -LiteralPath $path -PathType Leaf) {
-        $files = @(Get-Item -LiteralPath $path)
-    } else {
-        $files = @(Get-ChildItem -LiteralPath $path -Recurse -File -ErrorAction SilentlyContinue)
-    }
-    $bytes = ($files | Measure-Object Length -Sum).Sum
-    Remove-Item -LiteralPath $path -Recurse -Force
-    $Removed.Add([ordered]@{
-        path = $RelativePath
-        reason = $Reason
-        removedFileCount = $files.Count
-        removedBytes = [int64]$bytes
-    }) | Out-Null
-}
-
-function Invoke-PySide6Pruning {
-    param(
-        [string]$SidecarDir,
-        [bool]$PruneTranslations,
-        [bool]$PrunePlugins,
-        [bool]$PruneSoftwareOpenGl
-    )
-
-    $removed = [System.Collections.Generic.List[object]]::new()
-    $pysideRoot = Join-Path $SidecarDir "_internal\PySide6"
-    if (-not (Test-Path -LiteralPath $pysideRoot -PathType Container)) {
-        return @()
-    }
-    if ($PruneTranslations) {
-        Remove-SidecarPath -SidecarDir $SidecarDir -RelativePath "_internal\PySide6\translations" -Reason "Qt translations are not used by the native overlay" -Removed $removed
-    }
-    if ($PrunePlugins) {
-        $pluginsRoot = Join-Path $pysideRoot "plugins"
-        if (Test-Path -LiteralPath $pluginsRoot -PathType Container) {
-            $keep = @(
-                "plugins\platforms\qwindows.dll",
-                "plugins\platforms\qdirect2d.dll",
-                "plugins\styles\qmodernwindowsstyle.dll"
-            )
-            $pluginFiles = Get-ChildItem -LiteralPath $pluginsRoot -Recurse -File
-            foreach ($pluginFile in $pluginFiles) {
-                $relativeToPySide = Get-RelativePath -Root $pysideRoot -Path $pluginFile.FullName
-                if ($keep -contains $relativeToPySide) {
-                    continue
-                }
-                Remove-SidecarPath -SidecarDir $SidecarDir -RelativePath (Join-Path "_internal\PySide6" $relativeToPySide) -Reason "Qt plugin not used by the native overlay" -Removed $removed
-            }
-            foreach ($pluginDir in (Get-ChildItem -LiteralPath $pluginsRoot -Recurse -Directory | Sort-Object FullName -Descending)) {
-                if (-not (Get-ChildItem -LiteralPath $pluginDir.FullName -Force -ErrorAction SilentlyContinue)) {
-                    Remove-Item -LiteralPath $pluginDir.FullName -Force
-                }
-            }
-        }
-    }
-    if ($PruneSoftwareOpenGl) {
-        Remove-SidecarPath -SidecarDir $SidecarDir -RelativePath "_internal\PySide6\opengl32sw.dll" -Reason "Optional Qt software OpenGL fallback" -Removed $removed
-    }
-    return @($removed)
-}
-
 function Write-SidecarBuildMetadata {
     param(
         [string]$SidecarDir,
@@ -394,7 +312,6 @@ function Write-SidecarBuildMetadata {
         [string]$CacheKey,
         [object]$PreparedMediaTools,
         [object[]]$MediaToolsCopied,
-        [object[]]$PySide6Pruned,
         [object]$RustAudioSidecarCopied,
         [string]$CopiedTo
     )
@@ -417,14 +334,10 @@ function Write-SidecarBuildMetadata {
             useGyanFfmpegEssentials = [bool]$UseGyanFfmpegEssentials
             skipBundledFfprobe = [bool]$SkipBundledFfprobe
             validateSlimMediaTools = [bool]$ValidateSlimMediaTools
-            prunePySide6Translations = [bool]$PrunePySide6Translations
-            prunePySide6UnusedPlugins = [bool]$PrunePySide6UnusedPlugins
-            prunePySide6SoftwareOpenGl = [bool]$PrunePySide6SoftwareOpenGl
             bundleRustAudioSidecar = [bool]$BundleRustAudioSidecar
         }
         preparedMediaTools = $PreparedMediaTools
         mediaToolsCopied = $MediaToolsCopied
-        pySide6Pruned = $PySide6Pruned
         rustAudioSidecarCopied = $RustAudioSidecarCopied
         totalDurationMs = [int64]$script:BuildTimingStarted.ElapsedMilliseconds
         phases = @($script:BuildTimingPhases)
@@ -915,7 +828,6 @@ $cacheEnabled = [bool]$ReuseSidecarIfUnchanged
 $cacheHit = $false
 $cacheKey = $null
 $cacheDir = $null
-$pySide6Pruned = @()
 
 if ($cacheEnabled) {
     Invoke-TimedStep -Label "sidecar-cache-key" -Command {
@@ -927,10 +839,7 @@ if ($cacheEnabled) {
             -UseProfileB ([bool]$UseProfileBFfmpeg) `
             -UseGyanEssentials ([bool]$UseGyanFfmpegEssentials) `
             -SkipFfprobe ([bool]$SkipBundledFfprobe) `
-            -ValidateSlimBundle ([bool]$ValidateSlimMediaTools) `
-            -PruneTranslations ([bool]$PrunePySide6Translations) `
-            -PrunePlugins ([bool]$PrunePySide6UnusedPlugins) `
-            -PruneSoftwareOpenGl ([bool]$PrunePySide6SoftwareOpenGl)
+            -ValidateSlimBundle ([bool]$ValidateSlimMediaTools)
         $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
         $script:SidecarInputManifest = $inputManifest
         $script:SidecarInputManifestJson = $inputManifestJson
@@ -975,17 +884,6 @@ if (-not (Test-Path $sidecarExe)) {
 }
 if (-not (Test-Path $sidecarExe)) {
     throw "Sidecar build completed but executable was not found under $sidecarDir."
-}
-
-if (-not $cacheHit -and ($PrunePySide6Translations -or $PrunePySide6UnusedPlugins -or $PrunePySide6SoftwareOpenGl)) {
-    Invoke-TimedStep -Label "pyside6-prune" -Command {
-        $script:PySide6Pruned = Invoke-PySide6Pruning `
-            -SidecarDir $sidecarDir `
-            -PruneTranslations ([bool]$PrunePySide6Translations) `
-            -PrunePlugins ([bool]$PrunePySide6UnusedPlugins) `
-            -PruneSoftwareOpenGl ([bool]$PrunePySide6SoftwareOpenGl)
-    }
-    $pySide6Pruned = @($script:PySide6Pruned)
 }
 
 Invoke-TimedStep -Label "frozen-runtime-import-check" -Command {
@@ -1048,7 +946,6 @@ if ($CopyToTauriRelease) {
         -CacheKey $cacheKey `
         -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
-        -PySide6Pruned $pySide6Pruned `
         -RustAudioSidecarCopied $rustAudioSidecarCopied `
         -CopiedTo $copiedTo
     if (Test-Path -LiteralPath $copiedTo -PathType Container) {
@@ -1063,7 +960,6 @@ if ($CopyToTauriRelease) {
         -CacheKey $cacheKey `
         -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
-        -PySide6Pruned $pySide6Pruned `
         -RustAudioSidecarCopied $rustAudioSidecarCopied `
         -CopiedTo $copiedTo
 }
@@ -1076,7 +972,6 @@ if ($CopyToTauriRelease) {
     cacheHit = $cacheHit
     cacheKey = $cacheKey
     mediaToolsCopied = $mediaToolsCopied
-    pySide6Pruned = $pySide6Pruned
     rustAudioSidecarCopied = $rustAudioSidecarCopied
     sidecarBuildMetadata = $metadataPath
     copiedToTauriRelease = $copiedTo

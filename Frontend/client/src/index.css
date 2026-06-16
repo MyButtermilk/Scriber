@@ -302,6 +302,15 @@ html:has(body[data-scroll-locked]) {
     background: var(--neu-bg);
   }
 
+  html[data-scriber-overlay-window="true"],
+  html[data-scriber-overlay-window="true"] body,
+  html[data-scriber-overlay-window="true"] #root {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent !important;
+  }
+
   h1,
   h2,
   h3,

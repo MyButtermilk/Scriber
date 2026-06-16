@@ -12,6 +12,7 @@ import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "
 import { useToast } from "@/hooks/use-toast";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri } from "@/lib/backend";
+import NativeRecordingOverlay from "@/components/NativeRecordingOverlay";
 
 // Keep default route eager for fastest first paint, lazy-load heavier routes.
 import LiveMic from "@/pages/LiveMic";
@@ -107,6 +108,10 @@ function RuntimeShell() {
 }
 
 function App() {
+  if (typeof window !== "undefined" && window.location.search.includes("overlay=1")) {
+    return <NativeRecordingOverlay />;
+  }
+
   const [backendBaseReady, setBackendBaseReady] = useState(!isTauriRuntime());
 
   useEffect(() => {

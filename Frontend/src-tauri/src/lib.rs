@@ -1,6 +1,7 @@
 mod audio_devices;
 mod audio_frame_pipe;
 mod audio_sidecar_client;
+mod native_overlay;
 mod redaction;
 mod shell_ipc;
 
@@ -856,6 +857,8 @@ pub fn run() {
         .manage(backend_manager)
         .setup(|app| {
             configure_desktop_shell(app)?;
+            native_overlay::create_overlay_window(app)?;
+            native_overlay::set_app_handle(app.handle().clone());
             apply_default_desktop_autostart(app.handle());
             let manager = app.state::<BackendManager>();
             manager.set_resource_dir(app.path().resource_dir().ok());

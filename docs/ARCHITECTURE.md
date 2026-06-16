@@ -71,7 +71,8 @@ Key modules:
 - `src/runtime/media_tools.py`: ffmpeg/ffprobe resolution.
 - `src/core/`: REST/WebSocket contracts, state machine, circuit breaker, retry
   and provider support types, hot-path tracing, logging helpers.
-- `src/overlay.py`: native recording overlay, PySide6 preferred.
+- `src/native_overlay.py`: backend facade for the Tauri-owned recording overlay
+  controlled through private shell IPC.
 
 The backend remains the source of truth for recording state, device selection,
 provider calls, transcript storage, and job lifecycle.
@@ -259,9 +260,9 @@ stacks.
 
 ## Legacy Fallback
 
-Tkinter UI and Python tray code remain useful for diagnostics, development, and
-emergency fallback. They are not the primary architecture for new Windows
-desktop behavior.
+Legacy Python UI and tray code remain source-only diagnostic fallback. They are
+not part of the standard packaged backend and are not the primary architecture
+for new Windows desktop behavior.
 
 New desktop lifecycle features should be implemented in Tauri/Rust when they
 belong to shell ownership, or in the Python backend when they belong to app

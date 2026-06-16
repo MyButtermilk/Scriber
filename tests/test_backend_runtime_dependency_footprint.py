@@ -16,9 +16,6 @@ def write_fake_sidecar(root: Path) -> Path:
     internal_files = {
         "onnxruntime/capi/onnxruntime.dll": b"o" * 4096,
         "onnxruntime/capi/onnxruntime_pybind11_state.pyd": b"p" * 4096,
-        "PySide6/QtCore.pyd": b"q" * 1024,
-        "PySide6/QtGui.pyd": b"g" * 1024,
-        "PySide6/QtWidgets.pyd": b"w" * 1024,
         "google/__init__.py": b"",
         "grpc/_cython/cygrpc.pyd": b"r" * 1024,
         "PIL/Image.py": b"i" * 1024,
@@ -49,12 +46,18 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
     assert report["summary"]["totalMb"] > 0
     assert report["summary"]["missingRequiredPaths"] == []
     assert report["summary"]["componentMissingRequiredPaths"] == []
-    assert set(report["dependencies"]) == {"scipy", "onnxruntime", "awsSdk"}
+    assert set(report["dependencies"]) == {
+        "scipy",
+        "onnxruntime",
+        "awsSdk",
+        "pythonGuiRuntime",
+    }
     assert set(report["components"]) == {
         "backend",
         "internal",
         "mediaTools",
         "pyside6",
+        "pythonGuiRuntime",
         "googleGrpc",
         "pillow",
     }
@@ -64,12 +67,18 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
     assert report["dependencies"]["awsSdk"]["expectedPresent"] is False
     assert report["dependencies"]["awsSdk"]["totalMb"] == 0
     assert report["dependencies"]["awsSdk"]["missingRequiredPaths"] == []
+    assert report["dependencies"]["pythonGuiRuntime"]["expectedPresent"] is False
+    assert report["dependencies"]["pythonGuiRuntime"]["totalMb"] == 0
+    assert report["dependencies"]["pythonGuiRuntime"]["missingRequiredPaths"] == []
     assert report["dependencies"]["onnxruntime"]["missingRequiredPaths"] == []
     assert report["dependencies"]["onnxruntime"]["topFiles"][0]["path"].startswith(
         "onnxruntime"
     )
     assert report["components"]["mediaTools"]["missingRequiredPaths"] == []
     assert report["components"]["pyside6"]["missingRequiredPaths"] == []
+    assert report["components"]["pyside6"]["disallowedPaths"] == []
+    assert report["components"]["pythonGuiRuntime"]["missingRequiredPaths"] == []
+    assert report["components"]["pythonGuiRuntime"]["disallowedPaths"] == []
     assert report["components"]["googleGrpc"]["missingRequiredPaths"] == []
     assert report["components"]["pillow"]["missingRequiredPaths"] == []
     assert report["components"]["pillow"]["disallowedPaths"] == []
@@ -140,6 +149,27 @@ def test_runtime_dependency_footprint_fails_when_aws_sdk_is_bundled(tmp_path: Pa
     assert "awsSdk" in report["summary"]["unexpectedPresentDependencies"]
 
 
+def test_runtime_dependency_footprint_fails_when_legacy_gui_runtime_is_bundled(tmp_path: Path) -> None:
+    sidecar = write_fake_sidecar(tmp_path / "scriber-backend")
+    pyside = sidecar / "_internal" / "PySide6" / "QtWidgets.pyd"
+    pyside.parent.mkdir(parents=True, exist_ok=True)
+    pyside.write_bytes(b"q" * 1024)
+    customtkinter = sidecar / "_internal" / "customtkinter" / "__init__.py"
+    customtkinter.parent.mkdir(parents=True, exist_ok=True)
+    customtkinter.write_bytes(b"")
+
+    report = build_report(sidecar)
+
+    assert report["ok"] is False
+    assert report["dependencies"]["pythonGuiRuntime"]["unexpectedPresent"] is True
+    assert "pythonGuiRuntime" in report["summary"]["unexpectedPresentDependencies"]
+    assert "pyside6:_internal\\PySide6" in report["summary"]["componentDisallowedPaths"]
+    assert (
+        "pythonGuiRuntime:_internal\\customtkinter"
+        in report["summary"]["componentDisallowedPaths"]
+    )
+
+
 def test_runtime_dependency_footprint_fails_on_prunable_onnxruntime_data(tmp_path: Path) -> None:
     sidecar = write_fake_sidecar(tmp_path / "scriber-backend")
     sample_model = sidecar / "_internal" / "onnxruntime" / "datasets" / "sample.onnx"
@@ -207,22 +237,20 @@ def test_windows_build_and_release_workflow_can_emit_runtime_dependency_footprin
     assert "--max-google-grpc-mb" in build
     assert "--max-pillow-mb" in build
     assert "if ($FastLocalInstaller)" in build
-    assert "$PrunePySide6Translations = $true" in build
-    assert "$PrunePySide6UnusedPlugins = $true" in build
-    assert "$MaxPySide6RuntimeDependencyMB = 65" in build
+    assert "PrunePySide6" not in build
+    assert "$MaxPySide6RuntimeDependencyMB = 65" not in build
     assert "$MaxPillowRuntimeDependencyMB = 6" in build
     assert "$runtimeDependencyFootprint[\"path\"] = $runtimeDependencyFootprintPath" in build
     assert "runtimeDependencyFootprint = $runtimeDependencyFootprint" in build
 
     assert '"-RunRuntimeDependencyFootprint"' in workflow
-    assert '"-PrunePySide6Translations"' in workflow
-    assert '"-PrunePySide6UnusedPlugins"' in workflow
+    assert "PrunePySide6" not in workflow
     assert '"-MaxScipyRuntimeDependencyMB"' in workflow
     assert '"-MaxOnnxRuntimeDependencyMB"' in workflow
     assert '"-MaxPythonRuntimeDependencyMB"' in workflow
     assert '"-MaxBackendRuntimeDependencyMB"' in workflow
     assert '"-MaxInternalRuntimeDependencyMB"' in workflow
     assert '"-MaxMediaToolsRuntimeDependencyMB"' in workflow
-    assert '"-MaxPySide6RuntimeDependencyMB"' in workflow
+    assert '"-MaxPySide6RuntimeDependencyMB"' not in workflow
     assert '"-MaxGoogleGrpcRuntimeDependencyMB"' in workflow
     assert '"-MaxPillowRuntimeDependencyMB"' in workflow

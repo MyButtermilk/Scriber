@@ -120,13 +120,12 @@ Provider latency:
 - Cloud STT finalization can dominate stop-to-text latency.
 - Local app optimization should be guided by hot-path metrics.
 
-PySide6 footprint:
+Legacy GUI footprint:
 
-- PySide6 remains required for the native overlay.
-- Qt translations and unused Qt plugins are pruned in fast local and release
-  builds.
-- Qt software OpenGL remains bundled; remove it only after installed overlay
-  smoke evidence across relevant Windows display modes.
+- The installed recording overlay is Tauri-owned; PySide6/Tk overlay runtimes
+  are no longer part of the standard backend sidecar.
+- Runtime dependency footprint gates reject PySide6, customtkinter, and Tk
+  reintroduction in the packaged backend.
 
 Rust audio:
 

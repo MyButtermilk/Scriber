@@ -36,6 +36,9 @@ def test_standard_requirements_include_audio_runtime_dependencies():
 
     assert "scipy" not in requirements
     assert "onnxruntime" in requirements
+    assert "PySide6-Essentials" not in requirements
+    assert "customtkinter" not in requirements
+    assert "pystray" not in requirements
     assert all("aws" not in line for line in requirements)
     assert all("boto" not in line for line in requirements)
 
@@ -119,6 +122,12 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"scipy",' in spec.split("excludes=[", 1)[1]
     assert '"PIL.AvifImagePlugin",' in spec.split("excludes=[", 1)[1]
     assert '"PIL._avif",' in spec.split("excludes=[", 1)[1]
+    hiddenimports_block = spec.split("hiddenimports = [", 1)[1].split("]", 1)[0]
+    assert '"PySide6.QtCore"' not in hiddenimports_block
+    assert '"PySide6",' in spec.split("excludes=[", 1)[1]
+    assert '"tkinter",' in spec.split("excludes=[", 1)[1]
+    assert '"customtkinter",' in spec.split("excludes=[", 1)[1]
+    assert '"pystray",' in spec.split("excludes=[", 1)[1]
     assert '"boto3",' in spec.split("excludes=[", 1)[1]
     assert '"botocore",' in spec.split("excludes=[", 1)[1]
     assert '"s3transfer",' in spec.split("excludes=[", 1)[1]

@@ -15,7 +15,8 @@ Latest validated local Profile B installer build from 2026-06-12:
 - Installed media tools: about `5.84 MiB`.
 - Profile B portable media-tool build: about `4.98 MiB` for `ffmpeg.exe`,
   `ffprobe.exe`, and required runtime DLLs.
-- PySide6 runtime component: about `62.70 MiB`.
+- Previous PySide6 overlay runtime component: about `62.70 MiB`; current
+  standard builds remove this runtime and render the overlay in Tauri.
 - AWS SDK footprint: absent, `0.00 MiB`.
 - Targeted package/provider-removal tests: `188 passed`.
 - Frontend type check passed.
@@ -83,6 +84,8 @@ Packaging/build:
 - PyInstaller sidecar can be reused through a hash cache.
 - Installed frontend assets are owned by the Tauri WebView bundle and are not
   embedded in the Python/PyInstaller backend sidecar.
+- The recording overlay is owned by Tauri WebView shell IPC, so PySide6/Tk
+  overlay runtimes are excluded from the Python backend sidecar.
 - Frontend dist changes do not invalidate the sidecar cache; the backend static
   frontend fallback is explicit dev/test opt-in through
   `SCRIBER_FRONTEND_DIST_DIR` or a source checkout.
@@ -167,7 +170,8 @@ No-feature-loss constraints:
 
 - No optional installer components.
 - ffmpeg and ffprobe remain bundled in the standard installer.
-- PySide6 remains bundled for the native mic overlay.
+- PySide6, customtkinter, and Tk overlay runtimes remain absent from the
+  standard sidecar; the installed overlay is Tauri-owned.
 - Provider dependencies remain bundled when the provider is still supported by
   backend or UI configuration.
 - Local ASR packaging remains separate from the standard cloud-provider sidecar.
@@ -182,15 +186,8 @@ Current packaging choices:
   standard sidecar excludes `boto3`, `botocore`, `s3transfer`, `aioboto3`,
   `aiobotocore`, and Pipecat AWS service modules.
 - Pillow AVIF binaries are excluded.
-
-PySide6 size reduction:
-
-- Qt translations and unused Qt plugins are pruned from fast local and release
-  installer builds.
-- `opengl32sw.dll` remains bundled as the Qt software OpenGL fallback.
-
-Do not prune the software OpenGL DLL by default without installed overlay smoke
-evidence across relevant Windows display modes.
+- Runtime dependency footprint gates reject SciPy, AWS SDK packages, PySide6,
+  customtkinter, and Tk reintroduction in the packaged backend.
 
 ## Remaining Performance Opportunities
 
@@ -202,8 +199,6 @@ Highest-value current opportunities:
   rerenders from status/history WebSocket events.
 - Keep investigating UI responsive behavior at narrow widths.
 - Add longer installed idle/live stability runs with CPU and memory budgets.
-- Consider pruning Qt software OpenGL only after visible overlay smoke coverage
-  is robust across relevant Windows display modes.
 
 Lower-value or risky opportunities:
 
@@ -268,11 +263,10 @@ Recommended sequence:
    and must stay a prototype until it proves a material win over the current
    Python `sounddevice` path.
 
-Do not remove `pycaw`/`comtypes`, `keyboard`/`pyautogui`/Tkinter fallbacks, or
-`sounddevice` until the relevant Rust replacement has passed installed Windows
-smokes and physical-device coverage. For audio capture, keep `sounddevice`
-available even after the Rust/WASAPI path exists unless a later release plan proves
-there is no support or compatibility loss.
+Do not remove `pycaw`/`comtypes`, `keyboard`/`pyautogui`, or `sounddevice`
+until the relevant Rust replacement has passed installed Windows smokes and
+physical-device coverage. Tk overlay and clipboard fallbacks are no longer part
+of the standard sidecar.
 
 ### 1. Windows Audio Device Events
 
@@ -442,8 +436,8 @@ Current code exploration:
 
 - `src/injector.py` owns live text injection inside the Pipecat pipeline.
 - Clipboard paste uses Win32 via `ctypes`, then `keyboard.press_and_release`.
-- Fallback paths use `pyautogui`, `keyboard.write`, and Tkinter clipboard
-  helpers.
+- Fallback paths use `pyautogui` and `keyboard.write`; Tkinter clipboard helpers
+  were removed from the standard path.
 - `Frontend/src-tauri/src/lib.rs` already has a Windows clipboard helper for
   tray recent transcript copying, but it does not send paste keystrokes or
   preserve/restore clipboard contents for live transcription.

@@ -252,6 +252,10 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                     "audioPrewarmStart",
                     "audioPrewarmStatus",
                     "audioPrewarmStop",
+                    "overlayShow",
+                    "overlayHide",
+                    "overlayAudioLevel",
+                    "overlayStatus",
                 ],
                 "textInjection": true,
                 "nativeDeviceEventsStatus": true,
@@ -262,6 +266,10 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                 "audioSidecar": {
                     "executableAvailable": audio_sidecar_executable_available(),
                     "stdioProtocolVersion": "1",
+                },
+                "nativeOverlay": {
+                    "renderer": "tauri-webview",
+                    "windowLabel": crate::native_overlay::OVERLAY_WINDOW_LABEL,
                 },
                 "audioFrameProtocol": audio_frame_protocol_payload(),
             }),
@@ -312,6 +320,22 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                 err.payload,
             ),
         },
+        "overlayShow" | "overlayHide" | "overlayAudioLevel" | "overlayStatus" => {
+            match crate::native_overlay::handle_shell_command(command, payload) {
+                Ok(payload) => response_line(request_id, true, "", "", started, payload),
+                Err(err) => response_line(
+                    request_id,
+                    false,
+                    "overlayUnavailable",
+                    &err,
+                    started,
+                    json!({
+                        "renderer": "tauri-webview",
+                        "windowLabel": crate::native_overlay::OVERLAY_WINDOW_LABEL,
+                    }),
+                ),
+            }
+        }
         "audioCaptureStart" => match parse_audio_capture_start_options(payload) {
             Ok(options) => {
                 let result = call_audio_sidecar_command(
@@ -2210,6 +2234,20 @@ mod tests {
             .unwrap()
             .iter()
             .any(|command| command == "audioPrewarmStart"));
+        assert_eq!(
+            value["payload"]["nativeOverlay"]["windowLabel"],
+            crate::native_overlay::OVERLAY_WINDOW_LABEL
+        );
+        assert!(value["payload"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command == "overlayShow"));
+        assert!(value["payload"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command == "overlayHide"));
     }
 
     #[test]

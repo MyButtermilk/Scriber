@@ -207,8 +207,8 @@ Recent local release evidence:
 - Backend resource tree: about 228 MiB.
 - Bundled Profile B ffmpeg/ffprobe media tools: about 5.84 MiB installed.
 - AWS Transcribe support and AWS SDK packages are not part of the standard app.
-- Fast local and release builds prune PySide6 translations and unused Qt
-  plugins while keeping the native overlay available.
+- The recording overlay is rendered by Tauri; PySide6/Tk overlay runtimes are
+  not part of the standard backend sidecar.
 - Installed frontend and media-preparation smokes pass in the standard local
   build flow.
 

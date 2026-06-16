@@ -94,29 +94,10 @@ def test_windows_clipboard_get_text_reports_open_failure():
         patch("src.injector.sys.platform", "win32"),
         patch("src.injector.ctypes.windll", windll, create=True),
         patch("src.injector.time.sleep", return_value=None),
-        patch("src.injector._tkinter_clipboard_get_text", return_value=_CLIPBOARD_ACCESS_FAILED),
     ):
         result = _windows_clipboard_get_text(retries=2, delay_secs=0)
 
     assert result is _CLIPBOARD_ACCESS_FAILED
-
-
-def test_windows_clipboard_get_text_uses_tkinter_fallback_after_open_failure():
-    class _User32:
-        def OpenClipboard(self, _owner):
-            return False
-
-    windll = type("_Windll", (), {"user32": _User32(), "kernel32": object()})()
-
-    with (
-        patch("src.injector.sys.platform", "win32"),
-        patch("src.injector.ctypes.windll", windll, create=True),
-        patch("src.injector.time.sleep", return_value=None),
-        patch("src.injector._tkinter_clipboard_get_text", return_value="fallback text"),
-    ):
-        result = _windows_clipboard_get_text(retries=2, delay_secs=0)
-
-    assert result == "fallback text"
 
 
 def test_windows_clipboard_get_text_distinguishes_missing_text_format():
@@ -141,7 +122,7 @@ def test_windows_clipboard_get_text_distinguishes_missing_text_format():
     assert result is None
 
 
-def test_windows_clipboard_set_text_uses_tkinter_fallback_after_open_failure():
+def test_windows_clipboard_set_text_reports_open_failure_without_gui_fallback():
     class _User32:
         def OpenClipboard(self, _owner):
             return False
@@ -152,9 +133,7 @@ def test_windows_clipboard_set_text_uses_tkinter_fallback_after_open_failure():
         patch("src.injector.sys.platform", "win32"),
         patch("src.injector.ctypes.windll", windll, create=True),
         patch("src.injector.time.sleep", return_value=None),
-        patch("src.injector._tkinter_clipboard_set_text", return_value=True) as fallback,
     ):
         result = _windows_clipboard_set_text("new text", retries=2, delay_secs=0)
 
-    assert result is True
-    fallback.assert_called_once_with("new text")
+    assert result is False

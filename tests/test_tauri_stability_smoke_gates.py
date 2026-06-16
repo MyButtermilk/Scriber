@@ -108,7 +108,7 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "function Invoke-ScriberFfmpegProfileManifest" in sidecar
     assert "function Get-SidecarInputManifest" in sidecar
     assert "function Write-SidecarBuildMetadata" in sidecar
-    assert "function Invoke-PySide6Pruning" in sidecar
+    assert "PySide6" not in sidecar
     assert "[switch]$UseProfileBFfmpeg" in sidecar
     assert "prepare-profile-b-ffmpeg" in sidecar
     assert "scripts\\ffmpeg\\build_profile_b_msys2.ps1" in sidecar
@@ -122,9 +122,6 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert 'Test-MediaToolExecutable -Path $copiedFfprobe -Name "ffprobe"' in sidecar
     assert "[switch]$ValidateSlimMediaTools" in sidecar
     assert "[switch]$ReuseSidecarIfUnchanged" in sidecar
-    assert "[switch]$PrunePySide6Translations" in sidecar
-    assert "[switch]$PrunePySide6UnusedPlugins" in sidecar
-    assert "[switch]$PrunePySide6SoftwareOpenGl" in sidecar
     assert "[switch]$BundleRustAudioSidecar" in sidecar
     assert "function Copy-RustAudioSidecarToTauriRelease" in sidecar
     assert "cargo build --release --bin scriber-audio-sidecar" in sidecar
@@ -191,14 +188,12 @@ def test_gyan_essentials_prepare_script_downloads_and_verifies_archive() -> None
 def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> None:
     build = read_script("scripts/build_windows.ps1")
 
+    assert "PrunePySide6" not in build
     assert "[switch]$SkipBundledFfprobe" in build
     assert "[switch]$ValidateSlimMediaTools" in build
     assert "[switch]$UseProfileBFfmpeg" in build
     assert '[string]$MediaToolsDir = ""' in build
     assert "[switch]$ReuseSidecarIfUnchanged" in build
-    assert "[switch]$PrunePySide6Translations" in build
-    assert "[switch]$PrunePySide6UnusedPlugins" in build
-    assert "[switch]$PrunePySide6SoftwareOpenGl" in build
     assert "[switch]$FastLocalInstaller" in build
     assert "[switch]$SkipPythonTests" in build
     assert "[switch]$SkipFrontendTypeCheck" in build
@@ -211,7 +206,6 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert 'SwitchName "-MediaToolsDir"' in build
     assert '$commandArgument = if ($Value -match' in build
     assert 'SwitchName "-ReuseSidecarIfUnchanged"' in build
-    assert 'SwitchName "-PrunePySide6Translations"' in build
     assert '$ConfigText.Replace($copySwitch, " $SwitchName$copySwitch")' in build
     assert "build-timing.json" in build
     assert "finally {" in build
@@ -222,15 +216,12 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "$ReuseSidecarIfUnchanged = $true" in build
     assert "$SkipPythonTests = $true" in build
     assert "$UseProfileBFfmpeg = $true" in build
-    assert "$PrunePySide6Translations = $true" in build
-    assert "$PrunePySide6UnusedPlugins = $true" in build
-    assert "$PrunePySide6SoftwareOpenGl = $true" not in build
     assert "if ($UseProfileBFfmpeg)" in build
     assert "$RunMediaPreparationSmoke = $true" in build
     assert "$RunRuntimeDependencyFootprint = $true" in build
     assert "$MaxBackendRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 325 } else { 500 }" in build
     assert "$MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 10 } else { 210 }" in build
-    assert "$MaxPySide6RuntimeDependencyMB = 65" in build
+    assert "$MaxPySide6RuntimeDependencyMB = 65" not in build
     assert "if (-not $SkipChecks -and -not $SkipPythonTests)" in build
     assert "if (-not $SkipChecks -and -not $SkipFrontendTypeCheck)" in build
 
@@ -248,6 +239,7 @@ def test_tauri_before_bundle_uses_profile_b_standard_media_tools() -> None:
 def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> None:
     workflow = read_script(".github/workflows/release-windows.yml")
 
+    assert "PrunePySide6" not in workflow
     assert "Set up MSYS2" in workflow
     assert "msys2/setup-msys2@v2" in workflow
     assert "Build FFmpeg Profile B media tools" in workflow
@@ -257,15 +249,32 @@ def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> N
     assert '"-MediaToolsDir"' in workflow
     assert "$env:SCRIBER_RELEASE_MEDIA_TOOLS_DIR" in workflow
     assert '"-ValidateSlimMediaTools"' in workflow
-    assert '"-PrunePySide6Translations"' in workflow
-    assert '"-PrunePySide6UnusedPlugins"' in workflow
-    assert '"-PrunePySide6SoftwareOpenGl"' not in workflow
     assert '"325"' in workflow
     assert '"10"' in workflow
-    assert '"65"' in workflow
     assert "choco install ffmpeg" not in workflow
     assert "prepare_gyan_ffmpeg_essentials.ps1" not in workflow
     assert '"-RunMediaPreparationSmoke"' in workflow
+
+
+def test_native_recording_overlay_is_tauri_owned() -> None:
+    web_api = read_script("src/web_api.py")
+    native_overlay_py = read_script("src/native_overlay.py")
+    native_overlay_rs = read_script("Frontend/src-tauri/src/native_overlay.rs")
+    shell_ipc = read_script("Frontend/src-tauri/src/shell_ipc.rs")
+    capabilities = read_script("Frontend/src-tauri/capabilities/default.json")
+    app = read_script("Frontend/client/src/App.tsx")
+
+    assert "from src.native_overlay import" in web_api
+    assert "from src.overlay import" not in web_api
+    assert "src.overlay" not in native_overlay_py
+    assert "recording-overlay" in native_overlay_rs
+    assert "scriber-overlay-state" in native_overlay_rs
+    assert "overlayShow" in shell_ipc
+    assert "overlayHide" in shell_ipc
+    assert "nativeOverlay" in shell_ipc
+    assert '"recording-overlay"' in capabilities
+    assert '"core:event:allow-listen"' in capabilities
+    assert "NativeRecordingOverlay" in app
 
 
 def test_installer_uninstall_smoke_is_a_strict_build_gate() -> None:

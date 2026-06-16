@@ -50,6 +50,13 @@ DEPENDENCY_GROUPS: dict[str, dict[str, Any]] = {
         "expectedPresent": False,
         "reason": "AWS Transcribe provider is not part of the standard app",
     },
+    "pythonGuiRuntime": {
+        "paths": ("PySide6", "customtkinter", "tkinter", "_tkinter.pyd", "pystray"),
+        "requiredPaths": (),
+        "disallowedPaths": ("PySide6", "customtkinter", "tkinter", "_tkinter.pyd", "pystray"),
+        "expectedPresent": False,
+        "reason": "Installed desktop overlay and shell UI are owned by Tauri/Rust",
+    },
 }
 
 COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
@@ -74,13 +81,15 @@ COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
     },
     "pyside6": {
         "paths": ("_internal/PySide6",),
-        "requiredPaths": (
-            "_internal/PySide6",
-            "_internal/PySide6/QtCore.pyd",
-            "_internal/PySide6/QtGui.pyd",
-            "_internal/PySide6/QtWidgets.pyd",
-        ),
-        "reason": "Native recording overlay renderer",
+        "requiredPaths": (),
+        "disallowedPaths": ("_internal/PySide6",),
+        "reason": "Disallowed legacy overlay runtime; Tauri WebView owns the recording overlay",
+    },
+    "pythonGuiRuntime": {
+        "paths": ("_internal/customtkinter", "_internal/tkinter", "_internal/_tkinter.pyd", "_internal/pystray"),
+        "requiredPaths": (),
+        "disallowedPaths": ("_internal/customtkinter", "_internal/tkinter", "_internal/_tkinter.pyd", "_internal/pystray"),
+        "reason": "Disallowed legacy Tk runtime; installed desktop UI is Tauri-owned",
     },
     "googleGrpc": {
         "paths": ("_internal/google", "_internal/grpc"),
@@ -342,6 +351,13 @@ def build_report(
             top_files_limit=top_files_limit,
             max_mb=None,
         ),
+        "pythonGuiRuntime": summarize_dependency(
+            "pythonGuiRuntime",
+            DEPENDENCY_GROUPS["pythonGuiRuntime"],
+            internal_dir=internal_dir,
+            top_files_limit=top_files_limit,
+            max_mb=None,
+        ),
     }
     components = {
         "backend": summarize_component(
@@ -371,6 +387,13 @@ def build_report(
             sidecar_dir=sidecar_dir,
             top_files_limit=top_files_limit,
             max_mb=max_pyside6_mb,
+        ),
+        "pythonGuiRuntime": summarize_component(
+            "pythonGuiRuntime",
+            COMPONENT_GROUPS["pythonGuiRuntime"],
+            sidecar_dir=sidecar_dir,
+            top_files_limit=top_files_limit,
+            max_mb=None,
         ),
         "googleGrpc": summarize_component(
             "googleGrpc",

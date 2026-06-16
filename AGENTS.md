@@ -35,8 +35,8 @@ the user explicitly asks for a temporary investigation note.
 - Frontend default in dev: `localhost:5000`, implemented with Vite 7, React 19,
   TypeScript, Tailwind v4, Wouter, and TanStack Query.
 - Runtime is Windows-first. Linux/macOS support is mostly fallback/dev support.
-- Legacy Tkinter/Python tray code remains maintenance fallback, not the primary
-  direction for new desktop work.
+- Legacy Python tray/UI code is source-only diagnostic fallback, not the primary
+  direction for new desktop work and not part of the standard packaged backend.
 
 ## Repository Map
 
@@ -61,7 +61,8 @@ Backend and runtime:
 - `src/core/`: contracts, state machine, circuit breaker, logging, tracing.
 - `src/runtime/audio_frame_pipe.py`: Python decoder/validator for the Rust
   audio frame-pipe protocol.
-- `src/overlay.py`: native mic overlay, PySide6 preferred, Tk fallback.
+- `src/native_overlay.py`: Python facade for the Tauri-owned recording overlay
+  exposed through private shell IPC.
 - `src/tray.py`, `src/main.py`, `src/ui.py`: legacy fallback desktop paths.
 
 Frontend and shell:
@@ -259,7 +260,8 @@ Packaging and scripts:
   Essentials is explicit fallback only.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`
   is an experiment, not the release default.
-- Do not remove PySide6. It is used for the native mic overlay; Tk is fallback.
+- Keep PySide6, customtkinter, and Tk overlay fallbacks out of the standard
+  sidecar. Installed recording overlay rendering is owned by Tauri/Rust.
 
 ### Data and Diagnostics
 

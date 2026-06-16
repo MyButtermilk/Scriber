@@ -29,9 +29,6 @@ param(
     [switch]$SkipBundledFfprobe,
     [switch]$ValidateSlimMediaTools,
     [switch]$ReuseSidecarIfUnchanged,
-    [switch]$PrunePySide6Translations,
-    [switch]$PrunePySide6UnusedPlugins,
-    [switch]$PrunePySide6SoftwareOpenGl,
     [switch]$FastLocalInstaller,
     [switch]$RunRuntimeDependencyFootprint,
     [double]$MaxScipyRuntimeDependencyMB = 0,
@@ -223,8 +220,6 @@ if ($FastLocalInstaller) {
     $SkipSmoke = $true
     $RunMediaPreparationSmoke = $true
     $RunRuntimeDependencyFootprint = $true
-    $PrunePySide6Translations = $true
-    $PrunePySide6UnusedPlugins = $true
     if (-not $MediaToolsDir) {
         $UseProfileBFfmpeg = $true
         $ValidateSlimMediaTools = $true
@@ -247,9 +242,6 @@ if ($FastLocalInstaller) {
     }
     if ($MaxMediaToolsRuntimeDependencyMB -le 0) {
         $MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 10 } else { 210 }
-    }
-    if ($MaxPySide6RuntimeDependencyMB -le 0) {
-        $MaxPySide6RuntimeDependencyMB = 65
     }
     if ($MaxGoogleGrpcRuntimeDependencyMB -le 0) {
         $MaxGoogleGrpcRuntimeDependencyMB = 15
@@ -318,7 +310,7 @@ try {
         $RequireUpdaterSignatures = $true
     }
 
-    if ($SkipBundledFfprobe -or $ValidateSlimMediaTools -or $MediaToolsDir -or $UseProfileBFfmpeg -or $ReuseSidecarIfUnchanged -or $PrunePySide6Translations -or $PrunePySide6UnusedPlugins -or $PrunePySide6SoftwareOpenGl) {
+    if ($SkipBundledFfprobe -or $ValidateSlimMediaTools -or $MediaToolsDir -or $UseProfileBFfmpeg -or $ReuseSidecarIfUnchanged) {
         if ($null -eq $tauriConfigOriginal) {
             $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
         }
@@ -338,15 +330,6 @@ try {
         }
         if ($ReuseSidecarIfUnchanged) {
             $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-ReuseSidecarIfUnchanged"
-        }
-        if ($PrunePySide6Translations) {
-            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-PrunePySide6Translations"
-        }
-        if ($PrunePySide6UnusedPlugins) {
-            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-PrunePySide6UnusedPlugins"
-        }
-        if ($PrunePySide6SoftwareOpenGl) {
-            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-PrunePySide6SoftwareOpenGl"
         }
         if ($updatedTauriConfig -ne $currentTauriConfig) {
             $currentTauriConfig = $updatedTauriConfig

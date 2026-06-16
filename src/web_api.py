@@ -72,7 +72,7 @@ from src.runtime.support_bundle import create_support_bundle
 from src.version import app_version
 from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
-from src.overlay import get_overlay, show_recording_overlay, show_initializing_overlay, show_transcribing_overlay, hide_recording_overlay, update_overlay_audio
+from src.native_overlay import get_overlay, show_recording_overlay, show_initializing_overlay, show_transcribing_overlay, hide_recording_overlay, update_overlay_audio
 from src import database as db
 
 TranscriptStatus = Literal["completed", "processing", "failed", "recording", "stopped"]
@@ -6176,7 +6176,7 @@ async def _background_init(controller: ScriberWebController) -> None:
     
     Runs asynchronously to avoid blocking server startup:
     1. Load transcripts from database
-    2. Prewarm Qt overlay
+    2. Prewarm native Tauri overlay endpoint
     3. Prewarm ML models (VAD, SmartTurn)
     4. Pre-import configured STT service (4.4 optimization)
     
@@ -6201,10 +6201,12 @@ async def _background_init(controller: ScriberWebController) -> None:
     
     async def _prewarm_overlay() -> None:
         try:
-            from src.overlay import get_overlay
-            # get_overlay triggers initialization in a background thread.
+            from src.native_overlay import get_overlay
+
+            # In installed Tauri builds, this verifies the shell IPC overlay
+            # endpoint without importing any GUI runtime into the backend.
             await asyncio.to_thread(lambda: get_overlay(on_stop=None))
-            logger.info("Overlay prewarmed (ready for first recording)")
+            logger.info("Native overlay endpoint prewarmed")
         except Exception as e:
             logger.debug(f"Overlay prewarm skipped: {e}")
 
