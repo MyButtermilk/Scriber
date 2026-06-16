@@ -62,6 +62,7 @@ class _FakeAssemblyPipeline:
 async def test_assemblyai_live_mic_start_stop_smoke(monkeypatch):
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(Config, "DEFAULT_STT_SERVICE", "assemblyai")
+    monkeypatch.setattr(Config, "ASSEMBLYAI_API_KEY", "test-key")
     monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
     _FakeAssemblyPipeline.created_services = []
     _FakeAssemblyPipeline.direct_paths = []

@@ -23,6 +23,7 @@ import {
 import { apiUrl } from "@/lib/backend";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
+import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
 import type { SettingsResponse } from "@/lib/api-types";
 
 interface CommandPaletteProps {
@@ -111,6 +112,17 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       });
       if (!res.ok) {
         const text = await res.text();
+        let payload: unknown = null;
+        try {
+          payload = text ? JSON.parse(text) : null;
+        } catch {
+          payload = null;
+        }
+        const recordingError = recordingErrorToastMessageFromPayload(payload, text || res.statusText);
+        if (recordingError) {
+          showRecordingErrorToast(toast, recordingError);
+          return;
+        }
         throw new Error(text || res.statusText);
       }
       onOpenChange(false);

@@ -445,7 +445,7 @@ const GlossyMicButton = memo(function GlossyMicButton({
 import { useQueryClient } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
-import { showRecordingErrorToast } from "@/lib/recording-error-toast";
+import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonList } from "@/components/ui/skeleton-card";
 import { QueryErrorState } from "@/components/ui/query-error-state";
@@ -743,6 +743,17 @@ export default function LiveMic() {
       const res = await fetch(apiUrl(endpoint), { method: "POST", credentials: "include" });
       if (!res.ok) {
         const text = await res.text();
+        let payload: unknown = null;
+        try {
+          payload = text ? JSON.parse(text) : null;
+        } catch {
+          payload = null;
+        }
+        const recordingError = recordingErrorToastMessageFromPayload(payload, text || res.statusText);
+        if (recordingError) {
+          showRecordingErrorToast(toast, recordingError);
+          return;
+        }
         throw new Error(text || res.statusText);
       }
     } catch (e: any) {

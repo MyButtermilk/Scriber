@@ -32,7 +32,7 @@ from src.audio_devices import (
 from src.config import Config
 from src.device_monitor import DeviceMonitor, devices_contain_name
 from src.core.provider_capabilities import supports_direct_file_upload
-from src.core.error_taxonomy import classify_error_message, is_retryable
+from src.core.error_taxonomy import ErrorCategory, classify_error_message, is_retryable
 from src.core.hot_path_tracer import HotPathTracer
 from src.core.logging_setup import emit_event, setup_logging
 from src.core.provider_circuit_breaker import ProviderCircuitBreaker
@@ -2025,6 +2025,19 @@ class ScriberWebController:
     def _select_available_provider(self) -> str:
         return self._provider_router.select()
 
+    def _validate_live_provider_ready(self, provider: str) -> None:
+        api_key_attr = Config.SERVICE_API_KEY_MAP.get(provider)
+        if not api_key_attr:
+            return
+        if Config.get_api_key(provider).strip():
+            return
+        label = (
+            Config.SERVICE_LABELS.get(provider)
+            or Config.SERVICE_LABELS.get(provider.split("_", 1)[0])
+            or provider
+        )
+        raise RuntimeError(f"{label} API Key is missing.")
+
     def _record_provider_success(self, provider: str) -> None:
         self._provider_router.record_success(provider)
 
@@ -2904,14 +2917,12 @@ class ScriberWebController:
     def _provider_user_error(self, error: Exception | str, *, provider: str | None = None) -> ProviderUserError:
         return provider_user_error(provider or self._active_provider, error)
 
-    def _provider_error_event(
-        self,
-        error: Exception | str,
+    @staticmethod
+    def _provider_error_event_from_info(
+        info: ProviderUserError,
         *,
-        provider: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
-        info = self._provider_user_error(error, provider=provider)
         return error_event(
             info.message,
             title=info.title,
@@ -2922,6 +2933,16 @@ class ScriberWebController:
             retryable=info.retryable,
             session_id=session_id,
         )
+
+    def _provider_error_event(
+        self,
+        error: Exception | str,
+        *,
+        provider: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        info = self._provider_user_error(error, provider=provider)
+        return self._provider_error_event_from_info(info, session_id=session_id)
 
     def _on_pipeline_done(self, task: asyncio.Task, *, session_id: str | None = None) -> None:
         # Ignore completions from tasks that are no longer the active live pipeline.
@@ -2997,13 +3018,16 @@ class ScriberWebController:
                     failed_current = self._current
                     self._current = None
             if failed_current:
-                self._add_to_history(failed_current)
-                self._schedule_transcript_save(failed_current)
-                self._loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(
-                        self._broadcast_history_updated(record=failed_current, reason="pipeline_failed")
+                if not failed_current.content_text().strip() and info.category is not ErrorCategory.CONFIG_INVALID:
+                    failed_current.append_final_text(f"[Error] {user_msg}")
+                if failed_current.content_text().strip():
+                    self._add_to_history(failed_current)
+                    self._schedule_transcript_save(failed_current)
+                    self._loop.call_soon_threadsafe(
+                        lambda: asyncio.create_task(
+                            self._broadcast_history_updated(record=failed_current, reason="pipeline_failed")
+                        )
                     )
-                )
         finally:
             # Schedule safe cleanup on the event loop
             self._loop.call_soon_threadsafe(
@@ -3744,12 +3768,35 @@ class ScriberWebController:
             except Exception as cleanup_err:
                 logger.warning(f"Failed to cleanup uploaded file: {cleanup_err}")
 
-    async def start_listening(self) -> None:
+    async def start_listening(self) -> ProviderUserError | None:
         # Acquire lock for entire operation - no parallel start/stop allowed
         async with self._listening_lock:
             # Don't start if already listening or if stop is in progress
             if self._is_listening or self._is_stopping:
-                return
+                return None
+
+            live_provider: str | None = None
+            try:
+                live_provider = self._select_available_provider()
+                self._validate_live_provider_ready(live_provider)
+            except Exception as exc:
+                provider_used = live_provider or self._active_provider or Config.DEFAULT_STT_SERVICE
+                info = self._provider_user_error(exc, provider=provider_used)
+                self._set_status("Error")
+                self._emit_workflow_event(
+                    message=f"Live mic session rejected before start: {info.message}",
+                    event="api.session.start_rejected",
+                    workflow="live_mic",
+                    stage="session_start",
+                    level="ERROR",
+                    provider=provider_used,
+                    milestone=True,
+                    outcome="failure",
+                    error_category=info.category.value,
+                    meta={"error": str(exc), "provider_error_code": info.code},
+                )
+                await self.broadcast(self._provider_error_event_from_info(info))
+                return info
 
             started_at = datetime.now()
             rec = TranscriptRecord(
@@ -3886,45 +3933,6 @@ class ScriberWebController:
 
             def on_last_audio_chunk_sent():
                 self._mark_hot_path(session_id, "last_chunk_sent")
-
-            try:
-                live_provider = self._select_available_provider()
-            except Exception as exc:
-                provider_used = self._active_provider or Config.DEFAULT_STT_SERVICE
-                info = self._provider_user_error(exc, provider=provider_used)
-                self._set_recording_state(RecordingState.FAILED, context="start_listening_provider_select")
-                self._set_status("Error")
-                self._overlay_audio_enabled = False
-                hide_recording_overlay()
-                with self._current_lock:
-                    failed = self._current
-                    self._current = None
-                self._is_listening = False
-                self._is_stopping = False
-                self._session_id = None
-                self._clear_hot_path_tracer(session_id)
-                if failed:
-                    failed.finish("failed")
-                    failed.append_final_text(f"[Error] {info.message}")
-                    self._add_to_history(failed)
-                    await self._save_transcript_to_db_async(failed)
-                    await self._broadcast_history_updated(record=failed, reason="session_failed")
-                self._emit_workflow_event(
-                    message=f"Live mic session failed before start: {exc}",
-                    event="api.session.failed",
-                    workflow="live_mic",
-                    stage="session_start",
-                    level="ERROR",
-                    session_id=session_id,
-                    record=rec,
-                    provider=provider_used,
-                    milestone=True,
-                    outcome="failure",
-                    error_category=info.category.value,
-                    meta={"error": str(exc), "provider_error_code": info.code},
-                )
-                await self.broadcast(self._provider_error_event(exc, provider=provider_used, session_id=session_id))
-                return
 
             self._active_provider = live_provider
             mic_prewarm_manager = self._mic_prewarm if Config.MIC_ALWAYS_ON else None
@@ -5120,7 +5128,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def start_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        await ctl.start_listening()
+        start_error = await ctl.start_listening()
+        if start_error is not None:
+            return web.json_response(
+                version_event_payload(ctl._provider_error_event_from_info(start_error)),
+                status=400,
+            )
         return web.json_response(ctl.get_state())
 
     async def stop_live(request: web.Request):

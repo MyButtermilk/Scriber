@@ -1371,12 +1371,49 @@ async def test_hotkey_toggle_is_deferred_while_stop_is_in_progress():
 
 
 @pytest.mark.asyncio
+async def test_start_listening_missing_provider_key_returns_error_without_history(monkeypatch):
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(web_api.Config, "DEFAULT_STT_SERVICE", "soniox")
+    monkeypatch.setattr(web_api.Config, "SONIOX_API_KEY", "")
+    ctl = ScriberWebController(loop)
+
+    with (
+        patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock,
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.ScriberPipeline") as pipeline_mock,
+        patch("src.web_api.show_initializing_overlay") as show_initializing_mock,
+    ):
+        info = await ctl.start_listening()
+        await asyncio.sleep(0)
+
+    assert info is not None
+    assert info.code == "missing_api_key"
+    assert info.provider == "soniox"
+    assert ctl.get_state()["recordingState"] == "idle"
+    assert ctl._current is None
+    assert ctl._pipeline_task is None
+    assert ctl._history == []
+    pipeline_mock.assert_not_called()
+    show_initializing_mock.assert_not_called()
+
+    payloads = [call.args[0] for call in broadcast_mock.await_args_list if call.args]
+    assert any(
+        payload.get("type") == "error"
+        and payload.get("provider") == "soniox"
+        and payload.get("code") == "missing_api_key"
+        for payload in payloads
+    )
+
+
+@pytest.mark.asyncio
 async def test_late_mic_ready_is_ignored_while_stop_is_in_progress():
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
     _LateReadyPipeline.instances.clear()
 
     with (
+        patch.object(web_api.Config, "DEFAULT_STT_SERVICE", "soniox"),
+        patch.object(web_api.Config, "SONIOX_API_KEY", "test-key"),
         patch("src.web_api.ScriberPipeline", _LateReadyPipeline),
         patch.object(ctl, "broadcast", new=AsyncMock()),
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
@@ -1413,7 +1450,9 @@ async def test_late_mic_ready_is_ignored_while_stop_is_in_progress():
 async def test_start_listening_passes_idle_prewarm_without_closing_it(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "DEFAULT_STT_SERVICE", "soniox")
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(web_api.Config, "SONIOX_API_KEY", "test-key")
     monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
     _FakeRustMicPrewarmManager.instances.clear()
     _PrewarmAwarePipeline.instances.clear()
