@@ -128,8 +128,12 @@ def test_recording_hot_path_text_target_keeps_focus_during_measurement():
         repo_root / "scripts" / "measure_recording_hot_path_baseline.py"
     ).read_text(encoding="utf-8")
 
-    assert 'root.attributes("-topmost", True)' in script
-    assert "root.after(500, focus_window)" in script
+    assert "System.Windows.Forms.Form" in script
+    assert "$form.TopMost = $true" in script
+    assert "$form.Activate()" in script
+    assert "$text.Focus()" in script
+    assert "System.Text.UTF8Encoding($false)" in script
+    assert "encoding=\"utf-8-sig\"" in script
 
 
 def test_recording_hot_path_summary_measures_text_injection_after_stop():

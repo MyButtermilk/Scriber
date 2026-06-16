@@ -35,8 +35,8 @@ the user explicitly asks for a temporary investigation note.
 - Frontend default in dev: `localhost:5000`, implemented with Vite 7, React 19,
   TypeScript, Tailwind v4, Wouter, and TanStack Query.
 - Runtime is Windows-first. Linux/macOS support is mostly fallback/dev support.
-- Legacy Python tray/UI code is source-only diagnostic fallback, not the primary
-  direction for new desktop work and not part of the standard packaged backend.
+- Legacy Python tray/UI code was removed. The Tauri shell owns desktop UI,
+  tray/menu actions, global hotkeys, and the recording overlay.
 
 ## Repository Map
 
@@ -63,7 +63,8 @@ Backend and runtime:
   audio frame-pipe protocol.
 - `src/native_overlay.py`: Python facade for the Tauri-owned recording overlay
   exposed through private shell IPC.
-- `src/tray.py`, `src/main.py`, `src/ui.py`: legacy fallback desktop paths.
+- `src/main.py`: compatibility notice for the removed Python desktop UI; use
+  Tauri for desktop runs.
 
 Frontend and shell:
 
@@ -259,11 +260,13 @@ Packaging and scripts:
   service modules out of the standard sidecar unless AWS support is explicitly
   reintroduced.
 - Standard provider packaging uses explicit SDK dependencies instead of broad
-  Pipecat provider extras. Keep `google-generativeai`, `google-genai`,
-  Google Cloud Text-to-Speech, and the unused Groq SDK out of the standard
-  sidecar unless a product path is reintroduced that actually imports them.
-  Gemini summarization uses direct HTTP, Google Cloud STT uses
-  `google-cloud-speech`, and Groq STT uses the OpenAI-compatible Pipecat path.
+  Pipecat provider extras. Keep `google-generativeai` and Google Cloud
+  Text-to-Speech out of the standard sidecar unless a product path is
+  reintroduced that actually imports them. Gemini summarization uses direct
+  HTTP, Google Cloud STT uses `google-cloud-speech` plus Pipecat's required
+  `google-genai` namespace dependency, OpenAI STT uses the explicit `openai`
+  SDK dependency, Groq STT uses Pipecat's `groq` SDK dependency, and Pipecat
+  provider imports require `nltk` at runtime.
 - FFmpeg Profile B is the standard Windows bundled media-tool path. Gyan
   Essentials is explicit fallback only.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`

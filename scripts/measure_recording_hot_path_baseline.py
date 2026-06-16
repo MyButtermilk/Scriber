@@ -35,7 +35,6 @@ LAST_CHUNK_TO_PROVIDER_FINAL_SEGMENT = "last_chunk_sent_to_provider_final_receiv
 PROVIDER_FINAL_TO_CLIPBOARD_SET_SEGMENT = "provider_final_received_to_clipboard_set_ms"
 CLIPBOARD_SET_TO_PASTE_SEGMENT = "clipboard_set_to_paste_ms"
 PASTE_TO_FIRST_PASTE_SEGMENT = "paste_to_first_paste_ms"
-TEXT_TARGET_WINDOW_FLAG = "--_text-target-window"
 RUST_AUDIO_ACTIVE_ENGINE = "rust-wasapi"
 RUST_AUDIO_FRAME_SOURCE = "rust-frame-pipe"
 
@@ -69,48 +68,60 @@ def iteration_text_target_path(raw_path: str, index: int, total_iterations: int)
     return path.with_name(f"{stem}.iteration-{index}{suffix}")
 
 
-def run_text_target_window(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Internal text target window for recording hot-path measurement.")
-    parser.add_argument("--target-output", required=True)
-    parser.add_argument("--target-title", default="Scriber Hot Path Text Target")
-    args = parser.parse_args(argv)
+def powershell_text_target_command() -> str:
+    return r"""
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 
-    try:
-        import tkinter as tk
-    except Exception as exc:
-        print(f"Could not import tkinter for text target window: {exc}", file=sys.stderr)
-        return 1
+$output = [Environment]::GetEnvironmentVariable('SCRIBER_TEXT_TARGET_OUTPUT')
+$title = [Environment]::GetEnvironmentVariable('SCRIBER_TEXT_TARGET_TITLE')
+if ([string]::IsNullOrWhiteSpace($title)) {
+  $title = 'Scriber Hot Path Text Target'
+}
 
-    output_path = Path(args.target_output).expanduser().resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("", encoding="utf-8")
+[System.Windows.Forms.Application]::EnableVisualStyles()
+$form = New-Object System.Windows.Forms.Form
+$form.Text = $title
+$form.Width = 760
+$form.Height = 320
+$form.StartPosition = 'Manual'
+$form.Left = 80
+$form.Top = 80
+$form.TopMost = $true
 
-    root = tk.Tk()
-    root.title(args.target_title)
-    root.geometry("760x320+80+80")
-    root.attributes("-topmost", True)
-    text = tk.Text(root, wrap="word", font=("Segoe UI", 12))
-    text.pack(fill="both", expand=True)
+$text = New-Object System.Windows.Forms.TextBox
+$text.Multiline = $true
+$text.AcceptsReturn = $true
+$text.AcceptsTab = $true
+$text.ScrollBars = 'Vertical'
+$text.Dock = 'Fill'
+$text.Font = New-Object System.Drawing.Font('Segoe UI', 12)
+$form.Controls.Add($text)
 
-    def save_text() -> None:
-        try:
-            output_path.write_text(text.get("1.0", "end-1c"), encoding="utf-8")
-        except Exception:
-            pass
-        root.after(200, save_text)
+$save = {
+  try {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($output, $text.Text, $encoding)
+  } catch {
+  }
+}
 
-    def focus_window() -> None:
-        try:
-            root.lift()
-            text.focus_force()
-        except Exception:
-            pass
-        root.after(500, focus_window)
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 200
+$timer.Add_Tick({
+  & $save
+  $form.Activate()
+  $text.Focus()
+})
+$timer.Start()
 
-    root.after(100, focus_window)
-    root.after(200, save_text)
-    root.mainloop()
-    return 0
+$form.Add_Shown({
+  $form.Activate()
+  $text.Focus()
+})
+$form.Add_FormClosed({ & $save })
+[System.Windows.Forms.Application]::Run($form)
+""".strip()
 
 
 def launch_text_target(args: argparse.Namespace, index: int) -> tuple[dict[str, Any] | None, subprocess.Popen | None]:
@@ -120,16 +131,23 @@ def launch_text_target(args: argparse.Namespace, index: int) -> tuple[dict[str, 
     target_path = iteration_text_target_path(args.text_target_file, index, args.iterations)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text("", encoding="utf-8")
+    if sys.platform != "win32":
+        raise RuntimeError("Text target window is only supported on Windows")
+
+    env = os.environ.copy()
+    env["SCRIBER_TEXT_TARGET_OUTPUT"] = str(target_path)
+    env["SCRIBER_TEXT_TARGET_TITLE"] = args.text_target_title
     proc = subprocess.Popen(
         [
-            sys.executable,
-            str(Path(__file__).resolve()),
-            TEXT_TARGET_WINDOW_FLAG,
-            "--target-output",
-            str(target_path),
-            "--target-title",
-            args.text_target_title,
+            "powershell",
+            "-NoProfile",
+            "-Sta",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            powershell_text_target_command(),
         ],
+        env=env,
         cwd=Path(__file__).resolve().parents[1],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -153,7 +171,7 @@ def read_text_target_length(info: dict[str, Any] | None) -> int:
     path = Path(str(info["path"]))
     if not path.is_file():
         return 0
-    return len(path.read_text(encoding="utf-8", errors="replace"))
+    return len(path.read_text(encoding="utf-8-sig", errors="replace").strip())
 
 
 def wait_for_text_target_capture(
@@ -915,8 +933,6 @@ def write_result(result: dict[str, Any], output_path: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv[1:]
-    if argv and argv[0] == TEXT_TARGET_WINDOW_FLAG:
-        return run_text_target_window(argv[1:])
     args = parse_args(argv)
     result = build_validate_result(args) if args.validate_only else run_benchmark(args)
     write_result(result, args.output)

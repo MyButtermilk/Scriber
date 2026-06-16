@@ -231,11 +231,11 @@ if ($FastLocalInstaller) {
     if ($MaxOnnxRuntimeDependencyMB -le 0) {
         $MaxOnnxRuntimeDependencyMB = 40
     }
-    if ($MaxPythonRuntimeDependencyMB -le 0) {
-        $MaxPythonRuntimeDependencyMB = 40
-    }
     if ($MaxBackendRuntimeDependencyMB -le 0) {
         $MaxBackendRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 325 } else { 500 }
+    }
+    if ($MaxPythonRuntimeDependencyMB -le 0) {
+        $MaxPythonRuntimeDependencyMB = $MaxBackendRuntimeDependencyMB
     }
     if ($MaxInternalRuntimeDependencyMB -le 0) {
         $MaxInternalRuntimeDependencyMB = 250

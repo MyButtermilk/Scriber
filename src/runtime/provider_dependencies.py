@@ -104,8 +104,8 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[ProviderRuntimeDependency, ...]] = {
         ProviderRuntimeDependency(
             "groq",
             "pipecat.services.groq.stt",
-            "openai",
-            "Groq Whisper-compatible OpenAI client path",
+            "groq",
+            "Groq Pipecat SDK path",
         ),
     ),
     "azure": (

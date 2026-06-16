@@ -16,7 +16,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts.measure_recording_hot_path_baseline import TEXT_TARGET_WINDOW_FLAG
+from scripts.measure_recording_hot_path_baseline import powershell_text_target_command
 from scripts.process_utils import terminate_process
 
 
@@ -95,16 +95,23 @@ def evaluate_result(
 def launch_target_window(target_path: Path, title: str, settle_sec: float) -> subprocess.Popen:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text("", encoding="utf-8")
+    if sys.platform != "win32":
+        raise RuntimeError("Text target window is only supported on Windows")
+
+    env = os.environ.copy()
+    env["SCRIBER_TEXT_TARGET_OUTPUT"] = str(target_path)
+    env["SCRIBER_TEXT_TARGET_TITLE"] = title
     proc = subprocess.Popen(
         [
-            sys.executable,
-            str(repo_root() / "scripts" / "measure_recording_hot_path_baseline.py"),
-            TEXT_TARGET_WINDOW_FLAG,
-            "--target-output",
-            str(target_path),
-            "--target-title",
-            title,
+            "powershell",
+            "-NoProfile",
+            "-Sta",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            powershell_text_target_command(),
         ],
+        env=env,
         cwd=repo_root(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,

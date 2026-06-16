@@ -56,12 +56,16 @@ for package in (
     except Exception:
         pass
 
+def collect_required_dynamic_libs(package):
+    libs = collect_dynamic_libs(package)
+    if not libs:
+        raise RuntimeError(f"No dynamic libraries collected for required package: {package}")
+    return libs
+
+
 binaries = []
-for package in ("onnxruntime",):
-    try:
-        binaries += collect_dynamic_libs(package)
-    except Exception:
-        pass
+for package in ("onnxruntime", "azure.cognitiveservices.speech"):
+    binaries += collect_required_dynamic_libs(package)
 
 datas = []
 assets_dir = repo_root / "src" / "assets"
@@ -112,7 +116,6 @@ a = Analysis(
         "datasets",
         "pyarrow",
         "fsspec",
-        "nltk",
         "sqlalchemy",
         "onnx",
         "numba",
@@ -135,11 +138,9 @@ a = Analysis(
         "google.generativeai",
         "google.ai.generativelanguage",
         "google.cloud.texttospeech",
-        "google.genai",
         "googleapiclient",
         "google_auth_httplib2",
         "httplib2",
-        "groq",
         "aioboto3",
         "aiobotocore",
         "boto3",
@@ -164,7 +165,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,

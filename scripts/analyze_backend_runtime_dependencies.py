@@ -62,21 +62,17 @@ DEPENDENCY_GROUPS: dict[str, dict[str, Any]] = {
             "google/generativeai",
             "google/ai/generativelanguage",
             "google/cloud/texttospeech",
-            "google/genai",
             "googleapiclient",
-            "groq",
         ),
         "requiredPaths": (),
         "disallowedPaths": (
             "google/generativeai",
             "google/ai/generativelanguage",
             "google/cloud/texttospeech",
-            "google/genai",
             "googleapiclient",
-            "groq",
         ),
         "expectedPresent": False,
-        "reason": "Standard sidecar uses direct HTTP or OpenAI-compatible paths instead of unused provider SDKs",
+        "reason": "Standard sidecar uses direct HTTP or explicit provider SDKs instead of unused provider SDKs",
     },
 }
 
@@ -99,6 +95,14 @@ COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
             "tools/ffmpeg/ffprobe.exe",
         ),
         "reason": "Bundled ffmpeg and ffprobe required for media preparation",
+    },
+    "azureSpeech": {
+        "paths": ("_internal/azure/cognitiveservices/speech",),
+        "requiredPaths": (
+            "_internal/azure/cognitiveservices/speech",
+            "_internal/azure/cognitiveservices/speech/Microsoft.CognitiveServices.Speech.core.dll",
+        ),
+        "reason": "Azure Speech native runtime DLLs required by the offered Azure provider",
     },
     "pyside6": {
         "paths": ("_internal/PySide6",),
@@ -124,7 +128,7 @@ COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
             "_internal/PIL/AvifImagePlugin.py",
             "_internal/PIL/_avif.cp313-win_amd64.pyd",
         ),
-        "reason": "Pillow runtime for tray/legacy image handling without unused AVIF binary support",
+        "reason": "Pillow runtime for image/export handling without unused AVIF binary support",
     },
 }
 
@@ -409,6 +413,13 @@ def build_report(
             top_files_limit=top_files_limit,
             max_mb=max_media_tools_mb,
         ),
+        "azureSpeech": summarize_component(
+            "azureSpeech",
+            COMPONENT_GROUPS["azureSpeech"],
+            sidecar_dir=sidecar_dir,
+            top_files_limit=top_files_limit,
+            max_mb=None,
+        ),
         "pyside6": summarize_component(
             "pyside6",
             COMPONENT_GROUPS["pyside6"],
@@ -438,7 +449,8 @@ def build_report(
             max_mb=max_pillow_mb,
         ),
     }
-    total_bytes = sum(item["totalBytes"] for item in dependencies.values())
+    dependency_total_bytes = sum(item["totalBytes"] for item in dependencies.values())
+    total_bytes = components["backend"]["totalBytes"]
     total_mb = size_mb(total_bytes)
     total_budget = evaluate_budget(total_mb, max_total_mb)
     missing = [
@@ -494,6 +506,8 @@ def build_report(
         "summary": {
             "totalBytes": total_bytes,
             "totalMb": total_mb,
+            "dependencyTotalBytes": dependency_total_bytes,
+            "dependencyTotalMb": size_mb(dependency_total_bytes),
             "missingRequiredPaths": missing,
             "disallowedPaths": disallowed,
             "unexpectedPresentDependencies": unexpected_present,

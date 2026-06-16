@@ -43,8 +43,11 @@ def test_standard_requirements_include_audio_runtime_dependencies():
     assert "scipy" not in requirements
     assert "onnxruntime" in requirements
     assert "google-cloud-speech<3,>=2.33.0" in requirements
+    assert "google-genai<2,>=1.41.0" in requirements
+    assert "groq~=0.23.0" in requirements
+    assert "nltk<4,>=3.9.1" in requirements
+    assert "openai<3,>=1.74.0" in requirements
     assert "google-generativeai" not in requirements
-    assert "groq" not in "\n".join(requirements)
     assert "PySide6-Essentials" not in requirements
     assert "customtkinter" not in requirements
     assert "pystray" not in requirements
@@ -110,6 +113,9 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
 
     assert "collect_dynamic_libs" in spec
     assert '"onnxruntime"' in spec
+    assert '"azure.cognitiveservices.speech"' in spec
+    assert "collect_required_dynamic_libs" in spec
+    assert "upx=False" in spec
     assert '"pipecat.audio.vad.silero"' in spec
     assert '"pipecat.services.aws.stt"' not in spec
     assert '"pipecat.services.soniox.stt"' in spec
@@ -140,8 +146,6 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"pystray",' in spec.split("excludes=[", 1)[1]
     assert '"google.generativeai",' in spec.split("excludes=[", 1)[1]
     assert '"google.cloud.texttospeech",' in spec.split("excludes=[", 1)[1]
-    assert '"google.genai",' in spec.split("excludes=[", 1)[1]
-    assert '"groq",' in spec.split("excludes=[", 1)[1]
     assert '"boto3",' in spec.split("excludes=[", 1)[1]
     assert '"botocore",' in spec.split("excludes=[", 1)[1]
     assert '"s3transfer",' in spec.split("excludes=[", 1)[1]

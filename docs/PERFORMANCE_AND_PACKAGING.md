@@ -186,11 +186,12 @@ Current packaging choices:
 - AWS Transcribe is no longer exposed in frontend or backend settings. The
   standard sidecar excludes `boto3`, `botocore`, `s3transfer`, `aioboto3`,
   `aiobotocore`, and Pipecat AWS service modules.
-- Gemini summaries use direct HTTP, so `google-generativeai`, `google-genai`,
-  Google Cloud Text-to-Speech, and the unused Groq SDK are excluded from the
-  standard sidecar. Google Cloud STT remains supported through
-  `google-cloud-speech`; Groq STT remains supported through the
-  OpenAI-compatible Pipecat path.
+- Gemini summaries use direct HTTP, so `google-generativeai` and Google Cloud
+  Text-to-Speech are excluded from the standard sidecar. Google Cloud STT
+  remains supported through `google-cloud-speech` plus Pipecat's required
+  `google-genai` namespace dependency; OpenAI STT, Groq STT, and Pipecat's
+  provider import path remain supported through explicit `openai`, `groq`, and
+  `nltk` runtime dependencies.
 - Pillow AVIF binaries are excluded.
 - Runtime dependency footprint gates reject SciPy, AWS SDK packages, PySide6,
   customtkinter, Tk, and unused provider SDK reintroduction in the packaged

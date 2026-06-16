@@ -131,9 +131,8 @@ Provider runtime footprint:
 
 - Supported cloud-provider runtime modules stay covered by the frozen runtime
   import check.
-- The standard sidecar excludes unused Google GenAI/TTS SDKs and the unused
-  Groq SDK; footprint gates fail if those SDKs reappear in the packaged
-  backend.
+- The standard sidecar excludes unused Google Generative-AI/TTS SDKs; footprint
+  gates fail if those SDKs reappear in the packaged backend.
 
 Rust audio:
 

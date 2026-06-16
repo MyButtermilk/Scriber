@@ -105,7 +105,8 @@ def test_text_injection_smoke_uses_real_injector_and_safe_target_window() -> Non
 
     assert "TextInjector" in script
     assert "injector._inject_text(args.text)" in script
-    assert "TEXT_TARGET_WINDOW_FLAG" in script
+    assert "powershell_text_target_command" in script
+    assert "SCRIBER_TEXT_TARGET_OUTPUT" in script
     assert "click_target_window" in script
     assert "targetFocus" in script
     assert '"tauri"' in script

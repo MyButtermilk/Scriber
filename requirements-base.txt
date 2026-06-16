@@ -3,7 +3,11 @@
 pipecat-ai[silero]
 azure-cognitiveservices-speech~=1.42.0
 deepgram-sdk~=4.7.0
+google-genai<2,>=1.41.0
 google-cloud-speech<3,>=2.33.0
+groq~=0.23.0
+nltk<4,>=3.9.1
+openai<3,>=1.74.0
 speechmatics-rt>=0.5.0
 websockets<16.0,>=13.1
 sounddevice
