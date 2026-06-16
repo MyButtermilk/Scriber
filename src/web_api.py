@@ -1637,15 +1637,9 @@ class ScriberWebController:
         try:
             native_endpoints: list[dict[str, Any]]
             inventory_source = "portaudio-only"
-            rust_endpoints = (
-                rust_inventory.get("endpoints")
-                if isinstance(rust_inventory, dict) and rust_inventory.get("available")
-                else None
-            )
-            if isinstance(rust_endpoints, list) and rust_endpoints:
-                native_endpoints = [
-                    endpoint for endpoint in rust_endpoints if isinstance(endpoint, dict)
-                ]
+            rust_endpoints = self._native_endpoints_from_rust_inventory(rust_inventory)
+            if rust_endpoints:
+                native_endpoints = rust_endpoints
                 inventory_source = "rust-wasapi"
             else:
                 native_endpoints = collect_native_capture_endpoint_inventory()
@@ -1666,7 +1660,23 @@ class ScriberWebController:
         except Exception as exc:
             return {"available": False, "reason": "mappingFailed", "error": str(exc)}
 
-    def _rust_audio_probe_diagnostics(self) -> dict[str, Any]:
+    @staticmethod
+    def _native_endpoints_from_rust_inventory(
+        rust_inventory: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        endpoints = (
+            rust_inventory.get("endpoints")
+            if isinstance(rust_inventory, dict) and rust_inventory.get("available")
+            else None
+        )
+        if not isinstance(endpoints, list):
+            return []
+        return [endpoint for endpoint in endpoints if isinstance(endpoint, dict)]
+
+    def _rust_audio_probe_diagnostics(
+        self,
+        rust_inventory: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         requested = _rust_audio_probe_requested()
         diagnostics: dict[str, Any] = {
             "requested": requested,
@@ -1688,6 +1698,7 @@ class ScriberWebController:
             **self._rust_audio_probe_device_selection_payload(
                 sample_rate=sample_rate,
                 channels=channels,
+                rust_inventory=rust_inventory,
             ),
         }
         response = call_shell_ipc("audioProbe", payload, timeout_seconds=2.0)
@@ -1706,7 +1717,13 @@ class ScriberWebController:
             diagnostics.setdefault("reason", diagnostics.get("responseErrorCode") or "probeUnavailable")
         return diagnostics
 
-    def _rust_audio_probe_device_selection_payload(self, *, sample_rate: int, channels: int) -> dict[str, Any]:
+    def _rust_audio_probe_device_selection_payload(
+        self,
+        *,
+        sample_rate: int,
+        channels: int,
+        rust_inventory: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         device_preference = str(getattr(Config, "MIC_DEVICE", "default") or "default").strip() or "default"
         favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "").strip()
         payload: dict[str, Any] = {
@@ -1714,6 +1731,10 @@ class ScriberWebController:
             "portAudioLabel": "",
             "nativeEndpointIdHash": None,
             "nativeEndpointMatchReason": "notResolved",
+            "nativeEndpointInventorySource": "notNeeded",
+            "rustInventoryAvailable": bool(
+                isinstance(rust_inventory, dict) and rust_inventory.get("available")
+            ),
         }
         if device_preference in {"default", "None"} and not favorite_mic:
             payload["nativeEndpointMatchReason"] = "windowsDefaultEndpoint"
@@ -1721,7 +1742,12 @@ class ScriberWebController:
         try:
             import sounddevice as sd  # type: ignore
 
-            native_endpoints = collect_native_capture_endpoint_inventory()
+            native_endpoints = self._native_endpoints_from_rust_inventory(rust_inventory)
+            inventory_source = "rust-wasapi" if native_endpoints else "unavailable"
+            if not native_endpoints:
+                native_endpoints = collect_native_capture_endpoint_inventory()
+                if native_endpoints:
+                    inventory_source = "pycaw"
             mappings = build_input_endpoint_mappings(
                 sd,
                 favorite_name=str(getattr(Config, "FAVORITE_MIC", "") or ""),
@@ -1759,6 +1785,7 @@ class ScriberWebController:
                 payload["nativeEndpointMatchReason"] = (
                     "nativeEndpointNotFound" if native_endpoints else "nativeInventoryUnavailable"
                 )
+                payload["nativeEndpointInventorySource"] = inventory_source
                 return payload
 
             payload.update(
@@ -1766,6 +1793,7 @@ class ScriberWebController:
                     "portAudioLabel": match.portaudio_name,
                     "nativeEndpointIdHash": match.native_endpoint_id_hash,
                     "nativeEndpointMatchReason": match.match_reason,
+                    "nativeEndpointInventorySource": inventory_source,
                 }
             )
             return payload
@@ -2592,7 +2620,9 @@ class ScriberWebController:
                     rust_inventory=rust_native_endpoint_inventory,
                 ),
                 "rustNativeEndpointInventory": rust_native_endpoint_inventory,
-                "rustAudioProbe": self._rust_audio_probe_diagnostics(),
+                "rustAudioProbe": self._rust_audio_probe_diagnostics(
+                    rust_inventory=rust_native_endpoint_inventory,
+                ),
                 "rustAudioFallbackCircuit": _rust_audio_fallback_circuit_diagnostics(),
                 "prewarm": self._prewarm_diagnostics(),
                 "activeCapture": self._active_audio_diagnostics(),

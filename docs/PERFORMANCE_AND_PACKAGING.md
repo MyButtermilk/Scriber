@@ -767,6 +767,10 @@ Missing prerequisites:
      `microphone.rustNativeEndpointInventory`, and
      `microphone.nativeEndpointMapping` prefers that Rust inventory over
      best-effort PyCAW before falling back to PyCAW or PortAudio-only mapping.
+     Passive Rust probe selection uses the same Rust/Tauri inventory first, so
+     probe, prewarm, and active capture resolve selected/favorite microphones
+     to the same redacted endpoint hash when the shell IPC inventory is
+     available.
    - Still open: proving favorite/default behavior on physical dock/USB
      transitions.
 3. Audio support-bundle schema:
@@ -1429,15 +1433,16 @@ Implementation plan:
      This prevents stale cached `prewarmId` state, a recovered idle-session
      dropout, or an unmeasured stop-to-prewarm gap from satisfying the
      Always-On-Mic promotion gate.
-   - Implemented on 2026-06-11: Rust active capture and Rust prewarm now prefer
-     the private Tauri shell-IPC `audioEndpointInventory` payload over
-     Python-local endpoint inventory when resolving favorite/non-default
-     microphones. This prevents a Python-only endpoint hash from being sent to
-     the Rust sidecar when both layers name the same physical microphone but
-     derive different redacted hashes. The targeted Insta360 investigation
-     reproduced the failure with `Mikrofon (4- Insta360 Link)` and confirmed
-     the fixed active capture uses the Rust/Tauri endpoint hash
-     `51112d9ccdd3a140` instead of the stale Python-local hash.
+   - Implemented on 2026-06-11 and extended on 2026-06-16: Rust active
+     capture, Rust prewarm, and passive Rust probe selection now prefer the
+     private Tauri shell-IPC `audioEndpointInventory` payload over Python-local
+     endpoint inventory when resolving favorite/non-default microphones. This
+     prevents a Python-only endpoint hash from being sent to the Rust sidecar
+     when both layers name the same physical microphone but derive different
+     redacted hashes. The targeted Insta360 investigation reproduced the
+     failure with `Mikrofon (4- Insta360 Link)` and confirmed the fixed active
+     capture uses the Rust/Tauri endpoint hash `51112d9ccdd3a140` instead of
+     the stale Python-local hash.
    - Implemented on 2026-06-11: Rust prewarm adoption now starts the new
      WASAPI capture before stopping the idle prewarm session. Diagnostics patch
      the final adopted-prewarm stop payload after capture readiness and expose
