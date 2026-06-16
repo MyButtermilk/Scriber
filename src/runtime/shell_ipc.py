@@ -486,7 +486,7 @@ def _send_request_over_pipe_windows(
                     newline_at = combined.find(b"\n")
                     if newline_at >= 0:
                         return combined[:newline_at].decode("utf-8", errors="replace")
-                if ok:
+                if ok and not bytes_read.value:
                     break
                 continue
             if error == error_broken_pipe:

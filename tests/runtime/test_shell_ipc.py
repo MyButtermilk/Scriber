@@ -288,3 +288,70 @@ def test_shell_ipc_windows_transport_serializes_requests(monkeypatch):
     assert errors == []
     assert len(results) == 2
     assert max_active == 1
+
+
+def test_shell_ipc_windows_transport_reads_response_past_first_buffer(monkeypatch):
+    import ctypes
+    from ctypes import wintypes
+
+    class FakeCall:
+        def __init__(self, func):
+            self.func = func
+            self.restype = None
+
+        def __call__(self, *args):
+            return self.func(*args)
+
+    class FakeKernel32:
+        def __init__(self, response_chunks: list[bytes]):
+            self.response_chunks = list(response_chunks)
+            self.written = b""
+            self.WaitNamedPipeW = FakeCall(lambda *_args: True)
+            self.CreateFileW = FakeCall(lambda *_args: 123)
+            self.WriteFile = FakeCall(self._write_file)
+            self.ReadFile = FakeCall(self._read_file)
+            self.CloseHandle = FakeCall(lambda *_args: True)
+
+        def _write_file(self, _handle, data, length, written_ptr, _overlapped):
+            length_value = int(getattr(length, "value", length))
+            self.written = ctypes.string_at(data, length_value)
+            ctypes.cast(written_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = length_value
+            return True
+
+        def _read_file(self, _handle, buffer, _buffer_len, bytes_read_ptr, _overlapped):
+            chunk = self.response_chunks.pop(0) if self.response_chunks else b""
+            if chunk:
+                ctypes.memmove(buffer, chunk, len(chunk))
+            ctypes.cast(bytes_read_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = len(chunk)
+            return True
+
+    response_line = (
+        json.dumps(
+            {
+                "apiVersion": "1",
+                "requestId": "request-id",
+                "success": True,
+                "errorCode": None,
+                "fallbackReason": None,
+                "timingsMs": {"total": 1.0},
+                "payload": {"diagnostics": "x" * 5000},
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    response_bytes = response_line.encode("utf-8")
+    assert b"\n" not in response_bytes[:4096]
+    fake_kernel32 = FakeKernel32([response_bytes[:4096], response_bytes[4096:]])
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: fake_kernel32, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 0, raising=False)
+
+    response = shell_ipc._send_request_over_pipe_windows(
+        r"\\.\pipe\scriber-shell-test",
+        "{}\n",
+        1.0,
+    )
+
+    assert fake_kernel32.written == b"{}\n"
+    assert response == response_line.rstrip("\n")
+    assert json.loads(response)["payload"]["diagnostics"] == "x" * 5000
