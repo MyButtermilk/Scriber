@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-06-12
+Last verified: 2026-06-16
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -81,7 +81,11 @@ I/O:
 Packaging/build:
 
 - PyInstaller sidecar can be reused through a hash cache.
-- Frontend dist timestamp changes alone should not invalidate the sidecar cache.
+- Installed frontend assets are owned by the Tauri WebView bundle and are not
+  embedded in the Python/PyInstaller backend sidecar.
+- Frontend dist changes do not invalidate the sidecar cache; the backend static
+  frontend fallback is explicit dev/test opt-in through
+  `SCRIBER_FRONTEND_DIST_DIR` or a source checkout.
 - Runtime dependency footprint gate rejects SciPy reintroduction and unused heavy
   runtime paths.
 
@@ -137,7 +141,8 @@ What it does:
 
 - Syncs versions.
 - Builds frontend.
-- Reuses sidecar when inputs are unchanged.
+- Reuses sidecar when backend/runtime inputs are unchanged; frontend asset
+  changes are handled by Tauri and do not rebuild the Python sidecar.
 - Builds Tauri/NSIS.
 - Runs size and runtime dependency footprint gates.
 - Runs selected installed-package smokes.

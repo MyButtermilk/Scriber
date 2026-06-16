@@ -480,14 +480,8 @@ def _frontend_dist_candidates() -> list[Path]:
         candidates.append(Path(raw).expanduser())
 
     bases: list[Path] = []
-    if is_frozen():
-        import sys
-
-        meipass = getattr(sys, "_MEIPASS", "")
-        if meipass:
-            bases.append(Path(meipass))
-        bases.append(app_root())
-    bases.append(repo_root())
+    if not is_frozen():
+        bases.append(repo_root())
 
     for base in bases:
         candidates.extend(
@@ -5736,7 +5730,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": f"Export failed: {e}"}, status=500)
 
     async def frontend_static(request: web.Request):
-        if request.path == "/ws" or request.path.startswith("/api/"):
+        if (
+            request.path == "/api"
+            or request.path.startswith("/api/")
+            or request.path == "/ws"
+            or request.path.startswith("/ws/")
+        ):
             return web.Response(status=404)
 
         frontend_root = _frontend_dist_dir()

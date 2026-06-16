@@ -71,10 +71,6 @@ assets_dir = repo_root / "src" / "assets"
 if assets_dir.exists():
     datas.append((str(assets_dir), "src/assets"))
 
-frontend_dist = repo_root / "Frontend" / "dist" / "public"
-if frontend_dist.exists():
-    datas.append((str(frontend_dist), "Frontend/dist/public"))
-
 for package in ("pipecat", "google", "yt_dlp"):
     try:
         datas += collect_data_files(package)

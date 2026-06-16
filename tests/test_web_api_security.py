@@ -378,11 +378,17 @@ async def test_static_frontend_routes_do_not_bypass_api_session_token(monkeypatc
         missing_asset = await client.get("/assets/missing.js")
         assert missing_asset.status == 404
 
+        bare_api = await client.get("/api")
+        assert bare_api.status == 404
+
         api_without_token = await client.get("/api/runtime")
         assert api_without_token.status == 401
 
         api_with_token = await client.get("/api/runtime", headers={"X-Scriber-Token": "secret"})
         assert api_with_token.status == 200
+
+        nested_ws = await client.get("/ws/not-a-real-websocket")
+        assert nested_ws.status == 404
     finally:
         await client.close()
         ctl.shutdown()
@@ -532,6 +538,18 @@ def test_frontend_file_for_request_blocks_path_traversal(tmp_path):
 
     assert web_api._frontend_file_for_request(root, "/../secret.txt") is None
     assert web_api._frontend_file_for_request(root, "/nested/route") == root / "index.html"
+
+
+def test_frozen_backend_frontend_candidates_require_explicit_env(monkeypatch, tmp_path):
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+
+    monkeypatch.delenv("SCRIBER_FRONTEND_DIST_DIR", raising=False)
+    monkeypatch.setattr(web_api, "is_frozen", lambda: True)
+    assert web_api._frontend_dist_candidates() == []
+
+    monkeypatch.setenv("SCRIBER_FRONTEND_DIST_DIR", str(frontend))
+    assert web_api._frontend_dist_candidates() == [frontend.resolve()]
 
 
 def test_upload_max_bytes_env(monkeypatch):

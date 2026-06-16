@@ -30,8 +30,8 @@ With -LiveRecordingDurationSec, it explicitly starts live microphone recording,
 keeps it running while sampling health/state, CPU, and memory, then stops it.
 With -VerifySupportBundle, it downloads the token-protected support bundle and
 verifies that injected dummy secrets are redacted from the ZIP contents.
-With -VerifyFrontend, it fetches the bundled frontend entrypoint and referenced
-JS/CSS assets from the running backend static fallback, verifies that Tauri
+With -VerifyFrontend, it verifies that installed frontend ownership stays in the
+Tauri WebView bundle rather than the Python backend sidecar, verifies that Tauri
 production origins can call /api/health and tokenized /api/runtime, and waits
 until the actual Tauri WebView reports a tokenized frontend-ready beacon.
 With -VerifyRealMediaWorkflows, it runs real installed backend file and YouTube
@@ -994,21 +994,6 @@ function Test-RustAudioFallbackCircuitDiagnostics {
     }
 }
 
-function Resolve-FrontendAssetUrl {
-    param(
-        [string]$BaseUrl,
-        [string]$Asset
-    )
-
-    if ($Asset -match "^https?://") {
-        return $Asset
-    }
-    if ($Asset.StartsWith("/")) {
-        return "$BaseUrl$Asset"
-    }
-    return "$BaseUrl/$Asset"
-}
-
 function Wait-FrontendReady {
     param(
         [int]$Port,
@@ -1045,50 +1030,29 @@ function Test-FrontendHttp {
 
     $baseUrl = "http://127.0.0.1:$Port"
     $rootUrl = "$baseUrl/"
-    $rootResponse = Invoke-WebRequest -Uri $rootUrl -TimeoutSec 10 -UseBasicParsing
-    if ([int]$rootResponse.StatusCode -ne 200) {
-        throw "Frontend root returned HTTP $($rootResponse.StatusCode)."
+    $backendRootStatusCode = $null
+    $backendRootBytes = 0
+    $backendStaticFallbackAvailable = $false
+    try {
+        $rootResponse = Invoke-WebRequest -Uri $rootUrl -TimeoutSec 10 -UseBasicParsing
+        $backendRootStatusCode = [int]$rootResponse.StatusCode
+        $html = [string]$rootResponse.Content
+        $backendRootBytes = [int]$html.Length
+        $backendStaticFallbackAvailable = $html.Contains('id="root"') -and ($html -match "<script")
+    } catch {
+        $response = $_.Exception.Response
+        if ($response -and $response.StatusCode) {
+            $backendRootStatusCode = [int]$response.StatusCode
+        } else {
+            throw
+        }
     }
 
-    $html = [string]$rootResponse.Content
-    if (-not $html.Contains('id="root"')) {
-        throw "Frontend root HTML does not contain the React root element."
+    if ($backendStaticFallbackAvailable) {
+        throw "Backend static fallback unexpectedly served frontend assets; installed frontend assets must be owned by the Tauri WebView bundle."
     }
-    if (-not ($html -match "<script")) {
-        throw "Frontend root HTML does not reference any JavaScript entrypoint."
-    }
-
-    $assetMatches = [regex]::Matches($html, '(?:src|href)="([^"]+\.(?:js|css)(?:\?[^"]*)?)"')
-    $assets = @()
-    foreach ($match in $assetMatches) {
-        $asset = [string]$match.Groups[1].Value
-        if ($asset -and ($assets -notcontains $asset)) {
-            $assets += $asset
-        }
-    }
-    if ($assets.Count -eq 0) {
-        throw "Frontend root HTML did not expose any JS/CSS assets."
-    }
-
-    $verifiedAssets = @()
-    foreach ($asset in ($assets | Select-Object -First 8)) {
-        $assetUrl = Resolve-FrontendAssetUrl -BaseUrl $baseUrl -Asset $asset
-        $assetResponse = Invoke-WebRequest -Uri $assetUrl -TimeoutSec 10 -UseBasicParsing
-        if ([int]$assetResponse.StatusCode -ne 200) {
-            throw "Frontend asset $asset returned HTTP $($assetResponse.StatusCode)."
-        }
-        $rawLength = [int]$assetResponse.RawContentLength
-        if ($rawLength -le 0) {
-            $rawLength = ([string]$assetResponse.Content).Length
-        }
-        if ($rawLength -le 0) {
-            throw "Frontend asset $asset was empty."
-        }
-        $verifiedAssets += [pscustomobject]@{
-            path = $asset
-            statusCode = [int]$assetResponse.StatusCode
-            bytes = $rawLength
-        }
+    if ($backendRootStatusCode -ne 404) {
+        throw "Backend frontend root returned HTTP $backendRootStatusCode; expected 404 because installed frontend assets are not embedded in the Python sidecar."
     }
 
     $tauriOrigin = "http://tauri.localhost"
@@ -1138,14 +1102,19 @@ function Test-FrontendHttp {
     if ([string]$lastSeen.locationOrigin -ne $tauriOrigin) {
         throw "Tauri WebView reported locationOrigin '$($lastSeen.locationOrigin)' instead of '$tauriOrigin'."
     }
+    if ([string]$lastSeen.origin -ne $tauriOrigin) {
+        throw "Tauri WebView frontend-ready request used Origin '$($lastSeen.origin)' instead of '$tauriOrigin'."
+    }
 
     return [pscustomobject]@{
         verified = $true
-        rootUrl = $rootUrl
-        rootStatusCode = [int]$rootResponse.StatusCode
-        htmlBytes = [int]$html.Length
-        assetCount = [int]$assets.Count
-        verifiedAssetCount = [int]$verifiedAssets.Count
+        source = "tauri-webview"
+        backendStaticFallbackUrl = $rootUrl
+        backendStaticFallbackStatusCode = [int]$backendRootStatusCode
+        backendStaticFallbackAvailable = $false
+        backendStaticFallbackBytes = [int]$backendRootBytes
+        assetCount = 0
+        verifiedAssetCount = 0
         tauriOriginCors = $true
         privateNetworkPreflight = $true
         runtimeCorsVerified = $runtimeCorsVerified
@@ -1154,7 +1123,8 @@ function Test-FrontendHttp {
         webViewTauriRuntime = [bool]$lastSeen.tauriRuntime
         webViewBackendBaseUrl = [string]$lastSeen.backendBaseUrl
         webViewLocationOrigin = [string]$lastSeen.locationOrigin
-        assets = $verifiedAssets
+        webViewRequestOrigin = [string]$lastSeen.origin
+        assets = @()
     }
 }
 

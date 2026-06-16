@@ -210,7 +210,6 @@ function Get-SidecarInputManifest {
     $pyInstallerVersion = (& $Python -c "import PyInstaller; print(PyInstaller.__version__)" 2>$null) -join "`n"
     $inputPaths = @(
         "src",
-        "Frontend\dist\public",
         "packaging\scriber-backend.spec",
         "requirements-base.txt",
         "pyloudnorm",

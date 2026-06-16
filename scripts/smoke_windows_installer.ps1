@@ -33,10 +33,11 @@ from the live microphone path for the configured duration and samples CPU,
 memory, health, and state while recording is active.
 With -VerifySupportBundle, the installed desktop smoke downloads the
 token-protected support bundle and verifies dummy secret redaction.
-With -VerifyFrontend, the installed desktop smoke verifies the frontend
-entrypoint and bundled JS/CSS assets through the running backend and verifies
-that Tauri production origins can call /api/health and tokenized /api/runtime,
-then waits for the actual Tauri WebView frontend-ready beacon.
+With -VerifyFrontend, the installed desktop smoke verifies that the installed
+frontend is owned by the Tauri WebView bundle instead of the Python backend
+sidecar, verifies that Tauri production origins can call /api/health and
+tokenized /api/runtime, then waits for the actual Tauri WebView frontend-ready
+beacon.
 With -VerifyMediaPreparation, the installed desktop smoke runs the media
 preparation helper smoke against the ffmpeg/ffprobe binaries that were actually
 installed with the packaged app.
@@ -274,6 +275,33 @@ function Resolve-InstalledAudioSidecarExe {
     }
 
     throw "Installed scriber-audio-sidecar.exe was not found under $Root."
+}
+
+function Test-InstalledFrontendAssetOwnership {
+    param([string]$Root)
+
+    $legacyBackendAssetTrees = @(
+        (Join-Path $Root "backend\Frontend\dist\public"),
+        (Join-Path $Root "resources\backend\Frontend\dist\public")
+    )
+    $found = @(
+        $legacyBackendAssetTrees |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
+            ForEach-Object { Convert-ToRelativePath -Root $Root -Path $_ }
+    )
+    if ($found.Count -gt 0) {
+        throw "Installed Python backend sidecar still contains frontend asset tree(s): $($found -join ', ')"
+    }
+
+    return [pscustomobject]@{
+        verified = $true
+        source = "tauri-webview"
+        backendFrontendAssetTreesAbsent = $true
+        checkedPaths = @(
+            $legacyBackendAssetTrees |
+                ForEach-Object { Convert-ToRelativePath -Root $Root -Path $_ }
+        )
+    }
 }
 
 function Convert-ToRelativePath {
@@ -680,11 +708,13 @@ $smoke = $null
 $upgrade = $null
 $mediaPreparation = $null
 $audioSidecarExe = $null
+$frontendAssetOwnership = $null
 $cleanupCompleted = $false
 try {
     Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer"
     $appExe = Resolve-InstalledAppExe -Root $InstallDir
     $audioSidecarExe = Resolve-InstalledAudioSidecarExe -Root $InstallDir
+    $frontendAssetOwnership = Test-InstalledFrontendAssetOwnership -Root $InstallDir
     $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
 
     $smoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
@@ -696,6 +726,7 @@ try {
         Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer upgrade"
         $appExe = Resolve-InstalledAppExe -Root $InstallDir
         $audioSidecarExe = Resolve-InstalledAudioSidecarExe -Root $InstallDir
+        $frontendAssetOwnership = Test-InstalledFrontendAssetOwnership -Root $InstallDir
         $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
         $secondSmoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
         if (-not (Test-Path -LiteralPath $sentinelPath -PathType Leaf)) {
@@ -715,6 +746,7 @@ try {
             globalHotkey = $secondSmoke.globalHotkey
             supportBundle = $secondSmoke.supportBundle
             frontend = $secondSmoke.frontend
+            frontendAssetOwnership = $frontendAssetOwnership
             liveRecording = $secondSmoke.liveRecording
             stability = $secondSmoke.stability
             legacyDataMigration = $secondSmoke.legacyDataMigration
@@ -754,6 +786,7 @@ try {
         globalHotkey = $smoke.globalHotkey
         supportBundle = $smoke.supportBundle
         frontend = $smoke.frontend
+        frontendAssetOwnership = $frontendAssetOwnership
         realMediaWorkflows = $smoke.realMediaWorkflows
         mediaPreparation = $mediaPreparation
         liveRecording = $smoke.liveRecording

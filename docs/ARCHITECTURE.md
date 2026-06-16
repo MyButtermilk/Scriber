@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-06-10
+Last verified: 2026-06-16
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -55,7 +55,7 @@ File:
 Key modules:
 
 - `src/web_api.py`: REST/WebSocket app, controller state, jobs, settings,
-  runtime logs, support bundles, static frontend fallback.
+  runtime logs, support bundles, and explicit dev/test frontend fallback.
 - `src/pipeline.py`: STT orchestration, service factory, VAD/analyzer caching,
   mic resolution, direct/async transcription helpers.
 - `src/microphone.py`: sounddevice transport, stream lifecycle, channel
@@ -75,6 +75,10 @@ Key modules:
 
 The backend remains the source of truth for recording state, device selection,
 provider calls, transcript storage, and job lifecycle.
+In installed Tauri builds, the Python sidecar does not embed or serve the
+production React asset tree. The only backend static frontend fallback is the
+explicit `SCRIBER_FRONTEND_DIST_DIR`/source-checkout path used for dev and
+tests.
 
 ## Frontend
 
@@ -96,6 +100,9 @@ Key modules:
 The frontend should not own backend lifecycle decisions. In desktop runtime it
 asks Tauri commands for backend access and posts the frontend-ready beacon after
 health is proven.
+Installed frontend assets are owned by Tauri through `frontendDist` and are
+loaded from the WebView origin (`http://tauri.localhost`), not from the Python
+backend loopback server.
 
 ## Tauri Shell
 
@@ -110,6 +117,9 @@ health is proven.
 - Own tray/menu shell actions: open/focus, restart backend, quit.
 - Run worker crash recovery and write crash metadata.
 - Avoid visible console windows for the Python child on Windows.
+- Own the installed frontend asset bundle through Tauri `frontendDist`; the
+  backend sidecar remains API-only unless a developer explicitly points
+  `SCRIBER_FRONTEND_DIST_DIR` at a frontend build.
 
 Tauri must not become the owner of recording state. Route recording commands
 through backend endpoints.

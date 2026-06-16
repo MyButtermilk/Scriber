@@ -2432,15 +2432,34 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
 
         assert_eq!(value["requestId"], "r-audio-prewarm-start");
-        assert_eq!(value["success"], false);
-        assert!(
-            matches!(
-                value["errorCode"].as_str(),
-                Some("audioPrewarmUnavailable" | "unknownCommand")
-            ),
-            "unexpected prewarm start error: {}",
-            value["errorCode"]
-        );
+        let success = value["success"].as_bool().unwrap_or(false);
+        if success {
+            assert!(
+                value
+                    .get("errorCode")
+                    .is_none_or(|code| code.as_str().unwrap_or_default().is_empty()),
+                "successful prewarm start should not return an error code: {}",
+                value["errorCode"]
+            );
+            assert_eq!(value["payload"]["prewarmAvailable"], true);
+            assert!(
+                value["payload"]["prewarmId"]
+                    .as_str()
+                    .is_some_and(|prewarm_id| !prewarm_id.is_empty()),
+                "successful prewarm start must return a prewarm id: {}",
+                value["payload"]
+            );
+            crate::audio_sidecar_client::shutdown_all_audio_sidecars("test");
+        } else {
+            assert!(
+                matches!(
+                    value["errorCode"].as_str(),
+                    Some("audioPrewarmUnavailable" | "unknownCommand")
+                ),
+                "unexpected prewarm start error: {}",
+                value["errorCode"]
+            );
+        }
         assert_eq!(value["payload"]["engine"], "rust-wasapi");
         assert_eq!(value["payload"]["requestedFormat"]["prebufferMs"], 400);
         assert_eq!(

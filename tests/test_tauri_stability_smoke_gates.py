@@ -157,17 +157,20 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert '$entry["lastWriteTimeUtc"] = $item.LastWriteTimeUtc.ToString("o")' in sidecar
 
 
-def test_sidecar_cache_key_includes_frontend_dist() -> None:
+def test_sidecar_cache_key_excludes_frontend_dist() -> None:
     sidecar = read_script("scripts/build_tauri_backend_sidecar.ps1")
+    spec = read_script("packaging/scriber-backend.spec")
 
     manifest_start = sidecar.index("function Get-SidecarInputManifest")
     manifest_end = sidecar.index("function Copy-DirectoryContents")
     manifest_block = sidecar[manifest_start:manifest_end]
 
     assert '"src"' in manifest_block
-    assert '"Frontend\\dist\\public"' in manifest_block
+    assert '"Frontend\\dist\\public"' not in manifest_block
     assert '"packaging\\scriber-backend.spec"' in manifest_block
     assert '"scripts\\check_backend_runtime_imports.py"' in manifest_block
+    assert "Frontend/dist/public" not in spec
+    assert "Frontend\" / \"dist\" / \"public" not in spec
 
 
 def test_gyan_essentials_prepare_script_downloads_and_verifies_archive() -> None:
@@ -392,7 +395,9 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "[switch]$VerifyFrontend" in desktop
     assert "function Test-FrontendHttp" in desktop
     assert "function Wait-FrontendReady" in desktop
-    assert "Frontend root HTML does not contain the React root element" in desktop
+    assert "Backend static fallback unexpectedly served frontend assets" in desktop
+    assert 'source = "tauri-webview"' in desktop
+    assert "backendStaticFallbackAvailable = $false" in desktop
     assert "http://tauri.localhost" in desktop
     assert "/api/runtime/frontend-ready" in desktop
     assert "Tauri WebView did not report frontend-ready" in desktop
@@ -401,6 +406,8 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "webViewReady = [bool]$frontendReady.ready" in desktop
     assert "webViewBackendBaseUrl" in desktop
     assert "webViewLocationOrigin" in desktop
+    assert "Tauri WebView frontend-ready request used Origin" in desktop
+    assert "webViewRequestOrigin" in desktop
     assert "Access-Control-Request-Private-Network" in desktop
     assert "privateNetworkPreflight = $true" in desktop
     assert "frontend = $frontend" in desktop
@@ -409,7 +416,12 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert '"-VerifySupportBundle"' in installer
     assert "supportBundle = $smoke.supportBundle" in installer
     assert "[switch]$VerifyFrontend" in installer
-    assert "frontend-ready beacon" in installer
+    assert "actual Tauri WebView frontend-ready" in installer
+    assert "function Test-InstalledFrontendAssetOwnership" in installer
+    assert "backend\\Frontend\\dist\\public" in installer
+    assert "resources\\backend\\Frontend\\dist\\public" in installer
+    assert "Installed Python backend sidecar still contains frontend asset tree" in installer
+    assert "frontendAssetOwnership = $frontendAssetOwnership" in installer
     assert '"-VerifyFrontend"' in installer
     assert "frontend = $smoke.frontend" in installer
 
