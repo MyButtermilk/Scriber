@@ -185,15 +185,44 @@ def test_audio_diagnostics_silence_requires_no_pipecat_vad_speech():
         "audioLevelSampleCount": 8,
         "maxObservedRms": 0.0001,
         "speechObserved": False,
-        "pipecatVad": {"enabled": True, "speechObserved": False, "speechStartedCount": 0},
+        "pipecatVad": {
+            "enabled": True,
+            "audioFrameCount": 80,
+            "speechObserved": False,
+            "speechStartedCount": 0,
+        },
+    }
+    noisy_fan = {
+        "audioLevelSampleCount": 12,
+        "maxObservedRms": 0.03,
+        "speechObserved": True,
+        "pipecatVad": {
+            "enabled": True,
+            "audioFrameCount": 120,
+            "speechObserved": False,
+            "speechStartedCount": 0,
+        },
+    }
+    no_vad_frames = {
+        **quiet,
+        "pipecatVad": {
+            "enabled": True,
+            "audioFrameCount": 0,
+            "speechObserved": False,
+            "speechStartedCount": 0,
+        },
     }
     speech = {
         **quiet,
-        "pipecatVad": {"speechObserved": True, "speechStartedCount": 1},
+        "pipecatVad": {"enabled": True, "audioFrameCount": 80, "speechObserved": True, "speechStartedCount": 1},
     }
 
     assert web_api._audio_diagnostics_indicate_silence(quiet) is True
     assert web_api._audio_diagnostics_have_pipecat_vad_silence(quiet) is True
+    assert web_api._audio_diagnostics_indicate_silence(noisy_fan) is True
+    assert web_api._audio_diagnostics_have_pipecat_vad_silence(noisy_fan) is True
+    assert web_api._audio_diagnostics_indicate_silence(no_vad_frames) is False
+    assert web_api._audio_diagnostics_have_pipecat_vad_silence(no_vad_frames) is False
     assert web_api._audio_diagnostics_indicate_silence(speech) is False
     assert web_api._audio_diagnostics_have_pipecat_vad_silence({**quiet, "pipecatVad": None}) is False
 
@@ -210,9 +239,14 @@ async def test_stop_listening_skips_provider_finalization_for_silent_async_recor
         def audio_diagnostics(self):
             return {
                 "audioLevelSampleCount": 8,
-                "maxObservedRms": 0.0001,
-                "speechObserved": False,
-                "pipecatVad": {"enabled": True, "speechObserved": False, "speechStartedCount": 0},
+                "maxObservedRms": 0.03,
+                "speechObserved": True,
+                "pipecatVad": {
+                    "enabled": True,
+                    "audioFrameCount": 80,
+                    "speechObserved": False,
+                    "speechStartedCount": 0,
+                },
             }
 
         async def cancel_silent_recording(self):

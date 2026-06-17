@@ -1093,6 +1093,17 @@ def _audio_diagnostics_indicate_silence(diagnostics: dict[str, Any] | None) -> b
                 return False
         except Exception:
             pass
+        if bool(vad_diagnostics.get("enabled")):
+            # Treat Pipecat/Silero VAD as authoritative for speech-vs-noise.
+            # The legacy RMS heuristic is only a fallback; loud fans and USB
+            # camera mics can exceed the RMS threshold without containing speech.
+            try:
+                audio_frame_count = vad_diagnostics.get("audioFrameCount")
+                if audio_frame_count is not None and int(audio_frame_count or 0) <= 0:
+                    return False
+            except Exception:
+                return False
+            return True
     try:
         sample_count = int(diagnostics.get("audioLevelSampleCount") or 0)
     except Exception:
@@ -1110,8 +1121,6 @@ def _audio_diagnostics_indicate_silence(diagnostics: dict[str, Any] | None) -> b
 
 
 def _audio_diagnostics_have_pipecat_vad_silence(diagnostics: dict[str, Any] | None) -> bool:
-    if not _audio_diagnostics_indicate_silence(diagnostics):
-        return False
     if not isinstance(diagnostics, dict):
         return False
     vad_diagnostics = diagnostics.get("pipecatVad")
@@ -1122,9 +1131,17 @@ def _audio_diagnostics_have_pipecat_vad_silence(diagnostics: dict[str, Any] | No
     if bool(vad_diagnostics.get("speechObserved")):
         return False
     try:
-        return int(vad_diagnostics.get("speechStartedCount") or 0) <= 0
+        if int(vad_diagnostics.get("speechStartedCount") or 0) > 0:
+            return False
     except Exception:
         return False
+    try:
+        audio_frame_count = vad_diagnostics.get("audioFrameCount")
+        if audio_frame_count is not None and int(audio_frame_count or 0) <= 0:
+            return False
+    except Exception:
+        return False
+    return True
 
 
 def _pipeline_stop_timeout_error(exc: BaseException) -> bool:

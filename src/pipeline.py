@@ -757,6 +757,7 @@ class PipecatVadSpeechObserver(FrameProcessor):
         self.enabled = bool(enabled)
         self._started_count = 0
         self._stopped_count = 0
+        self._audio_frame_count = 0
         self._speaking = False
         self._speech_observed = False
         self._last_started_at = 0.0
@@ -767,7 +768,9 @@ class PipecatVadSpeechObserver(FrameProcessor):
 
         if self.enabled:
             now = time.monotonic()
-            if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
+            if isinstance(frame, InputAudioRawFrame):
+                self._audio_frame_count += 1
+            elif isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
                 self._started_count += 1
                 self._speaking = True
                 self._speech_observed = True
@@ -785,6 +788,7 @@ class PipecatVadSpeechObserver(FrameProcessor):
             "enabled": self.enabled,
             "speechObserved": bool(self._speech_observed),
             "speaking": bool(self._speaking),
+            "audioFrameCount": int(self._audio_frame_count),
             "speechStartedCount": int(self._started_count),
             "speechStoppedCount": int(self._stopped_count),
             "lastSpeechStartedAgoSeconds": (

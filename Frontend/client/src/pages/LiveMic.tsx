@@ -12,8 +12,8 @@ import type { BackendStateResponse } from "@/lib/api-types";
 
 const DELETE_GLITCH_DURATION_MS = 1200;
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
-const MIC_VISUAL_NOISE_FLOOR = 0.0012;
-const MIC_VISUAL_DISPLAY_SCALE = 22;
+const MIC_VISUAL_NOISE_FLOOR = 0.00003;
+const MIC_VISUAL_DISPLAY_SCALE = 90;
 
 type Transcript = {
   id: string;
@@ -291,7 +291,7 @@ const AudioVisualizer = memo(function AudioVisualizer({
       }
       lastDrawAt = time;
       resizeCanvas();
-      const rawLevel = Math.min(1, Math.max(0, audioLevelRef.current * 3));
+      const rawLevel = micVisualGainFromAudioLevel(audioLevelRef.current);
       smoothedLevel = smoothedLevel * 0.72 + rawLevel * 0.28;
 
       ctx.clearRect(0, 0, lastWidth, lastHeight);

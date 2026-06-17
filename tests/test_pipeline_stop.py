@@ -1,9 +1,11 @@
 import asyncio
 
 import pytest
+from pipecat.frames.frames import InputAudioRawFrame
+from pipecat.processors.frame_processor import FrameDirection
 
 from src.config import Config
-from src.pipeline import ScriberPipeline
+from src.pipeline import PipecatVadSpeechObserver, ScriberPipeline
 
 
 class _DummyTask:
@@ -216,6 +218,33 @@ def test_pipeline_audio_diagnostics_merges_pipecat_vad_snapshot():
     assert diagnostics["speechObserved"] is True
     assert diagnostics["speechObservedByVad"] is True
     assert diagnostics["pipecatVad"]["speechStartedCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_pipecat_vad_observer_counts_audio_frames():
+    observer = PipecatVadSpeechObserver(enabled=True)
+    pushed = []
+
+    async def _capture_push(frame, direction):
+        pushed.append((frame, direction))
+
+    observer.push_frame = _capture_push
+
+    await observer.process_frame(
+        InputAudioRawFrame(audio=b"\0" * 320, sample_rate=16000, num_channels=1),
+        FrameDirection.DOWNSTREAM,
+    )
+    await observer.process_frame(
+        InputAudioRawFrame(audio=b"\0" * 320, sample_rate=16000, num_channels=1),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    snapshot = observer.snapshot()
+
+    assert snapshot["audioFrameCount"] == 2
+    assert snapshot["speechStartedCount"] == 0
+    assert snapshot["speechObserved"] is False
+    assert len(pushed) == 2
 
 
 @pytest.mark.asyncio

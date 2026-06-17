@@ -28,8 +28,8 @@ const OVERLAY_CONTENT_WIDTH = STOP_BUTTON_SIZE + WAVEFORM_CANVAS_WIDTH;
 const PILL_WIDTH = OVERLAY_CONTENT_WIDTH + PILL_PADDING * 2;
 const PILL_HEIGHT = STOP_BUTTON_SIZE + PILL_PADDING * 2;
 const MIDNIGHT_COLORS = ["#93C5FD", "#3B82F6", "#1E3A8A"];
-const OVERLAY_RMS_NOISE_FLOOR = 0.0012;
-const OVERLAY_RMS_DISPLAY_SCALE = 22;
+const OVERLAY_RMS_NOISE_FLOOR = 0.00003;
+const OVERLAY_RMS_DISPLAY_SCALE = 90;
 
 function normalizeMode(value: unknown): OverlayMode {
   const mode = String(value || "").trim().toLowerCase();
@@ -302,7 +302,7 @@ export default function NativeRecordingOverlay() {
   }, []);
 
   useEffect(() => {
-    if (!backendReady || isDevOverlayPreview || !visible) return;
+    if (!backendReady || isDevOverlayPreview) return;
     const socket = new WebSocket(wsUrl("/ws"));
     socket.onmessage = (event) => {
       try {
@@ -317,7 +317,7 @@ export default function NativeRecordingOverlay() {
     return () => {
       socket.close();
     };
-  }, [applyWsMessage, backendReady, isDevOverlayPreview, visible]);
+  }, [applyWsMessage, backendReady, isDevOverlayPreview]);
 
   const handleStop = useCallback(async () => {
     try {
