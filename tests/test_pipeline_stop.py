@@ -42,15 +42,23 @@ class _DummyAudioInput:
 
 
 class _DummyPrewarmManager:
-    def __init__(self, events: list[str] | None = None) -> None:
+    def __init__(self, events: list[str] | None = None, *, resume_result: bool = True) -> None:
+        self.detach_calls = 0
         self.resume_calls = 0
         self._events = events
+        self._resume_result = resume_result
+
+    def detach_active_capture(self, _callback=None) -> bool:
+        self.detach_calls += 1
+        if self._events is not None:
+            self._events.append("prewarm_detach")
+        return False
 
     def resume_after_active_capture(self) -> bool:
         self.resume_calls += 1
         if self._events is not None:
             self._events.append("prewarm_resume")
-        return True
+        return self._resume_result
 
 
 @pytest.mark.asyncio
@@ -109,8 +117,36 @@ async def test_cleanup_audio_input_resumes_always_on_prewarm_immediately(monkeyp
 
     assert audio_input.close_stream is True
     assert pipeline.audio_input is None
+    assert prewarm.detach_calls == 1
     assert prewarm.resume_calls == 1
-    assert events == ["audio_stop", "prewarm_resume"]
+    assert events == ["prewarm_detach", "prewarm_resume", "audio_stop"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_audio_input_retries_prewarm_resume_after_stop(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    events: list[str] = []
+    prewarm = _DummyPrewarmManager(events, resume_result=False)
+    pipeline = ScriberPipeline(
+        service_name="soniox",
+        on_status_change=None,
+        mic_prewarm_manager=prewarm,
+    )
+    audio_input = _DummyAudioInput(events)
+    pipeline.audio_input = audio_input
+
+    await pipeline._cleanup_audio_input()
+
+    assert audio_input.close_stream is True
+    assert pipeline.audio_input is None
+    assert prewarm.detach_calls == 1
+    assert prewarm.resume_calls == 2
+    assert events == [
+        "prewarm_detach",
+        "prewarm_resume",
+        "audio_stop",
+        "prewarm_resume",
+    ]
 
 
 def test_pipeline_delegates_audio_diagnostics_and_health():

@@ -778,10 +778,27 @@ class ScriberPipeline:
         if not audio_input:
             return
         resume_prewarm = bool(Config.MIC_ALWAYS_ON and self.mic_prewarm_manager is not None)
+        prewarm_resumed_before_stop = False
         async with self._audio_cleanup_lock:
             audio_input = self.audio_input
             if not audio_input:
                 return
+            if resume_prewarm:
+                try:
+                    detach_active_capture = getattr(
+                        self.mic_prewarm_manager,
+                        "detach_active_capture",
+                        None,
+                    )
+                    if callable(detach_active_capture):
+                        await asyncio.to_thread(detach_active_capture, None)
+                    prewarm_resumed_before_stop = bool(
+                        await asyncio.to_thread(
+                            self.mic_prewarm_manager.resume_after_active_capture
+                        )
+                    )
+                except Exception as exc:
+                    logger.debug(f"Mic prewarm pre-resume before audio cleanup warning: {exc}")
             try:
                 # Pipeline instances are per-session, so keep_alive streams cannot
                 # be safely reused here. Always close to avoid orphaned PortAudio
@@ -791,7 +808,7 @@ class ScriberPipeline:
                 logger.debug(f"Audio input cleanup warning: {exc}")
             finally:
                 self.audio_input = None
-        if resume_prewarm:
+        if resume_prewarm and not prewarm_resumed_before_stop:
             try:
                 await asyncio.to_thread(self.mic_prewarm_manager.resume_after_active_capture)
             except Exception as exc:
