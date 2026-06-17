@@ -56,6 +56,20 @@ def summarize_directory(root: Path, *, top_files_limit: int) -> dict:
     }
 
 
+def installed_app_from_smoke_report(path: Path, *, max_installed_mb: float | None) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    install_size = payload.get("installSize")
+    if not isinstance(install_size, dict):
+        raise ValueError(f"Installed smoke report has no installSize object: {path}")
+
+    installed_app = dict(install_size)
+    installed_app["budget"] = evaluate_budget(
+        installed_app.get("totalMb"),
+        max_installed_mb,
+    )
+    return installed_app
+
+
 def evaluate_budget(value_mb: float | None, max_mb: float | None) -> dict:
     if max_mb is None or max_mb <= 0:
         return {"maxMb": None, "withinBudget": None}
@@ -68,6 +82,7 @@ def build_report(
     artifacts: list[Path],
     *,
     install_dir: Path | None = None,
+    installed_smoke_report: Path | None = None,
     top_roots: list[Path] | None = None,
     max_installer_mb: float | None = 220.0,
     max_installed_mb: float | None = None,
@@ -85,7 +100,16 @@ def build_report(
     installer_budget = evaluate_budget(largest_artifact_mb, max_installer_mb)
 
     installed_app = None
-    if install_dir is not None:
+    if installed_smoke_report is not None:
+        if not installed_smoke_report.is_file():
+            raise FileNotFoundError(
+                f"Installed smoke report was not found: {installed_smoke_report}"
+            )
+        installed_app = installed_app_from_smoke_report(
+            installed_smoke_report,
+            max_installed_mb=max_installed_mb,
+        )
+    elif install_dir is not None:
         if not install_dir.is_dir():
             raise FileNotFoundError(f"Install directory was not found: {install_dir}")
         installed_app = summarize_directory(install_dir, top_files_limit=top_files_limit)
@@ -139,6 +163,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Create and gate Scriber release size metadata.")
     parser.add_argument("--artifact", action="append", default=[], help="Release artifact path.")
     parser.add_argument("--install-dir", default="", help="Optional installed app directory to measure.")
+    parser.add_argument(
+        "--installed-smoke-report",
+        default="",
+        help="Optional smoke_windows_installer JSON report containing installSize.",
+    )
     parser.add_argument("--top-root", action="append", default=[], help="Directory whose largest files should be reported.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="JSON report output path.")
     parser.add_argument("--max-installer-mb", type=float, default=220.0)
@@ -148,11 +177,17 @@ def main(argv: list[str] | None = None) -> int:
 
     artifacts = [Path(item).expanduser().resolve() for item in args.artifact]
     install_dir = Path(args.install_dir).expanduser().resolve() if args.install_dir else None
+    installed_smoke_report = (
+        Path(args.installed_smoke_report).expanduser().resolve()
+        if args.installed_smoke_report
+        else None
+    )
     top_roots = [Path(item).expanduser().resolve() for item in args.top_root]
 
     report = build_report(
         artifacts,
         install_dir=install_dir,
+        installed_smoke_report=installed_smoke_report,
         top_roots=top_roots,
         max_installer_mb=args.max_installer_mb,
         max_installed_mb=args.max_installed_mb if args.max_installed_mb > 0 else None,

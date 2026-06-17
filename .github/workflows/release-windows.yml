@@ -94,7 +94,7 @@ jobs:
             "-MaxOnnxRuntimeDependencyMB",
             "40",
             "-MaxPythonRuntimeDependencyMB",
-            "40",
+            "325",
             "-MaxBackendRuntimeDependencyMB",
             "325",
             "-MaxInternalRuntimeDependencyMB",

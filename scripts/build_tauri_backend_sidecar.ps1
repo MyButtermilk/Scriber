@@ -241,12 +241,123 @@ function Copy-DirectoryContents {
         [string]$TargetLabel
     )
 
-    Assert-UnderRoot -Root $RepoRoot -Path $TargetDir -Label $TargetLabel
-    if (Test-Path -LiteralPath $TargetDir) {
-        Remove-Item -LiteralPath $TargetDir -Recurse -Force
+    Sync-DirectoryContents -SourceDir $SourceDir -TargetDir $TargetDir -TargetLabel $TargetLabel | Out-Null
+}
+
+function Test-FileContentEqual {
+    param(
+        [string]$SourcePath,
+        [string]$TargetPath
+    )
+
+    if (-not (Test-Path -LiteralPath $TargetPath -PathType Leaf)) {
+        return $false
     }
+
+    $source = Get-Item -LiteralPath $SourcePath
+    $target = Get-Item -LiteralPath $TargetPath
+    if ($source.Length -ne $target.Length) {
+        return $false
+    }
+    if ($source.LastWriteTimeUtc -eq $target.LastWriteTimeUtc) {
+        return $true
+    }
+
+    $sourceHash = (Get-FileHash -LiteralPath $source.FullName -Algorithm SHA256).Hash
+    $targetHash = (Get-FileHash -LiteralPath $target.FullName -Algorithm SHA256).Hash
+    return $sourceHash -eq $targetHash
+}
+
+function Copy-FileIfChanged {
+    param(
+        [string]$SourcePath,
+        [string]$TargetPath
+    )
+
+    if (Test-FileContentEqual -SourcePath $SourcePath -TargetPath $TargetPath) {
+        $source = Get-Item -LiteralPath $SourcePath
+        $target = Get-Item -LiteralPath $TargetPath
+        if ($source.LastWriteTimeUtc -ne $target.LastWriteTimeUtc) {
+            [System.IO.File]::SetLastWriteTimeUtc($target.FullName, $source.LastWriteTimeUtc)
+        }
+        return $false
+    }
+
+    $targetParent = Split-Path -Parent $TargetPath
+    New-Item -ItemType Directory -Force -Path $targetParent | Out-Null
+    Copy-Item -LiteralPath $SourcePath -Destination $TargetPath -Force
+    $source = Get-Item -LiteralPath $SourcePath
+    [System.IO.File]::SetLastWriteTimeUtc($TargetPath, $source.LastWriteTimeUtc)
+    return $true
+}
+
+function Sync-DirectoryContents {
+    param(
+        [string]$SourceDir,
+        [string]$TargetDir,
+        [string]$TargetLabel
+    )
+
+    Assert-UnderRoot -Root $RepoRoot -Path $TargetDir -Label $TargetLabel
+    if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
+        throw "Source directory was not found for ${TargetLabel}: ${SourceDir}"
+    }
+
+    $sourceRoot = Convert-ToFullPath -Path $SourceDir
+    $targetRoot = Convert-ToFullPath -Path $TargetDir
     New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
-    Copy-Item -Path (Join-Path $SourceDir "*") -Destination $TargetDir -Recurse -Force
+
+    $sourceRelativePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $copied = 0
+    $skipped = 0
+    foreach ($sourceFile in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File) {
+        $relative = Get-RelativePath -Root $sourceRoot -Path $sourceFile.FullName
+        $sourceRelativePaths.Add($relative) | Out-Null
+        $targetPath = Join-Path $targetRoot $relative
+        Assert-UnderRoot -Root $targetRoot -Path $targetPath -Label "$TargetLabel file target"
+        if (Copy-FileIfChanged -SourcePath $sourceFile.FullName -TargetPath $targetPath) {
+            $copied += 1
+        } else {
+            $skipped += 1
+        }
+    }
+
+    $removed = 0
+    foreach ($targetFile in Get-ChildItem -LiteralPath $targetRoot -Recurse -File -ErrorAction SilentlyContinue) {
+        $relative = Get-RelativePath -Root $targetRoot -Path $targetFile.FullName
+        if (-not $sourceRelativePaths.Contains($relative)) {
+            Assert-UnderRoot -Root $targetRoot -Path $targetFile.FullName -Label "$TargetLabel stale file"
+            Remove-Item -LiteralPath $targetFile.FullName -Force
+            $removed += 1
+        }
+    }
+
+    foreach ($targetDirectory in Get-ChildItem -LiteralPath $targetRoot -Recurse -Directory -ErrorAction SilentlyContinue | Sort-Object FullName -Descending) {
+        if (-not (Get-ChildItem -LiteralPath $targetDirectory.FullName -Force -ErrorAction SilentlyContinue)) {
+            Assert-UnderRoot -Root $targetRoot -Path $targetDirectory.FullName -Label "$TargetLabel stale directory"
+            Remove-Item -LiteralPath $targetDirectory.FullName -Force
+        }
+    }
+
+    return [ordered]@{
+        copied = $copied
+        skipped = $skipped
+        removed = $removed
+    }
+}
+
+function Get-RustAudioSidecarInputManifest {
+    param([string]$Root)
+
+    return [ordered]@{
+        apiVersion = "1"
+        files = Get-InputFileEntries -Root $Root -RelativePaths @(
+            "Frontend\src-tauri\Cargo.toml",
+            "Frontend\src-tauri\Cargo.lock",
+            "Frontend\src-tauri\build.rs",
+            "Frontend\src-tauri\src"
+        )
+    }
 }
 
 function Copy-RustAudioSidecarToTauriRelease {
@@ -255,43 +366,100 @@ function Copy-RustAudioSidecarToTauriRelease {
     )
 
     $tauriDir = Join-Path $Root "Frontend\src-tauri"
-    $targetDir = Join-Path $tauriDir "resources\audio-sidecar"
+    $targetDir = Join-Path $tauriDir "target\release"
+    $staleResourceDir = Join-Path $tauriDir "resources\audio-sidecar"
+    $staleTargetResourceDir = Join-Path $targetDir "audio-sidecar"
+    $cacheRoot = Join-Path $Root "build\rust-audio-sidecar-cache"
+    $cargoTargetDir = Join-Path $Root "build\rust-audio-sidecar-target"
     Assert-UnderRoot -Root $Root -Path $targetDir -Label "Tauri release audio sidecar target"
-
-    Push-Location $tauriDir
-    try {
-        cargo build --release --bin scriber-audio-sidecar
-    } finally {
-        Pop-Location
-    }
-    if ($LASTEXITCODE -ne 0) {
-        throw "Rust audio sidecar build failed."
-    }
+    Assert-UnderRoot -Root $Root -Path $staleResourceDir -Label "Stale audio sidecar resource"
+    Assert-UnderRoot -Root $Root -Path $staleTargetResourceDir -Label "Stale packaged audio sidecar resource"
+    Assert-UnderRoot -Root $Root -Path $cacheRoot -Label "Rust audio sidecar cache"
+    Assert-UnderRoot -Root $Root -Path $cargoTargetDir -Label "Rust audio sidecar cargo target"
 
     $exeName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "scriber-audio-sidecar.exe" } else { "scriber-audio-sidecar" }
-    $sourceExe = Join-Path $tauriDir "target\release\$exeName"
-    if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
-        throw "Rust audio sidecar executable was not found: $sourceExe"
+    $cacheExe = Join-Path $cacheRoot $exeName
+    $cacheManifestPath = Join-Path $cacheRoot "audio-sidecar-cache-manifest.json"
+    $metadataPath = Join-Path $cacheRoot "audio-sidecar-build-metadata.json"
+    $inputManifest = Get-RustAudioSidecarInputManifest -Root $Root
+    $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
+    $cacheKey = Get-StringSha256 -Value $inputManifestJson
+    $cacheHit = $false
+
+    if ((Test-Path -LiteralPath $cacheExe -PathType Leaf) -and (Test-Path -LiteralPath $cacheManifestPath -PathType Leaf)) {
+        try {
+            $cacheManifest = Get-Content -LiteralPath $cacheManifestPath -Raw | ConvertFrom-Json
+            $cacheHit = ([string]$cacheManifest.cacheKey) -eq $cacheKey
+        } catch {
+            $cacheHit = $false
+        }
+    }
+
+    if (-not $cacheHit) {
+        Push-Location $tauriDir
+        try {
+            cargo build --release --bin scriber-audio-sidecar --target-dir $cargoTargetDir
+        } finally {
+            Pop-Location
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Rust audio sidecar build failed."
+        }
+
+        $sourceExe = Join-Path $cargoTargetDir "release\$exeName"
+        if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+            throw "Rust audio sidecar executable was not found: $sourceExe"
+        }
+
+        New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+        Copy-FileIfChanged -SourcePath $sourceExe -TargetPath $cacheExe | Out-Null
+        $cacheManifestPayload = [ordered]@{
+            apiVersion = "1"
+            cacheKey = $cacheKey
+            inputManifest = $inputManifest
+        }
+        $cacheManifestPayload | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $cacheManifestPath -Encoding utf8
+    }
+
+    if (-not (Test-Path -LiteralPath $cacheExe -PathType Leaf)) {
+        throw "Rust audio sidecar cache executable was not found: $cacheExe"
     }
 
     New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-    Get-ChildItem -LiteralPath $targetDir -Force -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -ne ".gitkeep" } |
-        Remove-Item -Recurse -Force
     $targetExe = Join-Path $targetDir $exeName
-    Copy-Item -LiteralPath $sourceExe -Destination $targetExe -Force
+    $targetCopied = Copy-FileIfChanged -SourcePath $cacheExe -TargetPath $targetExe
+
+    if (Test-Path -LiteralPath $staleResourceDir -PathType Container) {
+        foreach ($staleItem in Get-ChildItem -LiteralPath $staleResourceDir -Force -ErrorAction SilentlyContinue) {
+            if ($staleItem.Name -ne ".gitkeep") {
+                Assert-UnderRoot -Root $staleResourceDir -Path $staleItem.FullName -Label "Stale audio sidecar resource"
+                Remove-Item -LiteralPath $staleItem.FullName -Recurse -Force
+            }
+        }
+        if (-not (Get-ChildItem -LiteralPath $staleResourceDir -Force -ErrorAction SilentlyContinue)) {
+            Assert-UnderRoot -Root $Root -Path $staleResourceDir -Label "Empty audio sidecar resource directory"
+            Remove-Item -LiteralPath $staleResourceDir -Force
+        }
+    }
+
+    if (Test-Path -LiteralPath $staleTargetResourceDir -PathType Container) {
+        Assert-UnderRoot -Root $targetDir -Path $staleTargetResourceDir -Label "Stale packaged audio sidecar resource"
+        Remove-Item -LiteralPath $staleTargetResourceDir -Recurse -Force
+    }
 
     $metadata = [ordered]@{
         apiVersion = "1"
         generatedAt = (Get-Date).ToUniversalTime().ToString("o")
-        sourceExe = $sourceExe
+        cacheHit = $cacheHit
+        cacheKey = $cacheKey
+        sourceExe = $cacheExe
         targetExe = $targetExe
         sha256 = (Get-FileHash -LiteralPath $targetExe -Algorithm SHA256).Hash.ToLowerInvariant()
         length = [int64](Get-Item -LiteralPath $targetExe).Length
+        targetCopied = [bool]$targetCopied
         captureDefault = "disabled"
         optInEnv = "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE"
     }
-    $metadataPath = Join-Path $targetDir "audio-sidecar-build-metadata.json"
     $metadata | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $metadataPath -Encoding utf8
 
     return [ordered]@{

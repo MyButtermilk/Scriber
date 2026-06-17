@@ -1218,7 +1218,25 @@ mod tests {
         let exe_parent = PathBuf::from(r"C:\Program Files\Scriber");
         let dirs = audio_sidecar_executable_dirs_for(Some(&exe_parent), None);
 
+        assert!(dirs.contains(&exe_parent));
         assert!(dirs.contains(&exe_parent.join("resources").join("audio-sidecar")));
+    }
+
+    #[test]
+    fn audio_sidecar_executable_dirs_prefer_root_binary_over_legacy_resource_dir() {
+        let exe_parent = PathBuf::from(r"C:\Program Files\Scriber");
+        let dirs = audio_sidecar_executable_dirs_for(Some(&exe_parent), None);
+
+        let root_index = dirs
+            .iter()
+            .position(|dir| dir == &exe_parent)
+            .expect("root directory missing");
+        let resource_index = dirs
+            .iter()
+            .position(|dir| dir == &exe_parent.join("audio-sidecar"))
+            .expect("audio-sidecar resource directory missing");
+
+        assert!(root_index < resource_index);
     }
 
     #[test]

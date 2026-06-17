@@ -78,7 +78,7 @@ def test_installer_smoke_requires_packaged_audio_sidecar() -> None:
     installer = read_script("scripts/smoke_windows_installer.ps1")
 
     assert "function Resolve-InstalledAudioSidecarExe" in installer
-    assert "resources\\audio-sidecar\\scriber-audio-sidecar.exe" in installer
+    assert '"scriber-audio-sidecar.exe"' in installer
     assert "Resolve-InstalledAudioSidecarExe -Root $InstallDir" in installer
     assert "audioSidecarExe = $audioSidecarExe" in installer
 
@@ -91,7 +91,11 @@ def test_release_build_and_installer_smoke_report_size_budgets() -> None:
     assert "[double]$InstallerMaxInstalledSizeMB = 0" in build
     assert "scripts\\create_release_size_report.py" in build
     assert "--max-installer-mb" in build
+    assert "--installed-smoke-report" in build
+    assert "installed-package-smoke.json" in build
     assert "size-report.json" in build
+    assert '"-OutputPath",' in build
+    assert "$installedPackageSmokePath" in build
     assert '"-MaxInstalledSizeMB", $InstallerMaxInstalledSizeMB.ToString' in build
 
     assert "[double]$MaxInstalledSizeMB = 0" in installer
@@ -107,6 +111,9 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "function Test-ScriberFfmpegCapabilities" in sidecar
     assert "function Invoke-ScriberFfmpegProfileManifest" in sidecar
     assert "function Get-SidecarInputManifest" in sidecar
+    assert "function Sync-DirectoryContents" in sidecar
+    assert "function Copy-FileIfChanged" in sidecar
+    assert "function Get-RustAudioSidecarInputManifest" in sidecar
     assert "function Write-SidecarBuildMetadata" in sidecar
     assert "PySide6" not in sidecar
     assert "[switch]$UseProfileBFfmpeg" in sidecar
@@ -125,7 +132,10 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "[switch]$BundleRustAudioSidecar" in sidecar
     assert "function Copy-RustAudioSidecarToTauriRelease" in sidecar
     assert "cargo build --release --bin scriber-audio-sidecar" in sidecar
-    assert "resources\\audio-sidecar" in sidecar
+    assert "--target-dir $cargoTargetDir" in sidecar
+    assert "rust-audio-sidecar-cache" in sidecar
+    assert "rust-audio-sidecar-target" in sidecar
+    assert '"target\\release"' in sidecar
     assert "audio-sidecar-build-metadata.json" in sidecar
     assert 'Test-ScriberFfmpegCapabilities -Path $copiedFfmpeg' in sidecar
     assert "scripts\\ffmpeg\\validate_ffmpeg_profile.py" in sidecar
@@ -150,6 +160,8 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "sidecar-build-metadata.json" in sidecar
     assert "sidecar-cache-save" in sidecar
     assert "rust-audio-sidecar-build" in sidecar
+    assert "Stale audio sidecar resource" in sidecar
+    assert "Stale packaged audio sidecar resource" in sidecar
     assert '$entry["sha256"] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()' in sidecar
     assert '$entry["lastWriteTimeUtc"] = $item.LastWriteTimeUtc.ToString("o")' in sidecar
 

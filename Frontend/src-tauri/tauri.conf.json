@@ -32,8 +32,7 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "resources": {
-      "target/release/backend/": "backend/",
-      "resources/audio-sidecar/": "audio-sidecar/"
+      "target/release/backend/": "backend/"
     },
     "windows": {
       "nsis": {

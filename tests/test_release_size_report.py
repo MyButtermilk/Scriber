@@ -57,6 +57,39 @@ def test_release_size_report_includes_installed_app_top_files(tmp_path: Path) ->
     assert report["installedApp"]["topFiles"][0]["path"] == "scriber-desktop.exe"
 
 
+def test_release_size_report_can_use_installer_smoke_install_size(tmp_path: Path) -> None:
+    artifact = tmp_path / "bundle" / "Scriber_0.1.0_x64-setup.exe"
+    smoke_report = tmp_path / "installed-package-smoke.json"
+    write_bytes(artifact, 1 * 1024 * 1024)
+    smoke_report.write_text(
+        """{
+          "ok": true,
+          "installSize": {
+            "path": "C:/tmp/Scriber",
+            "fileCount": 2,
+            "totalBytes": 6291456,
+            "totalMb": 6.0,
+            "topFiles": [
+              {"path": "scriber-desktop.exe", "sizeBytes": 4194304, "sizeMb": 4.0}
+            ]
+          }
+        }""",
+        encoding="utf-8",
+    )
+
+    report = build_report(
+        [artifact],
+        installed_smoke_report=smoke_report,
+        max_installer_mb=2,
+        max_installed_mb=8,
+    )
+
+    assert report["ok"] is True
+    assert report["installedApp"]["budget"]["withinBudget"] is True
+    assert report["installedApp"]["fileCount"] == 2
+    assert report["installedApp"]["topFiles"][0]["path"] == "scriber-desktop.exe"
+
+
 def test_release_size_report_requires_existing_artifacts(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         build_report([tmp_path / "missing.exe"])

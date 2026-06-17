@@ -274,6 +274,8 @@ def test_windows_build_and_release_workflow_can_emit_runtime_dependency_footprin
     assert '"-MaxScipyRuntimeDependencyMB"' in workflow
     assert '"-MaxOnnxRuntimeDependencyMB"' in workflow
     assert '"-MaxPythonRuntimeDependencyMB"' in workflow
+    assert '"325"' in workflow
+    assert '"-MaxPythonRuntimeDependencyMB",\n            "40"' not in workflow
     assert '"-MaxBackendRuntimeDependencyMB"' in workflow
     assert '"-MaxInternalRuntimeDependencyMB"' in workflow
     assert '"-MaxMediaToolsRuntimeDependencyMB"' in workflow

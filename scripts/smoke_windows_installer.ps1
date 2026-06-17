@@ -258,6 +258,7 @@ function Resolve-InstalledAudioSidecarExe {
     param([string]$Root)
 
     $candidates = @(
+        (Join-Path $Root "scriber-audio-sidecar.exe"),
         (Join-Path $Root "audio-sidecar\scriber-audio-sidecar.exe"),
         (Join-Path $Root "resources\audio-sidecar\scriber-audio-sidecar.exe")
     )
@@ -268,7 +269,7 @@ function Resolve-InstalledAudioSidecarExe {
     }
 
     $audioSidecarExe = Get-ChildItem -LiteralPath $Root -Recurse -File -Filter "scriber-audio-sidecar.exe" -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match "\\audio-sidecar\\scriber-audio-sidecar\.exe$" } |
+        Where-Object { $_.FullName -match "\\scriber-audio-sidecar\.exe$" } |
         Select-Object -First 1
     if ($audioSidecarExe) {
         return $audioSidecarExe.FullName

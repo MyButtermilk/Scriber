@@ -363,8 +363,10 @@ try {
     $metadataDir = Join-Path $targetRelease "release-metadata"
     $mediaPreparationSmokePath = Join-Path $metadataDir "media-preparation-smoke.json"
     $runtimeDependencyFootprintPath = Join-Path $metadataDir "runtime-dependency-footprint.json"
+    $installedPackageSmokePath = Join-Path $metadataDir "installed-package-smoke.json"
+    $installedPackageSmokeTempPath = Join-Path $RepoRoot "tmp\installer-smoke\installed-package-smoke.json"
     $buildTimingPath = Join-Path $metadataDir "build-timing.json"
-    foreach ($staleReport in @($mediaPreparationSmokePath, $runtimeDependencyFootprintPath)) {
+    foreach ($staleReport in @($mediaPreparationSmokePath, $runtimeDependencyFootprintPath, $installedPackageSmokePath, $installedPackageSmokeTempPath)) {
         if (Test-Path -LiteralPath $staleReport -PathType Leaf) {
             Remove-Item -LiteralPath $staleReport -Force
         }
@@ -376,6 +378,11 @@ try {
     }
     $runtimeDependencyFootprint = [ordered]@{
         ran = [bool]$RunRuntimeDependencyFootprint
+        path = $null
+        generatedAt = $null
+    }
+    $installedPackageSmoke = [ordered]@{
+        ran = $false
         path = $null
         generatedAt = $null
     }
@@ -555,30 +562,6 @@ try {
             }
         }
 
-        Invoke-Checked -Label "Release size report" -Command {
-            Push-Location $RepoRoot
-            try {
-                $sizeReportArgs = @(
-                    "scripts\create_release_size_report.py",
-                    "--output",
-                    (Join-Path $metadataDir "size-report.json"),
-                    "--max-installer-mb",
-                    $MaxInstallerSizeMB.ToString([System.Globalization.CultureInfo]::InvariantCulture),
-                    "--top-root",
-                    $bundleRoot
-                )
-                $backendReleaseDir = Join-Path $targetRelease "backend"
-                if (Test-Path -LiteralPath $backendReleaseDir -PathType Container) {
-                    $sizeReportArgs += @("--top-root", $backendReleaseDir)
-                }
-                foreach ($artifact in $artifacts) {
-                    $sizeReportArgs += @("--artifact", $artifact)
-                }
-                python @sizeReportArgs
-            } finally {
-                Pop-Location
-            }
-        }
     }
 
     if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerFrontendSmoke -or $RunInstallerMediaPreparationSmoke -or $RunInstallerRealMediaWorkflowSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
@@ -590,7 +573,9 @@ try {
                     "-ExecutionPolicy",
                     "Bypass",
                     "-File",
-                    "scripts\smoke_windows_installer.ps1"
+                    "scripts\smoke_windows_installer.ps1",
+                    "-OutputPath",
+                    $installedPackageSmokeTempPath
                 )
                 if ($RunInstallerCrashSmoke) {
                     $installerSmokeArgs += "-SimulateBackendCrash"
@@ -707,6 +692,47 @@ try {
                     $installerSmokeArgs += "-VerifyUninstall"
                 }
                 powershell @installerSmokeArgs
+                if (-not (Test-Path -LiteralPath $installedPackageSmokeTempPath -PathType Leaf)) {
+                    throw "Installed package smoke did not write expected report: $installedPackageSmokeTempPath"
+                }
+                New-Item -ItemType Directory -Force -Path $metadataDir | Out-Null
+                Copy-Item -LiteralPath $installedPackageSmokeTempPath -Destination $installedPackageSmokePath -Force
+                $installedPackageSmoke["ran"] = $true
+                $installedPackageSmoke["path"] = $installedPackageSmokePath
+                $installedPackageSmoke["generatedAt"] = (Get-Item -LiteralPath $installedPackageSmokePath).LastWriteTimeUtc.ToString("o")
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
+    if ($artifacts.Count -gt 0) {
+        Invoke-Checked -Label "Release size report" -Command {
+            Push-Location $RepoRoot
+            try {
+                $sizeReportArgs = @(
+                    "scripts\create_release_size_report.py",
+                    "--output",
+                    (Join-Path $metadataDir "size-report.json"),
+                    "--max-installer-mb",
+                    $MaxInstallerSizeMB.ToString([System.Globalization.CultureInfo]::InvariantCulture),
+                    "--top-root",
+                    $bundleRoot
+                )
+                if ($InstallerMaxInstalledSizeMB -gt 0) {
+                    $sizeReportArgs += @("--max-installed-mb", $InstallerMaxInstalledSizeMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                }
+                if (Test-Path -LiteralPath $installedPackageSmokePath -PathType Leaf) {
+                    $sizeReportArgs += @("--installed-smoke-report", $installedPackageSmokePath)
+                }
+                $backendReleaseDir = Join-Path $targetRelease "backend"
+                if (Test-Path -LiteralPath $backendReleaseDir -PathType Container) {
+                    $sizeReportArgs += @("--top-root", $backendReleaseDir)
+                }
+                foreach ($artifact in $artifacts) {
+                    $sizeReportArgs += @("--artifact", $artifact)
+                }
+                python @sizeReportArgs
             } finally {
                 Pop-Location
             }
@@ -727,6 +753,7 @@ try {
         buildTiming = $buildTimingPath
         mediaPreparationSmoke = $mediaPreparationSmoke
         runtimeDependencyFootprint = $runtimeDependencyFootprint
+        installedPackageSmoke = $installedPackageSmoke
     } | ConvertTo-Json -Compress
 } finally {
     if ($null -ne $tauriConfigOriginal) {

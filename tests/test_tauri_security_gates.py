@@ -150,7 +150,6 @@ def test_tauri_bundle_only_carries_approved_resource_directories() -> None:
     assert "externalBin" not in config.get("bundle", {})
     assert config["bundle"]["resources"] == {
         "target/release/backend/": "backend/",
-        "resources/audio-sidecar/": "audio-sidecar/",
     }
 
 

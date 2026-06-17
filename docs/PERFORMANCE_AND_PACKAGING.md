@@ -9,10 +9,10 @@ installer-size, and optimization notes.
 
 Latest validated local Profile B installer build from 2026-06-17:
 
-- Installer: about `88.10 MiB`.
-- Installed app: about `200.41 MiB`.
+- Installer: about `88.22 MiB`.
+- Installed app: about `199.73 MiB`.
 - Backend resource tree: about `185.45 MiB`.
-- Installed media tools: about `5.84 MiB`.
+- Installed media tools: about `4.98 MiB`.
 - Profile B portable media-tool build: about `4.98 MiB` for `ffmpeg.exe`,
   `ffprobe.exe`, and required runtime DLLs.
 - Previous PySide6 overlay runtime component: about `62.70 MiB`; current
@@ -27,8 +27,8 @@ Latest validated local Profile B installer build from 2026-06-17:
   the Profile B path with `https://www.youtube.com/watch?v=0wEjbSYNUM8`.
 
 Compared with the 2026-06-12 Profile B baseline, the 2026-06-17 build is
-about `0.21 MiB` smaller as a compressed installer, `42.31 MiB` smaller after
-installation, and `42.32 MiB` smaller in the backend resource tree.
+about `0.2 MiB` smaller as a compressed installer, about `43 MiB` smaller
+after installation, and about `42.3 MiB` smaller in the backend resource tree.
 
 Historical comparison points:
 
@@ -86,8 +86,18 @@ I/O:
 Packaging/build:
 
 - PyInstaller sidecar can be reused through a hash cache.
+- PyInstaller sidecar release sync is content-aware, so unchanged files are not
+  rewritten into the Tauri release tree.
+- The Rust audio sidecar has its own input hash cache under
+  `build\rust-audio-sidecar-cache` and a separate Cargo target dir under
+  `build\rust-audio-sidecar-target`; when Rust audio inputs are unchanged, the
+  build copies the cached sidecar into Tauri's normal `target\release` path
+  instead of recompiling it.
 - Installed frontend assets are owned by the Tauri WebView bundle and are not
   embedded in the Python/PyInstaller backend sidecar.
+- The Rust audio sidecar is bundled once as Tauri's install-root
+  `scriber-audio-sidecar.exe`, not as a duplicate `audio-sidecar/` resource
+  directory.
 - The recording overlay is owned by Tauri WebView shell IPC, so PySide6/Tk
   overlay runtimes are excluded from the Python backend sidecar.
 - Frontend dist changes do not invalidate the sidecar cache; the backend static
@@ -150,8 +160,11 @@ What it does:
 - Builds frontend.
 - Reuses sidecar when backend/runtime inputs are unchanged; frontend asset
   changes are handled by Tauri and do not rebuild the Python sidecar.
+- Reuses the Rust audio sidecar when Rust audio inputs are unchanged.
 - Builds Tauri/NSIS.
 - Runs size and runtime dependency footprint gates.
+- Writes the installed package smoke report into release metadata and uses it
+  for the installed-app size section in `size-report.json`.
 - Runs selected installed-package smokes.
 
 Release workflow:

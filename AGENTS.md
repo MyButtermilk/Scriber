@@ -78,8 +78,8 @@ Frontend and shell:
 - `Frontend/src-tauri/src/audio_sidecar.rs`: separate Rust audio sidecar with
   `--self-test`, `--stdio` JSON-lines protocol, a test-only
   `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` frame-pipe transport harness, and
-  default WASAPI capture/prewarm support. It is bundled as an installed
-  resource and is the standard live-mic capture engine.
+  default WASAPI capture/prewarm support. It is bundled once as Tauri's
+  install-root sidecar executable and is the standard live-mic capture engine.
 - `Frontend/src-tauri/src/audio_sidecar_client.rs`: Tauri-side sidecar lookup,
   stdio JSON-lines client, and process lifecycle registry. It only uses
   allowlisted executable names, supports `SCRIBER_AUDIO_SIDECAR_EXE` for local
@@ -302,7 +302,9 @@ Already implemented and should not be regressed:
 - JobStore and latency metrics store connection reuse.
 - CORS origin decision cache.
 - Sidecar hash cache that avoids PyInstaller when inputs are unchanged.
-- Profile B ffmpeg media tools, about `5.84 MiB` installed.
+- Rust audio sidecar hash cache that avoids recompiling when inputs are
+  unchanged.
+- Profile B ffmpeg media tools, about `4.98 MiB` installed.
 
 ## Commands
 

@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-06-11
+Last verified: 2026-06-17
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -75,8 +75,10 @@ Performance/packaging:
 - `tests/perf/test_frontend_vendor_chunk_config.py`
 - `tests/test_tauri_security_gates.py`
 - `tests/test_tauri_stability_smoke_gates.py`
-- Tauri bundle resources include both `backend/` and `audio-sidecar/`. The
-  Rust sidecar is the standard live-mic capture/prewarm engine.
+- Tauri bundle resources include the Python `backend/` resource tree. The Rust
+  audio sidecar is bundled once as Tauri's install-root
+  `scriber-audio-sidecar.exe` and is the standard live-mic capture/prewarm
+  engine.
 
 ## Installer Builds
 
@@ -143,9 +145,9 @@ Installed frontend smoke verifies:
 - the real WebView reports frontend-ready.
 
 Installed package smoke also verifies that the bundled
-`scriber-audio-sidecar.exe` exists under the installed `audio-sidecar/` resource
-layout. This is a packaging gate only; it does not promote Rust audio capture to
-the default engine.
+`scriber-audio-sidecar.exe` exists at the installed app root. This is a
+packaging gate only; it does not promote Rust audio capture to the default
+engine.
 
 Rust audio prewarm sidecar smoke verifies the prewarm lifecycle:
 
