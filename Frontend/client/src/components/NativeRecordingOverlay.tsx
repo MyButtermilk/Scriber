@@ -309,15 +309,26 @@ export default function NativeRecordingOverlay() {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
       {visible && (
-        <div>
+        <div className="relative inline-flex">
+          <div
+            data-testid="native-recording-shadow"
+            aria-hidden="true"
+            className="absolute inset-0 bg-slate-950/30"
+            style={{
+              borderRadius: 9999,
+              filter: "blur(12px)",
+              pointerEvents: "none",
+              transform: "translateY(7px) scaleX(0.96)",
+            }}
+          />
           <div
             data-testid="native-recording-pill"
-            className="flex items-center bg-black"
+            className="relative flex items-center bg-black"
             style={{
               borderRadius: 9999,
               padding: PILL_PADDING,
               overflow: "hidden",
-              boxShadow: "0 12px 36px rgba(0, 0, 0, 0.36), inset 0 0 0 1px rgba(255, 255, 255, 0.10)",
+              boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.10)",
             }}
           >
             {mode === "recording" && (

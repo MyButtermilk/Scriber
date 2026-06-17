@@ -17,6 +17,7 @@ import { useState, useEffect, useRef, useLayoutEffect, useCallback, useMemo } fr
 import { apiUrl } from "@/lib/backend";
 import ReactMarkdown from "react-markdown";
 import { QueryErrorState } from "@/components/ui/query-error-state";
+import { DesktopTitleBar } from "@/components/DesktopTitleBar";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { extractFailureMessage, friendlyError, friendlyRequestMessage, responseErrorMessage } from "@/lib/request-errors";
 import type { SettingsResponse, TranscriptDetailResponse, TranscriptHistoryItem } from "@/lib/api-types";
@@ -534,9 +535,10 @@ export default function TranscriptDetail() {
   }, [transcript.summary]);
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="h-screen bg-background flex flex-col overflow-hidden">
+      <DesktopTitleBar />
       {/* Header Toolbar */}
-      <header className="sticky top-0 z-40 backdrop-blur-md border-b border-border/50 h-16 flex items-center justify-between px-4 md:px-8 gap-4" style={{ background: 'var(--neu-bg)' }}>
+      <header className="z-40 shrink-0 backdrop-blur-md border-b border-border/50 h-16 flex items-center justify-between px-4 md:px-8 gap-4" style={{ background: 'var(--neu-bg)' }}>
         <div className="flex items-center gap-4 min-w-0 flex-1">
           <Link href={getBackLink()}>
             <Button variant="ghost" size="icon" className="-ml-2 shrink-0" aria-label="Go back">
@@ -666,7 +668,7 @@ export default function TranscriptDetail() {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto p-4 md:p-8 md:px-16 lg:px-32">
+      <main className="min-h-0 flex-1 overflow-y-auto p-4 md:p-8 md:px-16 lg:px-32">
         <div className="max-w-3xl mx-auto space-y-6">
 
           {/* Meta Card */}
