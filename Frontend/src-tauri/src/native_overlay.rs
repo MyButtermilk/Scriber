@@ -11,11 +11,8 @@ pub const OVERLAY_WINDOW_LABEL: &str = "recording-overlay";
 #[cfg(not(test))]
 pub const OVERLAY_EVENT: &str = "scriber-overlay-state";
 
-#[cfg(not(test))]
-const OVERLAY_WIDTH: f64 = 360.0;
-#[cfg(not(test))]
-const OVERLAY_HEIGHT: f64 = 104.0;
-#[cfg(not(test))]
+const OVERLAY_WIDTH: f64 = 300.0;
+const OVERLAY_HEIGHT: f64 = 92.0;
 const OVERLAY_BOTTOM_MARGIN: f64 = 28.0;
 
 #[cfg(not(test))]
@@ -282,8 +279,16 @@ mod tests {
 
     #[test]
     fn overlay_position_centers_above_work_area_bottom() {
-        let (x, y) = overlay_position_for_work_area(0.0, 0.0, 1920.0, 1040.0, 360.0, 104.0, 28.0);
-        assert_eq!((x, y), (780.0, 908.0));
+        let (x, y) = overlay_position_for_work_area(
+            0.0,
+            0.0,
+            1920.0,
+            1040.0,
+            OVERLAY_WIDTH,
+            OVERLAY_HEIGHT,
+            OVERLAY_BOTTOM_MARGIN,
+        );
+        assert_eq!((x, y), (810.0, 920.0));
     }
 
     #[test]

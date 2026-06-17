@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Square } from "lucide-react";
-import { AnimatePresence, motion } from "framer-motion";
 import { apiUrl, isTauriRuntime, loadBackendBaseUrlFromTauri, wsUrl } from "@/lib/backend";
 import {
   isScriberWebSocketMessage,
@@ -18,7 +17,12 @@ type OverlayEventPayload = {
   visible?: boolean;
 };
 
-const BAR_COUNT = 56;
+const BAR_COUNT = 40;
+const WAVEFORM_CANVAS_WIDTH = 190;
+const WAVEFORM_CANVAS_HEIGHT = 34;
+const PILL_PADDING = 6;
+const STOP_BUTTON_SIZE = 36;
+const STOP_ICON_SIZE = 14;
 const MIDNIGHT_COLORS = ["#93C5FD", "#3B82F6", "#1E3A8A"];
 
 function normalizeMode(value: unknown): OverlayMode {
@@ -106,13 +110,13 @@ function OverlayWaveform({ rms }: { rms: number }) {
       const levels = levelsRef.current;
       const display = displayRef.current;
       const fall = fallRef.current;
-      const padLeft = 16 * dpr;
-      const padRight = 24 * dpr;
+      const padLeft = 10 * dpr;
+      const padRight = 14 * dpr;
       const usableWidth = Math.max(1, width - padLeft - padRight);
       const gap = 2 * dpr;
       const barWidth = Math.max(2, (usableWidth - gap * (BAR_COUNT - 1)) / BAR_COUNT);
       const centerY = height / 2;
-      const maxHeight = 40 * dpr;
+      const maxHeight = 28 * dpr;
 
       ctx.clearRect(0, 0, width, height);
       for (let i = 0; i < BAR_COUNT; i++) {
@@ -146,29 +150,34 @@ function OverlayWaveform({ rms }: { rms: number }) {
 
   return (
     <canvas
+      data-testid="native-recording-waveform"
       ref={canvasRef}
-      width={270}
-      height={48}
+      width={WAVEFORM_CANVAS_WIDTH}
+      height={WAVEFORM_CANVAS_HEIGHT}
       aria-hidden="true"
-      style={{ width: 270, height: 48, display: "block" }}
+      style={{
+        width: WAVEFORM_CANVAS_WIDTH,
+        height: WAVEFORM_CANVAS_HEIGHT,
+        display: "block",
+      }}
     />
   );
 }
 
 function InitializingContent() {
   return (
-    <div className="flex h-12 items-center gap-2 px-6 text-blue-300">
-      <Loader2 className="h-5 w-5 animate-spin" />
-      <span className="text-[15px] font-medium">Preparing...</span>
+    <div className="flex items-center gap-1.5 px-4 text-blue-300" style={{ height: STOP_BUTTON_SIZE }}>
+      <Loader2 className="h-4 w-4 animate-spin" />
+      <span className="text-[13px] font-medium">Preparing...</span>
     </div>
   );
 }
 
 function TranscribingContent() {
   return (
-    <div className="flex h-12 items-center gap-2 px-6 text-blue-400">
-      <Loader2 className="h-5 w-5 animate-spin" />
-      <span className="text-base font-medium">Transcribing...</span>
+    <div className="flex items-center gap-1.5 px-4 text-blue-400" style={{ height: STOP_BUTTON_SIZE }}>
+      <Loader2 className="h-4 w-4 animate-spin" />
+      <span className="text-[13px] font-medium">Transcribing...</span>
     </div>
   );
 }
@@ -299,40 +308,44 @@ export default function NativeRecordingOverlay() {
 
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
-      <AnimatePresence mode="wait">
-        {visible && (
-          <motion.div
-            initial={{ opacity: 0, y: 20, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 10, scale: 0.98 }}
-            transition={{ duration: 0.18, ease: [0.25, 0.46, 0.45, 0.94] }}
-            style={{ willChange: "transform, opacity", transform: "translateZ(0)" }}
+      {visible && (
+        <div>
+          <div
+            data-testid="native-recording-pill"
+            className="flex items-center bg-black"
+            style={{
+              borderRadius: 9999,
+              padding: PILL_PADDING,
+              overflow: "hidden",
+              boxShadow: "0 12px 36px rgba(0, 0, 0, 0.36), inset 0 0 0 1px rgba(255, 255, 255, 0.10)",
+            }}
           >
-            <div
-              className="flex items-center rounded-full border border-white/10 bg-black px-2 py-2"
-              style={{ boxShadow: "0 12px 36px rgba(0, 0, 0, 0.36)" }}
-            >
-              {mode === "recording" && (
-                <button
-                  type="button"
-                  onClick={handleStop}
-                  className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-full border-0 bg-[#e74c3c] text-white transition-transform duration-150 hover:scale-105"
-                  aria-label="Stop recording"
-                >
-                  <Square className="h-5 w-5 fill-current" />
-                </button>
-              )}
-              {mode === "initializing" ? (
-                <InitializingContent />
-              ) : mode === "recording" ? (
-                <OverlayWaveform rms={rms} />
-              ) : mode === "transcribing" ? (
-                <TranscribingContent />
-              ) : null}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            {mode === "recording" && (
+              <button
+                data-testid="native-recording-stop"
+                type="button"
+                onClick={handleStop}
+                className="flex shrink-0 items-center justify-center border-0 bg-[#e74c3c] text-white transition-colors duration-150 hover:bg-[#f05242]"
+                style={{
+                  width: STOP_BUTTON_SIZE,
+                  height: STOP_BUTTON_SIZE,
+                  borderRadius: STOP_BUTTON_SIZE / 2,
+                }}
+                aria-label="Stop recording"
+              >
+                <Square className="fill-current" style={{ width: STOP_ICON_SIZE, height: STOP_ICON_SIZE }} />
+              </button>
+            )}
+            {mode === "initializing" ? (
+              <InitializingContent />
+            ) : mode === "recording" ? (
+              <OverlayWaveform rms={rms} />
+            ) : mode === "transcribing" ? (
+              <TranscribingContent />
+            ) : null}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
