@@ -55,8 +55,8 @@ Debug/support:
 Packaging/performance:
 
 - Profile B ffmpeg is the default Windows media-tool profile.
-- Installer size dropped to about `88.31 MiB`; installed app smoke is about
-  `242.72 MiB`.
+- Installer size is about `88.10 MiB`; installed app smoke is about
+  `200.41 MiB`.
 - SciPy is absent from the standard sidecar.
 - AWS Transcribe and AWS SDK packages are absent from the standard sidecar.
 - Sidecar reuse cache reduces repeated local installer build time.

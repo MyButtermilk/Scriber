@@ -153,7 +153,9 @@ session tokens, and similar credentials.
 ```powershell
 git clone https://github.com/MyButtermilk/Scriber.git
 cd Scriber
-.\start.bat
+cd Frontend
+npm install
+npm run tauri:dev
 ```
 
 Manual backend:
@@ -203,8 +205,8 @@ Frontend\src-tauri\target\release\bundle\nsis\
 Recent local release evidence:
 
 - Installer size: about 88 MiB.
-- Installed app size in smoke: about 243 MiB.
-- Backend resource tree: about 228 MiB.
+- Installed app size in smoke: about 200 MiB.
+- Backend resource tree: about 185 MiB.
 - Bundled Profile B ffmpeg/ffprobe media tools: about 5.84 MiB installed.
 - AWS Transcribe support and AWS SDK packages are not part of the standard app.
 - The recording overlay is rendered by Tauri; PySide6/Tk overlay runtimes are

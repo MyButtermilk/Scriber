@@ -1,17 +1,17 @@
 # Performance And Packaging
 
-Last verified: 2026-06-16
+Last verified: 2026-06-17
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
 
 ## Current Baseline
 
-Latest validated local Profile B installer build from 2026-06-12:
+Latest validated local Profile B installer build from 2026-06-17:
 
-- Installer: about `88.31 MiB`.
-- Installed app: about `242.72 MiB`.
-- Backend resource tree: about `227.77 MiB`.
+- Installer: about `88.10 MiB`.
+- Installed app: about `200.41 MiB`.
+- Backend resource tree: about `185.45 MiB`.
 - Installed media tools: about `5.84 MiB`.
 - Profile B portable media-tool build: about `4.98 MiB` for `ffmpeg.exe`,
   `ffprobe.exe`, and required runtime DLLs.
@@ -25,6 +25,10 @@ Latest validated local Profile B installer build from 2026-06-12:
 - Installed uninstall smoke passed.
 - Real installed file and YouTube workflow smoke previously passed `2/2` for
   the Profile B path with `https://www.youtube.com/watch?v=0wEjbSYNUM8`.
+
+Compared with the 2026-06-12 Profile B baseline, the 2026-06-17 build is
+about `0.21 MiB` smaller as a compressed installer, `42.31 MiB` smaller after
+installation, and `42.32 MiB` smaller in the backend resource tree.
 
 Historical comparison points:
 
