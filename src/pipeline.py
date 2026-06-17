@@ -512,7 +512,7 @@ from src.smallest_stt import (
     transcribe_with_smallest_pre_recorded,
 )
 from src.azure_mai_stt import (
-    AzureMaiTranscribeProcessor,
+    AzureMaiTranscribeSTTService,
     azure_mai_content_type,
     azure_mai_transcript_payload_to_text,
     prepared_azure_mai_audio_file,
@@ -979,20 +979,12 @@ class ScriberPipeline:
                 model=Config.OPENAI_STT_MODEL,
             )
         
-        elif self.service_name == "azure":
-            # Lazy import - only loaded when Azure is used
-            module = import_provider_runtime_module("azure", "pipecat.services.azure.stt")
-            AzureSTTService = module.AzureSTTService
-            if not Config.AZURE_SPEECH_KEY or not Config.AZURE_SPEECH_REGION: raise ValueError("Azure Speech Key or Region is missing.")
-            lang = Language.EN_US if Config.LANGUAGE == "en" else _selected_language()
-            return AzureSTTService(api_key=Config.AZURE_SPEECH_KEY, region=Config.AZURE_SPEECH_REGION, language=lang)
-
         elif self.service_name == "azure_mai":
             api_key = _get_api_key("azure_mai")
             if not api_key:
                 raise ValueError("Azure MAI Speech Key is missing.")
-            logger.info("Using Microsoft MAI Transcribe buffered transcription mode")
-            return AzureMaiTranscribeProcessor(
+            logger.info("Using Microsoft MAI Transcribe Pipecat STT service")
+            return AzureMaiTranscribeSTTService(
                 speech_key=api_key,
                 region=validate_azure_mai_region(getattr(Config, "AZURE_MAI_REGION", None)),
                 language=Config.LANGUAGE,
@@ -1486,7 +1478,7 @@ class ScriberPipeline:
             if self.service_name == "azure_mai":
                 api_key = Config.get_api_key("azure_mai")
                 if not api_key:
-                    raise ValueError("Azure Speech key is missing")
+                    raise ValueError("Azure MAI Speech key is missing")
 
                 region = validate_azure_mai_region(getattr(Config, "AZURE_MAI_REGION", None))
                 if self.on_progress:

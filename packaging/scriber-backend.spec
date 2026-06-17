@@ -36,7 +36,6 @@ hiddenimports = [
     "pipecat.services.google.stt",
     "pipecat.services.deepgram.stt",
     "pipecat.services.openai.stt",
-    "pipecat.services.azure.stt",
     "pipecat.services.gladia.stt",
     "pipecat.services.groq.stt",
     "pipecat.services.speechmatics.stt",
@@ -63,9 +62,7 @@ def collect_required_dynamic_libs(package):
     return libs
 
 
-binaries = []
-for package in ("onnxruntime", "azure.cognitiveservices.speech"):
-    binaries += collect_required_dynamic_libs(package)
+binaries = collect_required_dynamic_libs("onnxruntime")
 
 datas = []
 assets_dir = repo_root / "src" / "assets"

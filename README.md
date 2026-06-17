@@ -43,7 +43,7 @@ calm place to capture it, understand it, and reuse it.
   support bundle download.
 
 Cloud and local provider paths currently cover Soniox, Microsoft Azure MAI,
-Azure Speech, OpenAI, Deepgram, AssemblyAI, Mistral, Gladia, Groq,
+OpenAI, Deepgram, AssemblyAI, Mistral, Gladia, Groq,
 Speechmatics, Smallest AI, ElevenLabs/fal.ai, Google, ONNX, and NeMo.
 
 ## Screenshots

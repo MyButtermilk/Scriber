@@ -373,7 +373,7 @@ export default function Youtube() {
 
   // Helper to detect if input is a YouTube URL
   const isYouTubeUrl = (input: string): boolean => {
-    return /(?:youtube\.com\/watch\?.*v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/)/i.test(input);
+    return /(?:youtube\.com\/watch\?.*v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/|youtube\.com\/live\/)/i.test(input);
   };
 
   const runSearch = async () => {

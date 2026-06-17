@@ -30,7 +30,6 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "pipecat.services.soniox.stt" in required_modules
     assert "pipecat.services.deepgram.stt" in required_modules
     assert "pipecat.services.google.stt" in required_modules
-    assert "pipecat.services.azure.stt" in required_modules
     assert "pipecat.services.speechmatics.stt" in required_modules
     assert "src.azure_mai_stt" in required_modules
 
@@ -48,6 +47,7 @@ def test_standard_requirements_include_audio_runtime_dependencies():
     assert "nltk<4,>=3.9.1" in requirements
     assert "openai<3,>=1.74.0" in requirements
     assert "google-generativeai" not in requirements
+    assert "azure-cognitiveservices-speech~=1.42.0" not in requirements
     assert "PySide6-Essentials" not in requirements
     assert "customtkinter" not in requirements
     assert "pystray" not in requirements
@@ -113,11 +113,12 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
 
     assert "collect_dynamic_libs" in spec
     assert '"onnxruntime"' in spec
-    assert '"azure.cognitiveservices.speech"' in spec
+    assert '"azure.cognitiveservices.speech"' not in spec
     assert "collect_required_dynamic_libs" in spec
     assert "upx=False" in spec
     assert '"pipecat.audio.vad.silero"' in spec
     assert '"pipecat.services.aws.stt"' not in spec
+    assert '"pipecat.services.azure.stt"' not in spec
     assert '"pipecat.services.soniox.stt"' in spec
     assert '"pyloudnorm.meter"' in spec
     assert '"scipy",' in spec

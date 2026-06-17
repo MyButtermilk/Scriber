@@ -64,7 +64,6 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "assemblyai", label: "Assembly AI Universal-3-Pro" },
   { value: "deepgram", label: "Deepgram" },
   { value: "openai", label: "OpenAI" },
-  { value: "azure", label: "Azure Speech" },
   { value: "azure_mai", label: "Microsoft MAI Transcribe" },
   { value: "gladia", label: "Gladia" },
   { value: "groq", label: "Groq" },
@@ -138,7 +137,7 @@ const API_KEY_HELP_LINKS = {
   smallest: { href: "https://app.smallest.ai/", label: "Smallest AI console" },
   mistral: { href: "https://console.mistral.ai/api-keys", label: "Mistral API keys" },
   fal: { href: "https://fal.ai/dashboard/keys", label: "fal.ai keys" },
-  azure: { href: "https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices", label: "Azure Speech resource" },
+  azure: { href: "https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices", label: "Azure MAI Speech resource" },
   gladia: { href: "https://app.gladia.io/api-keys", label: "Gladia API keys" },
   groq: { href: "https://console.groq.com/keys", label: "Groq API keys" },
   speechmatics: { href: "https://portal.speechmatics.com/", label: "Speechmatics portal" },
@@ -261,8 +260,6 @@ export default function Settings() {
   const [mistralKey, setMistralKey] = useState("");
   const [smallestKey, setSmallestKey] = useState("");
   const [elevenLabsKey, setElevenLabsKey] = useState("");
-  const [azureKey, setAzureKey] = useState("");
-  const [azureRegion, setAzureRegion] = useState("");
   const [azureMaiKey, setAzureMaiKey] = useState("");
   const [azureMaiRegion, setAzureMaiRegion] = useState("northeurope");
   const [azureMaiModel, setAzureMaiModel] = useState("mai-transcribe-1.5");
@@ -283,7 +280,6 @@ export default function Settings() {
   const [showMistralKey, setShowMistralKey] = useState(false);
   const [showSmallestKey, setShowSmallestKey] = useState(false);
   const [showElevenLabsKey, setShowElevenLabsKey] = useState(false);
-  const [showAzureKey, setShowAzureKey] = useState(false);
   const [showAzureMaiKey, setShowAzureMaiKey] = useState(false);
   const [showGladiaKey, setShowGladiaKey] = useState(false);
   const [showGroqKey, setShowGroqKey] = useState(false);
@@ -363,10 +359,6 @@ export default function Settings() {
         return hasValue(openAIKey)
           ? null
           : { label: "OpenAI API key", helpKey: "openai" as const };
-      case "azure":
-        return hasValue(azureKey) && hasValue(azureRegion)
-          ? null
-          : { label: "Azure Speech key and region", helpKey: "azure" as const };
       case "azure_mai":
         return hasValue(azureMaiKey) && hasValue(azureMaiRegion)
           ? null
@@ -403,7 +395,6 @@ export default function Settings() {
     assemblyAIKey,
     deepgramKey,
     openAIKey,
-    azureKey,
     azureMaiKey,
     gladiaKey,
     groqKey,
@@ -520,8 +511,6 @@ export default function Settings() {
         setGeminiKey(keys.googleApiKey || "");
         setYoutubeKey(keys.youtubeApiKey || "");
         setElevenLabsKey(keys.elevenlabs || "");
-        setAzureKey(keys.azureSpeechKey || "");
-        setAzureRegion(keys.azureSpeechRegion || "");
         setAzureMaiKey(keys.azureMaiSpeechKey || "");
         setAzureMaiRegion(keys.azureMaiRegion || "northeurope");
         setAzureMaiModel(keys.azureMaiModel || "mai-transcribe-1.5");
@@ -608,8 +597,6 @@ export default function Settings() {
       if (provider === "Smallest AI") apiKeys.smallest = smallestKey;
       if (provider === "ElevenLabs") apiKeys.elevenlabs = elevenLabsKey;
       if (provider === "Azure") {
-        apiKeys.azureSpeechKey = azureKey;
-        apiKeys.azureSpeechRegion = azureRegion;
         apiKeys.azureMaiSpeechKey = azureMaiKey;
         apiKeys.azureMaiRegion = azureMaiRegion || "northeurope";
         apiKeys.azureMaiModel = azureMaiModel || "mai-transcribe-1.5";
@@ -2523,47 +2510,6 @@ export default function Settings() {
                       {savedKeys['ElevenLabs'] ? "Saved" : "Save"}
                     </Button>
                   </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="azure">Azure Speech Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showAzureKey ? "text" : "password"}
-                        value={azureKey}
-                        onChange={(e) => setAzureKey(e.target.value)}
-                        placeholder="Enter your Azure key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowAzureKey(!showAzureKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showAzureKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['Azure'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('Azure')}
-                      className={savedKeys['Azure'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['Azure'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['Azure'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <Label>Azure Speech Region</Label>
-                  <Input
-                    value={azureRegion}
-                    onChange={(e) => setAzureRegion(e.target.value)}
-                    placeholder="e.g. westeurope"
-                    className="font-mono text-sm"
-                  />
-                  <p className="text-xs text-muted-foreground">Required for standard Azure Speech STT.</p>
                 </div>
 
                 <div className="space-y-2 pt-2">

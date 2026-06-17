@@ -55,8 +55,9 @@ if [ ! -f ".env" ]; then
     read -p "Enter AssemblyAI API Key: " ASSEMBLY
     read -p "Enter Deepgram API Key: " DEEPGRAM
     read -p "Enter OpenAI API Key: " OPENAI
-    read -p "Enter Azure Speech Key: " AZURE_KEY
-    read -p "Enter Azure Speech Region: " AZURE_REGION
+    read -p "Enter Azure MAI Speech Key: " AZURE_MAI_KEY
+    read -p "Enter Azure MAI Region [northeurope]: " AZURE_MAI_REGION
+    AZURE_MAI_REGION=${AZURE_MAI_REGION:-northeurope}
     read -p "Enter Gladia API Key: " GLADIA
     read -p "Enter ElevenLabs API Key: " ELEVEN
 
@@ -66,8 +67,9 @@ ASSEMBLYAI_API_KEY=$ASSEMBLY
 ELEVENLABS_API_KEY=$ELEVEN
 DEEPGRAM_API_KEY=$DEEPGRAM
 OPENAI_API_KEY=$OPENAI
-AZURE_SPEECH_KEY=$AZURE_KEY
-AZURE_SPEECH_REGION=$AZURE_REGION
+AZURE_MAI_SPEECH_KEY=$AZURE_MAI_KEY
+SCRIBER_AZURE_MAI_REGION=$AZURE_MAI_REGION
+SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1.5
 GLADIA_API_KEY=$GLADIA
 SCRIBER_HOTKEY=ctrl+alt+s
 SCRIBER_DEFAULT_STT=soniox

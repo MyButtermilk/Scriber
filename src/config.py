@@ -65,8 +65,6 @@ class Config:
 
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
-    AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
     AZURE_MAI_SPEECH_KEY = os.getenv("AZURE_MAI_SPEECH_KEY")
     AZURE_MAI_REGION = os.getenv("SCRIBER_AZURE_MAI_REGION", "northeurope")
     AZURE_MAI_MODEL = os.getenv("SCRIBER_AZURE_MAI_MODEL", "mai-transcribe-1.5")
@@ -112,7 +110,6 @@ class Config:
         "elevenlabs": "ELEVENLABS_API_KEY",
         "deepgram": "DEEPGRAM_API_KEY",
         "openai": "OPENAI_API_KEY",
-        "azure": "AZURE_SPEECH_KEY",
         "azure_mai": "AZURE_MAI_SPEECH_KEY",
         "gladia": "GLADIA_API_KEY",
         "groq": "GROQ_API_KEY",
@@ -133,7 +130,6 @@ class Config:
         "elevenlabs": "ElevenLabs",
         "deepgram": "Deepgram",
         "openai": "OpenAI",
-        "azure": "Azure",
         "azure_mai": "Microsoft MAI Transcribe",
         "gladia": "Gladia",
         "groq": "Groq",
@@ -326,8 +322,6 @@ Input:"""
         add("YOUTUBE_API_KEY", getattr(cls, "YOUTUBE_API_KEY", "") or "")
         add("DEEPGRAM_API_KEY", cls.DEEPGRAM_API_KEY or "")
         add("OPENAI_API_KEY", cls.OPENAI_API_KEY or "")
-        add("AZURE_SPEECH_KEY", cls.AZURE_SPEECH_KEY or "")
-        add("AZURE_SPEECH_REGION", cls.AZURE_SPEECH_REGION or "")
         add("AZURE_MAI_SPEECH_KEY", cls.AZURE_MAI_SPEECH_KEY or "")
         add("SCRIBER_AZURE_MAI_REGION", cls.AZURE_MAI_REGION or "northeurope")
         add("SCRIBER_AZURE_MAI_MODEL", cls.AZURE_MAI_MODEL or "mai-transcribe-1.5")

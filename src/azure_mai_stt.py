@@ -7,6 +7,7 @@ import asyncio
 import json
 import tempfile
 from pathlib import Path
+from collections.abc import AsyncGenerator
 from typing import Any, BinaryIO, Callable
 
 import aiohttp
@@ -21,7 +22,9 @@ from pipecat.frames.frames import (
     StopFrame,
     TranscriptionFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.processors.frame_processor import FrameDirection
+from pipecat.services.ai_service import AIService
+from pipecat.services.stt_service import STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
@@ -251,8 +254,14 @@ async def transcribe_with_azure_mai(
     return payload if isinstance(payload, dict) else {}
 
 
-class AzureMaiTranscribeProcessor(FrameProcessor):
-    """Buffered live/file processor for Azure MAI Transcribe."""
+class AzureMaiTranscribeSTTService(STTService):
+    """Pipecat STT service for Azure MAI Transcribe's batch REST API.
+
+    MAI Transcribe 1.5 is currently exposed through Azure's LLM Speech REST API,
+    not the streaming Azure Speech SDK path used by Pipecat's AzureSTTService.
+    This service keeps the app on Pipecat's STT boundary while buffering audio
+    until a terminal frame before calling MAI once.
+    """
 
     def __init__(
         self,
@@ -262,8 +271,9 @@ class AzureMaiTranscribeProcessor(FrameProcessor):
         language: Language | str = "auto",
         session: aiohttp.ClientSession | None = None,
         on_progress: Callable[[str], None] | None = None,
+        audio_passthrough: bool = True,
     ) -> None:
-        super().__init__()
+        super().__init__(audio_passthrough=audio_passthrough)
         self._speech_key = speech_key
         self._region = validate_azure_mai_region(region)
         self._language = language or "auto"
@@ -312,42 +322,56 @@ class AzureMaiTranscribeProcessor(FrameProcessor):
                 payload = await _call(session)
         return azure_mai_transcript_payload_to_text(payload)
 
+    def _transcription_frame(self, text: str) -> TranscriptionFrame:
+        return TranscriptionFrame(
+            text=text,
+            user_id=self._user_id or "user",
+            timestamp=time_now_iso8601(),
+            result=None,
+        )
+
+    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+        text = (await self._transcribe_bytes(audio)).strip()
+        if text:
+            yield self._transcription_frame(text)
+
+    async def process_audio_frame(self, frame: AudioRawFrame, direction: FrameDirection):
+        if self._muted:
+            return
+
+        self._user_id = str(getattr(frame, "user_id", "") or "")
+        if not frame.audio:
+            logger.warning(f"Empty audio frame received for STT service: {self.name} {frame.num_frames}")
+            return
+
+        if getattr(frame, "sample_rate", None):
+            self._sample_rate = int(frame.sample_rate or self._sample_rate)
+        if getattr(frame, "num_channels", None):
+            self._channels = max(1, int(frame.num_channels or self._channels))
+        self._buffer.write(frame.audio)
+        self._buffer_size += len(frame.audio)
+
+    async def _flush_transcription(self, direction: FrameDirection) -> None:
+        if not self._buffer_size:
+            return
+
+        _report_progress(self._on_progress, "Transcribing...")
+        self._buffer.seek(0)
+        text = (await self._transcribe_bytes(self._buffer.read())).strip()
+        if text:
+            await self.push_frame(self._transcription_frame(text), direction)
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-
-        if isinstance(frame, AudioRawFrame):
-            if frame.audio:
-                if getattr(frame, "sample_rate", None):
-                    self._sample_rate = int(frame.sample_rate or self._sample_rate)
-                if getattr(frame, "num_channels", None):
-                    self._channels = max(1, int(frame.num_channels or self._channels))
-                self._buffer.write(frame.audio)
-                self._buffer_size += len(frame.audio)
-            await self.push_frame(frame, direction)
+        if not isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
+            await super().process_frame(frame, direction)
             return
 
-        if isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
-            try:
-                if self._buffer_size:
-                    _report_progress(self._on_progress, "Transcribing...")
-                    self._buffer.seek(0)
-                    text = (await self._transcribe_bytes(self._buffer.read())).strip()
-                    if text:
-                        await self.push_frame(
-                            TranscriptionFrame(
-                                text=text,
-                                user_id="user",
-                                timestamp=time_now_iso8601(),
-                                result=None,
-                            ),
-                            direction,
-                        )
-            except Exception as exc:
-                logger.error(f"Azure MAI transcription failed: {exc}")
-                await self.push_frame(ErrorFrame(error=f"azure mai error: {exc}"), direction)
-            finally:
-                self._reset_buffer()
-            await self.push_frame(frame, direction)
-            return
-
+        await AIService.process_frame(self, frame, direction)
+        try:
+            await self._flush_transcription(direction)
+        except Exception as exc:
+            logger.error(f"Azure MAI transcription failed: {exc}")
+            await self.push_frame(ErrorFrame(error=f"azure mai error: {exc}"), direction)
+        finally:
+            self._reset_buffer()
         await self.push_frame(frame, direction)

@@ -20,7 +20,6 @@ def write_fake_sidecar(root: Path) -> Path:
         "grpc/_cython/cygrpc.pyd": b"r" * 1024,
         "PIL/Image.py": b"i" * 1024,
         "PIL/ImageDraw.py": b"d" * 1024,
-        "azure/cognitiveservices/speech/Microsoft.CognitiveServices.Speech.core.dll": b"a" * 1024,
     }
     sidecar_files = {
         "tools/ffmpeg/ffmpeg.exe": b"f" * 20480,
@@ -58,7 +57,6 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
         "backend",
         "internal",
         "mediaTools",
-        "azureSpeech",
         "pyside6",
         "pythonGuiRuntime",
         "googleGrpc",
@@ -81,7 +79,6 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
         "onnxruntime"
     )
     assert report["components"]["mediaTools"]["missingRequiredPaths"] == []
-    assert report["components"]["azureSpeech"]["missingRequiredPaths"] == []
     assert report["components"]["pyside6"]["missingRequiredPaths"] == []
     assert report["components"]["pyside6"]["disallowedPaths"] == []
     assert report["components"]["pythonGuiRuntime"]["missingRequiredPaths"] == []
@@ -112,16 +109,11 @@ def test_runtime_dependency_footprint_fails_when_component_budget_is_exceeded(tm
 def test_runtime_dependency_footprint_fails_when_standard_component_is_missing(tmp_path: Path) -> None:
     sidecar = write_fake_sidecar(tmp_path / "scriber-backend")
     (sidecar / "tools" / "ffmpeg" / "ffprobe.exe").unlink()
-    (sidecar / "_internal" / "azure" / "cognitiveservices" / "speech" / "Microsoft.CognitiveServices.Speech.core.dll").unlink()
 
     report = build_report(sidecar)
 
     assert report["ok"] is False
     assert "mediaTools:tools/ffmpeg/ffprobe.exe" in report["summary"]["componentMissingRequiredPaths"]
-    assert (
-        "azureSpeech:_internal/azure/cognitiveservices/speech/Microsoft.CognitiveServices.Speech.core.dll"
-        in report["summary"]["componentMissingRequiredPaths"]
-    )
 
 
 def test_runtime_dependency_footprint_fails_when_unused_pillow_avif_binary_is_bundled(tmp_path: Path) -> None:
@@ -159,6 +151,26 @@ def test_runtime_dependency_footprint_fails_when_aws_sdk_is_bundled(tmp_path: Pa
     assert report["ok"] is False
     assert report["dependencies"]["awsSdk"]["unexpectedPresent"] is True
     assert "awsSdk" in report["summary"]["unexpectedPresentDependencies"]
+
+
+def test_runtime_dependency_footprint_fails_when_azure_speech_sdk_is_bundled(tmp_path: Path) -> None:
+    sidecar = write_fake_sidecar(tmp_path / "scriber-backend")
+    azure_speech_path = (
+        sidecar
+        / "_internal"
+        / "azure"
+        / "cognitiveservices"
+        / "speech"
+        / "Microsoft.CognitiveServices.Speech.core.dll"
+    )
+    azure_speech_path.parent.mkdir(parents=True, exist_ok=True)
+    azure_speech_path.write_bytes(b"a" * 1024)
+
+    report = build_report(sidecar)
+
+    assert report["ok"] is False
+    assert report["dependencies"]["unusedProviderSdks"]["unexpectedPresent"] is True
+    assert "unusedProviderSdks" in report["summary"]["unexpectedPresentDependencies"]
 
 
 def test_runtime_dependency_footprint_fails_when_legacy_gui_runtime_is_bundled(tmp_path: Path) -> None:

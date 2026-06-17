@@ -71,7 +71,14 @@ from src.runtime.retry_scheduler import RetryScheduler
 from src.runtime.debug_logs import clear_debug_logs, collect_debug_logs
 from src.runtime.support_bundle import create_support_bundle
 from src.version import app_version
-from src.youtube_api import YouTubeApiError, search_youtube_videos, get_video_by_id, extract_youtube_video_id
+from src.youtube_api import (
+    UNSUPPORTED_YOUTUBE_URL_MESSAGE,
+    YouTubeApiError,
+    extract_youtube_video_id,
+    get_video_by_id,
+    is_youtube_url_like,
+    search_youtube_videos,
+)
 from src.youtube_download import YouTubeDownloadError, download_youtube_audio
 from src.native_overlay import get_overlay, show_recording_overlay, show_initializing_overlay, show_transcribing_overlay, hide_recording_overlay, update_overlay_audio
 from src import database as db
@@ -4511,8 +4518,6 @@ class ScriberWebController:
                 "assemblyai": Config.ASSEMBLYAI_API_KEY or "",
                 "deepgram": Config.DEEPGRAM_API_KEY or "",
                 "openai": Config.OPENAI_API_KEY or "",
-                "azureSpeechKey": Config.AZURE_SPEECH_KEY or "",
-                "azureSpeechRegion": Config.AZURE_SPEECH_REGION or "",
                 "azureMaiSpeechKey": getattr(Config, "AZURE_MAI_SPEECH_KEY", "") or "",
                 "azureMaiRegion": getattr(Config, "AZURE_MAI_REGION", "") or "northeurope",
                 "azureMaiModel": getattr(Config, "AZURE_MAI_MODEL", "") or "mai-transcribe-1.5",
@@ -4638,12 +4643,6 @@ class ScriberWebController:
                 if key in api_keys and isinstance(api_keys[key], str) and setter:
                     setter(api_keys[key])
 
-            if "azureSpeechKey" in api_keys and isinstance(api_keys["azureSpeechKey"], str):
-                Config.AZURE_SPEECH_KEY = api_keys["azureSpeechKey"].strip()
-                os.environ["AZURE_SPEECH_KEY"] = Config.AZURE_SPEECH_KEY
-            if "azureSpeechRegion" in api_keys and isinstance(api_keys["azureSpeechRegion"], str):
-                Config.AZURE_SPEECH_REGION = api_keys["azureSpeechRegion"].strip()
-                os.environ["AZURE_SPEECH_REGION"] = Config.AZURE_SPEECH_REGION
             if "azureMaiSpeechKey" in api_keys and isinstance(api_keys["azureMaiSpeechKey"], str):
                 Config.AZURE_MAI_SPEECH_KEY = api_keys["azureMaiSpeechKey"].strip()
                 os.environ["AZURE_MAI_SPEECH_KEY"] = Config.AZURE_MAI_SPEECH_KEY
@@ -5340,6 +5339,47 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if not session:
             return web.json_response({"message": "HTTP session not initialized"}, status=500)
 
+        direct_video_id = extract_youtube_video_id(q)
+        if direct_video_id:
+            logger.info("YouTube search query resolved as direct video URL: {}", direct_video_id)
+            try:
+                video = await get_video_by_id(
+                    api_key,
+                    direct_video_id,
+                    session=session,
+                    timeout=ClientTimeout(total=30),
+                )
+            except ValueError as exc:
+                return web.json_response({"message": str(exc)}, status=400)
+            except YouTubeApiError as exc:
+                logger.warning("YouTube direct URL lookup failed: status={} video_id={}", exc.status, direct_video_id)
+                return web.json_response({"message": str(exc), "details": exc.details}, status=exc.status)
+            except Exception:
+                logger.exception("YouTube direct URL lookup failed")
+                return web.json_response({"message": "YouTube video fetch failed"}, status=500)
+
+            if not video:
+                logger.warning("YouTube direct URL lookup returned no item for video_id={}", direct_video_id)
+                return web.json_response({"message": "Video not found", "code": "youtube_video_not_found"}, status=404)
+
+            return web.json_response(
+                {
+                    "query": q,
+                    "nextPageToken": "",
+                    "prevPageToken": "",
+                    "totalResults": 1 if video else 0,
+                    "resultsPerPage": 1 if video else 0,
+                    "items": [video] if video else [],
+                }
+            )
+
+        if is_youtube_url_like(q):
+            logger.warning("Unsupported YouTube URL format sent to search endpoint")
+            return web.json_response(
+                {"message": UNSUPPORTED_YOUTUBE_URL_MESSAGE, "code": "unsupported_youtube_url"},
+                status=400,
+            )
+
         try:
             payload = await search_youtube_videos(
                 api_key,
@@ -5366,6 +5406,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
         # If URL provided, extract video ID from it
         if url_param and not video_id:
             video_id = extract_youtube_video_id(url_param) or ""
+            if not video_id and is_youtube_url_like(url_param):
+                logger.warning("Unsupported YouTube URL format sent to video endpoint")
+                return web.json_response(
+                    {"message": UNSUPPORTED_YOUTUBE_URL_MESSAGE, "code": "unsupported_youtube_url"},
+                    status=400,
+                )
         
         if not video_id:
             return web.json_response({"message": "Missing video ID or URL parameter"}, status=400)
@@ -5396,6 +5442,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "YouTube video fetch failed"}, status=500)
 
         if not video:
+            logger.warning("YouTube video lookup returned no item for video_id={}", video_id)
             return web.json_response({"message": "Video not found"}, status=404)
 
         return web.json_response(video)
@@ -6286,8 +6333,6 @@ def _prewarm_stt_service(service_name: str) -> None:
             import_provider_runtime_module("deepgram", "pipecat.services.deepgram.stt")
         elif service_name == "openai":
             import_provider_runtime_module("openai", "pipecat.services.openai.stt")
-        elif service_name == "azure":
-            import_provider_runtime_module("azure", "pipecat.services.azure.stt")
         elif service_name == "gladia":
             import_provider_runtime_module("gladia", "pipecat.services.gladia.stt")
         elif service_name == "groq":
@@ -6299,7 +6344,7 @@ def _prewarm_stt_service(service_name: str) -> None:
         elif service_name in {"smallest", "smallest_async"}:
             from src.smallest_stt import SmallestRealtimeSTTService, SmallestAsyncProcessor  # noqa: F401
         elif service_name == "azure_mai":
-            from src.azure_mai_stt import AzureMaiTranscribeProcessor  # noqa: F401
+            from src.azure_mai_stt import AzureMaiTranscribeSTTService  # noqa: F401
         # soniox is already imported at module level
     except ImportError as e:
         logger.debug(f"Could not prewarm STT service {service_name}: {e}")

@@ -44,7 +44,6 @@ STANDARD_PROVIDER_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pipecat.services.elevenlabs.stt", "ElevenLabs STT provider"),
     ("pipecat.services.deepgram.stt", "Deepgram STT provider"),
     ("pipecat.services.openai.stt", "OpenAI STT provider"),
-    ("pipecat.services.azure.stt", "Azure Speech STT provider"),
     ("pipecat.services.gladia.stt", "Gladia STT provider"),
     ("pipecat.services.groq.stt", "Groq STT provider"),
     ("pipecat.services.speechmatics.stt", "Speechmatics STT provider"),
@@ -106,14 +105,6 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[ProviderRuntimeDependency, ...]] = {
             "pipecat.services.groq.stt",
             "groq",
             "Groq Pipecat SDK path",
-        ),
-    ),
-    "azure": (
-        ProviderRuntimeDependency(
-            "azure",
-            "pipecat.services.azure.stt",
-            "azure-cognitiveservices-speech",
-            "Azure Speech SDK",
         ),
     ),
     "google": (

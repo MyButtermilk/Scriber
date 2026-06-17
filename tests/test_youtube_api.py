@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from aiohttp import ClientSession
 
-from src.youtube_api import parse_iso8601_duration, search_youtube_videos
+from src.youtube_api import extract_youtube_video_id, is_youtube_url_like, parse_iso8601_duration, search_youtube_videos
 
 
 def test_parse_iso8601_duration():
@@ -11,6 +11,21 @@ def test_parse_iso8601_duration():
     assert parse_iso8601_duration("PT1H2M3S") == 1 * 3600 + 2 * 60 + 3
     assert parse_iso8601_duration("PT0S") == 0
     assert parse_iso8601_duration("not-a-duration") == 0
+
+
+def test_extract_youtube_video_id_supports_live_urls():
+    assert (
+        extract_youtube_video_id("https://www.youtube.com/live/-Ppvp4uM7Kw?si=S_S3vpkqR6rw5t5T")
+        == "-Ppvp4uM7Kw"
+    )
+    assert extract_youtube_video_id("https://www.youtube.com/live/-Ppvp4uM7Kw") == "-Ppvp4uM7Kw"
+    assert extract_youtube_video_id("youtube.com/live/-Ppvp4uM7Kw") == "-Ppvp4uM7Kw"
+
+
+def test_youtube_url_like_detects_unknown_youtube_urls_for_better_errors():
+    assert is_youtube_url_like("https://www.youtube.com/live/-Ppvp4uM7Kw")
+    assert is_youtube_url_like("https://www.youtube.com/channel/example")
+    assert not is_youtube_url_like("https://example.com/watch?v=-Ppvp4uM7Kw")
 
 
 @pytest.mark.asyncio

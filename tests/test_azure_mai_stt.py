@@ -1,9 +1,10 @@
 from pathlib import Path
 
 import pytest
+from pipecat.services.stt_service import STTService
 
 from src.azure_mai_stt import (
-    AzureMaiTranscribeProcessor,
+    AzureMaiTranscribeSTTService,
     azure_mai_content_type,
     azure_mai_language_locales,
     azure_mai_model,
@@ -164,11 +165,13 @@ async def test_azure_mai_live_buffer_uploads_mp3_not_wav(monkeypatch):
     monkeypatch.setattr("src.azure_mai_stt._pcm_to_mp3", fake_pcm_to_mp3)
     monkeypatch.setattr("src.azure_mai_stt.transcribe_with_azure_mai", fake_transcribe_with_azure_mai)
 
-    processor = AzureMaiTranscribeProcessor(
+    processor = AzureMaiTranscribeSTTService(
         speech_key="key",
         region="northeurope",
         language="de",
     )
+
+    assert isinstance(processor, STTService)
 
     text = await processor._transcribe_bytes(b"\x01\x02")
 

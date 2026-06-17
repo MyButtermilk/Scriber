@@ -178,7 +178,6 @@ def _normalize_provider(provider: str | None, raw: str) -> str:
         "assemblyai": "assemblyai",
         "azure_mai": "azure_mai",
         "azure_mai_transcribe": "azure_mai",
-        "azure": "azure",
         "deepgram": "deepgram",
         "openai": "openai",
         "onnx_local": "onnx_local",
@@ -212,7 +211,7 @@ def _normalize_provider(provider: str | None, raw: str) -> str:
 def _provider_family(provider: str) -> str:
     if provider in {"soniox", "soniox_async"}:
         return "soniox"
-    if provider in {"azure", "azure_mai"}:
+    if provider == "azure_mai":
         return "azure"
     if provider in {"mistral", "mistral_async"}:
         return "mistral"

@@ -17,12 +17,15 @@ type OverlayEventPayload = {
   visible?: boolean;
 };
 
-const BAR_COUNT = 40;
-const WAVEFORM_CANVAS_WIDTH = 190;
-const WAVEFORM_CANVAS_HEIGHT = 34;
-const PILL_PADDING = 6;
-const STOP_BUTTON_SIZE = 36;
-const STOP_ICON_SIZE = 14;
+const BAR_COUNT = 36;
+const WAVEFORM_CANVAS_WIDTH = 162;
+const WAVEFORM_CANVAS_HEIGHT = 29;
+const PILL_PADDING = 5;
+const STOP_BUTTON_SIZE = 31;
+const STOP_ICON_SIZE = 12;
+const OVERLAY_CONTENT_WIDTH = STOP_BUTTON_SIZE + WAVEFORM_CANVAS_WIDTH;
+const PILL_WIDTH = OVERLAY_CONTENT_WIDTH + PILL_PADDING * 2;
+const PILL_HEIGHT = STOP_BUTTON_SIZE + PILL_PADDING * 2;
 const MIDNIGHT_COLORS = ["#93C5FD", "#3B82F6", "#1E3A8A"];
 
 function normalizeMode(value: unknown): OverlayMode {
@@ -31,6 +34,18 @@ function normalizeMode(value: unknown): OverlayMode {
     return mode;
   }
   return "hidden";
+}
+
+function devOverlayModeFromLocation(): OverlayMode {
+  if (typeof window === "undefined" || isTauriRuntime()) return "hidden";
+  const params = new URLSearchParams(window.location.search);
+  return normalizeMode(params.get("overlayMode"));
+}
+
+function devOverlayRmsFromLocation(): number {
+  if (typeof window === "undefined" || isTauriRuntime()) return 0;
+  const params = new URLSearchParams(window.location.search);
+  return Math.min(1, Math.max(0, Number(params.get("overlayRms")) || 0.32));
 }
 
 function interpolateColor(colors: string[], factor: number): string {
@@ -110,13 +125,13 @@ function OverlayWaveform({ rms }: { rms: number }) {
       const levels = levelsRef.current;
       const display = displayRef.current;
       const fall = fallRef.current;
-      const padLeft = 10 * dpr;
-      const padRight = 14 * dpr;
+      const padLeft = 8 * dpr;
+      const padRight = 10 * dpr;
       const usableWidth = Math.max(1, width - padLeft - padRight);
-      const gap = 2 * dpr;
-      const barWidth = Math.max(2, (usableWidth - gap * (BAR_COUNT - 1)) / BAR_COUNT);
+      const gap = 1.8 * dpr;
+      const barWidth = Math.max(1.8 * dpr, (usableWidth - gap * (BAR_COUNT - 1)) / BAR_COUNT);
       const centerY = height / 2;
-      const maxHeight = 28 * dpr;
+      const maxHeight = 24 * dpr;
 
       ctx.clearRect(0, 0, width, height);
       for (let i = 0; i < BAR_COUNT; i++) {
@@ -164,29 +179,31 @@ function OverlayWaveform({ rms }: { rms: number }) {
   );
 }
 
-function InitializingContent() {
+function StatusContent({ mode }: { mode: "initializing" | "transcribing" }) {
+  const label = mode === "initializing" ? "Preparing..." : "Transcribing...";
+  const color = mode === "initializing" ? "text-blue-300" : "text-blue-400";
   return (
-    <div className="flex items-center gap-1.5 px-4 text-blue-300" style={{ height: STOP_BUTTON_SIZE }}>
-      <Loader2 className="h-4 w-4 animate-spin" />
-      <span className="text-[13px] font-medium">Preparing...</span>
+    <div className={`flex h-full w-full items-center justify-center gap-1.5 ${color}`}>
+      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      <span className="text-[12px] font-medium leading-none">{label}</span>
     </div>
   );
 }
 
-function TranscribingContent() {
-  return (
-    <div className="flex items-center gap-1.5 px-4 text-blue-400" style={{ height: STOP_BUTTON_SIZE }}>
-      <Loader2 className="h-4 w-4 animate-spin" />
-      <span className="text-[13px] font-medium">Transcribing...</span>
-    </div>
-  );
+function overlayLayerClass(active: boolean): string {
+  return [
+    "absolute inset-0 flex items-center",
+    "transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
+    active ? "translate-y-0 scale-100 opacity-100" : "pointer-events-none translate-y-1 scale-[0.98] opacity-0",
+  ].join(" ");
 }
 
 export default function NativeRecordingOverlay() {
   const [backendReady, setBackendReady] = useState(!isTauriRuntime());
-  const [mode, setMode] = useState<OverlayMode>("hidden");
-  const [rms, setRms] = useState(0);
+  const [mode, setMode] = useState<OverlayMode>(() => devOverlayModeFromLocation());
+  const [rms, setRms] = useState(() => devOverlayRmsFromLocation());
   const activeSessionIdRef = useRef<string | null>(null);
+  const isDevOverlayPreview = !isTauriRuntime() && devOverlayModeFromLocation() !== "hidden";
 
   const applyWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
@@ -276,7 +293,7 @@ export default function NativeRecordingOverlay() {
   }, []);
 
   useEffect(() => {
-    if (!backendReady) return;
+    if (!backendReady || isDevOverlayPreview) return;
     const socket = new WebSocket(wsUrl("/ws"));
     socket.onmessage = (event) => {
       try {
@@ -291,7 +308,7 @@ export default function NativeRecordingOverlay() {
     return () => {
       socket.close();
     };
-  }, [applyWsMessage, backendReady]);
+  }, [applyWsMessage, backendReady, isDevOverlayPreview]);
 
   const handleStop = useCallback(async () => {
     try {
@@ -329,31 +346,42 @@ export default function NativeRecordingOverlay() {
               padding: PILL_PADDING,
               overflow: "hidden",
               boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.10)",
+              width: PILL_WIDTH,
+              height: PILL_HEIGHT,
             }}
           >
-            {mode === "recording" && (
-              <button
-                data-testid="native-recording-stop"
-                type="button"
-                onClick={handleStop}
-                className="flex shrink-0 items-center justify-center border-0 bg-[#e74c3c] text-white transition-colors duration-150 hover:bg-[#f05242]"
-                style={{
-                  width: STOP_BUTTON_SIZE,
-                  height: STOP_BUTTON_SIZE,
-                  borderRadius: STOP_BUTTON_SIZE / 2,
-                }}
-                aria-label="Stop recording"
-              >
-                <Square className="fill-current" style={{ width: STOP_ICON_SIZE, height: STOP_ICON_SIZE }} />
-              </button>
-            )}
-            {mode === "initializing" ? (
-              <InitializingContent />
-            ) : mode === "recording" ? (
-              <OverlayWaveform rms={rms} />
-            ) : mode === "transcribing" ? (
-              <TranscribingContent />
-            ) : null}
+            <div
+              className="relative overflow-hidden"
+              style={{
+                width: OVERLAY_CONTENT_WIDTH,
+                height: STOP_BUTTON_SIZE,
+              }}
+            >
+              <div className={overlayLayerClass(mode === "initializing")} aria-hidden={mode !== "initializing"}>
+                <StatusContent mode="initializing" />
+              </div>
+              <div className={`${overlayLayerClass(mode === "recording")} gap-0`} aria-hidden={mode !== "recording"}>
+                <button
+                  data-testid="native-recording-stop"
+                  type="button"
+                  tabIndex={mode === "recording" ? 0 : -1}
+                  onClick={handleStop}
+                  className="flex shrink-0 items-center justify-center border-0 bg-[#e74c3c] text-white transition-colors duration-150 hover:bg-[#f05242]"
+                  style={{
+                    width: STOP_BUTTON_SIZE,
+                    height: STOP_BUTTON_SIZE,
+                    borderRadius: STOP_BUTTON_SIZE / 2,
+                  }}
+                  aria-label="Stop recording"
+                >
+                  <Square className="fill-current" style={{ width: STOP_ICON_SIZE, height: STOP_ICON_SIZE }} />
+                </button>
+                <OverlayWaveform rms={rms} />
+              </div>
+              <div className={overlayLayerClass(mode === "transcribing")} aria-hidden={mode !== "transcribing"}>
+                <StatusContent mode="transcribing" />
+              </div>
+            </div>
           </div>
         </div>
       )}

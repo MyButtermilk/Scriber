@@ -63,6 +63,7 @@ DEPENDENCY_GROUPS: dict[str, dict[str, Any]] = {
             "google/ai/generativelanguage",
             "google/cloud/texttospeech",
             "googleapiclient",
+            "azure/cognitiveservices/speech",
         ),
         "requiredPaths": (),
         "disallowedPaths": (
@@ -70,6 +71,7 @@ DEPENDENCY_GROUPS: dict[str, dict[str, Any]] = {
             "google/ai/generativelanguage",
             "google/cloud/texttospeech",
             "googleapiclient",
+            "azure/cognitiveservices/speech",
         ),
         "expectedPresent": False,
         "reason": "Standard sidecar uses direct HTTP or explicit provider SDKs instead of unused provider SDKs",
@@ -95,14 +97,6 @@ COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
             "tools/ffmpeg/ffprobe.exe",
         ),
         "reason": "Bundled ffmpeg and ffprobe required for media preparation",
-    },
-    "azureSpeech": {
-        "paths": ("_internal/azure/cognitiveservices/speech",),
-        "requiredPaths": (
-            "_internal/azure/cognitiveservices/speech",
-            "_internal/azure/cognitiveservices/speech/Microsoft.CognitiveServices.Speech.core.dll",
-        ),
-        "reason": "Azure Speech native runtime DLLs required by the offered Azure provider",
     },
     "pyside6": {
         "paths": ("_internal/PySide6",),
@@ -412,13 +406,6 @@ def build_report(
             sidecar_dir=sidecar_dir,
             top_files_limit=top_files_limit,
             max_mb=max_media_tools_mb,
-        ),
-        "azureSpeech": summarize_component(
-            "azureSpeech",
-            COMPONENT_GROUPS["azureSpeech"],
-            sidecar_dir=sidecar_dir,
-            top_files_limit=top_files_limit,
-            max_mb=None,
         ),
         "pyside6": summarize_component(
             "pyside6",

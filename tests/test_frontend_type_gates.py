@@ -122,6 +122,7 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert "(await res.json()) as TranscriptDetailResponse" in source
     assert "type YouTubeSearchItem = {" not in source
     assert "/api/youtube/thumbnail?url=" in source
+    assert "youtube\\.com\\/live\\/" in source
     assert "encodeURIComponent(value)" in source
     assert "decoding=\"async\"" in source
     assert "referrerPolicy=\"no-referrer\"" in source
@@ -285,3 +286,17 @@ def test_recording_popup_uses_canvas_waveform_without_react_frame_state() -> Non
     assert "const canvas = canvasRef.current;" in source
     assert "requestAnimationFrame(draw)" in source
     assert "setAudioLevels" not in source
+
+
+def test_native_recording_overlay_uses_fixed_size_state_layers() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "NativeRecordingOverlay.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const WAVEFORM_CANVAS_WIDTH = 162;" in source
+    assert "const STOP_BUTTON_SIZE = 31;" in source
+    assert "const PILL_WIDTH = OVERLAY_CONTENT_WIDTH + PILL_PADDING * 2;" in source
+    assert "width: PILL_WIDTH" in source
+    assert "height: PILL_HEIGHT" in source
+    assert "absolute inset-0 flex items-center" in source
+    assert "overlayMode" in source

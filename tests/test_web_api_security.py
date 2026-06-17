@@ -60,6 +60,53 @@ def test_safe_youtube_thumbnail_url_allows_only_youtube_thumbnail_hosts():
     assert web_api._safe_youtube_thumbnail_url("https://user:pass@i.ytimg.com/vi/abc123/hqdefault.jpg") is None
 
 
+@pytest.mark.asyncio
+async def test_youtube_search_resolves_live_url_as_direct_video(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(web_api.Config, "YOUTUBE_API_KEY", "test-key", raising=False)
+    captured: dict[str, str] = {}
+
+    async def fake_get_video_by_id(api_key, video_id, *, session, timeout=None):
+        captured["api_key"] = api_key
+        captured["video_id"] = video_id
+        return {
+            "videoId": video_id,
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "title": "Live Video",
+            "description": "",
+            "channelTitle": "Channel",
+            "publishedAt": "2026-06-17T00:00:00Z",
+            "thumbnailUrl": "",
+            "duration": "00:00",
+            "durationSeconds": 0,
+        }
+
+    async def fail_search_youtube_videos(*args, **kwargs):
+        raise AssertionError("direct YouTube URLs must not be sent to search")
+
+    monkeypatch.setattr(web_api, "get_video_by_id", fake_get_video_by_id)
+    monkeypatch.setattr(web_api, "search_youtube_videos", fail_search_youtube_videos)
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.get(
+            "/api/youtube/search",
+            params={"q": "https://www.youtube.com/live/-Ppvp4uM7Kw?si=S_S3vpkqR6rw5t5T"},
+        )
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 200
+    assert captured == {"api_key": "test-key", "video_id": "-Ppvp4uM7Kw"}
+    assert payload["items"][0]["videoId"] == "-Ppvp4uM7Kw"
+    assert payload["items"][0]["url"] == "https://www.youtube.com/watch?v=-Ppvp4uM7Kw"
+
+
 class _FakeTransport:
     def __init__(self, peername=("127.0.0.1", 12345)):
         self._peername = peername

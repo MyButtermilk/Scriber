@@ -243,8 +243,6 @@ export interface SettingsApiKeys {
   assemblyai?: string;
   deepgram?: string;
   openai?: string;
-  azureSpeechKey?: string;
-  azureSpeechRegion?: string;
   azureMaiSpeechKey?: string;
   azureMaiRegion?: string;
   azureMaiModel?: string;

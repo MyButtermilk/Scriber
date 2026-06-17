@@ -11,9 +11,9 @@ pub const OVERLAY_WINDOW_LABEL: &str = "recording-overlay";
 #[cfg(not(test))]
 pub const OVERLAY_EVENT: &str = "scriber-overlay-state";
 
-const OVERLAY_WIDTH: f64 = 300.0;
-const OVERLAY_HEIGHT: f64 = 92.0;
-const OVERLAY_BOTTOM_MARGIN: f64 = 28.0;
+const OVERLAY_WIDTH: f64 = 255.0;
+const OVERLAY_HEIGHT: f64 = 78.0;
+const OVERLAY_BOTTOM_MARGIN: f64 = 12.0;
 
 #[cfg(not(test))]
 static OVERLAY_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -288,7 +288,7 @@ mod tests {
             OVERLAY_HEIGHT,
             OVERLAY_BOTTOM_MARGIN,
         );
-        assert_eq!((x, y), (810.0, 920.0));
+        assert_eq!((x, y), (833.0, 950.0));
     }
 
     #[test]

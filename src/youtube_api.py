@@ -4,12 +4,19 @@ import asyncio
 import json
 import re
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
 
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+UNSUPPORTED_YOUTUBE_URL_MESSAGE = (
+    "Unsupported YouTube URL format. Paste a YouTube watch, live, shorts, embed, or youtu.be link."
+)
+_YOUTUBE_VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
+_YOUTUBE_HOST_SUFFIXES = ("youtube.com", "youtube-nocookie.com")
+_YOUTU_BE_HOSTS = {"youtu.be", "www.youtu.be"}
 
 
 class YouTubeApiError(RuntimeError):
@@ -39,6 +46,36 @@ def format_duration(seconds: int) -> str:
     if hours:
         return f"{hours:d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+def _normalized_url(value: str) -> str:
+    candidate = (value or "").strip()
+    if not candidate:
+        return ""
+    if "://" not in candidate and (
+        candidate.startswith("youtube.com/")
+        or candidate.startswith("www.youtube.com/")
+        or candidate.startswith("m.youtube.com/")
+        or candidate.startswith("music.youtube.com/")
+        or candidate.startswith("youtu.be/")
+        or candidate.startswith("www.youtu.be/")
+    ):
+        return f"https://{candidate}"
+    return candidate
+
+
+def _is_valid_video_id(value: str) -> bool:
+    return bool(_YOUTUBE_VIDEO_ID_RE.fullmatch((value or "").strip()))
+
+
+def _youtube_host(hostname: str | None) -> str:
+    return (hostname or "").lower().strip(".")
+
+
+def is_youtube_url_like(value: str) -> bool:
+    parsed = urlparse(_normalized_url(value))
+    host = _youtube_host(parsed.hostname)
+    return host in _YOUTU_BE_HOSTS or any(host == suffix or host.endswith(f".{suffix}") for suffix in _YOUTUBE_HOST_SUFFIXES)
 
 
 def _best_thumbnail_url(thumbnails: Any) -> str:
@@ -259,18 +296,34 @@ async def get_video_by_id(
 
 def extract_youtube_video_id(url: str) -> str | None:
     """Extract video ID from various YouTube URL formats."""
-    url = (url or "").strip()
-    if not url:
+    raw_url = (url or "").strip()
+    if not raw_url:
         return None
-    
-    # Handle youtube.com/watch?v=VIDEO_ID, /embed/, /v/, and /shorts/
-    match = re.search(r'(?:youtube\.com/watch\?.*v=|youtube\.com/embed/|youtube\.com/v/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})', url)
+
+    parsed = urlparse(_normalized_url(raw_url))
+    host = _youtube_host(parsed.hostname)
+    path_parts = [part for part in parsed.path.split("/") if part]
+
+    if host in _YOUTU_BE_HOSTS and path_parts and _is_valid_video_id(path_parts[0]):
+        return path_parts[0]
+
+    if any(host == suffix or host.endswith(f".{suffix}") for suffix in _YOUTUBE_HOST_SUFFIXES):
+        query_video = (parse_qs(parsed.query).get("v") or [""])[0]
+        if _is_valid_video_id(query_video):
+            return query_video
+
+        if len(path_parts) >= 2 and path_parts[0].lower() in {"embed", "v", "shorts", "live"}:
+            video_id = path_parts[1]
+            if _is_valid_video_id(video_id):
+                return video_id
+
+    # Regex fallback for legacy callers passing embedded or partially escaped links.
+    match = re.search(
+        r"(?:youtube\.com/(?:watch\?.*v=|embed/|v/|shorts/|live/)|youtu\.be/)([a-zA-Z0-9_-]{11})",
+        raw_url,
+        flags=re.IGNORECASE,
+    )
     if match:
         return match.group(1)
-    
-    # Handle youtu.be/VIDEO_ID
-    match = re.search(r'youtu\.be/([a-zA-Z0-9_-]{11})', url)
-    if match:
-        return match.group(1)
-    
+
     return None

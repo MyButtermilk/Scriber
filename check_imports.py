@@ -35,10 +35,10 @@ except ImportError as e:
     print(f"OpenAISTTService NOT found: {e}")
 
 try:
-    from pipecat.services.azure.stt import AzureSTTService
-    print("AzureSTTService found")
+    from src.azure_mai_stt import AzureMaiTranscribeSTTService
+    print("AzureMaiTranscribeSTTService found")
 except ImportError as e:
-    print(f"AzureSTTService NOT found: {e}")
+    print(f"AzureMaiTranscribeSTTService NOT found: {e}")
 
 try:
     from pipecat.services.gladia.stt import GladiaSTTService
