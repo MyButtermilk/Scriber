@@ -112,6 +112,103 @@ def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch)
     assert "prewarm-1" not in str(snapshot)
 
 
+def test_rust_audio_prewarm_start_if_enabled_stops_disabled_paused_session(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", False, raising=False)
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "prewarmId": payload["prewarmId"],
+                    "reason": "prewarmStop",
+                },
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    with manager._lock:
+        manager._prewarm_id = "prewarm-disabled"
+        manager._prewarm_payload = {"prewarmId": "prewarm-disabled"}
+        manager._stream_signature = {"sample_rate": 16000}
+        manager._paused_for_active_capture = True
+        manager._active_capture_attached = True
+
+    assert manager.start_if_enabled() is False
+    assert manager.is_active is False
+    assert commands == [("audioPrewarmStop", {"prewarmId": "prewarm-disabled"})]
+
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["pausedForActiveCapture"] is False
+    assert snapshot["activeCaptureAttached"] is False
+    assert snapshot["lastStopReason"] == "disabled"
+    assert snapshot["lastStopSuccess"] is True
+    assert "prewarm-disabled" not in str(snapshot)
+
+
+def test_rust_audio_prewarm_discards_late_start_after_disable(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
+    monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
+    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
+    monkeypatch.setattr(Config, "MIC_PREBUFFER_MS", 400, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            monkeypatch.setattr(Config, "MIC_ALWAYS_ON", False, raising=False)
+            return {
+                "success": True,
+                "payload": {
+                    "prewarmId": "prewarm-race",
+                    "source": "wasapi-prewarm",
+                },
+            }
+        if command == "audioPrewarmStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "prewarmId": payload["prewarmId"],
+                    "reason": "prewarmStop",
+                },
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
+
+    assert manager.start_if_enabled() is False
+    assert manager.is_active is False
+    assert [command for command, _payload in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStop",
+    ]
+    assert commands[1][1] == {"prewarmId": "prewarm-race"}
+
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["streamStartCount"] == 0
+    assert snapshot["streamCloseCount"] == 1
+    assert snapshot["lastStartSuccess"] is False
+    assert snapshot["lastStopReason"] == "disabled_after_start"
+    assert snapshot["lastStopSuccess"] is True
+    assert snapshot["active"] is False
+    assert "prewarm-race" not in str(snapshot)
+
+
 def test_rust_audio_prewarm_manager_records_resume_gap_after_capture(monkeypatch):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
     monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)

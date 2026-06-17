@@ -334,12 +334,12 @@ class RustAudioPrewarmManager:
         logger.warning(f"Rust mic prewarm could not start: {exc}")
 
     def start_if_enabled(self) -> bool:
-        with self._lock:
-            if self._paused_for_active_capture or self._paused_for_device_refresh:
-                return False
         if not Config.MIC_ALWAYS_ON:
             self.stop(reason="disabled")
             return False
+        with self._lock:
+            if self._paused_for_active_capture or self._paused_for_device_refresh:
+                return False
         return self.start()
 
     def start(self) -> bool:
@@ -376,6 +376,30 @@ class RustAudioPrewarmManager:
             prewarm_id = str(response_payload.get("prewarmId") or "").strip()
             if not prewarm_id:
                 raise RuntimeError("audioPrewarmStart did not return prewarmId")
+
+            with self._lock:
+                keep_started_session = bool(Config.MIC_ALWAYS_ON) and not (
+                    self._paused_for_active_capture or self._paused_for_device_refresh
+                )
+            if not keep_started_session:
+                self._stop_sidecar_prewarm(prewarm_id, reason="disabled_after_start")
+                with self._lock:
+                    self._prewarm_id = ""
+                    self._prewarm_payload = {}
+                    self._stream_signature = {}
+                    self._last_start_duration_ms = round(
+                        max(0.0, time.monotonic() - attempt_started) * 1000.0,
+                        3,
+                    )
+                    self._last_start_response_ms = shell_response_ms
+                    self._last_start_success = False
+                    self._record_transition_locked("start_discarded", "disabled_after_start")
+                    self._record_event_locked(
+                        "start_discarded",
+                        "disabled_after_start",
+                        prewarmIdHash=self._hash_hint(prewarm_id),
+                    )
+                return False
 
             with self._lock:
                 self._prewarm_id = prewarm_id
@@ -846,12 +870,8 @@ class RustAudioPrewarmManager:
             logger.warning(f"Rust mic prewarm session missing; restarting ({reason})")
         return self.start_if_enabled()
 
-    def stop(self, *, reason: str = "stop") -> None:
+    def _stop_sidecar_prewarm(self, prewarm_id: str, *, reason: str) -> None:
         with self._lock:
-            prewarm_id = self._prewarm_id
-            self._prewarm_id = ""
-            self._prewarm_payload = {}
-            self._stream_signature = {}
             self._last_stop_at = time.monotonic()
             self._last_stop_reason = reason
             self._last_stop_response_ms = None
@@ -906,3 +926,20 @@ class RustAudioPrewarmManager:
                     responseMs=self._last_stop_response_ms,
                 )
             logger.debug(f"Rust mic prewarm stop failed ({reason}): {exc}")
+
+    def stop(self, *, reason: str = "stop") -> None:
+        with self._lock:
+            prewarm_id = self._prewarm_id
+            self._prewarm_id = ""
+            self._prewarm_payload = {}
+            self._stream_signature = {}
+            if reason in {"disabled", "settings_disabled", "shutdown"}:
+                self._paused_for_active_capture = False
+                self._paused_for_device_refresh = False
+                self._active_capture_attached = False
+            self._last_stop_at = time.monotonic()
+            self._last_stop_reason = reason
+            self._last_stop_response_ms = None
+            self._last_stop_success = False
+            self._last_stop_error = ""
+        self._stop_sidecar_prewarm(prewarm_id, reason=reason)

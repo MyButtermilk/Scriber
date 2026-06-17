@@ -43,6 +43,12 @@ Startup and imports:
 
 - STT provider imports are mostly lazy in the service factory.
 - Expensive VAD/analyzer setup is cached.
+- Startup ML analyzer and STT provider prewarm are opt-in through
+  `SCRIBER_PREWARM_MODELS_ON_STARTUP` and `SCRIBER_PREWARM_STT_ON_STARTUP` so
+  installed idle sessions do not load provider/model runtimes unless requested.
+- In Tauri-supervised runtime, Rust owns global hotkeys; the Python `keyboard`
+  hook and polling fallback are skipped unless
+  `SCRIBER_ENABLE_PYTHON_HOTKEYS_IN_TAURI=1`.
 - Runtime import diagnostics are separated from normal readiness paths where
   possible.
 
@@ -51,10 +57,17 @@ Live mic:
 - Rust/WASAPI sidecar capture is now the standard live-mic capture path.
 - Always-On-Mic uses the Rust prewarm manager and can prepend adopted sidecar
   prebuffer frames when recording starts.
+- Async/finalizing live mic providers run Pipecat Silero VAD in the input
+  pipeline and can skip provider upload/finalization when no speech was
+  detected and the RMS silence gate also stayed quiet.
 - Device-name/favorite resolution has a short TTL cache.
 - Device refresh is deferred while a recording stream is active.
 - Audio-level UI work is throttled to about 60 Hz.
 - Live waveform uses Canvas/RAF instead of per-frame React state.
+- The recording overlay WebView is created lazily on first show instead of at
+  app startup; hidden overlays do not keep their own WebSocket connection.
+- Overlay and live mic visualizers cap drawing to about 30 FPS and keep audio
+  level updates out of React state where practical.
 
 Backend/WebSocket:
 
@@ -111,6 +124,8 @@ Packaging/build:
   `SCRIBER_FRONTEND_DIST_DIR` or a source checkout.
 - Runtime dependency footprint gate rejects SciPy reintroduction and unused heavy
   runtime paths.
+- Installed desktop stability smokes include per-role process-tree metrics for
+  Tauri shell, backend, WebView2, audio sidecar, and other child processes.
 
 ## FFmpeg Profile B
 

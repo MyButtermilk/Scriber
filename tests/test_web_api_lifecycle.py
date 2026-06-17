@@ -20,6 +20,7 @@ class _FakeMicPrewarmManager:
         self.pause_calls = 0
         self.resume_calls = 0
         self.stop_calls = 0
+        self.stop_reasons: list[str] = []
         self.quiesce_calls = 0
         self.refresh_resume_calls = 0
         self.ensure_calls = 0
@@ -66,8 +67,9 @@ class _FakeMicPrewarmManager:
     def detach_active_capture(self, *_args, **_kwargs):
         return self.active
 
-    def stop(self) -> None:
+    def stop(self, *, reason: str = "stop") -> None:
         self.stop_calls += 1
+        self.stop_reasons.append(reason)
         self.active = False
 
 
@@ -176,6 +178,85 @@ def test_transcript_record_buffers_final_segments_until_content_read():
     assert rec._pending_content_segments == ["second", "third"]
     assert rec.content_text() == "first\n\nsecond\n\nthird"
     assert rec._pending_content_segments == []
+
+
+def test_audio_diagnostics_silence_requires_no_pipecat_vad_speech():
+    quiet = {
+        "audioLevelSampleCount": 8,
+        "maxObservedRms": 0.0001,
+        "speechObserved": False,
+        "pipecatVad": {"enabled": True, "speechObserved": False, "speechStartedCount": 0},
+    }
+    speech = {
+        **quiet,
+        "pipecatVad": {"speechObserved": True, "speechStartedCount": 1},
+    }
+
+    assert web_api._audio_diagnostics_indicate_silence(quiet) is True
+    assert web_api._audio_diagnostics_have_pipecat_vad_silence(quiet) is True
+    assert web_api._audio_diagnostics_indicate_silence(speech) is False
+    assert web_api._audio_diagnostics_have_pipecat_vad_silence({**quiet, "pipecatVad": None}) is False
+
+
+@pytest.mark.asyncio
+async def test_stop_listening_skips_provider_finalization_for_silent_async_recording(monkeypatch):
+    class _SilentPipeline:
+        service_name = "soniox_async"
+
+        def __init__(self):
+            self.cancel_silent_called = False
+            self.stop_called = False
+
+        def audio_diagnostics(self):
+            return {
+                "audioLevelSampleCount": 8,
+                "maxObservedRms": 0.0001,
+                "speechObserved": False,
+                "pipecatVad": {"enabled": True, "speechObserved": False, "speechStartedCount": 0},
+            }
+
+        async def cancel_silent_recording(self):
+            self.cancel_silent_called = True
+
+        async def stop(self, **_kwargs):
+            self.stop_called = True
+
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    session_id = "silent-session"
+    record = _make_record(session_id)
+    pipeline = _SilentPipeline()
+    broadcasts: list[dict] = []
+
+    ctl._is_listening = True
+    ctl._pipeline = pipeline
+    ctl._pipeline_task = None
+    ctl._current = record
+    ctl._session_id = session_id
+    ctl._active_provider = "soniox_async"
+    ctl._set_recording_state(web_api.RecordingState.INITIALIZING, context="test")
+    ctl._set_recording_state(web_api.RecordingState.RECORDING, context="test")
+
+    async def _capture_broadcast(payload):
+        broadcasts.append(payload)
+
+    monkeypatch.setattr(ctl, "broadcast", AsyncMock(side_effect=_capture_broadcast))
+    monkeypatch.setattr(ctl, "_save_transcript_to_db_async", AsyncMock())
+    monkeypatch.setattr(ctl, "_broadcast_history_updated", AsyncMock())
+    monkeypatch.setattr(ctl, "_hide_recording_overlay_async", lambda: None)
+    monkeypatch.setattr(
+        ctl,
+        "_show_transcribing_overlay_async",
+        lambda: (_ for _ in ()).throw(AssertionError("transcribing overlay should not be shown")),
+    )
+    monkeypatch.setattr(ctl, "_resume_idle_mic_prewarm_after_capture", lambda: None)
+
+    await ctl.stop_listening()
+
+    assert pipeline.cancel_silent_called is True
+    assert pipeline.stop_called is False
+    assert record.status == "completed"
+    assert all(payload.get("type") != "transcribing" for payload in broadcasts)
 
 
 class _ChunkUploadField:
@@ -387,8 +468,9 @@ async def test_update_settings_toggles_idle_mic_prewarm(monkeypatch, tmp_path):
     await ctl.update_settings({"micAlwaysOn": False})
 
     assert web_api.Config.MIC_ALWAYS_ON is False
-    assert manager.resume_calls == 2
+    assert manager.resume_calls == 1
     assert manager.stop_calls >= 1
+    assert "settings_disabled" in manager.stop_reasons
     assert manager.active is False
 
     ctl.shutdown()

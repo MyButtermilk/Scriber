@@ -463,6 +463,120 @@ function Get-ProcessTotalCpuSeconds {
     return $cpuByPid
 }
 
+function Get-ScriberProcessRole {
+    param(
+        [int]$ProcessId,
+        [int]$AppPid,
+        [int]$BackendPid,
+        [string]$ProcessName
+    )
+
+    $name = ([string]$ProcessName).ToLowerInvariant()
+    if ($ProcessId -eq $AppPid) {
+        return "tauriShell"
+    }
+    if ($ProcessId -eq $BackendPid -or $name -eq "scriber-backend") {
+        return "backend"
+    }
+    if ($name -eq "msedgewebview2") {
+        return "webview2"
+    }
+    if ($name -eq "scriber-audio-sidecar") {
+        return "audioSidecar"
+    }
+    if ($name -like "scriber*") {
+        return "scriberChild"
+    }
+    return "otherDescendant"
+}
+
+function Get-ProcessTreeMetrics {
+    param(
+        [int]$AppPid,
+        [int]$BackendPid
+    )
+
+    $allProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $childrenByParent = @{}
+    foreach ($proc in $allProcesses) {
+        $parentId = [int]$proc.ParentProcessId
+        if (-not $childrenByParent.ContainsKey($parentId)) {
+            $childrenByParent[$parentId] = New-Object System.Collections.Generic.List[int]
+        }
+        $childrenByParent[$parentId].Add([int]$proc.ProcessId)
+    }
+
+    $seen = @{}
+    $queue = New-Object System.Collections.Generic.Queue[int]
+    foreach ($rootId in @($AppPid, $BackendPid)) {
+        if ($rootId -gt 0 -and -not $seen.ContainsKey($rootId)) {
+            $seen[$rootId] = $true
+            $queue.Enqueue($rootId)
+        }
+    }
+    while ($queue.Count -gt 0) {
+        $currentId = $queue.Dequeue()
+        if (-not $childrenByParent.ContainsKey($currentId)) {
+            continue
+        }
+        foreach ($childId in $childrenByParent[$currentId]) {
+            if (-not $seen.ContainsKey($childId)) {
+                $seen[$childId] = $true
+                $queue.Enqueue($childId)
+            }
+        }
+    }
+
+    $metrics = @()
+    foreach ($processId in @($seen.Keys | ForEach-Object { [int]$_ } | Sort-Object)) {
+        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+        if (-not $process) {
+            continue
+        }
+        $cim = $allProcesses | Where-Object { [int]$_.ProcessId -eq $processId } | Select-Object -First 1
+        $parentPid = if ($cim) { [int]$cim.ParentProcessId } else { $null }
+        $metrics += [pscustomobject]@{
+            pid = [int]$processId
+            parentPid = $parentPid
+            name = [string]$process.ProcessName
+            role = Get-ScriberProcessRole -ProcessId $processId -AppPid $AppPid -BackendPid $BackendPid -ProcessName $process.ProcessName
+            cpuTotalSeconds = [Math]::Round([double]$process.TotalProcessorTime.TotalSeconds, 3)
+            workingSetMb = [Math]::Round([double]$process.WorkingSet64 / 1MB, 2)
+            privateBytesMb = [Math]::Round([double]$process.PrivateMemorySize64 / 1MB, 2)
+        }
+    }
+    return $metrics
+}
+
+function Get-ProcessTreeMetricsSummary {
+    param([object[]]$Samples)
+
+    $rows = @()
+    foreach ($sample in $Samples) {
+        foreach ($metric in @($sample.processMetrics)) {
+            if ($metric) {
+                $rows += $metric
+            }
+        }
+    }
+    $summary = @()
+    foreach ($role in @($rows | ForEach-Object { [string]$_.role } | Sort-Object -Unique)) {
+        $roleRows = @($rows | Where-Object { [string]$_.role -eq $role })
+        if (-not $roleRows.Count) {
+            continue
+        }
+        $summary += [pscustomobject]@{
+            role = $role
+            pidCount = @($roleRows | ForEach-Object { [int]$_.pid } | Sort-Object -Unique).Count
+            sampleCount = $roleRows.Count
+            maxWorkingSetMb = [Math]::Round([double](($roleRows | Measure-Object -Property workingSetMb -Maximum).Maximum), 2)
+            maxPrivateBytesMb = [Math]::Round([double](($roleRows | Measure-Object -Property privateBytesMb -Maximum).Maximum), 2)
+            maxCpuTotalSeconds = [Math]::Round([double](($roleRows | Measure-Object -Property cpuTotalSeconds -Maximum).Maximum), 3)
+        }
+    }
+    return $summary
+}
+
 function Get-DeltaCpuPercent {
     param(
         [object]$PreviousSeconds,
@@ -510,7 +624,11 @@ function Test-RuntimeStability {
     $deadline = $startedAt.AddSeconds($DurationSec)
     $logicalProcessorCount = [Math]::Max(1, [Environment]::ProcessorCount)
     $lastCpuSampleAt = Get-Date
-    $lastCpuTotals = Get-ProcessTotalCpuSeconds -ProcessIds @([int]$AppProcess.Id, $BackendPid)
+    $lastProcessMetrics = @(Get-ProcessTreeMetrics -AppPid ([int]$AppProcess.Id) -BackendPid $BackendPid)
+    $lastCpuTotals = @{}
+    foreach ($metric in $lastProcessMetrics) {
+        $lastCpuTotals[[int]$metric.pid] = [double]$metric.cpuTotalSeconds
+    }
     do {
         if ($AppProcess.HasExited) {
             throw "Tauri process exited during stability smoke with code $($AppProcess.ExitCode)."
@@ -542,7 +660,11 @@ function Test-RuntimeStability {
         }
 
         $currentCpuSampleAt = Get-Date
-        $currentCpuTotals = Get-ProcessTotalCpuSeconds -ProcessIds @([int]$AppProcess.Id, $BackendPid)
+        $currentProcessMetrics = @(Get-ProcessTreeMetrics -AppPid ([int]$AppProcess.Id) -BackendPid $BackendPid)
+        $currentCpuTotals = @{}
+        foreach ($metric in $currentProcessMetrics) {
+            $currentCpuTotals[[int]$metric.pid] = [double]$metric.cpuTotalSeconds
+        }
         $cpuElapsedSec = ($currentCpuSampleAt - $lastCpuSampleAt).TotalSeconds
         $appCpuPercent = Get-DeltaCpuPercent `
             -PreviousSeconds $lastCpuTotals[[int]$AppProcess.Id] `
@@ -576,6 +698,7 @@ function Test-RuntimeStability {
             stateMs = $stateProbe.elapsedMs
             audioDiagnosticsMs = if ($audioDiagnosticsProbe) { $audioDiagnosticsProbe.elapsedMs } else { $null }
             audioDiagnostics = $audioDiagnosticsSummary
+            processMetrics = $currentProcessMetrics
             healthReady = [bool]$health.ready
             status = [string]$state.status
             recordingState = [string]$state.recordingState
@@ -604,6 +727,7 @@ function Test-RuntimeStability {
     $backendCpuMax = if ($backendCpuValues.Count) { [double](($backendCpuValues | Measure-Object -Maximum).Maximum) } else { $null }
     $combinedCpuMax = if ($combinedCpuValues.Count) { [double](($combinedCpuValues | Measure-Object -Maximum).Maximum) } else { $null }
     $combinedCpuAvg = if ($combinedCpuValues.Count) { [Math]::Round([double](($combinedCpuValues | Measure-Object -Average).Average), 2) } else { $null }
+    $processMetricsSummary = @(Get-ProcessTreeMetricsSummary -Samples $samples)
     if ($MaxIdleCpuPercent -gt 0 -and -not $combinedCpuValues.Count) {
         throw "Stability smoke could not collect idle CPU samples."
     }
@@ -628,6 +752,7 @@ function Test-RuntimeStability {
         combinedCpuMaxPercent = $combinedCpuMax
         combinedCpuAvgPercent = $combinedCpuAvg
         maxIdleCpuPercent = if ($MaxIdleCpuPercent -gt 0) { $MaxIdleCpuPercent } else { $null }
+        processMetricsSummary = $processMetricsSummary
         samples = $samples
     }
 }

@@ -368,6 +368,11 @@ class AzureMaiTranscribeSTTService(STTService):
 
         await AIService.process_frame(self, frame, direction)
         try:
+            if getattr(self, "_skip_terminal_transcription", False):
+                logger.info("Azure MAI: skipping terminal transcription for silent recording")
+                self._reset_buffer()
+                await self.push_frame(frame, direction)
+                return
             await self._flush_transcription(direction)
         except Exception as exc:
             logger.error(f"Azure MAI transcription failed: {exc}")

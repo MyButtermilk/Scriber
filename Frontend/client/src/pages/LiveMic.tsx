@@ -12,6 +12,8 @@ import type { BackendStateResponse } from "@/lib/api-types";
 
 const DELETE_GLITCH_DURATION_MS = 1200;
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
+const MIC_VISUAL_NOISE_FLOOR = 0.0012;
+const MIC_VISUAL_DISPLAY_SCALE = 22;
 
 type Transcript = {
   id: string;
@@ -43,6 +45,14 @@ function coerceRecordingState(value: unknown, fallback: LiveRecordingState = "id
     default:
       return fallback;
   }
+}
+
+function micVisualGainFromAudioLevel(rawInput: number): number {
+  const rms = Math.min(1, Math.max(0, rawInput > 1 ? rawInput / 100 : rawInput));
+  if (rms <= MIC_VISUAL_NOISE_FLOOR) {
+    return 0;
+  }
+  return Math.min(1, Math.pow((rms - MIC_VISUAL_NOISE_FLOOR) * MIC_VISUAL_DISPLAY_SCALE, 0.72));
 }
 
 // Memoized TranscriptCard to prevent unnecessary re-renders
@@ -240,6 +250,7 @@ const AudioVisualizer = memo(function AudioVisualizer({
     let smoothedLevel = 0;
     let lastWidth = 0;
     let lastHeight = 0;
+    let lastDrawAt = 0;
 
     const style = getComputedStyle(document.documentElement);
     const primary = `hsl(${style.getPropertyValue("--primary").trim() || "220 60% 50%"})`;
@@ -274,6 +285,11 @@ const AudioVisualizer = memo(function AudioVisualizer({
     }
 
     const tick = (time: number) => {
+      if (time - lastDrawAt < 33) {
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+      lastDrawAt = time;
       resizeCanvas();
       const rawLevel = Math.min(1, Math.max(0, audioLevelRef.current * 3));
       smoothedLevel = smoothedLevel * 0.72 + rawLevel * 0.28;
@@ -322,11 +338,10 @@ const GlossyMicButton = memo(function GlossyMicButton({
   audioLevelRef,
   onToggle,
 }: GlossyMicButtonProps) {
-  const [smoothedGain, setSmoothedGain] = useState(0);
   const [ripples, setRipples] = useState<Array<{ id: number; scale: number; alpha: number }>>([]);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const rippleCounterRef = useRef(0);
   const smoothedGainRef = useRef(0);
-  const agcRef = useRef(0.01);
   const lastRippleTimeRef = useRef(0);
   const rippleTimeoutsRef = useRef<number[]>([]);
 
@@ -354,8 +369,7 @@ const GlossyMicButton = memo(function GlossyMicButton({
   useEffect(() => {
     if (!isActive) {
       smoothedGainRef.current = 0;
-      agcRef.current = 0.01;
-      setSmoothedGain(0);
+      wrapperRef.current?.style.setProperty("--audio-gain", "0");
       setRipples([]);
       clearRippleTimeouts();
       return;
@@ -364,18 +378,10 @@ const GlossyMicButton = memo(function GlossyMicButton({
     let rafId = 0;
     const update = (now: number) => {
       const rawInput = Number.isFinite(audioLevelRef.current) ? audioLevelRef.current : 0;
-      const rms = Math.min(1, Math.max(0, rawInput > 1 ? rawInput / 100 : rawInput));
-
-      if (rms > agcRef.current) {
-        agcRef.current = rms;
-      } else {
-        agcRef.current = agcRef.current * 0.98 + rms * 0.02;
-      }
-
-      const currentGain = Math.min(1, Math.max(0, Math.pow(rms / (agcRef.current + 1e-6), 0.55) * 1.25));
+      const currentGain = micVisualGainFromAudioLevel(rawInput);
       const nextGain = (smoothedGainRef.current * 0.75) + (currentGain * 0.25);
       smoothedGainRef.current = nextGain;
-      setSmoothedGain(nextGain);
+      wrapperRef.current?.style.setProperty("--audio-gain", nextGain.toFixed(3));
 
       const minRippleDelay = 350 - (nextGain * 200);
       if (nextGain > 0.25 && now - lastRippleTimeRef.current > minRippleDelay) {
@@ -393,12 +399,8 @@ const GlossyMicButton = memo(function GlossyMicButton({
     };
   }, [audioLevelRef, clearRippleTimeouts, isActive, spawnRipple]);
 
-  const wrapperStyle = {
-    "--audio-gain": smoothedGain.toFixed(3),
-  } as CSSProperties;
-
   return (
-    <div className={`glossy-mic-wrapper ${isActive ? "is-recording" : ""}`} style={wrapperStyle}>
+    <div ref={wrapperRef} className={`glossy-mic-wrapper ${isActive ? "is-recording" : ""}`}>
       <div className="glossy-mic-outer-ring">
         <div className="glossy-mic-trench">
           <div className="glossy-mic-pulse-glow" />

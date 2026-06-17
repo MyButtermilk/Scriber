@@ -452,8 +452,8 @@ def _audio_diagnostic_import_status() -> dict[str, dict[str, Any]]:
     statuses: dict[str, dict[str, Any]] = {}
     for module_name in _AUDIO_DIAGNOSTIC_IMPORTS:
         try:
-            importlib.import_module(module_name)
-            statuses[module_name] = {"importable": True, "error": None}
+            spec = importlib.util.find_spec(module_name)
+            statuses[module_name] = {"importable": spec is not None, "error": None}
         except Exception as exc:
             statuses[module_name] = {
                 "importable": False,
@@ -1084,6 +1084,15 @@ def _live_pipeline_uses_async_finalization(pipeline: Any | None) -> bool:
 def _audio_diagnostics_indicate_silence(diagnostics: dict[str, Any] | None) -> bool:
     if not isinstance(diagnostics, dict):
         return False
+    vad_diagnostics = diagnostics.get("pipecatVad")
+    if isinstance(vad_diagnostics, dict):
+        if bool(vad_diagnostics.get("speechObserved")):
+            return False
+        try:
+            if int(vad_diagnostics.get("speechStartedCount") or 0) > 0:
+                return False
+        except Exception:
+            pass
     try:
         sample_count = int(diagnostics.get("audioLevelSampleCount") or 0)
     except Exception:
@@ -1098,6 +1107,24 @@ def _audio_diagnostics_indicate_silence(diagnostics: dict[str, Any] | None) -> b
         max_rms = 0.0
     threshold = _env_float(_LIVE_MIC_SILENCE_RMS_THRESHOLD_ENV, 0.0007, minimum=0.0, maximum=0.05)
     return max_rms <= threshold
+
+
+def _audio_diagnostics_have_pipecat_vad_silence(diagnostics: dict[str, Any] | None) -> bool:
+    if not _audio_diagnostics_indicate_silence(diagnostics):
+        return False
+    if not isinstance(diagnostics, dict):
+        return False
+    vad_diagnostics = diagnostics.get("pipecatVad")
+    if not isinstance(vad_diagnostics, dict):
+        return False
+    if not bool(vad_diagnostics.get("enabled")):
+        return False
+    if bool(vad_diagnostics.get("speechObserved")):
+        return False
+    try:
+        return int(vad_diagnostics.get("speechStartedCount") or 0) <= 0
+    except Exception:
+        return False
 
 
 def _pipeline_stop_timeout_error(exc: BaseException) -> bool:
@@ -1963,14 +1990,15 @@ class ScriberWebController:
         self._stop_mic_watchdog_if_idle()
 
     async def _sync_idle_mic_prewarm_after_settings(self) -> None:
+        if not Config.MIC_ALWAYS_ON:
+            await asyncio.to_thread(self._mic_prewarm.stop, reason="settings_disabled")
+            self._stop_mic_watchdog_if_idle()
+            return
         if self._is_listening or self._is_stopping:
             await asyncio.to_thread(self._mic_prewarm.pause_for_active_capture)
         else:
             await asyncio.to_thread(self._mic_prewarm.resume_after_active_capture)
-        if Config.MIC_ALWAYS_ON or self._is_listening:
-            self._start_mic_watchdog()
-        else:
-            self._stop_mic_watchdog_if_idle()
+        self._start_mic_watchdog()
 
     @staticmethod
     def _trace_id_for(value: str | None) -> str | None:
@@ -4299,11 +4327,48 @@ class ScriberWebController:
             pipeline.service_name == "soniox" and 
             Config.SONIOX_MODE == "realtime"
         )
+        current_has_text = bool(current and current.content_text().strip())
+        silent_early_exit = bool(
+            pipeline
+            and async_finalization
+            and _audio_diagnostics_have_pipecat_vad_silence(pipeline_audio_diagnostics)
+            and not is_realtime_service
+            and not current_has_text
+            and callable(getattr(pipeline, "cancel_silent_recording", None))
+        )
         
         if is_realtime_service:
             # For RT services, hide overlay immediately - text is already injected
             self._overlay_audio_enabled = False
             self._hide_recording_overlay_async()
+        elif silent_early_exit:
+            self._overlay_audio_enabled = False
+            self._hide_recording_overlay_async()
+            await self.broadcast(status_event("No speech detected", False, session_id=session_id))
+            self._emit_workflow_event(
+                message="Live mic silent recording skipped provider finalization",
+                event="api.session.silent_skipped_provider",
+                workflow="live_mic",
+                stage="session_stop",
+                session_id=session_id,
+                record=current,
+                provider=provider_used,
+                milestone=True,
+                outcome="success",
+                meta={
+                    "audio": {
+                        "sampleCount": (pipeline_audio_diagnostics or {}).get("audioLevelSampleCount")
+                        if isinstance(pipeline_audio_diagnostics, dict)
+                        else None,
+                        "maxObservedRms": (pipeline_audio_diagnostics or {}).get("maxObservedRms")
+                        if isinstance(pipeline_audio_diagnostics, dict)
+                        else None,
+                        "pipecatVad": (pipeline_audio_diagnostics or {}).get("pipecatVad")
+                        if isinstance(pipeline_audio_diagnostics, dict)
+                        else None,
+                    }
+                },
+            )
         else:
             # Show transcribing state for async services that need processing time
             self._overlay_audio_enabled = False
@@ -4316,21 +4381,24 @@ class ScriberWebController:
         retrigger_hotkey_toggle = False
         try:
             if pipeline:
-                try:
-                    await pipeline.stop(timeout_secs=stop_timeout_secs)
-                except TypeError as exc:
-                    if "timeout_secs" not in str(exc) and "unexpected keyword" not in str(exc):
-                        raise
-                    await pipeline.stop()
-                except Exception as exc:
-                    if quiet_recording and _pipeline_stop_timeout_error(exc):
-                        logger.info(
-                            "Suppressing async live transcription timeout after quiet recording "
-                            f"(timeout={stop_timeout_secs:g}s, provider={provider_used})"
-                        )
-                    else:
-                        raise
-                self._record_provider_success(provider_used or "")
+                if silent_early_exit:
+                    await pipeline.cancel_silent_recording()
+                else:
+                    try:
+                        await pipeline.stop(timeout_secs=stop_timeout_secs)
+                    except TypeError as exc:
+                        if "timeout_secs" not in str(exc) and "unexpected keyword" not in str(exc):
+                            raise
+                        await pipeline.stop()
+                    except Exception as exc:
+                        if quiet_recording and _pipeline_stop_timeout_error(exc):
+                            logger.info(
+                                "Suppressing async live transcription timeout after quiet recording "
+                                f"(timeout={stop_timeout_secs:g}s, provider={provider_used})"
+                            )
+                        else:
+                            raise
+                    self._record_provider_success(provider_used or "")
              
             # Now that pipeline has stopped and transcription callback has fired,
             # clear _current to prevent any further modifications
@@ -4499,6 +4567,13 @@ class ScriberWebController:
     def register_hotkeys(self) -> None:
         if os.getenv(_DISABLE_HOTKEYS_ENV, "").strip().lower() in {"1", "true", "yes"}:
             logger.info("Hotkeys disabled via SCRIBER_DISABLE_HOTKEYS")
+            return
+        if (
+            os.getenv(_RUNTIME_MODE_ENV, "").strip().lower() == "tauri-supervised"
+            and os.getenv("SCRIBER_ENABLE_PYTHON_HOTKEYS_IN_TAURI", "").strip().lower()
+            not in {"1", "true", "yes", "on"}
+        ):
+            logger.info("Python hotkeys skipped in Tauri-supervised runtime; Rust owns global hotkeys")
             return
         try:
             import keyboard as kb  # type: ignore
@@ -6470,10 +6545,10 @@ async def _background_init(controller: ScriberWebController) -> None:
     Runs asynchronously to avoid blocking server startup:
     1. Load transcripts from database
     2. Prewarm native Tauri overlay endpoint
-    3. Prewarm ML models (VAD, SmartTurn)
-    4. Pre-import configured STT service (4.4 optimization)
+    3. Optionally prewarm ML models (VAD, SmartTurn)
+    4. Optionally pre-import configured STT service
     
-    Total savings: ~700-1200ms off startup + first recording latency.
+    Provider/model prewarm is opt-in to keep idle memory low in installed builds.
     """
     await asyncio.sleep(0.1)  # Yield to let server start accepting connections
 
@@ -6530,16 +6605,21 @@ async def _background_init(controller: ScriberWebController) -> None:
         except Exception as e:
             logger.warning(f"Background job resume failed: {e}")
 
-    # Run latency-critical warmups immediately instead of waiting for database
-    # and pending-job work. These are independent and directly affect the first
-    # hotkey-to-recording path.
-    await asyncio.gather(
+    background_tasks = [
         _sync_idle_mic_prewarm(),
         _load_startup_data(),
         _prewarm_overlay(),
-        _prewarm_models(),
-        _prewarm_stt(),
-    )
+    ]
+    if _env_flag_enabled("SCRIBER_PREWARM_MODELS_ON_STARTUP"):
+        background_tasks.append(_prewarm_models())
+    else:
+        logger.debug("Startup ML model prewarm skipped; enable SCRIBER_PREWARM_MODELS_ON_STARTUP=1 to restore")
+    if _env_flag_enabled("SCRIBER_PREWARM_STT_ON_STARTUP"):
+        background_tasks.append(_prewarm_stt())
+    else:
+        logger.debug("Startup STT import prewarm skipped; enable SCRIBER_PREWARM_STT_ON_STARTUP=1 to restore")
+
+    await asyncio.gather(*background_tasks)
 
 
 def _prewarm_stt_service(service_name: str) -> None:

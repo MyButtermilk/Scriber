@@ -283,6 +283,11 @@ class SmallestAsyncProcessor(FrameProcessor):
 
         if isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
             try:
+                if getattr(self, "_skip_terminal_transcription", False):
+                    logger.info("Smallest async: skipping terminal transcription for silent recording")
+                    self._reset_buffer()
+                    await self.push_frame(frame, direction)
+                    return
                 if self._buffer_size:
                     _report_progress(self._on_progress, "Transcribing...")
                     self._buffer.seek(0)

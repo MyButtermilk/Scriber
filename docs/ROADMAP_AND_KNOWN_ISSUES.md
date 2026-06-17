@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-06-11
+Last verified: 2026-06-17
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -32,7 +32,13 @@ Mic and recording:
 - Polling fallback is intentionally slow compared with the old aggressive poll.
 - PortAudio access is guarded and refreshes are recording-aware.
 - Always-on mic prewarm and rolling prebuffer are implemented.
-- Audio-level visualization is throttled and frontend waveform uses Canvas/RAF.
+- Async/finalizing live mic providers use Pipecat Silero VAD plus RMS silence
+  gating to skip expensive provider finalization for silent recordings.
+- Audio-level visualization is throttled and frontend waveform uses Canvas/RAF;
+  the recording overlay and live mic visualizers avoid React state updates for
+  hot audio-level animation where practical.
+- The native recording overlay WebView is created lazily on first show instead
+  of at app startup.
 - Live Mic UI state updates correctly after session finish in the current branch.
 
 YouTube/file:
@@ -60,6 +66,8 @@ Packaging/performance:
 - SciPy is absent from the standard sidecar.
 - AWS Transcribe and AWS SDK packages are absent from the standard sidecar.
 - Sidecar reuse cache reduces repeated local installer build time.
+- Installed stability smokes include role-based process-tree metrics for
+  Tauri shell, backend, WebView2, audio sidecar, and other child processes.
 
 Docs:
 
@@ -119,6 +127,11 @@ Provider latency:
 
 - Cloud STT finalization can dominate stop-to-text latency.
 - Local app optimization should be guided by hot-path metrics.
+- A future Rust-side VAD path is worth evaluating in the audio sidecar. The
+  referenced Silero Rust examples use either `ort` with an ONNX model path or
+  `wavekat-vad` with compile-time model embedding and 16 kHz frame handling;
+  this should be measured against the current Pipecat VAD path before adding
+  another packaged model/runtime path.
 
 Legacy GUI footprint:
 

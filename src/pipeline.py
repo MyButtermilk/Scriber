@@ -23,7 +23,10 @@ from pipecat.frames.frames import (
     StartFrame,
     StopFrame,
     CancelFrame,
+    UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
     ErrorFrame,
 )
 from pipecat.transcriptions.language import Language
@@ -106,6 +109,39 @@ class _AnalyzerCache:
             cls._smart_turn_analyzer = None
             logger.debug("Analyzer cache cleared")
 
+
+def _live_service_uses_async_finalization(service_name: str) -> bool:
+    normalized = str(service_name or "")
+    return (
+        normalized in {"soniox_async", "mistral_async", "smallest_async", "azure_mai", "assemblyai"}
+        or (normalized == "soniox" and Config.SONIOX_MODE == "async")
+    )
+
+
+def _live_service_uses_smart_turn(service_name: str) -> bool:
+    return str(service_name or "") == "soniox" and Config.SONIOX_MODE == "realtime"
+
+
+def _create_vad_analyzer(*, quiet_mic: bool = False):
+    vad_analyzer = _AnalyzerCache.get_vad_analyzer()
+    if not vad_analyzer:
+        return None
+    if quiet_mic and VADParams:
+        try:
+            vad_analyzer.set_sample_rate(Config.SAMPLE_RATE)
+            params = vad_analyzer.params
+            vad_analyzer.set_params(
+                VADParams(
+                    confidence=params.confidence,
+                    start_secs=params.start_secs,
+                    stop_secs=params.stop_secs,
+                    min_volume=0.1,
+                )
+            )
+        except Exception as exc:
+            logger.debug(f"VAD param override failed: {exc}")
+    return vad_analyzer
+
 _SONIOX_IMPORT_ERROR: BaseException | None = None
 try:
     from pipecat.services.soniox.stt import SonioxSTTService, SonioxInputParams, SonioxContextObject
@@ -172,6 +208,11 @@ class SonioxAsyncProcessor(FrameProcessor):
             self._buffer_size += len(frame.audio)
             await self.push_frame(frame, direction)
         elif isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
+            if getattr(self, "_skip_terminal_transcription", False):
+                logger.info("Soniox async: skipping terminal transcription for silent recording")
+                self._reset_buffer()
+                await self.push_frame(frame, direction)
+                return
             if not self._buffer_size:
                 logger.debug("Soniox async: no audio buffered; skipping transcription")
                 await self.push_frame(frame, direction)
@@ -708,6 +749,57 @@ class ConnectionErrorHandlerProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class PipecatVadSpeechObserver(FrameProcessor):
+    """Tracks Pipecat VAD speech events for diagnostics and silent-session skips."""
+
+    def __init__(self, *, enabled: bool):
+        super().__init__()
+        self.enabled = bool(enabled)
+        self._started_count = 0
+        self._stopped_count = 0
+        self._speaking = False
+        self._speech_observed = False
+        self._last_started_at = 0.0
+        self._last_stopped_at = 0.0
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+
+        if self.enabled:
+            now = time.monotonic()
+            if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
+                self._started_count += 1
+                self._speaking = True
+                self._speech_observed = True
+                self._last_started_at = now
+            elif isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
+                self._stopped_count += 1
+                self._speaking = False
+                self._last_stopped_at = now
+
+        await self.push_frame(frame, direction)
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
+        return {
+            "enabled": self.enabled,
+            "speechObserved": bool(self._speech_observed),
+            "speaking": bool(self._speaking),
+            "speechStartedCount": int(self._started_count),
+            "speechStoppedCount": int(self._stopped_count),
+            "lastSpeechStartedAgoSeconds": (
+                round(now - self._last_started_at, 3)
+                if self._last_started_at > 0
+                else None
+            ),
+            "lastSpeechStoppedAgoSeconds": (
+                round(now - self._last_stopped_at, 3)
+                if self._last_stopped_at > 0
+                else None
+            ),
+        }
+
+
 class TranscriptionCallbackProcessor(FrameProcessor):
     """Emits interim/final transcription updates via a lightweight callback."""
 
@@ -762,6 +854,7 @@ class ScriberPipeline:
         self.task = None
         self.runner = None
         self.audio_input = None
+        self._vad_observer: PipecatVadSpeechObserver | None = None
         self.is_active = False
         self._terminal_error: str | None = None
         self._audio_cleanup_lock = asyncio.Lock()
@@ -777,13 +870,14 @@ class ScriberPipeline:
         audio_input = self.audio_input
         if not audio_input:
             return
-        resume_prewarm = bool(Config.MIC_ALWAYS_ON and self.mic_prewarm_manager is not None)
+        has_prewarm_manager = self.mic_prewarm_manager is not None
+        resume_prewarm = bool(Config.MIC_ALWAYS_ON and has_prewarm_manager)
         prewarm_resumed_before_stop = False
         async with self._audio_cleanup_lock:
             audio_input = self.audio_input
             if not audio_input:
                 return
-            if resume_prewarm:
+            if has_prewarm_manager:
                 try:
                     detach_active_capture = getattr(
                         self.mic_prewarm_manager,
@@ -792,11 +886,12 @@ class ScriberPipeline:
                     )
                     if callable(detach_active_capture):
                         await asyncio.to_thread(detach_active_capture, None)
-                    prewarm_resumed_before_stop = bool(
-                        await asyncio.to_thread(
-                            self.mic_prewarm_manager.resume_after_active_capture
+                    if resume_prewarm:
+                        prewarm_resumed_before_stop = bool(
+                            await asyncio.to_thread(
+                                self.mic_prewarm_manager.resume_after_active_capture
+                            )
                         )
-                    )
                 except Exception as exc:
                     logger.debug(f"Mic prewarm pre-resume before audio cleanup warning: {exc}")
             try:
@@ -816,15 +911,30 @@ class ScriberPipeline:
 
     def audio_diagnostics(self) -> dict[str, Any] | None:
         audio_input = self.audio_input
+        vad_snapshot = None
+        if self._vad_observer is not None:
+            try:
+                vad_snapshot = self._vad_observer.snapshot()
+            except Exception as exc:
+                vad_snapshot = {"enabled": True, "available": False, "error": str(exc)}
         if not audio_input:
+            if vad_snapshot is not None:
+                return {"available": False, "pipecatVad": vad_snapshot}
             return None
-        snapshot = getattr(audio_input, "diagnostic_snapshot", None)
-        if not callable(snapshot):
-            return {"available": False}
-        try:
-            return snapshot()
-        except Exception as exc:
-            return {"available": False, "error": str(exc)}
+        snapshot_fn = getattr(audio_input, "diagnostic_snapshot", None)
+        if not callable(snapshot_fn):
+            base_snapshot = {"available": False}
+        else:
+            try:
+                base_snapshot = snapshot_fn()
+            except Exception as exc:
+                base_snapshot = {"available": False, "error": str(exc)}
+        if vad_snapshot is not None:
+            base_snapshot["pipecatVad"] = vad_snapshot
+            if bool(vad_snapshot.get("speechObserved")):
+                base_snapshot["speechObserved"] = True
+                base_snapshot["speechObservedByVad"] = True
+        return base_snapshot
 
     def ensure_audio_health(
         self,
@@ -844,6 +954,61 @@ class ScriberPipeline:
                 max_callback_gap_seconds=max_callback_gap_seconds,
             )
         )
+
+    def _iter_pipeline_processors(self) -> list[Any]:
+        pipeline = self.pipeline
+        if not pipeline:
+            return []
+        processors: list[Any] = []
+        seen: set[int] = set()
+        for attr in ("processors", "steps", "_processors"):
+            values = getattr(pipeline, attr, None)
+            if not values:
+                continue
+            try:
+                iterator = list(values)
+            except TypeError:
+                continue
+            for processor in iterator:
+                identity = id(processor)
+                if identity not in seen:
+                    seen.add(identity)
+                    processors.append(processor)
+        return processors
+
+    def _mark_provider_terminal_transcription_skip(self) -> None:
+        for processor in self._iter_pipeline_processors():
+            if hasattr(processor, "_buffer_size") or callable(getattr(processor, "_reset_buffer", None)):
+                setattr(processor, "_skip_terminal_transcription", True)
+
+    async def cancel_silent_recording(self, timeout_secs: float = 5.0) -> None:
+        """Cancel a live session without asking buffered async providers to transcribe silence."""
+        logger.info("Cancelling silent live recording without provider finalization")
+        self._mark_provider_terminal_transcription_skip()
+        if self.on_status_change:
+            self.on_status_change("No speech detected")
+
+        await self._cleanup_audio_input()
+
+        if self.task and not self.task.has_finished():
+            try:
+                try:
+                    await self.task.cancel(reason="silent recording")
+                except TypeError:
+                    await self.task.cancel()
+            except Exception as exc:
+                logger.debug(f"Silent recording task cancel warning: {exc}")
+        if self.runner:
+            try:
+                await self.runner.cancel()
+            except Exception as exc:
+                logger.debug(f"Silent recording runner cancel warning: {exc}")
+
+        try:
+            await asyncio.wait_for(self._start_done.wait(), timeout=timeout_secs)
+        except asyncio.TimeoutError:
+            logger.debug("Timed out waiting for silent recording pipeline cancellation")
+        self.is_active = False
 
     def _create_stt_service(self, session: aiohttp.ClientSession, *, for_file: bool = False):
         """Create the appropriate STT service based on configuration.
@@ -1074,41 +1239,38 @@ class ScriberPipeline:
             return
         logger.info(f"Starting Scriber Pipeline with {self.service_name}")
         self._terminal_error = None
+        self._vad_observer = None
         self._start_done.clear()
         try:
             async with aiohttp.ClientSession() as session:
                 stt_service = self._create_stt_service(session)
                 
-                # Use cached analyzers for faster start (saves 200-500ms on subsequent recordings)
-                smart_turn = _AnalyzerCache.get_smart_turn_analyzer()
+                # SmartTurn is only needed for Soniox realtime. Async/finalizing providers
+                # use Pipecat VAD below so short silent recordings can skip provider finalization.
+                smart_turn = (
+                    _AnalyzerCache.get_smart_turn_analyzer()
+                    if _live_service_uses_smart_turn(self.service_name)
+                    else None
+                )
 
                 vad_analyzer = None
                 # VAD is needed for:
                 # 1. SegmentedSTTService (requires VAD for audio segmentation)
+                # 2. Async live providers so silent recordings can be ended locally.
                 # Note: For Soniox RT, we use SmartTurn V3 exclusively for turn detection.
                 # Using both VAD and SmartTurn causes double UserStoppedSpeakingFrame events,
                 # which triggers duplicate text injection.
-                needs_vad = isinstance(stt_service, SegmentedSTTService)
+                needs_vad = isinstance(stt_service, SegmentedSTTService) or _live_service_uses_async_finalization(self.service_name)
                     
                 if needs_vad:
-                    vad_analyzer = _AnalyzerCache.get_vad_analyzer()
+                    vad_analyzer = _create_vad_analyzer(
+                        quiet_mic=(
+                            self.service_name == "onnx_local"
+                            or _live_service_uses_async_finalization(self.service_name)
+                        )
+                    )
                     if not vad_analyzer:
                         logger.warning("VAD analyzer required but not available; transcripts may not finalize properly.")
-                    elif self.service_name == "onnx_local" and VADParams:
-                        try:
-                            vad_analyzer.set_sample_rate(Config.SAMPLE_RATE)
-                            params = vad_analyzer.params
-                            # Canary/Parakeet need more sensitive VAD for quiet mics.
-                            vad_analyzer.set_params(
-                                VADParams(
-                                    confidence=params.confidence,
-                                    start_secs=params.start_secs,
-                                    stop_secs=params.stop_secs,
-                                    min_volume=0.1,
-                                )
-                            )
-                        except Exception as exc:
-                            logger.debug(f"VAD param override failed: {exc}")
 
                 # Always use our custom MicrophoneInput to support on_audio_level callback
                 self.audio_input = MicrophoneInput(
@@ -1163,7 +1325,11 @@ class ScriberPipeline:
                     on_provider_error=self._record_terminal_error,
                 )
 
-                steps = [self.audio_input, stt_service, error_handler]
+                steps = [self.audio_input]
+                if vad_analyzer is not None:
+                    self._vad_observer = PipecatVadSpeechObserver(enabled=True)
+                    steps.append(self._vad_observer)
+                steps.extend([stt_service, error_handler])
                 if transcript_cb:
                     steps.append(transcript_cb)
                 steps.append(text_injector)
@@ -1228,23 +1394,9 @@ class ScriberPipeline:
 
                 vad_analyzer = None
                 if isinstance(stt_service, SegmentedSTTService):
-                    vad_analyzer = _AnalyzerCache.get_vad_analyzer()
+                    vad_analyzer = _create_vad_analyzer(quiet_mic=self.service_name == "onnx_local")
                     if not vad_analyzer:
                         logger.warning("Segmented STT requires VAD; transcripts may be empty.")
-                    elif self.service_name == "onnx_local" and VADParams:
-                        try:
-                            vad_analyzer.set_sample_rate(Config.SAMPLE_RATE)
-                            params = vad_analyzer.params
-                            vad_analyzer.set_params(
-                                VADParams(
-                                    confidence=params.confidence,
-                                    start_secs=params.start_secs,
-                                    stop_secs=params.stop_secs,
-                                    min_volume=0.1,
-                                )
-                            )
-                        except Exception as exc:
-                            logger.debug(f"VAD param override failed: {exc}")
 
                 file_input = FfmpegAudioFileInput(
                     file_path,

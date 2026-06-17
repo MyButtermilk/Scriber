@@ -28,6 +28,8 @@ const OVERLAY_CONTENT_WIDTH = STOP_BUTTON_SIZE + WAVEFORM_CANVAS_WIDTH;
 const PILL_WIDTH = OVERLAY_CONTENT_WIDTH + PILL_PADDING * 2;
 const PILL_HEIGHT = STOP_BUTTON_SIZE + PILL_PADDING * 2;
 const MIDNIGHT_COLORS = ["#93C5FD", "#3B82F6", "#1E3A8A"];
+const OVERLAY_RMS_NOISE_FLOOR = 0.0012;
+const OVERLAY_RMS_DISPLAY_SCALE = 22;
 
 function normalizeMode(value: unknown): OverlayMode {
   const mode = String(value || "").trim().toLowerCase();
@@ -38,15 +40,16 @@ function normalizeMode(value: unknown): OverlayMode {
 }
 
 function devOverlayModeFromLocation(): OverlayMode {
-  if (typeof window === "undefined" || isTauriRuntime()) return "hidden";
+  if (typeof window === "undefined") return "hidden";
   const params = new URLSearchParams(window.location.search);
   return normalizeMode(params.get("overlayMode"));
 }
 
 function devOverlayRmsFromLocation(): number {
-  if (typeof window === "undefined" || isTauriRuntime()) return 0;
+  if (typeof window === "undefined") return 0;
   const params = new URLSearchParams(window.location.search);
-  return Math.min(1, Math.max(0, Number(params.get("overlayRms")) || 0.32));
+  const fallback = isTauriRuntime() ? 0 : 0.32;
+  return Math.min(1, Math.max(0, Number(params.get("overlayRms")) || fallback));
 }
 
 function interpolateColor(colors: string[], factor: number): string {
@@ -71,41 +74,36 @@ function interpolateColor(colors: string[], factor: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-function OverlayWaveform({ rms }: { rms: number }) {
+function overlayVisualizerLevelFromRms(rms: number): number {
+  const level = Math.min(1, Math.max(0, Number(rms) || 0));
+  if (level <= OVERLAY_RMS_NOISE_FLOOR) {
+    return 0;
+  }
+  return Math.min(1, Math.pow((level - OVERLAY_RMS_NOISE_FLOOR) * OVERLAY_RMS_DISPLAY_SCALE, 0.72));
+}
+
+function OverlayWaveform({ active, rmsRef }: { active: boolean; rmsRef: { current: number } }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const levelsRef = useRef<number[]>(Array(BAR_COUNT).fill(0));
   const displayRef = useRef<number[]>(Array(BAR_COUNT).fill(0.12));
   const fallRef = useRef<number[]>(Array(BAR_COUNT).fill(0));
-  const agcRef = useRef(0.02);
-
-  useEffect(() => {
-    const safeRms = Math.min(1, Math.max(0, Number(rms) || 0));
-    if (safeRms > agcRef.current) {
-      agcRef.current = safeRms;
-    } else {
-      agcRef.current = agcRef.current * 0.98 + safeRms * 0.02;
-    }
-    const norm = Math.pow(safeRms / (agcRef.current + 1e-6), 0.55) * 1.25;
-    for (let i = 0; i < BAR_COUNT; i++) {
-      const center = BAR_COUNT / 2;
-      const dist = Math.abs(i - center) / center;
-      const freqFactor = 1.0 - dist * dist * 0.6;
-      const phase = i * 0.4 + safeRms * 20;
-      const wave = 0.85 + 0.15 * Math.sin(phase);
-      levelsRef.current[i] = norm * freqFactor * wave;
-    }
-  }, [rms]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !active) return;
 
     let rafId = 0;
     let lastFrameAt = performance.now();
+    let lastDrawAt = 0;
     const gravity = 0.8;
     const riseSpeed = 0.6;
 
     const draw = (now: number) => {
+      if (now - lastDrawAt < 33) {
+        rafId = requestAnimationFrame(draw);
+        return;
+      }
+      lastDrawAt = now;
       const rect = canvas.getBoundingClientRect();
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const width = Math.max(1, Math.round(rect.width * dpr));
@@ -119,6 +117,16 @@ function OverlayWaveform({ rms }: { rms: number }) {
       if (!ctx) {
         rafId = requestAnimationFrame(draw);
         return;
+      }
+
+      const inputLevel = overlayVisualizerLevelFromRms(rmsRef.current);
+      for (let i = 0; i < BAR_COUNT; i++) {
+        const center = BAR_COUNT / 2;
+        const dist = Math.abs(i - center) / center;
+        const freqFactor = 1.0 - dist * dist * 0.6;
+        const phase = i * 0.52 + now * 0.01;
+        const wave = inputLevel > 0 ? 0.84 + 0.16 * Math.sin(phase) : 0;
+        levelsRef.current[i] = inputLevel * freqFactor * wave;
       }
 
       const dt = Math.min(0.034, Math.max(0.001, (now - lastFrameAt) / 1000));
@@ -162,7 +170,7 @@ function OverlayWaveform({ rms }: { rms: number }) {
 
     rafId = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(rafId);
-  }, []);
+  }, [active, rmsRef]);
 
   return (
     <canvas
@@ -202,9 +210,10 @@ function overlayLayerClass(active: boolean): string {
 export default function NativeRecordingOverlay() {
   const [backendReady, setBackendReady] = useState(!isTauriRuntime());
   const [mode, setMode] = useState<OverlayMode>(() => devOverlayModeFromLocation());
-  const [rms, setRms] = useState(() => devOverlayRmsFromLocation());
+  const rmsRef = useRef(devOverlayRmsFromLocation());
   const activeSessionIdRef = useRef<string | null>(null);
   const isDevOverlayPreview = !isTauriRuntime() && devOverlayModeFromLocation() !== "hidden";
+  const visible = mode !== "hidden";
 
   const applyWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
@@ -215,7 +224,7 @@ export default function NativeRecordingOverlay() {
 
     switch (msg.type) {
       case "audio_level":
-        setRms(Math.min(1, Math.max(0, Number(msg.rms) || 0)));
+        rmsRef.current = Math.min(1, Math.max(0, Number(msg.rms) || 0));
         break;
       case "state":
       case "status":
@@ -234,7 +243,7 @@ export default function NativeRecordingOverlay() {
         if (msgSessionId) {
           activeSessionIdRef.current = msgSessionId;
         }
-        setRms(0);
+        rmsRef.current = 0;
         setMode("initializing");
         break;
       case "transcribing":
@@ -293,7 +302,7 @@ export default function NativeRecordingOverlay() {
   }, []);
 
   useEffect(() => {
-    if (!backendReady || isDevOverlayPreview) return;
+    if (!backendReady || isDevOverlayPreview || !visible) return;
     const socket = new WebSocket(wsUrl("/ws"));
     socket.onmessage = (event) => {
       try {
@@ -308,7 +317,7 @@ export default function NativeRecordingOverlay() {
     return () => {
       socket.close();
     };
-  }, [applyWsMessage, backendReady, isDevOverlayPreview]);
+  }, [applyWsMessage, backendReady, isDevOverlayPreview, visible]);
 
   const handleStop = useCallback(async () => {
     try {
@@ -320,8 +329,6 @@ export default function NativeRecordingOverlay() {
       // The backend state stream will hide the overlay if stop already won.
     }
   }, []);
-
-  const visible = mode !== "hidden";
 
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
@@ -376,7 +383,7 @@ export default function NativeRecordingOverlay() {
                 >
                   <Square className="fill-current" style={{ width: STOP_ICON_SIZE, height: STOP_ICON_SIZE }} />
                 </button>
-                <OverlayWaveform rms={rms} />
+                <OverlayWaveform active={mode === "recording"} rmsRef={rmsRef} />
               </div>
               <div className={overlayLayerClass(mode === "transcribing")} aria-hidden={mode !== "transcribing"}>
                 <StatusContent mode="transcribing" />

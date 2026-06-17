@@ -392,6 +392,11 @@ class MistralAsyncProcessor(FrameProcessor):
 
         if isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
             try:
+                if getattr(self, "_skip_terminal_transcription", False):
+                    logger.info("Mistral async: skipping terminal transcription for silent recording")
+                    self._reset_buffer()
+                    await self.push_frame(frame, direction)
+                    return
                 if self._buffer_size:
                     self._report_progress("Transcribing...")
                     self._buffer.seek(0)

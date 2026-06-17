@@ -30,6 +30,25 @@ class _DummyTask:
         self._done_event.set()
 
 
+class _DummyRunner:
+    def __init__(self):
+        self.cancel_called = False
+
+    async def cancel(self):
+        self.cancel_called = True
+
+
+class _DummyPipelineGraph:
+    def __init__(self, processors):
+        self.processors = processors
+
+
+class _BufferedProvider:
+    def __init__(self):
+        self._buffer_size = 1024
+        self._skip_terminal_transcription = False
+
+
 class _DummyAudioInput:
     def __init__(self, events: list[str] | None = None) -> None:
         self.close_stream = None
@@ -173,3 +192,47 @@ def test_pipeline_delegates_audio_diagnostics_and_health():
     assert audio_input.health_calls == [
         {"reason": "test", "max_callback_gap_seconds": 3.0}
     ]
+
+
+def test_pipeline_audio_diagnostics_merges_pipecat_vad_snapshot():
+    class _HealthAudioInput:
+        def diagnostic_snapshot(self):
+            return {"running": True, "speechObserved": False}
+
+    class _VadObserver:
+        def snapshot(self):
+            return {
+                "enabled": True,
+                "speechObserved": True,
+                "speechStartedCount": 1,
+            }
+
+    pipeline = ScriberPipeline(service_name="soniox_async", on_status_change=None)
+    pipeline.audio_input = _HealthAudioInput()
+    pipeline._vad_observer = _VadObserver()
+
+    diagnostics = pipeline.audio_diagnostics()
+
+    assert diagnostics["speechObserved"] is True
+    assert diagnostics["speechObservedByVad"] is True
+    assert diagnostics["pipecatVad"]["speechStartedCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_silent_recording_marks_buffered_provider_skip():
+    events: list[str] = []
+    provider = _BufferedProvider()
+    pipeline = ScriberPipeline(service_name="soniox_async", on_status_change=None)
+    pipeline.pipeline = _DummyPipelineGraph([provider])
+    pipeline.audio_input = _DummyAudioInput(events)
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    pipeline.task = _DummyTask(pipeline._start_done, set_done_on_stop=False)
+    pipeline.runner = _DummyRunner()
+
+    await pipeline.cancel_silent_recording()
+
+    assert provider._skip_terminal_transcription is True
+    assert pipeline.task.cancel_called is True
+    assert pipeline.runner.cancel_called is True
+    assert events == ["audio_stop"]

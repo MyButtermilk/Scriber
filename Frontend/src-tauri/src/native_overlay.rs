@@ -57,6 +57,7 @@ pub fn set_app_handle(app: tauri::AppHandle) {
 pub fn set_app_handle(_app: tauri::AppHandle) {}
 
 #[cfg(not(test))]
+#[allow(dead_code)]
 pub fn create_overlay_window(app: &tauri::App) -> tauri::Result<()> {
     if app.get_webview_window(OVERLAY_WINDOW_LABEL).is_some() {
         return Ok(());
@@ -84,6 +85,7 @@ pub fn create_overlay_window(app: &tauri::App) -> tauri::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub fn create_overlay_window(_app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
@@ -111,7 +113,7 @@ fn show_overlay(payload: &Value) -> Result<Value, String> {
 #[cfg(not(test))]
 fn show_overlay_mode(mode: String) -> Result<Value, String> {
     let app = overlay_app_handle()?;
-    let window = overlay_window(&app)?;
+    let window = ensure_overlay_window(&app, &mode)?;
     ensure_overlay_positioned(&window).map_err(|err| format!("overlay position failed: {err}"))?;
     let event_payload = update_state(|state| {
         state.mode = mode.clone();
@@ -144,7 +146,7 @@ fn show_overlay_mode(mode: String) -> Result<Value, String> {
 #[cfg(not(test))]
 fn hide_overlay() -> Result<Value, String> {
     let app = overlay_app_handle()?;
-    let window = overlay_window(&app)?;
+    let window = overlay_window(&app);
     let event_payload = update_state(|state| {
         state.mode = "hidden".to_string();
         state.visible = false;
@@ -157,9 +159,11 @@ fn hide_overlay() -> Result<Value, String> {
         }
     });
     let _ = app.emit_to(OVERLAY_WINDOW_LABEL, OVERLAY_EVENT, event_payload);
-    window
-        .hide()
-        .map_err(|err| format!("overlay hide failed: {err}"))?;
+    if let Some(window) = window {
+        window
+            .hide()
+            .map_err(|err| format!("overlay hide failed: {err}"))?;
+    }
     Ok(status_payload())
 }
 
@@ -193,9 +197,37 @@ fn overlay_app_handle() -> Result<tauri::AppHandle, String> {
 }
 
 #[cfg(not(test))]
-fn overlay_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+fn overlay_window(app: &tauri::AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window(OVERLAY_WINDOW_LABEL)
-        .ok_or_else(|| "Tauri overlay window is not available".to_string())
+}
+
+#[cfg(not(test))]
+fn ensure_overlay_window(app: &tauri::AppHandle, initial_mode: &str) -> Result<WebviewWindow, String> {
+    if let Some(window) = overlay_window(app) {
+        return Ok(window);
+    }
+
+    let safe_mode = normalize_overlay_mode(initial_mode).unwrap_or_else(|_| "recording".to_string());
+    let window = WebviewWindowBuilder::new(
+        app,
+        OVERLAY_WINDOW_LABEL,
+        WebviewUrl::App(format!("index.html?overlay=1&overlayMode={safe_mode}").into()),
+    )
+    .title("Scriber Recording Overlay")
+    .inner_size(OVERLAY_WIDTH, OVERLAY_HEIGHT)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focusable(false)
+    .visible(false)
+    .build()
+    .map_err(|err| format!("overlay window create failed: {err}"))?;
+    position_overlay_window(&window).map_err(|err| format!("overlay position failed: {err}"))?;
+    mark_overlay_position_initialized();
+    Ok(window)
 }
 
 #[cfg(not(test))]
