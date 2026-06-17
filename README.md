@@ -189,12 +189,13 @@ Fast local installer build:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -FastLocalInstaller `
-  -UseProfileBFfmpeg `
-  -ValidateSlimMediaTools `
-  -ReuseSidecarIfUnchanged `
   -RunInstallerFrontendSmoke `
   -RunInstallerMediaPreparationSmoke
 ```
+
+`-FastLocalInstaller` enables Profile B media tools, sidecar cache reuse, and
+local `zlib` NSIS compression by default. Release builds keep the smaller LZMA
+installer path.
 
 The NSIS installer is written to:
 
@@ -204,9 +205,10 @@ Frontend\src-tauri\target\release\bundle\nsis\
 
 Recent local release evidence:
 
-- Installer size: about 88 MiB.
-- Installed app size in smoke: about 200 MiB.
-- Backend resource tree: about 185 MiB.
+- Fast local `zlib` installer size: about 103 MiB.
+- Release LZMA installer size: about 86-88 MiB.
+- Installed app size in smoke: about 195 MiB.
+- Backend resource tree: about 180 MiB.
 - Bundled Profile B ffmpeg/ffprobe media tools: about 4.98 MiB installed.
 - AWS Transcribe support and AWS SDK packages are not part of the standard app.
 - The recording overlay is rendered by Tauri; PySide6/Tk overlay runtimes are

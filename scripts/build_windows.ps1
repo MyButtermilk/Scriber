@@ -30,6 +30,11 @@ param(
     [switch]$ValidateSlimMediaTools,
     [switch]$ReuseSidecarIfUnchanged,
     [switch]$FastLocalInstaller,
+    [switch]$FastLocalStagedApp,
+    [ValidateSet("", "lzma", "zlib", "bzip2", "none")]
+    [string]$NsisCompression = "",
+    [switch]$LocalPyInstallerNoClean,
+    [switch]$RustAudioIsolatedTarget,
     [switch]$RunRuntimeDependencyFootprint,
     [double]$MaxScipyRuntimeDependencyMB = 0,
     [double]$MaxOnnxRuntimeDependencyMB = 0,
@@ -178,10 +183,73 @@ function Add-TauriBeforeBundleCommandValueSwitch {
     return $ConfigText.Replace($copySwitch, " $SwitchName $escapedCommandArgument$copySwitch")
 }
 
+function Set-TauriNsisCompression {
+    param(
+        [string]$ConfigText,
+        [string]$Compression
+    )
+
+    if (-not $Compression) {
+        return $ConfigText
+    }
+
+    $config = $ConfigText | ConvertFrom-Json
+    if (-not $config.bundle) {
+        $config | Add-Member -NotePropertyName "bundle" -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    if (-not $config.bundle.windows) {
+        $config.bundle | Add-Member -NotePropertyName "windows" -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    if (-not $config.bundle.windows.nsis) {
+        $config.bundle.windows | Add-Member -NotePropertyName "nsis" -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+
+    $config.bundle.windows.nsis | Add-Member -NotePropertyName "compression" -NotePropertyValue $Compression -Force
+    return ($config | ConvertTo-Json -Depth 100)
+}
+
+function New-SidecarBuildScriptArguments {
+    $sidecarArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts\build_tauri_backend_sidecar.ps1",
+        "-SkipFrontendBuild",
+        "-InstallPyInstaller",
+        "-BundleMediaTools",
+        "-BundleRustAudioSidecar",
+        "-CopyToTauriRelease"
+    )
+    if ($SkipBundledFfprobe) {
+        $sidecarArgs += "-SkipBundledFfprobe"
+    }
+    if ($ValidateSlimMediaTools) {
+        $sidecarArgs += "-ValidateSlimMediaTools"
+    }
+    if ($UseProfileBFfmpeg) {
+        $sidecarArgs += "-UseProfileBFfmpeg"
+    }
+    if ($MediaToolsDir) {
+        $sidecarArgs += @("-MediaToolsDir", $MediaToolsDir)
+    }
+    if ($ReuseSidecarIfUnchanged) {
+        $sidecarArgs += "-ReuseSidecarIfUnchanged"
+    }
+    if ($LocalPyInstallerNoClean) {
+        $sidecarArgs += "-LocalPyInstallerNoClean"
+    }
+    if ($RustAudioIsolatedTarget) {
+        $sidecarArgs += "-RustAudioIsolatedTarget"
+    }
+    return $sidecarArgs
+}
+
 function Write-BuildTimingReport {
     param(
         [string]$MetadataDir,
-        [string]$SidecarMetadataPath
+        [string]$SidecarMetadataPath,
+        [object]$BuildMode
     )
 
     New-Item -ItemType Directory -Force -Path $MetadataDir | Out-Null
@@ -196,6 +264,7 @@ function Write-BuildTimingReport {
         totalDurationMs = [int64]$script:BuildTimingStarted.ElapsedMilliseconds
         phases = @($script:BuildTimingPhases)
         sidecar = $sidecarMetadata
+        buildMode = $BuildMode
     }
     $path = Join-Path $MetadataDir "build-timing.json"
     $payload | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $path -Encoding utf8
@@ -214,10 +283,62 @@ if ($UseProfileBFfmpeg) {
     $ValidateSlimMediaTools = $true
 }
 
+if ($FastLocalInstaller -and $FastLocalStagedApp) {
+    throw "Use either -FastLocalInstaller or -FastLocalStagedApp, not both."
+}
+if ($NsisCompression -and -not $FastLocalInstaller) {
+    throw "-NsisCompression is a dev-only FastLocalInstaller option."
+}
+if ($FastLocalStagedApp -and $NsisCompression) {
+    throw "-NsisCompression only applies to installer builds, not -FastLocalStagedApp."
+}
+if ($LocalPyInstallerNoClean -and -not ($FastLocalInstaller -or $FastLocalStagedApp)) {
+    throw "-LocalPyInstallerNoClean is only allowed with -FastLocalInstaller or -FastLocalStagedApp."
+}
+
 if ($FastLocalInstaller) {
     $ReuseSidecarIfUnchanged = $true
     $SkipPythonTests = $true
     $SkipSmoke = $true
+    $RunMediaPreparationSmoke = $true
+    $RunRuntimeDependencyFootprint = $true
+    if (-not $MediaToolsDir) {
+        $UseProfileBFfmpeg = $true
+        $ValidateSlimMediaTools = $true
+    }
+    if (-not $NsisCompression) {
+        $NsisCompression = "zlib"
+    }
+
+    if ($MaxScipyRuntimeDependencyMB -le 0) {
+        $MaxScipyRuntimeDependencyMB = 0.001
+    }
+    if ($MaxOnnxRuntimeDependencyMB -le 0) {
+        $MaxOnnxRuntimeDependencyMB = 40
+    }
+    if ($MaxBackendRuntimeDependencyMB -le 0) {
+        $MaxBackendRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 325 } else { 500 }
+    }
+    if ($MaxPythonRuntimeDependencyMB -le 0) {
+        $MaxPythonRuntimeDependencyMB = $MaxBackendRuntimeDependencyMB
+    }
+    if ($MaxInternalRuntimeDependencyMB -le 0) {
+        $MaxInternalRuntimeDependencyMB = 250
+    }
+    if ($MaxMediaToolsRuntimeDependencyMB -le 0) {
+        $MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 10 } else { 210 }
+    }
+    if ($MaxGoogleGrpcRuntimeDependencyMB -le 0) {
+        $MaxGoogleGrpcRuntimeDependencyMB = 15
+    }
+    if ($MaxPillowRuntimeDependencyMB -le 0) {
+        $MaxPillowRuntimeDependencyMB = 6
+    }
+}
+
+if ($FastLocalStagedApp) {
+    $ReuseSidecarIfUnchanged = $true
+    $SkipPythonTests = $true
     $RunMediaPreparationSmoke = $true
     $RunRuntimeDependencyFootprint = $true
     if (-not $MediaToolsDir) {
@@ -310,7 +431,7 @@ try {
         $RequireUpdaterSignatures = $true
     }
 
-    if ($SkipBundledFfprobe -or $ValidateSlimMediaTools -or $MediaToolsDir -or $UseProfileBFfmpeg -or $ReuseSidecarIfUnchanged) {
+    if ((-not $FastLocalStagedApp) -and ($SkipBundledFfprobe -or $ValidateSlimMediaTools -or $MediaToolsDir -or $UseProfileBFfmpeg -or $ReuseSidecarIfUnchanged -or $LocalPyInstallerNoClean -or $RustAudioIsolatedTarget -or $NsisCompression)) {
         if ($null -eq $tauriConfigOriginal) {
             $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
         }
@@ -331,18 +452,48 @@ try {
         if ($ReuseSidecarIfUnchanged) {
             $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-ReuseSidecarIfUnchanged"
         }
+        if ($LocalPyInstallerNoClean) {
+            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-LocalPyInstallerNoClean"
+        }
+        if ($RustAudioIsolatedTarget) {
+            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-RustAudioIsolatedTarget"
+        }
+        if ($NsisCompression) {
+            $updatedTauriConfig = Set-TauriNsisCompression -ConfigText $updatedTauriConfig -Compression $NsisCompression
+        }
         if ($updatedTauriConfig -ne $currentTauriConfig) {
             $currentTauriConfig = $updatedTauriConfig
             Set-Utf8NoBomContent -Path $tauriConfigPath -Value $currentTauriConfig
         }
     }
 
-    Invoke-Checked -Label "Tauri Windows bundle" -Command {
-        Push-Location $frontendRoot
-        try {
-            npm run tauri:build -- --bundles $bundleArg
-        } finally {
-            Pop-Location
+    if ($FastLocalStagedApp) {
+        Invoke-Checked -Label "Tauri staged sidecar preparation" -Command {
+            Push-Location $RepoRoot
+            try {
+                $sidecarArgs = New-SidecarBuildScriptArguments
+                powershell @sidecarArgs
+            } finally {
+                Pop-Location
+            }
+        }
+
+        Invoke-Checked -Label "Tauri staged app build" -Command {
+            Push-Location $frontendRoot
+            try {
+                npm run tauri:build -- --no-bundle
+            } finally {
+                Pop-Location
+            }
+        }
+    } else {
+        Invoke-Checked -Label "Tauri Windows bundle" -Command {
+            Push-Location $frontendRoot
+            try {
+                npm run tauri:build -- --bundles $bundleArg
+            } finally {
+                Pop-Location
+            }
         }
     }
 
@@ -387,7 +538,7 @@ try {
         generatedAt = $null
     }
     $artifacts = @()
-    if (Test-Path $bundleRoot) {
+    if ((-not $FastLocalStagedApp) -and (Test-Path $bundleRoot)) {
         $artifacts = @(
             Get-ChildItem -Path $bundleRoot -Recurse -File -Include *.exe,*.msi |
                 Select-Object -ExpandProperty FullName
@@ -739,8 +890,19 @@ try {
         }
     }
 
+    $buildMode = [ordered]@{
+        artifactKind = if ($FastLocalStagedApp) { "staged-app" } else { "installer" }
+        devOnly = [bool]($FastLocalInstaller -or $FastLocalStagedApp -or ($NsisCompression -and $NsisCompression -ne "lzma") -or $LocalPyInstallerNoClean)
+        fastLocalInstaller = [bool]$FastLocalInstaller
+        fastLocalStagedApp = [bool]$FastLocalStagedApp
+        installerBuilt = [bool]($artifacts.Count -gt 0)
+        installerSmokeValidated = [bool]$installedPackageSmoke["ran"]
+        nsisCompression = if ($NsisCompression) { $NsisCompression } else { "tauri-default" }
+        localPyInstallerNoClean = [bool]$LocalPyInstallerNoClean
+        rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
+    }
     $sidecarMetadataPath = Join-Path $targetRelease "backend\sidecar-build-metadata.json"
-    $buildTimingPath = Write-BuildTimingReport -MetadataDir $metadataDir -SidecarMetadataPath $sidecarMetadataPath
+    $buildTimingPath = Write-BuildTimingReport -MetadataDir $metadataDir -SidecarMetadataPath $sidecarMetadataPath -BuildMode $buildMode
 
     [pscustomobject]@{
         ok = $true
@@ -751,6 +913,7 @@ try {
         metadataDir = $metadataDir
         sizeReport = Join-Path $metadataDir "size-report.json"
         buildTiming = $buildTimingPath
+        buildMode = $buildMode
         mediaPreparationSmoke = $mediaPreparationSmoke
         runtimeDependencyFootprint = $runtimeDependencyFootprint
         installedPackageSmoke = $installedPackageSmoke

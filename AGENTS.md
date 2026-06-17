@@ -302,8 +302,12 @@ Already implemented and should not be regressed:
 - JobStore and latency metrics store connection reuse.
 - CORS origin decision cache.
 - Sidecar hash cache that avoids PyInstaller when inputs are unchanged.
+- Target-current sidecar metadata that skips restoring/copying the backend tree
+  when `target\release\backend` already matches the current cache key and
+  release resource flags.
 - Rust audio sidecar hash cache that avoids recompiling when inputs are
-  unchanged.
+  unchanged; the cache key is limited to the Rust audio sidecar dependency set,
+  and the normal Tauri Cargo target is used by default.
 - Profile B ffmpeg media tools, about `4.98 MiB` installed.
 
 ## Commands
@@ -317,6 +321,7 @@ python -m pytest
 ```powershell
 cd Frontend
 npm run check
+npm run build:webview
 npm run build
 ```
 
@@ -330,11 +335,17 @@ Fast local installer:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -FastLocalInstaller `
-  -UseProfileBFfmpeg `
-  -ValidateSlimMediaTools `
-  -ReuseSidecarIfUnchanged `
   -RunInstallerFrontendSmoke `
   -RunInstallerMediaPreparationSmoke
+```
+
+Fast local staged app without NSIS:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -FastLocalStagedApp `
+  -SkipChecks `
+  -SkipSmoke
 ```
 
 Broader installed workflow smoke when provider credentials and network are
@@ -343,9 +354,6 @@ available:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -FastLocalInstaller `
-  -UseProfileBFfmpeg `
-  -ValidateSlimMediaTools `
-  -ReuseSidecarIfUnchanged `
   -RunInstallerFrontendSmoke `
   -RunInstallerMediaPreparationSmoke `
   -RunInstallerRealMediaWorkflowSmoke

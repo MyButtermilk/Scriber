@@ -36,6 +36,8 @@ param(
     [switch]$ReuseSidecarIfUnchanged,
     [string]$SidecarCacheRoot = "",
     [switch]$BundleRustAudioSidecar,
+    [switch]$RustAudioIsolatedTarget,
+    [switch]$LocalPyInstallerNoClean,
     [switch]$CopyToTauriRelease
 )
 
@@ -163,6 +165,35 @@ function Get-InputFileEntries {
     return $entries
 }
 
+function Get-ObjectPropertyValue {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    if ($null -eq $Object) {
+        return $null
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) {
+        return $property.Value
+    }
+    return $null
+}
+
+function Get-SidecarFlagState {
+    return [ordered]@{
+        bundleMediaTools = [bool]$BundleMediaTools
+        useProfileBFfmpeg = [bool]$UseProfileBFfmpeg
+        useGyanFfmpegEssentials = [bool]$UseGyanFfmpegEssentials
+        skipBundledFfprobe = [bool]$SkipBundledFfprobe
+        validateSlimMediaTools = [bool]$ValidateSlimMediaTools
+        bundleRustAudioSidecar = [bool]$BundleRustAudioSidecar
+        pyInstallerClean = -not [bool]$LocalPyInstallerNoClean
+        rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
+    }
+}
+
 function Get-ToolMetadataEntry {
     param(
         [string]$Root,
@@ -197,7 +228,8 @@ function Get-SidecarInputManifest {
         [bool]$UseProfileB,
         [bool]$UseGyanEssentials,
         [bool]$SkipFfprobe,
-        [bool]$ValidateSlimBundle
+        [bool]$ValidateSlimBundle,
+        [bool]$PyInstallerClean
     )
 
     $pythonVersion = (& $Python -c "import sys; print(sys.version)" 2>$null) -join "`n"
@@ -228,6 +260,7 @@ function Get-SidecarInputManifest {
             useGyanFfmpegEssentials = $UseGyanEssentials
             skipBundledFfprobe = $SkipFfprobe
             validateSlimMediaTools = $ValidateSlimBundle
+            pyInstallerClean = $PyInstallerClean
         }
         files = Get-InputFileEntries -Root $Root -RelativePaths $inputPaths
         tools = $tools
@@ -349,20 +382,51 @@ function Sync-DirectoryContents {
 function Get-RustAudioSidecarInputManifest {
     param([string]$Root)
 
+    $relativePaths = @(
+        "Frontend\src-tauri\Cargo.toml",
+        "Frontend\src-tauri\Cargo.lock",
+        "Frontend\src-tauri\build.rs",
+        "Frontend\src-tauri\src\audio_sidecar.rs",
+        "Frontend\src-tauri\src\audio_frame_pipe.rs",
+        "Frontend\src-tauri\src\redaction.rs"
+    )
+    $knownPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($relative in $relativePaths) {
+        $knownPaths.Add($relative) | Out-Null
+    }
+
+    $audioSidecarPath = Join-Path $Root "Frontend\src-tauri\src\audio_sidecar.rs"
+    if (Test-Path -LiteralPath $audioSidecarPath -PathType Leaf) {
+        $modulePattern = '^\s*mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;'
+        foreach ($line in Get-Content -LiteralPath $audioSidecarPath) {
+            $match = [regex]::Match($line, $modulePattern)
+            if ($match.Success) {
+                $moduleRelativePath = "Frontend\src-tauri\src\$($match.Groups[1].Value).rs"
+                if (-not $knownPaths.Contains($moduleRelativePath)) {
+                    throw "Rust audio sidecar cache manifest is missing module dependency: $moduleRelativePath"
+                }
+            }
+        }
+    }
+
     return [ordered]@{
         apiVersion = "1"
-        files = Get-InputFileEntries -Root $Root -RelativePaths @(
-            "Frontend\src-tauri\Cargo.toml",
-            "Frontend\src-tauri\Cargo.lock",
-            "Frontend\src-tauri\build.rs",
-            "Frontend\src-tauri\src"
-        )
+        files = Get-InputFileEntries -Root $Root -RelativePaths $relativePaths
     }
+}
+
+function Get-RustAudioSidecarCacheKey {
+    param([string]$Root)
+
+    $inputManifest = Get-RustAudioSidecarInputManifest -Root $Root
+    $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
+    return Get-StringSha256 -Value $inputManifestJson
 }
 
 function Copy-RustAudioSidecarToTauriRelease {
     param(
-        [string]$Root
+        [string]$Root,
+        [bool]$UseIsolatedTarget = $false
     )
 
     $tauriDir = Join-Path $Root "Frontend\src-tauri"
@@ -370,7 +434,7 @@ function Copy-RustAudioSidecarToTauriRelease {
     $staleResourceDir = Join-Path $tauriDir "resources\audio-sidecar"
     $staleTargetResourceDir = Join-Path $targetDir "audio-sidecar"
     $cacheRoot = Join-Path $Root "build\rust-audio-sidecar-cache"
-    $cargoTargetDir = Join-Path $Root "build\rust-audio-sidecar-target"
+    $cargoTargetDir = if ($UseIsolatedTarget) { Join-Path $Root "build\rust-audio-sidecar-target" } else { Join-Path $tauriDir "target" }
     Assert-UnderRoot -Root $Root -Path $targetDir -Label "Tauri release audio sidecar target"
     Assert-UnderRoot -Root $Root -Path $staleResourceDir -Label "Stale audio sidecar resource"
     Assert-UnderRoot -Root $Root -Path $staleTargetResourceDir -Label "Stale packaged audio sidecar resource"
@@ -454,6 +518,8 @@ function Copy-RustAudioSidecarToTauriRelease {
         cacheKey = $cacheKey
         sourceExe = $cacheExe
         targetExe = $targetExe
+        cargoTargetDir = $cargoTargetDir
+        isolatedCargoTarget = [bool]$UseIsolatedTarget
         sha256 = (Get-FileHash -LiteralPath $targetExe -Algorithm SHA256).Hash.ToLowerInvariant()
         length = [int64](Get-Item -LiteralPath $targetExe).Length
         targetCopied = [bool]$targetCopied
@@ -468,7 +534,77 @@ function Copy-RustAudioSidecarToTauriRelease {
         metadataPath = $metadataPath
         sha256 = $metadata.sha256
         length = $metadata.length
+        cacheHit = $cacheHit
+        cacheKey = $cacheKey
+        isolatedCargoTarget = [bool]$UseIsolatedTarget
     }
+}
+
+function Test-SidecarTargetCurrent {
+    param(
+        [string]$TargetDir,
+        [string]$ExpectedCacheKey,
+        [object]$ExpectedFlags,
+        [string]$ExpectedRustAudioCacheKey
+    )
+
+    $metadataPath = Join-Path $TargetDir "sidecar-build-metadata.json"
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+        return $false
+    }
+    try {
+        $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+
+    $cache = Get-ObjectPropertyValue -Object $metadata -Name "cache"
+    if ([string](Get-ObjectPropertyValue -Object $cache -Name "key") -ne $ExpectedCacheKey) {
+        return $false
+    }
+
+    $flags = Get-ObjectPropertyValue -Object $metadata -Name "flags"
+    foreach ($key in $ExpectedFlags.Keys) {
+        if ([bool](Get-ObjectPropertyValue -Object $flags -Name $key) -ne [bool]$ExpectedFlags[$key]) {
+            return $false
+        }
+    }
+
+    $sidecarExe = Join-Path $TargetDir "scriber-backend.exe"
+    if (-not (Test-Path -LiteralPath $sidecarExe -PathType Leaf)) {
+        $sidecarExe = Join-Path $TargetDir "scriber-backend"
+    }
+    if (-not (Test-Path -LiteralPath $sidecarExe -PathType Leaf)) {
+        return $false
+    }
+    foreach ($requiredPath in @("_internal\onnxruntime", "_internal\onnxruntime\capi")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $TargetDir $requiredPath))) {
+            return $false
+        }
+    }
+    if ($BundleMediaTools -or $MediaToolsDir) {
+        if (-not (Test-Path -LiteralPath (Join-Path $TargetDir "tools\ffmpeg\ffmpeg.exe") -PathType Leaf)) {
+            return $false
+        }
+        if (-not $SkipBundledFfprobe -and -not (Test-Path -LiteralPath (Join-Path $TargetDir "tools\ffmpeg\ffprobe.exe") -PathType Leaf)) {
+            return $false
+        }
+        if ($ValidateSlimMediaTools -and -not (Test-Path -LiteralPath (Join-Path $TargetDir "tools\ffmpeg\ffmpeg-profile-manifest.json") -PathType Leaf)) {
+            return $false
+        }
+    }
+    if ($BundleRustAudioSidecar) {
+        $releaseDir = Split-Path -Parent $TargetDir
+        $exeName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "scriber-audio-sidecar.exe" } else { "scriber-audio-sidecar" }
+        if (-not (Test-Path -LiteralPath (Join-Path $releaseDir $exeName) -PathType Leaf)) {
+            return $false
+        }
+        $rustAudio = Get-ObjectPropertyValue -Object $metadata -Name "rustAudioSidecarCopied"
+        if (-not $ExpectedRustAudioCacheKey -or [string](Get-ObjectPropertyValue -Object $rustAudio -Name "cacheKey") -ne $ExpectedRustAudioCacheKey) {
+            return $false
+        }
+    }
+    return $true
 }
 
 function Write-SidecarBuildMetadata {
@@ -481,7 +617,8 @@ function Write-SidecarBuildMetadata {
         [object]$PreparedMediaTools,
         [object[]]$MediaToolsCopied,
         [object]$RustAudioSidecarCopied,
-        [string]$CopiedTo
+        [string]$CopiedTo,
+        [bool]$TargetCurrent = $false
     )
 
     $script:BuildTimingStarted.Stop()
@@ -491,6 +628,7 @@ function Write-SidecarBuildMetadata {
         sidecarDir = $SidecarDir
         sidecarExe = $SidecarExe
         copiedToTauriRelease = $CopiedTo
+        targetCurrent = [bool]$TargetCurrent
         cache = [ordered]@{
             enabled = $CacheEnabled
             hit = $CacheHit
@@ -503,6 +641,8 @@ function Write-SidecarBuildMetadata {
             skipBundledFfprobe = [bool]$SkipBundledFfprobe
             validateSlimMediaTools = [bool]$ValidateSlimMediaTools
             bundleRustAudioSidecar = [bool]$BundleRustAudioSidecar
+            pyInstallerClean = -not [bool]$LocalPyInstallerNoClean
+            rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
         }
         preparedMediaTools = $PreparedMediaTools
         mediaToolsCopied = $MediaToolsCopied
@@ -1007,7 +1147,8 @@ if ($cacheEnabled) {
             -UseProfileB ([bool]$UseProfileBFfmpeg) `
             -UseGyanEssentials ([bool]$UseGyanFfmpegEssentials) `
             -SkipFfprobe ([bool]$SkipBundledFfprobe) `
-            -ValidateSlimBundle ([bool]$ValidateSlimMediaTools)
+            -ValidateSlimBundle ([bool]$ValidateSlimMediaTools) `
+            -PyInstallerClean (-not [bool]$LocalPyInstallerNoClean)
         $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
         $script:SidecarInputManifest = $inputManifest
         $script:SidecarInputManifestJson = $inputManifestJson
@@ -1017,6 +1158,58 @@ if ($cacheEnabled) {
     $cacheDir = Join-Path $SidecarCacheRoot $cacheKey
     $cachedSidecarDir = Join-Path $cacheDir "scriber-backend"
     $cachedSidecarExe = Join-Path $cachedSidecarDir "scriber-backend.exe"
+    $expectedFlags = Get-SidecarFlagState
+    $expectedRustAudioCacheKey = if ($BundleRustAudioSidecar) { Get-RustAudioSidecarCacheKey -Root $RepoRoot } else { "" }
+    if ($CopyToTauriRelease) {
+        $targetDir = Join-Path $RepoRoot "Frontend\src-tauri\target\release\backend"
+        Invoke-TimedStep -Label "sidecar-target-current-check" -Command {
+            $script:SidecarTargetCurrent = Test-SidecarTargetCurrent `
+                -TargetDir $targetDir `
+                -ExpectedCacheKey $cacheKey `
+                -ExpectedFlags $expectedFlags `
+                -ExpectedRustAudioCacheKey $expectedRustAudioCacheKey
+        }
+        if ($script:SidecarTargetCurrent) {
+            $cacheHit = $true
+            $sidecarDir = $targetDir
+            $sidecarExe = Join-Path $sidecarDir "scriber-backend.exe"
+            if (-not (Test-Path -LiteralPath $sidecarExe -PathType Leaf)) {
+                $sidecarExe = Join-Path $sidecarDir "scriber-backend"
+            }
+            $mediaToolsCopied = @()
+            $toolsDir = Join-Path $sidecarDir "tools\ffmpeg"
+            if (Test-Path -LiteralPath $toolsDir -PathType Container) {
+                $mediaToolsCopied = @(Get-ChildItem -LiteralPath $toolsDir -File | Select-Object -ExpandProperty FullName)
+            }
+            $targetMetadata = Get-Content -LiteralPath (Join-Path $targetDir "sidecar-build-metadata.json") -Raw | ConvertFrom-Json
+            $metadataPath = Write-SidecarBuildMetadata `
+                -SidecarDir $sidecarDir `
+                -SidecarExe $sidecarExe `
+                -CacheEnabled $cacheEnabled `
+                -CacheHit $true `
+                -CacheKey $cacheKey `
+                -PreparedMediaTools $preparedMediaTools `
+                -MediaToolsCopied $mediaToolsCopied `
+                -RustAudioSidecarCopied $targetMetadata.rustAudioSidecarCopied `
+                -CopiedTo $targetDir `
+                -TargetCurrent $true
+
+            [pscustomobject]@{
+                ok = $true
+                sidecarDir = $sidecarDir
+                sidecarExe = $sidecarExe
+                cacheEnabled = $cacheEnabled
+                cacheHit = $true
+                cacheKey = $cacheKey
+                targetCurrent = $true
+                mediaToolsCopied = $mediaToolsCopied
+                rustAudioSidecarCopied = $targetMetadata.rustAudioSidecarCopied
+                sidecarBuildMetadata = $metadataPath
+                copiedToTauriRelease = $targetDir
+            } | ConvertTo-Json -Compress
+            return
+        }
+    }
     if ((Test-Path -LiteralPath $cachedSidecarExe -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $cacheDir "cache-manifest.json") -PathType Leaf)) {
         Invoke-TimedStep -Label "sidecar-cache-restore" -Command {
             Copy-DirectoryContents -SourceDir $cachedSidecarDir -TargetDir (Join-Path $DistRoot "scriber-backend") -TargetLabel "Restored sidecar dist target"
@@ -1032,7 +1225,12 @@ if (-not $cacheHit) {
         try {
             Push-Location $RepoRoot
             try {
-                & $PythonPath -m PyInstaller --noconfirm --clean --distpath $DistRoot --workpath $WorkRoot $SpecPath
+                $pyInstallerArgs = @("--noconfirm")
+                if (-not $LocalPyInstallerNoClean) {
+                    $pyInstallerArgs += "--clean"
+                }
+                $pyInstallerArgs += @("--distpath", $DistRoot, "--workpath", $WorkRoot, $SpecPath)
+                & $PythonPath -m PyInstaller @pyInstallerArgs
             } finally {
                 Pop-Location
             }
@@ -1100,7 +1298,7 @@ if ($CopyToTauriRelease) {
 
 if ($BundleRustAudioSidecar) {
     Invoke-TimedStep -Label "rust-audio-sidecar-build" -Command {
-        $script:RustAudioSidecarCopied = Copy-RustAudioSidecarToTauriRelease -Root $RepoRoot
+        $script:RustAudioSidecarCopied = Copy-RustAudioSidecarToTauriRelease -Root $RepoRoot -UseIsolatedTarget ([bool]$RustAudioIsolatedTarget)
     }
     $rustAudioSidecarCopied = $script:RustAudioSidecarCopied
 }

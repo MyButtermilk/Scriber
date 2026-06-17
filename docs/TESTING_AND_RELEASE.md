@@ -87,12 +87,15 @@ Fast local Profile B installer:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -FastLocalInstaller `
-  -UseProfileBFfmpeg `
-  -ValidateSlimMediaTools `
-  -ReuseSidecarIfUnchanged `
   -RunInstallerFrontendSmoke `
   -RunInstallerMediaPreparationSmoke
 ```
+
+`-FastLocalInstaller` enables Profile B media tools, sidecar cache reuse,
+runtime dependency footprint checks, and local `zlib` NSIS compression by
+default. Build metadata records the effective compression and marks these
+artifacts as `devOnly=true`; release builds keep the default LZMA installer
+path.
 
 Typical output:
 
@@ -105,9 +108,6 @@ Broader local installed workflow smoke:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -FastLocalInstaller `
-  -UseProfileBFfmpeg `
-  -ValidateSlimMediaTools `
-  -ReuseSidecarIfUnchanged `
   -RunInstallerFrontendSmoke `
   -RunInstallerMediaPreparationSmoke `
   -RunInstallerSupportBundleSmoke `
@@ -119,13 +119,23 @@ Real file/YouTube workflow smoke, when credentials and network are available:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -FastLocalInstaller `
-  -UseProfileBFfmpeg `
-  -ValidateSlimMediaTools `
-  -ReuseSidecarIfUnchanged `
   -RunInstallerFrontendSmoke `
   -RunInstallerMediaPreparationSmoke `
   -RunInstallerRealMediaWorkflowSmoke
 ```
+
+For the fastest local app-start/package loop without NSIS:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -FastLocalStagedApp `
+  -SkipChecks `
+  -SkipSmoke
+```
+
+This produces a staged `target\release\scriber-desktop.exe` plus sidecars,
+records `buildMode.artifactKind=staged-app`, and does not claim installer
+validation.
 
 Default real YouTube smoke URL:
 

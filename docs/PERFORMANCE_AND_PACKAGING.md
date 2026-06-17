@@ -88,11 +88,17 @@ Packaging/build:
 - PyInstaller sidecar can be reused through a hash cache.
 - PyInstaller sidecar release sync is content-aware, so unchanged files are not
   rewritten into the Tauri release tree.
+- When the Tauri release backend target already has the current sidecar cache
+  key and required release resources, the sidecar builder records
+  `targetCurrent=true` and skips PyInstaller restore, frozen import check,
+  backend tree sync, and Rust audio sidecar copy work.
 - The Rust audio sidecar has its own input hash cache under
-  `build\rust-audio-sidecar-cache` and a separate Cargo target dir under
-  `build\rust-audio-sidecar-target`; when Rust audio inputs are unchanged, the
-  build copies the cached sidecar into Tauri's normal `target\release` path
-  instead of recompiling it.
+  `build\rust-audio-sidecar-cache`. Its cache key is limited to
+  `Cargo.toml`, `Cargo.lock`, `build.rs`, `audio_sidecar.rs`,
+  `audio_frame_pipe.rs`, and `redaction.rs`, with a module guard in the build
+  script. It uses Tauri's normal Cargo target by default so desktop and audio
+  sidecar builds can share compiled dependencies; `-RustAudioIsolatedTarget` is
+  troubleshooting fallback.
 - Installed frontend assets are owned by the Tauri WebView bundle and are not
   embedded in the Python/PyInstaller backend sidecar.
 - The Rust audio sidecar is bundled once as Tauri's install-root
@@ -147,9 +153,6 @@ Fast local installer:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -FastLocalInstaller `
-  -UseProfileBFfmpeg `
-  -ValidateSlimMediaTools `
-  -ReuseSidecarIfUnchanged `
   -RunInstallerFrontendSmoke `
   -RunInstallerMediaPreparationSmoke
 ```
@@ -157,15 +160,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
 What it does:
 
 - Syncs versions.
-- Builds frontend.
+- Builds the Tauri WebView frontend through `npm run build:webview`.
 - Reuses sidecar when backend/runtime inputs are unchanged; frontend asset
   changes are handled by Tauri and do not rebuild the Python sidecar.
 - Reuses the Rust audio sidecar when Rust audio inputs are unchanged.
-- Builds Tauri/NSIS.
+- Builds Tauri/NSIS. `-FastLocalInstaller` defaults NSIS compression to `zlib`
+  and records `buildMode.devOnly=true` plus `buildMode.nsisCompression` in
+  `build-timing.json`; release builds keep Tauri's default LZMA path.
 - Runs size and runtime dependency footprint gates.
 - Writes the installed package smoke report into release metadata and uses it
   for the installed-app size section in `size-report.json`.
 - Runs selected installed-package smokes.
+
+Very tight local staged app loop:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
+  -FastLocalStagedApp `
+  -SkipChecks `
+  -SkipSmoke
+```
+
+This builds/copies the sidecars, runs `tauri build --no-bundle`, writes
+`buildMode.artifactKind=staged-app`, and runs the media-preparation and runtime
+dependency footprint checks. It is dev-only and intentionally does not validate
+NSIS install, upgrade, shortcut, or uninstall behavior.
 
 Release workflow:
 
