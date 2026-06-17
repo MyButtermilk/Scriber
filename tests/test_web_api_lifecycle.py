@@ -1,6 +1,8 @@
 import asyncio
 import json
 import sys
+import threading
+import time
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1571,6 +1573,49 @@ async def test_start_listening_missing_provider_key_returns_error_without_histor
         and payload.get("code") == "missing_api_key"
         for payload in payloads
     )
+
+
+@pytest.mark.asyncio
+async def test_start_listening_does_not_wait_for_overlay_shell_ipc(monkeypatch):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    _PrewarmAwarePipeline.instances.clear()
+    overlay_release = threading.Event()
+
+    def slow_overlay_show() -> None:
+        overlay_release.wait(timeout=0.35)
+
+    with (
+        patch("src.web_api.ScriberPipeline", _PrewarmAwarePipeline),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch("src.web_api.show_initializing_overlay", side_effect=slow_overlay_show),
+        patch("src.web_api.show_recording_overlay"),
+        patch("src.web_api.show_transcribing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        started = time.monotonic()
+        await ctl.start_listening()
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.2
+        assert ctl._pipeline_task is not None
+
+        overlay_release.set()
+        if ctl._overlay_tasks:
+            await asyncio.wait_for(
+                asyncio.gather(*list(ctl._overlay_tasks), return_exceptions=True),
+                timeout=1.0,
+            )
+
+        pipeline = _PrewarmAwarePipeline.instances[-1]
+        pipeline.stop_gate.set()
+        await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
+
+    ctl.shutdown()
 
 
 @pytest.mark.asyncio

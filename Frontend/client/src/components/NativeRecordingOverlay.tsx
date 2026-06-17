@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Square } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { apiUrl, isTauriRuntime, loadBackendBaseUrlFromTauri, wsUrl } from "@/lib/backend";
 import {
   isScriberWebSocketMessage,
@@ -221,10 +222,12 @@ export default function NativeRecordingOverlay() {
         if (msgSessionId && !activeSessionId) {
           activeSessionIdRef.current = msgSessionId;
         }
-        if (msg.transcribing) {
+        if (msg.recordingState === "finalizing" || msg.transcribing) {
           setMode("transcribing");
-        } else if (msg.listening) {
+        } else if (msg.recordingState === "recording" || msg.listening) {
           setMode("recording");
+        } else if (msg.recordingState === "initializing") {
+          setMode("initializing");
         }
         break;
       case "session_started":
@@ -232,7 +235,7 @@ export default function NativeRecordingOverlay() {
           activeSessionIdRef.current = msgSessionId;
         }
         setRms(0);
-        setMode("recording");
+        setMode("initializing");
         break;
       case "transcribing":
         setMode("transcribing");
@@ -270,14 +273,11 @@ export default function NativeRecordingOverlay() {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void import("@tauri-apps/api/event")
-      .then(({ listen }) =>
-        listen<OverlayEventPayload>("scriber-overlay-state", (event) => {
-          const payload = event.payload || {};
-          const nextMode = payload.visible === false ? "hidden" : normalizeMode(payload.mode);
-          setMode(nextMode);
-        })
-      )
+    void listen<OverlayEventPayload>("scriber-overlay-state", (event) => {
+      const payload = event.payload || {};
+      const nextMode = payload.visible === false ? "hidden" : normalizeMode(payload.mode);
+      setMode(nextMode);
+    })
       .then((cleanup) => {
         if (disposed) {
           cleanup();

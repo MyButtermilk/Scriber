@@ -275,6 +275,7 @@ def test_native_recording_overlay_is_tauri_owned() -> None:
     shell_ipc = read_script("Frontend/src-tauri/src/shell_ipc.rs")
     capabilities = read_script("Frontend/src-tauri/capabilities/default.json")
     app = read_script("Frontend/client/src/App.tsx")
+    main = read_script("Frontend/client/src/main.tsx")
 
     assert "from src.native_overlay import" in web_api
     assert "from src.overlay import" not in web_api
@@ -286,7 +287,9 @@ def test_native_recording_overlay_is_tauri_owned() -> None:
     assert "nativeOverlay" in shell_ipc
     assert '"recording-overlay"' in capabilities
     assert '"core:event:allow-listen"' in capabilities
-    assert "NativeRecordingOverlay" in app
+    assert "NativeRecordingOverlay" not in app
+    assert 'import("./components/NativeRecordingOverlay")' in main
+    assert 'import("./App")' in main
 
 
 def test_transcript_detail_keeps_native_window_titlebar() -> None:

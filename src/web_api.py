@@ -1465,6 +1465,7 @@ class ScriberWebController:
         # This avoids blocking app startup while ensuring overlay is ready for first hotkey
         self._overlay = None
         self._overlay_lock = asyncio.Lock()
+        self._overlay_tasks: set[asyncio.Task] = set()
         
         # Initialize database schema only (transcript loading happens in background)
         db.init_database()
@@ -2488,6 +2489,64 @@ class ScriberWebController:
         )
         self._overlay = get_overlay(on_stop=on_stop)
         return self._overlay
+
+    def _schedule_overlay_command(self, name: str, command: Callable[[], None]) -> None:
+        """Run native overlay shell IPC off the live mic hot path.
+
+        Tauri overlay commands can involve a named-pipe roundtrip, monitor lookup,
+        and first WebView wakeup. Keeping them sequential preserves visual state
+        ordering without delaying microphone startup or stop handling.
+        """
+
+        async def _run() -> None:
+            started = time.monotonic()
+            try:
+                async with self._overlay_lock:
+                    await asyncio.to_thread(command)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug(f"Overlay command '{name}' failed: {exc}")
+            finally:
+                duration_ms = (time.monotonic() - started) * 1000.0
+                if duration_ms >= 75.0:
+                    logger.debug(f"Overlay command '{name}' took {duration_ms:.1f}ms")
+
+        def _create_task() -> None:
+            task = self._loop.create_task(_run(), name=f"overlay_{name}")
+            self._overlay_tasks.add(task)
+            task.add_done_callback(self._overlay_tasks.discard)
+
+        try:
+            running_loop = asyncio.get_running_loop()
+            if running_loop is self._loop:
+                _create_task()
+            elif self._loop.is_running():
+                self._loop.call_soon_threadsafe(_create_task)
+            else:
+                task = running_loop.create_task(_run(), name=f"overlay_{name}")
+                self._overlay_tasks.add(task)
+                task.add_done_callback(self._overlay_tasks.discard)
+        except RuntimeError:
+            if self._loop.is_running():
+                self._loop.call_soon_threadsafe(_create_task)
+            else:
+                try:
+                    command()
+                except Exception as exc:
+                    logger.debug(f"Overlay command '{name}' failed: {exc}")
+
+    def _show_initializing_overlay_async(self) -> None:
+        self._schedule_overlay_command("initializing", show_initializing_overlay)
+
+    def _show_recording_overlay_async(self) -> None:
+        self._schedule_overlay_command("recording", show_recording_overlay)
+
+    def _show_transcribing_overlay_async(self) -> None:
+        self._schedule_overlay_command("transcribing", show_transcribing_overlay)
+
+    def _hide_recording_overlay_async(self) -> None:
+        self._schedule_overlay_command("hide", hide_recording_overlay)
     
     def _load_transcripts_from_db(self) -> None:
         """Load transcript metadata from database on startup.
@@ -3062,7 +3121,7 @@ class ScriberWebController:
             self._set_status("Error", session_id=session_id)
             # Hide overlay when pipeline fails to prevent it staying stuck at "Preparing..."
             self._overlay_audio_enabled = False
-            hide_recording_overlay()
+            self._hide_recording_overlay_async()
             
             info = self._provider_user_error(exc, provider=provider_used)
             category = info.category
@@ -3907,12 +3966,10 @@ class ScriberWebController:
                 outcome="started",
             )
 
-            # Ensure overlay has stop callback connected before showing
-            self._get_overlay()
-
-            # Show initializing overlay immediately for user feedback
+            # Show initializing overlay immediately for user feedback without
+            # blocking microphone startup on shell IPC or WebView wakeup.
             self._overlay_audio_enabled = False
-            show_initializing_overlay()
+            self._show_initializing_overlay_async()
 
             # Callback to transition overlay when mic is ready
             def on_mic_ready():
@@ -3929,7 +3986,7 @@ class ScriberWebController:
                 self._set_recording_state(RecordingState.RECORDING, context="on_mic_ready")
                 self._set_status("Listening", session_id=session_id)
                 self._overlay_audio_enabled = True
-                show_recording_overlay()
+                self._show_recording_overlay_async()
                 logger.info("Microphone ready - recording started")
                 self._emit_workflow_event(
                     message="Microphone ready - recording started",
@@ -3954,7 +4011,7 @@ class ScriberWebController:
                 self._set_recording_state(RecordingState.FAILED, context="pipeline_error")
                 self._set_status("Error")
                 self._overlay_audio_enabled = False
-                hide_recording_overlay()
+                self._hide_recording_overlay_async()
 
                 info = self._provider_user_error(error_msg, provider=provider_used)
                 category = info.category
@@ -4246,11 +4303,11 @@ class ScriberWebController:
         if is_realtime_service:
             # For RT services, hide overlay immediately - text is already injected
             self._overlay_audio_enabled = False
-            hide_recording_overlay()
+            self._hide_recording_overlay_async()
         else:
             # Show transcribing state for async services that need processing time
             self._overlay_audio_enabled = False
-            show_transcribing_overlay()
+            self._show_transcribing_overlay_async()
             transcribing_payload = transcribing_event(session_id=session_id)
             await self.broadcast(transcribing_payload)
 
@@ -4284,7 +4341,7 @@ class ScriberWebController:
             # Hide overlay for async services after processing completes
             if not is_realtime_service:
                 self._overlay_audio_enabled = False
-                hide_recording_overlay()
+                self._hide_recording_overlay_async()
             
             if pipeline_task:
                 pipeline_task.cancel()
@@ -4314,7 +4371,7 @@ class ScriberWebController:
                 meta={"error": str(exc), "provider_error_code": stop_error_info.code},
             )
             self._overlay_audio_enabled = False
-            hide_recording_overlay()
+            self._hide_recording_overlay_async()
             error_payload = self._provider_error_event(exc, provider=provider_used, session_id=session_id)
             await self.broadcast(error_payload)
         finally:
@@ -4534,6 +4591,9 @@ class ScriberWebController:
         if self._background_stop_task:
             self._background_stop_task.cancel()
             self._background_stop_task = None
+        for task in list(self._overlay_tasks):
+            task.cancel()
+        self._overlay_tasks.clear()
 
         kb = self._keyboard
         if kb and hasattr(kb, "clear_all_hotkeys"):
@@ -6417,27 +6477,6 @@ async def _background_init(controller: ScriberWebController) -> None:
     """
     await asyncio.sleep(0.1)  # Yield to let server start accepting connections
 
-    try:
-        await controller._sync_idle_mic_prewarm_after_settings()
-        logger.info("Startup idle microphone prewarm synchronized")
-    except Exception as e:
-        logger.debug(f"Startup idle microphone prewarm sync skipped: {e}")
-    
-    # Load transcripts from database first (needed for UI)
-    try:
-        await asyncio.to_thread(controller._load_transcripts_from_db)
-        controller._transcripts_loaded = True
-        logger.info(f"Loaded {len(controller._history)} transcripts from database")
-    except Exception as e:
-        logger.warning(f"Background transcript load failed: {e}")
-
-    try:
-        resumed = await controller.resume_pending_jobs(limit=25)
-        if resumed:
-            logger.info(f"Resumed {resumed} pending background job(s)")
-    except Exception as e:
-        logger.warning(f"Background job resume failed: {e}")
-    
     async def _prewarm_overlay() -> None:
         try:
             from src.native_overlay import get_overlay
@@ -6454,8 +6493,8 @@ async def _background_init(controller: ScriberWebController) -> None:
             def _warm_analyzers() -> None:
                 from src.pipeline import _AnalyzerCache
 
-                _AnalyzerCache.get_vad_analyzer()
                 _AnalyzerCache.get_smart_turn_analyzer()
+                _AnalyzerCache.get_vad_analyzer()
 
             await asyncio.to_thread(_warm_analyzers)
             logger.info("ML model cache warmed (first recording will start faster)")
@@ -6469,8 +6508,34 @@ async def _background_init(controller: ScriberWebController) -> None:
         except Exception as e:
             logger.debug(f"STT prewarm skipped: {e}")
 
-    # Run heavyweight warmups in parallel.
+    async def _sync_idle_mic_prewarm() -> None:
+        try:
+            await controller._sync_idle_mic_prewarm_after_settings()
+            logger.info("Startup idle microphone prewarm synchronized")
+        except Exception as e:
+            logger.debug(f"Startup idle microphone prewarm sync skipped: {e}")
+
+    async def _load_startup_data() -> None:
+        try:
+            await asyncio.to_thread(controller._load_transcripts_from_db)
+            controller._transcripts_loaded = True
+            logger.info(f"Loaded {len(controller._history)} transcripts from database")
+        except Exception as e:
+            logger.warning(f"Background transcript load failed: {e}")
+
+        try:
+            resumed = await controller.resume_pending_jobs(limit=25)
+            if resumed:
+                logger.info(f"Resumed {resumed} pending background job(s)")
+        except Exception as e:
+            logger.warning(f"Background job resume failed: {e}")
+
+    # Run latency-critical warmups immediately instead of waiting for database
+    # and pending-job work. These are independent and directly affect the first
+    # hotkey-to-recording path.
     await asyncio.gather(
+        _sync_idle_mic_prewarm(),
+        _load_startup_data(),
         _prewarm_overlay(),
         _prewarm_models(),
         _prewarm_stt(),

@@ -3,9 +3,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock};
 #[cfg(not(test))]
-use tauri::{
-    Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-};
+use tauri::{Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 pub const OVERLAY_WINDOW_LABEL: &str = "recording-overlay";
 #[cfg(not(test))]
@@ -24,6 +22,8 @@ struct OverlayState {
     mode: String,
     visible: bool,
     last_rms: f64,
+    #[cfg_attr(test, allow(dead_code))]
+    position_initialized: bool,
 }
 
 impl Default for OverlayState {
@@ -32,6 +32,7 @@ impl Default for OverlayState {
             mode: "hidden".to_string(),
             visible: false,
             last_rms: 0.0,
+            position_initialized: false,
         }
     }
 }
@@ -78,6 +79,7 @@ pub fn create_overlay_window(app: &tauri::App) -> tauri::Result<()> {
     .visible(false)
     .build()?;
     position_overlay_window(&window)?;
+    mark_overlay_position_initialized();
     Ok(())
 }
 
@@ -110,7 +112,7 @@ fn show_overlay(payload: &Value) -> Result<Value, String> {
 fn show_overlay_mode(mode: String) -> Result<Value, String> {
     let app = overlay_app_handle()?;
     let window = overlay_window(&app)?;
-    position_overlay_window(&window).map_err(|err| format!("overlay position failed: {err}"))?;
+    ensure_overlay_positioned(&window).map_err(|err| format!("overlay position failed: {err}"))?;
     let event_payload = update_state(|state| {
         state.mode = mode.clone();
         state.visible = true;
@@ -198,12 +200,15 @@ fn overlay_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
 
 #[cfg(not(test))]
 fn position_overlay_window(window: &WebviewWindow) -> tauri::Result<()> {
-    let monitor = window.current_monitor()?.or(window.primary_monitor()?).or_else(|| {
-        window
-            .available_monitors()
-            .ok()
-            .and_then(|monitors| monitors.into_iter().next())
-    });
+    let monitor = window
+        .current_monitor()?
+        .or(window.primary_monitor()?)
+        .or_else(|| {
+            window
+                .available_monitors()
+                .ok()
+                .and_then(|monitors| monitors.into_iter().next())
+        });
     if let Some(monitor) = monitor {
         let work_area = monitor.work_area();
         let scale = monitor.scale_factor().max(0.25);
@@ -219,6 +224,24 @@ fn position_overlay_window(window: &WebviewWindow) -> tauri::Result<()> {
         window.set_position(LogicalPosition::new(x, y))?;
     }
     Ok(())
+}
+
+#[cfg(not(test))]
+fn ensure_overlay_positioned(window: &WebviewWindow) -> tauri::Result<()> {
+    let already_positioned = update_state(|state| state.position_initialized);
+    if already_positioned {
+        return Ok(());
+    }
+    position_overlay_window(window)?;
+    mark_overlay_position_initialized();
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn mark_overlay_position_initialized() {
+    update_state(|state| {
+        state.position_initialized = true;
+    });
 }
 
 fn overlay_position_for_work_area(
@@ -294,7 +317,10 @@ mod tests {
     #[test]
     fn overlay_mode_validation_accepts_known_modes() {
         assert_eq!(normalize_overlay_mode("Recording").unwrap(), "recording");
-        assert_eq!(normalize_overlay_mode("transcribing").unwrap(), "transcribing");
+        assert_eq!(
+            normalize_overlay_mode("transcribing").unwrap(),
+            "transcribing"
+        );
         assert!(normalize_overlay_mode("floating").is_err());
     }
 
