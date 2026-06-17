@@ -128,6 +128,9 @@ _RUNTIME_MODE_ENV = "SCRIBER_RUNTIME_MODE"
 _BACKEND_LAUNCH_KIND_ENV = "SCRIBER_BACKEND_LAUNCH_KIND"
 _AUDIO_ENGINE_ENV = "SCRIBER_AUDIO_ENGINE"
 _RUST_AUDIO_PROBE_ENV = "SCRIBER_RUST_AUDIO_PROBE"
+_LIVE_MIC_ASYNC_STOP_TIMEOUT_ENV = "SCRIBER_LIVE_MIC_ASYNC_STOP_TIMEOUT_SEC"
+_LIVE_MIC_SILENT_STOP_TIMEOUT_ENV = "SCRIBER_LIVE_MIC_SILENT_STOP_TIMEOUT_SEC"
+_LIVE_MIC_SILENCE_RMS_THRESHOLD_ENV = "SCRIBER_LIVE_MIC_SILENCE_RMS_THRESHOLD"
 _NATIVE_DEVICE_EVENTS_ENV = "SCRIBER_NATIVE_DEVICE_EVENTS"
 _SETTINGS_PERSIST_DEBOUNCE_ENV = "SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC"
 _WEB_HOST_ENV = "SCRIBER_WEB_HOST"
@@ -1058,6 +1061,49 @@ def _preview_from_words(words: list[str], max_words: int = 5, *, has_more: bool 
     return preview
 
 
+def _env_float(name: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
+    try:
+        value = float(os.getenv(name, str(default)) or default)
+    except Exception:
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _live_pipeline_uses_async_finalization(pipeline: Any | None) -> bool:
+    service_name = str(getattr(pipeline, "service_name", "") or "")
+    return (
+        service_name in {"soniox_async", "mistral_async", "smallest_async", "azure_mai", "assemblyai"}
+        or (service_name == "soniox" and Config.SONIOX_MODE == "async")
+    )
+
+
+def _audio_diagnostics_indicate_silence(diagnostics: dict[str, Any] | None) -> bool:
+    if not isinstance(diagnostics, dict):
+        return False
+    try:
+        sample_count = int(diagnostics.get("audioLevelSampleCount") or 0)
+    except Exception:
+        sample_count = 0
+    if sample_count < 5:
+        return False
+    if bool(diagnostics.get("speechObserved")):
+        return False
+    try:
+        max_rms = float(diagnostics.get("maxObservedRms") or 0.0)
+    except Exception:
+        max_rms = 0.0
+    threshold = _env_float(_LIVE_MIC_SILENCE_RMS_THRESHOLD_ENV, 0.0007, minimum=0.0, maximum=0.05)
+    return max_rms <= threshold
+
+
+def _pipeline_stop_timeout_error(exc: BaseException) -> bool:
+    return "transcription did not finish within" in str(exc or "").casefold()
+
+
 def _normalize_hotkey_for_backend(display_hotkey: str) -> str:
     # Frontend records like "Ctrl + Shift + S"; keyboard expects "ctrl+shift+s".
     hotkey = (display_hotkey or "").strip()
@@ -1338,6 +1384,7 @@ class ScriberWebController:
         except Exception:
             self._mic_watchdog_callback_gap_seconds = 15.0
         self._pending_hotkey_toggle = False
+        self._background_stop_task: asyncio.Task | None = None
         self._last_hotkey_deferred_log = 0.0
         self._last_ptt_error_log = 0.0
         self._last_toggle_poll_error_log = 0.0
@@ -4065,6 +4112,60 @@ class ScriberWebController:
             logger.error(f"Emergency stop error: {e}")
             self._resume_idle_mic_prewarm_after_capture()
 
+    def _live_mic_stop_timeout_seconds(
+        self,
+        *,
+        current: TranscriptRecord | None,
+        async_finalization: bool,
+        quiet_recording: bool,
+    ) -> float | None:
+        if not async_finalization:
+            return None
+        if quiet_recording:
+            return _env_float(_LIVE_MIC_SILENT_STOP_TIMEOUT_ENV, 4.0, minimum=1.0, maximum=30.0)
+
+        elapsed = 0.0
+        if current is not None and current._started_at_monotonic is not None:
+            elapsed = max(0.0, time.monotonic() - current._started_at_monotonic)
+        dynamic_default = min(90.0, max(12.0, 8.0 + elapsed * 0.35))
+        return _env_float(
+            _LIVE_MIC_ASYNC_STOP_TIMEOUT_ENV,
+            dynamic_default,
+            minimum=5.0,
+            maximum=180.0,
+        )
+
+    def _on_background_stop_done(self, task: asyncio.Task) -> None:
+        if self._background_stop_task is task:
+            self._background_stop_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(f"Background live mic stop failed: {exc}")
+
+    def request_background_stop_listening(self) -> bool:
+        if self._loop.is_closed():
+            return False
+        if self._is_stopping:
+            self._pending_hotkey_toggle = True
+            now = time.monotonic()
+            if now - self._last_hotkey_deferred_log >= 1.0:
+                self._last_hotkey_deferred_log = now
+                logger.info("Toggle requested while stop is in progress; deferring until stop completes.")
+            return True
+        if not self._is_listening:
+            return False
+        if self._background_stop_task is not None and not self._background_stop_task.done():
+            return True
+        self._background_stop_task = self._loop.create_task(
+            self.stop_listening(),
+            name="live_mic_background_stop",
+        )
+        self._background_stop_task.add_done_callback(self._on_background_stop_done)
+        return True
+
     async def stop_listening(self) -> ProviderUserError | None:
         # Acquire lock for entire operation - no parallel start/stop allowed
         async with self._listening_lock:
@@ -4082,6 +4183,18 @@ class ScriberWebController:
                 current = self._current
             session_id = self._session_id
             provider_used = self._active_provider
+            pipeline_audio_diagnostics = (
+                pipeline.audio_diagnostics()
+                if pipeline and callable(getattr(pipeline, "audio_diagnostics", None))
+                else None
+            )
+            quiet_recording = _audio_diagnostics_indicate_silence(pipeline_audio_diagnostics)
+            async_finalization = _live_pipeline_uses_async_finalization(pipeline)
+            stop_timeout_secs = self._live_mic_stop_timeout_seconds(
+                current=current,
+                async_finalization=async_finalization,
+                quiet_recording=quiet_recording,
+            )
             self._mark_hot_path(session_id, "stop_requested")
             self._set_recording_state(RecordingState.FINALIZING, context="stop_listening")
             self._emit_workflow_event(
@@ -4094,6 +4207,22 @@ class ScriberWebController:
                 provider=provider_used,
                 milestone=True,
                 outcome="started",
+                meta={
+                    "async_finalization": async_finalization,
+                    "quiet_recording": quiet_recording,
+                    "stop_timeout_seconds": stop_timeout_secs,
+                    "audio": {
+                        "sampleCount": (pipeline_audio_diagnostics or {}).get("audioLevelSampleCount")
+                        if isinstance(pipeline_audio_diagnostics, dict)
+                        else None,
+                        "maxObservedRms": (pipeline_audio_diagnostics or {}).get("maxObservedRms")
+                        if isinstance(pipeline_audio_diagnostics, dict)
+                        else None,
+                        "speechObserved": (pipeline_audio_diagnostics or {}).get("speechObserved")
+                        if isinstance(pipeline_audio_diagnostics, dict)
+                        else None,
+                    },
+                },
             )
             
             # Clear pipeline references immediately to prevent double-stop
@@ -4130,7 +4259,20 @@ class ScriberWebController:
         retrigger_hotkey_toggle = False
         try:
             if pipeline:
-                await pipeline.stop()
+                try:
+                    await pipeline.stop(timeout_secs=stop_timeout_secs)
+                except TypeError as exc:
+                    if "timeout_secs" not in str(exc) and "unexpected keyword" not in str(exc):
+                        raise
+                    await pipeline.stop()
+                except Exception as exc:
+                    if quiet_recording and _pipeline_stop_timeout_error(exc):
+                        logger.info(
+                            "Suppressing async live transcription timeout after quiet recording "
+                            f"(timeout={stop_timeout_secs:g}s, provider={provider_used})"
+                        )
+                    else:
+                        raise
                 self._record_provider_success(provider_used or "")
              
             # Now that pipeline has stopped and transcription callback has fired,
@@ -4292,7 +4434,10 @@ class ScriberWebController:
                 self._last_hotkey_deferred_log = now
                 logger.info("Hotkey pressed while stop is in progress; deferring until stop completes.")
             return
-        await self.toggle_listening()
+        if self._is_listening:
+            self.request_background_stop_listening()
+            return
+        await self.start_listening()
 
     def register_hotkeys(self) -> None:
         if os.getenv(_DISABLE_HOTKEYS_ENV, "").strip().lower() in {"1", "true", "yes"}:
@@ -4386,6 +4531,9 @@ class ScriberWebController:
         if self._mic_watchdog_task:
             self._mic_watchdog_task.cancel()
             self._mic_watchdog_task = None
+        if self._background_stop_task:
+            self._background_stop_task.cancel()
+            self._background_stop_task = None
 
         kb = self._keyboard
         if kb and hasattr(kb, "clear_all_hotkeys"):
@@ -5173,7 +5321,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def toggle_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        await ctl.toggle_listening()
+        if ctl._is_listening or ctl._is_stopping:
+            accepted = ctl.request_background_stop_listening()
+            payload = ctl.get_state()
+            payload["stopAccepted"] = bool(accepted)
+            payload["finalizing"] = True
+            return web.json_response(payload, status=202)
+
+        await ctl.start_listening()
         return web.json_response(ctl.get_state())
 
     async def get_settings(request: web.Request):
@@ -6261,6 +6416,12 @@ async def _background_init(controller: ScriberWebController) -> None:
     Total savings: ~700-1200ms off startup + first recording latency.
     """
     await asyncio.sleep(0.1)  # Yield to let server start accepting connections
+
+    try:
+        await controller._sync_idle_mic_prewarm_after_settings()
+        logger.info("Startup idle microphone prewarm synchronized")
+    except Exception as e:
+        logger.debug(f"Startup idle microphone prewarm sync skipped: {e}")
     
     # Load transcripts from database first (needed for UI)
     try:

@@ -107,6 +107,34 @@ async def test_youtube_search_resolves_live_url_as_direct_video(monkeypatch, tmp
     assert payload["items"][0]["url"] == "https://www.youtube.com/watch?v=-Ppvp4uM7Kw"
 
 
+@pytest.mark.asyncio
+async def test_live_mic_toggle_acknowledges_stop_without_waiting(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._is_listening = True
+    called = {"stop": False}
+
+    def fake_background_stop() -> bool:
+        called["stop"] = True
+        return True
+
+    ctl.request_background_stop_listening = fake_background_stop  # type: ignore[method-assign]
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.post("/api/live-mic/toggle")
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 202
+    assert called["stop"] is True
+    assert payload["stopAccepted"] is True
+    assert payload["finalizing"] is True
+
+
 class _FakeTransport:
     def __init__(self, peername=("127.0.0.1", 12345)):
         self._peername = peername

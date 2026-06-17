@@ -882,6 +882,12 @@ class MicrophoneInput(BaseInputTransport):
         self._channel_selection_interval_frames = 10
         self._last_audio_level_at = 0.0
         self._audio_level_interval = 1.0 / 60.0
+        self._last_observed_rms = 0.0
+        self._max_observed_rms = 0.0
+        self._audio_level_sample_count = 0
+        self._speech_observed = False
+        self._speech_observed_count = 0
+        self._last_speech_at = 0.0
         self._stream_claimed = False
         self._last_audio_chunk_sent_notified = False
         self._callback_count = 0
@@ -996,6 +1002,12 @@ class MicrophoneInput(BaseInputTransport):
         self._active_capture_channel = None
         self._channel_selection_counter = 0
         self._last_audio_level_at = 0.0
+        self._last_observed_rms = 0.0
+        self._max_observed_rms = 0.0
+        self._audio_level_sample_count = 0
+        self._speech_observed = False
+        self._speech_observed_count = 0
+        self._last_speech_at = 0.0
         self._last_audio_chunk_sent_notified = False
         self._callback_count = 0
         self._last_callback_at = 0.0
@@ -1188,6 +1200,14 @@ class MicrophoneInput(BaseInputTransport):
                     self._speech_active = False
 
                 # Keep visualization continuous across syllables.
+                rms_value = float(rms)
+                self._last_observed_rms = rms_value
+                self._max_observed_rms = max(self._max_observed_rms, rms_value)
+                self._audio_level_sample_count += 1
+                if self._speech_active:
+                    self._speech_observed = True
+                    self._speech_observed_count += 1
+                    self._last_speech_at = now
                 vis_target = float(rms) if self._speech_active else max(0.0, rms * 0.10)
                 if vis_target > self._visual_level:
                     self._visual_level = self._visual_level * 0.25 + vis_target * 0.75
@@ -1229,6 +1249,16 @@ class MicrophoneInput(BaseInputTransport):
             "device": str(self.device),
             "callbackCount": int(self._callback_count),
             "droppedFrameCount": int(self._dropped_chunks),
+            "lastObservedRms": float(self._last_observed_rms),
+            "maxObservedRms": float(self._max_observed_rms),
+            "audioLevelSampleCount": int(self._audio_level_sample_count),
+            "speechObserved": bool(self._speech_observed),
+            "speechObservedCount": int(self._speech_observed_count),
+            "lastSpeechAgoSeconds": (
+                round(time.monotonic() - self._last_speech_at, 3)
+                if self._last_speech_at > 0
+                else None
+            ),
             "source": source_snapshot,
             "streamStartedAgoSeconds": (
                 round(time.monotonic() - self._stream_started_at, 3)

@@ -321,6 +321,27 @@ async def test_controller_starts_idle_mic_prewarm_when_enabled(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_startup_idle_mic_prewarm_sync_retries_after_initial_attempt(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    await _wait_for_prewarm_task(ctl)
+    manager = _FakeRustMicPrewarmManager.instances[-1]
+
+    manager.active = False
+    await ctl._sync_idle_mic_prewarm_after_settings()
+
+    assert manager.resume_calls == 2
+    assert manager.active is True
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_controller_uses_rust_idle_prewarm_manager_for_rust_audio_engine(
     monkeypatch,
     tmp_path,
@@ -1328,6 +1349,24 @@ class _StopFailPipeline:
         )
 
 
+class _QuietTimeoutPipeline:
+    service_name = "azure_mai"
+
+    def __init__(self):
+        self.timeout_secs = None
+
+    def audio_diagnostics(self):
+        return {
+            "audioLevelSampleCount": 12,
+            "maxObservedRms": 0.0001,
+            "speechObserved": False,
+        }
+
+    async def stop(self, timeout_secs=None):
+        self.timeout_secs = timeout_secs
+        raise RuntimeError(f"Transcription did not finish within {timeout_secs:g} seconds.")
+
+
 @pytest.mark.asyncio
 async def test_stop_listening_marks_failed_when_stop_raises():
     loop = asyncio.get_running_loop()
@@ -1373,6 +1412,45 @@ async def test_stop_listening_marks_failed_when_stop_raises():
         in rec.content
     )
     assert ctl._status == "Error"
+    assert rec in ctl._history
+
+
+@pytest.mark.asyncio
+async def test_stop_listening_suppresses_timeout_after_quiet_recording(monkeypatch):
+    loop = asyncio.get_running_loop()
+    monkeypatch.setenv("SCRIBER_LIVE_MIC_SILENT_STOP_TIMEOUT_SEC", "2")
+    ctl = ScriberWebController(loop)
+
+    session_id = "quiet-timeout-session"
+    rec = _make_record(session_id)
+    pipeline = _QuietTimeoutPipeline()
+    ctl._current = rec
+    ctl._session_id = session_id
+    ctl._is_listening = True
+    ctl._pipeline = pipeline
+    ctl._pipeline_task = None
+
+    with (
+        patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock,
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch("src.web_api.show_transcribing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        stop_error = await ctl.stop_listening()
+
+    error_payloads = [
+        call.args[0]
+        for call in broadcast_mock.await_args_list
+        if call.args and call.args[0].get("type") == "error"
+    ]
+
+    assert stop_error is None
+    assert pipeline.timeout_secs == 2.0
+    assert rec.status == "completed"
+    assert "[Error]" not in rec.content
+    assert not error_payloads
+    assert ctl._status == "Stopped"
     assert rec in ctl._history
 
 
