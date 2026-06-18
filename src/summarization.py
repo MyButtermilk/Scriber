@@ -74,7 +74,9 @@ def _is_retryable_gemini_failure(message: str) -> bool:
 
 
 def _should_fallback_to_openai() -> bool:
-    return os.getenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENAI", "1").strip().lower() not in {"0", "false", "no"}
+    # Cross-provider fallback is surprising in the UI: if Gemini is selected,
+    # users should see Gemini errors unless they explicitly opt into fallback.
+    return os.getenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENAI", "0").strip().lower() in {"1", "true", "yes"}
 
 
 def _is_gemini_thinking_model(model: str) -> bool:
@@ -336,6 +338,11 @@ async def summarize_text(
                     raise RuntimeError(
                         f"Summarization timed out after {timeout_display}s (fallback model: {fallback_model}). Please try again."
                     ) from timeout_exc
+                except Exception as fallback_exc:
+                    raise RuntimeError(
+                        "Gemini summarization failed and the configured OpenAI fallback also failed: "
+                        f"{fallback_exc}"
+                    ) from fallback_exc
             else:
                 raise
         else:

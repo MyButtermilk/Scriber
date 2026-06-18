@@ -1,5 +1,5 @@
 import { Switch, Route, useLocation } from "wouter";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { queryClient } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -12,6 +12,8 @@ import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "
 import { useToast } from "@/hooks/use-toast";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri } from "@/lib/backend";
+import { preloadPrimaryTabChunks } from "@/lib/route-preload";
+import { preloadPrimaryTabData } from "@/lib/tab-data-preload";
 
 // Keep default route eager for fastest first paint, lazy-load heavier routes.
 import LiveMic from "@/pages/LiveMic";
@@ -95,7 +97,13 @@ function RecordingErrorToastBridge() {
 
 function RuntimeShell() {
   const { isOnline } = useBackendStatus();
+  const queryClient = useQueryClient();
   const websocketEnabled = isOnline;
+
+  useEffect(() => {
+    if (!isOnline) return;
+    return preloadPrimaryTabData(queryClient);
+  }, [isOnline, queryClient]);
 
   return (
     <WebSocketProvider path="/ws" autoReconnect={true} reconnectDelay={1000} enabled={websocketEnabled}>
@@ -120,6 +128,11 @@ function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!backendBaseReady) return;
+    return preloadPrimaryTabChunks();
+  }, [backendBaseReady]);
 
   useDeviceChangeRefresh(backendBaseReady);
 

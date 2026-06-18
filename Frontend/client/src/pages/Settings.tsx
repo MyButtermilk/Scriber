@@ -13,11 +13,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
 import {
   apiUrl,
-  getAutostartStatus,
   refreshGlobalHotkey,
   setGlobalHotkeyCaptureActive,
   setAutostartEnabled as setDesktopAutostartEnabled,
 } from "@/lib/backend";
+import { invalidateSettingsBootstrap, loadSettingsBootstrap } from "@/lib/settings-bootstrap";
 import type {
   ApiMessageResponse,
   LocalModelActionResponse,
@@ -469,18 +469,7 @@ export default function Settings() {
     const load = async () => {
       try {
         setSettingsError("");
-        // Load core settings data in parallel.
-        const [settingsRes, micsRes, autostart] = await Promise.all([
-          fetch(apiUrl("/api/settings"), { credentials: "include" }),
-          fetch(apiUrl("/api/microphones"), { credentials: "include" }),
-          getAutostartStatus().catch(() => ({ enabled: false, available: false })),
-        ]);
-
-        if (!settingsRes.ok) throw new Error(await settingsRes.text());
-        if (!micsRes.ok) throw new Error(await micsRes.text());
-
-        const settings = (await settingsRes.json()) as SettingsResponse;
-        const mics = (await micsRes.json()) as MicrophonesResponse;
+        const { settings, microphones: mics, autostart } = await loadSettingsBootstrap();
         if (cancelled) return;
 
         const keys = settings.apiKeys || {};
@@ -560,6 +549,7 @@ export default function Settings() {
       const text = await res.text();
       throw new Error(text || res.statusText);
     }
+    invalidateSettingsBootstrap();
     return (await res.json()) as SettingsResponse;
   };
 

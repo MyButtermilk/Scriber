@@ -811,6 +811,13 @@ pub fn run() {
             return;
         }
     };
+    let cleaned_sidecars =
+        audio_sidecar_client::cleanup_stray_audio_sidecar_processes("shellStartup");
+    if cleaned_sidecars > 0 {
+        write_shell_log(&format!(
+            "cleaned {cleaned_sidecars} stray audio sidecar process(es) during shell startup"
+        ));
+    }
     let shell_ipc_config = shell_ipc::ShellIpcConfig::new();
     let shell_ipc_handle =
         match shell_ipc::start_shell_ipc_server(shell_ipc_config.clone(), |message| {

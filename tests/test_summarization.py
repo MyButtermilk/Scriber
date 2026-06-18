@@ -145,6 +145,52 @@ async def test_summarize_text_normalizes_markdown_bullets(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
+async def test_gemini_summary_does_not_fallback_to_openai_by_default(monkeypatch: pytest.MonkeyPatch):
+    openai_calls = 0
+    monkeypatch.delenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENAI", raising=False)
+    monkeypatch.setattr(summarization.Config, "OPENAI_API_KEY", "openai-key")
+
+    async def _fake_gemini(_prompt: str, _model: str, _max_output_tokens: int) -> str:
+        raise RuntimeError("Gemini API error 429: RESOURCE_EXHAUSTED")
+
+    async def _fake_openai(_prompt: str, _model: str, _max_output_tokens: int) -> str:
+        nonlocal openai_calls
+        openai_calls += 1
+        return "openai summary"
+
+    monkeypatch.setattr(summarization, "_summarize_gemini", _fake_gemini)
+    monkeypatch.setattr(summarization, "_summarize_openai", _fake_openai)
+
+    with pytest.raises(RuntimeError, match="Gemini API error 429"):
+        await summarization.summarize_text("x y z", model="gemini-flash-latest")
+
+    assert openai_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_gemini_summary_openai_fallback_is_explicit_and_contextual(monkeypatch: pytest.MonkeyPatch):
+    openai_calls = 0
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENAI", "1")
+    monkeypatch.setattr(summarization.Config, "OPENAI_API_KEY", "openai-key")
+
+    async def _fake_gemini(_prompt: str, _model: str, _max_output_tokens: int) -> str:
+        raise RuntimeError("Gemini API error 429: RESOURCE_EXHAUSTED")
+
+    async def _fake_openai(_prompt: str, _model: str, _max_output_tokens: int) -> str:
+        nonlocal openai_calls
+        openai_calls += 1
+        raise RuntimeError("OpenAI API error: insufficient_quota")
+
+    monkeypatch.setattr(summarization, "_summarize_gemini", _fake_gemini)
+    monkeypatch.setattr(summarization, "_summarize_openai", _fake_openai)
+
+    with pytest.raises(RuntimeError, match="Gemini summarization failed and the configured OpenAI fallback also failed"):
+        await summarization.summarize_text("x y z", model="gemini-flash-latest")
+
+    assert openai_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_summarize_gemini_retries_max_tokens_with_larger_budget(monkeypatch: pytest.MonkeyPatch):
     calls: list[int] = []
     monkeypatch.setattr(summarization.Config, "GOOGLE_API_KEY", "test-key")

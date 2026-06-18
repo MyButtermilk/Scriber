@@ -18,6 +18,31 @@ export function transcriptHistoryQueryKey(type: TranscriptHistoryType, q: string
   return ["/api/transcripts", { q, type, infinite: true }] as const;
 }
 
+export async function fetchTranscriptHistoryPage<TItem>({
+  type,
+  q,
+  offset,
+  pageSize = TRANSCRIPT_HISTORY_PAGE_SIZE,
+}: {
+  type: TranscriptHistoryType;
+  q: string;
+  offset: number;
+  pageSize?: number;
+}): Promise<TranscriptHistoryPage<TItem>> {
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  params.set("type", type);
+  params.set("offset", String(offset));
+  params.set("limit", String(pageSize));
+
+  const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
+  if (!res.ok) {
+    throw new Error(await responseErrorMessage(res));
+  }
+
+  return (await res.json()) as TranscriptHistoryPage<TItem>;
+}
+
 interface UseTranscriptHistoryQueryOptions {
   type: TranscriptHistoryType;
   q: string;
@@ -33,18 +58,7 @@ export function useTranscriptHistoryQuery<TItem>({
     queryKey: transcriptHistoryQueryKey(type, q),
     queryFn: async ({ pageParam }) => {
       const offset = typeof pageParam === "number" ? pageParam : 0;
-      const params = new URLSearchParams();
-      if (q) params.set("q", q);
-      params.set("type", type);
-      params.set("offset", String(offset));
-      params.set("limit", String(pageSize));
-
-      const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
-      if (!res.ok) {
-        throw new Error(await responseErrorMessage(res));
-      }
-
-      return (await res.json()) as TranscriptHistoryPage<TItem>;
+      return fetchTranscriptHistoryPage<TItem>({ type, q, offset, pageSize });
     },
     initialPageParam: 0,
     getNextPageParam: (lastPage) => {

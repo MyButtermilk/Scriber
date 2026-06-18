@@ -7,6 +7,7 @@ import { DesktopTitleBar } from "@/components/DesktopTitleBar";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useState, useEffect, useCallback, lazy, Suspense } from "react";
+import { preloadRouteChunk } from "@/lib/route-preload";
 
 const CommandPalette = lazy(async () => {
   const module = await import("@/components/CommandPalette");
@@ -49,28 +50,10 @@ export function AppLayout({ children, path }: AppLayoutProps) {
     setCommandOpen(true);
   }, []);
 
-  const preloadRouteChunk = useCallback((href: string) => {
-    if (href === "/youtube") {
-      void import("@/pages/Youtube");
-      return;
-    }
-    if (href === "/file") {
-      void import("@/pages/FileTranscribe");
-      return;
-    }
-    if (href === "/settings") {
-      void import("@/pages/Settings");
-      return;
-    }
-    if (href === "/debug") {
-      void import("@/pages/DebugConsole");
-    }
-  }, []);
-
   // Preload route chunks on intent to keep navigation responsive.
-  const handleNavHover = (href: string) => {
-    preloadRouteChunk(href);
-  };
+  const handleNavIntent = useCallback((href: string) => {
+    void preloadRouteChunk(href);
+  }, []);
 
   const tabs = [
     { href: "/", icon: Mic, label: "Live Mic" },
@@ -91,8 +74,9 @@ export function AppLayout({ children, path }: AppLayoutProps) {
             <li key={tab.href}>
               <Link
                 href={tab.href}
-                onMouseEnter={() => handleNavHover(tab.href)}
-                onFocus={() => handleNavHover(tab.href)}
+                onPointerEnter={() => handleNavIntent(tab.href)}
+                onPointerDown={() => handleNavIntent(tab.href)}
+                onFocus={() => handleNavIntent(tab.href)}
                 onClick={onNavigate}
                 className={cn(
                   "neu-nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium cursor-pointer no-underline outline-none",

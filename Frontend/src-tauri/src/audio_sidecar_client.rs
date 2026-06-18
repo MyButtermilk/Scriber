@@ -13,6 +13,20 @@ use uuid::Uuid;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+    System::{
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        },
+        Threading::{
+            GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+        },
+    },
+};
 
 const AUDIO_SIDECAR_EXE_ENV: &str = "SCRIBER_AUDIO_SIDECAR_EXE";
 const AUDIO_SIDECAR_PROTOCOL_VERSION: &str = "1";
@@ -96,6 +110,10 @@ pub fn shutdown_all_audio_sidecars(reason: &str) -> usize {
         stopped = stopped.saturating_add(1);
     }
     stopped
+}
+
+pub fn cleanup_stray_audio_sidecar_processes(reason: &str) -> usize {
+    cleanup_stray_audio_sidecar_processes_for(find_audio_sidecar_executable().as_deref(), reason)
 }
 
 fn active_audio_sidecars() -> &'static Mutex<HashMap<String, ActiveAudioSidecar>> {
@@ -225,11 +243,20 @@ fn start_audio_sidecar_capture_with_sidecar(
         );
     }
 
-    let mut sessions = active_audio_sidecars().lock().unwrap();
-    if let Some(mut old_sidecar) = sessions.remove(&stream_id) {
-        stop_sidecar_process(&stream_id, &mut old_sidecar, "duplicateStreamId");
+    let replaced = {
+        let mut sessions = active_audio_sidecars().lock().unwrap();
+        let replaced: Vec<(String, ActiveAudioSidecar)> = sessions.drain().collect();
+        sessions.insert(stream_id.clone(), sidecar);
+        replaced
+    };
+    for (old_stream_id, mut old_sidecar) in replaced {
+        let reason = if old_stream_id == stream_id {
+            "duplicateStreamId"
+        } else {
+            "captureStartReplacedActiveCapture"
+        };
+        stop_sidecar_process(&old_stream_id, &mut old_sidecar, reason);
     }
-    sessions.insert(stream_id, sidecar);
     response
 }
 
@@ -307,11 +334,20 @@ fn start_audio_sidecar_prewarm_at(program: &Path, payload: Value) -> AudioSideca
         );
     }
 
-    let mut sessions = active_audio_prewarm_sidecars().lock().unwrap();
-    if let Some(mut old_sidecar) = sessions.remove(&prewarm_id) {
-        stop_prewarm_sidecar_process(&prewarm_id, &mut old_sidecar, "duplicatePrewarmId");
+    let replaced = {
+        let mut sessions = active_audio_prewarm_sidecars().lock().unwrap();
+        let replaced: Vec<(String, ActiveAudioSidecar)> = sessions.drain().collect();
+        sessions.insert(prewarm_id.clone(), sidecar);
+        replaced
+    };
+    for (old_prewarm_id, mut old_sidecar) in replaced {
+        let reason = if old_prewarm_id == prewarm_id {
+            "duplicatePrewarmId"
+        } else {
+            "prewarmStartReplacedActivePrewarm"
+        };
+        stop_prewarm_sidecar_process(&old_prewarm_id, &mut old_sidecar, reason);
     }
-    sessions.insert(prewarm_id, sidecar);
     response
 }
 
@@ -952,6 +988,116 @@ fn with_exit_status(
     result
 }
 
+#[cfg(windows)]
+fn cleanup_stray_audio_sidecar_processes_for(program: Option<&Path>, _reason: &str) -> usize {
+    let Some(program) = program else {
+        return 0;
+    };
+    let target_path = normalized_process_path(program);
+    if target_path.is_empty() {
+        return 0;
+    }
+
+    let current_pid = unsafe { GetCurrentProcessId() };
+    let mut stopped = 0usize;
+    for pid in matching_audio_sidecar_process_ids(&target_path) {
+        if pid == current_pid {
+            continue;
+        }
+        if terminate_process_by_id(pid) {
+            stopped = stopped.saturating_add(1);
+        }
+    }
+    stopped
+}
+
+#[cfg(not(windows))]
+fn cleanup_stray_audio_sidecar_processes_for(_program: Option<&Path>, _reason: &str) -> usize {
+    0
+}
+
+#[cfg(windows)]
+fn matching_audio_sidecar_process_ids(target_path: &str) -> Vec<u32> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Vec::new();
+    }
+
+    let mut pids = Vec::new();
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while has_entry {
+        let exe_name = wide_process_name(&entry.szExeFile);
+        if audio_sidecar_executable_names()
+            .iter()
+            .any(|allowed| exe_name.eq_ignore_ascii_case(allowed))
+        {
+            if let Some(path) = process_image_path(entry.th32ProcessID) {
+                if normalized_process_path(&path) == target_path {
+                    pids.push(entry.th32ProcessID);
+                }
+            }
+        }
+        has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe {
+        let _ = CloseHandle(snapshot);
+    }
+    pids
+}
+
+#[cfg(windows)]
+fn process_image_path(pid: u32) -> Option<PathBuf> {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    let mut buffer = vec![0u16; 32_768];
+    let mut size = buffer.len() as u32;
+    let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size) };
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    if ok == 0 || size == 0 {
+        return None;
+    }
+    buffer.truncate(size as usize);
+    Some(PathBuf::from(String::from_utf16_lossy(&buffer)))
+}
+
+#[cfg(windows)]
+fn terminate_process_by_id(pid: u32) -> bool {
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    let terminated = unsafe { TerminateProcess(handle, 0) } != 0;
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    terminated
+}
+
+#[cfg(windows)]
+fn normalized_process_path(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+#[cfg(windows)]
+fn wide_process_name(raw: &[u16]) -> String {
+    let len = raw
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(raw.len());
+    String::from_utf16_lossy(&raw[..len])
+}
+
 fn parse_sidecar_response(
     raw: &str,
     expected_request_id: &str,
@@ -1286,6 +1432,30 @@ mod tests {
     #[test]
     fn audio_sidecar_shutdown_without_active_sessions_is_noop() {
         assert_eq!(shutdown_all_audio_sidecars("test"), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn audio_sidecar_process_name_reads_until_nul() {
+        let mut raw = [0u16; 260];
+        let text: Vec<u16> = "scriber-audio-sidecar.exe".encode_utf16().collect();
+        raw[..text.len()].copy_from_slice(&text);
+        raw[text.len()] = 0;
+        raw[text.len() + 1] = 'x' as u16;
+
+        assert_eq!(wide_process_name(&raw), "scriber-audio-sidecar.exe");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn audio_sidecar_process_path_normalization_is_case_insensitive() {
+        let upper = PathBuf::from(r"C:\Program Files\Scriber\scriber-audio-sidecar.exe");
+        let lower = PathBuf::from(r"c:/program files/scriber/SCRIBER-AUDIO-SIDECAR.EXE");
+
+        assert_eq!(
+            normalized_process_path(&upper),
+            normalized_process_path(&lower)
+        );
     }
 
     #[test]
