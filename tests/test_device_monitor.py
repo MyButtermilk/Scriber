@@ -72,6 +72,30 @@ def test_schedule_refresh_logs_only_new_pending_refresh(monkeypatch):
     ]
 
 
+def test_device_state_changed_burst_uses_trailing_debounce(monkeypatch):
+    monitor = device_monitor.DeviceMonitor(debounce_seconds=0.5)
+    logs: list[str] = []
+    times = iter([100.0, 100.2, 100.6, 101.1])
+
+    monkeypatch.setattr(device_monitor.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(
+        device_monitor,
+        "logger",
+        types.SimpleNamespace(debug=lambda msg: logs.append(msg)),
+    )
+
+    monitor._schedule_refresh(reason="device_state_changed", immediate=False)
+    monitor._schedule_refresh(reason="device_state_changed", immediate=False)
+    monitor._schedule_refresh(reason="device_state_changed", immediate=False)
+    monitor._schedule_refresh(reason="device_state_changed", immediate=False)
+
+    assert logs == [
+        "[DeviceMonitor] refresh scheduled (device_state_changed, portaudio)",
+    ]
+    expected_due_at = 101.1 + device_monitor._DEVICE_STATE_CHANGED_DEBOUNCE_SECONDS
+    assert abs(monitor._pending_refresh_at - expected_due_at) < 0.001
+
+
 def test_refresh_deferred_while_stream_active_is_not_rescheduled(monkeypatch):
     monitor = device_monitor.DeviceMonitor(debounce_seconds=1.0)
     logs: list[str] = []

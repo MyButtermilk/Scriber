@@ -37,6 +37,16 @@ until the actual Tauri WebView reports a tokenized frontend-ready beacon.
 With -VerifyRealMediaWorkflows, it runs real installed backend file and YouTube
 transcription workflows through the token-protected REST API and requires
 completed transcript plus summary evidence.
+With -VerifySingleInstance, it starts a second desktop process and verifies that
+the single-instance mutex makes it exit without spawning another backend worker.
+Use -SingleInstanceSecondArguments and -SingleInstanceForbiddenLogText to verify
+that malformed/sensitive second-launch input is blocked without runtime log leaks.
+With -VerifyAudioSidecarCleanup, it starts a same-install audio sidecar before
+launch and verifies startup cleanup removes it and app exit leaves no same-path
+audio sidecar processes behind.
+With -VerifyShellMenuSmoke, it triggers the installed shell's smoke-only tray
+menu path after startup checks and verifies Open Scriber plus Quit timing and
+cleanup from the real Tauri shell process.
 
 Build the executable first with:
   cd Frontend
@@ -87,6 +97,14 @@ param(
     [switch]$VerifySupportBundle,
     [switch]$VerifyFrontend,
     [switch]$VerifyRealMediaWorkflows,
+    [switch]$VerifySingleInstance,
+    [string[]]$SingleInstanceSecondArguments = @(),
+    [string[]]$SingleInstanceForbiddenLogText = @(),
+    [switch]$VerifyAudioSidecarCleanup,
+    [switch]$VerifyShellMenuSmoke,
+    [string]$ShellMenuSmokeActions = "show-window,quit",
+    [int]$ShellMenuSmokeTimeoutSec = 30,
+    [int]$ShellMenuSmokeActionDelayMs = 250,
     [string]$RealWorkflowYoutubeUrl = "https://www.youtube.com/watch?v=0wEjbSYNUM8",
     [int]$RealWorkflowFileTimeoutSec = 240,
     [int]$RealWorkflowYoutubeTimeoutSec = 420,
@@ -1490,6 +1508,22 @@ namespace ScriberSmoke {
 
     public static class KeyboardInput {
         [StructLayout(LayoutKind.Sequential)]
+        public struct POINT {
+            public int x;
+            public int y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MSG {
+            public IntPtr hwnd;
+            public uint message;
+            public UIntPtr wParam;
+            public IntPtr lParam;
+            public uint time;
+            public POINT pt;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         public struct INPUT {
             public uint type;
             public InputUnion u;
@@ -1533,6 +1567,15 @@ namespace ScriberSmoke {
 
         [DllImport("user32.dll", SetLastError = true)]
         public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
 
         [DllImport("user32.dll")]
         public static extern uint MapVirtualKey(uint uCode, uint uMapType);
@@ -1617,6 +1660,61 @@ function Invoke-GlobalHotkeyChord {
     foreach ($modifier in $releaseModifiers) {
         Start-Sleep -Milliseconds 25
         [ScriberSmoke.KeyboardInput]::SendKey([UInt16]$modifier, $true)
+    }
+}
+
+function Convert-VirtualKeyToHotkeyModifier {
+    param([int]$VirtualKey)
+
+    switch ($VirtualKey) {
+        0x10 { return 0x0004 } # MOD_SHIFT
+        0x11 { return 0x0002 } # MOD_CONTROL
+        0x12 { return 0x0001 } # MOD_ALT
+        0x5B { return 0x0008 } # MOD_WIN
+        default { throw "Unsupported modifier virtual key for synthetic hotkey probe: $VirtualKey" }
+    }
+}
+
+function Test-SyntheticGlobalHotkeyDispatchSupport {
+    param(
+        [string]$ProbeHotkey = "ctrl+alt+shift+f24",
+        [int]$DeadlineMs = 1500
+    )
+
+    Initialize-WindowsKeyboardInput
+    $chord = Convert-HotkeyToKeyChord -Hotkey $ProbeHotkey
+    $modifiers = 0
+    foreach ($modifier in $chord.modifiers) {
+        $modifiers = $modifiers -bor (Convert-VirtualKeyToHotkeyModifier -VirtualKey ([int]$modifier))
+    }
+
+    $probeId = 0x5348
+    $registered = [ScriberSmoke.KeyboardInput]::RegisterHotKey(
+        [IntPtr]::Zero,
+        $probeId,
+        [UInt32]$modifiers,
+        [UInt32]$chord.key
+    )
+    if (-not $registered) {
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "Synthetic global hotkey support preflight could not register probe hotkey '$ProbeHotkey' (Win32 error $errorCode)."
+    }
+
+    try {
+        Invoke-GlobalHotkeyChord -Hotkey $ProbeHotkey
+        $deadline = (Get-Date).AddMilliseconds($DeadlineMs)
+        do {
+            $msg = New-Object ScriberSmoke.KeyboardInput+MSG
+            if ([ScriberSmoke.KeyboardInput]::PeekMessage([ref]$msg, [IntPtr]::Zero, 0, 0, 0x0001)) {
+                if ($msg.message -eq 0x0312 -and [int]$msg.wParam -eq $probeId) {
+                    return $true
+                }
+            }
+            Start-Sleep -Milliseconds 20
+        } while ((Get-Date) -lt $deadline)
+        return $false
+    } finally {
+        [void][ScriberSmoke.KeyboardInput]::UnregisterHotKey([IntPtr]::Zero, $probeId)
     }
 }
 
@@ -1744,6 +1842,9 @@ function Test-GlobalHotkeyDispatch {
     if ($DispatchMethod -eq "manual") {
         Write-Warning "Manual global hotkey smoke: press '$Hotkey' within ${DeadlineSec}s."
     } else {
+        if (-not (Test-SyntheticGlobalHotkeyDispatchSupport)) {
+            throw "Synthetic global hotkey dispatch is unavailable on this host: Windows SendInput did not trigger a probe RegisterHotKey. Use -WaitForManualGlobalHotkey for physical OS hotkey evidence."
+        }
         Invoke-GlobalHotkeyChord -Hotkey $Hotkey
     }
 
@@ -1927,6 +2028,439 @@ function Assert-NoNewBackendListeners {
     }
 }
 
+function Get-InstalledAudioSidecarProcesses {
+    param([string]$InstallRoot)
+
+    if (-not $InstallRoot -or -not (Test-Path -LiteralPath $InstallRoot -PathType Container)) {
+        return @()
+    }
+    $rootFull = (Convert-ToFullPath -Path $InstallRoot).ToLowerInvariant()
+    return @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $name = [string]$_.Name
+                if ($name -notmatch "^scriber-audio-sidecar") {
+                    return $false
+                }
+                $cmd = if ($_.CommandLine) { $_.CommandLine.ToLowerInvariant() } else { "" }
+                $exe = if ($_.ExecutablePath) { $_.ExecutablePath.ToLowerInvariant() } else { "" }
+                $exe.StartsWith($rootFull) -or $cmd.Contains($rootFull)
+            } |
+            ForEach-Object {
+                [pscustomobject]@{
+                    processId = [int]$_.ProcessId
+                    name = [string]$_.Name
+                    executablePath = [string]$_.ExecutablePath
+                }
+            }
+    )
+}
+
+function Resolve-InstalledAudioSidecarExe {
+    param([string]$InstallRoot)
+
+    $candidates = @(
+        (Join-Path $InstallRoot "scriber-audio-sidecar.exe"),
+        (Join-Path $InstallRoot "audio-sidecar\scriber-audio-sidecar.exe"),
+        (Join-Path $InstallRoot "resources\audio-sidecar\scriber-audio-sidecar.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+    $match = Get-ChildItem -LiteralPath $InstallRoot -Recurse -File -Filter "scriber-audio-sidecar.exe" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($match) {
+        return $match.FullName
+    }
+    throw "Installed audio sidecar executable was not found under $InstallRoot."
+}
+
+function Start-InstalledAudioSidecarStray {
+    param([string]$AudioSidecarPath)
+
+    $sidecarPath = (Resolve-Path -LiteralPath $AudioSidecarPath).Path
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $sidecarPath
+    $startInfo.Arguments = "--stdio"
+    $startInfo.WorkingDirectory = Split-Path $sidecarPath
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) {
+        throw "Failed to start installed audio sidecar cleanup probe."
+    }
+    Start-Sleep -Milliseconds 500
+    if ($process.HasExited) {
+        throw "Installed audio sidecar cleanup probe exited before Tauri startup."
+    }
+    return [pscustomobject]@{
+        process = $process
+        processId = [int]$process.Id
+        executablePath = $sidecarPath
+    }
+}
+
+function Test-SingleInstanceBlock {
+    param(
+        [string]$ExePath,
+        [string]$RuntimeDataDir,
+        [System.Diagnostics.Process]$PrimaryAppProcess,
+        [int]$DeadlineSec,
+        [string[]]$SecondArgumentList = @(),
+        [string[]]$ForbiddenLogText = @()
+    )
+
+    $backendBaseline = @(Get-ManagedBackendProcesses | ForEach-Object { [int]$_.ProcessId })
+    $startProcessParams = @{
+        FilePath = $ExePath
+        WorkingDirectory = (Split-Path $ExePath)
+        WindowStyle = "Hidden"
+        PassThru = $true
+    }
+    if ($SecondArgumentList -and $SecondArgumentList.Count -gt 0) {
+        $startProcessParams.ArgumentList = $SecondArgumentList
+    }
+    $second = Start-Process @startProcessParams
+    try {
+        if (-not $second.WaitForExit([Math]::Max(1, $DeadlineSec) * 1000)) {
+            Stop-Process -Id $second.Id -Force -ErrorAction SilentlyContinue
+            throw "Second Tauri process did not exit within ${DeadlineSec}s."
+        }
+        Assert-NoNewBackendListeners -BaselinePids $backendBaseline -WaitSec 2
+        if ($PrimaryAppProcess.HasExited) {
+            throw "Primary Tauri process exited while verifying single-instance behavior."
+        }
+        $shellLogPath = Join-Path $RuntimeDataDir "logs\tauri-shell.log"
+        $logObserved = Wait-TextFileContains `
+            -Path $shellLogPath `
+            -Pattern "another Scriber desktop instance is already running" `
+            -DeadlineSec 5
+        if (-not $logObserved) {
+            throw "Single-instance mutex message was not observed in $shellLogPath."
+        }
+        $forbiddenLogFileCount = 0
+        if ($ForbiddenLogText -and $ForbiddenLogText.Count -gt 0) {
+            $logPaths = @(
+                $shellLogPath,
+                (Join-Path $RuntimeDataDir "logs\tauri-backend.log")
+            )
+            foreach ($logPath in $logPaths) {
+                if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) {
+                    continue
+                }
+                $forbiddenLogFileCount += 1
+                $content = Get-Content -Raw -LiteralPath $logPath
+                foreach ($probe in $ForbiddenLogText) {
+                    if ($probe -and $content.Contains($probe)) {
+                        throw "Single-instance forbidden probe text leaked to runtime logs."
+                    }
+                }
+            }
+        }
+        return [pscustomobject]@{
+            verified = $true
+            secondProcessId = [int]$second.Id
+            secondExitCode = [int]$second.ExitCode
+            secondArgumentCount = if ($SecondArgumentList) { [int]$SecondArgumentList.Count } else { 0 }
+            noManagedBackendSpawned = $true
+            primaryStillRunning = -not $PrimaryAppProcess.HasExited
+            shellLogPath = $shellLogPath
+            shellLogObserved = $logObserved
+            forbiddenLogTextAbsent = if ($ForbiddenLogText -and $ForbiddenLogText.Count -gt 0) { $true } else { $null }
+            forbiddenLogFileCount = $forbiddenLogFileCount
+        }
+    } finally {
+        if ($second -and -not $second.HasExited) {
+            Stop-Process -Id $second.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Test-ShellMenuSmoke {
+    param(
+        [System.Diagnostics.Process]$AppProcess,
+        [string]$RuntimeDataDir,
+        [string]$TriggerPath,
+        [string]$Actions,
+        [int]$DeadlineSec
+    )
+
+    $shellLogPath = Join-Path $RuntimeDataDir "logs\tauri-shell.log"
+    New-Item -ItemType Directory -Force -Path (Split-Path $TriggerPath) | Out-Null
+    Set-Content -LiteralPath $TriggerPath -Value "go" -Encoding ASCII
+
+    $showMatch = $null
+    $copyRecentMatch = $null
+    $hotkeyPressMatch = $null
+    $hotkeyReleaseMatch = $null
+    $overlayInitializingMatch = $null
+    $overlayRecordingMatch = $null
+    $overlayTranscribingMatch = $null
+    $overlayHideMatch = $null
+    $quitMatch = $null
+    $copyRecentRequested = [string]::IsNullOrWhiteSpace($Actions) -eq $false -and $Actions -match "(?i)(^|[,;\s])(copy-recent|copy-recent-transcript|recent-copy)([,;\s]|$)"
+    $hotkeyPressRequested = [string]::IsNullOrWhiteSpace($Actions) -eq $false -and $Actions -match "(?i)(^|[,;\s])(hotkey-press|push-to-talk-press|ptt-press)([,;\s]|$)"
+    $hotkeyReleaseRequested = [string]::IsNullOrWhiteSpace($Actions) -eq $false -and $Actions -match "(?i)(^|[,;\s])(hotkey-release|push-to-talk-release|ptt-release)([,;\s]|$)"
+    $overlayInitializingRequested = [string]::IsNullOrWhiteSpace($Actions) -eq $false -and $Actions -match "(?i)(^|[,;\s])(overlay-initializing|overlay-preparing)([,;\s]|$)"
+    $overlayRecordingRequested = [string]::IsNullOrWhiteSpace($Actions) -eq $false -and $Actions -match "(?i)(^|[,;\s])(overlay-recording)([,;\s]|$)"
+    $overlayTranscribingRequested = [string]::IsNullOrWhiteSpace($Actions) -eq $false -and $Actions -match "(?i)(^|[,;\s])(overlay-transcribing|overlay-finalizing)([,;\s]|$)"
+    $overlayHideRequested = [string]::IsNullOrWhiteSpace($Actions) -eq $false -and $Actions -match "(?i)(^|[,;\s])(overlay-hide|hide-overlay)([,;\s]|$)"
+    $deadline = (Get-Date).AddSeconds($DeadlineSec)
+    do {
+        if (Test-Path -LiteralPath $shellLogPath -PathType Leaf) {
+            $content = Get-Content -LiteralPath $shellLogPath -Raw -ErrorAction SilentlyContinue
+            if (-not $showMatch -and $content) {
+                $candidate = [regex]::Match(
+                    $content,
+                    "shell menu smoke action show-window completed elapsedMs=(\d+) visible=(true|false) hideSucceeded=(true|false)"
+                )
+                if ($candidate.Success) {
+                    $showMatch = $candidate
+                    if ($candidate.Groups[2].Value -ne "true") {
+                        throw "Shell menu smoke Open Scriber did not leave the main window visible."
+                    }
+                }
+            }
+            if ($copyRecentRequested -and -not $copyRecentMatch -and $content) {
+                $candidate = [regex]::Match(
+                    $content,
+                    "shell menu smoke action copy-recent completed elapsedMs=(\d+) copied=(true|false) transcriptId=([A-Za-z0-9_-]+)"
+                )
+                if ($candidate.Success) {
+                    $copyRecentMatch = $candidate
+                    if ($candidate.Groups[2].Value -ne "true") {
+                        throw "Shell menu smoke Recent Transcript copy did not report copied=true."
+                    }
+                }
+            }
+            if ($hotkeyPressRequested -and -not $hotkeyPressMatch -and $content) {
+                $candidate = [regex]::Match(
+                    $content,
+                    "shell menu smoke action hotkey-press completed elapsedMs=(\d+) mode=([A-Za-z0-9_]+) path=([^ ]+) dispatched=(true|false) posted=(true|false) error=([^\r\n]*)"
+                )
+                if ($candidate.Success) {
+                    $hotkeyPressMatch = $candidate
+                    if ($candidate.Groups[2].Value -ne "push_to_talk" -or $candidate.Groups[3].Value -ne "/api/live-mic/start" -or $candidate.Groups[4].Value -ne "true") {
+                        throw "Shell menu smoke push-to-talk press did not dispatch /api/live-mic/start in push_to_talk mode."
+                    }
+                }
+            }
+            if ($hotkeyReleaseRequested -and -not $hotkeyReleaseMatch -and $content) {
+                $candidate = [regex]::Match(
+                    $content,
+                    "shell menu smoke action hotkey-release completed elapsedMs=(\d+) mode=([A-Za-z0-9_]+) path=([^ ]+) dispatched=(true|false) posted=(true|false) error=([^\r\n]*)"
+                )
+                if ($candidate.Success) {
+                    $hotkeyReleaseMatch = $candidate
+                    if ($candidate.Groups[2].Value -ne "push_to_talk" -or $candidate.Groups[3].Value -ne "/api/live-mic/stop" -or $candidate.Groups[4].Value -ne "true") {
+                        throw "Shell menu smoke push-to-talk release did not dispatch /api/live-mic/stop in push_to_talk mode."
+                    }
+                }
+            }
+            if ($overlayInitializingRequested -and -not $overlayInitializingMatch -and $content) {
+                $candidate = [regex]::Match(
+                    $content,
+                    "shell menu smoke action overlay-initializing completed elapsedMs=(\d+) mode=([A-Za-z0-9_]+) visible=(true|false) available=(true|false)"
+                )
+                if ($candidate.Success) {
+                    $overlayInitializingMatch = $candidate
+                    if ($candidate.Groups[2].Value -ne "initializing" -or $candidate.Groups[3].Value -ne "true" -or $candidate.Groups[4].Value -ne "true") {
+                        throw "Shell menu smoke overlay-initializing did not report visible initializing state."
+                    }
+                }
+            }
+            if ($overlayRecordingRequested -and -not $overlayRecordingMatch -and $content) {
+                $candidate = [regex]::Match(
+                    $content,
+                    "shell menu smoke action overlay-recording completed elapsedMs=(\d+) mode=([A-Za-z0-9_]+) visible=(true|false) available=(true|false)"
+                )
+                if ($candidate.Success) {
+                    $overlayRecordingMatch = $candidate
+                    if ($candidate.Groups[2].Value -ne "recording" -or $candidate.Groups[3].Value -ne "true" -or $candidate.Groups[4].Value -ne "true") {
+                        throw "Shell menu smoke overlay-recording did not report visible recording state."
+                    }
+                }
+            }
+            if ($overlayTranscribingRequested -and -not $overlayTranscribingMatch -and $content) {
+                $candidate = [regex]::Match(
+                    $content,
+                    "shell menu smoke action overlay-transcribing completed elapsedMs=(\d+) mode=([A-Za-z0-9_]+) visible=(true|false) available=(true|false)"
+                )
+                if ($candidate.Success) {
+                    $overlayTranscribingMatch = $candidate
+                    if ($candidate.Groups[2].Value -ne "transcribing" -or $candidate.Groups[3].Value -ne "true" -or $candidate.Groups[4].Value -ne "true") {
+                        throw "Shell menu smoke overlay-transcribing did not report visible transcribing state."
+                    }
+                }
+            }
+            if ($overlayHideRequested -and -not $overlayHideMatch -and $content) {
+                $candidate = [regex]::Match(
+                    $content,
+                    "shell menu smoke action overlay-hide completed elapsedMs=(\d+) mode=([A-Za-z0-9_]+) visible=(true|false) available=(true|false)"
+                )
+                if ($candidate.Success) {
+                    $overlayHideMatch = $candidate
+                    if ($candidate.Groups[2].Value -ne "hidden" -or $candidate.Groups[3].Value -ne "false" -or $candidate.Groups[4].Value -ne "true") {
+                        throw "Shell menu smoke overlay-hide did not report hidden state."
+                    }
+                }
+            }
+            if (-not $quitMatch -and $content) {
+                $candidate = [regex]::Match(
+                    $content,
+                    "shell menu smoke action quit completed elapsedMs=(\d+) stoppedSidecars=(\d+) exitRequested=true"
+                )
+                if ($candidate.Success) {
+                    $quitMatch = $candidate
+                }
+            }
+            if (
+                $showMatch -and
+                $quitMatch -and
+                (-not $copyRecentRequested -or $copyRecentMatch) -and
+                (-not $hotkeyPressRequested -or $hotkeyPressMatch) -and
+                (-not $hotkeyReleaseRequested -or $hotkeyReleaseMatch) -and
+                (-not $overlayInitializingRequested -or $overlayInitializingMatch) -and
+                (-not $overlayRecordingRequested -or $overlayRecordingMatch) -and
+                (-not $overlayTranscribingRequested -or $overlayTranscribingMatch) -and
+                (-not $overlayHideRequested -or $overlayHideMatch)
+            ) {
+                break
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    if (-not $showMatch) {
+        throw "Shell menu smoke did not observe the Open Scriber marker in $shellLogPath."
+    }
+    if (-not $quitMatch) {
+        throw "Shell menu smoke did not observe the Quit marker in $shellLogPath."
+    }
+    if ($copyRecentRequested -and -not $copyRecentMatch) {
+        throw "Shell menu smoke did not observe the Recent Transcript copy marker in $shellLogPath."
+    }
+    if ($hotkeyPressRequested -and -not $hotkeyPressMatch) {
+        throw "Shell menu smoke did not observe the push-to-talk press marker in $shellLogPath."
+    }
+    if ($hotkeyReleaseRequested -and -not $hotkeyReleaseMatch) {
+        throw "Shell menu smoke did not observe the push-to-talk release marker in $shellLogPath."
+    }
+    if ($overlayInitializingRequested -and -not $overlayInitializingMatch) {
+        throw "Shell menu smoke did not observe the overlay-initializing marker in $shellLogPath."
+    }
+    if ($overlayRecordingRequested -and -not $overlayRecordingMatch) {
+        throw "Shell menu smoke did not observe the overlay-recording marker in $shellLogPath."
+    }
+    if ($overlayTranscribingRequested -and -not $overlayTranscribingMatch) {
+        throw "Shell menu smoke did not observe the overlay-transcribing marker in $shellLogPath."
+    }
+    if ($overlayHideRequested -and -not $overlayHideMatch) {
+        throw "Shell menu smoke did not observe the overlay-hide marker in $shellLogPath."
+    }
+
+    $remaining = [Math]::Max(1, [int][Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds))
+    Wait-ProcessExit -ProcessId ([int]$AppProcess.Id) -DeadlineSec $remaining
+
+    return [pscustomobject]@{
+        verified = $true
+        shellLogPath = $shellLogPath
+        triggerPath = $TriggerPath
+        showWindow = [pscustomobject]@{
+            elapsedMs = [int]$showMatch.Groups[1].Value
+            visible = ($showMatch.Groups[2].Value -eq "true")
+            hideSucceeded = ($showMatch.Groups[3].Value -eq "true")
+        }
+        copyRecent = if ($copyRecentMatch) {
+            [pscustomobject]@{
+                elapsedMs = [int]$copyRecentMatch.Groups[1].Value
+                copied = ($copyRecentMatch.Groups[2].Value -eq "true")
+                transcriptId = $copyRecentMatch.Groups[3].Value
+            }
+        } else {
+            $null
+        }
+        hotkeyPress = if ($hotkeyPressMatch) {
+            [pscustomobject]@{
+                elapsedMs = [int]$hotkeyPressMatch.Groups[1].Value
+                mode = $hotkeyPressMatch.Groups[2].Value
+                path = $hotkeyPressMatch.Groups[3].Value
+                dispatched = ($hotkeyPressMatch.Groups[4].Value -eq "true")
+                posted = ($hotkeyPressMatch.Groups[5].Value -eq "true")
+                error = $hotkeyPressMatch.Groups[6].Value
+            }
+        } else {
+            $null
+        }
+        hotkeyRelease = if ($hotkeyReleaseMatch) {
+            [pscustomobject]@{
+                elapsedMs = [int]$hotkeyReleaseMatch.Groups[1].Value
+                mode = $hotkeyReleaseMatch.Groups[2].Value
+                path = $hotkeyReleaseMatch.Groups[3].Value
+                dispatched = ($hotkeyReleaseMatch.Groups[4].Value -eq "true")
+                posted = ($hotkeyReleaseMatch.Groups[5].Value -eq "true")
+                error = $hotkeyReleaseMatch.Groups[6].Value
+            }
+        } else {
+            $null
+        }
+        overlay = [pscustomobject]@{
+            initializing = if ($overlayInitializingMatch) {
+                [pscustomobject]@{
+                    elapsedMs = [int]$overlayInitializingMatch.Groups[1].Value
+                    mode = $overlayInitializingMatch.Groups[2].Value
+                    visible = ($overlayInitializingMatch.Groups[3].Value -eq "true")
+                    available = ($overlayInitializingMatch.Groups[4].Value -eq "true")
+                }
+            } else {
+                $null
+            }
+            recording = if ($overlayRecordingMatch) {
+                [pscustomobject]@{
+                    elapsedMs = [int]$overlayRecordingMatch.Groups[1].Value
+                    mode = $overlayRecordingMatch.Groups[2].Value
+                    visible = ($overlayRecordingMatch.Groups[3].Value -eq "true")
+                    available = ($overlayRecordingMatch.Groups[4].Value -eq "true")
+                }
+            } else {
+                $null
+            }
+            transcribing = if ($overlayTranscribingMatch) {
+                [pscustomobject]@{
+                    elapsedMs = [int]$overlayTranscribingMatch.Groups[1].Value
+                    mode = $overlayTranscribingMatch.Groups[2].Value
+                    visible = ($overlayTranscribingMatch.Groups[3].Value -eq "true")
+                    available = ($overlayTranscribingMatch.Groups[4].Value -eq "true")
+                }
+            } else {
+                $null
+            }
+            hide = if ($overlayHideMatch) {
+                [pscustomobject]@{
+                    elapsedMs = [int]$overlayHideMatch.Groups[1].Value
+                    mode = $overlayHideMatch.Groups[2].Value
+                    visible = ($overlayHideMatch.Groups[3].Value -eq "true")
+                    available = ($overlayHideMatch.Groups[4].Value -eq "true")
+                }
+            } else {
+                $null
+            }
+        }
+        quit = [pscustomobject]@{
+            elapsedMs = [int]$quitMatch.Groups[1].Value
+            stoppedSidecars = [int]$quitMatch.Groups[2].Value
+            exitRequested = $true
+        }
+        appExited = $true
+    }
+}
+
 function Wait-BackendCrashMetadata {
     param(
         [string]$DataDir,
@@ -2056,6 +2590,7 @@ if (-not (Test-Path $ExePath)) {
     throw "Missing Tauri executable: $ExePath. Run 'cd Frontend; npm run tauri:build' first."
 }
 $ExePath = (Resolve-Path $ExePath).Path
+$InstallRoot = Split-Path $ExePath
 $PythonPath = Resolve-PythonPath -Root $RepoRoot -Requested $PythonPath
 if ($BackendExePath) {
     if (-not (Test-Path $BackendExePath)) {
@@ -2101,11 +2636,24 @@ if (($SimulateGlobalHotkey -or $WaitForManualGlobalHotkey) -and ($SimulateBacken
 if ($SimulateGlobalHotkey -and $WaitForManualGlobalHotkey) {
     throw "-SimulateGlobalHotkey cannot be combined with -WaitForManualGlobalHotkey."
 }
+if ($VerifyAudioSidecarCleanup -and $KeepAppOpen) {
+    throw "-VerifyAudioSidecarCleanup cannot be combined with -KeepAppOpen because app-exit cleanup must be verified."
+}
+if ($VerifyShellMenuSmoke -and $KeepAppOpen) {
+    throw "-VerifyShellMenuSmoke cannot be combined with -KeepAppOpen because shell Quit must be verified."
+}
+if ($VerifyShellMenuSmoke -and $ShellMenuSmokeActions -notmatch "(?i)(^|[,;\s])(quit|exit)([,;\s]|$)") {
+    throw "-VerifyShellMenuSmoke requires ShellMenuSmokeActions to include quit."
+}
 if (-not $DataDir) {
     $DataDir = Join-Path $RepoRoot ("tmp\tauri-smoke-data\" + [System.Guid]::NewGuid().ToString("N"))
 }
 $DataDir = Convert-ToFullPath -Path $DataDir
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+$shellMenuSmokeTriggerPath = $null
+if ($VerifyShellMenuSmoke) {
+    $shellMenuSmokeTriggerPath = Join-Path $DataDir "shell-menu-smoke.trigger"
+}
 $globalHotkeySmokeConfig = $null
 if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey) {
     $globalHotkeySmokeConfig = Initialize-GlobalHotkeySmokeData -RuntimeDataDir $DataDir -Hotkey $GlobalHotkeySmokeHotkey -Root $RepoRoot
@@ -2139,9 +2687,14 @@ $oldRustSyntheticCapture = $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE
 $oldRustWasapiCapture = $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE
 $oldMicAlwaysOn = $env:SCRIBER_MIC_ALWAYS_ON
 $oldScriberAutoSummarize = $env:SCRIBER_AUTO_SUMMARIZE
+$oldAudioSidecarExe = $env:SCRIBER_AUDIO_SIDECAR_EXE
 $oldBackendStartTimeout = $env:SCRIBER_BACKEND_START_TIMEOUT_MS
 $oldSimulateStartupTimeout = $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE
 $oldSimulateStartupTimeoutMarker = $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER
+$oldShellMenuSmokeActions = $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTIONS
+$oldShellMenuSmokeTriggerFile = $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_FILE
+$oldShellMenuSmokeTriggerTimeout = $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_TIMEOUT_MS
+$oldShellMenuSmokeActionDelay = $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTION_DELAY_MS
 $liveRecordingProviderEnvSnapshot = @{}
 
 function Set-SmokeEnvironmentVariable {
@@ -2230,6 +2783,12 @@ if ($SimulateBackendStartupTimeout) {
     $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE = "1"
     $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER = Join-Path $DataDir "startup-timeout-once.marker"
 }
+if ($VerifyShellMenuSmoke) {
+    $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTIONS = $ShellMenuSmokeActions
+    $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_FILE = $shellMenuSmokeTriggerPath
+    $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_TIMEOUT_MS = ([Math]::Max(1, $ShellMenuSmokeTimeoutSec) * 1000).ToString()
+    $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTION_DELAY_MS = ([Math]::Max(0, $ShellMenuSmokeActionDelayMs)).ToString()
+}
 
 $app = $null
 $result = $null
@@ -2237,7 +2796,25 @@ $failure = $null
 $defaultPortBlocker = $null
 $externalBackend = $null
 $externalBackendPid = $null
+$singleInstance = $null
+$audioSidecarCleanup = $null
+$strayAudioSidecar = $null
+$shellMenuSmoke = $null
 try {
+    if ($VerifyAudioSidecarCleanup) {
+        $audioSidecarProbePath = Resolve-InstalledAudioSidecarExe -InstallRoot $InstallRoot
+        $env:SCRIBER_AUDIO_SIDECAR_EXE = $audioSidecarProbePath
+        $strayAudioSidecar = Start-InstalledAudioSidecarStray -AudioSidecarPath $audioSidecarProbePath
+        $audioSidecarCleanup = [pscustomobject]@{
+            verified = $false
+            startupProbePid = [int]$strayAudioSidecar.processId
+            startupProbePath = [string]$strayAudioSidecar.executablePath
+            shellAudioSidecarExe = [string]$audioSidecarProbePath
+            startupCleanupVerified = $false
+            noRemainingInstalledSidecarsAfterExit = $false
+            remainingInstalledSidecarsAfterExit = @()
+        }
+    }
     $backendBaselineForApp = $baseline
     if ($AttachExternalBackend) {
         if (-not (Test-LoopbackPortFree -Port $DefaultBackendPort)) {
@@ -2303,6 +2880,19 @@ try {
     }
     if (-not (Convert-ToFullPath -Path $runtime.downloadsDir).StartsWith($DataDir, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Managed backend downloadsDir is not under dataDir: $($runtime.downloadsDir)"
+    }
+    if ($VerifyAudioSidecarCleanup) {
+        Wait-ProcessExit -ProcessId ([int]$strayAudioSidecar.processId) -DeadlineSec 10
+        $audioSidecarCleanup.startupCleanupVerified = $true
+    }
+    if ($VerifySingleInstance) {
+        $singleInstance = Test-SingleInstanceBlock `
+            -ExePath $ExePath `
+            -RuntimeDataDir $DataDir `
+            -PrimaryAppProcess $app `
+            -DeadlineSec 10 `
+            -SecondArgumentList $SingleInstanceSecondArguments `
+            -ForbiddenLogText $SingleInstanceForbiddenLogText
     }
     $externalAttach = $null
     if ($AttachExternalBackend) {
@@ -2481,6 +3071,14 @@ try {
         -ProbeIntervalSec $StabilityProbeIntervalSec `
         -MaxWorkingSetGrowthMB $MaxBackendWorkingSetGrowthMB `
         -MaxIdleCpuPercent $MaxIdleCpuPercent
+    if ($VerifyShellMenuSmoke) {
+        $shellMenuSmoke = Test-ShellMenuSmoke `
+            -AppProcess $app `
+            -RuntimeDataDir $DataDir `
+            -TriggerPath $shellMenuSmokeTriggerPath `
+            -Actions $ShellMenuSmokeActions `
+            -DeadlineSec $ShellMenuSmokeTimeoutSec
+    }
     $result = [pscustomobject]@{
         ok = $true
         appPid = $app.Id
@@ -2499,11 +3097,14 @@ try {
         supportBundle = $supportBundle
         realMediaWorkflows = $realMediaWorkflows
         globalHotkey = $globalHotkey
+        singleInstance = $singleInstance
+        audioSidecarCleanup = $audioSidecarCleanup
         startupTimeout = $startupTimeout
         crashRecovery = $crashRecovery
         controlledShutdown = $controlledShutdown
         liveRecording = $liveRecording
         stability = $stability
+        shellMenuSmoke = $shellMenuSmoke
         cleanupVerified = $false
     }
 } catch {
@@ -2543,11 +3144,14 @@ try {
         supportBundle = $supportBundle
         realMediaWorkflows = $realMediaWorkflows
         globalHotkey = $globalHotkey
+        singleInstance = $singleInstance
+        audioSidecarCleanup = $audioSidecarCleanup
         startupTimeout = $startupTimeout
         crashRecovery = $crashRecovery
         controlledShutdown = $controlledShutdown
         liveRecording = $failureLiveRecording
         stability = $null
+        shellMenuSmoke = $shellMenuSmoke
         failureDiagnostics = $failureDiagnostics
         cleanupVerified = $false
     }
@@ -2584,6 +3188,29 @@ try {
         }
     }
 
+    if ($VerifyAudioSidecarCleanup) {
+        if ($strayAudioSidecar -and $strayAudioSidecar.process -and -not $strayAudioSidecar.process.HasExited) {
+            Stop-Process -Id ([int]$strayAudioSidecar.processId) -Force -ErrorAction SilentlyContinue
+            $cleanupFailure = "Installed audio sidecar startup cleanup did not stop probe process $($strayAudioSidecar.processId)."
+        }
+        $remainingAudioSidecars = @(Get-InstalledAudioSidecarProcesses -InstallRoot $InstallRoot)
+        if ($audioSidecarCleanup) {
+            $audioSidecarCleanup.remainingInstalledSidecarsAfterExit = @($remainingAudioSidecars)
+            $audioSidecarCleanup.noRemainingInstalledSidecarsAfterExit = ($remainingAudioSidecars.Count -eq 0)
+            $audioSidecarCleanup.verified = (
+                [bool]$audioSidecarCleanup.startupCleanupVerified -and
+                [bool]$audioSidecarCleanup.noRemainingInstalledSidecarsAfterExit
+            )
+        }
+        if ($remainingAudioSidecars.Count -gt 0) {
+            foreach ($process in $remainingAudioSidecars) {
+                Stop-Process -Id ([int]$process.processId) -Force -ErrorAction SilentlyContinue
+            }
+            $details = @($remainingAudioSidecars | ForEach-Object { "$($_.processId):$($_.name)" })
+            $cleanupFailure = "Installed audio sidecar process remained after Tauri exit: $($details -join '; ')"
+        }
+    }
+
     if ($defaultPortBlocker) {
         $defaultPortBlocker.Stop()
         $defaultPortBlocker = $null
@@ -2613,9 +3240,14 @@ try {
     $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = $oldRustWasapiCapture
     $env:SCRIBER_MIC_ALWAYS_ON = $oldMicAlwaysOn
     $env:SCRIBER_AUTO_SUMMARIZE = $oldScriberAutoSummarize
+    $env:SCRIBER_AUDIO_SIDECAR_EXE = $oldAudioSidecarExe
     $env:SCRIBER_BACKEND_START_TIMEOUT_MS = $oldBackendStartTimeout
     $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_ONCE = $oldSimulateStartupTimeout
     $env:SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER = $oldSimulateStartupTimeoutMarker
+    $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTIONS = $oldShellMenuSmokeActions
+    $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_FILE = $oldShellMenuSmokeTriggerFile
+    $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_TIMEOUT_MS = $oldShellMenuSmokeTriggerTimeout
+    $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTION_DELAY_MS = $oldShellMenuSmokeActionDelay
     foreach ($name in @($liveRecordingProviderEnvSnapshot.Keys)) {
         [Environment]::SetEnvironmentVariable(
             $name,

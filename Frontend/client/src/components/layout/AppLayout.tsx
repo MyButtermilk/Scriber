@@ -117,7 +117,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
           <div className="flex items-center gap-1.5">
             <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
               <SheetTrigger asChild>
-                <Button type="button" variant="ghost" size="icon" aria-label="Open navigation">
+                <Button type="button" variant="ghost" size="icon" className="min-h-[44px] min-w-[44px]" aria-label="Open navigation">
                   <Menu className="h-5 w-5" />
                 </Button>
               </SheetTrigger>
@@ -146,6 +146,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
               type="button"
               variant="ghost"
               size="icon"
+              className="min-h-[44px] min-w-[44px]"
               onClick={handleOpenCommandPalette}
               aria-label="Open command palette"
             >

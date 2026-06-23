@@ -5,6 +5,11 @@ import { Loader2, Square } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { apiUrl, isTauriRuntime, loadBackendBaseUrlFromTauri, wsUrl } from "@/lib/backend";
 import {
+  DEFAULT_VISUALIZER_BAR_COUNT,
+  loadVisualizerBarCount,
+  normalizeVisualizerBarCount,
+} from "@/lib/visualizer-settings";
+import {
   isScriberWebSocketMessage,
   type ScriberWebSocketMessage,
 } from "@/contexts/WebSocketContext";
@@ -18,7 +23,6 @@ type OverlayEventPayload = {
   visible?: boolean;
 };
 
-const BAR_COUNT = 36;
 const WAVEFORM_CANVAS_WIDTH = 162;
 const WAVEFORM_CANVAS_HEIGHT = 29;
 const PILL_PADDING = 5;
@@ -82,11 +86,37 @@ function overlayVisualizerLevelFromRms(rms: number): number {
   return Math.min(1, Math.pow((level - OVERLAY_RMS_NOISE_FLOOR) * OVERLAY_RMS_DISPLAY_SCALE, 0.72));
 }
 
-function OverlayWaveform({ active, rmsRef }: { active: boolean; rmsRef: { current: number } }) {
+function resizeBarBuffer(values: number[], count: number, fill: number): number[] {
+  if (values.length === count) {
+    return values;
+  }
+  const next = values.slice(0, count);
+  while (next.length < count) {
+    next.push(fill);
+  }
+  return next;
+}
+
+function OverlayWaveform({
+  active,
+  rmsRef,
+  barCount,
+}: {
+  active: boolean;
+  rmsRef: { current: number };
+  barCount: number;
+}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const levelsRef = useRef<number[]>(Array(BAR_COUNT).fill(0));
-  const displayRef = useRef<number[]>(Array(BAR_COUNT).fill(0.12));
-  const fallRef = useRef<number[]>(Array(BAR_COUNT).fill(0));
+  const resolvedBarCount = normalizeVisualizerBarCount(barCount);
+  const levelsRef = useRef<number[]>(Array(resolvedBarCount).fill(0));
+  const displayRef = useRef<number[]>(Array(resolvedBarCount).fill(0.12));
+  const fallRef = useRef<number[]>(Array(resolvedBarCount).fill(0));
+
+  useEffect(() => {
+    levelsRef.current = resizeBarBuffer(levelsRef.current, resolvedBarCount, 0);
+    displayRef.current = resizeBarBuffer(displayRef.current, resolvedBarCount, 0.12);
+    fallRef.current = resizeBarBuffer(fallRef.current, resolvedBarCount, 0);
+  }, [resolvedBarCount]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -120,8 +150,8 @@ function OverlayWaveform({ active, rmsRef }: { active: boolean; rmsRef: { curren
       }
 
       const inputLevel = overlayVisualizerLevelFromRms(rmsRef.current);
-      for (let i = 0; i < BAR_COUNT; i++) {
-        const center = BAR_COUNT / 2;
+      for (let i = 0; i < resolvedBarCount; i++) {
+        const center = resolvedBarCount / 2;
         const dist = Math.abs(i - center) / center;
         const freqFactor = 1.0 - dist * dist * 0.6;
         const phase = i * 0.52 + now * 0.01;
@@ -137,13 +167,19 @@ function OverlayWaveform({ active, rmsRef }: { active: boolean; rmsRef: { curren
       const padLeft = 8 * dpr;
       const padRight = 10 * dpr;
       const usableWidth = Math.max(1, width - padLeft - padRight);
-      const gap = 1.8 * dpr;
-      const barWidth = Math.max(1.8 * dpr, (usableWidth - gap * (BAR_COUNT - 1)) / BAR_COUNT);
+      const gap = Math.max(
+        0.5 * dpr,
+        Math.min(1.8 * dpr, usableWidth / Math.max(1, resolvedBarCount * 7)),
+      );
+      const barWidth = Math.max(
+        0.7 * dpr,
+        (usableWidth - gap * (resolvedBarCount - 1)) / resolvedBarCount,
+      );
       const centerY = height / 2;
       const maxHeight = 24 * dpr;
 
       ctx.clearRect(0, 0, width, height);
-      for (let i = 0; i < BAR_COUNT; i++) {
+      for (let i = 0; i < resolvedBarCount; i++) {
         const target = levels[i] || 0;
         const current = display[i] || 0.12;
         if (target > current) {
@@ -153,7 +189,7 @@ function OverlayWaveform({ active, rmsRef }: { active: boolean; rmsRef: { curren
           fall[i] = (fall[i] || 0) + gravity * dt;
           display[i] = Math.max(0.12, current - fall[i]);
         }
-        const centerFactor = 1.0 - Math.abs(i - BAR_COUNT / 2) / (BAR_COUNT / 2);
+        const centerFactor = 1.0 - Math.abs(i - resolvedBarCount / 2) / (resolvedBarCount / 2);
         const adjustedLevel = display[i] * (0.5 + 0.5 * centerFactor);
         const barHeight = Math.max(2 * dpr, adjustedLevel * maxHeight);
         const x = padLeft + i * (barWidth + gap);
@@ -170,7 +206,7 @@ function OverlayWaveform({ active, rmsRef }: { active: boolean; rmsRef: { curren
 
     rafId = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(rafId);
-  }, [active, rmsRef]);
+  }, [active, resolvedBarCount, rmsRef]);
 
   return (
     <canvas
@@ -210,10 +246,28 @@ function overlayLayerClass(active: boolean): string {
 export default function NativeRecordingOverlay() {
   const [backendReady, setBackendReady] = useState(!isTauriRuntime());
   const [mode, setMode] = useState<OverlayMode>(() => devOverlayModeFromLocation());
+  const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
   const rmsRef = useRef(devOverlayRmsFromLocation());
   const activeSessionIdRef = useRef<string | null>(null);
   const isDevOverlayPreview = !isTauriRuntime() && devOverlayModeFromLocation() !== "hidden";
   const visible = mode !== "hidden";
+
+  const refreshVisualizerBarCount = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const count = await loadVisualizerBarCount(signal);
+      setVisualizerBarCount(count);
+    } catch (e: any) {
+      if (e?.name !== "AbortError") {
+        setVisualizerBarCount(DEFAULT_VISUALIZER_BAR_COUNT);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshVisualizerBarCount(controller.signal);
+    return () => controller.abort();
+  }, [refreshVisualizerBarCount]);
 
   const applyWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
@@ -254,8 +308,11 @@ export default function NativeRecordingOverlay() {
         activeSessionIdRef.current = null;
         setMode("hidden");
         break;
+      case "settings_updated":
+        void refreshVisualizerBarCount();
+        break;
     }
-  }, []);
+  }, [refreshVisualizerBarCount]);
 
   useEffect(() => {
     document.documentElement.dataset.scriberOverlayWindow = "true";
@@ -383,7 +440,11 @@ export default function NativeRecordingOverlay() {
                 >
                   <Square className="fill-current" style={{ width: STOP_ICON_SIZE, height: STOP_ICON_SIZE }} />
                 </button>
-                <OverlayWaveform active={mode === "recording"} rmsRef={rmsRef} />
+                <OverlayWaveform
+                  active={mode === "recording"}
+                  rmsRef={rmsRef}
+                  barCount={visualizerBarCount}
+                />
               </div>
               <div className={overlayLayerClass(mode === "transcribing")} aria-hidden={mode !== "transcribing"}>
                 <StatusContent mode="transcribing" />

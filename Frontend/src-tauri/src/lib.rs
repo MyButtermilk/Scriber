@@ -72,6 +72,11 @@ const AUTOSTART_REGISTRY_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVe
 const AUTOSTART_REGISTRY_VALUE: &str = "Scriber";
 const AUTOSTART_USER_CHOICE_FILE: &str = "desktop-autostart-user-choice";
 const AUTOSTART_DEFAULT_ENV: &str = "SCRIBER_DESKTOP_AUTOSTART_DEFAULT";
+const SHELL_MENU_SMOKE_ACTIONS_ENV: &str = "SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTIONS";
+const SHELL_MENU_SMOKE_TRIGGER_FILE_ENV: &str = "SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_FILE";
+const SHELL_MENU_SMOKE_TRIGGER_TIMEOUT_MS_ENV: &str =
+    "SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_TIMEOUT_MS";
+const SHELL_MENU_SMOKE_ACTION_DELAY_MS_ENV: &str = "SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTION_DELAY_MS";
 const HOTKEY_DISPATCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS: u64 = 1000;
 const NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL: Duration = Duration::from_secs(900);
@@ -108,11 +113,25 @@ pub struct BackendAccess {
     session_token: String,
 }
 
+#[derive(Debug)]
 struct RecentTranscriptMenuEntry {
     id: String,
     title: String,
     date: String,
     transcript_type: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellMenuSmokeAction {
+    ShowWindow,
+    CopyRecent,
+    HotkeyPress,
+    HotkeyRelease,
+    OverlayInitializing,
+    OverlayRecording,
+    OverlayTranscribing,
+    OverlayHide,
+    Quit,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -884,6 +903,7 @@ pub fn run() {
                 start_native_device_event_monitor_for_app(app.handle().clone());
             app.state::<NativeDeviceEventsState>()
                 .set_handle(native_events_handle);
+            start_shell_menu_smoke_actions(app.handle().clone());
             let shell_ipc_state = app.state::<ShellIpcState>();
             write_shell_log(&format!(
                 "shell IPC state running={} pipe_hash={}",
@@ -1155,6 +1175,318 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+fn start_shell_menu_smoke_actions<R>(app: AppHandle<R>)
+where
+    R: Runtime + 'static,
+{
+    let actions =
+        parse_shell_menu_smoke_actions(&env::var(SHELL_MENU_SMOKE_ACTIONS_ENV).unwrap_or_default());
+    if actions.is_empty() {
+        return;
+    }
+
+    let trigger_path = env::var(SHELL_MENU_SMOKE_TRIGGER_FILE_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from);
+    let trigger_timeout = env_duration_ms(
+        SHELL_MENU_SMOKE_TRIGGER_TIMEOUT_MS_ENV,
+        Duration::from_secs(60),
+        Duration::from_secs(1),
+        Duration::from_secs(300),
+    );
+    let action_delay = env_duration_ms(
+        SHELL_MENU_SMOKE_ACTION_DELAY_MS_ENV,
+        Duration::from_millis(250),
+        Duration::from_millis(0),
+        Duration::from_secs(30),
+    );
+
+    if let Err(err) = std::thread::Builder::new()
+        .name("shell-menu-smoke".to_string())
+        .spawn(move || {
+            if let Some(path) = trigger_path.as_ref() {
+                write_shell_log(&format!(
+                    "shell menu smoke waiting for trigger path_hash={}",
+                    redaction::hash_sensitive_identifier(&path.display().to_string())
+                ));
+                if !wait_for_shell_menu_smoke_trigger(path, trigger_timeout) {
+                    write_shell_log("shell menu smoke trigger timed out");
+                    return;
+                }
+                write_shell_log("shell menu smoke trigger observed");
+            }
+
+            for action in actions {
+                if !action_delay.is_zero() {
+                    std::thread::sleep(action_delay);
+                }
+                match action {
+                    ShellMenuSmokeAction::ShowWindow => run_shell_menu_smoke_show_window(&app),
+                    ShellMenuSmokeAction::CopyRecent => run_shell_menu_smoke_copy_recent(&app),
+                    ShellMenuSmokeAction::HotkeyPress => run_shell_menu_smoke_hotkey_event(
+                        &app,
+                        ShortcutState::Pressed,
+                        "hotkey-press",
+                    ),
+                    ShellMenuSmokeAction::HotkeyRelease => run_shell_menu_smoke_hotkey_event(
+                        &app,
+                        ShortcutState::Released,
+                        "hotkey-release",
+                    ),
+                    ShellMenuSmokeAction::OverlayInitializing => {
+                        run_shell_menu_smoke_overlay_show("initializing")
+                    }
+                    ShellMenuSmokeAction::OverlayRecording => {
+                        run_shell_menu_smoke_overlay_show("recording")
+                    }
+                    ShellMenuSmokeAction::OverlayTranscribing => {
+                        run_shell_menu_smoke_overlay_show("transcribing")
+                    }
+                    ShellMenuSmokeAction::OverlayHide => run_shell_menu_smoke_overlay_hide(),
+                    ShellMenuSmokeAction::Quit => {
+                        run_shell_menu_smoke_quit(&app);
+                        break;
+                    }
+                }
+            }
+        })
+    {
+        write_shell_log(&format!("shell menu smoke thread failed: {err}"));
+    }
+}
+
+fn parse_shell_menu_smoke_actions(raw: &str) -> Vec<ShellMenuSmokeAction> {
+    raw.split([',', ';', ' ', '\n', '\r', '\t'])
+        .filter_map(|part| match part.trim().to_ascii_lowercase().as_str() {
+            "show" | "open" | "open-window" | "show-window" => {
+                Some(ShellMenuSmokeAction::ShowWindow)
+            }
+            "copy-recent" | "copy-recent-transcript" | "recent-copy" => {
+                Some(ShellMenuSmokeAction::CopyRecent)
+            }
+            "hotkey-press" | "push-to-talk-press" | "ptt-press" => {
+                Some(ShellMenuSmokeAction::HotkeyPress)
+            }
+            "hotkey-release" | "push-to-talk-release" | "ptt-release" => {
+                Some(ShellMenuSmokeAction::HotkeyRelease)
+            }
+            "overlay-initializing" | "overlay-preparing" => {
+                Some(ShellMenuSmokeAction::OverlayInitializing)
+            }
+            "overlay-recording" => Some(ShellMenuSmokeAction::OverlayRecording),
+            "overlay-transcribing" | "overlay-finalizing" => {
+                Some(ShellMenuSmokeAction::OverlayTranscribing)
+            }
+            "overlay-hide" | "hide-overlay" => Some(ShellMenuSmokeAction::OverlayHide),
+            "quit" | "exit" => Some(ShellMenuSmokeAction::Quit),
+            _ => None,
+        })
+        .collect()
+}
+
+fn wait_for_shell_menu_smoke_trigger(path: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    path.exists()
+}
+
+fn run_shell_menu_smoke_show_window<R: Runtime>(app: &AppHandle<R>) {
+    let started = Instant::now();
+    let mut hide_succeeded = false;
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        match window.hide() {
+            Ok(()) => {
+                hide_succeeded = true;
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(err) => write_shell_log(&format!("shell menu smoke setup hide failed: {err}")),
+        }
+    } else {
+        write_shell_log("shell menu smoke setup hide skipped: main window not found");
+    }
+
+    show_main_window(app);
+    std::thread::sleep(Duration::from_millis(100));
+    let visible = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    write_shell_log(&format!(
+        "shell menu smoke action show-window completed elapsedMs={} visible={} hideSucceeded={}",
+        started.elapsed().as_millis(),
+        visible,
+        hide_succeeded
+    ));
+}
+
+fn run_shell_menu_smoke_copy_recent<R: Runtime>(app: &AppHandle<R>) {
+    let started = Instant::now();
+    let manager = app.state::<BackendManager>();
+    let status = manager.ensure_started();
+    if !status.ready {
+        write_shell_log(&format!(
+            "shell menu smoke action copy-recent skipped ready=false message={}",
+            status.message
+        ));
+        return;
+    }
+    match fetch_recent_transcripts(&manager.access()) {
+        Ok(entries) => {
+            let Some(entry) = entries.first() else {
+                write_shell_log(&format!(
+                    "shell menu smoke action copy-recent completed elapsedMs={} copied=false reason=empty",
+                    started.elapsed().as_millis()
+                ));
+                return;
+            };
+            let copied = copy_recent_transcript_from_shell(app, &entry.id);
+            write_shell_log(&format!(
+                "shell menu smoke action copy-recent completed elapsedMs={} copied={} transcriptId={}",
+                started.elapsed().as_millis(),
+                copied,
+                entry.id
+            ));
+        }
+        Err(err) => write_shell_log(&format!(
+            "shell menu smoke action copy-recent failed elapsedMs={} error={err}",
+            started.elapsed().as_millis()
+        )),
+    }
+}
+
+fn run_shell_menu_smoke_hotkey_event<R: Runtime>(
+    app: &AppHandle<R>,
+    event_state: ShortcutState,
+    label: &str,
+) {
+    let started = Instant::now();
+    let status = match refresh_global_hotkey_for_app(app) {
+        Ok(status) => status,
+        Err(err) => {
+            write_shell_log(&format!(
+                "shell menu smoke action {label} completed elapsedMs={} mode=unknown path=none dispatched=false posted=false error=refresh_failed:{}",
+                started.elapsed().as_millis(),
+                sanitize_shell_log_token(&err)
+            ));
+            return;
+        }
+    };
+    let path = app
+        .try_state::<DesktopHotkeyState>()
+        .and_then(|state| state.action_for_event(event_state, Instant::now()));
+    let Some(path) = path else {
+        write_shell_log(&format!(
+            "shell menu smoke action {label} completed elapsedMs={} mode={} path=none dispatched=false posted=false",
+            started.elapsed().as_millis(),
+            status.mode
+        ));
+        return;
+    };
+
+    let manager = app.state::<BackendManager>();
+    let backend_status = manager.ensure_started();
+    let (posted, error) = if backend_status.ready {
+        match post_backend_path(&manager.access(), path) {
+            Ok(_) => (true, String::new()),
+            Err(err) => (false, sanitize_shell_log_token(&err)),
+        }
+    } else {
+        (
+            false,
+            sanitize_shell_log_token(&format!("backend_not_ready:{}", backend_status.message)),
+        )
+    };
+    write_shell_log(&format!(
+        "shell menu smoke action {label} completed elapsedMs={} mode={} path={} dispatched=true posted={} error={}",
+        started.elapsed().as_millis(),
+        status.mode,
+        path,
+        posted,
+        error
+    ));
+}
+
+fn run_shell_menu_smoke_overlay_show(mode: &str) {
+    let started = Instant::now();
+    match native_overlay::handle_shell_command("overlayShow", &json!({ "mode": mode })) {
+        Ok(status) => {
+            let visible = status
+                .get("visible")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let reported_mode = status
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let available = status
+                .get("available")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            write_shell_log(&format!(
+                "shell menu smoke action overlay-{mode} completed elapsedMs={} mode={} visible={} available={}",
+                started.elapsed().as_millis(),
+                sanitize_shell_log_token(reported_mode),
+                visible,
+                available
+            ));
+        }
+        Err(err) => write_shell_log(&format!(
+            "shell menu smoke action overlay-{mode} failed elapsedMs={} error={}",
+            started.elapsed().as_millis(),
+            sanitize_shell_log_token(&err)
+        )),
+    }
+}
+
+fn run_shell_menu_smoke_overlay_hide() {
+    let started = Instant::now();
+    match native_overlay::handle_shell_command("overlayHide", &json!({})) {
+        Ok(status) => {
+            let visible = status
+                .get("visible")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let mode = status
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let available = status
+                .get("available")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            write_shell_log(&format!(
+                "shell menu smoke action overlay-hide completed elapsedMs={} mode={} visible={} available={}",
+                started.elapsed().as_millis(),
+                sanitize_shell_log_token(mode),
+                visible,
+                available
+            ));
+        }
+        Err(err) => write_shell_log(&format!(
+            "shell menu smoke action overlay-hide failed elapsedMs={} error={}",
+            started.elapsed().as_millis(),
+            sanitize_shell_log_token(&err)
+        )),
+    }
+}
+
+fn run_shell_menu_smoke_quit<R: Runtime>(app: &AppHandle<R>) {
+    let started = Instant::now();
+    let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("shellMenuSmokeQuit");
+    write_shell_log(&format!(
+        "shell menu smoke action quit completed elapsedMs={} stoppedSidecars={} exitRequested=true",
+        started.elapsed().as_millis(),
+        stopped
+    ));
+    app.exit(0);
+}
+
 fn restart_backend_from_shell<R: Runtime>(app: &AppHandle<R>) {
     let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("backendRestartMenu");
     if stopped > 0 {
@@ -1204,6 +1536,10 @@ fn fetch_recent_transcripts(
     access: &BackendAccess,
 ) -> Result<Vec<RecentTranscriptMenuEntry>, String> {
     let value = request_backend_json(access, "GET", "/api/transcripts?limit=20&offset=0")?;
+    recent_transcripts_from_value(&value)
+}
+
+fn recent_transcripts_from_value(value: &Value) -> Result<Vec<RecentTranscriptMenuEntry>, String> {
     let items = value
         .get("items")
         .and_then(Value::as_array)
@@ -1233,10 +1569,10 @@ fn fetch_recent_transcripts(
     Ok(entries)
 }
 
-fn copy_recent_transcript_from_shell<R: Runtime>(app: &AppHandle<R>, transcript_id: &str) {
+fn copy_recent_transcript_from_shell<R: Runtime>(app: &AppHandle<R>, transcript_id: &str) -> bool {
     if !is_safe_transcript_id(transcript_id) {
         write_shell_log("recent transcript copy skipped: invalid transcript id");
-        return;
+        return false;
     }
     let manager = app.state::<BackendManager>();
     let status = manager.ensure_started();
@@ -1245,26 +1581,32 @@ fn copy_recent_transcript_from_shell<R: Runtime>(app: &AppHandle<R>, transcript_
             "recent transcript copy skipped because backend is not ready: {}",
             status.message
         ));
-        return;
+        return false;
     }
     let path = format!("/api/transcripts/{transcript_id}");
     let value = match request_backend_json(&manager.access(), "GET", &path) {
         Ok(value) => value,
         Err(err) => {
             write_shell_log(&format!("recent transcript copy fetch failed: {err}"));
-            return;
+            return false;
         }
     };
     let content = value_string(&value, "content");
     if content.trim().is_empty() {
         write_shell_log("recent transcript copy skipped: transcript content is empty");
-        return;
+        return false;
     }
     match copy_text_to_clipboard(&content) {
-        Ok(()) => write_shell_log(&format!(
-            "recent transcript copied to clipboard: {transcript_id}"
-        )),
-        Err(err) => write_shell_log(&format!("recent transcript clipboard copy failed: {err}")),
+        Ok(()) => {
+            write_shell_log(&format!(
+                "recent transcript copied to clipboard: {transcript_id}"
+            ));
+            true
+        }
+        Err(err) => {
+            write_shell_log(&format!("recent transcript clipboard copy failed: {err}"));
+            false
+        }
     }
 }
 
@@ -1320,6 +1662,20 @@ fn sanitize_menu_label(value: &str, fallback: &str, max_chars: usize) -> String 
         .collect::<String>();
     truncated.push_str("...");
     truncated
+}
+
+fn sanitize_shell_log_token(value: &str) -> String {
+    value
+        .chars()
+        .take(180)
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '=') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[cfg(windows)]
@@ -1499,6 +1855,20 @@ fn backend_start_timeout() -> Duration {
         .filter(|value| *value > 0)
         .map(Duration::from_millis)
         .unwrap_or(BACKEND_START_TIMEOUT)
+}
+
+fn env_duration_ms(
+    name: &str,
+    default: Duration,
+    minimum: Duration,
+    maximum: Duration,
+) -> Duration {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .map(|duration| duration.clamp(minimum, maximum))
+        .unwrap_or(default)
 }
 
 fn force_managed_backend() -> bool {
@@ -1757,7 +2127,9 @@ fn format_registry_error(operation: &str, status: u32) -> String {
     )
 }
 
-fn refresh_global_hotkey_for_app(app: &AppHandle) -> Result<DesktopHotkeyStatus, String> {
+fn refresh_global_hotkey_for_app<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<DesktopHotkeyStatus, String> {
     let hotkey_state = app.state::<DesktopHotkeyState>();
     if !tauri_global_hotkey_enabled() {
         let _ = app.global_shortcut().unregister_all();
@@ -2568,18 +2940,21 @@ mod tests {
     use super::{
         acquire_single_instance_guard, autostart_command_for_exe, autostart_commands_match,
         backend_executable_names, backend_start_timeout, build_backend_http_request,
-        desktop_autostart_default_enabled, env_flag_enabled, find_backend_executable,
-        find_backend_executable_in_dirs, health_response_ready, is_safe_transcript_id,
-        is_shell_menu_item, managed_backend_start_timed_out, normalize_global_shortcut,
-        normalize_hotkey_mode, parse_loopback_backend_url, recent_transcript_label,
+        desktop_autostart_default_enabled, env_duration_ms, env_flag_enabled,
+        find_backend_executable, find_backend_executable_in_dirs, health_response_ready,
+        is_safe_transcript_id, is_shell_menu_item, managed_backend_start_timed_out,
+        normalize_global_shortcut, normalize_hotkey_mode, parse_loopback_backend_url,
+        parse_shell_menu_smoke_actions, recent_transcript_label, recent_transcripts_from_value,
         resolve_session_token, sanitize_menu_label, shell_ipc, shell_ipc_env_pairs,
         should_refresh_hotkey_after_backend_ready, should_show_window_for_tray_click,
         split_http_response, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
-        RecentTranscriptMenuEntry, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
-        BACKEND_START_TIMEOUT_ENV, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX,
-        MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        RecentTranscriptMenuEntry, ShellMenuSmokeAction, AUTOSTART_DEFAULT_ENV,
+        BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, HOTKEY_DISPATCH_DEBOUNCE,
+        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
+        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
+        TRAY_RECENT_TRANSCRIPT_LIMIT,
     };
     use std::{
         fs,
@@ -2687,6 +3062,61 @@ mod tests {
             Some(value) => std::env::set_var(BACKEND_START_TIMEOUT_ENV, value),
             None => std::env::remove_var(BACKEND_START_TIMEOUT_ENV),
         }
+    }
+
+    #[test]
+    fn env_duration_ms_clamps_smoke_values() {
+        const TEST_ENV: &str = "SCRIBER_TEST_DURATION_MS";
+        let previous = std::env::var(TEST_ENV).ok();
+
+        std::env::set_var(TEST_ENV, "50");
+        assert_eq!(
+            env_duration_ms(
+                TEST_ENV,
+                Duration::from_millis(500),
+                Duration::from_millis(100),
+                Duration::from_millis(1000),
+            ),
+            Duration::from_millis(100)
+        );
+
+        std::env::set_var(TEST_ENV, "1500");
+        assert_eq!(
+            env_duration_ms(
+                TEST_ENV,
+                Duration::from_millis(500),
+                Duration::from_millis(100),
+                Duration::from_millis(1000),
+            ),
+            Duration::from_millis(1000)
+        );
+
+        match previous {
+            Some(value) => std::env::set_var(TEST_ENV, value),
+            None => std::env::remove_var(TEST_ENV),
+        }
+    }
+
+    #[test]
+    fn shell_menu_smoke_actions_accept_only_safe_smoke_commands() {
+        assert_eq!(
+            parse_shell_menu_smoke_actions(
+                "show-window, unknown; copy-recent hotkey-press hotkey-release overlay-initializing overlay-recording overlay-transcribing overlay-hide quit open",
+            ),
+            vec![
+                ShellMenuSmokeAction::ShowWindow,
+                ShellMenuSmokeAction::CopyRecent,
+                ShellMenuSmokeAction::HotkeyPress,
+                ShellMenuSmokeAction::HotkeyRelease,
+                ShellMenuSmokeAction::OverlayInitializing,
+                ShellMenuSmokeAction::OverlayRecording,
+                ShellMenuSmokeAction::OverlayTranscribing,
+                ShellMenuSmokeAction::OverlayHide,
+                ShellMenuSmokeAction::Quit,
+                ShellMenuSmokeAction::ShowWindow,
+            ]
+        );
+        assert!(parse_shell_menu_smoke_actions("copy-transcript secret").is_empty());
     }
 
     #[test]
@@ -3097,6 +3527,62 @@ mod tests {
             "one two three"
         );
         assert_eq!(sanitize_menu_label("", "fallback", 20), "fallback");
+    }
+
+    #[test]
+    fn recent_transcript_entries_filter_invalid_ids_status_and_limit() {
+        let mut items = vec![
+            serde_json::json!({
+                "id": "mic-failed",
+                "status": "failed",
+                "title": "Failed transcript",
+                "date": "Today",
+                "type": "mic"
+            }),
+            serde_json::json!({
+                "id": "../secret",
+                "status": "completed",
+                "title": "Path traversal",
+                "date": "Today",
+                "type": "mic"
+            }),
+            serde_json::json!({
+                "id": "bad?id=1",
+                "status": "completed",
+                "title": "Query id",
+                "date": "Today",
+                "type": "mic"
+            }),
+        ];
+        for index in 0..(TRAY_RECENT_TRANSCRIPT_LIMIT + 2) {
+            items.push(serde_json::json!({
+                "id": format!("mic-{index:05}"),
+                "status": "completed",
+                "title": format!("Transcript {index}"),
+                "date": "Today",
+                "type": "mic"
+            }));
+        }
+        let value = serde_json::json!({ "items": items });
+
+        let entries = recent_transcripts_from_value(&value).expect("entries");
+
+        assert_eq!(entries.len(), TRAY_RECENT_TRANSCRIPT_LIMIT);
+        assert!(entries.iter().all(|entry| is_safe_transcript_id(&entry.id)));
+        assert_eq!(entries[0].id, "mic-00000");
+        assert_eq!(
+            entries.last().map(|entry| entry.id.as_str()),
+            Some("mic-00004")
+        );
+        assert!(!entries.iter().any(|entry| entry.id == "mic-failed"));
+    }
+
+    #[test]
+    fn recent_transcript_entries_reject_missing_items_array() {
+        let err = recent_transcripts_from_value(&serde_json::json!({"items": null}))
+            .expect_err("missing items must be rejected");
+
+        assert_eq!(err, "backend transcript list did not include items");
     }
 
     #[test]

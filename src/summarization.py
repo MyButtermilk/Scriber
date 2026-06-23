@@ -220,16 +220,19 @@ def _parse_duration_seconds(duration: str | None) -> int | None:
     return hours * 3600 + minutes * 60 + seconds
 
 
-def _gemini_thinking_budget_for_model(model: str) -> int | None:
+def _gemini_thinking_level_for_model(model: str) -> str | None:
     if not _is_gemini_thinking_model(model):
         return None
-    raw = os.getenv("SCRIBER_SUMMARY_GEMINI_THINKING_BUDGET_TOKENS", "1024").strip()
+    raw = os.getenv("SCRIBER_SUMMARY_GEMINI_THINKING_LEVEL", "medium").strip().lower()
     if raw == "":
         return None
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return 1024
+    if raw not in {"minimal", "low", "medium", "high"}:
+        logger.warning(
+            "Invalid SCRIBER_SUMMARY_GEMINI_THINKING_LEVEL='{}'; using 'medium'.",
+            raw,
+        )
+        raw = "medium"
+    return raw.upper()
 
 
 def _gemini_retry_output_cap(model: str, initial_max_output_tokens: int) -> int:
@@ -429,9 +432,9 @@ def _build_gemini_payload(prompt: str, model: str, max_output_tokens: int) -> di
     if temperature_raw:
         generation_config["temperature"] = min(1.0, max(0.0, float(temperature_raw)))
 
-    thinking_budget = _gemini_thinking_budget_for_model(model)
-    if thinking_budget is not None:
-        generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+    thinking_level = _gemini_thinking_level_for_model(model)
+    if thinking_level is not None:
+        generation_config["thinkingConfig"] = {"thinkingLevel": thinking_level}
 
     return {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -539,12 +542,12 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
                     if max_token_attempt < max_token_retries and current_max_output_tokens < retry_cap:
                         next_max_output_tokens = _gemini_next_output_budget(current_max_output_tokens, retry_cap)
                         logger.warning(
-                            "Gemini stopped due MAX_TOKENS (max_output_tokens={}, candidate_tokens={}, total_tokens={}). Retrying with max_output_tokens={} and thinkingBudget={}.",
+                            "Gemini stopped due MAX_TOKENS (max_output_tokens={}, candidate_tokens={}, total_tokens={}). Retrying with max_output_tokens={} and thinkingLevel={}.",
                             current_max_output_tokens,
                             candidate_tokens,
                             total_tokens,
                             next_max_output_tokens,
-                            _gemini_thinking_budget_for_model(model),
+                            _gemini_thinking_level_for_model(model),
                         )
                         current_max_output_tokens = next_max_output_tokens
                         continue

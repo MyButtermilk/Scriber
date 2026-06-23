@@ -3,6 +3,7 @@ import {
     BACKEND_SESSION_TOKEN_REQUIRED_EVENT,
     backendSessionToken,
     isBackendSessionTokenRequired,
+    reportFrontendReady,
     wsUrl,
 } from "@/lib/backend";
 import type { MicrophoneDevice } from "@/lib/api-types";
@@ -197,6 +198,9 @@ export function WebSocketProvider({
                 setIsConnected(true);
                 reconnectCountRef.current = 0;
                 setReconnectCount(0);
+                void reportFrontendReady({ force: true }).catch((readyError) => {
+                    console.debug("Frontend readiness beacon failed after WebSocket open.", readyError);
+                });
             };
 
             ws.onmessage = (event) => {

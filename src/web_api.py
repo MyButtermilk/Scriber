@@ -131,8 +131,11 @@ _RUST_AUDIO_PROBE_ENV = "SCRIBER_RUST_AUDIO_PROBE"
 _LIVE_MIC_ASYNC_STOP_TIMEOUT_ENV = "SCRIBER_LIVE_MIC_ASYNC_STOP_TIMEOUT_SEC"
 _LIVE_MIC_SILENT_STOP_TIMEOUT_ENV = "SCRIBER_LIVE_MIC_SILENT_STOP_TIMEOUT_SEC"
 _LIVE_MIC_SILENCE_RMS_THRESHOLD_ENV = "SCRIBER_LIVE_MIC_SILENCE_RMS_THRESHOLD"
+_LIVE_MIC_TOGGLE_START_GRACE_ENV = "SCRIBER_LIVE_MIC_TOGGLE_START_GRACE_SEC"
 _NATIVE_DEVICE_EVENTS_ENV = "SCRIBER_NATIVE_DEVICE_EVENTS"
 _SETTINGS_PERSIST_DEBOUNCE_ENV = "SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC"
+_FORCE_EXIT_AFTER_SHUTDOWN_ENV = "SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN"
+_FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_ENV = "SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_SEC"
 _WEB_HOST_ENV = "SCRIBER_WEB_HOST"
 _WEB_PORT_ENV = "SCRIBER_WEB_PORT"
 _DISABLE_HOTKEYS_ENV = "SCRIBER_DISABLE_HOTKEYS"
@@ -328,6 +331,38 @@ def _audio_engine_feature_flags() -> dict[str, Any]:
 
 def _env_flag_enabled(name: str) -> bool:
     return (os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _should_force_process_exit_after_shutdown() -> bool:
+    raw = (os.getenv(_FORCE_EXIT_AFTER_SHUTDOWN_ENV, "") or "").strip().lower()
+    if raw in {"0", "false", "no", "off", "disabled"}:
+        return False
+    if raw in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    return (
+        is_frozen()
+        and (os.getenv(_RUNTIME_MODE_ENV, "") or "").strip().lower() == "tauri-supervised"
+    )
+
+
+def _force_process_exit_after_shutdown_timeout_seconds() -> float:
+    return _env_float(_FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_ENV, 5.0, minimum=0.5, maximum=30.0)
+
+
+def _arm_force_process_exit_after_shutdown() -> threading.Timer:
+    timeout_seconds = _force_process_exit_after_shutdown_timeout_seconds()
+
+    def _force_exit() -> None:
+        logger.warning(
+            "Forcing Scriber backend process exit after shutdown timeout "
+            f"({timeout_seconds:g}s)"
+        )
+        os._exit(0)
+
+    timer = threading.Timer(timeout_seconds, _force_exit)
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 def _rust_audio_probe_requested() -> bool:
@@ -643,6 +678,65 @@ def _validate_default_stt_service(raw_service: str) -> str:
     return service
 
 
+def _service_label(provider: str) -> str:
+    provider = (provider or "").strip().lower()
+    return (
+        Config.SERVICE_LABELS.get(provider)
+        or Config.SERVICE_LABELS.get(provider.split("_", 1)[0])
+        or provider
+        or "STT provider"
+    )
+
+
+def _provider_readiness_error(provider: str) -> str | None:
+    provider = (provider or "").strip().lower()
+    if provider == "onnx_local":
+        try:
+            from src.onnx_stt import is_onnx_available
+
+            if is_onnx_available():
+                return None
+        except Exception:
+            pass
+        return "Local ONNX transcription is unavailable in this Scriber build. Switch provider or install a build with local ONNX support."
+
+    if provider == "nemo_local":
+        try:
+            from src.nemo_stt import is_nemo_available
+
+            if is_nemo_available():
+                return None
+        except Exception:
+            pass
+        return "Local NeMo transcription is unavailable in this Scriber build. Switch provider or install a build with local NeMo support."
+
+    api_key_attr = Config.SERVICE_API_KEY_MAP.get(provider)
+    if api_key_attr and not Config.get_api_key(provider).strip():
+        return f"{_service_label(provider)} API Key is missing."
+    return None
+
+
+def _validate_provider_ready(provider: str) -> None:
+    error = _provider_readiness_error(provider)
+    if error:
+        raise RuntimeError(error)
+
+
+def _validate_local_provider_ready(provider: str) -> None:
+    provider = (provider or "").strip().lower()
+    if provider not in {"onnx_local", "nemo_local"}:
+        return
+    _validate_provider_ready(provider)
+
+
+def _raise_empty_transcript(provider: str, workflow: str) -> None:
+    label = _service_label(provider)
+    raise ValueError(
+        f"Audio could not be processed by {label}: provider returned no transcript text "
+        f"for this {workflow}. Try a clearer or longer file, or switch provider."
+    )
+
+
 def _validate_summarization_model(raw_model: str) -> str:
     model = (raw_model or "").strip()
     if not model:
@@ -655,6 +749,11 @@ def _validate_summarization_model(raw_model: str) -> str:
             "Invalid summarizationModel format. Allowed characters: letters, numbers, dot, underscore, hyphen."
         )
     return model
+
+
+def _payload_bool(payload: dict[str, Any], key: str) -> bool | None:
+    value = payload.get(key)
+    return value if isinstance(value, bool) else None
 
 
 def _normalize_upload_provider(provider: str | None) -> str:
@@ -1440,6 +1539,14 @@ class ScriberWebController:
             )
         except Exception:
             self._hotkey_dispatch_debounce_seconds = 0.25
+        self._live_toggle_start_grace_seconds = _env_float(
+            _LIVE_MIC_TOGGLE_START_GRACE_ENV,
+            0.35,
+            minimum=0.0,
+            maximum=2.0,
+        )
+        self._ignore_toggle_stop_until = 0.0
+        self._last_duplicate_start_toggle_log = 0.0
         self._status = "Stopped"
         self._started_at_iso = (
             datetime.now(timezone.utc)
@@ -2149,17 +2256,7 @@ class ScriberWebController:
         return self._provider_router.select()
 
     def _validate_live_provider_ready(self, provider: str) -> None:
-        api_key_attr = Config.SERVICE_API_KEY_MAP.get(provider)
-        if not api_key_attr:
-            return
-        if Config.get_api_key(provider).strip():
-            return
-        label = (
-            Config.SERVICE_LABELS.get(provider)
-            or Config.SERVICE_LABELS.get(provider.split("_", 1)[0])
-            or provider
-        )
-        raise RuntimeError(f"{label} API Key is missing.")
+        _validate_provider_ready(provider)
 
     def _record_provider_success(self, provider: str) -> None:
         self._provider_router.record_success(provider)
@@ -2240,6 +2337,7 @@ class ScriberWebController:
             try:
                 await self._set_job_running_async(rec.id)
                 provider = self._select_available_provider()
+                _validate_provider_ready(provider)
             except asyncio.CancelledError:
                 if rec.status == "processing":
                     rec.status = "stopped"
@@ -2281,6 +2379,7 @@ class ScriberWebController:
             try:
                 await self._set_job_running_async(rec.id)
                 provider = self._select_available_provider()
+                _validate_provider_ready(provider)
             except asyncio.CancelledError:
                 if rec.status == "processing":
                     rec.status = "stopped"
@@ -3469,6 +3568,8 @@ class ScriberWebController:
                 )
 
             content = rec.content_text()
+            if not content.strip():
+                _raise_empty_transcript(provider, "YouTube transcription")
             logger.info(f"YouTube transcription completed: {len(content)} chars")
             workflow_phase["value"] = "completed"
             rec.status = "completed"
@@ -3782,6 +3883,8 @@ class ScriberWebController:
                 )
 
             content = rec.content_text()
+            if not content.strip():
+                _raise_empty_transcript(provider, "file transcription")
             logger.info(f"File transcription completed: {len(content)} chars")
             rec.status = "completed"
             rec.step = "Completed"
@@ -4134,6 +4237,7 @@ class ScriberWebController:
             self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
             self._pipeline_task.add_done_callback(lambda task: self._on_pipeline_done(task, session_id=session_id))
             self._is_listening = True
+            self._arm_duplicate_start_toggle_guard()
             self._start_mic_watchdog()
             self._set_status("Preparing microphone...", session_id=session_id)
             self._emit_workflow_event(
@@ -4259,6 +4363,8 @@ class ScriberWebController:
             return True
         if not self._is_listening:
             return False
+        if self._should_ignore_duplicate_start_toggle():
+            return False
         if self._background_stop_task is not None and not self._background_stop_task.done():
             return True
         self._background_stop_task = self._loop.create_task(
@@ -4266,6 +4372,28 @@ class ScriberWebController:
             name="live_mic_background_stop",
         )
         self._background_stop_task.add_done_callback(self._on_background_stop_done)
+        return True
+
+    def _arm_duplicate_start_toggle_guard(self) -> None:
+        if self._live_toggle_start_grace_seconds <= 0:
+            self._ignore_toggle_stop_until = 0.0
+            return
+        self._ignore_toggle_stop_until = time.monotonic() + self._live_toggle_start_grace_seconds
+
+    def _should_ignore_duplicate_start_toggle(self) -> bool:
+        if not self._is_listening or self._is_stopping:
+            return False
+        if self._ignore_toggle_stop_until <= 0:
+            return False
+        if time.monotonic() > self._ignore_toggle_stop_until:
+            return False
+        state = self._recording_state_machine.state
+        if state not in {RecordingState.INITIALIZING, RecordingState.RECORDING}:
+            return False
+        now = time.monotonic()
+        if now - self._last_duplicate_start_toggle_log >= 1.0:
+            self._last_duplicate_start_toggle_log = now
+            logger.info("Ignoring duplicate live mic toggle during startup grace window.")
         return True
 
     async def stop_listening(self) -> ProviderUserError | None:
@@ -4277,6 +4405,7 @@ class ScriberWebController:
             # Mark that we're stopping
             self._is_stopping = True
             self._is_listening = False  # Prevent any new operations
+            self._ignore_toggle_stop_until = 0.0
             
             # Capture current pipeline references
             pipeline = self._pipeline
@@ -4577,6 +4706,8 @@ class ScriberWebController:
                 logger.info("Hotkey pressed while stop is in progress; deferring until stop completes.")
             return
         if self._is_listening:
+            if self._should_ignore_duplicate_start_toggle():
+                return
             self.request_background_stop_listening()
             return
         await self.start_listening()
@@ -4845,6 +4976,7 @@ class ScriberWebController:
             validated_mode = _validate_mode(payload["mode"])
         if "defaultSttService" in payload and isinstance(payload["defaultSttService"], str):
             validated_service = _validate_default_stt_service(payload["defaultSttService"])
+            _validate_local_provider_ready(validated_service)
         if "sonioxMode" in payload and isinstance(payload["sonioxMode"], str):
             validated_soniox_mode = _validate_soniox_mode(payload["sonioxMode"])
         if "summarizationModel" in payload and isinstance(payload["summarizationModel"], str):
@@ -4881,12 +5013,14 @@ class ScriberWebController:
             invalidate_mic_device_resolution_cache()
             mic_runtime_changed = True
 
-        if "micAlwaysOn" in payload:
-            Config.set_mic_always_on(bool(payload["micAlwaysOn"]))
+        mic_always_on = _payload_bool(payload, "micAlwaysOn")
+        if mic_always_on is not None:
+            Config.set_mic_always_on(mic_always_on)
             mic_runtime_changed = True
 
-        if "debug" in payload:
-            Config.set_debug(bool(payload["debug"]))
+        debug_enabled = _payload_bool(payload, "debug")
+        if debug_enabled is not None:
+            Config.set_debug(debug_enabled)
 
         if "customVocab" in payload and isinstance(payload["customVocab"], str):
             Config.CUSTOM_VOCAB = payload["customVocab"].strip()
@@ -4899,8 +5033,9 @@ class ScriberWebController:
             Config.SUMMARIZATION_MODEL = validated_summarization_model
             os.environ["SCRIBER_SUMMARIZATION_MODEL"] = Config.SUMMARIZATION_MODEL
 
-        if "autoSummarize" in payload:
-            Config.AUTO_SUMMARIZE = bool(payload["autoSummarize"])
+        auto_summarize = _payload_bool(payload, "autoSummarize")
+        if auto_summarize is not None:
+            Config.AUTO_SUMMARIZE = auto_summarize
             os.environ["SCRIBER_AUTO_SUMMARIZE"] = "1" if Config.AUTO_SUMMARIZE else "0"
 
         if "openaiSttModel" in payload and isinstance(payload["openaiSttModel"], str):
@@ -4912,8 +5047,9 @@ class ScriberWebController:
         if "onnxQuantization" in payload and isinstance(payload["onnxQuantization"], str):
             Config.set_onnx_quantization(payload["onnxQuantization"])
 
-        if "onnxUseGpu" in payload:
-            Config.set_onnx_use_gpu(bool(payload["onnxUseGpu"]))
+        onnx_use_gpu = _payload_bool(payload, "onnxUseGpu")
+        if onnx_use_gpu is not None:
+            Config.set_onnx_use_gpu(onnx_use_gpu)
 
         if "nemoModel" in payload and isinstance(payload["nemoModel"], str):
             Config.set_nemo_model(payload["nemoModel"])
@@ -5474,6 +5610,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
     async def toggle_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         if ctl._is_listening or ctl._is_stopping:
+            if ctl._should_ignore_duplicate_start_toggle():
+                payload = ctl.get_state()
+                payload["stopAccepted"] = False
+                payload["finalizing"] = False
+                payload["duplicateStartIgnored"] = True
+                return web.json_response(payload)
             accepted = ctl.request_background_stop_listening()
             payload = ctl.get_state()
             payload["stopAccepted"] = bool(accepted)
@@ -6524,6 +6666,7 @@ async def run_server(host: str, port: int) -> None:
     loop = asyncio.get_running_loop()
     controller = ScriberWebController(loop)
     controller.register_hotkeys()
+    force_process_exit = _should_force_process_exit_after_shutdown()
 
     stop_event = asyncio.Event()
     app = create_app(controller)
@@ -6535,7 +6678,7 @@ async def run_server(host: str, port: int) -> None:
     logger.info(f"Scriber web API listening on http://{host}:{port} (ws://{host}:{port}/ws)")
 
     # Start background initialization (improves first recording latency)
-    asyncio.create_task(_background_init(controller), name="background_init")
+    background_init_task = asyncio.create_task(_background_init(controller), name="background_init")
 
     def _request_stop(*_args: Any) -> None:
         loop.call_soon_threadsafe(stop_event.set)
@@ -6546,14 +6689,28 @@ async def run_server(host: str, port: int) -> None:
         except Exception:  # pragma: no cover - platform dependent
             pass
 
+    force_exit_timer: threading.Timer | None = None
     await stop_event.wait()
+    logger.info("Scriber web API shutdown requested")
+    if force_process_exit:
+        force_exit_timer = _arm_force_process_exit_after_shutdown()
+    if not background_init_task.done():
+        background_init_task.cancel()
+        await asyncio.gather(background_init_task, return_exceptions=True)
     try:
         await controller.stop_listening()
     except Exception:
         pass
     finally:
-        controller.shutdown()
-        await runner.cleanup()
+        try:
+            controller.shutdown()
+            await runner.cleanup()
+            logger.info("Scriber web API shutdown cleanup complete")
+        finally:
+            if force_exit_timer is not None:
+                force_exit_timer.cancel()
+            if force_process_exit:
+                os._exit(0)
 
 
 async def _background_init(controller: ScriberWebController) -> None:

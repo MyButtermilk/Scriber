@@ -517,16 +517,14 @@ function Invoke-InstalledDesktopSmoke {
     }
     if ($VerifyGlobalHotkeyRegistration) {
         $smokeArgs += "-VerifyGlobalHotkeyRegistration"
-        $smokeArgs += @("-GlobalHotkeySmokeHotkey", $GlobalHotkeySmokeHotkey)
-        $smokeArgs += @("-GlobalHotkeyDispatchTimeoutSec", $GlobalHotkeyDispatchTimeoutSec.ToString())
     }
     if ($SimulateGlobalHotkey) {
         $smokeArgs += "-SimulateGlobalHotkey"
-        $smokeArgs += @("-GlobalHotkeySmokeHotkey", $GlobalHotkeySmokeHotkey)
-        $smokeArgs += @("-GlobalHotkeyDispatchTimeoutSec", $GlobalHotkeyDispatchTimeoutSec.ToString())
     }
     if ($WaitForManualGlobalHotkey) {
         $smokeArgs += "-WaitForManualGlobalHotkey"
+    }
+    if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey) {
         $smokeArgs += @("-GlobalHotkeySmokeHotkey", $GlobalHotkeySmokeHotkey)
         $smokeArgs += @("-GlobalHotkeyDispatchTimeoutSec", $GlobalHotkeyDispatchTimeoutSec.ToString())
     }
@@ -671,7 +669,7 @@ if ($VerifyUninstall -and $KeepInstalled) {
     throw "-VerifyUninstall cannot be combined with -KeepInstalled."
 }
 if (-not $InstallerPath) {
-    $InstallerPath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe"
+    $InstallerPath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.2.0_x64-setup.exe"
 }
 if (-not (Test-Path $InstallerPath)) {
     throw "Missing installer: $InstallerPath"

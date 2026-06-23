@@ -4,7 +4,9 @@ from typing import ClassVar
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiohttp.test_utils import TestClient, TestServer
 
+from src import web_api
 from src.config import Config
 from src.injector import TextInjector
 from src.web_api import ScriberWebController
@@ -135,6 +137,83 @@ async def test_hotkey_toggle_burst_stress_end_to_end(monkeypatch):
     assert all(rec.status == "completed" for rec in ctl._history)
     assert all(rec.content.strip().startswith("stress transcript") for rec in ctl._history)
     assert paste_mock.call_count == len(ctl._history)
+
+
+@pytest.mark.asyncio
+async def test_tauri_hotkey_start_spam_during_initializing_creates_single_recording(
+    monkeypatch,
+    tmp_path,
+):
+    loop = asyncio.get_running_loop()
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", False)
+    monkeypatch.setattr(Config, "INJECT_METHOD", "paste")
+
+    ctl = ScriberWebController(loop)
+    _StressFakePipeline.instances.clear()
+    _StressFakePipeline.created = 0
+
+    pause_entered = asyncio.Event()
+    release_start = asyncio.Event()
+
+    async def slow_prewarm_pause():
+        pause_entered.set()
+        await release_start.wait()
+
+    with (
+        patch("src.web_api.ScriberPipeline", _StressFakePipeline),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "_pause_idle_mic_prewarm_for_capture", side_effect=slow_prewarm_pause),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay"),
+        patch("src.web_api.show_transcribing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector._paste_text", return_value=True) as paste_mock,
+    ):
+        app = web_api.create_app(ctl)
+        server = TestServer(app)
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            first_response_task = asyncio.create_task(client.post("/api/live-mic/toggle"))
+            await asyncio.wait_for(pause_entered.wait(), timeout=1.0)
+
+            burst_response_tasks = [
+                asyncio.create_task(client.post("/api/live-mic/toggle"))
+                for _ in range(24)
+            ]
+            await asyncio.sleep(0.01)
+            release_start.set()
+
+            responses = await asyncio.gather(first_response_task, *burst_response_tasks)
+            payloads = [await response.json() for response in responses]
+        finally:
+            await client.close()
+
+        assert [response.status for response in responses] == [200] * 25
+        assert len(_StressFakePipeline.instances) == 1
+        pipeline = _StressFakePipeline.instances[0]
+        assert pipeline.stats.start_calls == 1
+        assert pipeline.stats.stop_calls == 0
+        assert ctl._pending_hotkey_toggle is False
+        assert ctl.get_state()["listening"] is True
+        assert ctl.get_state()["recordingState"] in {"initializing", "recording"}
+        assert all(payload["listening"] is True for payload in payloads)
+
+        await ctl.stop_listening()
+        await asyncio.sleep(0.05)
+
+    _assert_controller_clean(ctl)
+    _assert_pipeline_invariants()
+    assert len(ctl._history) == 1
+    assert ctl._history[0].status == "completed"
+    assert paste_mock.call_count == 1
 
 
 @pytest.mark.asyncio

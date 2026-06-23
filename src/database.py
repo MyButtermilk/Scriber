@@ -501,7 +501,7 @@ def search_transcript_metadata(
                     "FROM transcripts_fts f "
                     "JOIN transcripts t ON t.rowid = f.rowid "
                     "WHERE transcripts_fts MATCH ? " + type_clause +
-                    "ORDER BY bm25(f), t.created_at DESC LIMIT ? OFFSET ?"
+                    "ORDER BY bm25(transcripts_fts), t.created_at DESC LIMIT ? OFFSET ?"
                 )
                 total = conn.execute(total_sql, [fts_q, *params]).fetchone()["c"]
                 rows = conn.execute(rows_sql, [fts_q, *params, limit, offset]).fetchall()

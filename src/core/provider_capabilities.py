@@ -57,6 +57,11 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
     ),
+    "gladia": ProviderCapabilities(
+        supports_live_streaming=True,
+        supports_direct_file_upload=True,
+        injects_immediately_in_live_mode=False,
+    ),
     "onnx_local": ProviderCapabilities(
         supports_live_streaming=True,
         supports_direct_file_upload=False,

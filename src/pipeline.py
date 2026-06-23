@@ -565,6 +565,10 @@ from src.assemblyai_async_stt import (
     assemblyai_transcript_payload_to_text,
     transcribe_with_assemblyai_pre_recorded,
 )
+from src.gladia_stt import (
+    gladia_transcript_payload_to_text,
+    transcribe_with_gladia_pre_recorded,
+)
 
 LANGUAGE_MAP = {
     "auto": None,
@@ -1675,6 +1679,38 @@ class ScriberPipeline:
                 text = azure_mai_transcript_payload_to_text(payload)
                 if text and self.on_transcription:
                     logger.info(f"Azure MAI direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
+            if self.service_name == "gladia":
+                api_key = Config.get_api_key("gladia")
+                if not api_key:
+                    raise ValueError("Gladia API key is missing")
+
+                async with aiohttp.ClientSession() as session:
+                    with open(path, "rb") as f:
+                        payload = await transcribe_with_gladia_pre_recorded(
+                            session=session,
+                            api_key=api_key,
+                            audio_source=f,
+                            filename=path.name,
+                            content_type=content_type,
+                            language=Config.LANGUAGE,
+                            custom_vocab=Config.CUSTOM_VOCAB or "",
+                            diarize=True,
+                            on_progress=self.on_progress,
+                            timeout_secs=900.0,
+                        )
+
+                text = gladia_transcript_payload_to_text(
+                    payload,
+                    prefer_speaker_labels=True,
+                )
+                if text and self.on_transcription:
+                    logger.info(f"Gladia direct transcription completed ({len(text)} chars)")
                     self.on_transcription(text, True)
 
                 if self.on_progress:

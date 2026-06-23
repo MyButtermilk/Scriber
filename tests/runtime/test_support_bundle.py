@@ -12,13 +12,16 @@ def test_redaction_helpers_hide_sensitive_values():
     escaped_pipe_name = pipe_name.replace("\\", "\\\\")
     endpoint_id = r"SWD\MMDEVAPI\{0.0.1.00000000}.{secret-capture-device}"
     escaped_endpoint_id = endpoint_id.replace("\\", "\\\\")
+    groq_key = "gsk_" + "a" * 32
     redacted = redact_text(
         f"OPENAI_API_KEY=sk-abcdefghijklmnop Authorization: Bearer token-value "
+        f"rawGroq={groq_key} "
         f"pipe={pipe_name} escaped={escaped_pipe_name} "
         f"endpoint={endpoint_id} escapedEndpoint={escaped_endpoint_id}"
     )
 
     assert "sk-abcdefghijklmnop" not in redacted
+    assert groq_key not in redacted
     assert "token-value" not in redacted
     assert pipe_name not in redacted
     assert escaped_pipe_name not in redacted
@@ -49,8 +52,11 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     repo_dir = tmp_path / "repo"
     logs_dir.mkdir(parents=True)
     repo_dir.mkdir()
+    groq_key = "gsk_" + "b" * 32
+    groq_log_key = "gsk_" + "c" * 32
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(data_dir))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-abcdefghijklmnop")
+    monkeypatch.setenv("GROQ_API_KEY", groq_key)
     monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "session-secret-value")
     shell_pipe = r"\\.\pipe\scriber-shell-bundle"
     raw_endpoint_id = r"SWD\MMDEVAPI\{0.0.1.00000000}.{support-bundle-capture}"
@@ -58,15 +64,16 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     monkeypatch.setattr(support_bundle, "repo_root", lambda: repo_dir)
 
     (data_dir / "settings.json").write_text(
-        '{"language":"en","apiKeys":{"openaiApiKey":"settings-secret-value"}}',
+        '{"language":"en","apiKeys":{"openaiApiKey":"settings-secret-value","groq":"settings-groq-secret"}}',
         encoding="utf-8",
     )
     (data_dir / ".env").write_text(
-        f"SONIOX_API_KEY=env-secret-value\nSCRIBER_MODE=toggle\nSCRIBER_SHELL_IPC_PIPE={shell_pipe}\n",
+        f"SONIOX_API_KEY=env-secret-value\nGROQ_API_KEY={groq_key}\nSCRIBER_MODE=toggle\nSCRIBER_SHELL_IPC_PIPE={shell_pipe}\n",
         encoding="utf-8",
     )
     (logs_dir / "latest.log").write_text(
-        f"\x00\x00OPENAI_API_KEY=log-secret-value Authorization: Bearer bearer-secret pipe={shell_pipe} endpoint={raw_endpoint_id}\n",
+        f"\x00\x00OPENAI_API_KEY=log-secret-value Authorization: Bearer bearer-secret "
+        f"raw_groq={groq_log_key} pipe={shell_pipe} endpoint={raw_endpoint_id}\n",
         encoding="utf-8",
     )
 
@@ -101,8 +108,11 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
         combined = "\n".join(zf.read(name).decode("utf-8", errors="replace") for name in names)
 
     assert "settings-secret-value" not in combined
+    assert "settings-groq-secret" not in combined
     assert "env-secret-value" not in combined
     assert "log-secret-value" not in combined
+    assert groq_key not in combined
+    assert groq_log_key not in combined
     assert "session-secret-value" not in combined
     assert "sk-abcdefghijklmnop" not in combined
     assert "bearer-secret" not in combined

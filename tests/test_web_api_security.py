@@ -1,6 +1,9 @@
 import asyncio
+import sys
+import types
 
 import pytest
+from aiohttp import WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 
 from src import web_api
@@ -108,6 +111,37 @@ async def test_youtube_search_resolves_live_url_as_direct_video(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+async def test_youtube_search_rejects_unknown_youtube_url_shape(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(web_api.Config, "YOUTUBE_API_KEY", "test-key", raising=False)
+
+    async def fail_search_youtube_videos(*args, **kwargs):
+        raise AssertionError("unsupported YouTube URL shapes must not be sent to search")
+
+    monkeypatch.setattr(web_api, "search_youtube_videos", fail_search_youtube_videos)
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.get(
+            "/api/youtube/search",
+            params={"q": "https://www.youtube.com/channel/example"},
+        )
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 400
+    assert payload == {
+        "message": web_api.UNSUPPORTED_YOUTUBE_URL_MESSAGE,
+        "code": "unsupported_youtube_url",
+    }
+
+
+@pytest.mark.asyncio
 async def test_live_mic_toggle_acknowledges_stop_without_waiting(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     ctl = ScriberWebController(asyncio.get_running_loop())
@@ -133,6 +167,131 @@ async def test_live_mic_toggle_acknowledges_stop_without_waiting(monkeypatch, tm
     assert called["stop"] is True
     assert payload["stopAccepted"] is True
     assert payload["finalizing"] is True
+
+
+def _fake_local_model_module(*, kind: str, model_id: str = "local-smoke-model"):
+    module = types.ModuleType(f"src.{kind}_stt")
+    state = {"downloading": False, "downloaded": False, "deleted": False}
+    info = {
+        "name": "Local Smoke Model",
+        "description": "Synthetic local model for route contracts",
+        "languages": ["en"],
+        "size_mb": 42,
+        "size_mb_by_quantization": {"int8": 21, "fp32": 42},
+        "supported_quantizations": ["int8", "fp32"],
+    }
+
+    def get_model_info(candidate):
+        return info if candidate == model_id else None
+
+    def get_model_status(candidate, **_kwargs):
+        assert candidate == model_id
+        return {
+            "downloaded": state["downloaded"],
+            "status": "ready" if state["downloaded"] else "not_downloaded",
+            "progress": 100.0 if state["downloaded"] else 0.0,
+            "message": "ready" if state["downloaded"] else "not downloaded",
+        }
+
+    def is_model_downloading(candidate):
+        assert candidate == model_id
+        return state["downloading"]
+
+    async def download_model(candidate, **kwargs):
+        assert candidate == model_id
+        progress = kwargs.get("on_progress")
+        if callable(progress):
+            progress(100.0, "download complete")
+        state["downloaded"] = True
+        return True
+
+    def delete_model(candidate, **_kwargs):
+        assert candidate == model_id
+        deleted = state["deleted"]
+        state["deleted"] = True
+        return deleted
+
+    def is_available():
+        return True
+
+    def list_available_models(**_kwargs):
+        return [{"id": model_id, **info, "downloaded": state["downloaded"]}]
+
+    module.get_model_info = get_model_info
+    module.get_model_status = get_model_status
+    module.is_model_downloading = is_model_downloading
+    module.download_model = download_model
+    module.delete_model = delete_model
+    if kind == "onnx":
+        module.is_onnx_available = is_available
+    else:
+        module.is_nemo_available = is_available
+    module.list_available_models = list_available_models
+    module._state = state
+    module._model_id = model_id
+    return module
+
+
+@pytest.mark.asyncio
+async def test_local_model_routes_handle_invalid_and_boundary_states(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    onnx_module = _fake_local_model_module(kind="onnx", model_id="onnx-smoke")
+    nemo_module = _fake_local_model_module(kind="nemo", model_id="nemo-smoke")
+    monkeypatch.setitem(sys.modules, "src.onnx_stt", onnx_module)
+    monkeypatch.setitem(sys.modules, "src.nemo_stt", nemo_module)
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        missing_onnx = await client.post("/api/onnx/download", json={})
+        unknown_onnx = await client.post("/api/onnx/download", json={"modelId": "unknown"})
+        onnx_module._state["downloading"] = True
+        busy_onnx = await client.post("/api/onnx/download", json={"modelId": "onnx-smoke"})
+        onnx_module._state["downloading"] = False
+        missing_nemo = await client.post("/api/nemo/download", json={})
+        unknown_nemo = await client.post("/api/nemo/download", json={"modelId": "unknown"})
+        nemo_module._state["downloading"] = True
+        busy_nemo = await client.post("/api/nemo/download", json={"modelId": "nemo-smoke"})
+        nemo_module._state["downloading"] = False
+        not_cached_onnx = await client.delete("/api/onnx/models/onnx-smoke?quantization=int8")
+        not_cached_nemo = await client.delete("/api/nemo/models/nemo-smoke")
+
+        payloads = {
+            "missing_onnx": await missing_onnx.json(),
+            "unknown_onnx": await unknown_onnx.json(),
+            "busy_onnx": await busy_onnx.json(),
+            "missing_nemo": await missing_nemo.json(),
+            "unknown_nemo": await unknown_nemo.json(),
+            "busy_nemo": await busy_nemo.json(),
+            "not_cached_onnx": await not_cached_onnx.json(),
+            "not_cached_nemo": await not_cached_nemo.json(),
+        }
+    finally:
+        await client.close()
+        ctl.shutdown()
+
+    assert missing_onnx.status == 400
+    assert payloads["missing_onnx"]["message"] == "Missing modelId"
+    assert unknown_onnx.status == 404
+    assert payloads["unknown_onnx"]["message"] == "Unknown model"
+    assert busy_onnx.status == 409
+    assert payloads["busy_onnx"]["message"] == "Download already in progress"
+    assert payloads["busy_onnx"]["modelId"] == "onnx-smoke"
+    assert not_cached_onnx.status == 404
+    assert payloads["not_cached_onnx"]["message"] == "Model not found in cache"
+
+    assert missing_nemo.status == 400
+    assert payloads["missing_nemo"]["message"] == "Missing modelId"
+    assert unknown_nemo.status == 404
+    assert payloads["unknown_nemo"]["message"] == "Unknown model"
+    assert busy_nemo.status == 409
+    assert payloads["busy_nemo"]["message"] == "Download already in progress"
+    assert payloads["busy_nemo"]["modelId"] == "nemo-smoke"
+    assert not_cached_nemo.status == 404
+    assert payloads["not_cached_nemo"]["message"] == "Delete failed"
 
 
 class _FakeTransport:
@@ -417,6 +576,88 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
         assert shutdown_event.is_set()
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_session_token_middleware_protects_live_mic_routes(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        start_without_token = await client.post("/api/live-mic/start")
+        stop_without_token = await client.post("/api/live-mic/stop")
+        toggle_without_token = await client.post("/api/live-mic/toggle")
+    finally:
+        await client.close()
+
+    assert start_without_token.status == 401
+    assert stop_without_token.status == 401
+    assert toggle_without_token.status == 401
+
+
+@pytest.mark.asyncio
+async def test_session_token_middleware_protects_ws_settings_and_transcript_routes(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        with pytest.raises(WSServerHandshakeError) as ws_error:
+            await client.ws_connect("/ws")
+
+        settings_without_token = await client.get("/api/settings")
+        settings_put_without_token = await client.put("/api/settings", json={"micAlwaysOn": False})
+        transcripts_without_token = await client.get("/api/transcripts")
+        transcript_detail_without_token = await client.get("/api/transcripts/not-found")
+        settings_with_query_token = await client.get("/api/settings?scriberToken=secret")
+    finally:
+        await client.close()
+        ctl.shutdown()
+
+    assert ws_error.value.status == 401
+    assert settings_without_token.status == 401
+    assert settings_put_without_token.status == 401
+    assert transcripts_without_token.status == 401
+    assert transcript_detail_without_token.status == 401
+    assert settings_with_query_token.status == 200
+
+
+@pytest.mark.asyncio
+async def test_session_token_middleware_protects_local_model_routes(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        onnx_models_without_token = await client.get("/api/onnx/models")
+        onnx_download_without_token = await client.post("/api/onnx/download", json={"modelId": "base"})
+        onnx_delete_without_token = await client.delete("/api/onnx/models/base")
+        nemo_models_without_token = await client.get("/api/nemo/models")
+        nemo_download_without_token = await client.post("/api/nemo/download", json={"modelId": "base"})
+        nemo_delete_without_token = await client.delete("/api/nemo/models/base")
+    finally:
+        await client.close()
+        ctl.shutdown()
+
+    assert onnx_models_without_token.status == 401
+    assert onnx_download_without_token.status == 401
+    assert onnx_delete_without_token.status == 401
+    assert nemo_models_without_token.status == 401
+    assert nemo_download_without_token.status == 401
+    assert nemo_delete_without_token.status == 401
 
 
 @pytest.mark.asyncio

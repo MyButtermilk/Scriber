@@ -266,7 +266,10 @@ Packaging and scripts:
   HTTP, Google Cloud STT uses `google-cloud-speech` plus Pipecat's required
   `google-genai` namespace dependency, OpenAI STT uses the explicit `openai`
   SDK dependency, Groq STT uses Pipecat's `groq` SDK dependency, and Pipecat
-  provider imports require `nltk` at runtime.
+  provider imports require `nltk` at runtime. Gladia live transcription uses
+  Pipecat's Gladia service; Gladia file and YouTube transcription use the
+  direct pre-recorded HTTP upload/polling API and should not be routed through
+  the live WebSocket pipeline.
 - FFmpeg Profile B is the standard Windows bundled media-tool path. Gyan
   Essentials is explicit fallback only.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`

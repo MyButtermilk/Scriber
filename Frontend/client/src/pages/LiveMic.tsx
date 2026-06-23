@@ -182,6 +182,7 @@ const TranscriptCard = memo(function TranscriptCard({
 interface AudioVisualizerProps {
   isRecording: boolean;
   audioLevelRef: React.MutableRefObject<number>;
+  barCount: number;
 }
 
 interface GlossyMicButtonProps {
@@ -236,6 +237,7 @@ function normalizeInputWarningActions(value: unknown): InputWarningAction[] {
 const AudioVisualizer = memo(function AudioVisualizer({
   isRecording,
   audioLevelRef,
+  barCount,
 }: AudioVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -247,6 +249,7 @@ const AudioVisualizer = memo(function AudioVisualizer({
     }
 
     let rafId = 0;
+    const resolvedBarCount = normalizeVisualizerBarCount(barCount);
     let smoothedLevel = 0;
     let lastWidth = 0;
     let lastHeight = 0;
@@ -295,16 +298,15 @@ const AudioVisualizer = memo(function AudioVisualizer({
       smoothedLevel = smoothedLevel * 0.72 + rawLevel * 0.28;
 
       ctx.clearRect(0, 0, lastWidth, lastHeight);
-      const barCount = 20;
-      const gap = 4;
-      const barWidth = Math.max(3, Math.floor((lastWidth - gap * (barCount - 1)) / barCount));
-      const totalWidth = barCount * barWidth + (barCount - 1) * gap;
+      const gap = Math.max(1, Math.min(4, lastWidth / Math.max(1, resolvedBarCount * 6)));
+      const barWidth = Math.max(1, (lastWidth - gap * (resolvedBarCount - 1)) / resolvedBarCount);
+      const totalWidth = resolvedBarCount * barWidth + (resolvedBarCount - 1) * gap;
       const startX = Math.max(0, (lastWidth - totalWidth) / 2);
       const maxBarHeight = Math.max(8, lastHeight - 8);
       ctx.fillStyle = primary;
 
-      for (let i = 0; i < barCount; i += 1) {
-        const centerDistance = Math.abs(i - (barCount - 1) / 2) / ((barCount - 1) / 2);
+      for (let i = 0; i < resolvedBarCount; i += 1) {
+        const centerDistance = Math.abs(i - (resolvedBarCount - 1) / 2) / ((resolvedBarCount - 1) / 2);
         const shape = 1 - centerDistance * centerDistance * 0.65;
         const phase = time * 0.008 + i * 0.7;
         const motion = 0.78 + Math.sin(phase) * 0.22;
@@ -319,7 +321,7 @@ const AudioVisualizer = memo(function AudioVisualizer({
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [audioLevelRef, isRecording]);
+  }, [audioLevelRef, barCount, isRecording]);
 
   return (
     <canvas
@@ -444,6 +446,11 @@ import { QueryErrorState } from "@/components/ui/query-error-state";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useUrlQueryState } from "@/hooks/use-url-query-state";
 import { formatDurationLikeYoutube } from "@/lib/duration";
+import {
+  DEFAULT_VISUALIZER_BAR_COUNT,
+  loadVisualizerBarCount,
+  normalizeVisualizerBarCount,
+} from "@/lib/visualizer-settings";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 
@@ -457,6 +464,7 @@ export default function LiveMic() {
   const [inputWarningActions, setInputWarningActions] = useState<InputWarningAction[]>([]);
   const [finalText, setFinalText] = useState("");
   const [interimText, setInterimText] = useState("");
+  const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const [, setLocation] = useLocation();
@@ -505,6 +513,23 @@ export default function LiveMic() {
   const transcriptsQuery = useTranscriptHistoryQuery<Transcript>({ type: "mic", q: debouncedSearch });
   const transcripts = transcriptsQuery.items;
   const activeSessionIdRef = useRef<string | null>(null);
+
+  const refreshVisualizerBarCount = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const count = await loadVisualizerBarCount(signal);
+      setVisualizerBarCount(count);
+    } catch (e: any) {
+      if (e?.name !== "AbortError") {
+        setVisualizerBarCount(DEFAULT_VISUALIZER_BAR_COUNT);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshVisualizerBarCount(controller.signal);
+    return () => controller.abort();
+  }, [refreshVisualizerBarCount]);
 
   // Mock timer
   useEffect(() => {
@@ -685,11 +710,12 @@ export default function LiveMic() {
         applyInputWarning("", "", []);
         break;
       case "settings_updated":
+        void refreshVisualizerBarCount();
         break;
       default:
         break;
     }
-  }, [applyBackendStateSnapshot, applyInputWarning, refreshMicHistory, toast]);
+  }, [applyBackendStateSnapshot, applyInputWarning, refreshMicHistory, refreshVisualizerBarCount, toast]);
 
   // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
   const { isConnected } = useSharedWebSocket(handleWsMessage);
@@ -902,7 +928,11 @@ export default function LiveMic() {
           )}
 
           {/* Waveform Visualization (Mock) */}
-          <AudioVisualizer isRecording={isRecording} audioLevelRef={audioLevelRef} />
+          <AudioVisualizer
+            isRecording={isRecording}
+            audioLevelRef={audioLevelRef}
+            barCount={visualizerBarCount}
+          />
 
           {/* Controls */}
           <div className="flex flex-col items-center justify-center gap-3">

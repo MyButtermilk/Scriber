@@ -2825,7 +2825,7 @@ html:has(body[data-scroll-locked]) {
 
 .delete-pill--sm,
 .copy-pill--sm {
-  --action-size: 24px;
+  --action-size: 26px;
   --action-hover-width: 72px;
   --action-icon-size: 10px;
 }

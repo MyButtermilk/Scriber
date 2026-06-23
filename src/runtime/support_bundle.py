@@ -28,6 +28,7 @@ _JSON_SECRET_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _OPENAI_STYLE_SECRET_RE = re.compile(r"\b(sk-[A-Za-z0-9_-]{8,})")
+_GROQ_STYLE_SECRET_RE = re.compile(r"\b(gsk_[A-Za-z0-9_-]{20,})")
 _SHELL_IPC_PIPE_RE = re.compile(
     r"(?:\\\\){1,2}\.(?:\\){1,2}pipe(?:\\){1,2}scriber-shell-[A-Za-z0-9_.-]+",
     re.IGNORECASE,
@@ -73,6 +74,7 @@ def redact_text(text: str) -> str:
     redacted = _ASSIGNMENT_SECRET_RE.sub(r"\1=[REDACTED]", redacted)
     redacted = _BEARER_RE.sub("Bearer [REDACTED]", redacted)
     redacted = _OPENAI_STYLE_SECRET_RE.sub("[REDACTED]", redacted)
+    redacted = _GROQ_STYLE_SECRET_RE.sub("[REDACTED]", redacted)
     redacted = _SHELL_IPC_PIPE_RE.sub("[REDACTED_PIPE]", redacted)
     redacted = _NATIVE_AUDIO_ENDPOINT_RE.sub("[REDACTED_ENDPOINT_ID]", redacted)
     return redacted

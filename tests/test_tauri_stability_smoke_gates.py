@@ -34,6 +34,41 @@ def test_desktop_stability_smoke_reports_idle_cpu_gate() -> None:
     assert "-MaxIdleCpuPercent $MaxIdleCpuPercent" in script
 
 
+def test_desktop_smoke_verifies_single_instance_and_audio_sidecar_cleanup() -> None:
+    script = read_script("scripts/smoke_tauri_desktop.ps1")
+
+    assert "[switch]$VerifySingleInstance" in script
+    assert "[string[]]$SingleInstanceSecondArguments = @()" in script
+    assert "[string[]]$SingleInstanceForbiddenLogText = @()" in script
+    assert "function Test-SingleInstanceBlock" in script
+    assert "SecondArgumentList" in script
+    assert "ForbiddenLogText" in script
+    assert "another Scriber desktop instance is already running" in script
+    assert "Single-instance forbidden probe text leaked to runtime logs." in script
+    assert "secondArgumentCount" in script
+    assert "forbiddenLogTextAbsent" in script
+    assert "noManagedBackendSpawned = $true" in script
+    assert "singleInstance = $singleInstance" in script
+
+    assert "[switch]$VerifyAudioSidecarCleanup" in script
+    assert "function Start-InstalledAudioSidecarStray" in script
+    assert "$env:SCRIBER_AUDIO_SIDECAR_EXE = $audioSidecarProbePath" in script
+    assert "$env:SCRIBER_AUDIO_SIDECAR_EXE = $oldAudioSidecarExe" in script
+    assert "startupCleanupVerified" in script
+    assert "noRemainingInstalledSidecarsAfterExit" in script
+    assert "audioSidecarCleanup = $audioSidecarCleanup" in script
+
+    assert "[switch]$VerifyShellMenuSmoke" in script
+    assert '[string]$ShellMenuSmokeActions = "show-window,quit"' in script
+    assert "function Test-ShellMenuSmoke" in script
+    assert "SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTIONS" in script
+    assert "SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_FILE" in script
+    assert "shell menu smoke action show-window completed" in script
+    assert "shell menu smoke action quit completed" in script
+    assert "Shell menu smoke Open Scriber did not leave the main window visible." in script
+    assert "shellMenuSmoke = $shellMenuSmoke" in script
+
+
 def test_installer_and_build_scripts_forward_memory_growth_gate() -> None:
     installer = read_script("scripts/smoke_windows_installer.ps1")
     build = read_script("scripts/build_windows.ps1")
@@ -162,7 +197,8 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "rust-audio-sidecar-build" in sidecar
     assert "Stale audio sidecar resource" in sidecar
     assert "Stale packaged audio sidecar resource" in sidecar
-    assert '$entry["sha256"] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()' in sidecar
+    assert "function Get-Sha256Hex" in sidecar
+    assert '$entry["sha256"] = Get-Sha256Hex -Path $item.FullName' in sidecar
     assert '$entry["lastWriteTimeUtc"] = $item.LastWriteTimeUtc.ToString("o")' in sidecar
 
 
@@ -352,6 +388,9 @@ def test_desktop_smoke_can_verify_os_global_hotkey_dispatch() -> None:
     assert '[string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12"' in desktop
     assert "function Test-GlobalHotkeyRegistration" in desktop
     assert "function Invoke-GlobalHotkeyChord" in desktop
+    assert "function Test-SyntheticGlobalHotkeyDispatchSupport" in desktop
+    assert "ctrl+alt+shift+f24" in desktop
+    assert "Windows SendInput did not trigger a probe RegisterHotKey" in desktop
     assert "function Test-GlobalHotkeyDispatch" in desktop
     assert '[ValidateSet("synthetic", "manual")]' in desktop
     assert 'Write-Warning "Manual global hotkey smoke: press' in desktop
@@ -376,6 +415,9 @@ def test_installer_and_build_scripts_forward_global_hotkey_smoke() -> None:
     assert '"-WaitForManualGlobalHotkey"' in installer
     assert '"-GlobalHotkeySmokeHotkey", $GlobalHotkeySmokeHotkey' in installer
     assert '"-GlobalHotkeyDispatchTimeoutSec", $GlobalHotkeyDispatchTimeoutSec.ToString()' in installer
+    assert installer.count('"-GlobalHotkeySmokeHotkey", $GlobalHotkeySmokeHotkey') == 1
+    assert installer.count('"-GlobalHotkeyDispatchTimeoutSec", $GlobalHotkeyDispatchTimeoutSec.ToString()') == 1
+    assert "if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey)" in installer
     assert "globalHotkey = $smoke.globalHotkey" in installer
 
     assert "[switch]$RunInstallerGlobalHotkeyRegistrationSmoke" in build

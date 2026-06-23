@@ -25,6 +25,8 @@ def test_extract_youtube_video_id_supports_live_urls():
 def test_youtube_url_like_detects_unknown_youtube_urls_for_better_errors():
     assert is_youtube_url_like("https://www.youtube.com/live/-Ppvp4uM7Kw")
     assert is_youtube_url_like("https://www.youtube.com/channel/example")
+    assert extract_youtube_video_id("https://www.youtube.com/channel/example") is None
+    assert extract_youtube_video_id("https://www.youtube.com/live/not-valid!") is None
     assert not is_youtube_url_like("https://example.com/watch?v=-Ppvp4uM7Kw")
 
 

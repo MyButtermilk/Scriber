@@ -79,3 +79,25 @@ def test_missing_api_key_is_provider_specific_configuration_error():
     assert info.category is ErrorCategory.CONFIG_INVALID
     assert info.code == "missing_api_key"
     assert info.message == "Soniox API key is missing. Add it in Settings."
+
+
+def test_missing_api_key_uses_provider_specific_labels_for_async_and_optional_providers():
+    cases = {
+        "assemblyai": "Assembly AI Universal-3-Pro",
+        "mistral": "Mistral (Realtime)",
+        "mistral_async": "Mistral (Async)",
+        "smallest": "Smallest AI (Realtime)",
+        "smallest_async": "Smallest AI (Async)",
+        "elevenlabs": "ElevenLabs",
+        "gladia": "Gladia",
+    }
+
+    for provider, label in cases.items():
+        info = provider_user_error(provider, f"{label} API Key is missing.")
+
+        assert info.provider == provider
+        assert info.provider_label == label
+        assert info.category is ErrorCategory.CONFIG_INVALID
+        assert info.code == "missing_api_key"
+        assert info.message == f"{label} API key is missing. Add it in Settings."
+        assert info.retryable is False

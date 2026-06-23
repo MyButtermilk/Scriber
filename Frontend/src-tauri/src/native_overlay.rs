@@ -202,12 +202,16 @@ fn overlay_window(app: &tauri::AppHandle) -> Option<WebviewWindow> {
 }
 
 #[cfg(not(test))]
-fn ensure_overlay_window(app: &tauri::AppHandle, initial_mode: &str) -> Result<WebviewWindow, String> {
+fn ensure_overlay_window(
+    app: &tauri::AppHandle,
+    initial_mode: &str,
+) -> Result<WebviewWindow, String> {
     if let Some(window) = overlay_window(app) {
         return Ok(window);
     }
 
-    let safe_mode = normalize_overlay_mode(initial_mode).unwrap_or_else(|_| "recording".to_string());
+    let safe_mode =
+        normalize_overlay_mode(initial_mode).unwrap_or_else(|_| "recording".to_string());
     let window = WebviewWindowBuilder::new(
         app,
         OVERLAY_WINDOW_LABEL,

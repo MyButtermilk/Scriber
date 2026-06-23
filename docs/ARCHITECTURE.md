@@ -243,15 +243,21 @@ Soniox is the default STT family: realtime live transcription uses
 `SCRIBER_SONIOX_ASYNC_MODEL` remain escape hatches for provider compatibility,
 but older Soniox realtime and async models are not release defaults.
 
-The standard sidecar keeps runtime support for every provider exposed in
-Settings, but the dependency boundary is explicit. Google Cloud STT is packaged
-through `google-cloud-speech` plus Pipecat's required `google-genai` namespace
-dependency; Gemini summarization uses direct HTTP and does not require
-`google-generativeai`. OpenAI STT uses the explicit `openai` SDK dependency,
-Groq STT uses Pipecat's `groq` SDK dependency, and Pipecat provider imports
-require `nltk` at runtime. Build-time runtime import checks cover the offered
-provider modules, and the footprint analyzer rejects unused provider SDKs if
-PyInstaller pulls them back in.
+The standard sidecar keeps runtime support for the shipped cloud/external
+providers exposed in Settings, but the dependency boundary is explicit. Local
+ASR choices such as ONNX and NeMo are configuration/UI surfaces with fail-closed
+readiness handling in the standard build; a successful installed local-ASR
+transcription path requires a separate local-ASR sidecar or packaging decision.
+Google Cloud STT is packaged through `google-cloud-speech` plus Pipecat's
+required `google-genai` namespace dependency; Gemini summarization uses direct
+HTTP and does not require `google-generativeai`. OpenAI STT uses the explicit
+`openai` SDK dependency, Groq STT uses Pipecat's `groq` SDK dependency, and
+Pipecat provider imports require `nltk` at runtime. Gladia live transcription
+still uses Pipecat's Gladia service, while file and YouTube transcription use
+Gladia's pre-recorded HTTP upload/polling API directly to avoid empty
+live-WebSocket finalization for complete files. Build-time runtime import checks
+cover the offered standard provider modules, and the footprint analyzer rejects
+unused provider SDKs if PyInstaller pulls them back in.
 
 ## Media Boundary
 

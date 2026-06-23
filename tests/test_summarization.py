@@ -61,14 +61,22 @@ def test_summary_budget_gemini_includes_thinking_reserve(monkeypatch: pytest.Mon
     assert gemini_tokens > gpt_tokens
 
 
-def test_gemini_payload_sets_explicit_thinking_budget(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_THINKING_BUDGET_TOKENS", "768")
+def test_gemini_payload_sets_explicit_thinking_level(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_THINKING_LEVEL", "low")
 
     payload = summarization._build_gemini_payload("prompt", "gemini-flash-latest", 4096)
 
     generation_config = payload["generationConfig"]
     assert generation_config["maxOutputTokens"] == 4096
-    assert generation_config["thinkingConfig"] == {"thinkingBudget": 768}
+    assert generation_config["thinkingConfig"] == {"thinkingLevel": "LOW"}
+
+
+def test_gemini_35_flash_payload_uses_medium_thinking_level_by_default(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("SCRIBER_SUMMARY_GEMINI_THINKING_LEVEL", raising=False)
+
+    payload = summarization._build_gemini_payload("prompt", "gemini-3.5-flash", 4096)
+
+    assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "MEDIUM"}
 
 
 def test_dynamic_length_instruction_contains_budget():
@@ -196,11 +204,11 @@ async def test_summarize_gemini_retries_max_tokens_with_larger_budget(monkeypatc
     monkeypatch.setattr(summarization.Config, "GOOGLE_API_KEY", "test-key")
     monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRIES", "1")
     monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_RETRY_MAX_OUTPUT_TOKENS", "8000")
-    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_THINKING_BUDGET_TOKENS", "512")
+    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_THINKING_LEVEL", "high")
 
     async def _fake_post(_session, _url, payload, *, retries):
         calls.append(payload["generationConfig"]["maxOutputTokens"])
-        assert payload["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 512}
+        assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "HIGH"}
         if len(calls) == 1:
             return {
                 "candidates": [

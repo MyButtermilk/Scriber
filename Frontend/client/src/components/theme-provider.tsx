@@ -43,11 +43,34 @@ type DocumentWithViewTransition = Document & {
     startViewTransition?: (updateCallback: () => void) => ViewTransition;
 };
 
+const VALID_THEMES = new Set<Theme>(["dark", "light", "system"]);
+
+function normalizeTheme(value: unknown, fallback: Theme = "system"): Theme {
+    return typeof value === "string" && VALID_THEMES.has(value as Theme) ? (value as Theme) : fallback;
+}
+
+function readStoredTheme(storageKey: string, fallback: Theme): Theme {
+    try {
+        return normalizeTheme(window.localStorage.getItem(storageKey), fallback);
+    } catch {
+        return fallback;
+    }
+}
+
+function writeStoredTheme(storageKey: string, theme: Theme) {
+    try {
+        window.localStorage.setItem(storageKey, theme);
+    } catch (error) {
+        console.debug("Theme preference could not be persisted.", error);
+    }
+}
+
 function resolveEffectiveTheme(theme: Theme): ResolvedTheme {
-    if (theme === "system") {
+    const normalizedTheme = normalizeTheme(theme);
+    if (normalizedTheme === "system") {
         return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     }
-    return theme;
+    return normalizedTheme;
 }
 
 function applyThemeClass(theme: ResolvedTheme) {
@@ -196,7 +219,7 @@ export function ThemeProvider({
     ...props
 }: ThemeProviderProps) {
     const [theme, setTheme] = useState<Theme>(
-        () => (localStorage.getItem(storageKey) as Theme) || defaultTheme
+        () => readStoredTheme(storageKey, normalizeTheme(defaultTheme))
     );
     const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
     const deferredDesktopThemeRef = useRef<ResolvedTheme | null>(null);
@@ -229,23 +252,24 @@ export function ThemeProvider({
     }, [theme]);
 
     const updateTheme = useCallback((nextTheme: Theme, options?: ThemeTransitionOptions) => {
-        localStorage.setItem(storageKey, nextTheme);
+        const normalizedNextTheme = normalizeTheme(nextTheme);
+        writeStoredTheme(storageKey, normalizedNextTheme);
 
-        const nextResolvedTheme = resolveEffectiveTheme(nextTheme);
+        const nextResolvedTheme = resolveEffectiveTheme(normalizedNextTheme);
         const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         const documentWithViewTransition = window.document as DocumentWithViewTransition;
         const startViewTransition = documentWithViewTransition.startViewTransition?.bind(documentWithViewTransition);
         const transitionOrigin = options?.origin ?? getVisibleThemeToggleOrigin();
 
         if (!transitionOrigin || prefersReducedMotion) {
-            setTheme(nextTheme);
+            setTheme(normalizedNextTheme);
             return;
         }
 
         const commitTheme = () => {
             applyThemeClass(nextResolvedTheme);
             setResolvedTheme(nextResolvedTheme);
-            setTheme(nextTheme);
+            setTheme(normalizedNextTheme);
         };
 
         const beginReveal = () => {

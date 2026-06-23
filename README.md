@@ -245,7 +245,7 @@ python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.jso
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
-  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.1.0_x64-setup.exe `
+  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.2.0_x64-setup.exe `
   -VerifyFrontend `
   -VerifyMediaPreparation `
   -VerifySupportBundle `

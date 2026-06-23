@@ -98,6 +98,21 @@ function Get-StringSha256 {
     }
 }
 
+function Get-Sha256Hex {
+    param([string]$Path)
+
+    $fullPath = Convert-ToFullPath -Path $Path
+    $stream = [System.IO.File]::OpenRead($fullPath)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha.ComputeHash($stream)
+        return ([System.BitConverter]::ToString($hashBytes)).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Get-RelativePath {
     param(
         [string]$Root,
@@ -128,7 +143,7 @@ function Get-FileHashEntry {
         length = [int64]$item.Length
     }
     if ($HashContent) {
-        $entry["sha256"] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $entry["sha256"] = Get-Sha256Hex -Path $item.FullName
     } else {
         $entry["lastWriteTimeUtc"] = $item.LastWriteTimeUtc.ToString("o")
     }
@@ -296,8 +311,8 @@ function Test-FileContentEqual {
         return $true
     }
 
-    $sourceHash = (Get-FileHash -LiteralPath $source.FullName -Algorithm SHA256).Hash
-    $targetHash = (Get-FileHash -LiteralPath $target.FullName -Algorithm SHA256).Hash
+    $sourceHash = Get-Sha256Hex -Path $source.FullName
+    $targetHash = Get-Sha256Hex -Path $target.FullName
     return $sourceHash -eq $targetHash
 }
 
@@ -520,7 +535,7 @@ function Copy-RustAudioSidecarToTauriRelease {
         targetExe = $targetExe
         cargoTargetDir = $cargoTargetDir
         isolatedCargoTarget = [bool]$UseIsolatedTarget
-        sha256 = (Get-FileHash -LiteralPath $targetExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        sha256 = Get-Sha256Hex -Path $targetExe
         length = [int64](Get-Item -LiteralPath $targetExe).Length
         targetCopied = [bool]$targetCopied
         captureDefault = "disabled"

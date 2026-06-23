@@ -116,6 +116,69 @@ class _RecoveringFakeMicPrewarmManager(_FakeMicPrewarmManager):
         return snapshot
 
 
+def test_force_process_exit_after_shutdown_is_frozen_tauri_only_by_default(monkeypatch):
+    monkeypatch.setenv("SCRIBER_RUNTIME_MODE", "tauri-supervised")
+    monkeypatch.delenv("SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN", raising=False)
+    monkeypatch.setattr(web_api, "is_frozen", lambda: False)
+
+    assert web_api._should_force_process_exit_after_shutdown() is False
+
+    monkeypatch.setattr(web_api, "is_frozen", lambda: True)
+    assert web_api._should_force_process_exit_after_shutdown() is True
+
+    monkeypatch.setenv("SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN", "0")
+    assert web_api._should_force_process_exit_after_shutdown() is False
+
+    monkeypatch.setenv("SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN", "1")
+    monkeypatch.setenv("SCRIBER_RUNTIME_MODE", "dev")
+    monkeypatch.setattr(web_api, "is_frozen", lambda: False)
+    assert web_api._should_force_process_exit_after_shutdown() is True
+
+
+def test_force_process_exit_after_shutdown_timeout_is_bounded(monkeypatch):
+    monkeypatch.delenv("SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_SEC", raising=False)
+    assert web_api._force_process_exit_after_shutdown_timeout_seconds() == 5.0
+
+    monkeypatch.setenv("SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_SEC", "0.1")
+    assert web_api._force_process_exit_after_shutdown_timeout_seconds() == 0.5
+
+    monkeypatch.setenv("SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_SEC", "45")
+    assert web_api._force_process_exit_after_shutdown_timeout_seconds() == 30.0
+
+    monkeypatch.setenv("SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_SEC", "2.5")
+    assert web_api._force_process_exit_after_shutdown_timeout_seconds() == 2.5
+
+
+def test_arm_force_process_exit_after_shutdown_starts_daemon_timer(monkeypatch):
+    exits: list[int] = []
+
+    class FakeTimer:
+        def __init__(self, interval, target):
+            self.interval = interval
+            self.target = target
+            self.daemon = False
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setenv("SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_SEC", "1.5")
+    monkeypatch.setattr(web_api.threading, "Timer", FakeTimer)
+    monkeypatch.setattr(web_api.os, "_exit", lambda code: exits.append(code))
+
+    timer = web_api._arm_force_process_exit_after_shutdown()
+
+    assert timer.interval == 1.5
+    assert timer.daemon is True
+    assert timer.started is True
+
+    timer.target()
+    assert exits == [0]
+
+
 def _install_fake_sounddevice_module(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -225,6 +288,28 @@ def test_audio_diagnostics_silence_requires_no_pipecat_vad_speech():
     assert web_api._audio_diagnostics_have_pipecat_vad_silence(no_vad_frames) is False
     assert web_api._audio_diagnostics_indicate_silence(speech) is False
     assert web_api._audio_diagnostics_have_pipecat_vad_silence({**quiet, "pipecatVad": None}) is False
+
+
+@pytest.mark.asyncio
+async def test_stop_listening_when_idle_is_noop(monkeypatch):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    try:
+        save_mock = AsyncMock()
+        history_mock = AsyncMock()
+        monkeypatch.setattr(ctl, "_save_transcript_to_db_async", save_mock)
+        monkeypatch.setattr(ctl, "_broadcast_history_updated", history_mock)
+
+        stop_error = await ctl.stop_listening()
+
+        assert stop_error is None
+        assert ctl._is_listening is False
+        assert ctl._is_stopping is False
+        assert ctl.get_state()["recordingState"] == "idle"
+        save_mock.assert_not_awaited()
+        history_mock.assert_not_awaited()
+    finally:
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio
@@ -506,6 +591,28 @@ async def test_update_settings_toggles_idle_mic_prewarm(monkeypatch, tmp_path):
     assert manager.stop_calls >= 1
     assert "settings_disabled" in manager.stop_reasons
     assert manager.active is False
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_update_settings_ignores_invalid_mic_always_on_type(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(web_api.Config, "persist_to_env_file", MagicMock())
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeRustMicPrewarmManager.instances[-1]
+
+    settings = await ctl.update_settings({"micAlwaysOn": "false"})
+
+    assert settings["micAlwaysOn"] is False
+    assert web_api.Config.MIC_ALWAYS_ON is False
+    assert manager.resume_calls == 0
+    assert manager.stop_calls == 0
 
     ctl.shutdown()
 
@@ -1320,6 +1427,55 @@ async def test_low_input_warning_emits_and_clears():
 
 
 @pytest.mark.asyncio
+async def test_input_warning_ignores_stale_session_and_malformed_actions():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    ctl._session_id = "current-session"
+
+    with patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock:
+        ctl._set_input_warning(
+            "Should not apply",
+            code="mic_level_very_low",
+            actions=[{"id": "settings", "label": "Settings", "uri": "/settings"}],
+            session_id="stale-session",
+        )
+        await asyncio.sleep(0)
+
+        assert ctl.get_state()["inputWarning"] == ""
+        assert ctl.get_state()["inputWarningActions"] == []
+        broadcast_mock.assert_not_awaited()
+
+        ctl._set_input_warning(
+            "Microphone input is very low.",
+            code="mic_level_very_low",
+            actions=[
+                {"id": "settings", "label": "Open settings", "uri": "/settings"},
+                {"id": "", "label": "Missing id", "uri": "/settings"},
+                {"id": "missing-uri", "label": "Missing URI", "uri": ""},
+                "not-an-action",
+            ],
+            session_id="current-session",
+        )
+        await asyncio.sleep(0.05)
+
+    state = ctl.get_state()
+    assert state["inputWarning"] == "Microphone input is very low."
+    assert state["inputWarningCode"] == "mic_level_very_low"
+    assert state["inputWarningActions"] == [
+        {"id": "settings", "label": "Open settings", "uri": "/settings"}
+    ]
+    payloads = [
+        call.args[0]
+        for call in broadcast_mock.await_args_list
+        if call.args and isinstance(call.args[0], dict) and call.args[0].get("type") == "input_warning"
+    ]
+    assert payloads[-1]["sessionId"] == "current-session"
+    assert payloads[-1]["actions"] == [
+        {"id": "settings", "label": "Open settings", "uri": "/settings"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_broadcast_skips_serialization_without_clients():
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
@@ -1430,6 +1586,10 @@ class _StopOkPipeline:
         self.stopped = True
 
 
+class _StopOkNamedPipeline(_StopOkPipeline):
+    service_name = "openai"
+
+
 @pytest.mark.asyncio
 async def test_emergency_stop_clears_state_and_stopping_flag():
     loop = asyncio.get_running_loop()
@@ -1455,6 +1615,65 @@ async def test_emergency_stop_clears_state_and_stopping_flag():
     assert ctl._pipeline_task is None
     assert ctl._session_id is None
     assert ctl._current is None
+
+
+@pytest.mark.asyncio
+async def test_completed_live_mic_session_is_persisted_and_searchable(monkeypatch, tmp_path):
+    db_path = tmp_path / "transcripts.db"
+    web_api.db._close_all_connections()
+    if hasattr(web_api.db._thread_local, "conn"):
+        web_api.db._thread_local.conn = None
+    monkeypatch.setattr(web_api.db, "_DB_PATH", db_path)
+    web_api.db.init_database()
+
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    session_id = "persisted-live-session"
+    rec = _make_record(session_id)
+    rec.title = "Live Mic Persistence Smoke"
+    rec.append_final_text("persisted live history smoke text")
+
+    ctl._current = rec
+    ctl._session_id = session_id
+    ctl._is_listening = True
+    ctl._pipeline = _StopOkNamedPipeline()
+    ctl._pipeline_task = None
+
+    with (
+        patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock,
+        patch("src.web_api.show_transcribing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        stop_error = await ctl.stop_listening()
+
+    assert stop_error is None
+    assert rec.status == "completed"
+    assert rec in ctl._history
+
+    listed = ctl.list_transcripts(transcript_type="mic", include_content=False)
+    assert listed["total"] == 1
+    assert listed["items"][0]["id"] == session_id
+    assert listed["items"][0]["status"] == "completed"
+    assert listed["items"][0]["preview"] == "persisted live history smoke text"
+
+    detail = ctl.get_transcript(session_id)
+    assert detail is not None
+    assert detail["content"] == "persisted live history smoke text"
+    assert detail["summaryStatus"] == "idle"
+
+    searched = web_api.db.search_transcript_metadata("persisted live history", transcript_type="mic")
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == session_id
+
+    payloads = [call.args[0] for call in broadcast_mock.await_args_list if call.args]
+    assert any(payload.get("type") == "session_finished" for payload in payloads)
+    assert any(
+        payload.get("type") == "history_updated"
+        and payload.get("transcriptId") == session_id
+        and payload.get("transcriptType") == "mic"
+        and payload.get("status") == "completed"
+        for payload in payloads
+    )
 
 
 class _StopFailPipeline:

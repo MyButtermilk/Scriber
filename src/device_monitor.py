@@ -42,6 +42,7 @@ _E_ALL = 2
 _NATIVE_EVENT_SAFETY_POLL_SECONDS = 15.0 * 60.0
 _FALLBACK_POLL_SECONDS = 60.0
 _NATIVE_HINT_STRING_LIMIT = 128
+_DEVICE_STATE_CHANGED_DEBOUNCE_SECONDS = 3.0
 
 
 def get_device_guard_lock() -> threading.RLock:
@@ -297,6 +298,7 @@ class DeviceMonitor:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._pending_refresh_at = 0.0
+        self._pending_refresh_reason = ""
         self._pending_refresh_requires_portaudio = False
         self._refresh_deferred_until_idle = False
         self._deferred_refresh_trigger = ""
@@ -511,7 +513,10 @@ class DeviceMonitor:
         force_portaudio_refresh: bool = True,
     ) -> None:
         now = time.monotonic()
-        due_at = now if immediate else now + self._debounce_seconds
+        debounce_seconds = self._debounce_seconds
+        if not immediate and reason.endswith("device_state_changed"):
+            debounce_seconds = max(debounce_seconds, _DEVICE_STATE_CHANGED_DEBOUNCE_SECONDS)
+        due_at = now if immediate else now + debounce_seconds
         scheduled = False
         with self._state_lock:
             if self._refresh_deferred_until_idle:
@@ -519,7 +524,18 @@ class DeviceMonitor:
             current = self._pending_refresh_at
             if current <= 0.0 or due_at < current:
                 self._pending_refresh_at = due_at
+                self._pending_refresh_reason = reason
                 scheduled = True
+            elif (
+                not immediate
+                and reason.endswith("device_state_changed")
+                and self._pending_refresh_reason.endswith("device_state_changed")
+                and due_at > current
+            ):
+                # Windows commonly emits several state changes during login/resume.
+                # Treat these as a trailing debounce so one settled refresh handles
+                # the burst instead of logging/scheduling each intermediate state.
+                self._pending_refresh_at = due_at
             if force_portaudio_refresh:
                 self._pending_refresh_requires_portaudio = True
         if scheduled:
@@ -674,6 +690,7 @@ class DeviceMonitor:
                 if pending_due > 0.0 and now >= pending_due:
                     with self._state_lock:
                         self._pending_refresh_at = 0.0
+                        self._pending_refresh_reason = ""
                         pending_requires_portaudio = self._pending_refresh_requires_portaudio
                         self._pending_refresh_requires_portaudio = False
                     self._refresh_devices(

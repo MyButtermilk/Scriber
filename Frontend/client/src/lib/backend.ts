@@ -123,13 +123,13 @@ export function apiUrl(pathOrUrl: string): string {
   return appendSessionToken(url);
 }
 
-export async function reportFrontendReady(): Promise<void> {
+export async function reportFrontendReady(options: { force?: boolean } = {}): Promise<void> {
   if (typeof window === "undefined") {
     return;
   }
 
   const reportKey = `${backendBaseUrl}|${backendSessionToken ? "token" : "no-token"}|${isTauriRuntime() ? "tauri" : "browser"}`;
-  if (frontendReadyReportKey === reportKey) {
+  if (!options.force && frontendReadyReportKey === reportKey) {
     return;
   }
 

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src import web_api
 from src.config import Config
 from src.data.job_store import JobStatus, JobStore
 from src.web_api import ScriberWebController, TranscriptRecord
@@ -71,6 +72,14 @@ class _SyntheticPipeline:
         self._on_transcription("Synthetic transcript text for summary failure.", True)
 
 
+class _EmptyPipeline:
+    async def transcribe_file_direct(self, _path):
+        return None
+
+    async def transcribe_file(self, _path):
+        return None
+
+
 def _completed_record(*, transcript_type: str, tmp_path) -> TranscriptRecord:
     now = datetime.now()
     return TranscriptRecord(
@@ -125,6 +134,82 @@ async def test_youtube_auto_summary_failure_is_exposed_as_summary_state(monkeypa
     assert "summary provider failed" in rec.summary_error
     assert rec.to_public(include_content=True)["summaryStatus"] == "failed"
     assert save_mock.await_count >= 3
+
+
+@pytest.mark.asyncio
+async def test_file_transcription_empty_provider_result_fails_job(monkeypatch, tmp_path):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    file_path = tmp_path / "upload.wav"
+    file_path.write_bytes(b"RIFF....WAVEfmt ")
+    rec = _completed_record(transcript_type="file", tmp_path=tmp_path)
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+
+    with (
+        patch("src.web_api.supports_direct_file_upload", return_value=True),
+        patch("src.web_api._create_scriber_pipeline", return_value=_EmptyPipeline()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()) as save_mock,
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as broadcast_mock,
+    ):
+        await ctl._run_file_transcription(rec, file_path, provider="gladia")
+
+    assert rec.status == "failed"
+    assert rec.step == "Failed"
+    assert "provider returned no transcript text" in rec.content
+    assert save_mock.await_count >= 1
+    assert broadcast_mock.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_youtube_transcription_empty_provider_result_fails_job(monkeypatch, tmp_path):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    ctl._downloads_dir = tmp_path / "downloads"
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"RIFF....WAVEfmt ")
+    rec = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
+
+    async def _download_youtube_audio(*_args, **_kwargs):
+        return audio_path
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+
+    with (
+        patch("src.web_api.download_youtube_audio", new=AsyncMock(side_effect=_download_youtube_audio)),
+        patch("src.web_api.supports_direct_file_upload", return_value=True),
+        patch("src.web_api._create_scriber_pipeline", return_value=_EmptyPipeline()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()) as save_mock,
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as broadcast_mock,
+    ):
+        await ctl._run_youtube_transcription(rec, provider="gladia")
+
+    assert rec.status == "failed"
+    assert rec.step == "Failed"
+    assert "provider returned no transcript text" in rec.content
+    assert save_mock.await_count >= 1
+    assert broadcast_mock.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_update_settings_rejects_unavailable_local_stt_provider(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(Config, "DEFAULT_STT_SERVICE", "soniox")
+    monkeypatch.setattr(
+        web_api,
+        "_provider_readiness_error",
+        lambda provider: "Local ONNX transcription is unavailable in this Scriber build."
+        if provider == "onnx_local"
+        else None,
+    )
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    with pytest.raises(RuntimeError, match="Local ONNX transcription is unavailable"):
+        await ctl.update_settings({"defaultSttService": "onnx_local"})
+
+    assert Config.DEFAULT_STT_SERVICE == "soniox"
+    ctl.shutdown()
 
 
 @pytest.mark.asyncio

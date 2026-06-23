@@ -42,6 +42,12 @@ import {
   type DesktopUpdateProgress,
   type DesktopUpdateStatus,
 } from "@/lib/desktop-updates";
+import {
+  DEFAULT_VISUALIZER_BAR_COUNT,
+  MAX_VISUALIZER_BAR_COUNT,
+  MIN_VISUALIZER_BAR_COUNT,
+  normalizeVisualizerBarCount,
+} from "@/lib/visualizer-settings";
 
 const LANGUAGE_OPTIONS = [
   { value: "auto", label: "Auto-detect" },
@@ -298,8 +304,8 @@ export default function Settings() {
   const [summarizationModel, setSummarizationModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [language, setLanguage] = useState("auto");
-  const [visualizerBarCount, setVisualizerBarCount] = useState(45);
-  const [savedVisualizerBarCount, setSavedVisualizerBarCount] = useState(45);
+  const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
+  const [savedVisualizerBarCount, setSavedVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartAvailable, setAutostartAvailable] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -484,7 +490,7 @@ export default function Settings() {
         setSummarizationPrompt(settings.summarizationPrompt || "");
         setSummarizationModel(settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
         setAutoSummarize(settings.autoSummarize === true);
-        const loadedVisualizerBarCount = settings.visualizerBarCount || 45;
+        const loadedVisualizerBarCount = normalizeVisualizerBarCount(settings.visualizerBarCount);
         setVisualizerBarCount(loadedVisualizerBarCount);
         setSavedVisualizerBarCount(loadedVisualizerBarCount);
         setMicAlwaysOn(settings.micAlwaysOn === true);
@@ -508,7 +514,14 @@ export default function Settings() {
         setSpeechmaticsKey(keys.speechmatics || "");
         setGoogleApplicationCredentials(keys.googleApplicationCredentials || "");
 
-        setInputDevices(mics.devices || []);
+        let microphonePayload = mics;
+        if (!Array.isArray(microphonePayload.devices)) {
+          const micsRes = await fetch(apiUrl("/api/microphones"), { credentials: "include" });
+          if (micsRes.ok) {
+            microphonePayload = (await micsRes.json()) as MicrophonesResponse;
+          }
+        }
+        setInputDevices(microphonePayload.devices || []);
 
         // Show page immediately - don't wait for model info
         setSettingsLoaded(true);
@@ -653,20 +666,27 @@ export default function Settings() {
   }, [handleHotkeyRecord, isRecordingHotkey]);
 
   const handleMicDeviceChange = async (deviceId: string) => {
+    const previousDeviceId = selectedDeviceId;
     setSelectedDeviceId(deviceId);
     try {
       await updateSettings({ micDevice: deviceId });
+      return true;
     } catch (e: any) {
+      setSelectedDeviceId(previousDeviceId);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
         duration: 4000,
       });
+      return false;
     }
   };
 
   const handleMicDeviceSelectFromDropdown = async (deviceId: string) => {
-    await handleMicDeviceChange(deviceId);
+    const saved = await handleMicDeviceChange(deviceId);
+    if (!saved) {
+      return;
+    }
     window.setTimeout(() => {
       setIsMicDropdownOpen(false);
     }, 500);
@@ -697,6 +717,7 @@ export default function Settings() {
   };
 
   const handleTranscriptionModelChange = async (value: string) => {
+    const previousValue = transcriptionModel;
     setTranscriptionModel(value);
     try {
       if (value === "soniox-async") {
@@ -715,6 +736,7 @@ export default function Settings() {
         await updateSettings({ defaultSttService: value });
       }
     } catch (e: any) {
+      setTranscriptionModel(previousValue);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
@@ -1052,12 +1074,12 @@ export default function Settings() {
   };
 
   const handleVisualizerBarCountChange = (value: number[]) => {
-    const count = value[0];
+    const count = normalizeVisualizerBarCount(value[0], savedVisualizerBarCount);
     setVisualizerBarCount(count);
   };
 
   const handleVisualizerBarCountCommit = async (value: number[]) => {
-    const count = value[0];
+    const count = normalizeVisualizerBarCount(value[0], savedVisualizerBarCount);
     if (count === savedVisualizerBarCount) {
       return;
     }
@@ -2069,8 +2091,8 @@ export default function Settings() {
                         value={[visualizerBarCount]}
                         onValueChange={handleVisualizerBarCountChange}
                         onValueCommit={handleVisualizerBarCountCommit}
-                        min={16}
-                        max={128}
+                        min={MIN_VISUALIZER_BAR_COUNT}
+                        max={MAX_VISUALIZER_BAR_COUNT}
                         step={1}
                         className="flex-1"
                       />
