@@ -65,6 +65,7 @@ class Config:
 
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     AZURE_MAI_SPEECH_KEY = os.getenv("AZURE_MAI_SPEECH_KEY")
     AZURE_MAI_REGION = os.getenv("SCRIBER_AZURE_MAI_REGION", "northeurope")
     AZURE_MAI_MODEL = os.getenv("SCRIBER_AZURE_MAI_MODEL", "mai-transcribe-1.5")
@@ -95,6 +96,7 @@ class Config:
     #   "auto" - Current default: Python clipboard paste, with Python fallbacks
     INJECT_METHOD = os.getenv("SCRIBER_INJECT_METHOD", "auto").lower()  # auto | sendinput | paste | type | tauri
     DISABLE_TEXT_INJECTION = os.getenv("SCRIBER_DISABLE_TEXT_INJECTION", "0") in ("1", "true", "True")
+    INJECT_TARGET_TITLE = os.getenv("SCRIBER_INJECT_TARGET_TITLE", "").strip()
     # Clipboard paste tuning (Windows). Some apps (Word/Outlook) process paste asynchronously.
     PASTE_PRE_DELAY_MS = int(os.getenv("SCRIBER_PASTE_PRE_DELAY_MS", "80"))
     PASTE_RESTORE_DELAY_MS = int(os.getenv("SCRIBER_PASTE_RESTORE_DELAY_MS", "1500"))
@@ -110,6 +112,7 @@ class Config:
         "elevenlabs": "ELEVENLABS_API_KEY",
         "deepgram": "DEEPGRAM_API_KEY",
         "openai": "OPENAI_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
         "azure_mai": "AZURE_MAI_SPEECH_KEY",
         "gladia": "GLADIA_API_KEY",
         "groq": "GROQ_API_KEY",
@@ -322,6 +325,7 @@ Input:"""
         add("YOUTUBE_API_KEY", getattr(cls, "YOUTUBE_API_KEY", "") or "")
         add("DEEPGRAM_API_KEY", cls.DEEPGRAM_API_KEY or "")
         add("OPENAI_API_KEY", cls.OPENAI_API_KEY or "")
+        add("OPENROUTER_API_KEY", cls.OPENROUTER_API_KEY or "")
         add("AZURE_MAI_SPEECH_KEY", cls.AZURE_MAI_SPEECH_KEY or "")
         add("SCRIBER_AZURE_MAI_REGION", cls.AZURE_MAI_REGION or "northeurope")
         add("SCRIBER_AZURE_MAI_MODEL", cls.AZURE_MAI_MODEL or "mai-transcribe-1.5")

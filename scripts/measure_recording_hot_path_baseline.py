@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import hashlib
 import json
 import os
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -66,6 +69,202 @@ def iteration_text_target_path(raw_path: str, index: int, total_iterations: int)
     suffix = path.suffix
     stem = path.name[: -len(suffix)] if suffix else path.name
     return path.with_name(f"{stem}.iteration-{index}{suffix}")
+
+
+def short_hash(value: object) -> str:
+    return hashlib.sha256(str(value).encode("utf-8", errors="replace")).hexdigest()[:8]
+
+
+def _window_text(hwnd: int) -> str:
+    user32 = ctypes.windll.user32
+    length = int(user32.GetWindowTextLengthW(ctypes.c_void_p(hwnd)))
+    buffer = ctypes.create_unicode_buffer(max(2, length + 1))
+    user32.GetWindowTextW(ctypes.c_void_p(hwnd), buffer, len(buffer))
+    return buffer.value
+
+
+def _window_class(hwnd: int) -> str:
+    user32 = ctypes.windll.user32
+    buffer = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(ctypes.c_void_p(hwnd), buffer, len(buffer))
+    return buffer.value
+
+
+def foreground_window_snapshot(expected_title: str = "") -> dict[str, Any]:
+    if sys.platform != "win32":
+        return {
+            "available": False,
+            "ok": False,
+            "reason": "not_windows",
+            "matchesExpectedTitle": False,
+        }
+
+    user32 = ctypes.windll.user32
+    hwnd = int(user32.GetForegroundWindow())
+    if not hwnd:
+        return {
+            "available": True,
+            "ok": False,
+            "reason": "no_foreground_window",
+            "matchesExpectedTitle": False,
+        }
+
+    pid = ctypes.c_ulong(0)
+    user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
+    title = _window_text(hwnd)
+    class_name = _window_class(hwnd)
+    matches = bool(expected_title and title == expected_title)
+    return {
+        "available": True,
+        "ok": matches,
+        "matchesExpectedTitle": matches,
+        "hwndHash": short_hash(hwnd),
+        "titleHash": short_hash(title),
+        "titleLength": len(title),
+        "classHash": short_hash(class_name),
+        "processIdHash": short_hash(pid.value),
+    }
+
+
+def try_focus_text_target_window(title: str) -> bool:
+    if sys.platform != "win32" or not title:
+        return False
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    hwnd = int(user32.FindWindowW(None, title))
+    if not hwnd:
+        return False
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
+    user32.AttachThreadInput.argtypes = [ctypes.c_ulong, ctypes.c_ulong, ctypes.c_bool]
+    user32.AttachThreadInput.restype = ctypes.c_bool
+    user32.BringWindowToTop.argtypes = [ctypes.c_void_p]
+    user32.BringWindowToTop.restype = ctypes.c_bool
+    user32.SetActiveWindow.argtypes = [ctypes.c_void_p]
+    user32.SetActiveWindow.restype = ctypes.c_void_p
+    kernel32.GetCurrentThreadId.restype = ctypes.c_ulong
+
+    sw_restore = 9
+    current_thread = int(kernel32.GetCurrentThreadId())
+    target_thread = int(user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), None))
+    foreground_hwnd = int(user32.GetForegroundWindow() or 0)
+    foreground_thread = (
+        int(user32.GetWindowThreadProcessId(ctypes.c_void_p(foreground_hwnd), None))
+        if foreground_hwnd
+        else 0
+    )
+    attached_threads: list[int] = []
+    for thread_id in {target_thread, foreground_thread}:
+        if thread_id and thread_id != current_thread:
+            if user32.AttachThreadInput(current_thread, thread_id, True):
+                attached_threads.append(thread_id)
+    try:
+        user32.ShowWindow(ctypes.c_void_p(hwnd), sw_restore)
+        user32.BringWindowToTop(ctypes.c_void_p(hwnd))
+        user32.SetActiveWindow(ctypes.c_void_p(hwnd))
+        focused = bool(user32.SetForegroundWindow(ctypes.c_void_p(hwnd)))
+        return focused or bool(foreground_window_snapshot(title).get("ok"))
+    finally:
+        for thread_id in attached_threads:
+            user32.AttachThreadInput(current_thread, thread_id, False)
+
+
+def record_text_target_focus(
+    sample: dict[str, Any],
+    info: dict[str, Any] | None,
+    phase: str,
+    *,
+    timeout_sec: float = 0.75,
+    poll_sec: float = 0.05,
+) -> bool:
+    if not info:
+        return True
+    title = str(info.get("title") or "")
+    deadline = time.monotonic() + max(0.0, timeout_sec)
+    latest: dict[str, Any] | None = None
+    while True:
+        focus_requested = try_focus_text_target_window(title)
+        latest = foreground_window_snapshot(title)
+        latest = {
+            "phase": phase,
+            "ok": bool(latest.get("ok")),
+            "focusRequested": focus_requested,
+            "expectedTitleHash": short_hash(title),
+            **latest,
+        }
+        if latest["ok"] or time.monotonic() >= deadline:
+            break
+        time.sleep(max(0.01, poll_sec))
+
+    sample.setdefault("textTargetFocus", []).append(latest)
+    return bool(latest and latest.get("ok"))
+
+
+def sleep_with_text_target_focus(
+    sample: dict[str, Any],
+    info: dict[str, Any] | None,
+    seconds: float,
+    phase: str,
+    *,
+    poll_sec: float = 0.2,
+) -> None:
+    deadline = time.monotonic() + max(0.0, seconds)
+    index = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(max(0.01, poll_sec), remaining))
+        index += 1
+        record_text_target_focus(
+            sample,
+            info,
+            f"{phase}:{index}",
+            timeout_sec=0.05,
+            poll_sec=0.01,
+        )
+
+
+def start_text_target_focus_keeper(
+    sample: dict[str, Any],
+    info: dict[str, Any] | None,
+    *,
+    interval_sec: float = 0.15,
+) -> tuple[threading.Event, threading.Thread] | None:
+    if not info:
+        return None
+    stop_event = threading.Event()
+
+    def _run() -> None:
+        index = 0
+        while not stop_event.wait(max(0.05, interval_sec)):
+            index += 1
+            record_text_target_focus(
+                sample,
+                info,
+                f"focus_keeper:{index}",
+                timeout_sec=0.05,
+                poll_sec=0.01,
+            )
+
+    thread = threading.Thread(
+        target=_run,
+        name="scriber-text-target-focus-keeper",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
+
+
+def stop_text_target_focus_keeper(
+    keeper: tuple[threading.Event, threading.Thread] | None,
+) -> None:
+    if keeper is None:
+        return
+    stop_event, thread = keeper
+    stop_event.set()
+    thread.join(timeout=1.0)
 
 
 def powershell_text_target_command() -> str:
@@ -310,6 +509,13 @@ def text_target_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         for sample in samples
         if sample.get("textTarget") is not None
     ]
+    focus_checks = [
+        check
+        for sample in samples
+        for check in (sample.get("textTargetFocus") or [])
+        if sample.get("textTarget") is not None
+    ]
+    focus_errors = sum(1 for check in focus_checks if not check.get("ok"))
     captured_chars = [
         int(target.get("capturedChars") or 0)
         for target in target_samples
@@ -326,6 +532,9 @@ def text_target_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "capturedChars": captured_chars,
         "maxCapturedChars": max(captured_chars) if captured_chars else 0,
         "captureElapsedDurations": summarize(capture_elapsed_values),
+        "focusChecks": len(focus_checks),
+        "focusErrors": focus_errors,
+        "focusOk": len(target_samples) <= 0 or (bool(focus_checks) and focus_errors == 0),
     }
 
 
@@ -415,11 +624,14 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
     }
     started = False
     text_target_proc: subprocess.Popen | None = None
+    text_target_focus_keeper: tuple[threading.Event, threading.Thread] | None = None
     speech_proc: subprocess.Popen | None = None
     try:
         text_target, text_target_proc = launch_text_target(args, index)
         if text_target:
             sample["textTarget"] = text_target
+            record_text_target_focus(sample, text_target, "target_launched")
+            text_target_focus_keeper = start_text_target_focus_keeper(sample, text_target)
 
         state = client.post("/api/live-mic/start")
         started = True
@@ -438,6 +650,8 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
             sample["sessionId"] = session_id
         if not session_id:
             raise RuntimeError("Backend did not expose a live session id.")
+        if text_target:
+            record_text_target_focus(sample, text_target, "recording_started")
 
         try:
             sample["audioDiagnosticsDuringRecording"] = client.get(
@@ -451,11 +665,25 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
 
         record_started_at = time.monotonic()
         if args.speech_prompt_text:
-            time.sleep(min(args.speech_prompt_delay_sec, args.record_seconds))
+            sleep_with_text_target_focus(
+                sample,
+                text_target,
+                min(args.speech_prompt_delay_sec, args.record_seconds),
+                "before_speech_prompt",
+            )
             speech_prompt, speech_proc = start_speech_prompt(args)
             sample["speechPrompt"] = speech_prompt
+            if text_target:
+                record_text_target_focus(sample, text_target, "speech_prompt_started")
         elapsed = time.monotonic() - record_started_at
-        time.sleep(max(0.0, args.record_seconds - elapsed))
+        sleep_with_text_target_focus(
+            sample,
+            text_target,
+            max(0.0, args.record_seconds - elapsed),
+            "recording_wait",
+        )
+        if text_target:
+            record_text_target_focus(sample, text_target, "before_stop")
         client.post("/api/live-mic/stop")
         started = False
         wait_for_state(
@@ -479,6 +707,10 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
             sample["textTarget"]["capturedChars"] = captured_chars
             sample["textTarget"]["captureElapsedMs"] = capture_elapsed_ms
             sample["textTarget"]["captured"] = captured_chars > 0
+            record_text_target_focus(sample, text_target, "after_capture")
+        sample["focusOk"] = all(
+            bool(check.get("ok")) for check in sample.get("textTargetFocus", [])
+        )
         sample["ok"] = any(name in segments for name in SEGMENTS_BY_REQUIREMENT.values())
     except Exception as exc:
         sample["error"] = str(exc)
@@ -493,6 +725,7 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
                 speech_proc.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
                 terminate_process(speech_proc)
+        stop_text_target_focus_keeper(text_target_focus_keeper)
         terminate_process(text_target_proc)
     return sample
 
@@ -717,6 +950,10 @@ def build_summary(
             target_status = "missing_target_window"
         elif target_summary["capturedSamples"] <= 0:
             target_status = "missing_target_text"
+        elif target_summary["focusErrors"] > 0:
+            target_status = "focus_lost"
+        elif target_summary["focusChecks"] <= 0:
+            target_status = "focus_unverified"
         requirements["text_target_persistence"] = {
             "status": target_status,
             "segment": "textTarget.capturedChars",
@@ -834,6 +1071,16 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             "captureElapsedMs": 35.0,
             "captured": True,
         }
+        sample["textTargetFocus"] = [
+            {
+                "phase": "validate",
+                "ok": True,
+                "focusRequested": False,
+                "expectedTitleHash": short_hash(args.text_target_title),
+                "available": False,
+                "matchesExpectedTitle": True,
+            }
+        ]
     return {
         "schemaVersion": 1,
         "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

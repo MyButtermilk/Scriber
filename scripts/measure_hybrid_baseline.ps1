@@ -43,6 +43,7 @@ param(
     [double]$RecordingHotPathSeconds = 2.0,
     [int]$RecordingHotPathTimeoutSec = 60,
     [string]$RecordingHotPathTextTargetFile = "",
+    [string]$RecordingHotPathTextTargetTitle = "Scriber Hot Path Text Target",
     [string]$RecordingHotPathSpeechPrompt = "",
     [double]$RecordingHotPathSpeechDelaySec = 0.5,
     [double]$RecordingHotPathTextTargetSettleSec = 1.0,
@@ -787,6 +788,7 @@ function Invoke-RecordingHotPathBenchmark {
     if ($RecordingHotPathTextTargetFile) {
         $recordingArgs += @(
             "--text-target-file", $RecordingHotPathTextTargetFile,
+            "--text-target-title", $RecordingHotPathTextTargetTitle,
             "--text-target-settle-sec", [string]$RecordingHotPathTextTargetSettleSec,
             "--text-target-timeout-sec", [string]$RecordingHotPathTextTargetTimeoutSec
         )
@@ -875,6 +877,8 @@ function Invoke-BaselineIteration {
     $oldSessionToken = $env:SCRIBER_SESSION_TOKEN
     $oldHotkeys = $env:SCRIBER_DISABLE_HOTKEYS
     $oldMonitor = $env:SCRIBER_DISABLE_DEVICE_MONITOR
+    $oldInjectMethod = $env:SCRIBER_INJECT_METHOD
+    $oldInjectTargetTitle = $env:SCRIBER_INJECT_TARGET_TITLE
 
     if ($DisableDevFallback) {
         $env:SCRIBER_REPO_ROOT = $null
@@ -901,6 +905,13 @@ function Invoke-BaselineIteration {
     }
     if (-not $EnableDeviceMonitor) {
         $env:SCRIBER_DISABLE_DEVICE_MONITOR = "1"
+    }
+    if ($RecordingHotPathTextTargetFile) {
+        $env:SCRIBER_INJECT_METHOD = "paste"
+        $env:SCRIBER_INJECT_TARGET_TITLE = $RecordingHotPathTextTargetTitle
+    } else {
+        $env:SCRIBER_INJECT_METHOD = $oldInjectMethod
+        $env:SCRIBER_INJECT_TARGET_TITLE = $oldInjectTargetTitle
     }
 
     $app = $null
@@ -1001,6 +1012,8 @@ function Invoke-BaselineIteration {
         $env:SCRIBER_SESSION_TOKEN = $oldSessionToken
         $env:SCRIBER_DISABLE_HOTKEYS = $oldHotkeys
         $env:SCRIBER_DISABLE_DEVICE_MONITOR = $oldMonitor
+        $env:SCRIBER_INJECT_METHOD = $oldInjectMethod
+        $env:SCRIBER_INJECT_TARGET_TITLE = $oldInjectTargetTitle
     }
 
     if (-not $sample) {
@@ -1288,6 +1301,7 @@ $result = [pscustomobject]@{
         recordingHotPathSeconds = $RecordingHotPathSeconds
         recordingHotPathTimeoutSec = $RecordingHotPathTimeoutSec
         recordingHotPathTextTargetFile = $RecordingHotPathTextTargetFile
+        recordingHotPathTextTargetTitleChars = $RecordingHotPathTextTargetTitle.Length
         recordingHotPathSpeechPromptChars = $RecordingHotPathSpeechPrompt.Length
         recordingHotPathSpeechDelaySec = $RecordingHotPathSpeechDelaySec
         recordingHotPathTextTargetSettleSec = $RecordingHotPathTextTargetSettleSec

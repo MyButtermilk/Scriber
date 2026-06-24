@@ -525,6 +525,30 @@ async def test_settings_round_trips_azure_mai_model(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_settings_round_trips_openrouter_summary_model_and_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    monkeypatch.setattr(web_api.Config, "OPENROUTER_API_KEY", "", raising=False)
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    settings = await ctl.update_settings(
+        {
+            "summarizationModel": "minimax/minimax-m3:nitro",
+            "apiKeys": {"openrouter": "openrouter-secret"},
+        }
+    )
+
+    assert web_api.Config.SUMMARIZATION_MODEL == "minimax/minimax-m3:nitro"
+    assert web_api.Config.OPENROUTER_API_KEY == "openrouter-secret"
+    assert settings["summarizationModel"] == "minimax/minimax-m3:nitro"
+    assert settings["apiKeys"]["openrouter"] == "openrouter-secret"
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_controller_starts_idle_mic_prewarm_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")

@@ -128,6 +128,8 @@ const SUMMARIZATION_MODEL_OPTIONS = [
   { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview" },
   { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite Preview" },
   { value: "gemini-3-pro-preview", label: "Gemini 3 Pro" },
+  { value: "minimax/minimax-m3:nitro", label: "OpenRouter MiniMax M3 (Nitro)" },
+  { value: "z-ai/glm-5.2:nitro", label: "OpenRouter GLM 5.2 (Nitro)" },
   { value: "gpt-5.2", label: "OpenAI GPT 5.2" },
   { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini" },
   { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano" },
@@ -138,6 +140,7 @@ const API_KEY_HELP_LINKS = {
   deepgram: { href: "https://console.deepgram.com/", label: "Deepgram console" },
   assemblyai: { href: "https://www.assemblyai.com/dashboard", label: "AssemblyAI dashboard" },
   gemini: { href: "https://aistudio.google.com/app/apikey", label: "Google AI Studio" },
+  openrouter: { href: "https://openrouter.ai/settings/keys", label: "OpenRouter keys" },
   youtube: { href: "https://console.cloud.google.com/apis/credentials", label: "Google Cloud credentials" },
   soniox: { href: "https://console.soniox.com/", label: "Soniox console" },
   smallest: { href: "https://app.smallest.ai/", label: "Smallest AI console" },
@@ -261,6 +264,7 @@ export default function Settings() {
   const [deepgramKey, setDeepgramKey] = useState("");
   const [assemblyAIKey, setAssemblyAIKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
+  const [openRouterKey, setOpenRouterKey] = useState("");
   const [youtubeKey, setYoutubeKey] = useState("");
   const [sonioxKey, setSonioxKey] = useState("");
   const [mistralKey, setMistralKey] = useState("");
@@ -281,6 +285,7 @@ export default function Settings() {
   const [showDeepgramKey, setShowDeepgramKey] = useState(false);
   const [showAssemblyAIKey, setShowAssemblyAIKey] = useState(false);
   const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const [showOpenRouterKey, setShowOpenRouterKey] = useState(false);
   const [showYoutubeKey, setShowYoutubeKey] = useState(false);
   const [showSonioxKey, setShowSonioxKey] = useState(false);
   const [showMistralKey, setShowMistralKey] = useState(false);
@@ -504,6 +509,7 @@ export default function Settings() {
         setDeepgramKey(keys.deepgram || "");
         setOpenAIKey(keys.openai || "");
         setGeminiKey(keys.googleApiKey || "");
+        setOpenRouterKey(keys.openrouter || "");
         setYoutubeKey(keys.youtubeApiKey || "");
         setElevenLabsKey(keys.elevenlabs || "");
         setAzureMaiKey(keys.azureMaiSpeechKey || "");
@@ -594,6 +600,7 @@ export default function Settings() {
       if (provider === "Deepgram") apiKeys.deepgram = deepgramKey;
       if (provider === "AssemblyAI") apiKeys.assemblyai = assemblyAIKey;
       if (provider === "Gemini") apiKeys.googleApiKey = geminiKey;
+      if (provider === "OpenRouter") apiKeys.openrouter = openRouterKey;
       if (provider === "YouTube") apiKeys.youtubeApiKey = youtubeKey;
       if (provider === "Soniox") apiKeys.soniox = sonioxKey;
       if (provider === "Mistral") apiKeys.mistral = mistralKey;
@@ -2369,6 +2376,36 @@ export default function Settings() {
                     >
                       {savedKeys['Gemini'] ? <Check className="w-4 h-4 mr-2" /> : null}
                       {savedKeys['Gemini'] ? "Saved" : "Save"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2">
+                  <ApiKeyLabel helpKey="openrouter">OpenRouter API Key</ApiKeyLabel>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Input
+                        type={showOpenRouterKey ? "text" : "password"}
+                        value={openRouterKey}
+                        onChange={(e) => setOpenRouterKey(e.target.value)}
+                        placeholder="Enter your OpenRouter key"
+                        className="font-mono text-sm pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowOpenRouterKey(!showOpenRouterKey)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      >
+                        {showOpenRouterKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <Button
+                      variant={savedKeys['OpenRouter'] ? "default" : "outline"}
+                      onClick={() => handleSaveApiKey('OpenRouter')}
+                      className={savedKeys['OpenRouter'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
+                    >
+                      {savedKeys['OpenRouter'] ? <Check className="w-4 h-4 mr-2" /> : null}
+                      {savedKeys['OpenRouter'] ? "Saved" : "Save"}
                     </Button>
                   </div>
                 </div>

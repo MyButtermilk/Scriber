@@ -92,6 +92,7 @@ pub fn create_overlay_window(_app: &tauri::App) -> tauri::Result<()> {
 
 pub fn handle_shell_command(command: &str, payload: &Value) -> Result<Value, String> {
     match command {
+        "overlayPrepare" => prepare_overlay(payload),
         "overlayShow" => show_overlay(payload),
         "overlayHide" => hide_overlay(),
         "overlayAudioLevel" => record_audio_level(payload),
@@ -108,6 +109,29 @@ fn show_overlay(payload: &Value) -> Result<Value, String> {
             .unwrap_or("recording"),
     )?;
     show_overlay_mode(mode)
+}
+
+fn prepare_overlay(payload: &Value) -> Result<Value, String> {
+    let mode = normalize_overlay_mode(
+        payload
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("initializing"),
+    )?;
+    prepare_overlay_mode(mode)
+}
+
+#[cfg(not(test))]
+fn prepare_overlay_mode(mode: String) -> Result<Value, String> {
+    let app = overlay_app_handle()?;
+    let window = ensure_overlay_window(&app, &mode)?;
+    ensure_overlay_positioned(&window).map_err(|err| format!("overlay position failed: {err}"))?;
+    Ok(status_payload())
+}
+
+#[cfg(test)]
+fn prepare_overlay_mode(_mode: String) -> Result<Value, String> {
+    Ok(status_payload())
 }
 
 #[cfg(not(test))]

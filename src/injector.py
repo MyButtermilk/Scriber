@@ -141,6 +141,30 @@ def _active_window_title() -> str:
         return ""
 
 
+def _expected_injection_target_title() -> str:
+    configured = getattr(Config, "INJECT_TARGET_TITLE", "") or os.getenv(
+        "SCRIBER_INJECT_TARGET_TITLE",
+        "",
+    )
+    return str(configured or "").strip()
+
+
+def _active_window_matches_expected_target(expected_title: str) -> bool:
+    if not expected_title:
+        return True
+    return _active_window_title() == expected_title
+
+
+def _foreground_target_guard_allows_dispatch(expected_title: str, *, phase: str) -> bool:
+    if _active_window_matches_expected_target(expected_title):
+        return True
+    logger.warning(
+        "Text injection skipped because foreground target title did not match "
+        f"(phase={phase})"
+    )
+    return False
+
+
 def _is_slow_app(title: str) -> bool:
     """Check if the active window is a known slow app that needs special handling."""
     title_lower = title.lower()
@@ -281,6 +305,13 @@ def _paste_text(
     if sys.platform != "win32":
         return False
 
+    expected_target_title = _expected_injection_target_title()
+    if not _foreground_target_guard_allows_dispatch(
+        expected_target_title,
+        phase="before_clipboard_set",
+    ):
+        return False
+
     # Only save previous clipboard if we're going to restore it
     previous_text = None if skip_clipboard_restore else _windows_clipboard_get_text()
 
@@ -301,6 +332,12 @@ def _paste_text(
         pre_delay_ms = _get_pre_delay_for_window()
         if pre_delay_ms:
             time.sleep(pre_delay_ms / 1000.0)
+
+        if not _foreground_target_guard_allows_dispatch(
+            expected_target_title,
+            phase="before_paste_dispatch",
+        ):
+            return False
 
         try:
             if keyboard and hasattr(keyboard, "press_and_release"):
@@ -351,6 +388,7 @@ def _tauri_inject_text(
     client_timeout_seconds = 2.5
     deadline_ms = 2000
     pre_delay_ms = max(0, int(getattr(Config, "PASTE_PRE_DELAY_MS", 80) or 80))
+    expected_target_title = _expected_injection_target_title()
 
     payload = {
         "text": text,
@@ -363,6 +401,8 @@ def _tauri_inject_text(
         "clipboardRetryDelayMs": 5,
         "deadlineMs": deadline_ms,
     }
+    if expected_target_title:
+        payload["expectedForegroundTitle"] = expected_target_title
     try:
         call_started_ns = time.perf_counter_ns()
         response = call_shell_ipc("injectText", payload, timeout_seconds=client_timeout_seconds)
@@ -552,6 +592,13 @@ class TextInjector(FrameProcessor):
         if method not in {"auto", "type", "paste", "sendinput", "tauri"}:
             method = "auto"
 
+        expected_target_title = _expected_injection_target_title()
+        if not _foreground_target_guard_allows_dispatch(
+            expected_target_title,
+            phase="before_injection",
+        ):
+            return
+
         if method == "tauri":
             if _tauri_inject_text(text, on_marker=self._notify_injection_marker):
                 self._notify_injected(text)
@@ -574,6 +621,11 @@ class TextInjector(FrameProcessor):
             return
 
         if method == "sendinput":
+            if not _foreground_target_guard_allows_dispatch(
+                expected_target_title,
+                phase="before_sendinput_dispatch",
+            ):
+                return
             if _send_input_text(text):
                 if Config.DEBUG:
                     logger.info(f"Injected via SendInput ({len(text)} chars, instant)")
@@ -587,6 +639,11 @@ class TextInjector(FrameProcessor):
                 self._notify_injected(text)
                 return
             logger.debug("Clipboard paste failed; trying SendInput")
+            if not _foreground_target_guard_allows_dispatch(
+                expected_target_title,
+                phase="before_sendinput_fallback",
+            ):
+                return
             if _send_input_text(text):
                 if Config.DEBUG:
                     logger.info(f"Injected via SendInput ({len(text)} chars, instant)")
@@ -595,6 +652,11 @@ class TextInjector(FrameProcessor):
             logger.debug("SendInput also failed; falling back to keystroke typing")
 
         # Last resort: character-by-character typing (slow but most compatible)
+        if not _foreground_target_guard_allows_dispatch(
+            expected_target_title,
+            phase="before_keyboard_dispatch",
+        ):
+            return
         try:
             keyboard.write(text, delay=0.01)  # 10ms per char
             self._notify_injected(text)

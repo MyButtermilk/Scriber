@@ -854,14 +854,7 @@ pub fn run() {
         None
     };
     let backend_manager = BackendManager::new(backend_shell_ipc_config);
-    let early_backend_status = backend_manager.ensure_started();
-    write_shell_log(&format!(
-        "early backend ensure pid={:?} ready={} launch_kind={} message={}",
-        early_backend_status.pid,
-        early_backend_status.ready,
-        early_backend_status.launch_kind,
-        early_backend_status.message
-    ));
+    write_shell_log("early backend ensure deferred until Tauri setup completes");
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
@@ -887,18 +880,10 @@ pub fn run() {
             apply_default_desktop_autostart(app.handle());
             let manager = app.state::<BackendManager>();
             manager.set_resource_dir(app.path().resource_dir().ok());
-            let setup_backend_status = manager.ensure_started();
-            write_shell_log(&format!(
-                "setup backend ensure pid={:?} ready={} launch_kind={} message={}",
-                setup_backend_status.pid,
-                setup_backend_status.ready,
-                setup_backend_status.launch_kind,
-                setup_backend_status.message
-            ));
             start_backend_supervisor(app.handle().clone());
-            if let Err(err) = refresh_global_hotkey_for_app(app.handle()) {
-                write_shell_log(&format!("global hotkey registration skipped: {err}"));
-            }
+            write_shell_log(
+                "setup backend ensure and global hotkey registration deferred to supervisor",
+            );
             let native_events_handle =
                 start_native_device_event_monitor_for_app(app.handle().clone());
             app.state::<NativeDeviceEventsState>()
@@ -2228,7 +2213,6 @@ fn start_backend_supervisor(app: AppHandle) {
         let mut hotkey_refreshed_after_ready = false;
         let mut tray_refreshed_after_ready = false;
         loop {
-            std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);
             let Some(manager) = app.try_state::<BackendManager>() else {
                 break;
             };
@@ -2254,6 +2238,7 @@ fn start_backend_supervisor(app: AppHandle) {
                 hotkey_refreshed_after_ready = false;
                 tray_refreshed_after_ready = false;
             }
+            std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);
         }
     });
 }

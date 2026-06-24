@@ -10,6 +10,17 @@ def read_script(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+def test_tauri_shell_defers_backend_start_off_setup_hot_path() -> None:
+    lib = read_script("Frontend/src-tauri/src/lib.rs")
+
+    assert "early backend ensure deferred until Tauri setup completes" in lib
+    assert "setup backend ensure and global hotkey registration deferred to supervisor" in lib
+    assert "let setup_backend_status = manager.ensure_started();" not in lib
+    assert "global hotkey registration skipped:" not in lib
+    assert "let status = manager.ensure_started();" in lib
+    assert "std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);" in lib
+
+
 def test_desktop_stability_smoke_reports_memory_growth_gate() -> None:
     script = read_script("scripts/smoke_tauri_desktop.ps1")
 
@@ -318,6 +329,7 @@ def test_native_recording_overlay_is_tauri_owned() -> None:
     assert "src.overlay" not in native_overlay_py
     assert "recording-overlay" in native_overlay_rs
     assert "scriber-overlay-state" in native_overlay_rs
+    assert "overlayPrepare" in shell_ipc
     assert "overlayShow" in shell_ipc
     assert "overlayHide" in shell_ipc
     assert "nativeOverlay" in shell_ipc
@@ -386,6 +398,8 @@ def test_desktop_smoke_can_verify_os_global_hotkey_dispatch() -> None:
     assert "[switch]$SimulateGlobalHotkey" in desktop
     assert "[switch]$WaitForManualGlobalHotkey" in desktop
     assert '[string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12"' in desktop
+    assert '[string]$GlobalHotkeySmokeDefaultStt = ""' in desktop
+    assert "[switch]$GlobalHotkeySkipStopCleanup" in desktop
     assert "function Test-GlobalHotkeyRegistration" in desktop
     assert "function Invoke-GlobalHotkeyChord" in desktop
     assert "function Test-SyntheticGlobalHotkeyDispatchSupport" in desktop
@@ -395,11 +409,18 @@ def test_desktop_smoke_can_verify_os_global_hotkey_dispatch() -> None:
     assert '[ValidateSet("synthetic", "manual")]' in desktop
     assert 'Write-Warning "Manual global hotkey smoke: press' in desktop
     assert 'dispatchMethod = $DispatchMethod' in desktop
+    assert "function Wait-GlobalHotkeyUserReady" in desktop
+    assert "api/metrics/hot-path?limit=10&includeActive=1" in desktop
+    assert "hotkey_received_to_mic_ready_ms" in desktop
+    assert "hotkey_received_to_first_audio_frame_ms" in desktop
+    assert "userReady = $userReady" in desktop
+    assert "hotPathMetrics = if ($userReady)" in desktop
     assert "Global hotkey registered: $Hotkey (toggle)" in desktop
-    assert "SCRIBER_DEFAULT_STT=$invalidProvider" in desktop
+    assert "SCRIBER_DEFAULT_STT=$effectiveDefaultStt" in desktop
     assert "Assert-UnderRoot -Root (Join-Path $Root \"tmp\") -Path $RuntimeDataDir -Label \"Global hotkey smoke DataDir\"" in desktop
     assert "$env:SCRIBER_HOTKEY = $globalHotkeySmokeConfig.hotkey" in desktop
-    assert "$env:SCRIBER_DEFAULT_STT = $globalHotkeySmokeConfig.invalidProvider" in desktop
+    assert "$env:SCRIBER_DEFAULT_STT = $globalHotkeySmokeConfig.defaultStt" in desktop
+    assert "stopSkipped = $stopSkipped" in desktop
     assert "$env:SCRIBER_HOTKEY = $oldScriberHotkey" in desktop
     assert "globalHotkey = $globalHotkey" in desktop
 

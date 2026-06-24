@@ -173,7 +173,7 @@ _ALLOWED_UPLOAD_EXTENSIONS = _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS
 _VALID_STT_SERVICES = frozenset(Config.SERVICE_LABELS.keys())
 _VALID_MODES = {"toggle", "push_to_talk"}
 _VALID_SONIOX_MODES = {"realtime", "async"}
-_VALID_SUMMARIZATION_MODEL_PREFIXES = ("gemini-", "gpt-")
+_VALID_SUMMARIZATION_MODEL_PREFIXES = ("gemini-", "gpt-", "minimax/", "z-ai/")
 _INPUT_WARNING_CODE_LOW_LEVEL = "mic_level_very_low"
 _SETTINGS_URI_SOUND = "ms-settings:sound"
 _SETTINGS_URI_SOUND_INPUT_PROPERTIES = "ms-settings:sound-defaultinputproperties"
@@ -752,9 +752,9 @@ def _validate_summarization_model(raw_model: str) -> str:
     if not model.startswith(_VALID_SUMMARIZATION_MODEL_PREFIXES):
         allowed = ", ".join(_VALID_SUMMARIZATION_MODEL_PREFIXES)
         raise ValueError(f"Invalid summarizationModel '{raw_model}'. Must start with: {allowed}")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
+    if not re.fullmatch(r"[A-Za-z0-9._:/-]+", model):
         raise ValueError(
-            "Invalid summarizationModel format. Allowed characters: letters, numbers, dot, underscore, hyphen."
+            "Invalid summarizationModel format. Allowed characters: letters, numbers, dot, underscore, slash, colon, hyphen."
         )
     return model
 
@@ -2970,7 +2970,7 @@ class ScriberWebController:
             "lastSeen": last_seen,
         }
 
-    def get_hot_path_metrics(self, *, limit: int = 50) -> dict[str, Any]:
+    def get_hot_path_metrics(self, *, limit: int = 50, include_active: bool = False) -> dict[str, Any]:
         query_limit = max(1, min(500, int(limit)))
         summary = self._latency_metrics_store.summarize(limit=query_limit)
         latest = self._latency_metrics_store.latest(limit=query_limit)
@@ -2983,7 +2983,23 @@ class ScriberWebController:
             }
             for metric in latest
         ]
-        return {"summary": summary, "items": items, "limit": query_limit}
+        active_items: list[dict[str, Any]] = []
+        if include_active:
+            with self._hot_path_lock:
+                emitted = set(self._hot_path_reports_emitted)
+                for tracer in self._hot_path_tracers.values():
+                    snapshot = tracer.snapshot()
+                    snapshot["reportEmitted"] = tracer.session_id in emitted
+                    snapshot["active"] = tracer.session_id not in emitted
+                    active_items.append(snapshot)
+            active_items = active_items[-query_limit:]
+        return {
+            "summary": summary,
+            "items": items,
+            "activeItems": active_items,
+            "includeActive": bool(include_active),
+            "limit": query_limit,
+        }
 
     async def add_client(self, ws: web.WebSocketResponse) -> None:
         async with self._clients_lock:
@@ -4126,6 +4142,9 @@ class ScriberWebController:
             # blocking microphone startup on shell IPC or WebView wakeup.
             self._overlay_audio_enabled = False
             self._show_initializing_overlay_async()
+            # Let the scheduled overlay task submit shell IPC before synchronous
+            # provider/pipeline setup resumes on this event-loop turn.
+            await asyncio.sleep(0)
 
             # Callback to transition overlay when mic is ready
             def on_mic_ready():
@@ -4957,6 +4976,7 @@ class ScriberWebController:
                 "assemblyai": Config.ASSEMBLYAI_API_KEY or "",
                 "deepgram": Config.DEEPGRAM_API_KEY or "",
                 "openai": Config.OPENAI_API_KEY or "",
+                "openrouter": getattr(Config, "OPENROUTER_API_KEY", "") or "",
                 "azureMaiSpeechKey": getattr(Config, "AZURE_MAI_SPEECH_KEY", "") or "",
                 "azureMaiRegion": getattr(Config, "AZURE_MAI_REGION", "") or "northeurope",
                 "azureMaiModel": getattr(Config, "AZURE_MAI_MODEL", "") or "mai-transcribe-1.5",
@@ -5078,6 +5098,7 @@ class ScriberWebController:
                 "assemblyai": ("assemblyai", lambda v: Config.set_api_key("assemblyai", v)),
                 "deepgram": ("deepgram", lambda v: Config.set_api_key("deepgram", v)),
                 "openai": ("openai", lambda v: Config.set_api_key("openai", v)),
+                "openrouter": ("openrouter", lambda v: Config.set_api_key("openrouter", v)),
                 "gladia": ("gladia", lambda v: Config.set_api_key("gladia", v)),
                 "groq": ("groq", lambda v: Config.set_api_key("groq", v)),
                 "speechmatics": ("speechmatics", lambda v: Config.set_api_key("speechmatics", v)),
@@ -5593,7 +5614,13 @@ def create_app(controller: ScriberWebController) -> web.Application:
             limit = int(request.query.get("limit", "50"))
         except ValueError:
             limit = 50
-        return web.json_response(ctl.get_hot_path_metrics(limit=limit))
+        include_active = str(request.query.get("includeActive", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        return web.json_response(ctl.get_hot_path_metrics(limit=limit, include_active=include_active))
 
     async def start_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]

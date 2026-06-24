@@ -46,7 +46,8 @@ class RecordingOverlay:
 
     def start(self) -> None:
         if _tauri_overlay_enabled():
-            _call_overlay("overlayStatus")
+            if not _call_overlay("overlayPrepare", {"mode": "initializing"}):
+                _call_overlay("overlayStatus")
 
     def stop(self) -> None:
         if _tauri_overlay_enabled():

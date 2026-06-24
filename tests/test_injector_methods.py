@@ -75,9 +75,128 @@ def test_disable_text_injection_skips_all_os_input(monkeypatch):
     keyboard_mock.write.assert_not_called()
 
 
+def test_inject_target_title_guard_skips_wrong_foreground(monkeypatch):
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    monkeypatch.setattr(Config, "INJECT_METHOD", "paste")
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "Scriber Hot Path Text Target")
+    injector = TextInjector()
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector._active_window_title", return_value="Codex"),
+        patch("src.injector._paste_text", return_value=True) as paste_mock,
+        patch("src.injector._send_input_text", return_value=True) as sendinput_mock,
+        patch("src.injector.keyboard", new=MagicMock()) as keyboard_mock,
+    ):
+        injector._inject_text("hello ")
+
+    paste_mock.assert_not_called()
+    sendinput_mock.assert_not_called()
+    keyboard_mock.write.assert_not_called()
+
+
+def test_inject_target_title_guard_skips_tauri_ipc_wrong_foreground(monkeypatch):
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    monkeypatch.setattr(Config, "INJECT_METHOD", "tauri")
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "Scriber Hot Path Text Target")
+    injector = TextInjector()
+
+    with (
+        patch("src.injector._active_window_title", return_value="Codex"),
+        patch("src.injector.call_shell_ipc") as ipc_mock,
+    ):
+        injector._inject_text("hello ")
+
+    ipc_mock.assert_not_called()
+
+
+def test_inject_target_title_guard_allows_expected_foreground(monkeypatch):
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    monkeypatch.setattr(Config, "INJECT_METHOD", "paste")
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "Scriber Hot Path Text Target")
+    injector = TextInjector()
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector._active_window_title", return_value="Scriber Hot Path Text Target"),
+        patch("src.injector._paste_text", return_value=True) as paste_mock,
+        patch("src.injector._send_input_text", return_value=True) as sendinput_mock,
+        patch("src.injector.keyboard", new=MagicMock()) as keyboard_mock,
+    ):
+        injector._inject_text("hello ")
+
+    paste_mock.assert_called_once_with("hello ", skip_clipboard_restore=False)
+    sendinput_mock.assert_not_called()
+    keyboard_mock.write.assert_not_called()
+
+
+def test_inject_method_auto_stops_fallback_after_focus_change(monkeypatch):
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    monkeypatch.setattr(Config, "INJECT_METHOD", "auto")
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "Scriber Hot Path Text Target")
+    injector = TextInjector()
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch(
+            "src.injector._active_window_title",
+            side_effect=["Scriber Hot Path Text Target", "Codex"],
+        ),
+        patch("src.injector._paste_text", return_value=False) as paste_mock,
+        patch("src.injector._send_input_text", return_value=True) as sendinput_mock,
+        patch("src.injector.keyboard", new=MagicMock()) as keyboard_mock,
+    ):
+        injector._inject_text("hello ")
+
+    paste_mock.assert_called_once_with("hello ", skip_clipboard_restore=False)
+    sendinput_mock.assert_not_called()
+    keyboard_mock.write.assert_not_called()
+
+
+def test_inject_method_sendinput_rechecks_target_before_dispatch(monkeypatch):
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    monkeypatch.setattr(Config, "INJECT_METHOD", "sendinput")
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "Scriber Hot Path Text Target")
+    injector = TextInjector()
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch(
+            "src.injector._active_window_title",
+            side_effect=["Scriber Hot Path Text Target", "Codex"],
+        ),
+        patch("src.injector._send_input_text", return_value=True) as sendinput_mock,
+        patch("src.injector.keyboard", new=MagicMock()) as keyboard_mock,
+    ):
+        injector._inject_text("hello ")
+
+    sendinput_mock.assert_not_called()
+    keyboard_mock.write.assert_not_called()
+
+
+def test_inject_method_type_rechecks_target_before_keyboard_dispatch(monkeypatch):
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    monkeypatch.setattr(Config, "INJECT_METHOD", "type")
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "Scriber Hot Path Text Target")
+    injector = TextInjector()
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch(
+            "src.injector._active_window_title",
+            side_effect=["Scriber Hot Path Text Target", "Codex"],
+        ),
+        patch("src.injector.keyboard", new=MagicMock()) as keyboard_mock,
+    ):
+        injector._inject_text("hello ")
+
+    keyboard_mock.write.assert_not_called()
+
+
 def test_inject_method_tauri_uses_shell_ipc_and_forwards_markers(monkeypatch):
     monkeypatch.setattr(Config, "INJECT_METHOD", "tauri")
     monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "Scriber Hot Path Text Target")
     shell_ipc._reset_diagnostics_for_tests()
     markers = []
     injected = []
@@ -86,6 +205,10 @@ def test_inject_method_tauri_uses_shell_ipc_and_forwards_markers(monkeypatch):
     with (
         patch("src.injector._paste_text", return_value=True) as paste_mock,
         patch("src.injector._send_input_text", return_value=True) as sendinput_mock,
+        patch(
+            "src.injector._active_window_title",
+            return_value="Scriber Hot Path Text Target",
+        ),
         patch("src.injector.call_shell_ipc") as ipc_mock,
     ):
         ipc_mock.return_value = {
@@ -104,6 +227,7 @@ def test_inject_method_tauri_uses_shell_ipc_and_forwards_markers(monkeypatch):
     assert payload["dispatch"] == "ctrlV"
     assert payload["preDelayMode"] == "auto"
     assert payload["preDelayMs"] == Config.PASTE_PRE_DELAY_MS
+    assert payload["expectedForegroundTitle"] == "Scriber Hot Path Text Target"
     assert payload["deadlineMs"] < 2500
     assert markers == ["clipboard_set", "paste"]
     assert injected == ["hello "]

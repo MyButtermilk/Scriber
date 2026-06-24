@@ -1093,6 +1093,11 @@ async def wait_for_settings_patches(
                 and patch["apiKeys"].get("googleApiKey") == "smoke-gemini-key"
                 for patch in patches
             )
+            and any(
+                isinstance(patch.get("apiKeys"), dict)
+                and patch["apiKeys"].get("openrouter") == "smoke-openrouter-key"
+                for patch in patches
+            )
         ):
             return {
                 "ok": True,
@@ -1190,6 +1195,7 @@ async def exercise_settings_help_links(cdp: CdpClient, *, timeout_sec: float) ->
     'Deepgram console': 'https://console.deepgram.com/',
     'AssemblyAI dashboard': 'https://www.assemblyai.com/dashboard',
     'Google AI Studio': 'https://aistudio.google.com/app/apikey',
+    'OpenRouter keys': 'https://openrouter.ai/settings/keys',
     'Google Cloud credentials': 'https://console.cloud.google.com/apis/credentials',
     'Soniox console': 'https://console.soniox.com/',
     'Smallest AI console': 'https://app.smallest.ai/',
@@ -1350,16 +1356,24 @@ async def exercise_settings_interactions(
   const geminiKeyInput = geminiSection?.querySelector('input');
   const geminiSaveButton = Array.from(geminiSection?.querySelectorAll('button') || [])
     .find((node) => (node.textContent || '').includes('Save'));
+  const openRouterSection = Array.from(document.querySelectorAll('.space-y-2'))
+    .find((node) => (node.textContent || '').includes('OpenRouter API Key'));
+  const openRouterKeyInput = openRouterSection?.querySelector('input');
+  const openRouterSaveButton = Array.from(openRouterSection?.querySelectorAll('button') || [])
+    .find((node) => (node.textContent || '').includes('Save'));
 
   const actions = {
     transcription: !!document.querySelector('input[aria-label="Select Mistral Async (Voxtral V2) as transcription model"]'),
     language: !!document.querySelector('input[aria-label="Select German as default transcription language"]'),
     summarizationModel: !!document.querySelector('input[aria-label="Select Gemini 3.5 Flash as summarization model"]'),
+    openRouterSummaryModels: !!document.querySelector('input[aria-label="Select OpenRouter MiniMax M3 (Nitro) as summarization model"]')
+      && !!document.querySelector('input[aria-label="Select OpenRouter GLM 5.2 (Nitro) as summarization model"]'),
     autoSummarize: !!Array.from(document.querySelectorAll('.settings-control-row'))
       .find((node) => (node.textContent || '').includes('Auto-Summarize'))?.querySelector('[role="switch"]'),
     customVocabulary: !!customVocabularyArea,
     summaryPrompt: !!summaryPromptArea,
-    geminiKey: !!geminiKeyInput && !!geminiSaveButton
+    geminiKey: !!geminiKeyInput && !!geminiSaveButton,
+    openRouterKey: !!openRouterKeyInput && !!openRouterSaveButton
   };
   if (!window.__scriberSmokeSettingsControlsClicked) {
       window.__scriberSmokeSettingsControlsClicked = true;
@@ -1375,6 +1389,12 @@ async def exercise_settings_interactions(
     geminiSaveButton.click();
     return { ok: false, waitingForGeminiKeySave: true, actions };
   }
+  if (actions.openRouterKey && !window.__scriberSmokeOpenRouterKeySaved) {
+    window.__scriberSmokeOpenRouterKeySaved = true;
+    setNativeValue(openRouterKeyInput, 'smoke-openrouter-key');
+    openRouterSaveButton.click();
+    return { ok: false, waitingForOpenRouterKeySave: true, actions };
+  }
 
   const text = document.body ? document.body.innerText : '';
   return {
@@ -1382,11 +1402,14 @@ async def exercise_settings_interactions(
       && text.includes('Mistral Async (Voxtral V2)')
       && text.includes('German')
       && text.includes('Gemini 3.5 Flash')
+      && text.includes('OpenRouter MiniMax M3 (Nitro)')
+      && text.includes('OpenRouter GLM 5.2 (Nitro)')
       && text.includes('Saved'),
     actions,
     hasMistralAsync: text.includes('Mistral Async (Voxtral V2)'),
     hasGerman: text.includes('German'),
     hasGemini35: text.includes('Gemini 3.5 Flash'),
+    hasOpenRouterSummaries: text.includes('OpenRouter MiniMax M3 (Nitro)') && text.includes('OpenRouter GLM 5.2 (Nitro)'),
     hasSavedToastOrButton: text.includes('Saved')
   };
 })()

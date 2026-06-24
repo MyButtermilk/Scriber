@@ -279,8 +279,11 @@ def test_frontend_browser_smoke_exercises_settings_persistence() -> None:
     assert "exercise_settings_favorite_mic" in script
     assert "gemini-flash-latest" in script
     assert "gemini-3.5-flash" in script
+    assert "OpenRouter MiniMax M3 (Nitro)" in script
+    assert "OpenRouter GLM 5.2 (Nitro)" in script
     assert "Mistral Async (Voxtral V2)" in script
     assert "https://platform.openai.com/api-keys" in script
+    assert "https://openrouter.ai/settings/keys" in script
     assert "https://console.mistral.ai/api-keys" in script
     assert "Set USB Smoke Microphone as favorite" in script
     assert "usb-smoke-mic" in script

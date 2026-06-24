@@ -132,6 +132,12 @@ def test_recording_hot_path_text_target_keeps_focus_during_measurement():
     assert "$form.TopMost = $true" in script
     assert "$form.Activate()" in script
     assert "$text.Focus()" in script
+    assert "SetForegroundWindow" in script
+    assert "AttachThreadInput" in script
+    assert "foreground_window_snapshot" in script
+    assert "textTargetFocus" in script
+    assert "start_text_target_focus_keeper" in script
+    assert "focus_keeper:" in script
     assert "System.Text.UTF8Encoding($false)" in script
     assert "encoding=\"utf-8-sig\"" in script
 
@@ -247,6 +253,12 @@ def test_recording_hot_path_summary_strict_text_target_passes_when_text_is_persi
                     "capturedChars": 27,
                     "captureElapsedMs": 310.0,
                 },
+                "textTargetFocus": [
+                    {
+                        "phase": "before_stop",
+                        "ok": True,
+                    }
+                ],
             }
         ],
         require_text_target=True,
@@ -256,6 +268,38 @@ def test_recording_hot_path_summary_strict_text_target_passes_when_text_is_persi
     assert summary["complete"] is True
     assert target_requirement["status"] == "measured"
     assert target_requirement["durations"]["p95Ms"] == 310.0
+    assert target_requirement["focusErrors"] == 0
+
+
+def test_recording_hot_path_summary_strict_text_target_requires_focus_guard():
+    summary = build_summary(
+        [
+            {
+                "ok": True,
+                "segments": {
+                    "hotkey_received_to_mic_ready_ms": 120.0,
+                    "hotkey_received_to_first_audio_frame_ms": 180.0,
+                    "stop_requested_to_first_paste_ms": 82.5,
+                },
+                "textTarget": {
+                    "capturedChars": 27,
+                    "captureElapsedMs": 310.0,
+                },
+                "textTargetFocus": [
+                    {
+                        "phase": "before_stop",
+                        "ok": False,
+                    }
+                ],
+            }
+        ],
+        require_text_target=True,
+    )
+
+    target_requirement = summary["requirements"]["text_target_persistence"]
+    assert summary["complete"] is False
+    assert target_requirement["status"] == "focus_lost"
+    assert target_requirement["focusErrors"] == 1
 
 
 def test_recording_hot_path_summary_treats_text_before_stop_as_zero_wait():
@@ -709,6 +753,8 @@ def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
     assert "stop_to_text_injection" in script
     assert "RecordingHotPathTextTargetFile" in script
     assert "RecordingHotPathSpeechPrompt" in script
+    assert "$oldInjectMethod = $env:SCRIBER_INJECT_METHOD" in script
+    assert '$env:SCRIBER_INJECT_METHOD = "paste"' in script
     assert "/api/runtime/audio-diagnostics" in (
         repo_root / "scripts" / "measure_recording_hot_path_baseline.py"
     ).read_text(encoding="utf-8")

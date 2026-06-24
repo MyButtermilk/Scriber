@@ -43,8 +43,9 @@ calm place to capture it, understand it, and reuse it.
   support bundle download.
 
 Cloud and local provider paths currently cover Soniox, Microsoft Azure MAI,
-OpenAI, Deepgram, AssemblyAI, Mistral, Gladia, Groq,
-Speechmatics, Smallest AI, ElevenLabs/fal.ai, Google, ONNX, and NeMo.
+OpenAI, OpenRouter for summaries/fallback, Deepgram, AssemblyAI, Mistral,
+Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs/fal.ai, Google, ONNX, and
+NeMo.
 
 ## Screenshots
 
@@ -144,7 +145,7 @@ session tokens, and similar credentials.
 
 - Windows 10 or newer for the primary desktop runtime.
 - Python 3.13.
-- Node.js/npm.
+- Node.js 26.3.1 Current and npm.
 - Rust toolchain.
 - Git.
 

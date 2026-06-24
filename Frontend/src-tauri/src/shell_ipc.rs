@@ -31,6 +31,7 @@ const CLIENT_READ_TIMEOUT_MS: u64 = 750;
 #[derive(Debug, Clone)]
 struct InjectTextOptions {
     text: String,
+    expected_foreground_title: String,
     restore_clipboard: bool,
     restore_delay_ms: u64,
     pre_delay_ms: u64,
@@ -252,6 +253,7 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                     "audioPrewarmStart",
                     "audioPrewarmStatus",
                     "audioPrewarmStop",
+                    "overlayPrepare",
                     "overlayShow",
                     "overlayHide",
                     "overlayAudioLevel",
@@ -320,22 +322,21 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                 err.payload,
             ),
         },
-        "overlayShow" | "overlayHide" | "overlayAudioLevel" | "overlayStatus" => {
-            match crate::native_overlay::handle_shell_command(command, payload) {
-                Ok(payload) => response_line(request_id, true, "", "", started, payload),
-                Err(err) => response_line(
-                    request_id,
-                    false,
-                    "overlayUnavailable",
-                    &err,
-                    started,
-                    json!({
-                        "renderer": "tauri-webview",
-                        "windowLabel": crate::native_overlay::OVERLAY_WINDOW_LABEL,
-                    }),
-                ),
-            }
-        }
+        "overlayPrepare" | "overlayShow" | "overlayHide" | "overlayAudioLevel"
+        | "overlayStatus" => match crate::native_overlay::handle_shell_command(command, payload) {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(err) => response_line(
+                request_id,
+                false,
+                "overlayUnavailable",
+                &err,
+                started,
+                json!({
+                    "renderer": "tauri-webview",
+                    "windowLabel": crate::native_overlay::OVERLAY_WINDOW_LABEL,
+                }),
+            ),
+        },
         "audioCaptureStart" => match parse_audio_capture_start_options(payload) {
             Ok(options) => {
                 let result = call_audio_sidecar_command(
@@ -801,6 +802,9 @@ fn parse_inject_text_options(payload: &Value) -> Result<InjectTextOptions, Shell
 
     Ok(InjectTextOptions {
         text,
+        expected_foreground_title: bounded_string(payload, "expectedForegroundTitle", "", 512)
+            .trim()
+            .to_string(),
         restore_clipboard: optional_bool(payload, "restoreClipboard", true),
         restore_delay_ms: optional_u64(payload, "restoreDelayMs", DEFAULT_RESTORE_DELAY_MS, 30_000),
         pre_delay_ms: optional_u64(payload, "preDelayMs", 0, 5_000),
@@ -866,8 +870,26 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
     let options = parse_inject_text_options(payload)?;
     let started = Instant::now();
     let mut markers: Vec<&'static str> = Vec::new();
-    let pre_delay_ms = resolve_pre_delay_ms(&options, foreground_title_for_policy().as_deref());
+    let foreground_title_before = foreground_title_for_policy();
+    let pre_delay_ms = resolve_pre_delay_ms(&options, foreground_title_before.as_deref());
     let foreground_before = foreground_snapshot();
+    if !foreground_title_matches_expected(&options, foreground_title_before.as_deref()) {
+        return Err(foreground_target_mismatch_error(
+            "before clipboard set",
+            inject_response_payload(
+                &options,
+                &markers,
+                pre_delay_ms,
+                None,
+                None,
+                None,
+                elapsed_ms(started),
+                restore_status("notNeeded", None),
+                &foreground_before,
+                &foreground_before,
+            ),
+        ));
+    }
 
     let clipboard_options = ClipboardOptions {
         retries: options.max_clipboard_retries,
@@ -930,6 +952,23 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
             &foreground_before,
         )
     })?;
+    if !foreground_title_matches_expected(&options, foreground_title_for_policy().as_deref()) {
+        return Err(foreground_target_mismatch_error(
+            "before clipboard set",
+            inject_response_payload(
+                &options,
+                &markers,
+                pre_delay_ms,
+                clipboard_read_ms,
+                None,
+                None,
+                elapsed_ms(started),
+                restore_status("notNeeded", None),
+                &foreground_before,
+                &foreground_snapshot(),
+            ),
+        ));
+    }
 
     let set_started = Instant::now();
     let clipboard_sequence_after_set = set_clipboard_text(&options.text, &clipboard_options)?;
@@ -1010,6 +1049,29 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
             &foreground_snapshot(),
         )
     })?;
+    if !foreground_title_matches_expected(&options, foreground_title_for_policy().as_deref()) {
+        let restore = restore_clipboard_now(
+            &options.text,
+            previous_text.as_deref(),
+            clipboard_sequence_after_set,
+            &clipboard_options,
+        );
+        return Err(foreground_target_mismatch_error(
+            "before paste dispatch",
+            inject_response_payload(
+                &options,
+                &markers,
+                pre_delay_ms,
+                clipboard_read_ms,
+                Some(clipboard_set_ms),
+                None,
+                elapsed_ms(started),
+                restore,
+                &foreground_before,
+                &foreground_snapshot(),
+            ),
+        ));
+    }
 
     let paste_started = Instant::now();
     if let Err(err) = dispatch_ctrl_v() {
@@ -1099,6 +1161,11 @@ fn inject_response_payload(
         "preDelayMode": options.pre_delay_mode,
         "requestedPreDelayMs": options.pre_delay_ms,
         "deadlineMs": options.deadline_ms,
+        "expectedForegroundTitleHash": if options.expected_foreground_title.is_empty() {
+            Value::Null
+        } else {
+            Value::String(hash_sensitive_identifier(&options.expected_foreground_title))
+        },
         "markers": markers,
         "restore": restore,
         "restoreScheduled": restore
@@ -1126,6 +1193,26 @@ fn restore_status(skipped_reason: &str, error_code: Option<&str>) -> Value {
         "skippedReason": skipped_reason,
         "errorCode": error_code,
     })
+}
+
+fn foreground_title_matches_expected(
+    options: &InjectTextOptions,
+    foreground_title: Option<&str>,
+) -> bool {
+    if options.expected_foreground_title.is_empty() {
+        return true;
+    }
+    foreground_title
+        .map(|title| title == options.expected_foreground_title)
+        .unwrap_or(false)
+}
+
+fn foreground_target_mismatch_error(phase: &'static str, payload: Value) -> ShellCommandError {
+    ShellCommandError::new(
+        "foregroundTargetMismatch",
+        format!("foreground target title did not match expected target {phase}"),
+    )
+    .with_payload(payload)
 }
 
 fn ensure_deadline_budget<F>(
@@ -2242,6 +2329,11 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
+            .any(|command| command == "overlayPrepare"));
+        assert!(value["payload"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|command| command == "overlayShow"));
         assert!(value["payload"]["commands"]
             .as_array()
@@ -2296,6 +2388,7 @@ mod tests {
     fn parse_inject_text_options_clamps_retry_and_delay_values() {
         let payload = json!({
             "text": "hello",
+            "expectedForegroundTitle": "Scriber Hot Path Text Target",
             "restoreClipboard": false,
             "restoreDelayMs": 999_999,
             "preDelayMs": 999_999,
@@ -2309,6 +2402,10 @@ mod tests {
         let options = super::parse_inject_text_options(&payload).unwrap();
 
         assert_eq!(options.text, "hello");
+        assert_eq!(
+            options.expected_foreground_title,
+            "Scriber Hot Path Text Target"
+        );
         assert!(!options.restore_clipboard);
         assert_eq!(options.restore_delay_ms, 30_000);
         assert_eq!(options.pre_delay_ms, 5_000);
@@ -2360,6 +2457,36 @@ mod tests {
             super::resolve_pre_delay_ms(&options, Some("Scriber - Notepad")),
             80
         );
+    }
+
+    #[test]
+    fn expected_foreground_title_requires_exact_match_when_present() {
+        let options = super::parse_inject_text_options(&json!({
+            "text": "hello",
+            "dispatch": "ctrlV",
+            "expectedForegroundTitle": "Scriber Hot Path Text Target",
+        }))
+        .unwrap();
+
+        assert!(super::foreground_title_matches_expected(
+            &options,
+            Some("Scriber Hot Path Text Target")
+        ));
+        assert!(!super::foreground_title_matches_expected(
+            &options,
+            Some("Codex")
+        ));
+        assert!(!super::foreground_title_matches_expected(&options, None));
+
+        let options_without_target = super::parse_inject_text_options(&json!({
+            "text": "hello",
+            "dispatch": "ctrlV",
+        }))
+        .unwrap();
+        assert!(super::foreground_title_matches_expected(
+            &options_without_target,
+            Some("Codex")
+        ));
     }
 
     #[test]
@@ -2755,6 +2882,7 @@ mod tests {
     fn inject_response_payload_reports_deadline_budget() {
         let options = super::InjectTextOptions {
             text: "hello".to_string(),
+            expected_foreground_title: "Scriber Hot Path Text Target".to_string(),
             restore_clipboard: true,
             restore_delay_ms: 1500,
             pre_delay_ms: 80,
@@ -2785,6 +2913,10 @@ mod tests {
         );
 
         assert_eq!(payload["deadlineMs"], 2000);
+        assert_eq!(
+            payload["expectedForegroundTitleHash"],
+            super::hash_sensitive_identifier("Scriber Hot Path Text Target")
+        );
     }
 
     #[test]

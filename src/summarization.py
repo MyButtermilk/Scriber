@@ -1,6 +1,6 @@
 """
 LLM-based transcript summarization.
-Supports OpenAI (GPT-4) and Google Gemini models.
+Supports OpenAI, Google Gemini, and OpenRouter models.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import json
 import math
 import os
 import re
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 import aiohttp
 from loguru import logger
@@ -25,7 +25,10 @@ SummarizationModel = Literal[
     "gpt-5.2",
     "gpt-5-mini",
     "gpt-5-nano",
+    "minimax/minimax-m3:nitro",
+    "z-ai/glm-5.2:nitro",
 ]
+_OPENROUTER_DEFAULT_MODELS = ("minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro")
 _MODEL_OUTPUT_TOKEN_CAPS = {
     "gpt-5-nano": 4096,
     "gpt-5-mini": 8192,
@@ -35,6 +38,8 @@ _MODEL_OUTPUT_TOKEN_CAPS = {
     "gemini-3-flash-preview": 8192,
     "gemini-3.1-flash-lite-preview": 8192,
     "gemini-3-pro-preview": 12288,
+    "minimax/minimax-m3:nitro": 8192,
+    "z-ai/glm-5.2:nitro": 8192,
 }
 _MARKDOWN_OUTPUT_GUARDRAIL = (
     "Ausgabeformat (verbindlich):\n"
@@ -77,6 +82,37 @@ def _should_fallback_to_openai() -> bool:
     # Cross-provider fallback is surprising in the UI: if Gemini is selected,
     # users should see Gemini errors unless they explicitly opt into fallback.
     return os.getenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENAI", "0").strip().lower() in {"1", "true", "yes"}
+
+
+def _should_fallback_to_openrouter() -> bool:
+    return os.getenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+
+def _is_openrouter_model(model: str) -> bool:
+    return "/" in (model or "") and not model.startswith(("http://", "https://"))
+
+
+def _openrouter_nitro_model(model: str) -> str:
+    raw = (model or "").strip()
+    if not raw:
+        return _OPENROUTER_DEFAULT_MODELS[0]
+    base = raw.split(":", 1)[0]
+    return f"{base}:nitro"
+
+
+def _openrouter_fallback_models() -> list[str]:
+    raw = os.getenv("SCRIBER_SUMMARY_OPENROUTER_FALLBACK_MODELS", "").strip()
+    candidates = [item.strip() for item in raw.split(",") if item.strip()] if raw else list(_OPENROUTER_DEFAULT_MODELS)
+    normalized: list[str] = []
+    for candidate in candidates:
+        model = _openrouter_nitro_model(candidate)
+        if model and model not in normalized:
+            normalized.append(model)
+    return normalized or list(_OPENROUTER_DEFAULT_MODELS)
 
 
 def _is_gemini_thinking_model(model: str) -> bool:
@@ -153,7 +189,8 @@ def _summary_budget_for_text(
     max_tokens = max(min_tokens, int(os.getenv("SCRIBER_SUMMARY_MAX_OUTPUT_TOKENS", "8192")))
     short_min_tokens = max(min_tokens, int(os.getenv("SCRIBER_SUMMARY_SHORT_MIN_OUTPUT_TOKENS", "900")))
 
-    model_cap = _MODEL_OUTPUT_TOKEN_CAPS.get(model, max_tokens)
+    model_key = _openrouter_nitro_model(model) if _is_openrouter_model(model) else model
+    model_cap = _MODEL_OUTPUT_TOKEN_CAPS.get(model_key, max_tokens)
     budget_cap = max(min_tokens, min(max_tokens, model_cap))
 
     requested_tokens = int(math.ceil(target_words * token_multiplier)) + token_overhead
@@ -251,6 +288,54 @@ def _gemini_next_output_budget(current_tokens: int, retry_cap: int) -> int:
     return min(retry_cap, max(current_tokens + 512, grown))
 
 
+async def _summarize_with_model(prompt: str, model: str, max_output_tokens: int) -> str:
+    if model.startswith("gpt-"):
+        return await _summarize_openai(prompt, model, max_output_tokens)
+    if model.startswith("gemini-"):
+        return await _summarize_gemini(prompt, model, max_output_tokens)
+    if _is_openrouter_model(model):
+        return await _summarize_openrouter(prompt, model, max_output_tokens)
+    raise ValueError(f"Unknown summarization model: {model}")
+
+
+async def _try_openrouter_summary_fallback(
+    prompt: str,
+    *,
+    primary_model: str,
+    primary_error: Exception,
+    max_output_tokens: int,
+    timeout_seconds: float,
+) -> str | None:
+    if _is_openrouter_model(primary_model):
+        return None
+    if not _should_fallback_to_openrouter():
+        return None
+    if not (getattr(Config, "OPENROUTER_API_KEY", "") or "").strip():
+        return None
+
+    fallback_models = _openrouter_fallback_models()
+    logger.warning(
+        "Summarization with {} failed ({}). Falling back to OpenRouter models {}.",
+        primary_model,
+        primary_error,
+        fallback_models,
+    )
+    try:
+        return await asyncio.wait_for(
+            _summarize_openrouter(prompt, fallback_models, max_output_tokens),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        timeout_display = max(1, int(round(timeout_seconds)))
+        raise RuntimeError(
+            f"{primary_model} summarization failed and OpenRouter fallback timed out after {timeout_display}s."
+        ) from exc
+    except Exception as fallback_exc:
+        raise RuntimeError(
+            f"{primary_model} summarization failed and the OpenRouter fallback also failed: {fallback_exc}"
+        ) from fallback_exc
+
+
 async def summarize_text(
     text: str,
     model: SummarizationModel | None = None,
@@ -275,6 +360,8 @@ async def summarize_text(
         return ""
     
     model = model or getattr(Config, "SUMMARIZATION_MODEL", Config.DEFAULT_SUMMARIZATION_MODEL)
+    if _is_openrouter_model(model):
+        model = _openrouter_nitro_model(model)
     base_prompt = Config.SUMMARIZATION_PROMPT or "Summarize the following transcript:"
     duration_seconds = _parse_duration_seconds(duration)
     input_words, target_words, output_tokens = _summary_budget_for_text(
@@ -297,15 +384,11 @@ async def summarize_text(
 
     timeout_seconds = _summary_timeout_seconds()
 
-    if model.startswith("gpt-"):
-        summarize_coro = _summarize_openai(full_prompt, model, output_tokens)
-    elif model.startswith("gemini-"):
-        summarize_coro = _summarize_gemini(full_prompt, model, output_tokens)
-    else:
-        raise ValueError(f"Unknown summarization model: {model}")
-
     try:
-        summary = await asyncio.wait_for(summarize_coro, timeout=timeout_seconds)
+        summary = await asyncio.wait_for(
+            _summarize_with_model(full_prompt, model, output_tokens),
+            timeout=timeout_seconds,
+        )
     except asyncio.TimeoutError as exc:
         timeout_display = max(1, int(round(timeout_seconds)))
         logger.error(
@@ -313,39 +396,63 @@ async def summarize_text(
             timeout_seconds,
             model,
         )
-        raise RuntimeError(
+        timeout_error = RuntimeError(
             f"Summarization timed out after {timeout_display}s. Please try again."
-        ) from exc
-    except RuntimeError as exc:
+        )
+        fallback = await _try_openrouter_summary_fallback(
+            full_prompt,
+            primary_model=model,
+            primary_error=timeout_error,
+            max_output_tokens=output_tokens,
+            timeout_seconds=timeout_seconds,
+        )
+        if fallback is not None:
+            summary = fallback
+        else:
+            raise timeout_error from exc
+    except Exception as exc:
+        fallback = await _try_openrouter_summary_fallback(
+            full_prompt,
+            primary_model=model,
+            primary_error=exc,
+            max_output_tokens=output_tokens,
+            timeout_seconds=timeout_seconds,
+        )
+        if fallback is not None:
+            summary = fallback
         # Gemini can occasionally return transient 429/503 ("high demand").
-        # If configured and OpenAI key is available, fall back automatically.
-        if (
-            model.startswith("gemini-")
-            and _should_fallback_to_openai()
-            and bool(Config.OPENAI_API_KEY)
-            and _is_retryable_gemini_failure(str(exc))
-        ):
-            fallback_model = (os.getenv("SCRIBER_SUMMARY_FALLBACK_MODEL", "gpt-5-mini") or "").strip()
-            if fallback_model.startswith("gpt-"):
-                logger.warning(
-                    "Gemini summarization failed with retryable error. Falling back to OpenAI model '{}'.",
-                    fallback_model,
-                )
-                try:
-                    summary = await asyncio.wait_for(
-                        _summarize_openai(full_prompt, fallback_model, output_tokens),
-                        timeout=timeout_seconds,
+        # The legacy OpenAI fallback remains opt-in for existing power users,
+        # but OpenRouter is the default automatic fallback when configured.
+        elif isinstance(exc, RuntimeError):
+            if (
+                model.startswith("gemini-")
+                and _should_fallback_to_openai()
+                and bool(Config.OPENAI_API_KEY)
+                and _is_retryable_gemini_failure(str(exc))
+            ):
+                fallback_model = (os.getenv("SCRIBER_SUMMARY_FALLBACK_MODEL", "gpt-5-mini") or "").strip()
+                if fallback_model.startswith("gpt-"):
+                    logger.warning(
+                        "Gemini summarization failed with retryable error. Falling back to OpenAI model '{}'.",
+                        fallback_model,
                     )
-                except asyncio.TimeoutError as timeout_exc:
-                    timeout_display = max(1, int(round(timeout_seconds)))
-                    raise RuntimeError(
-                        f"Summarization timed out after {timeout_display}s (fallback model: {fallback_model}). Please try again."
-                    ) from timeout_exc
-                except Exception as fallback_exc:
-                    raise RuntimeError(
-                        "Gemini summarization failed and the configured OpenAI fallback also failed: "
-                        f"{fallback_exc}"
-                    ) from fallback_exc
+                    try:
+                        summary = await asyncio.wait_for(
+                            _summarize_openai(full_prompt, fallback_model, output_tokens),
+                            timeout=timeout_seconds,
+                        )
+                    except asyncio.TimeoutError as timeout_exc:
+                        timeout_display = max(1, int(round(timeout_seconds)))
+                        raise RuntimeError(
+                            f"Summarization timed out after {timeout_display}s (fallback model: {fallback_model}). Please try again."
+                        ) from timeout_exc
+                    except Exception as fallback_exc:
+                        raise RuntimeError(
+                            "Gemini summarization failed and the configured OpenAI fallback also failed: "
+                            f"{fallback_exc}"
+                        ) from fallback_exc
+                else:
+                    raise
             else:
                 raise
         else:
@@ -422,6 +529,128 @@ def _extract_openai_response_text(response: Any) -> str:
             if isinstance(text, str) and text:
                 chunks.append(text)
     return "".join(chunks).strip()
+
+
+def _build_openrouter_payload(
+    prompt: str,
+    models: str | Sequence[str],
+    max_output_tokens: int,
+) -> dict[str, Any]:
+    if isinstance(models, str):
+        normalized_models = [_openrouter_nitro_model(models)]
+    else:
+        normalized_models = [_openrouter_nitro_model(model) for model in models if str(model or "").strip()]
+
+    if not normalized_models:
+        normalized_models = list(_OPENROUTER_DEFAULT_MODELS)
+
+    payload: dict[str, Any] = {
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_output_tokens,
+        "temperature": 0.3,
+    }
+    if len(normalized_models) == 1:
+        payload["model"] = normalized_models[0]
+    else:
+        payload["models"] = normalized_models
+    return payload
+
+
+def _openrouter_error_detail(status: int, raw: str) -> str:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw[:600]
+
+    error = data.get("error") if isinstance(data, dict) else None
+    if isinstance(error, dict):
+        parts = []
+        code = error.get("code")
+        message = error.get("message")
+        if code is not None:
+            parts.append(str(code))
+        if message:
+            parts.append(str(message))
+        if parts:
+            return ": ".join(parts)[:600]
+    return raw[:600] or str(status)
+
+
+def _extract_openrouter_response_text(data: dict[str, Any]) -> str:
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                chunks.append(part["text"])
+        return "".join(chunks)
+    return ""
+
+
+async def _summarize_openrouter(
+    prompt: str,
+    models: str | Sequence[str],
+    max_output_tokens: int,
+) -> str:
+    """Summarize through OpenRouter Chat Completions."""
+    api_key = getattr(Config, "OPENROUTER_API_KEY", "") or ""
+    if not api_key:
+        raise ValueError("OpenRouter API key not configured. Please add it in Settings.")
+
+    timeout_seconds = _summary_timeout_seconds()
+    timeout = aiohttp.ClientTimeout(
+        total=timeout_seconds,
+        connect=min(15, timeout_seconds),
+        sock_connect=min(15, timeout_seconds),
+        sock_read=timeout_seconds,
+    )
+    payload = _build_openrouter_payload(prompt, models, max_output_tokens)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://scriber.local",
+        "X-OpenRouter-Title": "Scriber",
+    }
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                json=payload,
+                headers=headers,
+            ) as resp:
+                raw = await resp.text()
+                if resp.status >= 400:
+                    detail = _openrouter_error_detail(resp.status, raw)
+                    raise RuntimeError(f"OpenRouter API error {resp.status}: {detail}")
+                data = json.loads(raw)
+
+        content = _extract_openrouter_response_text(data).strip()
+        logger.info(
+            "OpenRouter summarization complete: {} chars (models={})",
+            len(content or ""),
+            payload.get("model") or payload.get("models"),
+        )
+        if not content:
+            raise RuntimeError("OpenRouter returned empty response.")
+        return content
+    except aiohttp.ClientError as e:
+        logger.exception("OpenRouter summarization HTTP error")
+        raise RuntimeError(f"OpenRouter summarization failed: {e}")
+    except json.JSONDecodeError as e:
+        logger.exception("OpenRouter summarization parse error")
+        raise RuntimeError(f"OpenRouter response parse failed: {e}")
 
 
 def _build_gemini_payload(prompt: str, model: str, max_output_tokens: int) -> dict[str, Any]:

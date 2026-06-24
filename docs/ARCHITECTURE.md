@@ -10,7 +10,7 @@ architecture notes and should be updated when ownership boundaries change.
 Scriber is a hybrid desktop app:
 
 - Tauri 2 shell for installed Windows desktop runtime.
-- React 19/Vite 7 frontend rendered inside the Tauri WebView or browser dev
+- React 19/Vite 8 frontend rendered inside the Tauri WebView or browser dev
   server.
 - Python `aiohttp` backend for local REST, WebSocket, mic recording, provider
   work, media preparation, persistence, logs, and support bundles.
@@ -249,10 +249,13 @@ ASR choices such as ONNX and NeMo are configuration/UI surfaces with fail-closed
 readiness handling in the standard build; a successful installed local-ASR
 transcription path requires a separate local-ASR sidecar or packaging decision.
 Google Cloud STT is packaged through `google-cloud-speech` plus Pipecat's
-required `google-genai` namespace dependency; Gemini summarization uses direct
-HTTP and does not require `google-generativeai`. OpenAI STT uses the explicit
-`openai` SDK dependency, Groq STT uses Pipecat's `groq` SDK dependency, and
-Pipecat provider imports require `nltk` at runtime. Gladia live transcription
+required `google-genai` namespace dependency; Gemini and OpenRouter
+summarization use direct HTTP and do not require `google-generativeai`.
+OpenRouter summary models are sent with `:nitro` variants and are used as the
+automatic cross-provider summary fallback when an OpenRouter key is configured.
+OpenAI STT uses the explicit `openai` SDK dependency, Groq STT uses Pipecat's
+`groq` SDK dependency, and Pipecat provider imports require `nltk` at runtime.
+Gladia live transcription
 still uses Pipecat's Gladia service, while file and YouTube transcription use
 Gladia's pre-recorded HTTP upload/polling API directly to avoid empty
 live-WebSocket finalization for complete files. Build-time runtime import checks

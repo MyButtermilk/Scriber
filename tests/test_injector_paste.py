@@ -71,6 +71,30 @@ def test_paste_text_emits_clipboard_and_paste_markers():
     mock_kb.press_and_release.assert_called_once_with("ctrl+v")
 
 
+def test_paste_text_rechecks_target_title_before_ctrl_v(monkeypatch):
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "Scriber Hot Path Text Target")
+    monkeypatch.setattr(Config, "PASTE_RESTORE_DELAY_MS", 0)
+    markers: list[str] = []
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector.sys.platform", "win32"),
+        patch(
+            "src.injector._active_window_title",
+            side_effect=["Scriber Hot Path Text Target", "Codex"],
+        ),
+        patch("src.injector._get_pre_delay_for_window", return_value=0),
+        patch("src.injector._windows_clipboard_get_text", side_effect=["old text", "new text"]),
+        patch("src.injector._windows_clipboard_set_text", return_value=True) as set_clip,
+        patch("src.injector.keyboard") as mock_kb,
+    ):
+        assert _paste_text("new text", on_marker=markers.append) is False
+
+    assert markers == ["clipboard_set"]
+    assert [call.args[0] for call in set_clip.call_args_list] == ["new text", "old text"]
+    mock_kb.press_and_release.assert_not_called()
+
+
 def test_paste_text_restores_previous_text_when_set_fails():
     with (
         patch("src.injector.HAS_GUI", True),

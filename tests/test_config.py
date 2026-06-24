@@ -36,6 +36,10 @@ class TestConfig(unittest.TestCase):
         self.assertIn("azure_mai", Config.SERVICE_API_KEY_MAP)
         self.assertIn("azure_mai", Config.SERVICE_LABELS)
 
+    def test_openrouter_service_mapping_exists(self):
+        self.assertIn("openrouter", Config.SERVICE_API_KEY_MAP)
+        self.assertNotIn("openrouter", Config.SERVICE_LABELS)
+
     def test_aws_transcribe_is_not_supported(self):
         self.assertNotIn("aws", Config.SERVICE_API_KEY_MAP)
         self.assertNotIn("aws", Config.SERVICE_LABELS)
@@ -93,6 +97,15 @@ def test_persist_to_env_file_includes_azure_mai_model(monkeypatch, tmp_path):
     Config.persist_to_env_file(str(target))
 
     assert "SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1.5" in target.read_text(encoding="utf-8")
+
+
+def test_persist_to_env_file_includes_openrouter_api_key(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "OPENROUTER_API_KEY", "openrouter-secret", raising=False)
+
+    Config.persist_to_env_file(str(target))
+
+    assert "OPENROUTER_API_KEY=openrouter-secret" in target.read_text(encoding="utf-8")
 
 
 def test_persist_to_env_file_includes_soniox_async_v5_default(monkeypatch, tmp_path):

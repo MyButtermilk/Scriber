@@ -113,6 +113,8 @@ param(
     [switch]$RealWorkflowSkipYoutube,
     [switch]$RealWorkflowNoSummary,
     [string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12",
+    [string]$GlobalHotkeySmokeDefaultStt = "",
+    [switch]$GlobalHotkeySkipStopCleanup,
     [int]$GlobalHotkeyDispatchTimeoutSec = 20,
     [int]$BackendStartupTimeoutMs = 3000,
     [int]$CrashRecoveryTimeoutSec = 75,
@@ -1706,7 +1708,8 @@ function Test-SyntheticGlobalHotkeyDispatchSupport {
         do {
             $msg = New-Object ScriberSmoke.KeyboardInput+MSG
             if ([ScriberSmoke.KeyboardInput]::PeekMessage([ref]$msg, [IntPtr]::Zero, 0, 0, 0x0001)) {
-                if ($msg.message -eq 0x0312 -and [int]$msg.wParam -eq $probeId) {
+                $wParam = [int]$msg.wParam.ToUInt64()
+                if ($msg.message -eq 0x0312 -and $wParam -eq $probeId) {
                     return $true
                 }
             }
@@ -1764,10 +1767,149 @@ function Get-MicTranscriptSummary {
     }
 }
 
+function Get-HotPathSegmentValue {
+    param(
+        [object]$Segments,
+        [string]$Name
+    )
+
+    if (-not $Segments) {
+        return $null
+    }
+    $property = $Segments.PSObject.Properties | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
+    if (-not $property) {
+        return $null
+    }
+    return $property.Value
+}
+
+function Convert-HotPathMilliseconds {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    try {
+        return [Math]::Round([double]$Value, 3)
+    } catch {
+        return $null
+    }
+}
+
+function Select-HotPathMetricItem {
+    param(
+        [object]$Metrics,
+        [string]$SessionId
+    )
+
+    if (-not $Metrics) {
+        return $null
+    }
+    $candidates = @()
+    if ($Metrics.activeItems) {
+        $candidates += @($Metrics.activeItems)
+    }
+    if ($Metrics.items) {
+        $candidates += @($Metrics.items)
+    }
+    if ($candidates.Count -eq 0) {
+        return $null
+    }
+    if ($SessionId) {
+        $match = @($candidates | Where-Object { [string]$_.sessionId -eq $SessionId } | Select-Object -First 1)
+        if ($match.Count -gt 0) {
+            return $match[0]
+        }
+    }
+    return $candidates[0]
+}
+
+function Convert-GlobalHotkeyUserReady {
+    param([object]$HotPathItem)
+
+    if (-not $HotPathItem) {
+        return [pscustomobject]@{
+            verified = $false
+            sessionId = ""
+            micReadyObserved = $false
+            firstAudioFrameObserved = $false
+            firstAudibleAudioFrameObserved = $false
+            hotkeyToMicReadyMs = $null
+            hotkeyToFirstAudioFrameMs = $null
+            hotkeyToFirstAudibleAudioFrameMs = $null
+            markerNames = @()
+            hotPathMetrics = $null
+        }
+    }
+
+    $segments = $HotPathItem.segments
+    $micReadyMs = Convert-HotPathMilliseconds -Value (Get-HotPathSegmentValue -Segments $segments -Name "hotkey_received_to_mic_ready_ms")
+    $firstAudioFrameMs = Convert-HotPathMilliseconds -Value (Get-HotPathSegmentValue -Segments $segments -Name "hotkey_received_to_first_audio_frame_ms")
+    $firstAudibleAudioFrameMs = Convert-HotPathMilliseconds -Value (Get-HotPathSegmentValue -Segments $segments -Name "hotkey_received_to_first_audible_audio_frame_ms")
+
+    return [pscustomobject]@{
+        verified = ($null -ne $micReadyMs -and $null -ne $firstAudioFrameMs)
+        sessionId = if ($HotPathItem.sessionId) { [string]$HotPathItem.sessionId } else { "" }
+        micReadyObserved = ($null -ne $micReadyMs)
+        firstAudioFrameObserved = ($null -ne $firstAudioFrameMs)
+        firstAudibleAudioFrameObserved = ($null -ne $firstAudibleAudioFrameMs)
+        hotkeyToMicReadyMs = $micReadyMs
+        hotkeyToFirstAudioFrameMs = $firstAudioFrameMs
+        hotkeyToFirstAudibleAudioFrameMs = $firstAudibleAudioFrameMs
+        markerNames = @($HotPathItem.markerNames)
+        hotPathMetrics = $HotPathItem
+    }
+}
+
+function Wait-GlobalHotkeyUserReady {
+    param(
+        [int]$Port,
+        [hashtable]$Headers = @{},
+        [string]$SessionId,
+        [int]$DeadlineSec
+    )
+
+    $deadline = (Get-Date).AddSeconds([Math]::Max(1, $DeadlineSec))
+    $lastReady = $null
+    do {
+        try {
+            $metrics = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/metrics/hot-path?limit=10&includeActive=1" -Headers $Headers -TimeoutSec 5
+            $item = Select-HotPathMetricItem -Metrics $metrics -SessionId $SessionId
+            if ($item) {
+                $lastReady = Convert-GlobalHotkeyUserReady -HotPathItem $item
+                if ($lastReady.verified) {
+                    return $lastReady
+                }
+            }
+        } catch {
+            $lastReady = [pscustomobject]@{
+                verified = $false
+                sessionId = $SessionId
+                micReadyObserved = $false
+                firstAudioFrameObserved = $false
+                firstAudibleAudioFrameObserved = $false
+                hotkeyToMicReadyMs = $null
+                hotkeyToFirstAudioFrameMs = $null
+                hotkeyToFirstAudibleAudioFrameMs = $null
+                markerNames = @()
+                hotPathMetrics = $null
+                error = $_.Exception.Message
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+
+    if ($lastReady) {
+        return $lastReady
+    }
+    return Convert-GlobalHotkeyUserReady -HotPathItem $null
+}
+
 function Initialize-GlobalHotkeySmokeData {
     param(
         [string]$RuntimeDataDir,
         [string]$Hotkey,
+        [string]$DefaultStt,
         [string]$Root
     )
 
@@ -1775,10 +1917,11 @@ function Initialize-GlobalHotkeySmokeData {
     New-Item -ItemType Directory -Force -Path $RuntimeDataDir | Out-Null
     $envPath = Join-Path $RuntimeDataDir ".env"
     $invalidProvider = "__hotkey_smoke_invalid__"
+    $effectiveDefaultStt = if ([string]::IsNullOrWhiteSpace($DefaultStt)) { $invalidProvider } else { $DefaultStt.Trim() }
     $lines = @(
         "SCRIBER_HOTKEY=$Hotkey",
         "SCRIBER_MODE=toggle",
-        "SCRIBER_DEFAULT_STT=$invalidProvider",
+        "SCRIBER_DEFAULT_STT=$effectiveDefaultStt",
         "SCRIBER_INJECT_METHOD=type",
         "SCRIBER_AUTO_SUMMARIZE=0"
     )
@@ -1787,6 +1930,7 @@ function Initialize-GlobalHotkeySmokeData {
         envPath = $envPath
         hotkey = $Hotkey
         invalidProvider = $invalidProvider
+        defaultStt = $effectiveDefaultStt
     }
 }
 
@@ -1795,6 +1939,7 @@ function Test-GlobalHotkeyRegistration {
         [string]$RuntimeDataDir,
         [string]$Hotkey,
         [string]$InvalidProvider,
+        [string]$DefaultStt,
         [int]$DeadlineSec
     )
 
@@ -1808,6 +1953,7 @@ function Test-GlobalHotkeyRegistration {
         hotkey = $Hotkey
         mode = "toggle"
         invalidProvider = $InvalidProvider
+        defaultStt = $DefaultStt
         shellLogPath = $shellLogPath
         registrationObserved = $true
         dispatchVerified = $false
@@ -1821,7 +1967,9 @@ function Test-GlobalHotkeyDispatch {
         [string]$RuntimeDataDir,
         [string]$Hotkey,
         [string]$InvalidProvider,
+        [string]$DefaultStt,
         [int]$DeadlineSec,
+        [bool]$SkipStopCleanup = $false,
         [ValidateSet("synthetic", "manual")]
         [string]$DispatchMethod = "synthetic"
     )
@@ -1835,16 +1983,21 @@ function Test-GlobalHotkeyDispatch {
         -RuntimeDataDir $RuntimeDataDir `
         -Hotkey $Hotkey `
         -InvalidProvider $InvalidProvider `
+        -DefaultStt $DefaultStt `
         -DeadlineSec $DeadlineSec
 
     $initialStateProbe = Invoke-TimedRestGet -Uri "http://127.0.0.1:$Port/api/state" -Headers $headers
     $initialTranscripts = Get-MicTranscriptSummary -Port $Port -Headers $headers
+    $dispatchStartQpcTicks = $null
+    $dispatchQpcFrequency = [System.Diagnostics.Stopwatch]::Frequency
     if ($DispatchMethod -eq "manual") {
+        $dispatchStartQpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
         Write-Warning "Manual global hotkey smoke: press '$Hotkey' within ${DeadlineSec}s."
     } else {
         if (-not (Test-SyntheticGlobalHotkeyDispatchSupport)) {
             throw "Synthetic global hotkey dispatch is unavailable on this host: Windows SendInput did not trigger a probe RegisterHotKey. Use -WaitForManualGlobalHotkey for physical OS hotkey evidence."
         }
+        $dispatchStartQpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
         Invoke-GlobalHotkeyChord -Hotkey $Hotkey
     }
 
@@ -1891,7 +2044,27 @@ function Test-GlobalHotkeyDispatch {
         throw "Global hotkey did not change backend state or create a mic transcript within ${DeadlineSec}s."
     }
 
-    if ([bool]$finalState.listening) {
+    $userReadySessionId = if ($finalState.sessionId) { [string]$finalState.sessionId } else { "" }
+    if (-not $userReadySessionId) {
+        $observedSession = @(
+            $observedStates |
+                Where-Object { $_.sessionId } |
+                Select-Object -Last 1
+        )
+        if ($observedSession.Count -gt 0) {
+            $userReadySessionId = [string]$observedSession[0].sessionId
+        }
+    }
+    $userReady = Wait-GlobalHotkeyUserReady `
+        -Port $Port `
+        -Headers $headers `
+        -SessionId $userReadySessionId `
+        -DeadlineSec ([Math]::Max(2, [Math]::Min(10, $DeadlineSec)))
+
+    $stopSkipped = $false
+    if ([bool]$finalState.listening -and $SkipStopCleanup) {
+        $stopSkipped = $true
+    } elseif ([bool]$finalState.listening) {
         try {
             Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/api/live-mic/stop" -Headers $headers -TimeoutSec 5 | Out-Null
         } catch {
@@ -1904,10 +2077,16 @@ function Test-GlobalHotkeyDispatch {
         hotkey = $Hotkey
         mode = "toggle"
         invalidProvider = $InvalidProvider
+        defaultStt = $DefaultStt
         shellLogPath = $registration.shellLogPath
         registrationObserved = $true
         dispatchVerified = $true
         dispatchMethod = $DispatchMethod
+        dispatchStartQpcTicks = $dispatchStartQpcTicks
+        qpcFrequency = $dispatchQpcFrequency
+        stopSkipped = $stopSkipped
+        userReady = $userReady
+        hotPathMetrics = if ($userReady) { $userReady.hotPathMetrics } else { $null }
         initialState = [pscustomobject]@{
             status = [string]$initialStateProbe.payload.status
             recordingState = [string]$initialStateProbe.payload.recordingState
@@ -2193,6 +2372,8 @@ function Test-ShellMenuSmoke {
 
     $shellLogPath = Join-Path $RuntimeDataDir "logs\tauri-shell.log"
     New-Item -ItemType Directory -Force -Path (Split-Path $TriggerPath) | Out-Null
+    $triggerQpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
+    $triggerQpcFrequency = [System.Diagnostics.Stopwatch]::Frequency
     Set-Content -LiteralPath $TriggerPath -Value "go" -Encoding ASCII
 
     $showMatch = $null
@@ -2372,6 +2553,8 @@ function Test-ShellMenuSmoke {
         verified = $true
         shellLogPath = $shellLogPath
         triggerPath = $TriggerPath
+        triggerQpcTicks = $triggerQpcTicks
+        qpcFrequency = $triggerQpcFrequency
         showWindow = [pscustomobject]@{
             elapsedMs = [int]$showMatch.Groups[1].Value
             visible = ($showMatch.Groups[2].Value -eq "true")
@@ -2645,6 +2828,9 @@ if ($VerifyShellMenuSmoke -and $KeepAppOpen) {
 if ($VerifyShellMenuSmoke -and $ShellMenuSmokeActions -notmatch "(?i)(^|[,;\s])(quit|exit)([,;\s]|$)") {
     throw "-VerifyShellMenuSmoke requires ShellMenuSmokeActions to include quit."
 }
+if ($GlobalHotkeySkipStopCleanup -and -not ($SimulateGlobalHotkey -or $WaitForManualGlobalHotkey)) {
+    throw "-GlobalHotkeySkipStopCleanup requires -SimulateGlobalHotkey or -WaitForManualGlobalHotkey."
+}
 if (-not $DataDir) {
     $DataDir = Join-Path $RepoRoot ("tmp\tauri-smoke-data\" + [System.Guid]::NewGuid().ToString("N"))
 }
@@ -2656,7 +2842,7 @@ if ($VerifyShellMenuSmoke) {
 }
 $globalHotkeySmokeConfig = $null
 if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey) {
-    $globalHotkeySmokeConfig = Initialize-GlobalHotkeySmokeData -RuntimeDataDir $DataDir -Hotkey $GlobalHotkeySmokeHotkey -Root $RepoRoot
+    $globalHotkeySmokeConfig = Initialize-GlobalHotkeySmokeData -RuntimeDataDir $DataDir -Hotkey $GlobalHotkeySmokeHotkey -DefaultStt $GlobalHotkeySmokeDefaultStt -Root $RepoRoot
 }
 if (-not $SessionToken) {
     $SessionToken = [System.Guid]::NewGuid().ToString("N")
@@ -2742,7 +2928,7 @@ if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManual
     $env:SCRIBER_TAURI_GLOBAL_HOTKEY = "1"
     $env:SCRIBER_HOTKEY = $globalHotkeySmokeConfig.hotkey
     $env:SCRIBER_MODE = "toggle"
-    $env:SCRIBER_DEFAULT_STT = $globalHotkeySmokeConfig.invalidProvider
+    $env:SCRIBER_DEFAULT_STT = $globalHotkeySmokeConfig.defaultStt
     $env:SCRIBER_INJECT_METHOD = "type"
     $env:SCRIBER_AUTO_SUMMARIZE = "0"
 }
@@ -2939,7 +3125,9 @@ try {
             -RuntimeDataDir $DataDir `
             -Hotkey $globalHotkeySmokeConfig.hotkey `
             -InvalidProvider $globalHotkeySmokeConfig.invalidProvider `
+            -DefaultStt $globalHotkeySmokeConfig.defaultStt `
             -DeadlineSec $GlobalHotkeyDispatchTimeoutSec `
+            -SkipStopCleanup ([bool]$GlobalHotkeySkipStopCleanup) `
             -DispatchMethod "synthetic"
     } elseif ($WaitForManualGlobalHotkey) {
         $globalHotkey = Test-GlobalHotkeyDispatch `
@@ -2948,13 +3136,16 @@ try {
             -RuntimeDataDir $DataDir `
             -Hotkey $globalHotkeySmokeConfig.hotkey `
             -InvalidProvider $globalHotkeySmokeConfig.invalidProvider `
+            -DefaultStt $globalHotkeySmokeConfig.defaultStt `
             -DeadlineSec $GlobalHotkeyDispatchTimeoutSec `
+            -SkipStopCleanup ([bool]$GlobalHotkeySkipStopCleanup) `
             -DispatchMethod "manual"
     } elseif ($VerifyGlobalHotkeyRegistration) {
         $globalHotkey = Test-GlobalHotkeyRegistration `
             -RuntimeDataDir $DataDir `
             -Hotkey $globalHotkeySmokeConfig.hotkey `
             -InvalidProvider $globalHotkeySmokeConfig.invalidProvider `
+            -DefaultStt $globalHotkeySmokeConfig.defaultStt `
             -DeadlineSec $GlobalHotkeyDispatchTimeoutSec
     }
     $crashRecovery = $null

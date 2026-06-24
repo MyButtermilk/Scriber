@@ -155,3 +155,26 @@ async def test_hot_path_metrics_summary_exposed(tmp_path):
     assert out["summary"]["count"] == 2
     assert len(out["items"]) == 2
     assert out["items"][0]["sessionId"] in {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_hot_path_metrics_can_include_active_readiness_snapshot(tmp_path):
+    loop = asyncio.get_running_loop()
+    metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    ctl = ScriberWebController(loop, latency_metrics_store=metrics_store)
+    session_id = "session-active-readiness"
+
+    ctl._start_hot_path_tracer(session_id)
+    ctl._mark_hot_path(session_id, "mic_ready")
+    ctl._mark_hot_path(session_id, "first_audio_frame")
+
+    out = ctl.get_hot_path_metrics(limit=10, include_active=True)
+
+    assert out["items"] == []
+    assert out["includeActive"] is True
+    active = next(item for item in out["activeItems"] if item["sessionId"] == session_id)
+    assert active["active"] is True
+    assert active["reportEmitted"] is False
+    assert active["markerNames"] == ["hotkey_received", "mic_ready", "first_audio_frame"]
+    assert "hotkey_received_to_mic_ready_ms" in active["segments"]
+    assert "hotkey_received_to_first_audio_frame_ms" in active["segments"]

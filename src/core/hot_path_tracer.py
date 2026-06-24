@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Any, Callable
 
 
 class HotPathTracer:
@@ -38,4 +38,20 @@ class HotPathTracer:
                     target_ts - source_ts
                 ) / 1_000_000
         return result
+
+    def snapshot(self) -> dict[str, Any]:
+        ordered = sorted(self._marks.items(), key=lambda item: item[1])
+        start_ts = self._marks.get("hotkey_received")
+        markers: list[dict[str, Any]] = []
+        for name, timestamp in ordered:
+            marker: dict[str, Any] = {"name": name}
+            if start_ts is not None:
+                marker["sinceHotkeyMs"] = (timestamp - start_ts) / 1_000_000
+            markers.append(marker)
+        return {
+            "sessionId": self.session_id,
+            "markerNames": [name for name, _timestamp in ordered],
+            "markers": markers,
+            "segments": self.report(),
+        }
 

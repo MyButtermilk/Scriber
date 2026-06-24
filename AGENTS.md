@@ -32,7 +32,7 @@ the user explicitly asks for a temporary investigation note.
 - Primary desktop runtime: Tauri 2 shell, React frontend, Python backend sidecar.
 - Backend default: `127.0.0.1:8765`, implemented with `aiohttp`, WebSocket
   events, SQLite, Pipecat pipeline code, and provider adapters.
-- Frontend default in dev: `localhost:5000`, implemented with Vite 7, React 19,
+- Frontend default in dev: `localhost:5000`, implemented with Vite 8, React 19,
   TypeScript, Tailwind v4, Wouter, and TanStack Query.
 - Runtime is Windows-first. Linux/macOS support is mostly fallback/dev support.
 - Legacy Python tray/UI code was removed. The Tauri shell owns desktop UI,
@@ -263,8 +263,11 @@ Packaging and scripts:
   Pipecat provider extras. Keep `google-generativeai` and Google Cloud
   Text-to-Speech out of the standard sidecar unless a product path is
   reintroduced that actually imports them. Gemini summarization uses direct
-  HTTP, Google Cloud STT uses `google-cloud-speech` plus Pipecat's required
-  `google-genai` namespace dependency, OpenAI STT uses the explicit `openai`
+  HTTP. OpenRouter summarization uses direct HTTP chat completions with
+  `:nitro` model variants for throughput-sorted provider routing, and is the
+  automatic summary fallback when configured. Google Cloud STT uses
+  `google-cloud-speech` plus Pipecat's required `google-genai` namespace
+  dependency, OpenAI STT uses the explicit `openai`
   SDK dependency, Groq STT uses Pipecat's `groq` SDK dependency, and Pipecat
   provider imports require `nltk` at runtime. Gladia live transcription uses
   Pipecat's Gladia service; Gladia file and YouTube transcription use the

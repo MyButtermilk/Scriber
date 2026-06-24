@@ -125,6 +125,7 @@ def test_settings_provider_help_links_are_safe_external_links() -> None:
         'deepgram: { href: "https://console.deepgram.com/"',
         'assemblyai: { href: "https://www.assemblyai.com/dashboard"',
         'gemini: { href: "https://aistudio.google.com/app/apikey"',
+        'openrouter: { href: "https://openrouter.ai/settings/keys"',
         'youtube: { href: "https://console.cloud.google.com/apis/credentials"',
         'soniox: { href: "https://console.soniox.com/"',
         'smallest: { href: "https://app.smallest.ai/"',
@@ -146,6 +147,10 @@ def test_settings_provider_help_links_are_safe_external_links() -> None:
     assert 'target="_blank"' in source
     assert 'rel="noreferrer"' in source
     assert "title={help.label}" in source
+    assert 'value: "minimax/minimax-m3:nitro"' in source
+    assert 'value: "z-ai/glm-5.2:nitro"' in source
+    assert "OpenRouter API Key" in source
+    assert 'if (provider === "OpenRouter") apiKeys.openrouter = openRouterKey;' in source
 
 
 def test_websocket_reconnect_reports_frontend_ready() -> None:
