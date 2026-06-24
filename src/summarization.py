@@ -115,6 +115,20 @@ def _openrouter_fallback_models() -> list[str]:
     return normalized or list(_OPENROUTER_DEFAULT_MODELS)
 
 
+def _openrouter_model_candidates(models: str | Sequence[str]) -> list[str]:
+    raw_models = [models] if isinstance(models, str) else list(models)
+    normalized: list[str] = []
+    for candidate in raw_models:
+        model = _openrouter_nitro_model(str(candidate or ""))
+        if model and model not in normalized:
+            normalized.append(model)
+    return normalized or list(_OPENROUTER_DEFAULT_MODELS)
+
+
+def _same_openrouter_model(left: str, right: str) -> bool:
+    return _openrouter_nitro_model(left).lower() == _openrouter_nitro_model(right).lower()
+
+
 def _is_gemini_thinking_model(model: str) -> bool:
     return model.startswith("gemini-3") or model == "gemini-flash-latest"
 
@@ -536,18 +550,13 @@ def _build_openrouter_payload(
     models: str | Sequence[str],
     max_output_tokens: int,
 ) -> dict[str, Any]:
-    if isinstance(models, str):
-        normalized_models = [_openrouter_nitro_model(models)]
-    else:
-        normalized_models = [_openrouter_nitro_model(model) for model in models if str(model or "").strip()]
-
-    if not normalized_models:
-        normalized_models = list(_OPENROUTER_DEFAULT_MODELS)
+    normalized_models = _openrouter_model_candidates(models)
 
     payload: dict[str, Any] = {
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_output_tokens,
         "temperature": 0.3,
+        "reasoning": {"exclude": True},
     }
     if len(normalized_models) == 1:
         payload["model"] = normalized_models[0]
@@ -576,26 +585,139 @@ def _openrouter_error_detail(status: int, raw: str) -> str:
     return raw[:600] or str(status)
 
 
-def _extract_openrouter_response_text(data: dict[str, Any]) -> str:
-    choices = data.get("choices") if isinstance(data, dict) else None
-    if not isinstance(choices, list) or not choices:
-        return ""
-    first = choices[0]
-    if not isinstance(first, dict):
-        return ""
-    message = first.get("message")
-    if not isinstance(message, dict):
-        return ""
+def _extract_openrouter_message_content(message: dict[str, Any]) -> str:
     content = message.get("content")
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         chunks: list[str] = []
         for part in content:
-            if isinstance(part, dict) and isinstance(part.get("text"), str):
-                chunks.append(part["text"])
+            if isinstance(part, str):
+                chunks.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+                    continue
+                nested_content = part.get("content")
+                if isinstance(nested_content, str):
+                    chunks.append(nested_content)
         return "".join(chunks)
     return ""
+
+
+def _openrouter_usage_summary(data: dict[str, Any]) -> dict[str, Any]:
+    usage = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(usage, dict):
+        return {}
+    completion_details = usage.get("completion_tokens_details")
+    if not isinstance(completion_details, dict):
+        completion_details = {}
+    return {
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+        "reasoning_tokens": completion_details.get("reasoning_tokens"),
+    }
+
+
+def _openrouter_choice_diagnostics(choice: dict[str, Any]) -> dict[str, Any]:
+    message = choice.get("message") if isinstance(choice, dict) else None
+    if not isinstance(message, dict):
+        message = {}
+    content = message.get("content")
+    error = choice.get("error") if isinstance(choice, dict) else None
+    if isinstance(error, dict):
+        choice_error = {
+            "code": error.get("code"),
+            "message": str(error.get("message") or "")[:240] or None,
+        }
+    else:
+        choice_error = None
+
+    reasoning = message.get("reasoning")
+    reasoning_details = message.get("reasoning_details")
+    content_type = type(content).__name__ if content is not None else "None"
+    return {
+        "finish_reason": choice.get("finish_reason"),
+        "native_finish_reason": choice.get("native_finish_reason"),
+        "content_type": content_type,
+        "content_chars": len(_extract_openrouter_message_content(message).strip()),
+        "reasoning_chars": len(reasoning.strip()) if isinstance(reasoning, str) else None,
+        "reasoning_details_count": len(reasoning_details) if isinstance(reasoning_details, list) else None,
+        "error": choice_error,
+    }
+
+
+def _extract_openrouter_response_text(data: dict[str, Any]) -> str:
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not isinstance(choices, list) or not choices:
+        return ""
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = _extract_openrouter_message_content(message).strip()
+        if content:
+            return content
+    return ""
+
+
+def _openrouter_empty_response_detail(data: dict[str, Any]) -> str:
+    choices = data.get("choices") if isinstance(data, dict) else None
+    first_choice = choices[0] if isinstance(choices, list) and choices else {}
+    choice_detail = _openrouter_choice_diagnostics(first_choice) if isinstance(first_choice, dict) else {}
+    usage = _openrouter_usage_summary(data)
+    detail = {
+        "model": data.get("model") if isinstance(data, dict) else None,
+        "choice": choice_detail,
+        "usage": usage,
+    }
+    return json.dumps(detail, ensure_ascii=True, sort_keys=True)
+
+
+async def _post_openrouter_chat_completion(
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    timeout: aiohttp.ClientTimeout,
+) -> dict[str, Any]:
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            json=payload,
+            headers=headers,
+        ) as resp:
+            raw = await resp.text()
+            if resp.status >= 400:
+                detail = _openrouter_error_detail(resp.status, raw)
+                raise RuntimeError(f"OpenRouter API error {resp.status}: {detail}")
+            return json.loads(raw)
+
+
+def _openrouter_used_model(data: dict[str, Any], fallback: str) -> str:
+    model = data.get("model") if isinstance(data, dict) else None
+    return str(model or fallback)
+
+
+def _openrouter_retry_candidates(
+    attempted: Sequence[str],
+    *,
+    used_model: str,
+    allow_default_fallbacks: bool,
+) -> list[str]:
+    source = list(attempted)
+    if allow_default_fallbacks:
+        source.extend(_openrouter_fallback_models())
+    retry: list[str] = []
+    for candidate in source:
+        if used_model and _same_openrouter_model(candidate, used_model):
+            continue
+        model = _openrouter_nitro_model(candidate)
+        if model and model not in retry:
+            retry.append(model)
+    return retry
 
 
 async def _summarize_openrouter(
@@ -615,36 +737,62 @@ async def _summarize_openrouter(
         sock_connect=min(15, timeout_seconds),
         sock_read=timeout_seconds,
     )
-    payload = _build_openrouter_payload(prompt, models, max_output_tokens)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://scriber.local",
         "X-OpenRouter-Title": "Scriber",
     }
+    requested_models = _openrouter_model_candidates(models)
+    if isinstance(models, str):
+        initial_models = _openrouter_retry_candidates(
+            requested_models,
+            used_model="",
+            allow_default_fallbacks=True,
+        )
+    else:
+        initial_models = requested_models
+
+    attempts: list[list[str]] = [initial_models]
+    last_empty_detail = ""
 
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                json=payload,
-                headers=headers,
-            ) as resp:
-                raw = await resp.text()
-                if resp.status >= 400:
-                    detail = _openrouter_error_detail(resp.status, raw)
-                    raise RuntimeError(f"OpenRouter API error {resp.status}: {detail}")
-                data = json.loads(raw)
+        attempt_index = 0
+        while attempt_index < len(attempts):
+            attempt_models = attempts[attempt_index]
+            payload = _build_openrouter_payload(prompt, attempt_models, max_output_tokens)
+            data = await _post_openrouter_chat_completion(payload, headers, timeout)
 
-        content = _extract_openrouter_response_text(data).strip()
-        logger.info(
-            "OpenRouter summarization complete: {} chars (models={})",
-            len(content or ""),
-            payload.get("model") or payload.get("models"),
-        )
-        if not content:
-            raise RuntimeError("OpenRouter returned empty response.")
-        return content
+            content = _extract_openrouter_response_text(data).strip()
+            used_model = _openrouter_used_model(data, attempt_models[0])
+            logger.info(
+                "OpenRouter summarization complete: {} chars (requested_models={}, response_model={})",
+                len(content or ""),
+                payload.get("model") or payload.get("models"),
+                used_model,
+            )
+            if content:
+                return content
+
+            last_empty_detail = _openrouter_empty_response_detail(data)
+            retry_models = _openrouter_retry_candidates(
+                attempt_models,
+                used_model=used_model,
+                allow_default_fallbacks=isinstance(models, str),
+            )
+            if retry_models and attempt_index == 0:
+                logger.warning(
+                    "OpenRouter returned empty response from {}. Retrying with {}. detail={}",
+                    used_model,
+                    retry_models,
+                    last_empty_detail,
+                )
+                attempts.append(retry_models)
+                attempt_index += 1
+                continue
+            break
+
+        raise RuntimeError(f"OpenRouter returned empty response. detail={last_empty_detail}")
     except aiohttp.ClientError as e:
         logger.exception("OpenRouter summarization HTTP error")
         raise RuntimeError(f"OpenRouter summarization failed: {e}")
