@@ -43,9 +43,12 @@ Startup and imports:
 
 - STT provider imports are mostly lazy in the service factory.
 - Expensive VAD/analyzer setup is cached.
-- Startup ML analyzer and STT provider prewarm are opt-in through
-  `SCRIBER_PREWARM_MODELS_ON_STARTUP` and `SCRIBER_PREWARM_STT_ON_STARTUP` so
-  installed idle sessions do not load provider/model runtimes unless requested.
+- Startup ML analyzer and STT provider prewarm follow Always-On-Mic by default:
+  with `SCRIBER_MIC_ALWAYS_ON=1`, Silero VAD/SmartTurn analyzer setup and the
+  selected STT provider import are warmed during startup so the hotkey path does
+  not pay that cost. `SCRIBER_PREWARM_MODELS_ON_STARTUP` and
+  `SCRIBER_PREWARM_STT_ON_STARTUP` remain manual opt-in switches when
+  Always-On-Mic is disabled.
 - In Tauri-supervised runtime, Rust owns global hotkeys; the Python `keyboard`
   hook and polling fallback are skipped unless
   `SCRIBER_ENABLE_PYTHON_HOTKEYS_IN_TAURI=1`.

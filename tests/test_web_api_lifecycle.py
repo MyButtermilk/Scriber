@@ -78,6 +78,29 @@ class _FakeRustMicPrewarmManager(_FakeMicPrewarmManager):
     instances: list["_FakeRustMicPrewarmManager"] = []
 
 
+def test_startup_prewarm_defaults_follow_mic_always_on(monkeypatch):
+    monkeypatch.delenv("SCRIBER_PREWARM_MODELS_ON_STARTUP", raising=False)
+    monkeypatch.delenv("SCRIBER_PREWARM_STT_ON_STARTUP", raising=False)
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+
+    assert web_api._prewarm_models_on_startup() is False
+    assert web_api._prewarm_stt_on_startup() is False
+
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+
+    assert web_api._prewarm_models_on_startup() is True
+    assert web_api._prewarm_stt_on_startup() is True
+
+
+def test_startup_prewarm_flags_still_opt_in_without_mic_always_on(monkeypatch):
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setenv("SCRIBER_PREWARM_MODELS_ON_STARTUP", "1")
+    monkeypatch.setenv("SCRIBER_PREWARM_STT_ON_STARTUP", "enabled")
+
+    assert web_api._prewarm_models_on_startup() is True
+    assert web_api._prewarm_stt_on_startup() is True
+
+
 class _RecoveringFakeMicPrewarmManager(_FakeMicPrewarmManager):
     engine = "rust-wasapi"
     instances: list["_RecoveringFakeMicPrewarmManager"] = []

@@ -333,6 +333,14 @@ def _env_flag_enabled(name: str) -> bool:
     return (os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
+def _prewarm_models_on_startup() -> bool:
+    return bool(Config.MIC_ALWAYS_ON) or _env_flag_enabled("SCRIBER_PREWARM_MODELS_ON_STARTUP")
+
+
+def _prewarm_stt_on_startup() -> bool:
+    return bool(Config.MIC_ALWAYS_ON) or _env_flag_enabled("SCRIBER_PREWARM_STT_ON_STARTUP")
+
+
 def _should_force_process_exit_after_shutdown() -> bool:
     raw = (os.getenv(_FORCE_EXIT_AFTER_SHUTDOWN_ENV, "") or "").strip().lower()
     if raw in {"0", "false", "no", "off", "disabled"}:
@@ -6784,11 +6792,11 @@ async def _background_init(controller: ScriberWebController) -> None:
         _load_startup_data(),
         _prewarm_overlay(),
     ]
-    if _env_flag_enabled("SCRIBER_PREWARM_MODELS_ON_STARTUP"):
+    if _prewarm_models_on_startup():
         background_tasks.append(_prewarm_models())
     else:
         logger.debug("Startup ML model prewarm skipped; enable SCRIBER_PREWARM_MODELS_ON_STARTUP=1 to restore")
-    if _env_flag_enabled("SCRIBER_PREWARM_STT_ON_STARTUP"):
+    if _prewarm_stt_on_startup():
         background_tasks.append(_prewarm_stt())
     else:
         logger.debug("Startup STT import prewarm skipped; enable SCRIBER_PREWARM_STT_ON_STARTUP=1 to restore")
