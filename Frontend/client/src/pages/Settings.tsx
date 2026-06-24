@@ -14,6 +14,7 @@ import { Slider } from "@/components/ui/slider";
 import {
   apiUrl,
   refreshGlobalHotkey,
+  isTauriRuntime,
   setGlobalHotkeyCaptureActive,
   setAutostartEnabled as setDesktopAutostartEnabled,
 } from "@/lib/backend";
@@ -155,6 +156,19 @@ const API_KEY_HELP_LINKS = {
 
 type ApiKeyHelpKey = keyof typeof API_KEY_HELP_LINKS;
 
+async function openExternalHelpUrl(url: string): Promise<void> {
+  if (isTauriRuntime()) {
+    try {
+      const { openUrl } = await import("@tauri-apps/plugin-opener");
+      await openUrl(url);
+      return;
+    } catch (error) {
+      console.warn("Tauri opener failed; falling back to browser window.open.", error);
+    }
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 function ApiKeyLink({ helpKey, children = "Get key" }: { helpKey: ApiKeyHelpKey; children?: ReactNode }) {
   const help = API_KEY_HELP_LINKS[helpKey];
   return (
@@ -162,6 +176,10 @@ function ApiKeyLink({ helpKey, children = "Get key" }: { helpKey: ApiKeyHelpKey;
       href={help.href}
       target="_blank"
       rel="noreferrer"
+      onClick={(event) => {
+        event.preventDefault();
+        void openExternalHelpUrl(help.href);
+      }}
       className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       title={help.label}
     >

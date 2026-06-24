@@ -114,15 +114,15 @@ def test_frontend_entrypoint_is_compatible_with_tauri_csp() -> None:
     assert "--font-heading:" in css
 
 
-def test_tauri_does_not_expose_general_shell_or_opener_plugins() -> None:
+def test_tauri_does_not_expose_general_shell_plugin() -> None:
     cargo = tomllib.loads((TAURI_DIR / "Cargo.toml").read_text(encoding="utf-8"))
     dependencies = cargo["dependencies"]
     lib_rs = (TAURI_DIR / "src" / "lib.rs").read_text(encoding="utf-8")
 
     assert "tauri-plugin-shell" not in dependencies
-    assert "tauri-plugin-opener" not in dependencies
     assert "tauri_plugin_shell" not in lib_rs
-    assert "tauri_plugin_opener" not in lib_rs
+    assert dependencies["tauri-plugin-opener"] == "2"
+    assert "tauri_plugin_opener::init()" in lib_rs
 
 
 def test_rust_audio_sidecar_is_separate_cargo_binary_not_tauri_external_bin() -> None:

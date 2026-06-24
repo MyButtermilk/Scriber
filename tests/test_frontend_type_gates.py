@@ -147,6 +147,9 @@ def test_settings_provider_help_links_are_safe_external_links() -> None:
     assert 'target="_blank"' in source
     assert 'rel="noreferrer"' in source
     assert "title={help.label}" in source
+    assert "void openExternalHelpUrl(help.href);" in source
+    assert 'const { openUrl } = await import("@tauri-apps/plugin-opener");' in source
+    assert "await openUrl(url);" in source
     assert 'value: "minimax/minimax-m3:nitro"' in source
     assert 'value: "z-ai/glm-5.2:nitro"' in source
     assert "OpenRouter API Key" in source
