@@ -242,7 +242,13 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert "URL.createObjectURL(blob)" not in source
     assert "function isCompletedStep" in source
     assert "function isVisiblyProcessing" in source
-    assert "const isProcessing = isVisiblyProcessing(item);" in source
+    assert 'type YoutubeHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";' in source
+    assert "function youtubeHistoryStatus(item: TranscriptHistoryItem): YoutubeHistoryStatus" in source
+    assert 'if (item.summaryStatus === "failed") return "summary_failed";' in source
+    assert 'historyStatus === "summary_failed"' in source
+    assert "Summary failed" in source
+    assert "text-red-600 border-red-200 bg-red-50" in source
+    assert "const isProcessing = isVisiblyProcessing(item);" not in source
 
 
 def test_youtube_sorting_and_failed_retry_use_client_state_and_source_url() -> None:
@@ -298,6 +304,12 @@ def test_file_upload_progress_uses_xhr_progress_before_server_processing() -> No
     assert "xhr.upload.onload = () => {" in source
     assert 'value={uploadProgress}' in source
     assert "uploadStatusText" in source
+    assert 'type FileHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";' in source
+    assert "function fileHistoryStatus(item: TranscriptHistoryItem): FileHistoryStatus" in source
+    assert 'if (item.summaryStatus === "failed") return "summary_failed";' in source
+    assert 'historyStatus === "summary_failed"' in source
+    assert "Summary failed" in source
+    assert "text-red-600 border-red-200 bg-red-50" in source
 
 
 def test_live_mic_interim_and_final_transcript_render_distinctly() -> None:

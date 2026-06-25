@@ -63,6 +63,16 @@ def test_summary_budget_gemini_includes_thinking_reserve(monkeypatch: pytest.Mon
     assert gemini_tokens > gpt_tokens
 
 
+def test_summary_budget_glm_openrouter_includes_reasoning_reserve(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_RESERVE_TOKENS", "2400")
+
+    _, _, minimax_tokens = summarization._summary_budget_for_text(_words(300), "minimax/minimax-m3:nitro")
+    _, _, glm_tokens = summarization._summary_budget_for_text(_words(300), "z-ai/glm-5.2:nitro")
+
+    assert minimax_tokens == 900
+    assert glm_tokens == 3300
+
+
 def test_openrouter_payload_normalizes_models_to_nitro():
     payload = summarization._build_openrouter_payload(
         "prompt",
@@ -73,7 +83,23 @@ def test_openrouter_payload_normalizes_models_to_nitro():
     assert payload["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
     assert payload["max_tokens"] == 4096
     assert payload["messages"] == [{"role": "user", "content": "prompt"}]
-    assert payload["reasoning"] == {"exclude": True}
+    assert payload["reasoning"] == {"exclude": True, "effort": "medium"}
+
+
+def test_openrouter_reasoning_effort_is_only_sent_when_explicit(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", raising=False)
+    assert summarization._openrouter_reasoning_config() == {"exclude": True, "effort": "medium"}
+
+    monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", "high")
+    assert summarization._openrouter_reasoning_config() == {"exclude": True, "effort": "high"}
+
+    monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", "invalid")
+    assert summarization._openrouter_reasoning_config() == {"exclude": True, "effort": "medium"}
+
+
+def test_openrouter_model_family_matches_dated_response_model():
+    assert summarization._same_openrouter_model("z-ai/glm-5.2:nitro", "z-ai/glm-5.2-20260616")
+    assert not summarization._same_openrouter_model("minimax/minimax-m3:nitro", "z-ai/glm-5.2-20260616")
 
 
 def test_openrouter_response_extractor_uses_first_non_empty_choice():
@@ -266,8 +292,58 @@ async def test_summarize_openrouter_retries_empty_selected_model_with_default_fa
     assert out == "fallback summary"
     assert calls[0]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
     assert calls[0]["max_tokens"] == 900
-    assert calls[0]["reasoning"] == {"exclude": True}
+    assert calls[0]["reasoning"] == {"exclude": True, "effort": "medium"}
     assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
+
+
+@pytest.mark.asyncio
+async def test_summarize_openrouter_retries_empty_length_response_with_larger_budget(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _fake_post(payload, _headers, _timeout):
+        calls.append(payload)
+        if len(calls) == 1:
+            return {
+                "model": "z-ai/glm-5.2-20260616",
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "native_finish_reason": "length",
+                        "message": {"role": "assistant", "content": None},
+                    }
+                ],
+                "usage": {
+                    "completion_tokens": 900,
+                    "prompt_tokens": 1989,
+                    "total_tokens": 2889,
+                    "completion_tokens_details": {"reasoning_tokens": 876},
+                },
+            }
+        return {
+            "model": "z-ai/glm-5.2-20260616",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "glm summary"},
+                }
+            ],
+            "usage": {"completion_tokens": 420, "total_tokens": 2400},
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    out = await summarization._summarize_openrouter("prompt", "z-ai/glm-5.2:nitro", 900)
+
+    assert out == "glm summary"
+    assert calls[0]["models"] == ["z-ai/glm-5.2:nitro", "minimax/minimax-m3:nitro"]
+    assert calls[0]["max_tokens"] == 900
+    assert calls[0]["reasoning"] == {"exclude": True, "effort": "medium"}
+    assert calls[1]["models"] == ["z-ai/glm-5.2:nitro", "minimax/minimax-m3:nitro"]
+    assert calls[1]["max_tokens"] == 1800
 
 
 @pytest.mark.asyncio

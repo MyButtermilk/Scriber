@@ -1,6 +1,6 @@
 import { useCallback, useState, useEffect, memo, useMemo, useRef } from "react";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileAudio, CheckCircle2, Loader2, XCircle, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
+import { AlertCircle, UploadCloud, FileAudio, CheckCircle2, Loader2, XCircle, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -51,6 +51,16 @@ function inferServerProcessingLabel(file: File, compressionThresholdBytes: numbe
   return `Preparing ${file.name}...`;
 }
 
+type FileHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";
+
+function fileHistoryStatus(item: TranscriptHistoryItem): FileHistoryStatus {
+  if (item.status === "processing") return "processing";
+  if (item.status === "failed") return "failed";
+  if (item.summaryStatus === "failed") return "summary_failed";
+  if (item.status === "stopped") return "stopped";
+  return "ready";
+}
+
 // Memoized FileCard to prevent unnecessary re-renders
 interface FileCardProps {
   item: TranscriptHistoryItem;
@@ -86,6 +96,7 @@ const FileCard = memo(function FileCard({
     ? "hue-rotate-180 saturate-200 blur-md skew-x-[40deg] scale-y-50 translate-x-12 opacity-0"
     : "hue-rotate-0 saturate-100 blur-0 skew-x-0 scale-y-100 translate-x-0 opacity-100"
     }`;
+  const historyStatus = fileHistoryStatus(item);
 
   return (
     <motion.div
@@ -118,13 +129,15 @@ const FileCard = memo(function FileCard({
           // List view
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${item.status === 'failed'
+              <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${historyStatus === 'failed' || historyStatus === 'summary_failed'
                 ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
-                : item.status === 'stopped'
+                : historyStatus === 'processing'
+                  ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600'
+                  : historyStatus === 'stopped'
                   ? 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600'
                   : 'bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600'
                 }`}>
-                {item.status === 'failed' ? <XCircle className="w-5 h-5" /> : item.status === 'stopped' ? <Square className="w-5 h-5" /> : <FileAudio className="w-5 h-5" />}
+                {historyStatus === 'failed' ? <XCircle className="w-5 h-5" /> : historyStatus === 'summary_failed' ? <AlertCircle className="w-5 h-5" /> : historyStatus === 'processing' ? <Loader2 className="w-5 h-5 animate-spin" /> : historyStatus === 'stopped' ? <Square className="w-5 h-5" /> : <FileAudio className="w-5 h-5" />}
               </div>
               <div>
                 <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
@@ -138,9 +151,19 @@ const FileCard = memo(function FileCard({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {item.status === 'failed' ? (
+              {historyStatus === 'processing' ? (
+                <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  {item.step || "Processing"}
+                </Badge>
+              ) : historyStatus === 'failed' ? (
                 <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
-              ) : item.status === 'stopped' ? (
+              ) : historyStatus === "summary_failed" ? (
+                <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px] flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3" />
+                  Summary failed
+                </Badge>
+              ) : historyStatus === 'stopped' ? (
                 <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">Stopped</Badge>
               ) : (
                 <div className="hidden sm:flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
@@ -170,18 +193,33 @@ const FileCard = memo(function FileCard({
           // Grid view
           <div className="flex flex-col h-full">
             <div className="flex items-start justify-between mb-3">
-              <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${item.status === 'failed'
+              <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${historyStatus === 'failed' || historyStatus === 'summary_failed'
                 ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
-                : item.status === 'stopped'
+                : historyStatus === 'processing'
+                  ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600'
+                  : historyStatus === 'stopped'
                   ? 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600'
                   : 'bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600'
                 }`}>
-                {item.status === 'failed' ? <XCircle className="w-6 h-6" /> : item.status === 'stopped' ? <Square className="w-6 h-6" /> : <FileAudio className="w-6 h-6" />}
+                {historyStatus === 'failed' ? <XCircle className="w-6 h-6" /> : historyStatus === 'summary_failed' ? <AlertCircle className="w-6 h-6" /> : historyStatus === 'processing' ? <Loader2 className="w-6 h-6 animate-spin" /> : historyStatus === 'stopped' ? <Square className="w-6 h-6" /> : <FileAudio className="w-6 h-6" />}
               </div>
               <div className="flex items-center gap-1">
-                {item.status === 'failed' ? (
+                {historyStatus === 'processing' ? (
+                  <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  </Badge>
+                ) : historyStatus === 'failed' ? (
                   <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
-                ) : item.status === 'stopped' ? (
+                ) : historyStatus === "summary_failed" ? (
+                  <Badge
+                    variant="outline"
+                    className="text-red-600 border-red-200 bg-red-50 text-[10px] flex items-center gap-1"
+                    title="Summary failed"
+                    aria-label="Summary failed"
+                  >
+                    <AlertCircle className="w-3 h-3" />
+                  </Badge>
+                ) : historyStatus === 'stopped' ? (
                   <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">Stopped</Badge>
                 ) : (
                   <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">

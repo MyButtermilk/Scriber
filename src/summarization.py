@@ -104,6 +104,11 @@ def _openrouter_nitro_model(model: str) -> str:
     return f"{base}:nitro"
 
 
+def _openrouter_model_family(model: str) -> str:
+    base = (model or "").strip().split(":", 1)[0].lower()
+    return re.sub(r"-\d{8}$", "", base)
+
+
 def _openrouter_fallback_models() -> list[str]:
     raw = os.getenv("SCRIBER_SUMMARY_OPENROUTER_FALLBACK_MODELS", "").strip()
     candidates = [item.strip() for item in raw.split(",") if item.strip()] if raw else list(_OPENROUTER_DEFAULT_MODELS)
@@ -126,7 +131,13 @@ def _openrouter_model_candidates(models: str | Sequence[str]) -> list[str]:
 
 
 def _same_openrouter_model(left: str, right: str) -> bool:
-    return _openrouter_nitro_model(left).lower() == _openrouter_nitro_model(right).lower()
+    return _openrouter_model_family(left) == _openrouter_model_family(right)
+
+
+def _is_openrouter_reasoning_model(model: str) -> bool:
+    raw = os.getenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_MODELS", "z-ai/glm-5.2").strip()
+    families = {_openrouter_model_family(item) for item in raw.split(",") if item.strip()}
+    return _openrouter_model_family(model) in families
 
 
 def _is_gemini_thinking_model(model: str) -> bool:
@@ -224,6 +235,17 @@ def _summary_budget_for_text(
         thinking_reserve = max(0, int(os.getenv("SCRIBER_SUMMARY_GEMINI_THINKING_RESERVE_TOKENS", "2400")))
         if thinking_reserve > 0:
             output_tokens = min(budget_cap, output_tokens + thinking_reserve)
+
+    # Some OpenRouter models, currently GLM 5.2, spend completion tokens on
+    # hidden/provider reasoning before emitting visible content.
+    if _is_openrouter_model(model) and _is_openrouter_reasoning_model(model_key):
+        reasoning_reserve = _env_int(
+            "SCRIBER_SUMMARY_OPENROUTER_REASONING_RESERVE_TOKENS",
+            2400,
+            min_value=0,
+        )
+        if reasoning_reserve > 0:
+            output_tokens = min(budget_cap, output_tokens + reasoning_reserve)
 
     return input_words, target_words, output_tokens
 
@@ -556,7 +578,7 @@ def _build_openrouter_payload(
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_output_tokens,
         "temperature": 0.3,
-        "reasoning": {"exclude": True},
+        "reasoning": _openrouter_reasoning_config(),
     }
     if len(normalized_models) == 1:
         payload["model"] = normalized_models[0]
@@ -583,6 +605,22 @@ def _openrouter_error_detail(status: int, raw: str) -> str:
         if parts:
             return ": ".join(parts)[:600]
     return raw[:600] or str(status)
+
+
+def _openrouter_reasoning_config() -> dict[str, Any]:
+    config: dict[str, Any] = {"exclude": True}
+    raw = os.getenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", "medium").strip().lower()
+    if not raw:
+        return config
+    allowed = {"max", "xhigh", "high", "medium", "low", "minimal", "none"}
+    if raw not in allowed:
+        logger.warning(
+            "Invalid SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT='{}'; using 'medium'.",
+            raw,
+        )
+        raw = "medium"
+    config["effort"] = raw
+    return config
 
 
 def _extract_openrouter_message_content(message: dict[str, Any]) -> str:
@@ -678,6 +716,24 @@ def _openrouter_empty_response_detail(data: dict[str, Any]) -> str:
     return json.dumps(detail, ensure_ascii=True, sort_keys=True)
 
 
+def _openrouter_primary_choice(data: dict[str, Any]) -> dict[str, Any]:
+    choices = data.get("choices") if isinstance(data, dict) else None
+    first_choice = choices[0] if isinstance(choices, list) and choices else {}
+    return first_choice if isinstance(first_choice, dict) else {}
+
+
+def _openrouter_should_retry_with_more_tokens(data: dict[str, Any]) -> bool:
+    choice = _openrouter_primary_choice(data)
+    finish_reason = str(choice.get("finish_reason") or "").lower()
+    native_finish_reason = str(choice.get("native_finish_reason") or "").lower()
+    if finish_reason != "length" and native_finish_reason != "length":
+        return False
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return True
+    return not _extract_openrouter_message_content(message).strip()
+
+
 async def _post_openrouter_chat_completion(
     payload: dict[str, Any],
     headers: dict[str, str],
@@ -720,6 +776,38 @@ def _openrouter_retry_candidates(
     return retry
 
 
+def _openrouter_retry_output_cap(models: Sequence[str], initial_max_output_tokens: int) -> int:
+    model_caps = [
+        _MODEL_OUTPUT_TOKEN_CAPS.get(_openrouter_nitro_model(model), initial_max_output_tokens)
+        for model in models
+    ]
+    model_cap = max(model_caps) if model_caps else initial_max_output_tokens
+    requested_cap = _env_int(
+        "SCRIBER_SUMMARY_OPENROUTER_RETRY_MAX_TOKENS",
+        8192,
+        min_value=initial_max_output_tokens,
+    )
+    return max(initial_max_output_tokens, min(model_cap, requested_cap))
+
+
+def _openrouter_next_output_budget(
+    current_tokens: int,
+    retry_cap: int,
+    data: dict[str, Any],
+) -> int:
+    usage = _openrouter_usage_summary(data)
+    completion_tokens = usage.get("completion_tokens")
+    reasoning_tokens = usage.get("reasoning_tokens")
+    minimum_increment = 512
+    if isinstance(reasoning_tokens, int) and reasoning_tokens > 0:
+        minimum_increment = max(minimum_increment, reasoning_tokens)
+    if isinstance(completion_tokens, int) and completion_tokens > current_tokens:
+        current_tokens = completion_tokens
+    growth = _env_float("SCRIBER_SUMMARY_OPENROUTER_MAX_TOKENS_RETRY_GROWTH", 2.0, min_value=1.1)
+    grown = int(math.ceil(current_tokens * growth))
+    return min(retry_cap, max(current_tokens + minimum_increment, grown))
+
+
 async def _summarize_openrouter(
     prompt: str,
     models: str | Sequence[str],
@@ -754,13 +842,17 @@ async def _summarize_openrouter(
         initial_models = requested_models
 
     attempts: list[list[str]] = [initial_models]
+    attempt_budgets: list[int] = [max_output_tokens]
+    seen_attempts: set[tuple[tuple[str, ...], int]] = {(tuple(initial_models), max_output_tokens)}
     last_empty_detail = ""
+    retry_cap = _openrouter_retry_output_cap(initial_models, max_output_tokens)
 
     try:
         attempt_index = 0
         while attempt_index < len(attempts):
             attempt_models = attempts[attempt_index]
-            payload = _build_openrouter_payload(prompt, attempt_models, max_output_tokens)
+            attempt_max_tokens = attempt_budgets[attempt_index]
+            payload = _build_openrouter_payload(prompt, attempt_models, attempt_max_tokens)
             data = await _post_openrouter_chat_completion(payload, headers, timeout)
 
             content = _extract_openrouter_response_text(data).strip()
@@ -775,12 +867,30 @@ async def _summarize_openrouter(
                 return content
 
             last_empty_detail = _openrouter_empty_response_detail(data)
+            if _openrouter_should_retry_with_more_tokens(data) and attempt_max_tokens < retry_cap:
+                next_max_tokens = _openrouter_next_output_budget(attempt_max_tokens, retry_cap, data)
+                key = (tuple(attempt_models), next_max_tokens)
+                if key not in seen_attempts:
+                    logger.warning(
+                        "OpenRouter returned empty length response from {} at max_tokens={}. Retrying with max_tokens={}. detail={}",
+                        used_model,
+                        attempt_max_tokens,
+                        next_max_tokens,
+                        last_empty_detail,
+                    )
+                    attempts.append(attempt_models)
+                    attempt_budgets.append(next_max_tokens)
+                    seen_attempts.add(key)
+                    attempt_index += 1
+                    continue
+
             retry_models = _openrouter_retry_candidates(
                 attempt_models,
                 used_model=used_model,
                 allow_default_fallbacks=isinstance(models, str),
             )
-            if retry_models and attempt_index == 0:
+            retry_key = (tuple(retry_models), attempt_max_tokens)
+            if retry_models and retry_key not in seen_attempts:
                 logger.warning(
                     "OpenRouter returned empty response from {}. Retrying with {}. detail={}",
                     used_model,
@@ -788,6 +898,8 @@ async def _summarize_openrouter(
                     last_empty_detail,
                 )
                 attempts.append(retry_models)
+                attempt_budgets.append(attempt_max_tokens)
+                seen_attempts.add(retry_key)
                 attempt_index += 1
                 continue
             break

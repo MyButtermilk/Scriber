@@ -1,4 +1,4 @@
-import { ArrowRight, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
+import { AlertCircle, ArrowRight, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -48,6 +48,16 @@ function isCompletedStep(step?: string): boolean {
 
 function isVisiblyProcessing(item: TranscriptHistoryItem): boolean {
   return item.status === "processing" && !isCompletedStep(item.step);
+}
+
+type YoutubeHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";
+
+function youtubeHistoryStatus(item: TranscriptHistoryItem): YoutubeHistoryStatus {
+  if (isVisiblyProcessing(item)) return "processing";
+  if (item.status === "failed") return "failed";
+  if (item.summaryStatus === "failed") return "summary_failed";
+  if (item.status === "stopped") return "stopped";
+  return "ready";
 }
 
 interface YoutubeThumbnailProps {
@@ -128,7 +138,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
     ? "hue-rotate-180 saturate-200 blur-md skew-x-[40deg] scale-y-50 translate-x-12 opacity-0"
     : "hue-rotate-0 saturate-100 blur-0 skew-x-0 scale-y-100 translate-x-0 opacity-100"
     }`;
-  const isProcessing = isVisiblyProcessing(item);
+  const historyStatus = youtubeHistoryStatus(item);
 
   return (
     <motion.div
@@ -175,14 +185,19 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
             <div className="flex-1 min-w-0 overflow-hidden">
               <div className="flex justify-between items-start gap-2">
                 <h3 className="font-medium text-foreground truncate text-base flex-1 min-w-0">{item.title}</h3>
-                {isProcessing ? (
+                {historyStatus === "processing" ? (
                   <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1 shrink-0">
                     <Loader2 className="w-3 h-3 animate-spin" />
                     {item.step || "Processing"}
                   </Badge>
-                ) : item.status === 'failed' ? (
+                ) : historyStatus === "failed" ? (
                   <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px] shrink-0">Failed</Badge>
-                ) : item.status === 'stopped' ? (
+                ) : historyStatus === "summary_failed" ? (
+                  <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px] flex items-center gap-1 shrink-0">
+                    <AlertCircle className="w-3 h-3" />
+                    Summary failed
+                  </Badge>
+                ) : historyStatus === "stopped" ? (
                   <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px] shrink-0">Stopped</Badge>
                 ) : (
                   <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full shrink-0">
@@ -227,13 +242,22 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                 {item.duration}
               </div>
               <div className="absolute top-2 right-2">
-                {isProcessing ? (
+                {historyStatus === "processing" ? (
                   <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50/90 text-[10px] flex items-center gap-1">
                     <Loader2 className="w-3 h-3 animate-spin" />
                   </Badge>
-                ) : item.status === 'failed' ? (
+                ) : historyStatus === "failed" ? (
                   <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50/90 text-[10px]">Failed</Badge>
-                ) : item.status === 'stopped' ? (
+                ) : historyStatus === "summary_failed" ? (
+                  <Badge
+                    variant="outline"
+                    className="text-red-600 border-red-200 bg-red-50/90 text-[10px] flex items-center gap-1"
+                    title="Summary failed"
+                    aria-label="Summary failed"
+                  >
+                    <AlertCircle className="w-3 h-3" />
+                  </Badge>
+                ) : historyStatus === "stopped" ? (
                   <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50/90 text-[10px]">Stopped</Badge>
                 ) : (
                   <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50/90 px-2 py-1 rounded-full">

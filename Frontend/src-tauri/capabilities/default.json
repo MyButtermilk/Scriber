@@ -13,6 +13,8 @@
     "core:window:allow-set-theme",
     "core:window:allow-start-dragging",
     "core:window:allow-toggle-maximize",
+    "opener:allow-default-urls",
+    "opener:allow-open-url",
     "process:allow-restart",
     "updater:allow-check",
     "updater:allow-download-and-install"
