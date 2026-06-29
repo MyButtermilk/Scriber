@@ -622,8 +622,13 @@ def test_native_recording_overlay_uses_fixed_size_state_layers() -> None:
     assert "const WAVEFORM_CANVAS_WIDTH = 162;" in source
     assert "const STOP_BUTTON_SIZE = 31;" in source
     assert "const PILL_WIDTH = OVERLAY_CONTENT_WIDTH + PILL_PADDING * 2;" in source
+    assert "const PILL_RADIUS = PILL_HEIGHT / 2;" in source
+    assert "const OVERLAY_DROP_SHADOW" in source
+    assert "const OVERLAY_PILL_SHADOW" in source
     assert "width: PILL_WIDTH" in source
     assert "height: PILL_HEIGHT" in source
+    assert 'filter: "blur' not in source
+    assert 'data-testid="native-recording-shadow"' not in source
     assert "absolute inset-0 flex items-center" in source
     assert "overlayMode" in source
     assert "let reconnectTimer: number | null = null;" in source

@@ -31,6 +31,11 @@ const STOP_ICON_SIZE = 12;
 const OVERLAY_CONTENT_WIDTH = STOP_BUTTON_SIZE + WAVEFORM_CANVAS_WIDTH;
 const PILL_WIDTH = OVERLAY_CONTENT_WIDTH + PILL_PADDING * 2;
 const PILL_HEIGHT = STOP_BUTTON_SIZE + PILL_PADDING * 2;
+const PILL_RADIUS = PILL_HEIGHT / 2;
+const OVERLAY_DROP_SHADOW =
+  "0 14px 26px -14px rgba(15, 23, 42, 0.62), 0 6px 14px -12px rgba(15, 23, 42, 0.38)";
+const OVERLAY_INSET_SHADOW = "inset 0 0 0 1px rgba(255, 255, 255, 0.10)";
+const OVERLAY_PILL_SHADOW = `${OVERLAY_DROP_SHADOW}, ${OVERLAY_INSET_SHADOW}`;
 const MIDNIGHT_COLORS = ["#93C5FD", "#3B82F6", "#1E3A8A"];
 const OVERLAY_RMS_NOISE_FLOOR = 0.00003;
 const OVERLAY_RMS_DISPLAY_SCALE = 90;
@@ -412,24 +417,13 @@ export default function NativeRecordingOverlay() {
       {visible && (
         <div className="relative inline-flex">
           <div
-            data-testid="native-recording-shadow"
-            aria-hidden="true"
-            className="absolute inset-0 bg-slate-950/30"
-            style={{
-              borderRadius: 9999,
-              filter: "blur(12px)",
-              pointerEvents: "none",
-              transform: "translateY(7px) scaleX(0.96)",
-            }}
-          />
-          <div
             data-testid="native-recording-pill"
             className="relative flex items-center bg-black"
             style={{
-              borderRadius: 9999,
+              borderRadius: PILL_RADIUS,
               padding: PILL_PADDING,
               overflow: "hidden",
-              boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.10)",
+              boxShadow: OVERLAY_PILL_SHADOW,
               width: PILL_WIDTH,
               height: PILL_HEIGHT,
             }}

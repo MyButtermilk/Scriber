@@ -383,6 +383,17 @@ installed live-recording and provider-backed comparison gates: a broken Rust
 frame pipe cannot pass merely because adoption counters were positive before
 the break.
 
+For the Always-On-Mic handoff regression specifically, evidence should prove
+that adopted WASAPI capture does not stop idle prewarm from the parent
+`captureStart` handler. The sidecar must transfer the old `PrewarmSession` into
+the capture writer, write adopted prebuffer blocks, call `IAudioClient.Start()`
+for the replacement stream, and then stop prewarm with reason
+`adoptedIntoCapture`. Failure reports should preserve explicit reasons such as
+`captureStartFailed` or `captureWriterFinishedBeforePrewarmHandoff`. Physical
+or installed-app checks should include the post-idle hotkey case, not only
+rapid repeated hotkey presses, because the observed regression appeared after
+the app had been idle while `SCRIBER_MIC_ALWAYS_ON=1` was enabled.
+
 The running app also persists recovered idle-prewarm watchdog restarts under
 `watchdog.lastWarning` when `healthRestartCount` increases during a watchdog
 check. Support bundles should therefore show the last brief Always-On-Mic

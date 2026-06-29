@@ -1498,13 +1498,24 @@ Implementation plan:
      failure with `Mikrofon (4- Insta360 Link)` and confirmed the fixed active
      capture uses the Rust/Tauri endpoint hash `51112d9ccdd3a140` instead of
      the stale Python-local hash.
-   - Implemented on 2026-06-11: Rust prewarm adoption now starts the new
-     WASAPI capture before stopping the idle prewarm session. Diagnostics patch
-     the final adopted-prewarm stop payload after capture readiness and expose
-     `adoptedPrewarm.handoffMode=overlap-capture-start-before-prewarm-stop`.
-     This is intended to remove the visible microphone privacy-light off/on
-     gap during hotkey start. It is still an overlap of two shared WASAPI
-     clients for a short handoff window, not a same-stream transfer.
+   - Implemented on 2026-06-11 and tightened on 2026-06-29: Rust prewarm
+     adoption overlaps idle prewarm with the next WASAPI capture instead of
+     stopping prewarm before the live stream exists. The 2026-06-29 decision is
+     that adopted WASAPI capture owns the old `PrewarmSession` until the capture
+     writer has written adopted prebuffer blocks and successfully called
+     `IAudioClient.Start()` on the replacement capture client. Only then may the
+     writer stop prewarm with reason `adoptedIntoCapture`. If pipe creation,
+     writer startup, or live-capture handoff fails first, the deferred session
+     must be stopped with an explicit failure reason such as
+     `captureStartFailed` or `captureWriterFinishedBeforePrewarmHandoff`.
+     This avoids the observed case where `SCRIBER_MIC_ALWAYS_ON=1` still showed
+     a brief Windows microphone privacy-light off/on blink after several idle
+     minutes because the parent command handler stopped prewarm before the new
+     WASAPI client was actually live. The design deliberately favors minimum
+     always-on hotkey latency and privacy-indicator continuity over releasing
+     the idle microphone between recordings. It is still an overlap of two
+     shared WASAPI clients for a short handoff window, not a same-stream
+     transfer.
    - Provider-backed Rust-only evidence on 2026-06-11:
      `tmp\rust-promotion-evidence\rust-only-provider-after-overlap-handoff-provider-confirm-recording-hot-path-1.json`
      passed with Azure MAI provider transcript, `engine=rust-wasapi`,
@@ -1621,7 +1632,10 @@ Risks:
 - A Rust capture crash inside the main Tauri process would take down the shell;
   keep prototype capture isolated in a sidecar until proven.
 - Always-on mic behavior affects user privacy indicators. Do not increase idle
-  mic activation beyond the existing setting.
+  mic activation beyond the existing setting. When that setting is enabled,
+  minimize hotkey latency and keep the privacy indicator continuous across
+  idle-prewarm-to-live-capture handoff; do not reintroduce a fixed prewarm
+  timeout or parent-handler prewarm stop that makes the indicator blink.
 
 ## Current Direction
 

@@ -212,19 +212,28 @@ Packaging and scripts:
   privacy-indicator dropouts are visible in support bundles without increasing
   steady-state log volume. Rust app-prewarm promotion evidence must include
   `recentEvents` lifecycle markers for pre-adoption start and post-resume
-  adoption/resume/restart, not only a final healthy status snapshot. The
-  Rust prewarm path is the app default. When no favorite/non-default mic is
-  selected, keep the request as `devicePreference=default` with no
-  `nativeEndpointIdHash`; the Rust sidecar must open the Windows default WASAPI
-  capture endpoint directly so the visible microphone privacy indicator matches
-  the active device. For selected or favorite microphones, the backend should
-  prefer the private Tauri `audioEndpointInventory` shell IPC response for
-  native endpoint inventory and use Python/PyCAW inventory only as fallback.
-  Active capture, prewarm, and passive Rust probe selection should all use the
-  same Rust/Tauri endpoint hash when available. Non-default Rust capture
-  without a native endpoint hash must fail before first frame; it must not
-  silently use the Windows default endpoint or attach default-device metadata
-  to a resolved favorite.
+  adoption/resume/restart, not only a final healthy status snapshot. Always-on
+  handoff is latency- and privacy-indicator-sensitive: when WASAPI capture
+  adopts non-empty prewarm blocks, do not stop the idle `PrewarmSession` in the
+  parent `captureStart` handler. Transfer that session into the capture writer,
+  write the adopted prebuffer, start the replacement WASAPI `IAudioClient`, and
+  stop prewarm only after `IAudioClient.Start()` succeeds. Early failures must
+  stop the deferred session with explicit reasons such as `captureStartFailed`
+  or `captureWriterFinishedBeforePrewarmHandoff`. This keeps
+  `SCRIBER_MIC_ALWAYS_ON=1` optimized for minimum hotkey latency and prevents a
+  visible Windows microphone privacy-indicator off/on blink between idle
+  prewarm and live capture. The Rust prewarm path is the app default. When no
+  favorite/non-default mic is selected, keep the request as
+  `devicePreference=default` with no `nativeEndpointIdHash`; the Rust sidecar
+  must open the Windows default WASAPI capture endpoint directly so the visible
+  microphone privacy indicator matches the active device. For selected or
+  favorite microphones, the backend should prefer the private Tauri
+  `audioEndpointInventory` shell IPC response for native endpoint inventory and
+  use Python/PyCAW inventory only as fallback. Active capture, prewarm, and
+  passive Rust probe selection should all use the same Rust/Tauri endpoint hash
+  when available. Non-default Rust capture without a native endpoint hash must
+  fail before first frame; it must not silently use the Windows default endpoint
+  or attach default-device metadata to a resolved favorite.
 - The Rust audio frame-pipe protocol is length-prefixed and versioned. Keep the
   Rust and Python header fixtures in sync when changing it.
 - Rust frame-pipe PCM is read into Python for downstream Pipecat/provider

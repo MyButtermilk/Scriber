@@ -238,10 +238,18 @@ Rust audio:
   passed with Azure MAI, `rust-wasapi` / `rust-frame-pipe`, no Python
   fallback, adopted prewarm, no dropped frames, selected Insta360 endpoint hash
   `51112d9ccdd3a140`, and about 126 ms hotkey-to-first-audio. The sidecar now
-  starts the new WASAPI capture before stopping prewarm and exposes
-  `adoptedPrewarm.handoffMode=overlap-capture-start-before-prewarm-stop`, which
-  is the current mitigation for the visible microphone privacy-light off/on
-  gap. This is not yet a true same-stream handoff.
+  overlaps prewarm and active capture for adoption and exposes
+  `adoptedPrewarm.handoffMode=overlap-capture-start-before-prewarm-stop`. On
+  2026-06-29 this was tightened after a visible Always-On-Mic privacy-light
+  blink was still observed following a longer idle period: when adopted WASAPI
+  prebuffer blocks exist, the old `PrewarmSession` is moved into the capture
+  writer and is stopped only after the replacement WASAPI `IAudioClient.Start()`
+  succeeds. Early handoff failures stop the deferred session with explicit
+  reasons (`captureStartFailed` or
+  `captureWriterFinishedBeforePrewarmHandoff`) instead of silently dropping
+  idle prewarm. This is the current mitigation for privacy-light continuity and
+  minimum hotkey latency with `SCRIBER_MIC_ALWAYS_ON=1`; it is not yet a true
+  same-stream handoff.
   The hardware matrix now records native DeviceMonitor refresh evidence without
   forced per-poll refreshes. The aggregate readiness runner can now also start
   that guided physical matrix directly with `-RunMicrophoneHardwareMatrix` and
