@@ -24,7 +24,7 @@ import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/us
 import {
   getFileUploadSnapshot,
   isFileUploadActive,
-  startFileUpload,
+  startFileUploadBatch,
   subscribeFileUpload,
 } from "@/lib/file-upload-store";
 import type {
@@ -281,6 +281,9 @@ export default function FileTranscribe() {
   const uploadProgress = uploadSnapshot.progress;
   const uploadingFileName = uploadSnapshot.fileName;
   const uploadStatusText = uploadSnapshot.statusText;
+  const uploadQueueItems = uploadSnapshot.items;
+  const uploadTotalFiles = uploadSnapshot.totalFiles;
+  const uploadFinishedFiles = uploadSnapshot.completedFiles + uploadSnapshot.failedFiles;
   const queryClient = useQueryClient();
   const getInitialViewMode = () => {
     if (typeof window === "undefined") return "list" as const;
@@ -364,17 +367,36 @@ export default function FileTranscribe() {
     },
   });
 
-  const uploadFile = useCallback(async (file: File) => {
+  const uploadFiles = useCallback(async (files: File[]) => {
+    const selectedFiles = files.filter(Boolean);
+    if (selectedFiles.length === 0) return;
     try {
-      const rec = await startFileUpload(file, {
-        serverProcessingLabel: inferServerProcessingLabel(file, compressionThresholdBytes),
+      const result = await startFileUploadBatch(selectedFiles, {
+        getServerProcessingLabel: (file) => inferServerProcessingLabel(file, compressionThresholdBytes),
       });
 
-      toast({
-        title: "File uploaded",
-        description: "Transcription started...",
-        duration: 3000,
-      });
+      if (result.failures.length > 0) {
+        const firstFailure = result.failures[0];
+        toast({
+          title: result.responses.length > 0 ? "Some uploads failed" : "Upload failed",
+          description:
+            result.responses.length > 0
+              ? `${result.responses.length} started, ${result.failures.length} failed. ${firstFailure.fileName}: ${firstFailure.error}`
+              : `${firstFailure.fileName}: ${firstFailure.error}`,
+          variant: "destructive",
+          duration: 7000,
+        });
+      } else {
+        toast({
+          title: selectedFiles.length === 1 ? "File uploaded" : "Files uploaded",
+          description:
+            selectedFiles.length === 1
+              ? "Transcription started..."
+              : `${result.responses.length} transcriptions started...`,
+          duration: 3000,
+        });
+      }
+
       queryClient.invalidateQueries({
         predicate: (query) =>
           query.queryKey[0] === "/api/transcripts" &&
@@ -384,8 +406,8 @@ export default function FileTranscribe() {
       // Stay out of the user's way if they intentionally switched tabs while
       // the long upload/extraction request was still running.
       const currentPath = typeof window !== "undefined" ? window.location.pathname : location;
-      if (rec?.id && currentPath === "/file") {
-        setLocation(`/transcript/${rec.id}`);
+      if (selectedFiles.length === 1 && result.responses[0]?.id && currentPath === "/file") {
+        setLocation(`/transcript/${result.responses[0].id}`);
       }
     } catch (e: any) {
       toast({
@@ -487,9 +509,9 @@ export default function FileTranscribe() {
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0 && !isFileUploadActive()) {
-      uploadFile(acceptedFiles[0]);
+      uploadFiles(acceptedFiles);
     }
-  }, [uploadFile]);
+  }, [uploadFiles]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -497,7 +519,7 @@ export default function FileTranscribe() {
       "audio/*": [".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac"],
       "video/*": [".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"],
     },
-    multiple: false,
+    multiple: true,
     disabled: isUploading,
   });
 
@@ -538,6 +560,11 @@ export default function FileTranscribe() {
             <>
               <p className="text-lg font-medium">{uploadStatusText || `Uploading ${uploadingFileName}...`}</p>
               <Progress value={uploadProgress} className="h-2 w-48 mx-auto mt-2" />
+              {uploadTotalFiles > 1 && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  {uploadFinishedFiles} of {uploadTotalFiles} files prepared
+                </p>
+              )}
             </>
           ) : (
             <>
@@ -546,6 +573,29 @@ export default function FileTranscribe() {
             </>
           )}
         </div>
+        {isUploading && uploadQueueItems.length > 1 && (
+          <div className="w-full max-w-md space-y-2 text-left">
+            {uploadQueueItems.map((item) => (
+              <div key={item.id} className="flex items-center gap-3 text-xs">
+                <span
+                  className={`h-2 w-2 rounded-full shrink-0 ${
+                    item.status === "failed"
+                      ? "bg-red-500"
+                      : item.status === "completed"
+                      ? "bg-green-500"
+                      : item.status === "queued"
+                      ? "bg-muted-foreground/40"
+                      : "bg-primary"
+                  }`}
+                />
+                <span className="min-w-0 flex-1 truncate text-foreground">{item.fileName}</span>
+                <span className="text-muted-foreground tabular-nums">
+                  {item.status === "queued" ? "Queued" : item.status === "failed" ? "Failed" : `${item.progress}%`}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Processing Queue */}
