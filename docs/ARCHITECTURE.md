@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-06-16
+Last verified: 2026-06-29
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -242,6 +242,19 @@ Soniox is the default STT family: realtime live transcription uses
 `stt-async-v5`. `SCRIBER_SONIOX_RT_MODEL` and
 `SCRIBER_SONIOX_ASYNC_MODEL` remain escape hatches for provider compatibility,
 but older Soniox realtime and async models are not release defaults.
+
+Speaker diarization is enabled where the current backend adapter has both a
+supported provider request flag and a stable speaker-output path. This covers
+Soniox async/direct and Soniox realtime callback formatting, Mistral
+async/direct, Smallest AI async/direct, AssemblyAI async/direct, Gladia
+pre-recorded file/YouTube transcription, Deepgram live result formatting, and
+Speechmatics live speaker formatting. These paths produce anonymous
+`[Speaker n]` labels. True known-speaker name identification is not enabled
+unless Scriber gains a UI/config source for provider-specific known speaker
+names or enrollment identifiers. The current Pipecat OpenAI STT bridge remains
+plain transcription because OpenAI's diarize model is exposed through the
+transcriptions API response format and needs a dedicated full-audio adapter
+rather than a safe factory flag.
 
 The standard sidecar keeps runtime support for the shipped cloud/external
 providers exposed in Settings, but the dependency boundary is explicit. Local

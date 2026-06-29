@@ -153,9 +153,117 @@ except Exception as exc:
 
 # Fallback params object if older pipecat build lacks SonioxInputParams
 class _SonioxParamsFallback:
-    def __init__(self, context=None, vad_enabled=True):
+    def __init__(self, context=None, vad_enabled=True, enable_speaker_diarization=False):
         self.context = context
         self.vad_enabled = vad_enabled
+        self.enable_speaker_diarization = enable_speaker_diarization
+
+
+def _format_speaker_transcript_tokens(tokens: list[dict[str, Any]]) -> str:
+    """Format provider tokens with contiguous speaker labels."""
+    if not tokens:
+        return ""
+
+    segments: list[tuple[str, str]] = []
+    current_speaker: str | None = None
+    current_text: list[str] = []
+
+    for token in tokens:
+        if not isinstance(token, dict):
+            continue
+        text = str(token.get("text") or "")
+        speaker = str(token.get("speaker") or "").strip()
+
+        if speaker and speaker != current_speaker:
+            if current_text and current_speaker:
+                segments.append((current_speaker, "".join(current_text).strip()))
+            current_speaker = speaker
+            current_text = [text]
+        else:
+            current_text.append(text)
+
+    if current_text and current_speaker:
+        segments.append((current_speaker, "".join(current_text).strip()))
+
+    if not segments:
+        return "".join(str(t.get("text") or "") for t in tokens if isinstance(t, dict)).strip()
+
+    return "\n\n".join(
+        f"[Speaker {speaker}]: {text}"
+        for speaker, text in segments
+        if text
+    )
+
+
+def _word_value(word: Any, key: str) -> Any:
+    if isinstance(word, dict):
+        return word.get(key)
+    return getattr(word, key, None)
+
+
+def _format_deepgram_words_with_speakers(words: list[Any]) -> str:
+    speaker_map: dict[str, int] = {}
+    next_speaker = 1
+    blocks: list[tuple[int, list[str]]] = []
+
+    for word in words:
+        speaker_raw = _word_value(word, "speaker")
+        if speaker_raw is None or speaker_raw == "":
+            continue
+        text = str(
+            _word_value(word, "punctuated_word")
+            or _word_value(word, "word")
+            or ""
+        ).strip()
+        if not text:
+            continue
+        speaker_key = str(speaker_raw).strip()
+        speaker_num = speaker_map.get(speaker_key)
+        if speaker_num is None:
+            speaker_num = next_speaker
+            speaker_map[speaker_key] = speaker_num
+            next_speaker += 1
+        if not blocks or blocks[-1][0] != speaker_num:
+            blocks.append((speaker_num, [text]))
+        else:
+            blocks[-1][1].append(text)
+
+    return "\n\n".join(
+        f"[Speaker {speaker_num}]: {' '.join(parts)}"
+        for speaker_num, parts in blocks
+        if parts
+    ).strip()
+
+
+def _diarized_text_from_frame_result(result: Any) -> str:
+    if isinstance(result, list):
+        tokens = [token for token in result if isinstance(token, dict)]
+        if tokens and any(token.get("speaker") for token in tokens):
+            return _format_speaker_transcript_tokens(tokens)
+        return ""
+
+    channel = getattr(result, "channel", None)
+    alternatives = getattr(channel, "alternatives", None)
+    if alternatives:
+        alternative = alternatives[0]
+        words = getattr(alternative, "words", None)
+        if words:
+            formatted = _format_deepgram_words_with_speakers(list(words))
+            if formatted:
+                return formatted
+
+    if isinstance(result, dict):
+        channel_payload = result.get("channel")
+        if isinstance(channel_payload, dict):
+            alternatives_payload = channel_payload.get("alternatives")
+            if isinstance(alternatives_payload, list) and alternatives_payload:
+                alternative = alternatives_payload[0]
+                if isinstance(alternative, dict):
+                    words = alternative.get("words")
+                    if isinstance(words, list):
+                        return _format_deepgram_words_with_speakers(words)
+
+    return ""
 
 
 class SonioxAsyncProcessor(FrameProcessor):
@@ -383,7 +491,15 @@ class SonioxAsyncProcessor(FrameProcessor):
             ) as r3:
                 r3.raise_for_status()
                 transcript_payload = await r3.json()
-                text = transcript_payload.get("text", "")
+                tokens = transcript_payload.get("tokens")
+                token_list = tokens if isinstance(tokens, list) else []
+                text = ""
+                if self.enable_speaker_diarization and token_list:
+                    text = _format_speaker_transcript_tokens(
+                        [token for token in token_list if isinstance(token, dict)]
+                    )
+                if not text:
+                    text = transcript_payload.get("text", "")
                 if text:
                     logger.info(f"Soniox async transcription completed ({len(text)} chars)")
                 self._report_progress("Completed")
@@ -825,8 +941,9 @@ class TranscriptionCallbackProcessor(FrameProcessor):
                     if frame.text:
                         cb(frame.text, False)
                 elif isinstance(frame, TranscriptionFrame):
-                    if frame.text:
-                        cb(frame.text, True)
+                    text = _diarized_text_from_frame_result(frame.result) or frame.text
+                    if text:
+                        cb(text, True)
             except Exception as e:
                 logger.error(f"TranscriptionCallback error: {e}")
 
@@ -1033,15 +1150,13 @@ class ScriberPipeline:
             use_async = self.service_name == "soniox_async" or Config.SONIOX_MODE == "async"
             if use_async:
                 logger.info("Using Soniox async transcription mode")
-                # Note: speaker diarization is NOT enabled for live mic (async mode)
-                # It's only enabled for file/youtube transcription
                 return SonioxAsyncProcessor(
                     api_key=_get_api_key("soniox"),
                     custom_vocab=Config.CUSTOM_VOCAB,
                     model=Config.SONIOX_ASYNC_MODEL,
                     session=session,
                     on_progress=self.on_progress,
-                    enable_speaker_diarization=False,  # Disabled for live mic
+                    enable_speaker_diarization=True,
                 )
             soniox_service_cls, soniox_input_params_cls, soniox_context_cls = _load_soniox_realtime_classes()
             if not soniox_service_cls: raise RuntimeError("SonioxSTTService not available.")
@@ -1057,11 +1172,27 @@ class ScriberPipeline:
                         model=rt_model,
                         context=soniox_context_cls(terms=terms),
                         language_hints=[lang_hint] if lang_hint else None,
-                    ) if soniox_input_params_cls else _SonioxParamsFallback(context=soniox_context_cls(terms=terms))
+                        enable_speaker_diarization=True,
+                    ) if soniox_input_params_cls else _SonioxParamsFallback(
+                        context=soniox_context_cls(terms=terms),
+                        enable_speaker_diarization=True,
+                    )
                 else:
-                    params = soniox_input_params_cls(model=rt_model, language_hints=[lang_hint] if lang_hint else None) if soniox_input_params_cls else _SonioxParamsFallback()
+                    params = soniox_input_params_cls(
+                        model=rt_model,
+                        language_hints=[lang_hint] if lang_hint else None,
+                        enable_speaker_diarization=True,
+                    ) if soniox_input_params_cls else _SonioxParamsFallback(
+                        enable_speaker_diarization=True,
+                    )
             else:
-                params = soniox_input_params_cls(model=rt_model, language_hints=[lang_hint] if lang_hint else None) if soniox_input_params_cls else _SonioxParamsFallback()
+                params = soniox_input_params_cls(
+                    model=rt_model,
+                    language_hints=[lang_hint] if lang_hint else None,
+                    enable_speaker_diarization=True,
+                ) if soniox_input_params_cls else _SonioxParamsFallback(
+                    enable_speaker_diarization=True,
+                )
             # vad_force_turn_endpoint=True disables automatic endpoint detection which would
             # otherwise close the WebSocket connection when speech pauses are detected.
             # This keeps the connection alive for the entire recording session.
@@ -1081,6 +1212,7 @@ class ScriberPipeline:
                     custom_vocab=Config.CUSTOM_VOCAB,
                     session=session,
                     on_progress=self.on_progress,
+                    diarize=True,
                 )
 
             logger.info("Using Mistral realtime transcription mode")
@@ -1103,7 +1235,7 @@ class ScriberPipeline:
                     language=Config.LANGUAGE,
                     session=session,
                     on_progress=self.on_progress,
-                    diarize=False,
+                    diarize=True,
                 )
 
             logger.info("Using Smallest AI Pulse realtime transcription mode")
@@ -1125,7 +1257,7 @@ class ScriberPipeline:
                 custom_vocab=Config.CUSTOM_VOCAB,
                 session=session,
                 on_progress=self.on_progress,
-                speaker_labels=False,  # Live mic: no diarization
+                speaker_labels=True,
             )
         
         elif self.service_name == "google":
@@ -1155,7 +1287,9 @@ class ScriberPipeline:
             module = import_provider_runtime_module("deepgram", "pipecat.services.deepgram.stt")
             DeepgramSTTService = module.DeepgramSTTService
             if not _get_api_key("deepgram"): raise ValueError("Deepgram API Key is missing.")
-            return DeepgramSTTService(api_key=_get_api_key("deepgram"))
+            LiveOptions = getattr(module, "LiveOptions", None)
+            live_options = LiveOptions(diarize=True) if LiveOptions else None
+            return DeepgramSTTService(api_key=_get_api_key("deepgram"), live_options=live_options)
         
         elif self.service_name == "openai":
             # Lazy import - only loaded when OpenAI is used
@@ -1201,7 +1335,17 @@ class ScriberPipeline:
             module = import_provider_runtime_module("speechmatics", "pipecat.services.speechmatics.stt")
             SpeechmaticsSTTService = module.SpeechmaticsSTTService
             if not _get_api_key("speechmatics"): raise ValueError("Speechmatics API Key is missing.")
-            return SpeechmaticsSTTService(api_key=_get_api_key("speechmatics"))
+            params_cls = getattr(SpeechmaticsSTTService, "InputParams", None)
+            params = (
+                params_cls(
+                    enable_diarization=True,
+                    speaker_active_format="[Speaker {speaker_id}]: {text}",
+                    speaker_passive_format="[Speaker {speaker_id}]: {text}",
+                )
+                if params_cls
+                else None
+            )
+            return SpeechmaticsSTTService(api_key=_get_api_key("speechmatics"), params=params)
         
         elif self.service_name == "onnx_local":
             from src.onnx_local_service import OnnxLocalBufferedSTTService, OnnxLocalSTTService
@@ -1479,41 +1623,9 @@ class ScriberPipeline:
         Returns:
             Formatted transcript string with speaker labels
         """
-        if not tokens:
-            return ""
-        
-        segments = []
-        current_speaker = None
-        current_text = []
-        
-        for token in tokens:
-            text = token.get("text", "")
-            speaker = token.get("speaker", "")
-            
-            if speaker and speaker != current_speaker:
-                # Save previous segment
-                if current_text and current_speaker:
-                    segments.append((current_speaker, "".join(current_text).strip()))
-                current_speaker = speaker
-                current_text = [text]
-            else:
-                current_text.append(text)
-        
-        # Don't forget last segment
-        if current_text and current_speaker:
-            segments.append((current_speaker, "".join(current_text).strip()))
-        
-        # Format with speaker labels
-        if not segments:
-            # Fallback: just concatenate all text
-            return "".join(t.get("text", "") for t in tokens).strip()
-        
-        lines = []
-        for speaker, text in segments:
-            if text:
-                lines.append(f"[Speaker {speaker}]: {text}")
-        
-        return "\n\n".join(lines)
+        return _format_speaker_transcript_tokens(
+            [token for token in tokens if isinstance(token, dict)]
+        )
 
     async def transcribe_file_direct(self, file_path: str) -> None:
         """

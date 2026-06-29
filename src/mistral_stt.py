@@ -311,6 +311,7 @@ class MistralAsyncProcessor(FrameProcessor):
         custom_vocab: str = "",
         session: aiohttp.ClientSession | None = None,
         on_progress: Optional[Callable[[str], None]] = None,
+        diarize: bool = False,
     ):
         super().__init__()
         self._api_key = api_key
@@ -319,6 +320,7 @@ class MistralAsyncProcessor(FrameProcessor):
         self._context_bias = _custom_vocab_to_context_bias(custom_vocab)
         self._session = session
         self._on_progress = on_progress
+        self._diarize = bool(diarize)
         self._buffer = self._create_buffer()
         self._buffer_size = 0
         self._sample_rate = 16000
@@ -364,7 +366,8 @@ class MistralAsyncProcessor(FrameProcessor):
                 content_type="audio/wav",
                 language=language,
                 context_bias=self._context_bias,
-                diarize=False,
+                diarize=self._diarize,
+                timestamp_granularities=["segment"] if self._diarize else None,
                 timeout_secs=240,
             )
 
@@ -374,6 +377,14 @@ class MistralAsyncProcessor(FrameProcessor):
             async with aiohttp.ClientSession() as session:
                 payload = await _transcribe(session)
 
+        if self._diarize:
+            segments = payload.get("segments")
+            if isinstance(segments, list):
+                diarized = format_mistral_segments_with_speakers(
+                    [segment for segment in segments if isinstance(segment, dict)]
+                )
+                if diarized:
+                    return diarized
         return _extract_text(payload)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):

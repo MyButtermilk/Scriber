@@ -100,7 +100,7 @@ path.
 Typical output:
 
 ```text
-Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.2.0_x64-setup.exe
+Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.3.0_x64-setup.exe
 ```
 
 Broader local installed workflow smoke:
