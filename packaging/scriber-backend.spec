@@ -87,6 +87,8 @@ try:
 except Exception:
     pass
 
+datas = exclude_datas(datas, ("tzdata",))
+
 a = Analysis(
     [str(repo_root / "src" / "backend_worker.py")],
     pathex=[str(repo_root)],
@@ -114,6 +116,7 @@ a = Analysis(
         "pyarrow",
         "fsspec",
         "sqlalchemy",
+        "tzdata",
         "onnx",
         "numba",
         "llvmlite",

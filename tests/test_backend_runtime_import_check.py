@@ -137,6 +137,8 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"numba",' in spec
     assert '"llvmlite",' in spec
     assert '"scipy",' in spec.split("excludes=[", 1)[1]
+    assert '"tzdata",' in spec.split("excludes=[", 1)[1]
+    assert 'exclude_datas(datas, ("tzdata",))' in spec
     assert '"PIL.AvifImagePlugin",' in spec.split("excludes=[", 1)[1]
     assert '"PIL._avif",' in spec.split("excludes=[", 1)[1]
     hiddenimports_block = spec.split("hiddenimports = [", 1)[1].split("]", 1)[0]
