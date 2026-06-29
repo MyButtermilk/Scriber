@@ -671,6 +671,10 @@ struct PrewarmSession {
     started_at: Instant,
     buffer: Arc<Mutex<PrewarmBuffer>>,
     block_size: u32,
+    native_endpoint_id_hash: Value,
+    endpoint_selection: Value,
+    mix_format_payload: Value,
+    resampler_payload: Value,
 }
 
 impl PrewarmSession {
@@ -687,6 +691,10 @@ impl PrewarmSession {
             audio_frame_count: (blocks.len() as u64).saturating_mul(u64::from(self.block_size)),
             payload_bytes,
             blocks,
+            native_endpoint_id_hash: self.native_endpoint_id_hash.clone(),
+            endpoint_selection: self.endpoint_selection.clone(),
+            mix_format_payload: self.mix_format_payload.clone(),
+            resampler_payload: self.resampler_payload.clone(),
         }
     }
 
@@ -762,6 +770,10 @@ struct AdoptedPrewarm {
     audio_frame_count: u64,
     payload_bytes: u64,
     blocks: Vec<Vec<u8>>,
+    native_endpoint_id_hash: Value,
+    endpoint_selection: Value,
+    mix_format_payload: Value,
+    resampler_payload: Value,
 }
 
 impl AdoptedPrewarm {
@@ -774,6 +786,10 @@ impl AdoptedPrewarm {
             "payloadBytes": self.payload_bytes,
             "adopted": self.block_count > 0,
             "stop": stop_payload,
+            "nativeEndpointIdHash": self.native_endpoint_id_hash.clone(),
+            "endpointSelection": self.endpoint_selection.clone(),
+            "mixFormat": self.mix_format_payload.clone(),
+            "resampler": self.resampler_payload.clone(),
         })
     }
 }
@@ -903,6 +919,7 @@ fn start_wasapi_capture_impl(
         .as_ref()
         .map(|(adopted, _)| adopted.blocks.clone())
         .unwrap_or_default();
+    let defer_wasapi_ready = !adopted_blocks.is_empty();
     let join_handle = thread::Builder::new()
         .name("scriber-audio-wasapi-frame-pipe".to_string())
         .spawn(move || {
@@ -913,6 +930,7 @@ fn start_wasapi_capture_impl(
                 stop_rx,
                 ready_tx,
                 adopted_blocks,
+                defer_wasapi_ready,
             )
         })
         .map_err(|err| {
@@ -921,6 +939,25 @@ fn start_wasapi_capture_impl(
             }
             format!("WASAPI frame-pipe writer thread spawn failed: {err}")
         })?;
+
+    if defer_wasapi_ready {
+        let session = CaptureSession {
+            stream_id: stream_id.clone(),
+            source: "wasapi-capture",
+            stop_tx,
+            join_handle: Some(join_handle),
+            started_at: Instant::now(),
+        };
+        let payload = wasapi_capture_payload(
+            &stream_id,
+            &pipe_path,
+            &request,
+            adopted_prewarm.as_ref(),
+            None,
+            true,
+        );
+        return Ok((session, payload));
+    }
 
     let ready = match ready_rx.recv_timeout(Duration::from_secs(3)) {
         Ok(Ok(ready)) => ready,
@@ -943,7 +980,84 @@ fn start_wasapi_capture_impl(
         join_handle: Some(join_handle),
         started_at: Instant::now(),
     };
-    let payload = json!({
+    let payload = wasapi_capture_payload(
+        &stream_id,
+        &pipe_path,
+        &request,
+        adopted_prewarm.as_ref(),
+        Some(ready),
+        false,
+    );
+    Ok((session, payload))
+}
+
+#[cfg(not(windows))]
+fn start_wasapi_capture_impl(
+    _request: CaptureRequest,
+    _adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
+) -> Result<(CaptureSession, Value), String> {
+    Err("WASAPI capture is only implemented on Windows".to_string())
+}
+
+#[cfg(windows)]
+fn wasapi_capture_payload(
+    stream_id: &str,
+    pipe_path: &str,
+    request: &CaptureRequest,
+    adopted_prewarm: Option<&(AdoptedPrewarm, Value)>,
+    ready: Option<WasapiReady>,
+    wasapi_ready_deferred: bool,
+) -> Value {
+    let (native_endpoint_id_hash, endpoint_selection, mix_format, resampler) =
+        if let Some(ready) = ready {
+            let resampler = json!({
+                "sourceSampleRate": ready.mix_format.sample_rate,
+                "targetSampleRate": request.sample_rate,
+                "sourceChannels": ready.mix_format.channels,
+                "targetChannels": request.channels,
+                "method": "nearest",
+            });
+            (
+                ready.endpoint_id_hash,
+                ready.endpoint_selection,
+                ready.mix_format.to_payload(),
+                resampler,
+            )
+        } else {
+            let adopted = adopted_prewarm.map(|(adopted, _)| adopted);
+            let requested_endpoint = if request.native_endpoint_id_hash.trim().is_empty() {
+                Value::Null
+            } else {
+                Value::String(request.native_endpoint_id_hash.clone())
+            };
+            let native_endpoint = adopted
+                .map(|adopted| adopted.native_endpoint_id_hash.clone())
+                .filter(|value| !value.is_null())
+                .unwrap_or_else(|| requested_endpoint.clone());
+            let endpoint_selection = adopted
+                .map(|adopted| adopted.endpoint_selection.clone())
+                .filter(|value| !value.is_null())
+                .unwrap_or_else(|| {
+                    endpoint_selection_payload(
+                        request,
+                        native_endpoint.clone(),
+                        "deferredUntilCaptureReady",
+                        is_default_device_preference(&request.device_preference),
+                        Value::String("wasapiReadyDeferredUntilLiveCapture".to_string()),
+                    )
+                });
+            let mix_format = adopted
+                .map(|adopted| adopted.mix_format_payload.clone())
+                .filter(|value| !value.is_null())
+                .unwrap_or(Value::Null);
+            let resampler = adopted
+                .map(|adopted| adopted.resampler_payload.clone())
+                .filter(|value| !value.is_null())
+                .unwrap_or(Value::Null);
+            (native_endpoint, endpoint_selection, mix_format, resampler)
+        };
+
+    json!({
         "sidecar": SIDECAR_NAME,
         "captureAvailable": true,
         "wasapiCapture": true,
@@ -955,29 +1069,16 @@ fn start_wasapi_capture_impl(
         "channels": request.channels,
         "captureChannels": request.channels,
         "sampleFormat": "pcm_i16_le",
-        "nativeEndpointIdHash": ready.endpoint_id_hash,
-        "adoptedPrewarm": adopted_prewarm_payload(adopted_prewarm.as_ref()),
-        "endpointSelection": ready.endpoint_selection,
+        "nativeEndpointIdHash": native_endpoint_id_hash,
+        "adoptedPrewarm": adopted_prewarm_payload(adopted_prewarm),
+        "endpointSelection": endpoint_selection,
         "requestedFormat": request.to_payload(),
         "audioFrameProtocol": audio_frame_protocol_payload(),
-        "mixFormat": ready.mix_format.to_payload(),
-        "resampler": {
-            "sourceSampleRate": ready.mix_format.sample_rate,
-            "targetSampleRate": request.sample_rate,
-            "sourceChannels": ready.mix_format.channels,
-            "targetChannels": request.channels,
-            "method": "nearest",
-        },
-    });
-    Ok((session, payload))
-}
-
-#[cfg(not(windows))]
-fn start_wasapi_capture_impl(
-    _request: CaptureRequest,
-    _adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
-) -> Result<(CaptureSession, Value), String> {
-    Err("WASAPI capture is only implemented on Windows".to_string())
+        "mixFormat": mix_format,
+        "resampler": resampler,
+        "wasapiReadyDeferred": wasapi_ready_deferred,
+        "firstFramesFromAdoptedPrewarm": wasapi_ready_deferred,
+    })
 }
 
 #[cfg(windows)]
@@ -1184,6 +1285,13 @@ fn start_synthetic_prewarm_impl(
         .spawn(move || run_synthetic_prewarm_worker(worker_request, stop_rx, worker_buffer))
         .map_err(|err| format!("synthetic prewarm worker thread spawn failed: {err}"))?;
 
+    let endpoint_selection = endpoint_selection_payload(
+        &request,
+        Value::Null,
+        "synthetic",
+        false,
+        Value::String("syntheticPrewarmHasNoNativeEndpoint".to_string()),
+    );
     let session = PrewarmSession {
         prewarm_id: prewarm_id.clone(),
         source: "synthetic-prewarm",
@@ -1192,6 +1300,10 @@ fn start_synthetic_prewarm_impl(
         started_at: Instant::now(),
         buffer,
         block_size: request.block_size,
+        native_endpoint_id_hash: Value::Null,
+        endpoint_selection: endpoint_selection.clone(),
+        mix_format_payload: Value::Null,
+        resampler_payload: Value::Null,
     };
     let payload = json!({
         "sidecar": SIDECAR_NAME,
@@ -1205,13 +1317,7 @@ fn start_synthetic_prewarm_impl(
         "captureChannels": request.channels,
         "sampleFormat": "pcm_i16_le",
         "nativeEndpointIdHash": Value::Null,
-        "endpointSelection": endpoint_selection_payload(
-            &request,
-            Value::Null,
-            "synthetic",
-            false,
-            Value::String("syntheticPrewarmHasNoNativeEndpoint".to_string()),
-        ),
+        "endpointSelection": endpoint_selection,
         "requestedFormat": request.to_payload(),
         "audioFrameProtocol": audio_frame_protocol_payload(),
         "prebufferFrameTarget": requested_prebuffer_frame_count(&request),
@@ -1248,6 +1354,16 @@ fn start_wasapi_prewarm_impl(request: CaptureRequest) -> Result<(PrewarmSession,
         }
     };
 
+    let ready_endpoint_id_hash = ready.endpoint_id_hash.clone();
+    let ready_endpoint_selection = ready.endpoint_selection.clone();
+    let ready_mix_format = ready.mix_format.to_payload();
+    let ready_resampler = json!({
+        "sourceSampleRate": ready.mix_format.sample_rate,
+        "targetSampleRate": request.sample_rate,
+        "sourceChannels": ready.mix_format.channels,
+        "targetChannels": request.channels,
+        "method": "nearest",
+    });
     let session = PrewarmSession {
         prewarm_id: prewarm_id.clone(),
         source: "wasapi-prewarm",
@@ -1256,6 +1372,10 @@ fn start_wasapi_prewarm_impl(request: CaptureRequest) -> Result<(PrewarmSession,
         started_at: Instant::now(),
         buffer,
         block_size: request.block_size,
+        native_endpoint_id_hash: ready_endpoint_id_hash.clone(),
+        endpoint_selection: ready_endpoint_selection.clone(),
+        mix_format_payload: ready_mix_format.clone(),
+        resampler_payload: ready_resampler.clone(),
     };
     let payload = json!({
         "sidecar": SIDECAR_NAME,
@@ -1268,19 +1388,13 @@ fn start_wasapi_prewarm_impl(request: CaptureRequest) -> Result<(PrewarmSession,
         "channels": request.channels,
         "captureChannels": request.channels,
         "sampleFormat": "pcm_i16_le",
-        "nativeEndpointIdHash": ready.endpoint_id_hash,
-        "endpointSelection": ready.endpoint_selection,
+        "nativeEndpointIdHash": ready_endpoint_id_hash,
+        "endpointSelection": ready_endpoint_selection,
         "requestedFormat": request.to_payload(),
         "audioFrameProtocol": audio_frame_protocol_payload(),
         "prebufferFrameTarget": requested_prebuffer_frame_count(&request),
-        "mixFormat": ready.mix_format.to_payload(),
-        "resampler": {
-            "sourceSampleRate": ready.mix_format.sample_rate,
-            "targetSampleRate": request.sample_rate,
-            "sourceChannels": ready.mix_format.channels,
-            "targetChannels": request.channels,
-            "method": "nearest",
-        },
+        "mixFormat": ready_mix_format,
+        "resampler": ready_resampler,
     });
     Ok((session, payload))
 }
@@ -1516,6 +1630,7 @@ fn run_wasapi_capture_writer(
     stop_rx: mpsc::Receiver<()>,
     ready_tx: Sender<Result<WasapiReady, String>>,
     adopted_prebuffer_blocks: Vec<Vec<u8>>,
+    defer_ready_until_after_pipe: bool,
 ) -> CaptureWriterStats {
     let mut stats = CaptureWriterStats::default();
     let mut ready_sent = false;
@@ -1529,6 +1644,7 @@ fn run_wasapi_capture_writer(
         &mut stats,
         started,
         adopted_prebuffer_blocks,
+        defer_ready_until_after_pipe,
     );
     if let Err(err) = result {
         if !ready_sent {
@@ -1672,7 +1788,26 @@ fn run_wasapi_capture_writer_inner(
     stats: &mut CaptureWriterStats,
     started: Instant,
     adopted_prebuffer_blocks: Vec<Vec<u8>>,
+    defer_ready_until_after_pipe: bool,
 ) -> Result<(), String> {
+    let mut sequence = 0_u64;
+    if defer_ready_until_after_pipe {
+        wait_for_pipe_client(pipe_handle, stop_rx)?;
+        stats.connected = true;
+        write_adopted_prebuffer_blocks(
+            pipe_handle,
+            request,
+            &adopted_prebuffer_blocks,
+            started,
+            &mut sequence,
+            stats,
+        )?;
+        match stop_rx.try_recv() {
+            Ok(()) | Err(TryRecvError::Disconnected) => return Ok(()),
+            Err(TryRecvError::Empty) => {}
+        }
+    }
+
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
         .ok()
         .map_err(|err| format!("COM initialization failed for WASAPI capture: {err}"))?;
@@ -1709,26 +1844,32 @@ fn run_wasapi_capture_writer_inner(
 
         unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
         let capture_result = (|| -> Result<(), String> {
-            ready_tx
-                .send(Ok(WasapiReady {
-                    endpoint_id_hash,
-                    endpoint_selection: selected.endpoint_selection,
-                    mix_format: mix_format.clone(),
-                }))
-                .map_err(|err| format!("could not report WASAPI readiness: {err}"))?;
+            let ready = Ok(WasapiReady {
+                endpoint_id_hash,
+                endpoint_selection: selected.endpoint_selection,
+                mix_format: mix_format.clone(),
+            });
+            if defer_ready_until_after_pipe {
+                let _ = ready_tx.send(ready);
+            } else {
+                ready_tx
+                    .send(ready)
+                    .map_err(|err| format!("could not report WASAPI readiness: {err}"))?;
+            }
             *ready_sent = true;
 
-            wait_for_pipe_client(pipe_handle, stop_rx)?;
-            stats.connected = true;
-            let mut sequence = 0_u64;
-            write_adopted_prebuffer_blocks(
-                pipe_handle,
-                request,
-                &adopted_prebuffer_blocks,
-                started,
-                &mut sequence,
-                stats,
-            )?;
+            if !defer_ready_until_after_pipe {
+                wait_for_pipe_client(pipe_handle, stop_rx)?;
+                stats.connected = true;
+                write_adopted_prebuffer_blocks(
+                    pipe_handle,
+                    request,
+                    &adopted_prebuffer_blocks,
+                    started,
+                    &mut sequence,
+                    stats,
+                )?;
+            }
             pump_wasapi_capture(
                 pipe_handle,
                 request,
@@ -2709,6 +2850,70 @@ mod tests {
                 .unwrap_or_default()
                 >= 1
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wasapi_capture_payload_can_defer_ready_for_adopted_prewarm() {
+        let request = CaptureRequest {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size: 16,
+            device_preference: "default".to_string(),
+            port_audio_label: "".to_string(),
+            native_endpoint_id_hash: "".to_string(),
+            prebuffer_ms: 400,
+            prewarm_id: "prewarm-1".to_string(),
+        };
+        let adopted = AdoptedPrewarm {
+            prewarm_id: "prewarm-1".to_string(),
+            source: "wasapi-prewarm",
+            block_count: 1,
+            audio_frame_count: 16,
+            payload_bytes: 32,
+            blocks: vec![vec![0; 32]],
+            native_endpoint_id_hash: Value::String("prewarm-endpoint-hash".to_string()),
+            endpoint_selection: json!({
+                "mode": "default",
+                "selectedNativeEndpointIdHash": "prewarm-endpoint-hash",
+                "usedDefaultEndpoint": true,
+            }),
+            mix_format_payload: json!({
+                "sampleRate": 48_000,
+                "channels": 2,
+            }),
+            resampler_payload: json!({
+                "sourceSampleRate": 48_000,
+                "targetSampleRate": 16_000,
+                "sourceChannels": 2,
+                "targetChannels": 1,
+                "method": "nearest",
+            }),
+        };
+        let stop_payload = json!({
+            "stopped": false,
+            "reason": "pendingCaptureReady",
+        });
+
+        let payload = wasapi_capture_payload(
+            "stream-1",
+            r"\\.\pipe\scriber-audio-test",
+            &request,
+            Some(&(adopted, stop_payload)),
+            None,
+            true,
+        );
+
+        assert_eq!(payload["captureAvailable"], true);
+        assert_eq!(payload["wasapiCapture"], true);
+        assert_eq!(payload["wasapiReadyDeferred"], true);
+        assert_eq!(payload["firstFramesFromAdoptedPrewarm"], true);
+        assert_eq!(payload["nativeEndpointIdHash"], "prewarm-endpoint-hash");
+        assert_eq!(payload["adoptedPrewarm"]["adopted"], true);
+        assert_eq!(payload["adoptedPrewarm"]["blocks"], 1);
+        assert_eq!(payload["endpointSelection"]["mode"], "default");
+        assert_eq!(payload["mixFormat"]["sampleRate"], 48_000);
+        assert_eq!(payload["resampler"]["sourceSampleRate"], 48_000);
     }
 
     #[test]
