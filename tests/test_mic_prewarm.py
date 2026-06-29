@@ -112,6 +112,83 @@ def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch)
     assert "prewarm-1" not in str(snapshot)
 
 
+def test_rust_audio_prewarm_manager_adopts_temporary_session_without_always_on(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
+    monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
+    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
+    monkeypatch.setattr(Config, "MIC_PREBUFFER_MS", 400, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            return {
+                "success": True,
+                "payload": {
+                    "prewarmId": "prewarm-temporary",
+                    "source": "wasapi-prewarm",
+                },
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+
+    assert manager.start_if_enabled(temporary=True) is True
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["active"] is True
+    assert snapshot["configured"] is False
+    assert snapshot["temporaryIdlePrewarm"] is True
+
+    adopted = manager.attach_active_capture(
+        None,
+        sample_rate=16000,
+        target_channels=1,
+        block_size=160,
+        device="default",
+    )
+
+    assert adopted is not None
+    assert adopted["prewarmId"] == "prewarm-temporary"
+    assert manager.is_active is False
+    assert [command for command, _payload in commands] == ["audioPrewarmStart"]
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["temporaryIdlePrewarm"] is False
+    assert snapshot["adoptionCount"] == 1
+    assert "prewarm-temporary" not in str(snapshot)
+
+
+def test_rust_audio_prewarm_manager_rejects_non_temporary_session_without_always_on(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", False, raising=False)
+    manager = RustAudioPrewarmManager(shell_call=lambda *_args, **_kwargs: {})
+    with manager._lock:
+        manager._prewarm_id = "prewarm-stale"
+        manager._stream_signature = {
+            "sample_rate": 16000,
+            "target_channels": 1,
+            "block_size": 160,
+        }
+        manager._temporary_idle_prewarm = False
+
+    assert manager.attach_active_capture(
+        None,
+        sample_rate=16000,
+        target_channels=1,
+        block_size=160,
+        device="default",
+    ) is None
+
+
 def test_rust_audio_prewarm_start_if_enabled_stops_disabled_paused_session(monkeypatch):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", False, raising=False)
     commands: list[tuple[str, dict]] = []

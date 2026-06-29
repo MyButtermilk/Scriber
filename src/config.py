@@ -86,6 +86,10 @@ class Config:
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
     FAVORITE_MIC = os.getenv("SCRIBER_FAVORITE_MIC", "")  # Preferred mic - used when available
     MIC_ALWAYS_ON = os.getenv("SCRIBER_MIC_ALWAYS_ON", "0") in ("1", "true", "True")
+    MIC_POST_RECORDING_PREWARM_SECONDS = max(
+        0.0,
+        min(600.0, float(os.getenv("SCRIBER_MIC_POST_RECORDING_PREWARM_SECONDS", "120") or 120)),
+    )
     MIC_BLOCK_SIZE = max(128, min(4096, int(os.getenv("SCRIBER_MIC_BLOCK_SIZE", "512"))))
     MIC_PREBUFFER_MS = max(0, min(2000, int(os.getenv("SCRIBER_MIC_PREBUFFER_MS", "400"))))
     # Text injection method:
@@ -287,6 +291,12 @@ Input:"""
         os.environ["SCRIBER_MIC_ALWAYS_ON"] = "1" if enabled else "0"
 
     @classmethod
+    def set_mic_post_recording_prewarm_seconds(cls, seconds: float) -> None:
+        value = max(0.0, min(600.0, float(seconds)))
+        cls.MIC_POST_RECORDING_PREWARM_SECONDS = value
+        os.environ["SCRIBER_MIC_POST_RECORDING_PREWARM_SECONDS"] = f"{value:g}"
+
+    @classmethod
     def set_visualizer_bar_count(cls, count: int) -> None:
         cls.VISUALIZER_BAR_COUNT = max(16, min(128, int(count)))
         os.environ["SCRIBER_VISUALIZER_BAR_COUNT"] = str(cls.VISUALIZER_BAR_COUNT)
@@ -363,6 +373,10 @@ Input:"""
         
         add("SCRIBER_FAVORITE_MIC", cls.FAVORITE_MIC or "")
         add("SCRIBER_MIC_ALWAYS_ON", "1" if cls.MIC_ALWAYS_ON else "0")
+        add(
+            "SCRIBER_MIC_POST_RECORDING_PREWARM_SECONDS",
+            f"{cls.MIC_POST_RECORDING_PREWARM_SECONDS:g}",
+        )
         add("SCRIBER_MIC_BLOCK_SIZE", str(cls.MIC_BLOCK_SIZE))
         add("SCRIBER_MIC_PREBUFFER_MS", str(cls.MIC_PREBUFFER_MS))
         add("SCRIBER_INJECT_METHOD", cls.INJECT_METHOD)

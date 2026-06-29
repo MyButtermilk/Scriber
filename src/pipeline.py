@@ -1280,6 +1280,12 @@ class ScriberPipeline:
                     if not vad_analyzer:
                         logger.warning("VAD analyzer required but not available; transcripts may not finalize properly.")
 
+                prewarm_active = bool(
+                    self.mic_prewarm_manager is not None
+                    and getattr(self.mic_prewarm_manager, "is_active", False)
+                )
+                use_prewarm_for_capture = bool(Config.MIC_ALWAYS_ON or prewarm_active)
+
                 # Always use our custom MicrophoneInput to support on_audio_level callback
                 self.audio_input = MicrophoneInput(
                     sample_rate=Config.SAMPLE_RATE,
@@ -1288,7 +1294,7 @@ class ScriberPipeline:
                     turn_analyzer=smart_turn,
                     vad_analyzer=vad_analyzer,
                     device=_resolve_mic_device(Config.MIC_DEVICE),
-                    keep_alive=Config.MIC_ALWAYS_ON,
+                    keep_alive=use_prewarm_for_capture,
                     prewarm_manager=self.mic_prewarm_manager,
                     on_audio_level=self.on_audio_level,
                     on_ready=self.on_mic_ready,

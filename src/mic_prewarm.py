@@ -143,6 +143,7 @@ class RustAudioPrewarmManager:
         self._prewarm_id = ""
         self._prewarm_payload: dict[str, Any] = {}
         self._stream_signature: dict[str, Any] = {}
+        self._temporary_idle_prewarm = False
         self._paused_for_active_capture = False
         self._paused_for_device_refresh = False
         self._active_capture_attached = False
@@ -198,6 +199,7 @@ class RustAudioPrewarmManager:
                 "configured": bool(Config.MIC_ALWAYS_ON),
                 "engine": self.engine,
                 "active": bool(self._prewarm_id),
+                "temporaryIdlePrewarm": bool(self._temporary_idle_prewarm),
                 "hasStream": bool(self._prewarm_id),
                 "prewarmIdHash": self._hash_hint(self._prewarm_id),
                 "activeCaptureAttached": self._active_capture_attached,
@@ -333,20 +335,21 @@ class RustAudioPrewarmManager:
         self._last_error_log_at = now
         logger.warning(f"Rust mic prewarm could not start: {exc}")
 
-    def start_if_enabled(self) -> bool:
-        if not Config.MIC_ALWAYS_ON:
+    def start_if_enabled(self, *, temporary: bool = False) -> bool:
+        if not Config.MIC_ALWAYS_ON and not temporary:
             self.stop(reason="disabled")
             return False
         with self._lock:
             if self._paused_for_active_capture or self._paused_for_device_refresh:
                 return False
-        return self.start()
+        return self.start(temporary=temporary)
 
-    def start(self) -> bool:
+    def start(self, *, temporary: bool = False) -> bool:
         with self._lock:
             if self._paused_for_active_capture or self._paused_for_device_refresh:
                 return False
             if self._prewarm_id:
+                self._temporary_idle_prewarm = bool(temporary and not Config.MIC_ALWAYS_ON)
                 return True
             active_resume_started_at = self._pending_active_capture_resume_attempt_at
             active_resume_detach_at = self._last_active_capture_detach_at
@@ -378,7 +381,7 @@ class RustAudioPrewarmManager:
                 raise RuntimeError("audioPrewarmStart did not return prewarmId")
 
             with self._lock:
-                keep_started_session = bool(Config.MIC_ALWAYS_ON) and not (
+                keep_started_session = bool(Config.MIC_ALWAYS_ON or temporary) and not (
                     self._paused_for_active_capture or self._paused_for_device_refresh
                 )
             if not keep_started_session:
@@ -387,6 +390,7 @@ class RustAudioPrewarmManager:
                     self._prewarm_id = ""
                     self._prewarm_payload = {}
                     self._stream_signature = {}
+                    self._temporary_idle_prewarm = False
                     self._last_start_duration_ms = round(
                         max(0.0, time.monotonic() - attempt_started) * 1000.0,
                         3,
@@ -404,6 +408,7 @@ class RustAudioPrewarmManager:
             with self._lock:
                 self._prewarm_id = prewarm_id
                 self._prewarm_payload = dict(response_payload)
+                self._temporary_idle_prewarm = bool(temporary and not Config.MIC_ALWAYS_ON)
                 self._stream_signature = {
                     "sample_rate": int(payload["sampleRate"]),
                     "target_channels": int(payload["channels"]),
@@ -466,6 +471,7 @@ class RustAudioPrewarmManager:
                         if active_resume_started_at > 0
                         else None
                     ),
+                    temporaryIdlePrewarm=self._temporary_idle_prewarm,
                 )
             logger.info("Rust mic prewarm session active")
             return True
@@ -474,6 +480,7 @@ class RustAudioPrewarmManager:
                 self._prewarm_id = ""
                 self._prewarm_payload = {}
                 self._stream_signature = {}
+                self._temporary_idle_prewarm = False
                 self._last_start_duration_ms = round(
                     max(0.0, time.monotonic() - attempt_started) * 1000.0,
                     3,
@@ -638,9 +645,9 @@ class RustAudioPrewarmManager:
         block_size: int,
         device: object,
     ) -> dict[str, Any] | None:
-        if not Config.MIC_ALWAYS_ON:
-            return None
         with self._lock:
+            if not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm:
+                return None
             if (
                 self._paused_for_device_refresh
                 or self._active_capture_attached
@@ -657,6 +664,7 @@ class RustAudioPrewarmManager:
 
             prewarm_id = self._prewarm_id
             self._prewarm_id = ""
+            self._temporary_idle_prewarm = False
             self._active_capture_attached = True
             self._paused_for_active_capture = True
             self._active_capture_pause_count += 1
@@ -698,7 +706,7 @@ class RustAudioPrewarmManager:
             self._record_event_locked("pause_active_capture", "active_capture")
         self.stop(reason="active_capture")
 
-    def resume_after_active_capture(self) -> bool:
+    def resume_after_active_capture(self, *, temporary: bool = False) -> bool:
         with self._lock:
             self._paused_for_active_capture = False
             self._active_capture_attached = False
@@ -706,7 +714,7 @@ class RustAudioPrewarmManager:
             self._last_active_capture_resume_attempt_at = time.monotonic()
             self._pending_active_capture_resume_attempt_at = self._last_active_capture_resume_attempt_at
             self._record_event_locked("resume_active_capture", "active_capture")
-        started = self.start_if_enabled()
+        started = self.start_if_enabled(temporary=temporary)
         if not started:
             with self._lock:
                 if self._pending_active_capture_resume_attempt_at:
@@ -746,7 +754,9 @@ class RustAudioPrewarmManager:
         max_callback_gap_seconds: float | None = None,
     ) -> bool:
         del max_callback_gap_seconds
-        if not Config.MIC_ALWAYS_ON:
+        with self._lock:
+            temporary_idle_prewarm = bool(self._temporary_idle_prewarm)
+        if not Config.MIC_ALWAYS_ON and not temporary_idle_prewarm:
             self.stop(reason=f"{reason}:disabled")
             return False
         with self._lock:
@@ -854,7 +864,7 @@ class RustAudioPrewarmManager:
                 "Rust mic prewarm session unhealthy; restarting "
                 f"({reason}, status={self._last_health_error or 'inactive'})"
             )
-            return self.start_if_enabled()
+            return self.start_if_enabled(temporary=temporary_idle_prewarm)
         with self._lock:
             self._last_health_check_active = False
             if had_previous_session:
@@ -868,7 +878,7 @@ class RustAudioPrewarmManager:
                 )
         if had_previous_session:
             logger.warning(f"Rust mic prewarm session missing; restarting ({reason})")
-        return self.start_if_enabled()
+        return self.start_if_enabled(temporary=temporary_idle_prewarm)
 
     def _stop_sidecar_prewarm(self, prewarm_id: str, *, reason: str) -> None:
         with self._lock:
@@ -933,6 +943,7 @@ class RustAudioPrewarmManager:
             self._prewarm_id = ""
             self._prewarm_payload = {}
             self._stream_signature = {}
+            self._temporary_idle_prewarm = False
             if reason in {"disabled", "settings_disabled", "shutdown"}:
                 self._paused_for_active_capture = False
                 self._paused_for_device_refresh = False

@@ -1517,6 +1517,8 @@ class ScriberWebController:
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
         self._mic_prewarm = _create_mic_prewarm_manager()
         self._mic_prewarm_task: Optional[asyncio.Task] = None
+        self._mic_post_recording_prewarm_handle: asyncio.TimerHandle | None = None
+        self._mic_post_recording_prewarm_stop_task: asyncio.Task | None = None
         self._mic_watchdog_task: Optional[asyncio.Task] = None
         self._last_mic_watchdog_warning_at = 0.0
         self._last_mic_watchdog_warning_snapshot: dict[str, Any] | None = None
@@ -1710,13 +1712,77 @@ class ScriberWebController:
             return
         except Exception as exc:
             logger.debug(f"Mic prewarm task warning: {exc}")
+        if self._mic_prewarm.is_active:
+            self._start_mic_watchdog()
 
-    def _schedule_idle_mic_prewarm(self) -> None:
+    def _cancel_post_recording_mic_prewarm_timer(self) -> None:
+        if self._mic_post_recording_prewarm_handle is not None:
+            self._mic_post_recording_prewarm_handle.cancel()
+            self._mic_post_recording_prewarm_handle = None
+
+    def _post_recording_mic_prewarm_seconds(self) -> float:
+        if Config.MIC_ALWAYS_ON:
+            return 0.0
+        try:
+            return max(
+                0.0,
+                min(
+                    600.0,
+                    float(getattr(Config, "MIC_POST_RECORDING_PREWARM_SECONDS", 0.0) or 0.0),
+                ),
+            )
+        except Exception:
+            return 0.0
+
+    def _schedule_post_recording_mic_prewarm_expiry(self, seconds: float) -> None:
+        self._cancel_post_recording_mic_prewarm_timer()
+        if seconds <= 0 or Config.MIC_ALWAYS_ON or self._loop.is_closed():
+            return
+        self._mic_post_recording_prewarm_handle = self._loop.call_later(
+            seconds,
+            self._expire_post_recording_mic_prewarm,
+        )
+
+    def _expire_post_recording_mic_prewarm(self) -> None:
+        self._mic_post_recording_prewarm_handle = None
+        if Config.MIC_ALWAYS_ON or self._is_listening or self._is_stopping:
+            return
+        if self._loop.is_closed() or not self._loop.is_running():
+            return
+        if (
+            self._mic_post_recording_prewarm_stop_task is not None
+            and not self._mic_post_recording_prewarm_stop_task.done()
+        ):
+            return
+
+        def stop_temporary_prewarm() -> None:
+            self._mic_prewarm.stop(reason="post_recording_idle_expired")
+
+        self._mic_post_recording_prewarm_stop_task = self._loop.create_task(
+            asyncio.to_thread(stop_temporary_prewarm),
+            name="mic_post_recording_prewarm_expire",
+        )
+        self._mic_post_recording_prewarm_stop_task.add_done_callback(
+            self._on_post_recording_mic_prewarm_stop_done
+        )
+
+    def _on_post_recording_mic_prewarm_stop_done(self, task: asyncio.Task) -> None:
+        if self._mic_post_recording_prewarm_stop_task is task:
+            self._mic_post_recording_prewarm_stop_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.debug(f"Post-recording mic prewarm expiry warning: {exc}")
+        self._stop_mic_watchdog_if_idle()
+
+    def _schedule_idle_mic_prewarm(self, *, temporary: bool = False) -> None:
         if self._loop.is_closed():
             return
         if not self._loop.is_running():
             return
-        if not Config.MIC_ALWAYS_ON and not self._mic_prewarm.is_active:
+        if not Config.MIC_ALWAYS_ON and not temporary and not self._mic_prewarm.is_active:
             return
         if self._mic_prewarm_task is not None and not self._mic_prewarm_task.done():
             return
@@ -1725,7 +1791,7 @@ class ScriberWebController:
             if self._is_listening or self._is_stopping:
                 self._mic_prewarm.pause_for_active_capture()
                 return
-            self._mic_prewarm.resume_after_active_capture()
+            self._mic_prewarm.resume_after_active_capture(temporary=temporary)
 
         self._mic_prewarm_task = self._loop.create_task(
             asyncio.to_thread(sync_idle_prewarm),
@@ -1736,7 +1802,7 @@ class ScriberWebController:
     def _start_mic_watchdog(self) -> None:
         if self._mic_watchdog_interval_seconds <= 0:
             return
-        if not Config.MIC_ALWAYS_ON and not self._is_listening:
+        if not Config.MIC_ALWAYS_ON and not self._is_listening and not self._mic_prewarm.is_active:
             return
         if self._loop.is_closed() or not self._loop.is_running():
             return
@@ -1748,7 +1814,7 @@ class ScriberWebController:
         )
 
     def _stop_mic_watchdog_if_idle(self) -> None:
-        if Config.MIC_ALWAYS_ON or self._is_listening or self._is_stopping:
+        if Config.MIC_ALWAYS_ON or self._is_listening or self._is_stopping or self._mic_prewarm.is_active:
             return
         if self._mic_watchdog_task is None:
             return
@@ -2115,14 +2181,29 @@ class ScriberWebController:
             await asyncio.to_thread(self._mic_prewarm.resume_after_active_capture)
 
     async def _pause_idle_mic_prewarm_for_capture(self) -> None:
+        self._cancel_post_recording_mic_prewarm_timer()
         await asyncio.to_thread(self._mic_prewarm.pause_for_active_capture)
 
     def _resume_idle_mic_prewarm_after_capture(self) -> None:
-        self._schedule_idle_mic_prewarm()
+        if Config.MIC_ALWAYS_ON:
+            self._cancel_post_recording_mic_prewarm_timer()
+            self._schedule_idle_mic_prewarm()
+            self._stop_mic_watchdog_if_idle()
+            return
+
+        seconds = self._post_recording_mic_prewarm_seconds()
+        if seconds <= 0:
+            self._cancel_post_recording_mic_prewarm_timer()
+            self._stop_mic_watchdog_if_idle()
+            return
+
+        self._schedule_idle_mic_prewarm(temporary=True)
+        self._schedule_post_recording_mic_prewarm_expiry(seconds)
         self._stop_mic_watchdog_if_idle()
 
     async def _sync_idle_mic_prewarm_after_settings(self) -> None:
         if not Config.MIC_ALWAYS_ON:
+            self._cancel_post_recording_mic_prewarm_timer()
             await asyncio.to_thread(self._mic_prewarm.stop, reason="settings_disabled")
             self._stop_mic_watchdog_if_idle()
             return
@@ -2893,6 +2974,7 @@ class ScriberWebController:
             "featureFlags": {
                 **_runtime_feature_flags(),
                 "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
+                "micPostRecordingPrewarmSeconds": self._post_recording_mic_prewarm_seconds(),
                 "sessionTokenRequired": _session_token_required(),
                 "validateWsContracts": bool(self._validate_ws_contracts),
             },
@@ -2920,6 +3002,7 @@ class ScriberWebController:
                 "favoriteMic": str(Config.FAVORITE_MIC or ""),
                 "favoriteMicConfigured": bool((Config.FAVORITE_MIC or "").strip()),
                 "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
+                "postRecordingPrewarmSeconds": self._post_recording_mic_prewarm_seconds(),
                 "idlePrewarmActive": bool(self._mic_prewarm.is_active),
                 "prebufferMs": int(getattr(Config, "MIC_PREBUFFER_MS", 0) or 0),
                 "deviceMonitor": self._device_monitor.diagnostic_snapshot()
@@ -4291,7 +4374,12 @@ class ScriberWebController:
                 self._mark_hot_path(session_id, "last_chunk_sent")
 
             self._active_provider = live_provider
-            mic_prewarm_manager = self._mic_prewarm if Config.MIC_ALWAYS_ON else None
+            self._cancel_post_recording_mic_prewarm_timer()
+            mic_prewarm_manager = (
+                self._mic_prewarm
+                if Config.MIC_ALWAYS_ON or self._mic_prewarm.is_active
+                else None
+            )
             self._pipeline = _create_scriber_pipeline(
                 service_name=live_provider,
                 on_status_change=lambda status: self._set_live_pipeline_status(status, session_id=session_id),
@@ -4883,6 +4971,10 @@ class ScriberWebController:
         if self._mic_watchdog_task:
             self._mic_watchdog_task.cancel()
             self._mic_watchdog_task = None
+        self._cancel_post_recording_mic_prewarm_timer()
+        if self._mic_post_recording_prewarm_stop_task:
+            self._mic_post_recording_prewarm_stop_task.cancel()
+            self._mic_post_recording_prewarm_stop_task = None
         if self._background_stop_task:
             self._background_stop_task.cancel()
             self._background_stop_task = None

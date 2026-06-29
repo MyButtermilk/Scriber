@@ -17,6 +17,7 @@ class _FakeMicPrewarmManager:
 
     def __init__(self):
         self.active = False
+        self.temporary = False
         self.pause_calls = 0
         self.resume_calls = 0
         self.stop_calls = 0
@@ -34,9 +35,10 @@ class _FakeMicPrewarmManager:
         self.pause_calls += 1
         self.active = False
 
-    def resume_after_active_capture(self) -> bool:
+    def resume_after_active_capture(self, *, temporary: bool = False) -> bool:
         self.resume_calls += 1
-        self.active = bool(web_api.Config.MIC_ALWAYS_ON)
+        self.temporary = bool(temporary and not web_api.Config.MIC_ALWAYS_ON)
+        self.active = bool(web_api.Config.MIC_ALWAYS_ON or temporary)
         if not self.active:
             self.stop_calls += 1
         return self.active
@@ -52,12 +54,13 @@ class _FakeMicPrewarmManager:
 
     def ensure_healthy(self, *, reason: str = "watchdog", max_callback_gap_seconds=None) -> bool:
         self.ensure_calls += 1
-        self.active = bool(web_api.Config.MIC_ALWAYS_ON)
+        self.active = bool(web_api.Config.MIC_ALWAYS_ON or self.temporary)
         return self.active
 
     def diagnostic_snapshot(self) -> dict:
         return {
             "active": self.active,
+            "temporaryIdlePrewarm": self.temporary,
             "ensureCalls": self.ensure_calls,
         }
 
@@ -71,6 +74,7 @@ class _FakeMicPrewarmManager:
         self.stop_calls += 1
         self.stop_reasons.append(reason)
         self.active = False
+        self.temporary = False
 
 
 class _FakeRustMicPrewarmManager(_FakeMicPrewarmManager):
@@ -385,7 +389,7 @@ async def test_stop_listening_skips_provider_finalization_for_silent_async_recor
     monkeypatch.setattr(ctl, "broadcast", AsyncMock(side_effect=_capture_broadcast))
     monkeypatch.setattr(ctl, "_save_transcript_to_db_async", AsyncMock())
     monkeypatch.setattr(ctl, "_broadcast_history_updated", AsyncMock())
-    monkeypatch.setattr(ctl, "_hide_recording_overlay_async", lambda: None)
+    monkeypatch.setattr(ctl, "_hide_recording_overlay_async", lambda **_kwargs: None)
     monkeypatch.setattr(
         ctl,
         "_show_transcribing_overlay_async",
@@ -660,6 +664,91 @@ async def test_update_settings_ignores_invalid_mic_always_on_type(monkeypatch, t
     assert web_api.Config.MIC_ALWAYS_ON is False
     assert manager.resume_calls == 0
     assert manager.stop_calls == 0
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_post_recording_prewarm_starts_temporarily_when_always_on_disabled(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(web_api.Config, "MIC_POST_RECORDING_PREWARM_SECONDS", 120.0, raising=False)
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeRustMicPrewarmManager.instances[-1]
+
+    assert manager.resume_calls == 0
+    assert manager.active is False
+
+    ctl._resume_idle_mic_prewarm_after_capture()
+    await _wait_for_prewarm_task(ctl)
+
+    assert manager.resume_calls == 1
+    assert manager.active is True
+    assert manager.temporary is True
+    assert ctl._mic_post_recording_prewarm_handle is not None
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_post_recording_prewarm_does_not_limit_always_on(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(web_api.Config, "MIC_POST_RECORDING_PREWARM_SECONDS", 120.0, raising=False)
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    await _wait_for_prewarm_task(ctl)
+    manager = _FakeRustMicPrewarmManager.instances[-1]
+
+    ctl._resume_idle_mic_prewarm_after_capture()
+
+    assert manager.active is True
+    assert manager.temporary is False
+    assert ctl._mic_post_recording_prewarm_handle is None
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_post_recording_prewarm_expires_when_always_on_disabled(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(web_api.Config, "MIC_POST_RECORDING_PREWARM_SECONDS", 120.0, raising=False)
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeRustMicPrewarmManager.instances[-1]
+
+    ctl._resume_idle_mic_prewarm_after_capture()
+    await _wait_for_prewarm_task(ctl)
+    ctl._cancel_post_recording_mic_prewarm_timer()
+    ctl._expire_post_recording_mic_prewarm()
+
+    for _ in range(50):
+        if ctl._mic_post_recording_prewarm_stop_task is None:
+            break
+        await asyncio.sleep(0.01)
+
+    assert manager.active is False
+    assert "post_recording_idle_expired" in manager.stop_reasons
 
     ctl.shutdown()
 
@@ -2069,6 +2158,49 @@ async def test_start_listening_passes_idle_prewarm_without_closing_it(monkeypatc
         pipeline = _PrewarmAwarePipeline.instances[-1]
 
         assert pipeline.mic_prewarm_manager is manager
+        assert manager.pause_calls == 0
+
+        pipeline.stop_gate.set()
+        await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_start_listening_passes_temporary_prewarm_when_always_on_disabled(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "DEFAULT_STT_SERVICE", "soniox")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(web_api.Config, "MIC_POST_RECORDING_PREWARM_SECONDS", 120.0, raising=False)
+    monkeypatch.setattr(web_api.Config, "SONIOX_API_KEY", "test-key")
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
+    _PrewarmAwarePipeline.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeRustMicPrewarmManager.instances[-1]
+    manager.active = True
+    manager.temporary = True
+    ctl._schedule_post_recording_mic_prewarm_expiry(120.0)
+
+    with (
+        patch("src.web_api.ScriberPipeline", _PrewarmAwarePipeline),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay"),
+    ):
+        await ctl.start_listening()
+
+        pipeline = _PrewarmAwarePipeline.instances[-1]
+
+        assert pipeline.mic_prewarm_manager is manager
+        assert ctl._mic_post_recording_prewarm_handle is None
         assert manager.pause_calls == 0
 
         pipeline.stop_gate.set()
