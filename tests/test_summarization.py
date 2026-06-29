@@ -69,8 +69,8 @@ def test_summary_budget_glm_openrouter_includes_reasoning_reserve(monkeypatch: p
     _, _, minimax_tokens = summarization._summary_budget_for_text(_words(300), "minimax/minimax-m3:nitro")
     _, _, glm_tokens = summarization._summary_budget_for_text(_words(300), "z-ai/glm-5.2:nitro")
 
-    assert minimax_tokens == 900
-    assert glm_tokens == 3300
+    assert minimax_tokens == 1600
+    assert glm_tokens == 6144
 
 
 def test_openrouter_payload_normalizes_models_to_nitro():
@@ -344,6 +344,81 @@ async def test_summarize_openrouter_retries_empty_length_response_with_larger_bu
     assert calls[0]["reasoning"] == {"exclude": True, "effort": "medium"}
     assert calls[1]["models"] == ["z-ai/glm-5.2:nitro", "minimax/minimax-m3:nitro"]
     assert calls[1]["max_tokens"] == 1800
+
+
+@pytest.mark.asyncio
+async def test_summarize_openrouter_retries_partial_length_response_instead_of_saving_it(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _fake_post(payload, _headers, _timeout):
+        calls.append(payload)
+        if len(calls) == 1:
+            return {
+                "model": "z-ai/glm-5.2-20260616",
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "native_finish_reason": "length",
+                        "message": {
+                            "role": "assistant",
+                            "content": "## Zusammenfassung\n\n- Erbschaftsteuer-Falle: Ohne Geme",
+                        },
+                    }
+                ],
+                "usage": {
+                    "completion_tokens": 900,
+                    "prompt_tokens": 1989,
+                    "total_tokens": 2889,
+                    "completion_tokens_details": {"reasoning_tokens": 300},
+                },
+            }
+        return {
+            "model": "z-ai/glm-5.2-20260616",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "vollstaendige summary"},
+                }
+            ],
+            "usage": {"completion_tokens": 420, "total_tokens": 2400},
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    out = await summarization._summarize_openrouter("prompt", "z-ai/glm-5.2:nitro", 900)
+
+    assert out == "vollstaendige summary"
+    assert calls[1]["max_tokens"] > calls[0]["max_tokens"]
+
+
+@pytest.mark.asyncio
+async def test_summarize_openrouter_discards_partial_length_response_at_retry_cap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+    monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_RETRY_MAX_TOKENS", "900")
+
+    async def _fake_post(_payload, _headers, _timeout):
+        return {
+            "model": "z-ai/glm-5.2-20260616",
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "native_finish_reason": "length",
+                    "message": {"role": "assistant", "content": "partial darf nicht zurueckkommen"},
+                }
+            ],
+            "usage": {"completion_tokens": 900, "total_tokens": 2400},
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    with pytest.raises(RuntimeError, match="partial summary was discarded"):
+        await summarization._summarize_openrouter("prompt", ["z-ai/glm-5.2:nitro"], 900)
 
 
 @pytest.mark.asyncio

@@ -198,9 +198,9 @@ def _summary_budget_for_text(
         ratio = 0.10
 
     min_words = max(80, int(os.getenv("SCRIBER_SUMMARY_MIN_WORDS", "180")))
-    max_words = max(min_words, int(os.getenv("SCRIBER_SUMMARY_MAX_WORDS", "2200")))
+    max_words = max(min_words, int(os.getenv("SCRIBER_SUMMARY_MAX_WORDS", "3200")))
     short_input_max_words = max(1, int(os.getenv("SCRIBER_SUMMARY_SHORT_INPUT_MAX_WORDS", "2500")))
-    short_min_words = max(min_words, int(os.getenv("SCRIBER_SUMMARY_SHORT_MIN_WORDS", "320")))
+    short_min_words = max(min_words, int(os.getenv("SCRIBER_SUMMARY_SHORT_MIN_WORDS", "450")))
     target_words = int(round(input_words * ratio))
     target_words = max(min_words, min(max_words, target_words))
     if input_words <= short_input_max_words:
@@ -208,11 +208,11 @@ def _summary_budget_for_text(
 
     # Approximate model tokens needed for the requested output length.
     # Defaults are intentionally generous to avoid clipping long summaries.
-    token_multiplier = max(1.0, float(os.getenv("SCRIBER_SUMMARY_TOKEN_MULTIPLIER", "1.8")))
-    token_overhead = max(0, int(os.getenv("SCRIBER_SUMMARY_TOKEN_OVERHEAD", "220")))
-    min_tokens = max(256, int(os.getenv("SCRIBER_SUMMARY_MIN_OUTPUT_TOKENS", "512")))
+    token_multiplier = max(1.0, float(os.getenv("SCRIBER_SUMMARY_TOKEN_MULTIPLIER", "2.2")))
+    token_overhead = max(0, int(os.getenv("SCRIBER_SUMMARY_TOKEN_OVERHEAD", "320")))
+    min_tokens = max(256, int(os.getenv("SCRIBER_SUMMARY_MIN_OUTPUT_TOKENS", "1024")))
     max_tokens = max(min_tokens, int(os.getenv("SCRIBER_SUMMARY_MAX_OUTPUT_TOKENS", "8192")))
-    short_min_tokens = max(min_tokens, int(os.getenv("SCRIBER_SUMMARY_SHORT_MIN_OUTPUT_TOKENS", "900")))
+    short_min_tokens = max(min_tokens, int(os.getenv("SCRIBER_SUMMARY_SHORT_MIN_OUTPUT_TOKENS", "1600")))
 
     model_key = _openrouter_nitro_model(model) if _is_openrouter_model(model) else model
     model_cap = _MODEL_OUTPUT_TOKEN_CAPS.get(model_key, max_tokens)
@@ -225,7 +225,7 @@ def _summary_budget_for_text(
 
     # For very long recordings (e.g. >30 min), allow a larger first-pass output.
     long_video_min_seconds = max(1, int(os.getenv("SCRIBER_SUMMARY_LONG_VIDEO_MIN_SECONDS", "1800")))
-    long_video_token_bonus = max(0, int(os.getenv("SCRIBER_SUMMARY_LONG_VIDEO_TOKEN_BONUS", "600")))
+    long_video_token_bonus = max(0, int(os.getenv("SCRIBER_SUMMARY_LONG_VIDEO_TOKEN_BONUS", "1500")))
     if duration_seconds and duration_seconds >= long_video_min_seconds and long_video_token_bonus > 0:
         output_tokens = min(budget_cap, output_tokens + long_video_token_bonus)
 
@@ -241,11 +241,17 @@ def _summary_budget_for_text(
     if _is_openrouter_model(model) and _is_openrouter_reasoning_model(model_key):
         reasoning_reserve = _env_int(
             "SCRIBER_SUMMARY_OPENROUTER_REASONING_RESERVE_TOKENS",
-            2400,
+            4096,
             min_value=0,
         )
         if reasoning_reserve > 0:
             output_tokens = min(budget_cap, output_tokens + reasoning_reserve)
+        reasoning_min_tokens = _env_int(
+            "SCRIBER_SUMMARY_OPENROUTER_REASONING_MIN_OUTPUT_TOKENS",
+            6144,
+            min_value=min_tokens,
+        )
+        output_tokens = min(budget_cap, max(output_tokens, reasoning_min_tokens))
 
     return input_words, target_words, output_tokens
 
@@ -255,7 +261,9 @@ def _dynamic_length_instruction(input_words: int, target_words: int) -> str:
         "Zusätzliche Längenregel (automatisch): "
         f"Der Input hat ungefähr {input_words} Wörter. "
         f"Erstelle eine inhaltlich vollständige Zusammenfassung mit ungefähr {target_words} Wörtern (Toleranz ±15%). "
-        "Bei langen Inputs sollen alle Hauptthemen, Entscheidungen, offenen Punkte und relevanten Details enthalten sein."
+        "Nutze das verfügbare Ausgabebudget großzügig, statt künstlich kurz zu bleiben. "
+        "Bei langen Inputs sollen alle Hauptthemen, Entscheidungen, offenen Punkte und relevanten Details enthalten sein. "
+        "Beende die Antwort immer mit einem vollständig abgeschlossenen Satz und Abschnitt."
     )
 
 
@@ -726,12 +734,7 @@ def _openrouter_should_retry_with_more_tokens(data: dict[str, Any]) -> bool:
     choice = _openrouter_primary_choice(data)
     finish_reason = str(choice.get("finish_reason") or "").lower()
     native_finish_reason = str(choice.get("native_finish_reason") or "").lower()
-    if finish_reason != "length" and native_finish_reason != "length":
-        return False
-    message = choice.get("message")
-    if not isinstance(message, dict):
-        return True
-    return not _extract_openrouter_message_content(message).strip()
+    return finish_reason == "length" or native_finish_reason == "length"
 
 
 async def _post_openrouter_chat_completion(
@@ -863,16 +866,14 @@ async def _summarize_openrouter(
                 payload.get("model") or payload.get("models"),
                 used_model,
             )
-            if content:
-                return content
 
-            last_empty_detail = _openrouter_empty_response_detail(data)
             if _openrouter_should_retry_with_more_tokens(data) and attempt_max_tokens < retry_cap:
+                last_empty_detail = _openrouter_empty_response_detail(data)
                 next_max_tokens = _openrouter_next_output_budget(attempt_max_tokens, retry_cap, data)
                 key = (tuple(attempt_models), next_max_tokens)
                 if key not in seen_attempts:
                     logger.warning(
-                        "OpenRouter returned empty length response from {} at max_tokens={}. Retrying with max_tokens={}. detail={}",
+                        "OpenRouter stopped due length from {} at max_tokens={}. Retrying with max_tokens={}. detail={}",
                         used_model,
                         attempt_max_tokens,
                         next_max_tokens,
@@ -884,6 +885,10 @@ async def _summarize_openrouter(
                     attempt_index += 1
                     continue
 
+            if content and not _openrouter_should_retry_with_more_tokens(data):
+                return content
+
+            last_empty_detail = _openrouter_empty_response_detail(data)
             retry_models = _openrouter_retry_candidates(
                 attempt_models,
                 used_model=used_model,
@@ -892,7 +897,7 @@ async def _summarize_openrouter(
             retry_key = (tuple(retry_models), attempt_max_tokens)
             if retry_models and retry_key not in seen_attempts:
                 logger.warning(
-                    "OpenRouter returned empty response from {}. Retrying with {}. detail={}",
+                    "OpenRouter returned incomplete or empty response from {}. Retrying with {}. detail={}",
                     used_model,
                     retry_models,
                     last_empty_detail,
@@ -902,6 +907,12 @@ async def _summarize_openrouter(
                 seen_attempts.add(retry_key)
                 attempt_index += 1
                 continue
+            if _openrouter_should_retry_with_more_tokens(data):
+                raise RuntimeError(
+                    "OpenRouter hit max_tokens before completing the summary "
+                    f"(max_tokens={attempt_max_tokens}, detail={last_empty_detail}). "
+                    "The partial summary was discarded to avoid saving truncated content."
+                )
             break
 
         raise RuntimeError(f"OpenRouter returned empty response. detail={last_empty_detail}")

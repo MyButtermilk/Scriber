@@ -286,30 +286,54 @@ def test_youtube_sorting_and_failed_retry_use_client_state_and_source_url() -> N
     assert "void retryYoutubeTranscription();" in detail_source
 
 
-def test_file_upload_progress_uses_xhr_progress_before_server_processing() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "FileTranscribe.tsx").read_text(
+def test_file_upload_progress_uses_route_persistent_store_before_server_processing() -> None:
+    page_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "FileTranscribe.tsx").read_text(
+        encoding="utf-8"
+    )
+    store_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "file-upload-store.ts").read_text(
         encoding="utf-8"
     )
 
-    assert "const [uploadProgress, setUploadProgress] = useState(0);" in source
-    assert "const xhr = new XMLHttpRequest();" in source
-    assert "xhr.withCredentials = true;" in source
-    assert "xhr.upload.onprogress = (event) => {" in source
-    assert "if (!event.lengthComputable || event.total <= 0) return;" in source
-    assert "Math.round((event.loaded / event.total) * 95)" in source
-    assert "setUploadProgress(percent);" in source
-    assert "const switchToServerPhase = () => {" in source
-    assert "setUploadProgress(96);" in source
-    assert "setUploadStatusText(serverProcessingLabel);" in source
-    assert "xhr.upload.onload = () => {" in source
-    assert 'value={uploadProgress}' in source
-    assert "uploadStatusText" in source
-    assert 'type FileHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";' in source
-    assert "function fileHistoryStatus(item: TranscriptHistoryItem): FileHistoryStatus" in source
-    assert 'if (item.summaryStatus === "failed") return "summary_failed";' in source
-    assert 'historyStatus === "summary_failed"' in source
-    assert "Summary failed" in source
-    assert "text-red-600 border-red-200 bg-red-50" in source
+    assert "useSyncExternalStore" in page_source
+    assert "subscribeFileUpload" in page_source
+    assert "getFileUploadSnapshot" in page_source
+    assert "startFileUpload(file" in page_source
+    assert "isFileUploadActive()" in page_source
+    assert "const currentPath = typeof window !==" in page_source
+    assert 'currentPath === "/file"' in page_source
+    assert "const xhr = new XMLHttpRequest();" not in page_source
+    assert "const [uploadProgress, setUploadProgress] = useState(0);" not in page_source
+
+    assert 'export type FileUploadStatus = "idle" | "uploading" | "server_processing" | "completed" | "failed";' in store_source
+    assert "const xhr = new XMLHttpRequest();" in store_source
+    assert "xhr.withCredentials = true;" in store_source
+    assert "xhr.upload.onprogress = (event) => {" in store_source
+    assert "if (!event.lengthComputable || event.total <= 0) return;" in store_source
+    assert "Math.round((event.loaded / event.total) * 95)" in store_source
+    assert "progress: percent" in store_source
+    assert "const switchToServerPhase = () => {" in store_source
+    assert 'status: "server_processing"' in store_source
+    assert "progress: 96" in store_source
+    assert "statusText: serverProcessingLabel" in store_source
+    assert "xhr.upload.onload = () => {" in store_source
+    assert 'value={uploadProgress}' in page_source
+    assert "uploadStatusText" in page_source
+    assert 'type FileHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";' in page_source
+    assert "function fileHistoryStatus(item: TranscriptHistoryItem): FileHistoryStatus" in page_source
+    assert 'if (item.summaryStatus === "failed") return "summary_failed";' in page_source
+    assert 'historyStatus === "summary_failed"' in page_source
+    assert "Summary failed" in page_source
+    assert "text-red-600 border-red-200 bg-red-50" in page_source
+
+
+def test_history_updates_are_invalidated_globally_for_background_jobs() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+    assert "function TranscriptHistoryInvalidationBridge()" in source
+    assert 'msg.type !== "history_updated"' in source
+    assert 'queryClient.invalidateQueries({ queryKey: ["/api/transcripts", msg.transcriptId], exact: true });' in source
+    assert "msg.transcriptType" in source
+    assert "<TranscriptHistoryInvalidationBridge />" in source
 
 
 def test_live_mic_interim_and_final_transcript_render_distinctly() -> None:

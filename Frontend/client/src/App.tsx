@@ -95,6 +95,41 @@ function RecordingErrorToastBridge() {
   return null;
 }
 
+function TranscriptHistoryInvalidationBridge() {
+  const queryClient = useQueryClient();
+
+  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
+    if (!msg || msg.type !== "history_updated") {
+      return;
+    }
+
+    if (msg.transcriptId) {
+      queryClient.invalidateQueries({ queryKey: ["/api/transcripts", msg.transcriptId], exact: true });
+    }
+
+    queryClient.invalidateQueries({
+      predicate: (query) => {
+        if (query.queryKey[0] !== "/api/transcripts") {
+          return false;
+        }
+
+        if (!msg.transcriptType) {
+          return true;
+        }
+
+        const scope = query.queryKey[1];
+        if (typeof scope !== "object" || scope === null) {
+          return false;
+        }
+        return (scope as { type?: string }).type === msg.transcriptType;
+      },
+    });
+  }, [queryClient]);
+
+  useSharedWebSocket(handleWsMessage);
+  return null;
+}
+
 function RuntimeShell() {
   const { isOnline } = useBackendStatus();
   const queryClient = useQueryClient();
@@ -108,6 +143,7 @@ function RuntimeShell() {
   return (
     <WebSocketProvider path="/ws" autoReconnect={true} reconnectDelay={1000} enabled={websocketEnabled}>
       <RecordingErrorToastBridge />
+      <TranscriptHistoryInvalidationBridge />
       <BackendOfflineBanner />
       <Router />
     </WebSocketProvider>

@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, memo, useMemo, useRef } from "react";
+import { useCallback, useState, useEffect, memo, useMemo, useRef, useSyncExternalStore } from "react";
 import { useDropzone } from "react-dropzone";
 import { AlertCircle, UploadCloud, FileAudio, CheckCircle2, Loader2, XCircle, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -21,9 +21,14 @@ import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
+import {
+  getFileUploadSnapshot,
+  isFileUploadActive,
+  startFileUpload,
+  subscribeFileUpload,
+} from "@/lib/file-upload-store";
 import type {
   ApiMessageResponse,
-  FileTranscribeResponse,
   SettingsResponse,
   TranscriptDeleteResponse,
   TranscriptDetailResponse,
@@ -262,15 +267,20 @@ const FileCard = memo(function FileCard({
 });
 
 export default function FileTranscribe() {
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
   const { toast } = useToast();
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadingFileName, setUploadingFileName] = useState("");
-  const [uploadStatusText, setUploadStatusText] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const deletingRef = useRef<string | null>(null);
+  const uploadSnapshot = useSyncExternalStore(
+    subscribeFileUpload,
+    getFileUploadSnapshot,
+    getFileUploadSnapshot,
+  );
+  const isUploading = uploadSnapshot.status === "uploading" || uploadSnapshot.status === "server_processing";
+  const uploadProgress = uploadSnapshot.progress;
+  const uploadingFileName = uploadSnapshot.fileName;
+  const uploadStatusText = uploadSnapshot.statusText;
   const queryClient = useQueryClient();
   const getInitialViewMode = () => {
     if (typeof window === "undefined") return "list" as const;
@@ -355,76 +365,26 @@ export default function FileTranscribe() {
   });
 
   const uploadFile = useCallback(async (file: File) => {
-    setIsUploading(true);
-    setUploadingFileName(file.name);
-    setUploadStatusText(`Uploading ${file.name}...`);
-    setUploadProgress(0);
-
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const rec = await new Promise<FileTranscribeResponse>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        let switchedToServerPhase = false;
-        const serverProcessingLabel = inferServerProcessingLabel(file, compressionThresholdBytes);
-
-        const switchToServerPhase = () => {
-          if (switchedToServerPhase) return;
-          switchedToServerPhase = true;
-          setUploadProgress(96);
-          setUploadStatusText(serverProcessingLabel);
-        };
-
-        xhr.open("POST", apiUrl("/api/file/transcribe"));
-        xhr.withCredentials = true;
-
-        xhr.upload.onprogress = (event) => {
-          if (!event.lengthComputable || event.total <= 0) return;
-          const percent = Math.max(5, Math.min(95, Math.round((event.loaded / event.total) * 95)));
-          setUploadProgress(percent);
-          if (event.loaded >= event.total) {
-            switchToServerPhase();
-          }
-        };
-
-        xhr.upload.onload = () => {
-          switchToServerPhase();
-        };
-
-        xhr.onerror = () => {
-          reject(new Error("Network error during file upload"));
-        };
-
-        xhr.onload = () => {
-          const responseText = xhr.responseText || "";
-          let parsed: Partial<FileTranscribeResponse> & ApiMessageResponse = {};
-          try {
-            parsed = responseText ? JSON.parse(responseText) as Partial<FileTranscribeResponse> & ApiMessageResponse : {};
-          } catch {
-            parsed = {};
-          }
-
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve(parsed as FileTranscribeResponse);
-            return;
-          }
-
-          reject(new Error(parsed.message || xhr.statusText || "Upload failed"));
-        };
-
-        xhr.send(formData);
+      const rec = await startFileUpload(file, {
+        serverProcessingLabel: inferServerProcessingLabel(file, compressionThresholdBytes),
       });
-      setUploadProgress(100);
 
       toast({
         title: "File uploaded",
         description: "Transcription started...",
         duration: 3000,
       });
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === "/api/transcripts" &&
+          (query.queryKey[1] as { type?: string })?.type === "file",
+      });
 
-      // Navigate to the transcript detail page
-      if (rec?.id) {
+      // Stay out of the user's way if they intentionally switched tabs while
+      // the long upload/extraction request was still running.
+      const currentPath = typeof window !== "undefined" ? window.location.pathname : location;
+      if (rec?.id && currentPath === "/file") {
         setLocation(`/transcript/${rec.id}`);
       }
     } catch (e: any) {
@@ -433,13 +393,8 @@ export default function FileTranscribe() {
         description: String(e?.message || e),
         duration: 5000,
       });
-    } finally {
-      setIsUploading(false);
-      setUploadProgress(0);
-      setUploadingFileName("");
-      setUploadStatusText("");
     }
-  }, [compressionThresholdBytes, setLocation, toast]);
+  }, [compressionThresholdBytes, location, queryClient, setLocation, toast]);
 
   const deleteTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation(); // Prevent card click navigation
@@ -531,10 +486,10 @@ export default function FileTranscribe() {
   }, [queryClient]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    if (acceptedFiles.length > 0 && !isUploading) {
+    if (acceptedFiles.length > 0 && !isFileUploadActive()) {
       uploadFile(acceptedFiles[0]);
     }
-  }, [isUploading, uploadFile]);
+  }, [uploadFile]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
