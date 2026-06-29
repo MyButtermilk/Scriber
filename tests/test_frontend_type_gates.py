@@ -626,3 +626,5 @@ def test_native_recording_overlay_uses_fixed_size_state_layers() -> None:
     assert "height: PILL_HEIGHT" in source
     assert "absolute inset-0 flex items-center" in source
     assert "overlayMode" in source
+    assert "let reconnectTimer: number | null = null;" in source
+    assert "reconnectTimer = window.setTimeout(connect, 750);" in source

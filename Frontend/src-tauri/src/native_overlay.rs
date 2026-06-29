@@ -22,6 +22,7 @@ struct OverlayState {
     mode: String,
     visible: bool,
     last_rms: f64,
+    window_created: bool,
     #[cfg_attr(test, allow(dead_code))]
     position_initialized: bool,
 }
@@ -32,6 +33,7 @@ impl Default for OverlayState {
             mode: "hidden".to_string(),
             visible: false,
             last_rms: 0.0,
+            window_created: false,
             position_initialized: false,
         }
     }
@@ -60,6 +62,7 @@ pub fn set_app_handle(_app: tauri::AppHandle) {}
 #[allow(dead_code)]
 pub fn create_overlay_window(app: &tauri::App) -> tauri::Result<()> {
     if app.get_webview_window(OVERLAY_WINDOW_LABEL).is_some() {
+        mark_overlay_window_created();
         return Ok(());
     }
 
@@ -79,6 +82,7 @@ pub fn create_overlay_window(app: &tauri::App) -> tauri::Result<()> {
     .focusable(false)
     .visible(false)
     .build()?;
+    mark_overlay_window_created();
     position_overlay_window(&window)?;
     mark_overlay_position_initialized();
     Ok(())
@@ -231,6 +235,7 @@ fn ensure_overlay_window(
     initial_mode: &str,
 ) -> Result<WebviewWindow, String> {
     if let Some(window) = overlay_window(app) {
+        mark_overlay_window_created();
         return Ok(window);
     }
 
@@ -253,6 +258,7 @@ fn ensure_overlay_window(
     .visible(false)
     .build()
     .map_err(|err| format!("overlay window create failed: {err}"))?;
+    mark_overlay_window_created();
     position_overlay_window(&window).map_err(|err| format!("overlay position failed: {err}"))?;
     mark_overlay_position_initialized();
     Ok(window)
@@ -304,6 +310,13 @@ fn mark_overlay_position_initialized() {
     });
 }
 
+#[cfg_attr(test, allow(dead_code))]
+fn mark_overlay_window_created() {
+    update_state(|state| {
+        state.window_created = true;
+    });
+}
+
 fn overlay_position_for_work_area(
     work_x: f64,
     work_y: f64,
@@ -343,6 +356,8 @@ fn status_payload() -> Value {
         "mode": state.mode,
         "visible": state.visible,
         "lastRms": state.last_rms,
+        "windowCreated": state.window_created,
+        "positionInitialized": state.position_initialized,
     })
 }
 

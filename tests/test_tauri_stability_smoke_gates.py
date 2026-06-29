@@ -319,6 +319,7 @@ def test_native_recording_overlay_is_tauri_owned() -> None:
     web_api = read_script("src/web_api.py")
     native_overlay_py = read_script("src/native_overlay.py")
     native_overlay_rs = read_script("Frontend/src-tauri/src/native_overlay.rs")
+    lib_rs = read_script("Frontend/src-tauri/src/lib.rs")
     shell_ipc = read_script("Frontend/src-tauri/src/shell_ipc.rs")
     capabilities = read_script("Frontend/src-tauri/capabilities/default.json")
     app = read_script("Frontend/client/src/App.tsx")
@@ -329,6 +330,9 @@ def test_native_recording_overlay_is_tauri_owned() -> None:
     assert "src.overlay" not in native_overlay_py
     assert "recording-overlay" in native_overlay_rs
     assert "scriber-overlay-state" in native_overlay_rs
+    assert "create_overlay_window(app)" in lib_rs
+    assert "native overlay hidden window precreated" in lib_rs
+    assert '"windowCreated"' in native_overlay_rs
     assert "overlayPrepare" in shell_ipc
     assert "overlayShow" in shell_ipc
     assert "overlayHide" in shell_ipc
@@ -400,6 +404,8 @@ def test_desktop_smoke_can_verify_os_global_hotkey_dispatch() -> None:
     assert '[string]$GlobalHotkeySmokeHotkey = "ctrl+alt+shift+f12"' in desktop
     assert '[string]$GlobalHotkeySmokeDefaultStt = ""' in desktop
     assert "[switch]$GlobalHotkeySkipStopCleanup" in desktop
+    assert "[int]$GlobalHotkeyPreDispatchSettleSec = 0" in desktop
+    assert "Start-Sleep -Seconds $GlobalHotkeyPreDispatchSettleSec" in desktop
     assert "function Test-GlobalHotkeyRegistration" in desktop
     assert "function Invoke-GlobalHotkeyChord" in desktop
     assert "function Test-SyntheticGlobalHotkeyDispatchSupport" in desktop

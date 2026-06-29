@@ -8,7 +8,7 @@ the backend, but the standard backend no longer imports or bundles PySide/Tk.
 from __future__ import annotations
 
 import os
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from loguru import logger
 
@@ -22,17 +22,16 @@ def _tauri_overlay_enabled() -> bool:
     return raw not in {"1", "true", "yes", "on"} and shell_ipc_available()
 
 
-def _call_overlay(command: str, payload: dict | None = None) -> bool:
+def _call_overlay_response(command: str, payload: dict | None = None) -> dict[str, Any]:
     response = call_shell_ipc(command, payload or {}, timeout_seconds=0.35)
-    if response.get("success") is True:
-        return True
-    logger.debug(
-        "Tauri overlay command {} failed: {} {}",
-        command,
-        response.get("errorCode"),
-        response.get("fallbackReason"),
-    )
-    return False
+    if response.get("success") is not True:
+        logger.debug(
+            "Tauri overlay command {} failed: {} {}",
+            command,
+            response.get("errorCode"),
+            response.get("fallbackReason"),
+        )
+    return response
 
 
 class RecordingOverlay:
@@ -44,30 +43,38 @@ class RecordingOverlay:
     def set_on_stop(self, on_stop: Optional[Callable[[], None]]) -> None:
         self._on_stop = on_stop
 
-    def start(self) -> None:
+    def start(self) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            if not _call_overlay("overlayPrepare", {"mode": "initializing"}):
-                _call_overlay("overlayStatus")
+            response = _call_overlay_response("overlayPrepare", {"mode": "initializing"})
+            if response.get("success") is not True:
+                _call_overlay_response("overlayStatus")
+            return response
+        return None
 
-    def stop(self) -> None:
+    def stop(self) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            _call_overlay("overlayHide")
+            return _call_overlay_response("overlayHide")
+        return None
 
-    def show(self) -> None:
+    def show(self) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            _call_overlay("overlayShow", {"mode": "recording"})
+            return _call_overlay_response("overlayShow", {"mode": "recording"})
+        return None
 
-    def show_initializing(self) -> None:
+    def show_initializing(self) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            _call_overlay("overlayShow", {"mode": "initializing"})
+            return _call_overlay_response("overlayShow", {"mode": "initializing"})
+        return None
 
-    def show_transcribing(self) -> None:
+    def show_transcribing(self) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            _call_overlay("overlayShow", {"mode": "transcribing"})
+            return _call_overlay_response("overlayShow", {"mode": "transcribing"})
+        return None
 
-    def hide(self) -> None:
+    def hide(self) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            _call_overlay("overlayHide")
+            return _call_overlay_response("overlayHide")
+        return None
 
     def update_audio_level(self, rms: float) -> None:
         if _tauri_overlay_enabled():
@@ -89,22 +96,24 @@ def get_overlay(on_stop: Optional[Callable[[], None]] = None) -> RecordingOverla
     return _overlay
 
 
-def show_recording_overlay() -> None:
-    get_overlay().show()
+def show_recording_overlay() -> dict[str, Any] | None:
+    return get_overlay().show()
 
 
-def show_initializing_overlay() -> None:
-    get_overlay().show_initializing()
+def show_initializing_overlay() -> dict[str, Any] | None:
+    return get_overlay().show_initializing()
 
 
-def show_transcribing_overlay() -> None:
+def show_transcribing_overlay() -> dict[str, Any] | None:
     if _overlay:
-        _overlay.show_transcribing()
+        return _overlay.show_transcribing()
+    return None
 
 
-def hide_recording_overlay() -> None:
+def hide_recording_overlay() -> dict[str, Any] | None:
     if _overlay:
-        _overlay.hide()
+        return _overlay.hide()
+    return None
 
 
 def update_overlay_audio(rms: float) -> None:

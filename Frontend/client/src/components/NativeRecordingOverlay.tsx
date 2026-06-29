@@ -360,19 +360,39 @@ export default function NativeRecordingOverlay() {
 
   useEffect(() => {
     if (!backendReady || isDevOverlayPreview) return;
-    const socket = new WebSocket(wsUrl("/ws"));
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(String(event.data));
-        if (isScriberWebSocketMessage(data)) {
-          applyWsMessage(data);
+    let disposed = false;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+
+    const connect = () => {
+      if (disposed) return;
+      socket = new WebSocket(wsUrl("/ws"));
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(String(event.data));
+          if (isScriberWebSocketMessage(data)) {
+            applyWsMessage(data);
+          }
+        } catch {
+          // Ignore malformed diagnostic traffic.
         }
-      } catch {
-        // Ignore malformed diagnostic traffic.
-      }
+      };
+      socket.onerror = () => {
+        socket?.close();
+      };
+      socket.onclose = () => {
+        if (disposed) return;
+        reconnectTimer = window.setTimeout(connect, 750);
+      };
     };
+
+    connect();
     return () => {
-      socket.close();
+      disposed = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      socket?.close();
     };
   }, [applyWsMessage, backendReady, isDevOverlayPreview]);
 

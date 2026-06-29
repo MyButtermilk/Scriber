@@ -2642,63 +2642,108 @@ class ScriberWebController:
         self._overlay = get_overlay(on_stop=on_stop)
         return self._overlay
 
-    def _schedule_overlay_command(self, name: str, command: Callable[[], None]) -> None:
+    def _schedule_overlay_command(
+        self,
+        name: str,
+        command: Callable[[], Any],
+        *,
+        session_id: str | None = None,
+    ) -> asyncio.Task[None] | None:
         """Run native overlay shell IPC off the live mic hot path.
 
         Tauri overlay commands can involve a named-pipe roundtrip, monitor lookup,
         and first WebView wakeup. Keeping them sequential preserves visual state
         ordering without delaying microphone startup or stop handling.
         """
+        marker_prefix = f"overlay_{name}"
+        self._mark_hot_path(session_id, f"{marker_prefix}_scheduled")
 
         async def _run() -> None:
             started = time.monotonic()
+            response: Any = None
             try:
+                self._mark_hot_path(session_id, f"{marker_prefix}_started")
                 async with self._overlay_lock:
-                    await asyncio.to_thread(command)
+                    response = await asyncio.to_thread(command)
+                if isinstance(response, dict) and response.get("success") is not True:
+                    self._mark_hot_path(session_id, f"{marker_prefix}_failed")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self._mark_hot_path(session_id, f"{marker_prefix}_failed")
                 logger.debug(f"Overlay command '{name}' failed: {exc}")
             finally:
+                self._mark_hot_path(session_id, f"{marker_prefix}_done")
                 duration_ms = (time.monotonic() - started) * 1000.0
-                if duration_ms >= 75.0:
-                    logger.debug(f"Overlay command '{name}' took {duration_ms:.1f}ms")
+                shell_ipc_total_ms = None
+                if isinstance(response, dict):
+                    timings = response.get("timingsMs")
+                    if isinstance(timings, dict):
+                        raw_total = timings.get("total")
+                        if isinstance(raw_total, (int, float)):
+                            shell_ipc_total_ms = float(raw_total)
+                if duration_ms >= 75.0 or (shell_ipc_total_ms or 0.0) >= 75.0:
+                    shell_ipc_part = (
+                        f" shellIpcTotalMs={shell_ipc_total_ms:.1f}"
+                        if shell_ipc_total_ms is not None
+                        else ""
+                    )
+                    logger.debug(
+                        f"Overlay command '{name}' took {duration_ms:.1f}ms{shell_ipc_part}"
+                    )
 
-        def _create_task() -> None:
+        def _create_task() -> asyncio.Task[None]:
             task = self._loop.create_task(_run(), name=f"overlay_{name}")
             self._overlay_tasks.add(task)
             task.add_done_callback(self._overlay_tasks.discard)
+            return task
 
         try:
             running_loop = asyncio.get_running_loop()
             if running_loop is self._loop:
-                _create_task()
+                return _create_task()
             elif self._loop.is_running():
                 self._loop.call_soon_threadsafe(_create_task)
+                return None
             else:
                 task = running_loop.create_task(_run(), name=f"overlay_{name}")
                 self._overlay_tasks.add(task)
                 task.add_done_callback(self._overlay_tasks.discard)
+                return task
         except RuntimeError:
             if self._loop.is_running():
                 self._loop.call_soon_threadsafe(_create_task)
+                return None
             else:
                 try:
                     command()
                 except Exception as exc:
                     logger.debug(f"Overlay command '{name}' failed: {exc}")
+                return None
 
-    def _show_initializing_overlay_async(self) -> None:
-        self._schedule_overlay_command("initializing", show_initializing_overlay)
+    def _show_initializing_overlay_async(self, *, session_id: str | None = None) -> None:
+        self._schedule_overlay_command(
+            "initializing",
+            show_initializing_overlay,
+            session_id=session_id,
+        )
 
-    def _show_recording_overlay_async(self) -> None:
-        self._schedule_overlay_command("recording", show_recording_overlay)
+    def _show_recording_overlay_async(self, *, session_id: str | None = None) -> None:
+        self._schedule_overlay_command(
+            "recording",
+            show_recording_overlay,
+            session_id=session_id,
+        )
 
-    def _show_transcribing_overlay_async(self) -> None:
-        self._schedule_overlay_command("transcribing", show_transcribing_overlay)
+    def _show_transcribing_overlay_async(self, *, session_id: str | None = None) -> None:
+        self._schedule_overlay_command(
+            "transcribing",
+            show_transcribing_overlay,
+            session_id=session_id,
+        )
 
-    def _hide_recording_overlay_async(self) -> None:
-        self._schedule_overlay_command("hide", hide_recording_overlay)
+    def _hide_recording_overlay_async(self, *, session_id: str | None = None) -> None:
+        self._schedule_overlay_command("hide", hide_recording_overlay, session_id=session_id)
     
     def _load_transcripts_from_db(self) -> None:
         """Load transcript metadata from database on startup.
@@ -3289,7 +3334,7 @@ class ScriberWebController:
             self._set_status("Error", session_id=session_id)
             # Hide overlay when pipeline fails to prevent it staying stuck at "Preparing..."
             self._overlay_audio_enabled = False
-            self._hide_recording_overlay_async()
+            self._hide_recording_overlay_async(session_id=session_id)
             
             info = self._provider_user_error(exc, provider=provider_used)
             category = info.category
@@ -4141,7 +4186,7 @@ class ScriberWebController:
             # Show initializing overlay immediately for user feedback without
             # blocking microphone startup on shell IPC or WebView wakeup.
             self._overlay_audio_enabled = False
-            self._show_initializing_overlay_async()
+            self._show_initializing_overlay_async(session_id=session_id)
             # Let the scheduled overlay task submit shell IPC before synchronous
             # provider/pipeline setup resumes on this event-loop turn.
             await asyncio.sleep(0)
@@ -4161,7 +4206,7 @@ class ScriberWebController:
                 self._set_recording_state(RecordingState.RECORDING, context="on_mic_ready")
                 self._set_status("Listening", session_id=session_id)
                 self._overlay_audio_enabled = True
-                self._show_recording_overlay_async()
+                self._show_recording_overlay_async(session_id=session_id)
                 logger.info("Microphone ready - recording started")
                 self._emit_workflow_event(
                     message="Microphone ready - recording started",
@@ -4186,7 +4231,7 @@ class ScriberWebController:
                 self._set_recording_state(RecordingState.FAILED, context="pipeline_error")
                 self._set_status("Error")
                 self._overlay_audio_enabled = False
-                self._hide_recording_overlay_async()
+                self._hide_recording_overlay_async(session_id=session_id)
 
                 info = self._provider_user_error(error_msg, provider=provider_used)
                 category = info.category
@@ -4513,10 +4558,10 @@ class ScriberWebController:
         if is_realtime_service:
             # For RT services, hide overlay immediately - text is already injected
             self._overlay_audio_enabled = False
-            self._hide_recording_overlay_async()
+            self._hide_recording_overlay_async(session_id=session_id)
         elif silent_early_exit:
             self._overlay_audio_enabled = False
-            self._hide_recording_overlay_async()
+            self._hide_recording_overlay_async(session_id=session_id)
             await self.broadcast(status_event("No speech detected", False, session_id=session_id))
             self._emit_workflow_event(
                 message="Live mic silent recording skipped provider finalization",
@@ -4545,7 +4590,7 @@ class ScriberWebController:
         else:
             # Show transcribing state for async services that need processing time
             self._overlay_audio_enabled = False
-            self._show_transcribing_overlay_async()
+            self._show_transcribing_overlay_async(session_id=session_id)
             transcribing_payload = transcribing_event(session_id=session_id)
             await self.broadcast(transcribing_payload)
 
@@ -4582,7 +4627,7 @@ class ScriberWebController:
             # Hide overlay for async services after processing completes
             if not is_realtime_service:
                 self._overlay_audio_enabled = False
-                self._hide_recording_overlay_async()
+                self._hide_recording_overlay_async(session_id=session_id)
             
             if pipeline_task:
                 pipeline_task.cancel()
@@ -4612,7 +4657,7 @@ class ScriberWebController:
                 meta={"error": str(exc), "provider_error_code": stop_error_info.code},
             )
             self._overlay_audio_enabled = False
-            self._hide_recording_overlay_async()
+            self._hide_recording_overlay_async(session_id=session_id)
             error_payload = self._provider_error_event(exc, provider=provider_used, session_id=session_id)
             await self.broadcast(error_payload)
         finally:

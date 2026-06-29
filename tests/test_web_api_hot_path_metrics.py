@@ -178,3 +178,32 @@ async def test_hot_path_metrics_can_include_active_readiness_snapshot(tmp_path):
     assert active["markerNames"] == ["hotkey_received", "mic_ready", "first_audio_frame"]
     assert "hotkey_received_to_mic_ready_ms" in active["segments"]
     assert "hotkey_received_to_first_audio_frame_ms" in active["segments"]
+
+
+@pytest.mark.asyncio
+async def test_overlay_commands_mark_hot_path_readiness_segments(tmp_path):
+    loop = asyncio.get_running_loop()
+    metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    ctl = ScriberWebController(loop, latency_metrics_store=metrics_store)
+    session_id = "session-overlay-readiness"
+
+    ctl._start_hot_path_tracer(session_id)
+    task = ctl._schedule_overlay_command(
+        "initializing",
+        lambda: {"success": True, "timingsMs": {"total": 4.0}},
+        session_id=session_id,
+    )
+    assert task is not None
+    await task
+
+    out = ctl.get_hot_path_metrics(limit=10, include_active=True)
+    active = next(item for item in out["activeItems"] if item["sessionId"] == session_id)
+
+    assert active["markerNames"] == [
+        "hotkey_received",
+        "overlay_initializing_scheduled",
+        "overlay_initializing_started",
+        "overlay_initializing_done",
+    ]
+    assert "overlay_initializing_scheduled_to_overlay_initializing_done_ms" in active["segments"]
+    assert "hotkey_received_to_overlay_initializing_done_ms" in active["segments"]

@@ -116,6 +116,7 @@ param(
     [string]$GlobalHotkeySmokeDefaultStt = "",
     [switch]$GlobalHotkeySkipStopCleanup,
     [int]$GlobalHotkeyDispatchTimeoutSec = 20,
+    [int]$GlobalHotkeyPreDispatchSettleSec = 0,
     [int]$BackendStartupTimeoutMs = 3000,
     [int]$CrashRecoveryTimeoutSec = 75,
     [string]$LegacyDataDir = "",
@@ -3119,6 +3120,9 @@ try {
     }
     $globalHotkey = $null
     if ($SimulateGlobalHotkey) {
+        if ($GlobalHotkeyPreDispatchSettleSec -gt 0) {
+            Start-Sleep -Seconds $GlobalHotkeyPreDispatchSettleSec
+        }
         $globalHotkey = Test-GlobalHotkeyDispatch `
             -Port ([int]$listener.Port) `
             -Token $SessionToken `
@@ -3130,6 +3134,9 @@ try {
             -SkipStopCleanup ([bool]$GlobalHotkeySkipStopCleanup) `
             -DispatchMethod "synthetic"
     } elseif ($WaitForManualGlobalHotkey) {
+        if ($GlobalHotkeyPreDispatchSettleSec -gt 0) {
+            Start-Sleep -Seconds $GlobalHotkeyPreDispatchSettleSec
+        }
         $globalHotkey = Test-GlobalHotkeyDispatch `
             -Port ([int]$listener.Port) `
             -Token $SessionToken `

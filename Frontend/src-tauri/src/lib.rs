@@ -878,6 +878,12 @@ pub fn run() {
         .setup(|app| {
             configure_desktop_shell(app)?;
             native_overlay::set_app_handle(app.handle().clone());
+            match native_overlay::create_overlay_window(app) {
+                Ok(()) => write_shell_log("native overlay hidden window precreated"),
+                Err(err) => write_shell_log(&format!(
+                    "native overlay hidden window precreate skipped: {err}"
+                )),
+            }
             apply_default_desktop_autostart(app.handle());
             let manager = app.state::<BackendManager>();
             manager.set_resource_dir(app.path().resource_dir().ok());
