@@ -402,7 +402,7 @@ impl AudioSidecarState {
     }
 
     fn start_capture(&mut self, request: CaptureRequest) -> Result<Value, String> {
-        let delayed_prewarm_stop = if request.prewarm_id.trim().is_empty() {
+        let mut delayed_prewarm_stop = if request.prewarm_id.trim().is_empty() {
             None
         } else {
             let prewarm_id = request.prewarm_id.clone();
@@ -422,8 +422,20 @@ impl AudioSidecarState {
         let adopted_prewarm = delayed_prewarm_stop
             .as_ref()
             .map(|(_, adopted, stop_payload)| (adopted.clone(), stop_payload.clone()));
-        let result = if wasapi_capture_enabled() {
-            start_wasapi_capture_impl(request, adopted_prewarm)
+        let use_wasapi_capture = wasapi_capture_enabled();
+        let defer_prewarm_stop_to_capture = use_wasapi_capture
+            && adopted_prewarm
+                .as_ref()
+                .is_some_and(|(adopted, _)| !adopted.blocks.is_empty());
+        let deferred_prewarm_session = if defer_prewarm_stop_to_capture {
+            delayed_prewarm_stop
+                .take()
+                .map(|(prewarm_session, _, _)| prewarm_session)
+        } else {
+            None
+        };
+        let result = if use_wasapi_capture {
+            start_wasapi_capture_impl(request, adopted_prewarm, deferred_prewarm_session)
         } else {
             start_synthetic_capture_impl(request, adopted_prewarm)
         };
@@ -547,6 +559,7 @@ struct CaptureWriterStats {
     prebuffer_frames_written: u64,
     live_frames_written: u64,
     bytes_written: u64,
+    deferred_prewarm_stop: Option<Value>,
     error: Option<String>,
 }
 
@@ -566,12 +579,8 @@ impl CaptureSession {
             .take()
             .map(|handle| {
                 handle.join().unwrap_or_else(|_| CaptureWriterStats {
-                    connected: false,
-                    frames_written: 0,
-                    prebuffer_frames_written: 0,
-                    live_frames_written: 0,
-                    bytes_written: 0,
                     error: Some("writerThreadPanicked".to_string()),
+                    ..CaptureWriterStats::default()
                 })
             })
             .unwrap_or_default();
@@ -587,6 +596,7 @@ impl CaptureSession {
             "prebufferFramesWritten": stats.prebuffer_frames_written,
             "liveFramesWritten": stats.live_frames_written,
             "bytesWritten": stats.bytes_written,
+            "deferredPrewarmStop": stats.deferred_prewarm_stop,
             "writerError": stats.error,
             "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         })
@@ -762,6 +772,15 @@ impl PrewarmSession {
     }
 }
 
+fn stop_deferred_prewarm_session(
+    prewarm_session: &mut Option<PrewarmSession>,
+    reason: &str,
+) -> Option<Value> {
+    prewarm_session
+        .take()
+        .map(|mut prewarm_session| prewarm_session.stop(reason))
+}
+
 #[derive(Debug, Clone, Default)]
 struct AdoptedPrewarm {
     prewarm_id: String,
@@ -906,10 +925,18 @@ fn start_synthetic_capture_impl(
 fn start_wasapi_capture_impl(
     request: CaptureRequest,
     adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
+    mut deferred_prewarm_session: Option<PrewarmSession>,
 ) -> Result<(CaptureSession, Value), String> {
     let stream_id = Uuid::new_v4().simple().to_string();
     let pipe_path = format!(r"\\.\pipe\scriber-audio-{stream_id}");
-    let pipe_handle = create_frame_pipe(&pipe_path)?;
+    let pipe_handle = match create_frame_pipe(&pipe_path) {
+        Ok(pipe_handle) => pipe_handle,
+        Err(err) => {
+            let _ =
+                stop_deferred_prewarm_session(&mut deferred_prewarm_session, "captureStartFailed");
+            return Err(err);
+        }
+    };
     let (stop_tx, stop_rx) = mpsc::channel();
     let (ready_tx, ready_rx) = mpsc::channel();
     let writer_request = request.clone();
@@ -920,6 +947,11 @@ fn start_wasapi_capture_impl(
         .map(|(adopted, _)| adopted.blocks.clone())
         .unwrap_or_default();
     let defer_wasapi_ready = !adopted_blocks.is_empty();
+    let writer_deferred_prewarm_session = if defer_wasapi_ready {
+        deferred_prewarm_session.take()
+    } else {
+        None
+    };
     let join_handle = thread::Builder::new()
         .name("scriber-audio-wasapi-frame-pipe".to_string())
         .spawn(move || {
@@ -931,12 +963,15 @@ fn start_wasapi_capture_impl(
                 ready_tx,
                 adopted_blocks,
                 defer_wasapi_ready,
+                writer_deferred_prewarm_session,
             )
         })
         .map_err(|err| {
             unsafe {
                 CloseHandle(pipe_handle);
             }
+            let _ =
+                stop_deferred_prewarm_session(&mut deferred_prewarm_session, "captureStartFailed");
             format!("WASAPI frame-pipe writer thread spawn failed: {err}")
         })?;
 
@@ -995,6 +1030,7 @@ fn start_wasapi_capture_impl(
 fn start_wasapi_capture_impl(
     _request: CaptureRequest,
     _adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
+    _deferred_prewarm_session: Option<PrewarmSession>,
 ) -> Result<(CaptureSession, Value), String> {
     Err("WASAPI capture is only implemented on Windows".to_string())
 }
@@ -1631,6 +1667,7 @@ fn run_wasapi_capture_writer(
     ready_tx: Sender<Result<WasapiReady, String>>,
     adopted_prebuffer_blocks: Vec<Vec<u8>>,
     defer_ready_until_after_pipe: bool,
+    mut deferred_prewarm_session: Option<PrewarmSession>,
 ) -> CaptureWriterStats {
     let mut stats = CaptureWriterStats::default();
     let mut ready_sent = false;
@@ -1645,12 +1682,19 @@ fn run_wasapi_capture_writer(
         started,
         adopted_prebuffer_blocks,
         defer_ready_until_after_pipe,
+        &mut deferred_prewarm_session,
     );
     if let Err(err) = result {
         if !ready_sent {
             let _ = ready_tx.send(Err(err.clone()));
         }
         stats.error = Some(err);
+    }
+    if let Some(stop_payload) = stop_deferred_prewarm_session(
+        &mut deferred_prewarm_session,
+        "captureWriterFinishedBeforePrewarmHandoff",
+    ) {
+        stats.deferred_prewarm_stop = Some(stop_payload);
     }
     unsafe {
         FlushFileBuffers(pipe_handle);
@@ -1789,6 +1833,7 @@ fn run_wasapi_capture_writer_inner(
     started: Instant,
     adopted_prebuffer_blocks: Vec<Vec<u8>>,
     defer_ready_until_after_pipe: bool,
+    deferred_prewarm_session: &mut Option<PrewarmSession>,
 ) -> Result<(), String> {
     let mut sequence = 0_u64;
     if defer_ready_until_after_pipe {
@@ -1844,6 +1889,10 @@ fn run_wasapi_capture_writer_inner(
 
         unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
         let capture_result = (|| -> Result<(), String> {
+            if defer_ready_until_after_pipe {
+                stats.deferred_prewarm_stop =
+                    stop_deferred_prewarm_session(deferred_prewarm_session, "adoptedIntoCapture");
+            }
             let ready = Ok(WasapiReady {
                 endpoint_id_hash,
                 endpoint_selection: selected.endpoint_selection,
@@ -2563,6 +2612,32 @@ mod tests {
         assert!(stop["totalBlocksObserved"].as_u64().unwrap_or_default() > 0);
         assert!(stop["bufferedBlocks"].as_u64().unwrap_or_default() <= 4);
         assert!(stop["sidecarUptimeMs"].as_u64().is_some());
+    }
+
+    #[test]
+    fn deferred_prewarm_stop_reports_adopted_handoff_reason() {
+        let request = CaptureRequest {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size: 16,
+            device_preference: "default".to_string(),
+            port_audio_label: "".to_string(),
+            native_endpoint_id_hash: "".to_string(),
+            prebuffer_ms: 4,
+            prewarm_id: "".to_string(),
+        };
+
+        let (session, _) = start_synthetic_prewarm_impl(request).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut deferred_session = Some(session);
+        let stop = stop_deferred_prewarm_session(&mut deferred_session, "adoptedIntoCapture")
+            .expect("deferred prewarm stop payload");
+
+        assert!(deferred_session.is_none());
+        assert_eq!(stop["stopped"], true);
+        assert_eq!(stop["reason"], "adoptedIntoCapture");
+        assert_eq!(stop["source"], "synthetic-prewarm");
+        assert!(stop["totalBlocksObserved"].as_u64().unwrap_or_default() > 0);
     }
 
     #[test]
