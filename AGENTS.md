@@ -128,7 +128,10 @@ Packaging and scripts:
 - Rust also exposes a private shell IPC channel for opt-in native text
   injection. `SCRIBER_INJECT_METHOD=tauri` is strict; `auto` must stay on the
   existing Python paste path until installed target-app evidence justifies a
-  default change.
+  default change. The Tauri `injectText` path must preserve a bounded snapshot
+  of restorable clipboard formats before setting transcript text, then restore
+  that snapshot only if the clipboard sequence is unchanged; do not regress this
+  to text-only clipboard preservation.
 - Shell IPC diagnostics may expose the latest `injectText` attempt only in
   sanitized form: error codes, fallback reason, allowed markers, restore status,
   `preDelayMode`, requested/applied pre-delay numbers, timing numbers, and
@@ -257,6 +260,10 @@ Packaging and scripts:
 - Soniox realtime live transcription defaults to `stt-rt-v5`. Keep
   `SCRIBER_SONIOX_RT_MODEL` as an override for temporary compatibility, but do
   not restore `stt-rt-v4` as the code default.
+- Live microphone transcription must not request or format provider speaker
+  diarization. Keep `enable_speaker_diarization=False` for live pipelines so
+  single-speaker dictation inserts plain text. File and YouTube jobs may enable
+  diarization where the provider adapter has stable anonymous speaker output.
 - Azure MAI defaults to `mai-transcribe-1.5`.
 - Keep `SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1` available as region/resource
   fallback.

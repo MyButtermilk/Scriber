@@ -243,18 +243,22 @@ Soniox is the default STT family: realtime live transcription uses
 `SCRIBER_SONIOX_ASYNC_MODEL` remain escape hatches for provider compatibility,
 but older Soniox realtime and async models are not release defaults.
 
-Speaker diarization is enabled where the current backend adapter has both a
-supported provider request flag and a stable speaker-output path. This covers
-Soniox async/direct and Soniox realtime callback formatting, Mistral
-async/direct, Smallest AI async/direct, AssemblyAI async/direct, Gladia
-pre-recorded file/YouTube transcription, Deepgram live result formatting, and
-Speechmatics live speaker formatting. These paths produce anonymous
-`[Speaker n]` labels. True known-speaker name identification is not enabled
-unless Scriber gains a UI/config source for provider-specific known speaker
-names or enrollment identifiers. The current Pipecat OpenAI STT bridge remains
-plain transcription because OpenAI's diarize model is exposed through the
-transcriptions API response format and needs a dedicated full-audio adapter
-rather than a safe factory flag.
+Speaker diarization is a batch-transcription feature, not a live dictation
+feature. File and YouTube jobs enable provider diarization where the current
+backend adapter has both a supported provider request flag and a stable
+speaker-output path. This covers Soniox async/direct, Mistral async/direct,
+Smallest AI async/direct, AssemblyAI async/direct, Gladia pre-recorded
+file/YouTube transcription, Deepgram result formatting, and Speechmatics speaker
+formatting when those providers are used for batch jobs. These paths produce
+anonymous `[Speaker n]` labels. Live microphone transcription explicitly
+disables speaker diarization and ignores provider speaker metadata at the
+callback boundary so single-speaker dictation is inserted as plain text. True
+known-speaker name identification is not enabled unless Scriber gains a
+UI/config source for provider-specific known speaker names or enrollment
+identifiers. The current Pipecat OpenAI STT bridge remains plain transcription
+because OpenAI's diarize model is exposed through the transcriptions API
+response format and needs a dedicated full-audio adapter rather than a safe
+factory flag.
 
 The standard sidecar keeps runtime support for the shipped cloud/external
 providers exposed in Settings, but the dependency boundary is explicit. Local

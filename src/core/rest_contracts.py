@@ -279,6 +279,10 @@ def _validate_shell_ipc_restore(payload: Any, contract: str) -> None:
     _require_optional_bool(payload, "succeeded", contract)
     _require_optional_string(payload, "skippedReason", contract)
     _require_optional_string(payload, "errorCode", contract)
+    _require_optional_string(payload, "restoreKind", contract)
+    _require_optional_number(payload, "formatCount", contract)
+    _require_optional_number(payload, "unsupportedFormatCount", contract)
+    _require_optional_number(payload, "totalBytes", contract)
 
 
 def _validate_shell_ipc_inject_text_payload(

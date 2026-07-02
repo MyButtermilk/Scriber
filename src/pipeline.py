@@ -927,9 +927,15 @@ class PipecatVadSpeechObserver(FrameProcessor):
 class TranscriptionCallbackProcessor(FrameProcessor):
     """Emits interim/final transcription updates via a lightweight callback."""
 
-    def __init__(self, on_transcription: Optional[Callable[[str, bool], None]]):
+    def __init__(
+        self,
+        on_transcription: Optional[Callable[[str, bool], None]],
+        *,
+        enable_speaker_diarization: bool = False,
+    ):
         super().__init__()
         self.on_transcription = on_transcription
+        self.enable_speaker_diarization = bool(enable_speaker_diarization)
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
@@ -941,7 +947,10 @@ class TranscriptionCallbackProcessor(FrameProcessor):
                     if frame.text:
                         cb(frame.text, False)
                 elif isinstance(frame, TranscriptionFrame):
-                    text = _diarized_text_from_frame_result(frame.result) or frame.text
+                    if self.enable_speaker_diarization:
+                        text = _diarized_text_from_frame_result(frame.result) or frame.text
+                    else:
+                        text = frame.text
                     if text:
                         cb(text, True)
             except Exception as e:
@@ -963,6 +972,7 @@ class ScriberPipeline:
         on_last_audio_chunk_sent: Optional[Callable[[], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
         mic_prewarm_manager=None,
+        enable_speaker_diarization: bool = False,
     ):
         self.service_name = service_name
         self.on_status_change = on_status_change
@@ -975,6 +985,7 @@ class ScriberPipeline:
         self.on_last_audio_chunk_sent = on_last_audio_chunk_sent
         self.on_error = on_error
         self.mic_prewarm_manager = mic_prewarm_manager
+        self.enable_speaker_diarization = bool(enable_speaker_diarization)
         self.pipeline = None
         self.task = None
         self.runner = None
@@ -1156,7 +1167,7 @@ class ScriberPipeline:
                     model=Config.SONIOX_ASYNC_MODEL,
                     session=session,
                     on_progress=self.on_progress,
-                    enable_speaker_diarization=True,
+                    enable_speaker_diarization=self.enable_speaker_diarization,
                 )
             soniox_service_cls, soniox_input_params_cls, soniox_context_cls = _load_soniox_realtime_classes()
             if not soniox_service_cls: raise RuntimeError("SonioxSTTService not available.")
@@ -1172,26 +1183,26 @@ class ScriberPipeline:
                         model=rt_model,
                         context=soniox_context_cls(terms=terms),
                         language_hints=[lang_hint] if lang_hint else None,
-                        enable_speaker_diarization=True,
+                        enable_speaker_diarization=self.enable_speaker_diarization,
                     ) if soniox_input_params_cls else _SonioxParamsFallback(
                         context=soniox_context_cls(terms=terms),
-                        enable_speaker_diarization=True,
+                        enable_speaker_diarization=self.enable_speaker_diarization,
                     )
                 else:
                     params = soniox_input_params_cls(
                         model=rt_model,
                         language_hints=[lang_hint] if lang_hint else None,
-                        enable_speaker_diarization=True,
+                        enable_speaker_diarization=self.enable_speaker_diarization,
                     ) if soniox_input_params_cls else _SonioxParamsFallback(
-                        enable_speaker_diarization=True,
+                        enable_speaker_diarization=self.enable_speaker_diarization,
                     )
             else:
                 params = soniox_input_params_cls(
                     model=rt_model,
                     language_hints=[lang_hint] if lang_hint else None,
-                    enable_speaker_diarization=True,
+                    enable_speaker_diarization=self.enable_speaker_diarization,
                 ) if soniox_input_params_cls else _SonioxParamsFallback(
-                    enable_speaker_diarization=True,
+                    enable_speaker_diarization=self.enable_speaker_diarization,
                 )
             # vad_force_turn_endpoint=True disables automatic endpoint detection which would
             # otherwise close the WebSocket connection when speech pauses are detected.
@@ -1212,7 +1223,7 @@ class ScriberPipeline:
                     custom_vocab=Config.CUSTOM_VOCAB,
                     session=session,
                     on_progress=self.on_progress,
-                    diarize=True,
+                    diarize=self.enable_speaker_diarization,
                 )
 
             logger.info("Using Mistral realtime transcription mode")
@@ -1235,7 +1246,7 @@ class ScriberPipeline:
                     language=Config.LANGUAGE,
                     session=session,
                     on_progress=self.on_progress,
-                    diarize=True,
+                    diarize=self.enable_speaker_diarization,
                 )
 
             logger.info("Using Smallest AI Pulse realtime transcription mode")
@@ -1257,7 +1268,7 @@ class ScriberPipeline:
                 custom_vocab=Config.CUSTOM_VOCAB,
                 session=session,
                 on_progress=self.on_progress,
-                speaker_labels=True,
+                speaker_labels=self.enable_speaker_diarization,
             )
         
         elif self.service_name == "google":
@@ -1288,7 +1299,11 @@ class ScriberPipeline:
             DeepgramSTTService = module.DeepgramSTTService
             if not _get_api_key("deepgram"): raise ValueError("Deepgram API Key is missing.")
             LiveOptions = getattr(module, "LiveOptions", None)
-            live_options = LiveOptions(diarize=True) if LiveOptions else None
+            live_options = (
+                LiveOptions(diarize=True)
+                if self.enable_speaker_diarization and LiveOptions
+                else None
+            )
             return DeepgramSTTService(api_key=_get_api_key("deepgram"), live_options=live_options)
         
         elif self.service_name == "openai":
@@ -1338,7 +1353,7 @@ class ScriberPipeline:
             params_cls = getattr(SpeechmaticsSTTService, "InputParams", None)
             params = (
                 params_cls(
-                    enable_diarization=True,
+                    enable_diarization=self.enable_speaker_diarization,
                     speaker_active_format="[Speaker {speaker_id}]: {text}",
                     speaker_passive_format="[Speaker {speaker_id}]: {text}",
                 )
@@ -1455,7 +1470,10 @@ class ScriberPipeline:
                 )
                 self.text_injector = text_injector
                 transcript_cb = (
-                    TranscriptionCallbackProcessor(self.on_transcription) if self.on_transcription else None
+                    TranscriptionCallbackProcessor(
+                        self.on_transcription,
+                        enable_speaker_diarization=self.enable_speaker_diarization,
+                    ) if self.on_transcription else None
                 )
 
                 # Create cleanup callback to stop microphone on connection errors
@@ -1564,7 +1582,10 @@ class ScriberPipeline:
                 )
 
                 transcript_cb = (
-                    TranscriptionCallbackProcessor(self.on_transcription) if self.on_transcription else None
+                    TranscriptionCallbackProcessor(
+                        self.on_transcription,
+                        enable_speaker_diarization=self.enable_speaker_diarization,
+                    ) if self.on_transcription else None
                 )
                 steps = [file_input, stt_service]
                 if transcript_cb:

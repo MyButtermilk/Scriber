@@ -895,29 +895,10 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
         retries: options.max_clipboard_retries,
         retry_delay: Duration::from_millis(options.clipboard_retry_delay_ms),
     };
-    let (previous_text, clipboard_read_ms) = if options.restore_clipboard {
+    let (previous_clipboard, clipboard_read_ms) = if options.restore_clipboard {
         let read_started = Instant::now();
-        match read_clipboard_text(&clipboard_options) {
-            Ok(Some(value)) => (Some(value), Some(elapsed_ms(read_started))),
-            Ok(None) => {
-                let partial_payload = inject_response_payload(
-                    &options,
-                    &markers,
-                    pre_delay_ms,
-                    Some(elapsed_ms(read_started)),
-                    None,
-                    None,
-                    elapsed_ms(started),
-                    restore_status("previousClipboardUnavailable", None),
-                    &foreground_before,
-                    &foreground_before,
-                );
-                return Err(ShellCommandError::new(
-                    "clipboardRestoreUnavailable",
-                    "previous clipboard text could not be captured",
-                )
-                .with_payload(partial_payload));
-            }
+        match read_clipboard_snapshot(&clipboard_options) {
+            Ok(snapshot) => (Some(snapshot), Some(elapsed_ms(read_started))),
             Err(err) => {
                 let partial_payload = inject_response_payload(
                     &options,
@@ -983,8 +964,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
             "deadlineBeforePaste",
             || {
                 let restore = restore_clipboard_now(
-                    &options.text,
-                    previous_text.as_deref(),
+                    previous_clipboard.as_ref(),
                     clipboard_sequence_after_set,
                     &clipboard_options,
                 );
@@ -1005,8 +985,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
     } else {
         ensure_deadline_budget(&options, started, 50, "deadlineBeforePaste", || {
             let restore = restore_clipboard_now(
-                &options.text,
-                previous_text.as_deref(),
+                previous_clipboard.as_ref(),
                 clipboard_sequence_after_set,
                 &clipboard_options,
             );
@@ -1031,8 +1010,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
 
     ensure_deadline_budget(&options, started, 50, "deadlineBeforePaste", || {
         let restore = restore_clipboard_now(
-            &options.text,
-            previous_text.as_deref(),
+            previous_clipboard.as_ref(),
             clipboard_sequence_after_set,
             &clipboard_options,
         );
@@ -1051,8 +1029,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
     })?;
     if !foreground_title_matches_expected(&options, foreground_title_for_policy().as_deref()) {
         let restore = restore_clipboard_now(
-            &options.text,
-            previous_text.as_deref(),
+            previous_clipboard.as_ref(),
             clipboard_sequence_after_set,
             &clipboard_options,
         );
@@ -1076,8 +1053,7 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
     let paste_started = Instant::now();
     if let Err(err) = dispatch_ctrl_v() {
         let restore = restore_clipboard_now(
-            &options.text,
-            previous_text.as_deref(),
+            previous_clipboard.as_ref(),
             clipboard_sequence_after_set,
             &clipboard_options,
         );
@@ -1100,15 +1076,16 @@ fn inject_text(payload: &Value) -> Result<Value, ShellCommandError> {
     let foreground_after = foreground_snapshot();
 
     let restore = if options.restore_clipboard {
-        if let Some(previous_text) = previous_text {
+        if let Some(previous_clipboard) = previous_clipboard {
+            let restore =
+                restore_status_with_snapshot("scheduled", None, Some(&previous_clipboard));
             schedule_clipboard_restore(
-                options.text.clone(),
-                previous_text,
+                previous_clipboard,
                 clipboard_options,
                 clipboard_sequence_after_set,
                 options.restore_delay_ms,
             );
-            restore_status("scheduled", None)
+            restore
         } else {
             restore_status("previousClipboardUnavailable", None)
         }
@@ -1195,6 +1172,25 @@ fn restore_status(skipped_reason: &str, error_code: Option<&str>) -> Value {
     })
 }
 
+#[cfg(windows)]
+fn restore_status_with_snapshot(
+    skipped_reason: &str,
+    error_code: Option<&str>,
+    snapshot: Option<&ClipboardSnapshot>,
+) -> Value {
+    let mut status = restore_status(skipped_reason, error_code);
+    if let Some(snapshot) = snapshot {
+        if let Some(object) = status.as_object_mut() {
+            if let Some(summary) = snapshot.summary().as_object() {
+                for (key, value) in summary {
+                    object.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+    status
+}
+
 fn foreground_title_matches_expected(
     options: &InjectTextOptions,
     foreground_title: Option<&str>,
@@ -1245,6 +1241,36 @@ struct ClipboardOptions {
     retries: u32,
     retry_delay: Duration,
 }
+
+#[cfg(windows)]
+#[derive(Clone)]
+struct ClipboardFormatSnapshot {
+    format: u32,
+    data: Vec<u8>,
+}
+
+#[cfg(windows)]
+#[derive(Clone)]
+struct ClipboardSnapshot {
+    formats: Vec<ClipboardFormatSnapshot>,
+    unsupported_format_count: usize,
+    total_bytes: usize,
+}
+
+#[cfg(windows)]
+impl ClipboardSnapshot {
+    fn summary(&self) -> Value {
+        json!({
+            "restoreKind": "snapshot",
+            "formatCount": self.formats.len(),
+            "unsupportedFormatCount": self.unsupported_format_count,
+            "totalBytes": self.total_bytes,
+        })
+    }
+}
+
+#[cfg(windows)]
+const MAX_CLIPBOARD_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 
 const CLIPBOARD_OWNER_CLASS: &str = "ScriberClipboardOwner";
 
@@ -1451,13 +1477,12 @@ fn is_slow_text_injection_foreground_title(title: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn read_clipboard_text(options: &ClipboardOptions) -> Result<Option<String>, ShellCommandError> {
+fn read_clipboard_snapshot(
+    options: &ClipboardOptions,
+) -> Result<ClipboardSnapshot, ShellCommandError> {
     use windows_sys::Win32::System::{
-        DataExchange::{
-            CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-        },
+        DataExchange::{CloseClipboard, EnumClipboardFormats, GetClipboardData, OpenClipboard},
         Memory::{GlobalLock, GlobalSize, GlobalUnlock},
-        Ole::CF_UNICODETEXT,
     };
 
     let owner = ClipboardOwnerWindow::create()?;
@@ -1466,41 +1491,65 @@ fn read_clipboard_text(options: &ClipboardOptions) -> Result<Option<String>, She
             thread::sleep(options.retry_delay);
             continue;
         }
+
         let result = unsafe {
-            if IsClipboardFormatAvailable(CF_UNICODETEXT as u32) == 0 {
-                Ok(None)
-            } else {
-                let handle = GetClipboardData(CF_UNICODETEXT as u32);
+            let mut snapshot = ClipboardSnapshot {
+                formats: Vec::new(),
+                unsupported_format_count: 0,
+                total_bytes: 0,
+            };
+            let mut snapshot_error: Option<ShellCommandError> = None;
+            let mut format = EnumClipboardFormats(0);
+            while format != 0 {
+                let handle = GetClipboardData(format);
                 if handle.is_null() {
-                    Err(ShellCommandError::new(
-                        "clipboardReadFailed",
-                        "GetClipboardData returned null",
-                    ))
-                } else {
-                    let ptr = GlobalLock(handle);
-                    if ptr.is_null() {
-                        Err(ShellCommandError::new(
-                            "clipboardReadFailed",
-                            "GlobalLock failed for clipboard data",
-                        ))
-                    } else {
-                        let byte_len = GlobalSize(handle);
-                        let text = if byte_len < std::mem::size_of::<u16>() {
-                            String::new()
-                        } else {
-                            let max_len = byte_len / std::mem::size_of::<u16>();
-                            let mut len = 0usize;
-                            let chars = ptr.cast::<u16>();
-                            while len < max_len && *chars.add(len) != 0 {
-                                len += 1;
-                            }
-                            let slice = std::slice::from_raw_parts(chars, len);
-                            String::from_utf16_lossy(slice)
-                        };
-                        let _ = GlobalUnlock(handle);
-                        Ok(Some(text))
-                    }
+                    snapshot.unsupported_format_count += 1;
+                    format = EnumClipboardFormats(format);
+                    continue;
                 }
+
+                let byte_len = GlobalSize(handle);
+                if byte_len == 0 {
+                    snapshot.unsupported_format_count += 1;
+                    format = EnumClipboardFormats(format);
+                    continue;
+                }
+                if snapshot.total_bytes.saturating_add(byte_len) > MAX_CLIPBOARD_SNAPSHOT_BYTES {
+                    snapshot_error = Some(ShellCommandError::new(
+                        "clipboardSnapshotTooLarge",
+                        format!(
+                            "clipboard snapshot exceeds {} bytes",
+                            MAX_CLIPBOARD_SNAPSHOT_BYTES
+                        ),
+                    ));
+                    break;
+                }
+
+                let ptr = GlobalLock(handle);
+                if ptr.is_null() {
+                    snapshot.unsupported_format_count += 1;
+                    format = EnumClipboardFormats(format);
+                    continue;
+                }
+                let data = std::slice::from_raw_parts(ptr.cast::<u8>(), byte_len).to_vec();
+                let _ = GlobalUnlock(handle);
+                snapshot.total_bytes += byte_len;
+                snapshot
+                    .formats
+                    .push(ClipboardFormatSnapshot { format, data });
+
+                format = EnumClipboardFormats(format);
+            }
+
+            if let Some(err) = snapshot_error {
+                Err(err)
+            } else if snapshot.formats.is_empty() && snapshot.unsupported_format_count > 0 {
+                Err(ShellCommandError::new(
+                    "clipboardSnapshotUnsupported",
+                    "clipboard only contains formats that cannot be captured for restore",
+                ))
+            } else {
+                Ok(snapshot)
             }
         };
         unsafe {
@@ -1510,7 +1559,86 @@ fn read_clipboard_text(options: &ClipboardOptions) -> Result<Option<String>, She
     }
     Err(ShellCommandError::new(
         "clipboardBusy",
-        "could not open clipboard for read",
+        "could not open clipboard for snapshot read",
+    ))
+}
+
+#[cfg(windows)]
+fn set_clipboard_snapshot(
+    snapshot: &ClipboardSnapshot,
+    options: &ClipboardOptions,
+) -> Result<u32, ShellCommandError> {
+    use std::ptr;
+    use windows_sys::Win32::{
+        Foundation::GlobalFree,
+        System::{
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+        },
+    };
+
+    let owner = ClipboardOwnerWindow::create()?;
+    for _ in 0..options.retries.max(1) {
+        if unsafe { OpenClipboard(owner.hwnd()) } == 0 {
+            thread::sleep(options.retry_delay);
+            continue;
+        }
+        let result = unsafe {
+            if EmptyClipboard() == 0 {
+                Err(ShellCommandError::new(
+                    "clipboardRestoreFailed",
+                    "EmptyClipboard failed while restoring clipboard snapshot",
+                ))
+            } else {
+                let mut restore_error: Option<ShellCommandError> = None;
+                for item in &snapshot.formats {
+                    let handle = GlobalAlloc(GMEM_MOVEABLE, item.data.len());
+                    if handle.is_null() {
+                        restore_error = Some(ShellCommandError::new(
+                            "clipboardRestoreFailed",
+                            "GlobalAlloc failed while restoring clipboard snapshot",
+                        ));
+                        break;
+                    }
+                    let locked_ptr = GlobalLock(handle);
+                    if locked_ptr.is_null() {
+                        let _ = GlobalFree(handle);
+                        restore_error = Some(ShellCommandError::new(
+                            "clipboardRestoreFailed",
+                            "GlobalLock failed while restoring clipboard snapshot",
+                        ));
+                        break;
+                    }
+                    ptr::copy_nonoverlapping(
+                        item.data.as_ptr(),
+                        locked_ptr.cast::<u8>(),
+                        item.data.len(),
+                    );
+                    let _ = GlobalUnlock(handle);
+                    if SetClipboardData(item.format, handle).is_null() {
+                        let _ = GlobalFree(handle);
+                        restore_error = Some(ShellCommandError::new(
+                            "clipboardRestoreFailed",
+                            format!("SetClipboardData failed for format {}", item.format),
+                        ));
+                        break;
+                    }
+                }
+
+                match restore_error {
+                    Some(err) => Err(err),
+                    None => Ok(()),
+                }
+            }
+        };
+        unsafe {
+            CloseClipboard();
+        }
+        return result.map(|()| clipboard_sequence_number());
+    }
+    Err(ShellCommandError::new(
+        "clipboardBusy",
+        "could not open clipboard for snapshot restore",
     ))
 }
 
@@ -1648,8 +1776,7 @@ fn keyboard_input(
 
 #[cfg(windows)]
 fn schedule_clipboard_restore(
-    injected_text: String,
-    previous_text: String,
+    previous_clipboard: ClipboardSnapshot,
     options: ClipboardOptions,
     expected_sequence: u32,
     restore_delay_ms: u64,
@@ -1658,23 +1785,17 @@ fn schedule_clipboard_restore(
         if restore_delay_ms > 0 {
             thread::sleep(Duration::from_millis(restore_delay_ms));
         }
-        let _ = restore_clipboard_now(
-            &injected_text,
-            Some(&previous_text),
-            expected_sequence,
-            &options,
-        );
+        let _ = restore_clipboard_now(Some(&previous_clipboard), expected_sequence, &options);
     });
 }
 
 #[cfg(windows)]
 fn restore_clipboard_now(
-    injected_text: &str,
-    previous_text: Option<&str>,
+    previous_clipboard: Option<&ClipboardSnapshot>,
     expected_sequence: u32,
     options: &ClipboardOptions,
 ) -> Value {
-    let Some(previous_text) = previous_text else {
+    let Some(previous_clipboard) = previous_clipboard else {
         return json!({
             "scheduled": false,
             "attempted": false,
@@ -1686,55 +1807,58 @@ fn restore_clipboard_now(
 
     let current_sequence = clipboard_sequence_number();
     if current_sequence != expected_sequence {
-        return json!({
+        let mut status = json!({
             "scheduled": false,
             "attempted": false,
             "succeeded": Value::Null,
             "skippedReason": "clipboardSequenceChanged",
             "errorCode": Value::Null,
         });
-    }
-
-    match read_clipboard_text(options) {
-        Ok(Some(current)) if current == injected_text => {
-            match set_clipboard_text(previous_text, options) {
-                Ok(_) => json!({
-                    "scheduled": false,
-                    "attempted": true,
-                    "succeeded": true,
-                    "skippedReason": Value::Null,
-                    "errorCode": Value::Null,
-                }),
-                Err(err) => json!({
-                    "scheduled": false,
-                    "attempted": true,
-                    "succeeded": false,
-                    "skippedReason": "restoreFailed",
-                    "errorCode": err.code,
-                }),
+        if let Some(object) = status.as_object_mut() {
+            if let Some(summary) = previous_clipboard.summary().as_object() {
+                for (key, value) in summary {
+                    object.insert(key.clone(), value.clone());
+                }
             }
         }
-        Ok(Some(_)) => json!({
-            "scheduled": false,
-            "attempted": false,
-            "succeeded": Value::Null,
-            "skippedReason": "clipboardContentChanged",
-            "errorCode": Value::Null,
-        }),
-        Ok(None) => json!({
-            "scheduled": false,
-            "attempted": false,
-            "succeeded": Value::Null,
-            "skippedReason": "clipboardFormatChanged",
-            "errorCode": Value::Null,
-        }),
-        Err(err) => json!({
-            "scheduled": false,
-            "attempted": false,
-            "succeeded": Value::Null,
-            "skippedReason": "restoreReadFailed",
-            "errorCode": err.code,
-        }),
+        return status;
+    }
+
+    match set_clipboard_snapshot(previous_clipboard, options) {
+        Ok(_) => {
+            let mut status = json!({
+                "scheduled": false,
+                "attempted": true,
+                "succeeded": true,
+                "skippedReason": Value::Null,
+                "errorCode": Value::Null,
+            });
+            if let Some(object) = status.as_object_mut() {
+                if let Some(summary) = previous_clipboard.summary().as_object() {
+                    for (key, value) in summary {
+                        object.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            status
+        }
+        Err(err) => {
+            let mut status = json!({
+                "scheduled": false,
+                "attempted": true,
+                "succeeded": false,
+                "skippedReason": "restoreFailed",
+                "errorCode": err.code,
+            });
+            if let Some(object) = status.as_object_mut() {
+                if let Some(summary) = previous_clipboard.summary().as_object() {
+                    for (key, value) in summary {
+                        object.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            status
+        }
     }
 }
 

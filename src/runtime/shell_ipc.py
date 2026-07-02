@@ -312,6 +312,13 @@ def _restore_summary(value: Any) -> dict[str, Any]:
         item = _safe_optional_string(value.get(key), max_len=80)
         if item is not None:
             summary[key] = item
+    restore_kind = _safe_optional_string(value.get("restoreKind"), max_len=32)
+    if restore_kind is not None:
+        summary["restoreKind"] = restore_kind
+    for key in ("formatCount", "unsupportedFormatCount", "totalBytes"):
+        item = value.get(key)
+        if isinstance(item, (int, float)) and not isinstance(item, bool):
+            summary[key] = float(item)
     return summary
 
 

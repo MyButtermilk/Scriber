@@ -517,9 +517,10 @@ Target:
 
 Ownership boundary:
 
-- Rust owns reading current `CF_UNICODETEXT`, setting new Unicode clipboard
-  text, dispatching Ctrl+V, safe optional restore, foreground-window snapshot,
-  basic diagnostics, and structured timing/status response.
+- Rust owns capturing a bounded snapshot of the current Windows clipboard
+  formats, setting new Unicode clipboard text, dispatching Ctrl+V, safe
+  optional snapshot restore, foreground-window snapshot, basic diagnostics, and
+  structured timing/status response.
 - Python keeps Pipecat `TextInjector` frame handling, interim/final buffering,
   the decision of when text is injected, hot-path markers, `on_injected`
   callbacks, existing `paste`/`sendinput`/`type` modes, fallback selection,
@@ -548,11 +549,11 @@ Implementation plan:
    - hashed foreground-window title and process id,
    - `fallbackReason` and `errorCode`.
 4. Reuse and extend `copy_text_to_clipboard` in `Frontend/src-tauri/src/lib.rs`:
-   - read current `CF_UNICODETEXT`,
+   - capture a bounded snapshot of current restorable clipboard formats,
    - set new clipboard text,
    - dispatch Ctrl+V with `SendInput`,
-   - restore only if the clipboard still contains the injected text, preferably
-     guarded by clipboard sequence number where available,
+   - restore only if the clipboard sequence has not changed since Scriber set
+     the injected text,
    - never hold the clipboard open while sleeping or dispatching input.
 5. Add target-window diagnostics using `GetForegroundWindow` and
    `GetWindowTextW` so Word/Outlook delay decisions can move out of Python.
@@ -582,13 +583,13 @@ Implementation status on `codex/rust-expansion-plan`:
 - `/api/runtime/audio-diagnostics` now reports `textInjection.shellIpc` status
   without calling the pipe from readiness or startup paths.
 - Added the `injectText` shell IPC command for opt-in Tauri text injection. The
-  Rust side reads and sets `CF_UNICODETEXT`, dispatches Ctrl+V with `SendInput`,
-  returns structured timing data and `clipboard_set`/`paste` markers, hashes
-  foreground-window diagnostics, owns `preDelayMode=auto` foreground-title
-  classification for Word/Outlook without logging raw titles, uses
-  byte-budgeted request limits, rejects embedded NUL text, enforces a request
-  deadline before side effects, and guards clipboard restore with the clipboard
-  sequence number.
+  Rust side captures a bounded Windows clipboard format snapshot, sets
+  `CF_UNICODETEXT`, dispatches Ctrl+V with `SendInput`, returns structured
+  timing data and `clipboard_set`/`paste` markers, hashes foreground-window
+  diagnostics, owns `preDelayMode=auto` foreground-title classification for
+  Word/Outlook without logging raw titles, uses byte-budgeted request limits,
+  rejects embedded NUL text, enforces a request deadline before side effects,
+  and guards clipboard restore with the clipboard sequence number.
 - Hardened the private Tauri shell IPC pipe with an explicit protected Windows
   DACL. The pipe still uses a per-process random name, a per-session token, and
   `PIPE_REJECT_REMOTE_CLIENTS`. When the current logon SID is available, access
@@ -599,6 +600,12 @@ Implementation status on `codex/rust-expansion-plan`:
   short-lived message-only `ScriberClipboardOwner` window. `injectText` now
   calls `OpenClipboard(hwnd)` for read, set, and delayed restore operations
   instead of `OpenClipboard(NULL)`.
+- Clipboard restore now preserves a full bounded snapshot of restorable
+  clipboard formats instead of only `CF_UNICODETEXT`. This keeps image, file,
+  HTML, and Office-style clipboard payloads from being permanently replaced by
+  the injected transcript text. Restore still skips when the Windows clipboard
+  sequence changed after Scriber set its text, so user copies during the restore
+  delay win over Scriber's delayed restore.
 - Added strict `SCRIBER_INJECT_METHOD=tauri` in Python `TextInjector`.
   `auto` intentionally still uses the existing Python paste path until installed
   target-app evidence justifies changing the default.

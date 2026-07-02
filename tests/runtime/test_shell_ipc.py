@@ -146,6 +146,10 @@ def test_shell_ipc_inject_text_diagnostics_are_redacted(monkeypatch):
                         "succeeded": None,
                         "skippedReason": "scheduled",
                         "errorCode": None,
+                        "restoreKind": "snapshot",
+                        "formatCount": 3,
+                        "unsupportedFormatCount": 1,
+                        "totalBytes": 4096,
                     },
                     "foregroundBefore": {
                         "available": True,
@@ -191,6 +195,10 @@ def test_shell_ipc_inject_text_diagnostics_are_redacted(monkeypatch):
     assert inject_payload["deadlineMs"] == 2000.0
     assert inject_payload["markers"] == ["clipboard_set", "paste"]
     assert inject_payload["restore"]["skippedReason"] == "scheduled"
+    assert inject_payload["restore"]["restoreKind"] == "snapshot"
+    assert inject_payload["restore"]["formatCount"] == 3.0
+    assert inject_payload["restore"]["unsupportedFormatCount"] == 1.0
+    assert inject_payload["restore"]["totalBytes"] == 4096.0
     assert inject_payload["foregroundBefore"]["titleHash"] == "title-hash"
     assert inject_payload["timingsMs"]["clipboardSet"] == 2.0
 

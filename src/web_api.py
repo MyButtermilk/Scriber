@@ -3702,6 +3702,7 @@ class ScriberWebController:
                 on_audio_level=None,
                 on_transcription=on_transcription,
                 on_progress=on_progress,
+                enable_speaker_diarization=True,
             )
             
             # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
@@ -4017,6 +4018,7 @@ class ScriberWebController:
                 on_audio_level=None,
                 on_transcription=on_transcription,
                 on_progress=on_progress,
+                enable_speaker_diarization=True,
             )
             
             # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
@@ -4391,6 +4393,7 @@ class ScriberWebController:
                 on_last_audio_chunk_sent=on_last_audio_chunk_sent,
                 on_error=on_pipeline_error,
                 mic_prewarm_manager=mic_prewarm_manager,
+                enable_speaker_diarization=False,
             )
             if mic_prewarm_manager is None:
                 await self._pause_idle_mic_prewarm_for_capture()

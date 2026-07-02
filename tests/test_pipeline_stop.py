@@ -82,7 +82,7 @@ class _DummyPrewarmManager:
         return self._resume_result
 
 
-def test_buffered_provider_factories_enable_diarization(monkeypatch):
+def test_buffered_provider_factories_disable_diarization_for_live_by_default(monkeypatch):
     monkeypatch.setattr(Config, "SONIOX_API_KEY", "key")
     monkeypatch.setattr(Config, "MISTRAL_API_KEY", "key")
     monkeypatch.setattr(Config, "SMALLEST_API_KEY", "key")
@@ -93,13 +93,42 @@ def test_buffered_provider_factories_enable_diarization(monkeypatch):
     smallest = ScriberPipeline(service_name="smallest_async")._create_stt_service(object())
     assemblyai = ScriberPipeline(service_name="assemblyai")._create_stt_service(object())
 
+    assert soniox.enable_speaker_diarization is False
+    assert mistral._diarize is False
+    assert smallest._diarize is False
+    assert assemblyai._speaker_labels is False
+
+
+def test_buffered_provider_factories_enable_diarization_for_batch_jobs(monkeypatch):
+    monkeypatch.setattr(Config, "SONIOX_API_KEY", "key")
+    monkeypatch.setattr(Config, "MISTRAL_API_KEY", "key")
+    monkeypatch.setattr(Config, "SMALLEST_API_KEY", "key")
+    monkeypatch.setattr(Config, "ASSEMBLYAI_API_KEY", "key")
+
+    soniox = ScriberPipeline(
+        service_name="soniox_async",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object())
+    mistral = ScriberPipeline(
+        service_name="mistral_async",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object())
+    smallest = ScriberPipeline(
+        service_name="smallest_async",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object())
+    assemblyai = ScriberPipeline(
+        service_name="assemblyai",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object())
+
     assert soniox.enable_speaker_diarization is True
     assert mistral._diarize is True
     assert smallest._diarize is True
     assert assemblyai._speaker_labels is True
 
 
-def test_deepgram_factory_enables_live_diarization(monkeypatch):
+def test_deepgram_factory_disables_live_diarization_by_default(monkeypatch):
     class _LiveOptions:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -120,10 +149,17 @@ def test_deepgram_factory_enables_live_diarization(monkeypatch):
 
     service = ScriberPipeline(service_name="deepgram")._create_stt_service(object())
 
-    assert service.live_options.kwargs == {"diarize": True}
+    assert service.live_options is None
+
+    service_with_speakers = ScriberPipeline(
+        service_name="deepgram",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object())
+
+    assert service_with_speakers.live_options.kwargs == {"diarize": True}
 
 
-def test_speechmatics_factory_enables_labeled_diarization(monkeypatch):
+def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatch):
     class _InputParams:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -145,6 +181,77 @@ def test_speechmatics_factory_enables_labeled_diarization(monkeypatch):
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
 
     service = ScriberPipeline(service_name="speechmatics")._create_stt_service(object())
+
+    assert service.params.kwargs == {
+        "enable_diarization": False,
+        "speaker_active_format": "[Speaker {speaker_id}]: {text}",
+        "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
+    }
+
+    service_with_speakers = ScriberPipeline(
+        service_name="speechmatics",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object())
+
+    assert service_with_speakers.params.kwargs == {
+        "enable_diarization": True,
+        "speaker_active_format": "[Speaker {speaker_id}]: {text}",
+        "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
+    }
+
+
+def test_deepgram_factory_enables_batch_diarization(monkeypatch):
+    class _LiveOptions:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _DeepgramSTTService:
+        def __init__(self, *, api_key, live_options=None):
+            self.api_key = api_key
+            self.live_options = live_options
+
+    module = type(
+        "DeepgramModule",
+        (),
+        {"DeepgramSTTService": _DeepgramSTTService, "LiveOptions": _LiveOptions},
+    )
+
+    monkeypatch.setattr(Config, "DEEPGRAM_API_KEY", "key")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+
+    service = ScriberPipeline(
+        service_name="deepgram",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object())
+
+    assert service.live_options.kwargs == {"diarize": True}
+
+
+def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
+    class _InputParams:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _SpeechmaticsSTTService:
+        InputParams = _InputParams
+
+        def __init__(self, *, api_key, params=None):
+            self.api_key = api_key
+            self.params = params
+
+    module = type(
+        "SpeechmaticsModule",
+        (),
+        {"SpeechmaticsSTTService": _SpeechmaticsSTTService},
+    )
+
+    monkeypatch.setattr(Config, "SPEECHMATICS_API_KEY", "key")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+
+    service = ScriberPipeline(
+        service_name="speechmatics",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object())
 
     assert service.params.kwargs == {
         "enable_diarization": True,
@@ -319,11 +426,43 @@ async def test_pipecat_vad_observer_counts_audio_frames():
 
 
 @pytest.mark.asyncio
-async def test_transcription_callback_formats_soniox_speaker_tokens():
+async def test_transcription_callback_uses_plain_text_without_diarization():
     captured: list[tuple[str, bool]] = []
     pushed = []
     processor = TranscriptionCallbackProcessor(
         lambda text, is_final: captured.append((text, is_final))
+    )
+
+    async def _capture_push(frame, direction):
+        pushed.append((frame, direction))
+
+    processor.push_frame = _capture_push
+
+    await processor.process_frame(
+        TranscriptionFrame(
+            text="Hallo plain fallback",
+            user_id="user",
+            timestamp="2026-06-29T00:00:00Z",
+            result=[
+                {"text": "Hallo", "speaker": "1"},
+                {"text": " Welt", "speaker": "1"},
+                {"text": "Antwort", "speaker": "2"},
+            ],
+        ),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    assert captured == [("Hallo plain fallback", True)]
+    assert len(pushed) == 1
+
+
+@pytest.mark.asyncio
+async def test_transcription_callback_formats_soniox_speaker_tokens_when_enabled():
+    captured: list[tuple[str, bool]] = []
+    pushed = []
+    processor = TranscriptionCallbackProcessor(
+        lambda text, is_final: captured.append((text, is_final)),
+        enable_speaker_diarization=True,
     )
 
     async def _capture_push(frame, direction):
