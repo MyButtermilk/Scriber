@@ -498,9 +498,10 @@ Current code exploration:
 
 - `src/injector.py` owns live text injection inside the Pipecat pipeline.
 - Clipboard paste uses Win32 via `ctypes`, then `keyboard.press_and_release`.
-  The default Python paste path snapshots bounded restorable clipboard formats
-  before setting transcript text and restores that snapshot when the clipboard
-  sequence is unchanged, preserving image/file/HTML assets instead of only text.
+  The default Python paste path snapshots bounded safe HGLOBAL-backed clipboard
+  formats before setting transcript text and restores that snapshot when the
+  clipboard sequence is unchanged. It preserves common text, file-drop, and DIB
+  image payloads without touching non-HGLOBAL handles such as `CF_BITMAP`.
 - Fallback paths use `pyautogui` and `keyboard.write`; Tkinter clipboard helpers
   were removed from the standard path.
 - `Frontend/src-tauri/src/lib.rs` already has a Windows clipboard helper for
@@ -603,12 +604,14 @@ Implementation status on `codex/rust-expansion-plan`:
   short-lived message-only `ScriberClipboardOwner` window. `injectText` now
   calls `OpenClipboard(hwnd)` for read, set, and delayed restore operations
   instead of `OpenClipboard(NULL)`.
-- Clipboard restore now preserves a full bounded snapshot of restorable
-  clipboard formats instead of only `CF_UNICODETEXT`. This keeps image, file,
-  HTML, and Office-style clipboard payloads from being permanently replaced by
-  the injected transcript text. Restore still skips when the Windows clipboard
+- Clipboard restore now preserves a bounded snapshot of safe HGLOBAL-backed
+  clipboard formats instead of only `CF_UNICODETEXT`. This keeps common text,
+  file-drop, and DIB/DIBV5 image payloads from being permanently replaced by the
+  injected transcript text. Restore still skips when the Windows clipboard
   sequence changed after Scriber set its text, so user copies during the restore
-  delay win over Scriber's delayed restore.
+  delay win over Scriber's delayed restore. Non-HGLOBAL handle formats such as
+  `CF_BITMAP`, `CF_PALETTE`, and `CF_ENHMETAFILE` are counted as unsupported and
+  skipped before any `GetClipboardData`/`GlobalSize` access.
 - The Python `auto`/`paste` injection path now follows the same snapshot rule as
   Tauri `injectText`. It no longer continues with clipboard paste when the
   existing clipboard cannot be snapshotted, because that would overwrite

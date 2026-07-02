@@ -1,3 +1,4 @@
+import ctypes
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,7 +12,9 @@ from src.injector import (
     _ClipboardFormatSnapshot,
     _ClipboardSnapshot,
     _paste_text,
+    _windows_clipboard_format_is_restorable,
     _windows_clipboard_get_text,
+    _windows_clipboard_snapshot,
     _windows_clipboard_set_text,
 )
 
@@ -200,3 +203,57 @@ def test_windows_clipboard_set_text_reports_open_failure_without_gui_fallback():
         result = _windows_clipboard_set_text("new text", retries=2, delay_secs=0)
 
     assert result is False
+
+
+def test_windows_clipboard_format_filter_rejects_non_hglobal_handles():
+    assert _windows_clipboard_format_is_restorable(8) is True  # CF_DIB
+    assert _windows_clipboard_format_is_restorable(13) is True  # CF_UNICODETEXT
+    assert _windows_clipboard_format_is_restorable(2) is False  # CF_BITMAP
+    assert _windows_clipboard_format_is_restorable(14) is False  # CF_ENHMETAFILE
+
+
+def test_windows_clipboard_snapshot_skips_non_hglobal_formats():
+    class _Callable:
+        def __init__(self, func):
+            self.func = func
+
+        def __call__(self, *args):
+            return self.func(*args)
+
+    dib = ctypes.create_string_buffer(b"dib-data")
+    get_data_calls: list[int] = []
+
+    class _User32:
+        def __init__(self):
+            self.OpenClipboard = _Callable(lambda _owner: True)
+            self.CloseClipboard = _Callable(lambda: True)
+            self.EnumClipboardFormats = _Callable(self._enum_clipboard_formats)
+            self.GetClipboardData = _Callable(self._get_clipboard_data)
+
+        def _enum_clipboard_formats(self, previous):
+            return {0: 2, 2: 8, 8: 0}.get(previous, 0)
+
+        def _get_clipboard_data(self, format_id):
+            get_data_calls.append(format_id)
+            if format_id == 2:
+                raise AssertionError("CF_BITMAP must not be treated as HGLOBAL")
+            return 1234
+
+    class _Kernel32:
+        def __init__(self):
+            self.GlobalSize = _Callable(lambda _handle: len(dib.raw))
+            self.GlobalLock = _Callable(lambda _handle: ctypes.addressof(dib))
+            self.GlobalUnlock = _Callable(lambda _handle: True)
+
+    windll = type("_Windll", (), {"user32": _User32(), "kernel32": _Kernel32()})()
+
+    with (
+        patch("src.injector.sys.platform", "win32"),
+        patch("src.injector.ctypes.windll", windll, create=True),
+    ):
+        snapshot = _windows_clipboard_snapshot()
+
+    assert isinstance(snapshot, _ClipboardSnapshot)
+    assert get_data_calls == [8]
+    assert snapshot.unsupported_format_count == 1
+    assert [(item.format_id, item.data) for item in snapshot.formats] == [(8, dib.raw)]

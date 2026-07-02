@@ -1271,6 +1271,22 @@ impl ClipboardSnapshot {
 
 #[cfg(windows)]
 const MAX_CLIPBOARD_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(windows)]
+const MAX_CLIPBOARD_SNAPSHOT_FORMATS: usize = 64;
+
+#[cfg(windows)]
+fn is_restorable_clipboard_format(format: u32) -> bool {
+    matches!(
+        format,
+        1  // CF_TEXT
+            | 7  // CF_OEMTEXT
+            | 8  // CF_DIB
+            | 13 // CF_UNICODETEXT
+            | 15 // CF_HDROP
+            | 16 // CF_LOCALE
+            | 17 // CF_DIBV5
+    )
+}
 
 const CLIPBOARD_OWNER_CLASS: &str = "ScriberClipboardOwner";
 
@@ -1499,8 +1515,21 @@ fn read_clipboard_snapshot(
                 total_bytes: 0,
             };
             let mut snapshot_error: Option<ShellCommandError> = None;
+            let mut seen_formats = std::collections::HashSet::new();
             let mut format = EnumClipboardFormats(0);
             while format != 0 {
+                if !seen_formats.insert(format) {
+                    break;
+                }
+                if seen_formats.len() > MAX_CLIPBOARD_SNAPSHOT_FORMATS {
+                    break;
+                }
+                if !is_restorable_clipboard_format(format) {
+                    snapshot.unsupported_format_count += 1;
+                    format = EnumClipboardFormats(format);
+                    continue;
+                }
+
                 let handle = GetClipboardData(format);
                 if handle.is_null() {
                     snapshot.unsupported_format_count += 1;
@@ -1593,6 +1622,10 @@ fn set_clipboard_snapshot(
                 let mut restored_any = false;
                 let mut skipped_count = 0usize;
                 for item in &snapshot.formats {
+                    if !is_restorable_clipboard_format(item.format) {
+                        skipped_count += 1;
+                        continue;
+                    }
                     let handle = GlobalAlloc(GMEM_MOVEABLE, item.data.len());
                     if handle.is_null() {
                         skipped_count += 1;

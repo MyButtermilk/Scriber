@@ -58,6 +58,24 @@ class _ClipboardSnapshot:
 
 
 _MAX_CLIPBOARD_SNAPSHOT_BYTES = 64 * 1024 * 1024
+_MAX_CLIPBOARD_SNAPSHOT_FORMATS = 64
+
+# Only these standard clipboard formats are HGLOBAL-backed and safe to copy
+# with GlobalSize/GlobalLock. Formats such as CF_BITMAP and CF_ENHMETAFILE
+# return GDI handles; treating them like HGLOBAL can crash the process.
+_RESTORABLE_STANDARD_CLIPBOARD_FORMATS = {
+    1,   # CF_TEXT
+    7,   # CF_OEMTEXT
+    8,   # CF_DIB
+    13,  # CF_UNICODETEXT
+    15,  # CF_HDROP
+    16,  # CF_LOCALE
+    17,  # CF_DIBV5
+}
+
+
+def _windows_clipboard_format_is_restorable(format_id: int) -> bool:
+    return int(format_id) in _RESTORABLE_STANDARD_CLIPBOARD_FORMATS
 
 
 # =============================================================================
@@ -344,8 +362,21 @@ def _windows_clipboard_snapshot(
             continue
         try:
             snapshot = _ClipboardSnapshot(formats=[])
+            seen_formats: set[int] = set()
             format_id = int(user32.EnumClipboardFormats(0))
             while format_id:
+                if format_id in seen_formats:
+                    logger.warning("Clipboard format enumeration repeated a format; stopping snapshot")
+                    break
+                if len(seen_formats) >= _MAX_CLIPBOARD_SNAPSHOT_FORMATS:
+                    logger.warning("Clipboard format enumeration exceeded snapshot limit; stopping snapshot")
+                    break
+                seen_formats.add(format_id)
+                if not _windows_clipboard_format_is_restorable(format_id):
+                    snapshot.unsupported_format_count += 1
+                    format_id = int(user32.EnumClipboardFormats(format_id))
+                    continue
+
                 handle = user32.GetClipboardData(format_id)
                 if not handle:
                     snapshot.unsupported_format_count += 1
@@ -423,6 +454,9 @@ def _windows_clipboard_restore_snapshot(
 
             restored_any = False
             for item in snapshot.formats:
+                if not _windows_clipboard_format_is_restorable(item.format_id):
+                    logger.debug(f"Clipboard restore skipped format {item.format_id}: unsupported handle type")
+                    continue
                 hglobal = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(item.data))
                 if not hglobal:
                     logger.debug(f"Clipboard restore skipped format {item.format_id}: GlobalAlloc failed")

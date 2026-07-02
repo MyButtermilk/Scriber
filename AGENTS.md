@@ -129,10 +129,11 @@ Packaging and scripts:
   injection. `SCRIBER_INJECT_METHOD=tauri` is strict; `auto` must stay on the
   existing Python paste path until installed target-app evidence justifies a
   default change. Clipboard-based injection paths, including the default Python
-  paste path and Tauri `injectText`, must preserve a bounded snapshot of
-  restorable clipboard formats before setting transcript text, then restore that
-  snapshot only if the clipboard sequence is unchanged; do not regress this to
-  text-only clipboard preservation.
+  paste path and Tauri `injectText`, must preserve a bounded snapshot of safe
+  HGLOBAL-backed clipboard formats before setting transcript text, then restore
+  that snapshot only if the clipboard sequence is unchanged; do not regress this
+  to text-only clipboard preservation, and do not call `GlobalSize`/`GlobalLock`
+  on handle formats such as `CF_BITMAP` or `CF_ENHMETAFILE`.
 - Shell IPC diagnostics may expose the latest `injectText` attempt only in
   sanitized form: error codes, fallback reason, allowed markers, restore status,
   `preDelayMode`, requested/applied pre-delay numbers, timing numbers, and
