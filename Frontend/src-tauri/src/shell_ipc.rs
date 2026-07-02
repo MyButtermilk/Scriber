@@ -1590,24 +1590,19 @@ fn set_clipboard_snapshot(
                     "EmptyClipboard failed while restoring clipboard snapshot",
                 ))
             } else {
-                let mut restore_error: Option<ShellCommandError> = None;
+                let mut restored_any = false;
+                let mut skipped_count = 0usize;
                 for item in &snapshot.formats {
                     let handle = GlobalAlloc(GMEM_MOVEABLE, item.data.len());
                     if handle.is_null() {
-                        restore_error = Some(ShellCommandError::new(
-                            "clipboardRestoreFailed",
-                            "GlobalAlloc failed while restoring clipboard snapshot",
-                        ));
-                        break;
+                        skipped_count += 1;
+                        continue;
                     }
                     let locked_ptr = GlobalLock(handle);
                     if locked_ptr.is_null() {
                         let _ = GlobalFree(handle);
-                        restore_error = Some(ShellCommandError::new(
-                            "clipboardRestoreFailed",
-                            "GlobalLock failed while restoring clipboard snapshot",
-                        ));
-                        break;
+                        skipped_count += 1;
+                        continue;
                     }
                     ptr::copy_nonoverlapping(
                         item.data.as_ptr(),
@@ -1617,17 +1612,21 @@ fn set_clipboard_snapshot(
                     let _ = GlobalUnlock(handle);
                     if SetClipboardData(item.format, handle).is_null() {
                         let _ = GlobalFree(handle);
-                        restore_error = Some(ShellCommandError::new(
-                            "clipboardRestoreFailed",
-                            format!("SetClipboardData failed for format {}", item.format),
-                        ));
-                        break;
+                        skipped_count += 1;
+                        continue;
                     }
+                    restored_any = true;
                 }
 
-                match restore_error {
-                    Some(err) => Err(err),
-                    None => Ok(()),
+                if restored_any || snapshot.formats.is_empty() {
+                    Ok(())
+                } else {
+                    Err(ShellCommandError::new(
+                        "clipboardRestoreFailed",
+                        format!(
+                            "no clipboard snapshot formats could be restored; skipped={skipped_count}"
+                        ),
+                    ))
                 }
             }
         };

@@ -128,10 +128,11 @@ Packaging and scripts:
 - Rust also exposes a private shell IPC channel for opt-in native text
   injection. `SCRIBER_INJECT_METHOD=tauri` is strict; `auto` must stay on the
   existing Python paste path until installed target-app evidence justifies a
-  default change. The Tauri `injectText` path must preserve a bounded snapshot
-  of restorable clipboard formats before setting transcript text, then restore
-  that snapshot only if the clipboard sequence is unchanged; do not regress this
-  to text-only clipboard preservation.
+  default change. Clipboard-based injection paths, including the default Python
+  paste path and Tauri `injectText`, must preserve a bounded snapshot of
+  restorable clipboard formats before setting transcript text, then restore that
+  snapshot only if the clipboard sequence is unchanged; do not regress this to
+  text-only clipboard preservation.
 - Shell IPC diagnostics may expose the latest `injectText` attempt only in
   sanitized form: error codes, fallback reason, allowed markers, restore status,
   `preDelayMode`, requested/applied pre-delay numbers, timing numbers, and

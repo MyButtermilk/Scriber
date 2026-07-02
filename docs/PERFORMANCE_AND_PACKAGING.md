@@ -498,6 +498,9 @@ Current code exploration:
 
 - `src/injector.py` owns live text injection inside the Pipecat pipeline.
 - Clipboard paste uses Win32 via `ctypes`, then `keyboard.press_and_release`.
+  The default Python paste path snapshots bounded restorable clipboard formats
+  before setting transcript text and restores that snapshot when the clipboard
+  sequence is unchanged, preserving image/file/HTML assets instead of only text.
 - Fallback paths use `pyautogui` and `keyboard.write`; Tkinter clipboard helpers
   were removed from the standard path.
 - `Frontend/src-tauri/src/lib.rs` already has a Windows clipboard helper for
@@ -606,6 +609,10 @@ Implementation status on `codex/rust-expansion-plan`:
   the injected transcript text. Restore still skips when the Windows clipboard
   sequence changed after Scriber set its text, so user copies during the restore
   delay win over Scriber's delayed restore.
+- The Python `auto`/`paste` injection path now follows the same snapshot rule as
+  Tauri `injectText`. It no longer continues with clipboard paste when the
+  existing clipboard cannot be snapshotted, because that would overwrite
+  non-text assets without a safe restore path.
 - Added strict `SCRIBER_INJECT_METHOD=tauri` in Python `TextInjector`.
   `auto` intentionally still uses the existing Python paste path until installed
   target-app evidence justifies changing the default.

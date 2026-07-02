@@ -5,6 +5,7 @@ import os
 import time
 import threading
 import ctypes
+from dataclasses import dataclass
 from ctypes import wintypes
 from typing import Callable, Optional
 from loguru import logger
@@ -41,6 +42,22 @@ class _ClipboardAccessFailed:
 
 
 _CLIPBOARD_ACCESS_FAILED = _ClipboardAccessFailed()
+
+
+@dataclass
+class _ClipboardFormatSnapshot:
+    format_id: int
+    data: bytes
+
+
+@dataclass
+class _ClipboardSnapshot:
+    formats: list[_ClipboardFormatSnapshot]
+    unsupported_format_count: int = 0
+    total_bytes: int = 0
+
+
+_MAX_CLIPBOARD_SNAPSHOT_BYTES = 64 * 1024 * 1024
 
 
 # =============================================================================
@@ -286,6 +303,153 @@ def _windows_clipboard_set_text(text: str, *, retries: int = 5, delay_secs: floa
     return False
 
 
+def _windows_clipboard_sequence_number() -> int | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
+        return int(user32.GetClipboardSequenceNumber())
+    except Exception:
+        return None
+
+
+def _windows_clipboard_snapshot(
+    *,
+    retries: int = 5,
+    delay_secs: float = 0.005,
+) -> _ClipboardSnapshot | _ClipboardAccessFailed:
+    if sys.platform != "win32":
+        return _CLIPBOARD_ACCESS_FAILED
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.CloseClipboard.restype = wintypes.BOOL
+    user32.EnumClipboardFormats.argtypes = [wintypes.UINT]
+    user32.EnumClipboardFormats.restype = wintypes.UINT
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalSize.restype = ctypes.c_size_t
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+
+    for _ in range(retries):
+        if not user32.OpenClipboard(None):
+            time.sleep(delay_secs)
+            continue
+        try:
+            snapshot = _ClipboardSnapshot(formats=[])
+            format_id = int(user32.EnumClipboardFormats(0))
+            while format_id:
+                handle = user32.GetClipboardData(format_id)
+                if not handle:
+                    snapshot.unsupported_format_count += 1
+                    format_id = int(user32.EnumClipboardFormats(format_id))
+                    continue
+
+                byte_len = int(kernel32.GlobalSize(handle))
+                if byte_len <= 0:
+                    snapshot.unsupported_format_count += 1
+                    format_id = int(user32.EnumClipboardFormats(format_id))
+                    continue
+                if snapshot.total_bytes + byte_len > _MAX_CLIPBOARD_SNAPSHOT_BYTES:
+                    logger.warning("Clipboard snapshot too large; refusing to overwrite clipboard")
+                    return _CLIPBOARD_ACCESS_FAILED
+
+                ptr = kernel32.GlobalLock(handle)
+                if not ptr:
+                    snapshot.unsupported_format_count += 1
+                    format_id = int(user32.EnumClipboardFormats(format_id))
+                    continue
+                try:
+                    data = ctypes.string_at(ptr, byte_len)
+                finally:
+                    kernel32.GlobalUnlock(handle)
+
+                snapshot.formats.append(_ClipboardFormatSnapshot(format_id=format_id, data=data))
+                snapshot.total_bytes += byte_len
+                format_id = int(user32.EnumClipboardFormats(format_id))
+
+            if not snapshot.formats and snapshot.unsupported_format_count:
+                logger.warning("Clipboard contains only unsupported formats; refusing to overwrite clipboard")
+                return _CLIPBOARD_ACCESS_FAILED
+            return snapshot
+        finally:
+            user32.CloseClipboard()
+
+    logger.warning("Clipboard snapshot access failed after retries")
+    return _CLIPBOARD_ACCESS_FAILED
+
+
+def _windows_clipboard_restore_snapshot(
+    snapshot: _ClipboardSnapshot,
+    *,
+    retries: int = 5,
+    delay_secs: float = 0.005,
+) -> bool:
+    if sys.platform != "win32":
+        return False
+
+    GMEM_MOVEABLE = 0x0002
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.CloseClipboard.restype = wintypes.BOOL
+    user32.EmptyClipboard.restype = wintypes.BOOL
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.restype = wintypes.HGLOBAL
+
+    for _ in range(retries):
+        if not user32.OpenClipboard(None):
+            time.sleep(delay_secs)
+            continue
+        try:
+            if not user32.EmptyClipboard():
+                return False
+
+            restored_any = False
+            for item in snapshot.formats:
+                hglobal = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(item.data))
+                if not hglobal:
+                    logger.debug(f"Clipboard restore skipped format {item.format_id}: GlobalAlloc failed")
+                    continue
+                ptr = kernel32.GlobalLock(hglobal)
+                if not ptr:
+                    kernel32.GlobalFree(hglobal)
+                    logger.debug(f"Clipboard restore skipped format {item.format_id}: GlobalLock failed")
+                    continue
+                try:
+                    ctypes.memmove(ptr, item.data, len(item.data))
+                finally:
+                    kernel32.GlobalUnlock(hglobal)
+
+                # After SetClipboardData succeeds, the system owns the handle.
+                if not user32.SetClipboardData(item.format_id, hglobal):
+                    kernel32.GlobalFree(hglobal)
+                    logger.debug(f"Clipboard restore skipped format {item.format_id}: SetClipboardData failed")
+                    continue
+                restored_any = True
+            return restored_any or not snapshot.formats
+        finally:
+            user32.CloseClipboard()
+
+    return False
+
+
 def _paste_text(
     text: str,
     *,
@@ -312,21 +476,24 @@ def _paste_text(
     ):
         return False
 
-    # Only save previous clipboard if we're going to restore it
-    previous_text = None if skip_clipboard_restore else _windows_clipboard_get_text()
+    # Only save previous clipboard if we're going to restore it. This uses a
+    # full format snapshot so image/file/HTML clipboard assets are not replaced
+    # permanently by the transcript text.
+    previous_clipboard = None if skip_clipboard_restore else _windows_clipboard_snapshot()
 
-    if previous_text is _CLIPBOARD_ACCESS_FAILED:
-        logger.warning("Current clipboard could not be read; continuing paste injection without restore")
-        previous_text = None
-        skip_clipboard_restore = True
+    if previous_clipboard is _CLIPBOARD_ACCESS_FAILED:
+        logger.warning("Current clipboard could not be snapshotted; skipping paste to avoid overwriting it")
+        return False
 
     if not _windows_clipboard_set_text(text):
-        if isinstance(previous_text, str):
-            _windows_clipboard_set_text(previous_text)
+        if isinstance(previous_clipboard, _ClipboardSnapshot):
+            _windows_clipboard_restore_snapshot(previous_clipboard)
         return False
+    clipboard_sequence_after_set = _windows_clipboard_sequence_number()
     if on_marker:
         on_marker("clipboard_set")
 
+    paste_dispatched = False
     try:
         # OPTIMIZED: App-specific pre-delay (0ms for most apps, ~80ms only for Word/Outlook)
         pre_delay_ms = _get_pre_delay_for_window()
@@ -349,6 +516,7 @@ def _paste_text(
                 pyautogui.hotkey("ctrl", "v", interval=0.05)
             else:
                 return False
+        paste_dispatched = True
         if on_marker:
             on_marker("paste")
 
@@ -358,17 +526,25 @@ def _paste_text(
             )
         return True
     finally:
-        if skip_clipboard_restore or previous_text is None:
+        if skip_clipboard_restore or not isinstance(previous_clipboard, _ClipboardSnapshot):
             pass  # Skip restoration for speed or no previous content
         else:
-            restore_delay_ms = max(0, int(getattr(Config, "PASTE_RESTORE_DELAY_MS", 0) or 0))
+            restore_delay_ms = (
+                max(0, int(getattr(Config, "PASTE_RESTORE_DELAY_MS", 0) or 0))
+                if paste_dispatched
+                else 0
+            )
 
             def _restore_if_unchanged():
                 try:
-                    current = _windows_clipboard_get_text()
-                    # Only restore if the clipboard still contains our injected text
-                    if current == text:
-                        _windows_clipboard_set_text(previous_text)
+                    current_sequence = _windows_clipboard_sequence_number()
+                    if (
+                        clipboard_sequence_after_set is not None
+                        and current_sequence is not None
+                        and current_sequence != clipboard_sequence_after_set
+                    ):
+                        return
+                    _windows_clipboard_restore_snapshot(previous_clipboard)
                 except Exception:
                     pass
 
