@@ -669,7 +669,7 @@ if ($VerifyUninstall -and $KeepInstalled) {
     throw "-VerifyUninstall cannot be combined with -KeepInstalled."
 }
 if (-not $InstallerPath) {
-    $InstallerPath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.0_x64-setup.exe"
+    $InstallerPath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.1_x64-setup.exe"
 }
 if (-not (Test-Path $InstallerPath)) {
     throw "Missing installer: $InstallerPath"
