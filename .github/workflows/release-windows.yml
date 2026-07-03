@@ -84,6 +84,7 @@ jobs:
             "-File",
             "scripts\build_windows.ps1",
             "-SkipSmoke",
+            "-SkipPythonTests",
             "-RunMediaPreparationSmoke",
             "-RunRuntimeDependencyFootprint",
             "-MediaToolsDir",

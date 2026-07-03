@@ -504,6 +504,8 @@ It:
 - sets up Python, Node, Rust, and MSYS2/UCRT64,
 - builds FFmpeg Profile B,
 - passes the produced media tools to `scripts/build_windows.ps1`,
+- skips the full Python unit suite in the packaging step; run it before release
+  or through PR/readiness gates,
 - runs media-preparation and runtime dependency footprint gates,
 - uploads or publishes NSIS artifacts and release metadata,
 - optionally validates Authenticode signatures and Tauri updater metadata when
