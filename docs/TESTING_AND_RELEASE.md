@@ -83,9 +83,11 @@ Performance/packaging:
   from the build config. This keeps fresh CI runners compatible with Tauri's
   early resource-path validation while preserving the checked-in
   `beforeBundleCommand` for direct developer `npm run tauri:build` workflows.
-- `requirements-base.txt` pins `pipecat-ai[silero]` because the frozen backend
-  runtime import gate covers provider modules such as Deepgram and Speechmatics;
-  unpinned Pipecat major upgrades can break those imports on fresh CI runners.
+- `requirements-base.txt` pins the Pipecat/provider SDK combination used by the
+  frozen backend runtime import gate. Pipecat, Deepgram, Speechmatics RT, and
+  `speechmatics-voice` must move together: unpinned Pipecat or provider SDK
+  drift can break fresh CI runners, while `pipecat-ai[speechmatics]` would pull
+  `transformers`/HuggingFace into the standard installer.
 
 ## Installer Builds
 

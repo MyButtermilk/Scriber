@@ -41,12 +41,17 @@ def test_standard_requirements_include_audio_runtime_dependencies():
 
     assert "scipy" not in requirements
     assert "onnxruntime" in requirements
-    assert "pipecat-ai[silero]==0.0.97" in requirements
+    assert "pipecat-ai[silero]==1.4.0" in requirements
+    assert "deepgram-sdk==7.4.0" in requirements
     assert "google-cloud-speech<3,>=2.33.0" in requirements
     assert "google-genai<2,>=1.41.0" in requirements
     assert "groq~=0.23.0" in requirements
-    assert "nltk<4,>=3.9.1" in requirements
+    assert "nltk<4,>=3.9.4" in requirements
     assert "openai<3,>=1.74.0" in requirements
+    assert "speechmatics-rt==1.1.0" in requirements
+    assert "speechmatics-voice==0.2.8" in requirements
+    assert "speechmatics-python" not in requirements
+    assert all("transformers" not in line for line in requirements)
     assert "google-generativeai" not in requirements
     assert "azure-cognitiveservices-speech~=1.42.0" not in requirements
     assert "PySide6-Essentials" not in requirements
