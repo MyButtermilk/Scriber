@@ -10,10 +10,18 @@ import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
 import { useSharedWebSocket, WebSocketProvider, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
 import { useToast } from "@/hooks/use-toast";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri } from "@/lib/backend";
 import { preloadPrimaryTabChunks } from "@/lib/route-preload";
 import { preloadPrimaryTabData } from "@/lib/tab-data-preload";
+import { ToastAction } from "@/components/ui/toast";
+import {
+  checkDesktopUpdateIfDue,
+  getCachedDesktopUpdateStatus,
+  shouldNotifyDesktopUpdate,
+  subscribeDesktopUpdateStatus,
+  type DesktopUpdateStatus,
+} from "@/lib/desktop-updates";
 
 // Keep default route eager for fastest first paint, lazy-load heavier routes.
 import LiveMic from "@/pages/LiveMic";
@@ -130,6 +138,93 @@ function TranscriptHistoryInvalidationBridge() {
   return null;
 }
 
+const DESKTOP_UPDATE_STARTUP_DELAY_MS = 12_000;
+const DESKTOP_UPDATE_BACKGROUND_POLL_MS = 6 * 60 * 60 * 1000;
+
+function isBusyForUpdatePrompt(msg: ScriberWebSocketMessage): boolean | null {
+  if (msg.type === "transcribing" || msg.type === "session_started") {
+    return true;
+  }
+  if (msg.type === "session_finished") {
+    return false;
+  }
+  if (msg.type === "state" || msg.type === "status") {
+    const recordingState = String(msg.recordingState || "").toLowerCase();
+    return Boolean(
+      msg.listening ||
+      msg.transcribing ||
+      (recordingState && !["idle", "completed", "failed", "stopped"].includes(recordingState)),
+    );
+  }
+  return null;
+}
+
+function DesktopUpdateAutoCheckBridge() {
+  const { toast } = useToast();
+  const [, setLocation] = useLocation();
+  const busyRef = useRef(false);
+  const notifiedVersionRef = useRef<string | null>(null);
+
+  const maybeNotify = useCallback((status: DesktopUpdateStatus) => {
+    if (busyRef.current || !shouldNotifyDesktopUpdate(status) || !status.version) {
+      return;
+    }
+    if (notifiedVersionRef.current === status.version) {
+      return;
+    }
+    notifiedVersionRef.current = status.version;
+    toast({
+      title: "Update available",
+      description: `Scriber ${status.version} is ready to install.`,
+      duration: 9000,
+      action: (
+        <ToastAction altText="Open update settings" onClick={() => setLocation("/settings")}>
+          View
+        </ToastAction>
+      ),
+    });
+  }, [setLocation, toast]);
+
+  const checkIfDue = useCallback(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    void checkDesktopUpdateIfDue({ isBusy: busyRef.current })
+      .then((result) => maybeNotify(result.status))
+      .catch((error) => console.debug("Desktop update background check failed.", error));
+  }, [maybeNotify]);
+
+  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
+    const busy = isBusyForUpdatePrompt(msg);
+    if (busy === null) {
+      return;
+    }
+    const wasBusy = busyRef.current;
+    busyRef.current = busy;
+    if (wasBusy && !busy) {
+      maybeNotify(getCachedDesktopUpdateStatus());
+    }
+  }, [maybeNotify]);
+
+  useSharedWebSocket(handleWsMessage);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    const unsubscribe = subscribeDesktopUpdateStatus(maybeNotify);
+    const startupTimer = window.setTimeout(checkIfDue, DESKTOP_UPDATE_STARTUP_DELAY_MS);
+    const interval = window.setInterval(checkIfDue, DESKTOP_UPDATE_BACKGROUND_POLL_MS);
+    return () => {
+      window.clearTimeout(startupTimer);
+      window.clearInterval(interval);
+      unsubscribe();
+    };
+  }, [checkIfDue, maybeNotify]);
+
+  return null;
+}
+
 function RuntimeShell() {
   const { isOnline } = useBackendStatus();
   const queryClient = useQueryClient();
@@ -144,6 +239,7 @@ function RuntimeShell() {
     <WebSocketProvider path="/ws" autoReconnect={true} reconnectDelay={1000} enabled={websocketEnabled}>
       <RecordingErrorToastBridge />
       <TranscriptHistoryInvalidationBridge />
+      <DesktopUpdateAutoCheckBridge />
       <BackendOfflineBanner />
       <Router />
     </WebSocketProvider>

@@ -409,6 +409,12 @@ if (-not $SkipChecks -and -not $SkipFrontendTypeCheck) {
 
 try {
     if ($EnableTauriUpdater) {
+        if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and $env:TAURI_SIGNING_PRIVATE_KEY_PATH) {
+            if (-not (Test-Path -LiteralPath $env:TAURI_SIGNING_PRIVATE_KEY_PATH -PathType Leaf)) {
+                throw "TAURI_SIGNING_PRIVATE_KEY_PATH does not point to a file."
+            }
+            $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -LiteralPath $env:TAURI_SIGNING_PRIVATE_KEY_PATH -Raw
+        }
         $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
         Invoke-Checked -Label "Prepare Tauri updater config" -Command {
             Push-Location $RepoRoot
@@ -537,12 +543,27 @@ try {
         path = $null
         generatedAt = $null
     }
+    $currentVersion = (python -c "from scripts.create_release_metadata import read_version; print(read_version())").Trim()
     $artifacts = @()
     if ((-not $FastLocalStagedApp) -and (Test-Path $bundleRoot)) {
-        $artifacts = @(
+        $allArtifacts = @(
             Get-ChildItem -Path $bundleRoot -Recurse -File -Include *.exe,*.msi |
-                Select-Object -ExpandProperty FullName
+                Sort-Object FullName
         )
+        $currentArtifacts = @(
+            $allArtifacts | Where-Object { $_.Name -like "*$currentVersion*" }
+        )
+        if ($currentArtifacts.Count -gt 0) {
+            $artifacts = @($currentArtifacts | Select-Object -ExpandProperty FullName)
+        } else {
+            $artifacts = @($allArtifacts | Select-Object -ExpandProperty FullName)
+        }
+        if ($artifacts.Count -gt 0) {
+            Write-Host (
+                "Release artifacts selected for metadata: " +
+                (($artifacts | ForEach-Object { Split-Path -Leaf $_ }) -join ", ")
+            )
+        }
     }
 
     if ($RunMediaPreparationSmoke) {

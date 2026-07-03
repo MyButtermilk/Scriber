@@ -96,6 +96,9 @@ Key modules:
 - `Frontend/client/src/contexts/WebSocketContext.tsx`: one shared WebSocket.
 - `Frontend/client/src/lib/backend.ts`: browser/dev/Tauri backend URL and token
   handling.
+- `Frontend/client/src/lib/desktop-updates.ts`: Tauri updater guest API wrapper,
+  local update cache, weekly automatic-check policy, per-version dismissal,
+  reminder deferral, and release-notes opener.
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing types.
 
 The frontend should not own backend lifecycle decisions. In desktop runtime it
@@ -104,6 +107,13 @@ health is proven.
 Installed frontend assets are owned by Tauri through `frontendDist` and are
 loaded from the WebView origin (`http://tauri.localhost`), not from the Python
 backend loopback server.
+Desktop update checks are frontend/Tauri-owned rather than Python-backend
+work. Installed builds check the configured Tauri updater endpoint in the
+background after startup and then about once per week, cache the result in
+local storage, and suppress update prompts while recording or transcription is
+active. Users can install, defer for a day, skip the current version, or open
+release notes from Settings. Unsigned/dev builds keep the updater plugin wired
+but are expected to report that release updater configuration is missing.
 
 ## Tauri Shell
 
@@ -116,6 +126,9 @@ backend loopback server.
 - Register global hotkey through Tauri.
 - Own Windows autostart through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - Own tray/menu shell actions: open/focus, restart backend, quit.
+- Initialize the Tauri updater plugin. Release builds provide updater endpoint,
+  public key, and signed artifacts through build-time configuration; Windows
+  updater installation runs in Tauri's passive mode.
 - Run worker crash recovery and write crash metadata.
 - Avoid visible console windows for the Python child on Windows.
 - Own the installed frontend asset bundle through Tauri `frontendDist`; the

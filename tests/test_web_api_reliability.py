@@ -20,6 +20,7 @@ class _FallbackPipeline:
         on_progress=None,
         on_mic_ready=None,
         on_error=None,
+        **_kwargs,
     ):
         self.service_name = service_name
         self.on_transcription = on_transcription
@@ -46,6 +47,7 @@ class _RetryPipeline:
         on_progress=None,
         on_mic_ready=None,
         on_error=None,
+        **_kwargs,
     ):
         self.service_name = service_name
         self.on_transcription = on_transcription

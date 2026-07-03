@@ -33,6 +33,7 @@ def configure_tauri_updater(config: dict, *, public_key: str, endpoints: list[st
     updater = plugins.setdefault("updater", {})
     updater["pubkey"] = public_key.strip()
     updater["endpoints"] = endpoints
+    updater.setdefault("windows", {})["installMode"] = "passive"
     return config
 
 

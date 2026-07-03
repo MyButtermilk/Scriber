@@ -101,14 +101,19 @@ Docs:
 
 Signing/updater:
 
-- Tauri updater wiring exists, but production update flow needs signing keys,
-  HTTPS endpoint, signed `latest.json`, and publication evidence.
+- Tauri updater wiring, weekly non-blocking frontend checks, local update cache,
+  one-day deferral, per-version skip, manual install/restart, and release-note
+  access are implemented for installed builds.
+- Free Tauri updater artifact signing is wired through GitHub Actions
+  secrets/variables. Each production update still needs the signed installer,
+  `.sig`, `latest.json`, and `SHA256SUMS.txt` published to the public GitHub
+  Release endpoint, plus publication evidence.
 - Authenticode validation exists, but real signing requires a certificate or
   cloud-signing provider.
 - `run_hybrid_release_readiness.ps1 -RunReleaseBuild` can now run the Windows
   release build as an evidence producer and reuse its Authenticode validation
-  report, but it still depends on real Tauri updater signing secrets,
-  Authenticode signing, and public HTTPS publication.
+  report, but it still depends on Authenticode signing when that gate is
+  enabled and on public HTTPS updater publication.
 
 Physical hardware evidence:
 

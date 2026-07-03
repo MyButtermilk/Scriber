@@ -125,6 +125,15 @@ Packaging and scripts:
   the runtime backend.
 - Rust owns Windows autostart, global hotkey registration, single-instance
   startup, tray/menu shell actions, and worker crash recovery.
+- Rust initializes the Tauri updater plugin, but frontend code owns update
+  checks and user-facing update UX. Keep update checks non-blocking, cached,
+  about weekly by default, and suppress automatic prompts while recording or
+  transcription is active. Do not add a Python backend updater cron or ping.
+  Production update builds must use signed Tauri updater artifacts, a public
+  HTTPS `latest.json`, and publication verification. `scripts/build_windows.ps1`
+  may accept a local `TAURI_SIGNING_PRIVATE_KEY_PATH`, but it must normalize it
+  to `TAURI_SIGNING_PRIVATE_KEY` before invoking Tauri; do not commit updater
+  private keys.
 - Rust also exposes a private shell IPC channel for opt-in native text
   injection. `SCRIBER_INJECT_METHOD=tauri` is strict; `auto` must stay on the
   existing Python paste path until installed target-app evidence justifies a

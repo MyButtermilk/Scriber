@@ -40,8 +40,13 @@ import {
   checkDesktopUpdate,
   initialDesktopUpdateStatus,
   installDesktopUpdate,
+  openDesktopUpdateReleaseNotes,
+  remindDesktopUpdateLater,
+  skipDesktopUpdateVersion,
+  subscribeDesktopUpdateStatus,
   type DesktopUpdateProgress,
   type DesktopUpdateStatus,
+  updateDesktopUpdateSettings,
 } from "@/lib/desktop-updates";
 import {
   DEFAULT_VISUALIZER_BAR_COUNT,
@@ -354,6 +359,10 @@ export default function Settings() {
   const [nemoMessage, setNemoMessage] = useState("");
   const [nemoModels, setNemoModels] = useState<NemoModelInfo[]>([]);
   const [nemoModel, setNemoModel] = useState("");
+
+  useEffect(() => {
+    return subscribeDesktopUpdateStatus(setDesktopUpdate);
+  }, []);
 
   const selectedModelLabel =
     TRANSCRIPTION_MODEL_OPTIONS.find((option) => option.value === transcriptionModel)?.label ||
@@ -1157,12 +1166,13 @@ export default function Settings() {
       });
     } catch (e: any) {
       const message = String(e?.message || e);
-      setDesktopUpdate({
+      setDesktopUpdate((prev) => ({
+        ...prev,
         phase: "error",
         enabled: false,
         available: false,
         message,
-      });
+      }));
       toast({
         title: "Update check failed",
         description: message,
@@ -1195,6 +1205,40 @@ export default function Settings() {
     } finally {
       setIsInstallingDesktopUpdate(false);
     }
+  };
+
+  const handleDesktopAutoCheckChange = (enabled: boolean) => {
+    const status = updateDesktopUpdateSettings({ autoCheckEnabled: enabled });
+    setDesktopUpdate(status);
+    toast({
+      title: "Saved",
+      description: enabled ? "Weekly update checks enabled." : "Automatic update checks disabled.",
+      duration: 2500,
+    });
+  };
+
+  const handleRemindDesktopUpdateLater = () => {
+    const status = remindDesktopUpdateLater(desktopUpdate.version);
+    setDesktopUpdate(status);
+    toast({
+      title: "Reminder set",
+      description: "Scriber will remind you about this update tomorrow.",
+      duration: 3000,
+    });
+  };
+
+  const handleSkipDesktopUpdateVersion = () => {
+    const status = skipDesktopUpdateVersion(desktopUpdate.version);
+    setDesktopUpdate(status);
+    toast({
+      title: "Update skipped",
+      description: "This version will not be announced again.",
+      duration: 3000,
+    });
+  };
+
+  const handleOpenDesktopUpdateReleaseNotes = () => {
+    void openDesktopUpdateReleaseNotes();
   };
 
   const handleMicAlwaysOnChange = async (enabled: boolean) => {
@@ -1328,21 +1372,30 @@ export default function Settings() {
     if (status === "error") return "destructive";
     return "outline";
   };
-  const desktopUpdateBadgeVariant: "default" | "secondary" | "destructive" | "outline" =
-    desktopUpdate.phase === "error"
-      ? "destructive"
-      : desktopUpdate.available
-        ? "default"
-        : desktopUpdate.enabled
-          ? "secondary"
-          : "outline";
-  const desktopUpdateBadgeLabel = desktopUpdate.available
-    ? "Available"
-    : desktopUpdate.phase === "idle"
-      ? "Not checked"
-      : desktopUpdate.enabled
-        ? "Current"
-        : "Not configured";
+  const desktopUpdateBadgeVariant: "default" | "secondary" | "destructive" | "outline" = (() => {
+    if (desktopUpdate.phase === "error") return "destructive";
+    if (desktopUpdate.dismissed) return "outline";
+    if (desktopUpdate.deferred) return "secondary";
+    if (desktopUpdate.available) return "default";
+    if (desktopUpdate.enabled) return "secondary";
+    return "outline";
+  })();
+  const desktopUpdateBadgeLabel = (() => {
+    if (desktopUpdate.available && desktopUpdate.dismissed) return "Skipped";
+    if (desktopUpdate.available && desktopUpdate.deferred) return "Later";
+    if (desktopUpdate.available) return "Available";
+    if (desktopUpdate.phase === "idle") return "Not checked";
+    if (desktopUpdate.enabled) return "Current";
+    return "Not configured";
+  })();
+  const desktopUpdateLastCheckedLabel = desktopUpdate.lastCheckedAt
+    ? new Date(desktopUpdate.lastCheckedAt).toLocaleString()
+    : "Never";
+  const desktopUpdateNextCheckLabel = !desktopUpdate.autoCheckEnabled
+    ? "Automatic checks disabled"
+    : desktopUpdate.lastCheckedAt && desktopUpdate.nextCheckAt
+      ? new Date(desktopUpdate.nextCheckAt).toLocaleString()
+      : "When Scriber starts";
 
   return (
     <div className={`settings-page max-w-screen-md mx-auto px-4 py-6 md:py-8 transition-opacity duration-150 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
@@ -2161,15 +2214,34 @@ export default function Settings() {
               </div>
             </AccordionTrigger>
             <AccordionContent>
-              <div className="px-6 pb-6 space-y-4">
+              <div className="px-6 pb-6 space-y-5">
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div className="space-y-1">
                     <Label className="text-base">Update status</Label>
                     <p className="text-sm text-muted-foreground">{desktopUpdate.message}</p>
+                    {desktopUpdate.deferred && desktopUpdate.deferredUntil && (
+                      <p className="text-xs text-muted-foreground">
+                        Reminder paused until {new Date(desktopUpdate.deferredUntil).toLocaleString()}.
+                      </p>
+                    )}
                   </div>
                   <Badge variant={desktopUpdateBadgeVariant} className="w-fit">
                     {desktopUpdateBadgeLabel}
                   </Badge>
+                </div>
+
+                <div className="settings-control-row rounded-lg border border-border/60 bg-secondary/20 p-3">
+                  <div className="space-y-0.5">
+                    <Label className="text-sm">Automatic checks</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Scriber checks GitHub in the background about once per week and never interrupts active recording.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={desktopUpdate.autoCheckEnabled}
+                    onCheckedChange={handleDesktopAutoCheckChange}
+                    disabled={isInstallingDesktopUpdate}
+                  />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
@@ -2180,6 +2252,14 @@ export default function Settings() {
                   <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                     <p className="text-xs text-muted-foreground">Available version</p>
                     <p className="font-medium text-foreground">{desktopUpdate.version || "None"}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                    <p className="text-xs text-muted-foreground">Last checked</p>
+                    <p className="font-medium text-foreground">{desktopUpdateLastCheckedLabel}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                    <p className="text-xs text-muted-foreground">Next automatic check</p>
+                    <p className="font-medium text-foreground">{desktopUpdateNextCheckLabel}</p>
                   </div>
                 </div>
 
@@ -2225,6 +2305,28 @@ export default function Settings() {
                       <Download className="w-4 h-4 mr-2" />
                     )}
                     Install and restart
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={handleRemindDesktopUpdateLater}
+                    disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}
+                  >
+                    Remind tomorrow
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={handleSkipDesktopUpdateVersion}
+                    disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}
+                  >
+                    Skip this version
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={handleOpenDesktopUpdateReleaseNotes}
+                    disabled={isInstallingDesktopUpdate}
+                  >
+                    <ExternalLink className="w-4 h-4 mr-2" />
+                    Release notes
                   </Button>
                 </div>
               </div>

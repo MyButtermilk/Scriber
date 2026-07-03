@@ -40,14 +40,33 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def discover_artifacts(root: Path = DEFAULT_ARTIFACT_DIR) -> list[Path]:
+def discover_artifacts(root: Path = DEFAULT_ARTIFACT_DIR, *, version: str | None = None) -> list[Path]:
     if not root.exists():
         return []
-    return sorted(
+    artifacts = sorted(
         path
         for path in root.rglob("*")
         if path.is_file() and path.suffix.lower() in {".exe", ".msi"}
     )
+    if version:
+        normalized_version = version[1:] if version.startswith("v") else version
+        current = [path for path in artifacts if normalized_version in path.name]
+        if current:
+            return current
+    return artifacts
+
+
+def primary_platform_artifact(artifacts: list[Path]) -> Path | None:
+    if not artifacts:
+        return None
+    nsis = [
+        path
+        for path in artifacts
+        if path.suffix.lower() == ".exe" and "setup" in path.name.lower()
+    ]
+    if nsis:
+        return sorted(nsis)[0]
+    return sorted(artifacts)[0]
 
 
 def artifact_url(path: Path, *, base_url: str | None, repository: str | None, tag: str | None) -> str:
@@ -80,6 +99,8 @@ def build_latest_json(
     artifact_entries = []
     platforms: dict[str, dict[str, str]] = {}
 
+    platform_artifact = primary_platform_artifact(artifacts)
+
     for path in artifacts:
         checksum = sha256_file(path)
         url = artifact_url(path, base_url=base_url, repository=repository, tag=tag)
@@ -93,9 +114,12 @@ def build_latest_json(
                 "signature": signature,
             }
         )
+
+    if platform_artifact:
+        signature = read_signature(platform_artifact)
         platforms[platform] = {
             "signature": signature,
-            "url": url,
+            "url": artifact_url(platform_artifact, base_url=base_url, repository=repository, tag=tag),
         }
 
     return {
@@ -165,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
 
     artifacts = [Path(item).expanduser().resolve() for item in args.artifact]
     if not artifacts:
-        artifacts = discover_artifacts()
+        artifacts = discover_artifacts(version=args.version)
     missing = [str(path) for path in artifacts if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"Missing release artifacts: {', '.join(missing)}")

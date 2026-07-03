@@ -100,7 +100,7 @@ path.
 Typical output:
 
 ```text
-Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.3.0_x64-setup.exe
+Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.0_x64-setup.exe
 ```
 
 Broader local installed workflow smoke:
@@ -511,16 +511,39 @@ It:
 
 ## Signing And Updater Status
 
-Tauri updater plugin wiring exists in the shell and frontend settings UI.
+Tauri updater plugin wiring exists in the shell, frontend settings UI, and the
+startup path for installed builds. The frontend owns update checks: it waits
+briefly after startup, checks the configured updater endpoint in the background
+about once per week, caches the latest result locally, and suppresses update
+notifications while recording or transcription is active. Settings exposes
+manual check, install/restart, release notes, one-day deferral, per-version
+skip, and an automatic-check toggle.
 
-Updater artifacts and update publication require:
+The Python backend must not run an updater cron or ping. Update publication is
+validated at release time through signed Tauri metadata.
 
-- Tauri updater public key,
-- Tauri signing private key,
-- HTTPS updater endpoint,
-- generated and published `latest.json`,
-- signature-required metadata validation,
-- publication verification.
+The GitHub release workflow uses Tauri's free updater artifact signing with
+these repository secrets/variables:
+
+- `SCRIBER_TAURI_UPDATER_PUBLIC_KEY`
+- `TAURI_SIGNING_PRIVATE_KEY`
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+- `SCRIBER_TAURI_UPDATER_ENDPOINT`
+
+`scripts\prepare_tauri_updater_config.py` enables updater artifacts, writes the
+public key/endpoints into `tauri.conf.json`, and sets Windows updater
+installation to Tauri's passive mode. For local signed builds,
+`scripts\build_windows.ps1` also accepts `TAURI_SIGNING_PRIVATE_KEY_PATH` and
+normalizes it to `TAURI_SIGNING_PRIVATE_KEY` before invoking the Tauri CLI.
+`scripts\create_release_metadata.py` prefers artifacts whose filename contains
+the current app version when auto-discovering release files, and
+`scripts\build_windows.ps1` applies the same current-version filter before
+writing release metadata. This keeps stale installers left in the bundle tree
+out of `latest.json`.
+
+Publishing an update still requires uploading the installer, `.sig`,
+`latest.json`, and `SHA256SUMS.txt` to a public HTTPS GitHub Release endpoint,
+then running publication verification against the released `latest.json`.
 
 Authenticode validation exists as a gate, but actual signing requires a real
 certificate or cloud-signing provider.
