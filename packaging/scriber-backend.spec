@@ -3,7 +3,7 @@
 from pathlib import Path
 import os
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
 
 repo_root = Path(os.environ.get("SCRIBER_REPO_ROOT", Path.cwd())).resolve()
 
@@ -65,6 +65,7 @@ def collect_required_dynamic_libs(package):
 binaries = collect_required_dynamic_libs("onnxruntime")
 
 datas = []
+datas += copy_metadata("pipecat-ai")
 assets_dir = repo_root / "src" / "assets"
 if assets_dir.exists():
     datas.append((str(assets_dir), "src/assets"))

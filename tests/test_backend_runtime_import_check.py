@@ -134,6 +134,8 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
         1,
     )[0]
     assert '"onnxruntime"' not in collect_submodules_packages
+    assert "copy_metadata" in spec
+    assert 'copy_metadata("pipecat-ai")' in spec
     assert "collect_data_files(" in spec
     assert '"onnxruntime",' in spec
     assert "includes=[" in spec
