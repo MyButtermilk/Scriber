@@ -1396,6 +1396,13 @@ export default function Settings() {
     : desktopUpdate.lastCheckedAt && desktopUpdate.nextCheckAt
       ? new Date(desktopUpdate.nextCheckAt).toLocaleString()
       : "When Scriber starts";
+  const desktopUpdateAvailableVersionLabel = (() => {
+    if (desktopUpdate.version) return desktopUpdate.version;
+    if (desktopUpdate.phase === "idle") return "Not checked";
+    if (desktopUpdate.phase === "error") return "Check failed";
+    if (!desktopUpdate.enabled) return "Not configured";
+    return "No newer version";
+  })();
 
   return (
     <div className={`settings-page max-w-screen-md mx-auto px-4 py-6 md:py-8 transition-opacity duration-150 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
@@ -2250,8 +2257,8 @@ export default function Settings() {
                     <p className="font-medium text-foreground">{desktopUpdate.currentVersion || "Unknown"}</p>
                   </div>
                   <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
-                    <p className="text-xs text-muted-foreground">Available version</p>
-                    <p className="font-medium text-foreground">{desktopUpdate.version || "None"}</p>
+                    <p className="text-xs text-muted-foreground">Available update</p>
+                    <p className="font-medium text-foreground">{desktopUpdateAvailableVersionLabel}</p>
                   </div>
                   <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                     <p className="text-xs text-muted-foreground">Last checked</p>
