@@ -78,7 +78,11 @@ Performance/packaging:
 - Tauri bundle resources include the Python `backend/` resource tree. The Rust
   audio sidecar is bundled once as Tauri's install-root
   `scriber-audio-sidecar.exe` and is the standard live-mic capture/prewarm
-  engine.
+  engine. `scripts\build_windows.ps1` prepares the Python backend sidecar before
+  calling `tauri build`, then temporarily removes Tauri's `beforeBundleCommand`
+  from the build config. This keeps fresh CI runners compatible with Tauri's
+  early resource-path validation while preserving the checked-in
+  `beforeBundleCommand` for direct developer `npm run tauri:build` workflows.
 
 ## Installer Builds
 

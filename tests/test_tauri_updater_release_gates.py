@@ -166,6 +166,17 @@ def test_build_script_validates_release_metadata_against_local_artifacts() -> No
     assert 'Join-Path $metadataDir "SHA256SUMS.txt"' in build_script
 
 
+def test_build_script_prepares_sidecar_before_tauri_bundle() -> None:
+    build_script = (REPO_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
+
+    sidecar_index = build_script.index('Invoke-Checked -Label "Tauri sidecar preparation"')
+    bundle_index = build_script.index('Invoke-Checked -Label "Tauri Windows bundle"')
+    assert sidecar_index < bundle_index
+    assert "Remove-TauriBeforeBundleCommand" in build_script
+    assert '$config.build.PSObject.Properties.Remove("beforeBundleCommand")' in build_script
+    assert "resources" in build_script
+
+
 def test_prepare_tauri_updater_config_writes_signed_release_config(tmp_path: Path) -> None:
     config = tmp_path / "tauri.conf.json"
     config.write_text(

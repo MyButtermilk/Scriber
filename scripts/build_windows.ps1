@@ -3,9 +3,11 @@
 Builds a Windows desktop release bundle for Scriber.
 
 .DESCRIPTION
-Runs the frontend type check, builds the Tauri Windows bundle, and optionally
-runs the release smoke test. The Tauri `beforeBundleCommand` builds and copies
-the Python backend sidecar with bundled ffmpeg/ffprobe before NSIS packaging.
+Runs the frontend type check, prepares the Python backend sidecar, builds the
+Tauri Windows bundle, and optionally runs the release smoke test. The checked-in
+Tauri `beforeBundleCommand` still supports direct `npm run tauri:build`, while
+this release orchestrator prepares the sidecar before Tauri validates bundle
+resources.
 
 Typical flow:
   powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
@@ -205,6 +207,16 @@ function Set-TauriNsisCompression {
     }
 
     $config.bundle.windows.nsis | Add-Member -NotePropertyName "compression" -NotePropertyValue $Compression -Force
+    return ($config | ConvertTo-Json -Depth 100)
+}
+
+function Remove-TauriBeforeBundleCommand {
+    param([string]$ConfigText)
+
+    $config = $ConfigText | ConvertFrom-Json
+    if ($config.build -and ($config.build.PSObject.Properties.Name -contains "beforeBundleCommand")) {
+        $config.build.PSObject.Properties.Remove("beforeBundleCommand")
+    }
     return ($config | ConvertTo-Json -Depth 100)
 }
 
@@ -493,6 +505,25 @@ try {
             }
         }
     } else {
+        Invoke-Checked -Label "Tauri sidecar preparation" -Command {
+            Push-Location $RepoRoot
+            try {
+                $sidecarArgs = New-SidecarBuildScriptArguments
+                powershell @sidecarArgs
+            } finally {
+                Pop-Location
+            }
+        }
+
+        if ($null -eq $tauriConfigOriginal) {
+            $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
+        }
+        $currentTauriConfig = Get-Content -Raw $tauriConfigPath
+        $updatedTauriConfig = Remove-TauriBeforeBundleCommand -ConfigText $currentTauriConfig
+        if ($updatedTauriConfig -ne $currentTauriConfig) {
+            Set-Utf8NoBomContent -Path $tauriConfigPath -Value $updatedTauriConfig
+        }
+
         Invoke-Checked -Label "Tauri Windows bundle" -Command {
             Push-Location $frontendRoot
             try {
