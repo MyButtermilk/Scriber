@@ -1,6 +1,6 @@
 # Pipecat core plus Silero VAD. Provider SDKs are explicit below so clean builds
 # do not pull unused TTS, GenAI, or compatibility extras into the installer.
-pipecat-ai[silero]
+pipecat-ai[silero]==0.0.97
 deepgram-sdk~=4.7.0
 google-genai<2,>=1.41.0
 google-cloud-speech<3,>=2.33.0

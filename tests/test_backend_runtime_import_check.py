@@ -41,6 +41,7 @@ def test_standard_requirements_include_audio_runtime_dependencies():
 
     assert "scipy" not in requirements
     assert "onnxruntime" in requirements
+    assert "pipecat-ai[silero]==0.0.97" in requirements
     assert "google-cloud-speech<3,>=2.33.0" in requirements
     assert "google-genai<2,>=1.41.0" in requirements
     assert "groq~=0.23.0" in requirements

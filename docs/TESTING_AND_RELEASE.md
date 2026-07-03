@@ -83,6 +83,9 @@ Performance/packaging:
   from the build config. This keeps fresh CI runners compatible with Tauri's
   early resource-path validation while preserving the checked-in
   `beforeBundleCommand` for direct developer `npm run tauri:build` workflows.
+- `requirements-base.txt` pins `pipecat-ai[silero]` because the frozen backend
+  runtime import gate covers provider modules such as Deepgram and Speechmatics;
+  unpinned Pipecat major upgrades can break those imports on fresh CI runners.
 
 ## Installer Builds
 
