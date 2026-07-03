@@ -36,7 +36,8 @@ $RequiredMsys2Packages = @(
     "mingw-w64-ucrt-x86_64-pkgconf",
     "mingw-w64-ucrt-x86_64-nasm",
     "mingw-w64-ucrt-x86_64-opus",
-    "mingw-w64-ucrt-x86_64-lame"
+    "mingw-w64-ucrt-x86_64-lame",
+    "mingw-w64-ucrt-x86_64-ffmpeg"
 )
 
 function Convert-ToFullPath {
@@ -163,6 +164,12 @@ function ConvertTo-MsysPath {
 function Get-FileInfoPayload {
     param([string]$Path)
 
+    if (-not $Path) {
+        return [ordered]@{
+            path = ""
+            exists = $false
+        }
+    }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return [ordered]@{
             path = $Path
@@ -196,6 +203,29 @@ function Copy-ProfileRuntimeDlls {
         }
     }
     return $copied
+}
+
+function Resolve-FixtureFfmpeg {
+    param([string]$Root)
+
+    $candidates = @(
+        (Join-Path $Root "ucrt64\bin\ffmpeg.exe")
+    )
+    $pathFfmpeg = Get-Command "ffmpeg.exe" -ErrorAction SilentlyContinue
+    if ($pathFfmpeg) {
+        $candidates += $pathFfmpeg.Source
+    }
+    $pathFfmpegNoExt = Get-Command "ffmpeg" -ErrorAction SilentlyContinue
+    if ($pathFfmpegNoExt) {
+        $candidates += $pathFfmpegNoExt.Source
+    }
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            return (Resolve-Path $candidate).Path
+        }
+    }
+    return ""
 }
 
 function Invoke-PythonGate {
@@ -259,7 +289,7 @@ if ($PlanOnly) {
         "git clone --branch `"$GitRef`" --depth 1 `"$SourceUrl`" <source-dir>",
         "JOBS=$JobsValue <kit>/configure-profile-b.sh <source-dir> <prefix-dir>",
         "python scripts\ffmpeg\validate_ffmpeg_profile.py --media-tools-dir <prefix-dir>\bin --profile B --require-lgpl --output `"$ManifestPath`"",
-        "python scripts\ffmpeg\smoke_profile_b_fixtures.py --media-tools-dir <prefix-dir>\bin --require-ffprobe --output `"$FixtureSmokePath`"",
+        "python scripts\ffmpeg\smoke_profile_b_fixtures.py --media-tools-dir <prefix-dir>\bin --fixture-ffmpeg <full-ffmpeg> --require-ffprobe --output `"$FixtureSmokePath`"",
         "python scripts\smoke_media_preparation.py --media-tools-dir <prefix-dir>\bin --require-ffprobe --output `"$MediaSmokePath`""
     )
     Write-Utf8NoBomJson -Path $ReportPath -Payload $plan
@@ -327,6 +357,7 @@ try {
         throw "Profile B build did not produce ffprobe.exe at $ffprobePath"
     }
     $runtimeDlls = Copy-ProfileRuntimeDlls -Root $Msys2Root -TargetDir $mediaToolsDir
+    $fixtureFfmpegPath = Resolve-FixtureFfmpeg -Root $Msys2Root
 
     Invoke-PythonGate -Label "Profile B manifest" -Arguments @(
         "scripts\ffmpeg\validate_ffmpeg_profile.py",
@@ -342,6 +373,8 @@ try {
         "scripts\ffmpeg\smoke_profile_b_fixtures.py",
         "--media-tools-dir",
         $mediaToolsDir,
+        "--fixture-ffmpeg",
+        $fixtureFfmpegPath,
         "--require-ffprobe",
         "--output",
         $FixtureSmokePath
@@ -384,6 +417,7 @@ try {
         mediaToolsDir = $mediaToolsDir
         ffmpeg = Get-FileInfoPayload -Path $ffmpegPath
         ffprobe = Get-FileInfoPayload -Path $ffprobePath
+        fixtureFfmpeg = Get-FileInfoPayload -Path $fixtureFfmpegPath
         runtimeDlls = $runtimeDlls
         reports = [ordered]@{
             manifest = $ManifestPath
