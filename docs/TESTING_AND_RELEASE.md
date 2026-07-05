@@ -101,15 +101,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
 ```
 
 `-FastLocalInstaller` enables Profile B media tools, sidecar cache reuse,
-runtime dependency footprint checks, and local `zlib` NSIS compression by
+runtime dependency footprint checks, and local `lzma` NSIS compression by
 default. Build metadata records the effective compression and marks these
-artifacts as `devOnly=true`; release builds keep the default LZMA installer
-path.
+artifacts as `devOnly=true`; explicit `-NsisCompression zlib` remains available
+for a faster but larger local-only package.
 
 Typical output:
 
 ```text
-Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.1_x64-setup.exe
+Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.2_x64-setup.exe
 ```
 
 Broader local installed workflow smoke:

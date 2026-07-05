@@ -2668,6 +2668,13 @@ class ScriberWebController:
                 return
             tracer.mark(marker, timestamp_ns=timestamp_ns)
 
+    def _hot_path_has_mark(self, session_id: str | None, marker: str) -> bool:
+        if not session_id or not marker:
+            return False
+        with self._hot_path_lock:
+            tracer = self._hot_path_tracers.get(session_id)
+            return bool(tracer and tracer.has_mark(marker))
+
     def _emit_hot_path_report_once(self, session_id: str | None, *, required_marker: str | None = "first_paste") -> bool:
         if not session_id:
             return False
@@ -4582,7 +4589,11 @@ class ScriberWebController:
                 if pipeline and callable(getattr(pipeline, "audio_diagnostics", None))
                 else None
             )
-            quiet_recording = _audio_diagnostics_indicate_silence(pipeline_audio_diagnostics)
+            audible_audio_observed = self._hot_path_has_mark(session_id, "first_audible_audio_frame")
+            quiet_recording = (
+                _audio_diagnostics_indicate_silence(pipeline_audio_diagnostics)
+                and not audible_audio_observed
+            )
             async_finalization = _live_pipeline_uses_async_finalization(pipeline)
             stop_timeout_secs = self._live_mic_stop_timeout_seconds(
                 current=current,
@@ -4604,6 +4615,7 @@ class ScriberWebController:
                 meta={
                     "async_finalization": async_finalization,
                     "quiet_recording": quiet_recording,
+                    "audible_audio_observed": audible_audio_observed,
                     "stop_timeout_seconds": stop_timeout_secs,
                     "audio": {
                         "sampleCount": (pipeline_audio_diagnostics or {}).get("audioLevelSampleCount")
@@ -4641,6 +4653,7 @@ class ScriberWebController:
             pipeline
             and async_finalization
             and _audio_diagnostics_have_pipecat_vad_silence(pipeline_audio_diagnostics)
+            and not audible_audio_observed
             and not is_realtime_service
             and not current_has_text
             and callable(getattr(pipeline, "cancel_silent_recording", None))

@@ -405,6 +405,81 @@ async def test_stop_listening_skips_provider_finalization_for_silent_async_recor
     assert all(payload.get("type") != "transcribing" for payload in broadcasts)
 
 
+@pytest.mark.asyncio
+async def test_stop_listening_finalizes_provider_when_audible_audio_was_seen(monkeypatch):
+    class _AudiblePipeline:
+        service_name = "soniox_async"
+
+        def __init__(self):
+            self.cancel_silent_called = False
+            self.stop_called = False
+            self.timeout_secs = None
+
+        def audio_diagnostics(self):
+            return {
+                "audioLevelSampleCount": 8,
+                "maxObservedRms": 0.03,
+                "speechObserved": True,
+                "pipecatVad": {
+                    "enabled": True,
+                    "audioFrameCount": 80,
+                    "speechObserved": False,
+                    "speechStartedCount": 0,
+                },
+            }
+
+        async def cancel_silent_recording(self):
+            self.cancel_silent_called = True
+
+        async def stop(self, **kwargs):
+            self.stop_called = True
+            self.timeout_secs = kwargs.get("timeout_secs")
+
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    session_id = "audible-session"
+    record = _make_record(session_id)
+    pipeline = _AudiblePipeline()
+    broadcasts: list[dict] = []
+    transcribing_overlay_calls: list[dict] = []
+
+    ctl._is_listening = True
+    ctl._pipeline = pipeline
+    ctl._pipeline_task = None
+    ctl._current = record
+    ctl._session_id = session_id
+    ctl._active_provider = "soniox_async"
+    ctl._start_hot_path_tracer(session_id)
+    ctl._mark_hot_path(session_id, "first_audio_frame")
+    ctl._mark_hot_path(session_id, "first_audible_audio_frame")
+    ctl._set_recording_state(web_api.RecordingState.INITIALIZING, context="test")
+    ctl._set_recording_state(web_api.RecordingState.RECORDING, context="test")
+
+    async def _capture_broadcast(payload):
+        broadcasts.append(payload)
+
+    monkeypatch.setattr(ctl, "broadcast", AsyncMock(side_effect=_capture_broadcast))
+    monkeypatch.setattr(ctl, "_save_transcript_to_db_async", AsyncMock())
+    monkeypatch.setattr(ctl, "_broadcast_history_updated", AsyncMock())
+    monkeypatch.setattr(ctl, "_hide_recording_overlay_async", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        ctl,
+        "_show_transcribing_overlay_async",
+        lambda **kwargs: transcribing_overlay_calls.append(kwargs),
+    )
+    monkeypatch.setattr(ctl, "_resume_idle_mic_prewarm_after_capture", lambda: None)
+
+    await ctl.stop_listening()
+
+    assert pipeline.cancel_silent_called is False
+    assert pipeline.stop_called is True
+    assert pipeline.timeout_secs is not None
+    assert pipeline.timeout_secs > 4.0
+    assert transcribing_overlay_calls == [{"session_id": session_id}]
+    assert any(payload.get("type") == "transcribing" for payload in broadcasts)
+    assert record.status == "completed"
+
+
 class _ChunkUploadField:
     def __init__(self, chunks: list[bytes]):
         self._chunks = list(chunks)

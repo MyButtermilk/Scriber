@@ -319,7 +319,7 @@ if ($FastLocalInstaller) {
         $ValidateSlimMediaTools = $true
     }
     if (-not $NsisCompression) {
-        $NsisCompression = "zlib"
+        $NsisCompression = "lzma"
     }
 
     if ($MaxScipyRuntimeDependencyMB -le 0) {

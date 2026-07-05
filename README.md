@@ -195,8 +195,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
 ```
 
 `-FastLocalInstaller` enables Profile B media tools, sidecar cache reuse, and
-local `zlib` NSIS compression by default. Release builds keep the smaller LZMA
-installer path.
+local LZMA NSIS compression by default, matching the GitHub release installer
+size profile.
 
 The NSIS installer is written to:
 
@@ -206,8 +206,8 @@ Frontend\src-tauri\target\release\bundle\nsis\
 
 Recent local release evidence:
 
-- Fast local `zlib` installer size: about 103 MiB.
-- Release LZMA installer size: about 86-88 MiB.
+- Fast local and release LZMA installer size: about 72-88 MiB, depending on
+  dependency wheel versions and signing metadata.
 - Installed app size in smoke: about 195 MiB.
 - Backend resource tree: about 180 MiB.
 - Bundled Profile B ffmpeg/ffprobe media tools: about 4.98 MiB installed.
@@ -246,7 +246,7 @@ python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.jso
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
-  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.1_x64-setup.exe `
+  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.2_x64-setup.exe `
   -VerifyFrontend `
   -VerifyMediaPreparation `
   -VerifySupportBundle `

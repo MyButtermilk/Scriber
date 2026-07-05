@@ -182,9 +182,10 @@ What it does:
 - Reuses sidecar when backend/runtime inputs are unchanged; frontend asset
   changes are handled by Tauri and do not rebuild the Python sidecar.
 - Reuses the Rust audio sidecar when Rust audio inputs are unchanged.
-- Builds Tauri/NSIS. `-FastLocalInstaller` defaults NSIS compression to `zlib`
-  and records `buildMode.devOnly=true` plus `buildMode.nsisCompression` in
-  `build-timing.json`; release builds keep Tauri's default LZMA path.
+- Builds Tauri/NSIS. `-FastLocalInstaller` defaults NSIS compression to `lzma`
+  so local installer sizes match GitHub release builds; it records
+  `buildMode.devOnly=true` plus `buildMode.nsisCompression` in
+  `build-timing.json`.
 - Runs size and runtime dependency footprint gates.
 - Writes the installed package smoke report into release metadata and uses it
   for the installed-app size section in `size-report.json`.
