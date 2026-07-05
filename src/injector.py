@@ -78,6 +78,73 @@ def _windows_clipboard_format_is_restorable(format_id: int) -> bool:
     return int(format_id) in _RESTORABLE_STANDARD_CLIPBOARD_FORMATS
 
 
+def _set_ctypes_signature(
+    func: object | None,
+    *,
+    argtypes: list[object] | None = None,
+    restype: object | None = None,
+) -> None:
+    if func is None:
+        return
+    try:
+        if argtypes is not None:
+            setattr(func, "argtypes", argtypes)
+        if restype is not None:
+            setattr(func, "restype", restype)
+    except Exception:
+        pass
+
+
+def _configure_windows_clipboard_api(user32: object, kernel32: object) -> None:
+    _set_ctypes_signature(
+        getattr(user32, "OpenClipboard", None),
+        argtypes=[wintypes.HWND],
+        restype=wintypes.BOOL,
+    )
+    _set_ctypes_signature(getattr(user32, "CloseClipboard", None), restype=wintypes.BOOL)
+    _set_ctypes_signature(getattr(user32, "EmptyClipboard", None), restype=wintypes.BOOL)
+    _set_ctypes_signature(
+        getattr(user32, "IsClipboardFormatAvailable", None),
+        argtypes=[wintypes.UINT],
+        restype=wintypes.BOOL,
+    )
+    _set_ctypes_signature(
+        getattr(user32, "GetClipboardData", None),
+        argtypes=[wintypes.UINT],
+        restype=wintypes.HANDLE,
+    )
+    _set_ctypes_signature(
+        getattr(user32, "SetClipboardData", None),
+        argtypes=[wintypes.UINT, wintypes.HANDLE],
+        restype=wintypes.HANDLE,
+    )
+    _set_ctypes_signature(
+        getattr(kernel32, "GlobalAlloc", None),
+        argtypes=[wintypes.UINT, ctypes.c_size_t],
+        restype=wintypes.HGLOBAL,
+    )
+    _set_ctypes_signature(
+        getattr(kernel32, "GlobalSize", None),
+        argtypes=[wintypes.HGLOBAL],
+        restype=ctypes.c_size_t,
+    )
+    _set_ctypes_signature(
+        getattr(kernel32, "GlobalLock", None),
+        argtypes=[wintypes.HGLOBAL],
+        restype=wintypes.LPVOID,
+    )
+    _set_ctypes_signature(
+        getattr(kernel32, "GlobalUnlock", None),
+        argtypes=[wintypes.HGLOBAL],
+        restype=wintypes.BOOL,
+    )
+    _set_ctypes_signature(
+        getattr(kernel32, "GlobalFree", None),
+        argtypes=[wintypes.HGLOBAL],
+        restype=wintypes.HGLOBAL,
+    )
+
+
 # =============================================================================
 # SendInput API for instant keystroke injection (Windows only)
 # =============================================================================
@@ -243,6 +310,7 @@ def _windows_clipboard_get_text(
     CF_UNICODETEXT = 13
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
+    _configure_windows_clipboard_api(user32, kernel32)
 
     for _ in range(retries):
         if not user32.OpenClipboard(None):
@@ -282,6 +350,7 @@ def _windows_clipboard_set_text(text: str, *, retries: int = 5, delay_secs: floa
 
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
+    _configure_windows_clipboard_api(user32, kernel32)
 
     data = text.encode("utf-16-le") + b"\x00\x00"
 
@@ -745,7 +814,7 @@ class TextInjector(FrameProcessor):
         if isinstance(frame, TranscriptionFrame):
             if frame.text and frame.text != self._last_injected:
                 if self.inject_immediately:
-                    self._inject_text(frame.text.strip() + " ")
+                    self._inject_text_safely(frame.text.strip() + " ")
                 else:
                     # Buffer finalized transcript segments; inject as one block at end of utterance.
                     self._buffer.append(frame.text.strip())
@@ -763,12 +832,22 @@ class TextInjector(FrameProcessor):
             text = " ".join(self._buffer).strip()
             if text:
                 logger.debug(f"TextInjector flush: injecting {len(text)} chars")
-                self._inject_text(text + " ")
+                self._inject_text_safely(text + " ")
             else:
                 logger.debug("TextInjector flush: buffer joined to empty string")
         else:
             logger.debug("TextInjector flush: buffer is empty")
         self._buffer = []
+
+    def _inject_text_safely(self, text: str) -> bool:
+        try:
+            self._inject_text(text)
+            return True
+        except Exception as exc:
+            logger.warning(
+                f"Text injection failed; transcript retained ({type(exc).__name__}: {exc})"
+            )
+            return False
 
     def _inject_text(self, text: str):
         """

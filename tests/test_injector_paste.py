@@ -205,6 +205,48 @@ def test_windows_clipboard_set_text_reports_open_failure_without_gui_fallback():
     assert result is False
 
 
+def test_windows_clipboard_set_text_configures_64_bit_handle_signature():
+    class _Callable:
+        def __init__(self, func):
+            self.func = func
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            return self.func(*args)
+
+    class _User32:
+        def __init__(self):
+            self.OpenClipboard = _Callable(lambda _owner: True)
+            self.EmptyClipboard = _Callable(lambda: True)
+            self.CloseClipboard = _Callable(lambda: True)
+            self.SetClipboardData = _Callable(self._set_clipboard_data)
+
+        def _set_clipboard_data(self, _format_id, handle):
+            if self.SetClipboardData.argtypes is None:
+                raise OverflowError("int too long to convert")
+            return handle
+
+    class _Kernel32:
+        def __init__(self):
+            self.buffer = ctypes.create_string_buffer(64)
+            self.GlobalAlloc = _Callable(lambda _flags, _size: 0x1_0000_0000)
+            self.GlobalLock = _Callable(lambda _handle: ctypes.addressof(self.buffer))
+            self.GlobalUnlock = _Callable(lambda _handle: True)
+            self.GlobalFree = _Callable(lambda _handle: 0)
+
+    user32 = _User32()
+    windll = type("_Windll", (), {"user32": user32, "kernel32": _Kernel32()})()
+
+    with patch("src.injector.sys.platform", "win32"), patch(
+        "src.injector.ctypes.windll", windll, create=True
+    ):
+        result = _windows_clipboard_set_text("new text")
+
+    assert result is True
+    assert user32.SetClipboardData.argtypes is not None
+
+
 def test_windows_clipboard_format_filter_rejects_non_hglobal_handles():
     assert _windows_clipboard_format_is_restorable(8) is True  # CF_DIB
     assert _windows_clipboard_format_is_restorable(13) is True  # CF_UNICODETEXT

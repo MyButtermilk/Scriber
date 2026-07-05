@@ -73,3 +73,22 @@ class TestInjector(unittest.TestCase):
             asyncio.run(run())
 
         self.assertEqual(injected_texts, ["hello world "])
+
+    def test_injection_failure_does_not_raise_from_flush(self):
+        injector = TextInjector(inject_immediately=False)
+
+        with patch.object(
+            injector,
+            "_inject_text",
+            side_effect=OverflowError("int too long to convert"),
+        ), patch.object(injector, "push_frame", new=AsyncMock()) as push_frame:
+            async def run():
+                frame = TranscriptionFrame(
+                    text="hello world", user_id="user", timestamp="now"
+                )
+                await injector.process_frame(frame, MagicMock())
+                await injector.process_frame(EndFrame(), MagicMock())
+
+            asyncio.run(run())
+
+        self.assertEqual(push_frame.await_count, 2)
