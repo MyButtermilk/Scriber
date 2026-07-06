@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from pipecat.frames.frames import InputAudioRawFrame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameDirection
+from websockets.protocol import State
 
 from src.config import Config
 from src.pipeline import PipecatVadSpeechObserver, ScriberPipeline, TranscriptionCallbackProcessor
@@ -43,6 +44,13 @@ class _DummyRunner:
 class _DummyPipelineGraph:
     def __init__(self, processors):
         self.processors = processors
+
+
+class _DummyRuntimePipelineGraph:
+    def __init__(self, steps):
+        self.processors = steps
+        self._processors = steps
+        self.steps = steps
 
 
 class _BufferedProvider:
@@ -288,6 +296,51 @@ async def test_stop_times_out_and_cancels():
 
 
 @pytest.mark.asyncio
+async def test_soniox_realtime_stop_does_not_wait_for_reconnecting_receive_task(monkeypatch):
+    monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
+
+    class _FakeWebSocket:
+        state = State.OPEN
+
+        def __init__(self):
+            self.sent: list[str] = []
+
+        async def send(self, data):
+            self.sent.append(data)
+
+    class SonioxSTTService:
+        def __init__(self, receive_task):
+            self._websocket = _FakeWebSocket()
+            self._receive_task = receive_task
+            self._audio_bytes_sent = 0
+
+    async def _never_finishes():
+        await asyncio.Event().wait()
+
+    pipeline = ScriberPipeline(service_name="soniox", on_status_change=None)
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    pipeline.task = _DummyTask(pipeline._start_done, set_done_on_stop=False)
+    receive_task = asyncio.create_task(_never_finishes())
+    soniox = SonioxSTTService(receive_task)
+    pipeline.pipeline = _DummyRuntimePipelineGraph([soniox])
+
+    async def _mark_final_after_stop_signal():
+        await asyncio.sleep(0.2)
+        pipeline._mark_final_transcription_received()
+
+    marker_task = asyncio.create_task(_mark_final_after_stop_signal())
+
+    await asyncio.wait_for(pipeline.stop(timeout_secs=1.0), timeout=1.0)
+
+    assert soniox._websocket.sent == [""]
+    assert pipeline.task.cancel_called is True
+    assert pipeline.task.stop_when_done_called is False
+    assert receive_task.cancelled()
+    await marker_task
+
+
+@pytest.mark.asyncio
 async def test_cleanup_audio_input_forces_stream_close():
     pipeline = ScriberPipeline(service_name="soniox", on_status_change=None)
     audio_input = _DummyAudioInput()
@@ -453,6 +506,34 @@ async def test_transcription_callback_uses_plain_text_without_diarization():
     )
 
     assert captured == [("Hallo plain fallback", True)]
+    assert len(pushed) == 1
+
+
+@pytest.mark.asyncio
+async def test_transcription_callback_marks_final_without_external_callback():
+    final_seen = asyncio.Event()
+    pushed = []
+    processor = TranscriptionCallbackProcessor(
+        None,
+        on_final_transcription=final_seen.set,
+    )
+
+    async def _capture_push(frame, direction):
+        pushed.append((frame, direction))
+
+    processor.push_frame = _capture_push
+
+    await processor.process_frame(
+        TranscriptionFrame(
+            text="Hallo final",
+            user_id="user",
+            timestamp="2026-07-06T00:00:00Z",
+            result=None,
+        ),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    assert final_seen.is_set()
     assert len(pushed) == 1
 
 

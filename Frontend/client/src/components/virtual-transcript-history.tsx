@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -26,6 +27,16 @@ type VirtualRow<TItem> = Array<{
 
 const GRID_GAP_PX = 16;
 const DEFAULT_MIN_GRID_COLUMN_WIDTH = 210;
+const HISTORY_LAYOUT_TRANSITION = {
+  type: "spring",
+  stiffness: 520,
+  damping: 44,
+  mass: 0.82,
+} as const;
+const HISTORY_ITEM_TRANSITION = {
+  duration: 0.18,
+  ease: [0.16, 1, 0.3, 1],
+} as const;
 
 function calculateGridColumns(width: number) {
   if (width <= 0) return 1;
@@ -48,6 +59,7 @@ export function VirtualTranscriptHistory<TItem>({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const loadInFlightRef = useRef(false);
+  const prefersReducedMotion = useReducedMotion();
   const [containerWidth, setContainerWidth] = useState(0);
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
 
@@ -162,50 +174,87 @@ export function VirtualTranscriptHistory<TItem>({
       data-history-virtualized="true"
       data-history-view={viewMode}
     >
-      <div
-        style={{
-          height: `${virtualizer.getTotalSize()}px`,
-          position: "relative",
-          width: "100%",
-        }}
-      >
-        {virtualRows.map((virtualRow) => {
-          const row = rows[virtualRow.index] ?? [];
-          return (
-            <div
-              key={virtualRow.key}
-              ref={virtualizer.measureElement}
-              data-index={virtualRow.index}
-              style={{
-                left: 0,
-                position: "absolute",
-                top: 0,
-                transform: `translateY(${virtualRow.start}px)`,
-                width: "100%",
-              }}
-            >
-              {viewMode === "grid" ? (
-                <div
-                  className={cn("grid items-stretch gap-4 pb-4", gridClassName)}
-                  style={{ gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))` }}
+      <LayoutGroup id={`transcript-history-${viewMode}`}>
+        <div
+          style={{
+            height: `${virtualizer.getTotalSize()}px`,
+            position: "relative",
+            width: "100%",
+          }}
+        >
+          <AnimatePresence initial={false} mode="popLayout">
+            {virtualRows.map((virtualRow) => {
+              const row = rows[virtualRow.index] ?? [];
+              return (
+                <motion.div
+                  key={virtualRow.key}
+                  ref={(node) => {
+                    if (node) virtualizer.measureElement(node);
+                  }}
+                  data-index={virtualRow.index}
+                  animate={{ opacity: 1, y: virtualRow.start }}
+                  exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.985 }}
+                  initial={false}
+                  transition={prefersReducedMotion ? { duration: 0 } : HISTORY_LAYOUT_TRANSITION}
+                  style={{
+                    left: 0,
+                    position: "absolute",
+                    top: 0,
+                    width: "100%",
+                  }}
                 >
-                  {row.map(({ item, index }) => (
-                    <div key={getItemKey(item, index)} className="min-w-0">
-                      {renderItem(item, index)}
+                  {viewMode === "grid" ? (
+                    <div
+                      className={cn("grid items-stretch gap-4 pb-4", gridClassName)}
+                      style={{ gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))` }}
+                    >
+                      <AnimatePresence initial={false} mode="popLayout">
+                        {row.map(({ item, index }) => {
+                          const itemKey = String(getItemKey(item, index));
+                          return (
+                            <motion.div
+                              key={itemKey}
+                              layout="position"
+                              layoutId={`history-${viewMode}-${itemKey}`}
+                              initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.985, y: 8 }}
+                              animate={{ opacity: 1, scale: 1, y: 0 }}
+                              exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: -6 }}
+                              transition={prefersReducedMotion ? { duration: 0 } : HISTORY_ITEM_TRANSITION}
+                              className="min-w-0"
+                            >
+                              {renderItem(item, index)}
+                            </motion.div>
+                          );
+                        })}
+                      </AnimatePresence>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                row.map(({ item, index }) => (
-                  <div key={getItemKey(item, index)} className="pb-4 [&>*]:!mb-0">
-                    {renderItem(item, index)}
-                  </div>
-                ))
-              )}
-            </div>
-          );
-        })}
-      </div>
+                  ) : (
+                    <AnimatePresence initial={false} mode="popLayout">
+                      {row.map(({ item, index }) => {
+                        const itemKey = String(getItemKey(item, index));
+                        return (
+                          <motion.div
+                            key={itemKey}
+                            layout="position"
+                            layoutId={`history-${viewMode}-${itemKey}`}
+                            initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.99, y: 8 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: -8 }}
+                            transition={prefersReducedMotion ? { duration: 0 } : HISTORY_ITEM_TRANSITION}
+                            className="pb-4 [&>*]:!mb-0"
+                          >
+                            {renderItem(item, index)}
+                          </motion.div>
+                        );
+                      })}
+                    </AnimatePresence>
+                  )}
+                </motion.div>
+              );
+            })}
+          </AnimatePresence>
+        </div>
+      </LayoutGroup>
 
       <div ref={loadMoreRef} className="flex h-12 items-center justify-center" aria-live="polite">
         {isLoadingMore && (

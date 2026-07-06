@@ -255,6 +255,12 @@ Soniox is the default STT family: realtime live transcription uses
 `stt-async-v5`. `SCRIBER_SONIOX_RT_MODEL` and
 `SCRIBER_SONIOX_ASYNC_MODEL` remain escape hatches for provider compatibility,
 but older Soniox realtime and async models are not release defaults.
+On live Soniox Realtime stop, Scriber sends Soniox's documented empty
+end-of-audio WebSocket frame, waits briefly for either a provider receive-task
+finish or a final transcript frame, then shuts the local pipeline down. Once a
+final transcript frame has arrived, Scriber must not wait on a reconnecting
+Soniox receive task; `SCRIBER_SONIOX_RT_STOP_FINAL_TIMEOUT_SECONDS` exists only
+as a bounded troubleshooting override for unusually slow finalization.
 
 Speaker diarization is a batch-transcription feature, not a live dictation
 feature. File and YouTube jobs enable provider diarization where the current

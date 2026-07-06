@@ -11,7 +11,6 @@ import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/backend";
 import { useToast } from "@/hooks/use-toast";
-import { motion, useReducedMotion } from "framer-motion";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonList } from "@/components/ui/skeleton-card";
 import { QueryErrorState } from "@/components/ui/query-error-state";
@@ -35,7 +34,6 @@ import type {
   TranscriptHistoryItem,
 } from "@/lib/api-types";
 
-const DELETE_GLITCH_DURATION_MS = 1200;
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
 const DEFAULT_COMPRESSION_THRESHOLD_BYTES = 50 * 1024 * 1024;
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"]);
@@ -69,7 +67,6 @@ function fileHistoryStatus(item: TranscriptHistoryItem): FileHistoryStatus {
 // Memoized FileCard to prevent unnecessary re-renders
 interface FileCardProps {
   item: TranscriptHistoryItem;
-  index: number;
   viewMode: "list" | "grid";
   isDeleting: boolean;
   isCopying: boolean;
@@ -81,7 +78,6 @@ interface FileCardProps {
 
 const FileCard = memo(function FileCard({
   item,
-  index,
   viewMode,
   isDeleting,
   isCopying,
@@ -90,34 +86,15 @@ const FileCard = memo(function FileCard({
   onNavigate,
   onHover,
 }: FileCardProps) {
-  const prefersReducedMotion = useReducedMotion();
-  const durationClass = "duration-[1200ms]";
-  const listLayoutClasses = `grid transition-[grid-template-rows,margin-bottom] ease-in-out ${durationClass} ${isDeleting
-    ? "grid-rows-[0fr] mb-0 overflow-hidden"
-    : "grid-rows-[1fr] mb-4 last:mb-0 overflow-visible"
-    }`;
-  const layoutClasses = viewMode === "list" ? listLayoutClasses : "block";
-  const visualClasses = `!transition-all !ease-out !duration-[1200ms] w-full origin-top transform-gpu ${isDeleting
-    ? "hue-rotate-180 saturate-200 blur-md skew-x-[40deg] scale-y-50 translate-x-12 opacity-0"
-    : "hue-rotate-0 saturate-100 blur-0 skew-x-0 scale-y-100 translate-x-0 opacity-100"
-    }`;
+  const deletingClasses = isDeleting
+    ? "pointer-events-none opacity-[0.55] scale-[0.985]"
+    : "opacity-100 scale-100";
   const historyStatus = fileHistoryStatus(item);
 
   return (
-    <motion.div
-      layout="position"
-      initial={prefersReducedMotion ? false : { opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{
-        delay: Math.min(index * 0.02, 0.1),
-        duration: prefersReducedMotion ? 0 : 0.2,
-        ease: "easeOut",
-        layout: { duration: prefersReducedMotion ? 0 : 0.45, ease: "easeInOut" },
-      }}
-      className={layoutClasses}
-    >
+    <div className="w-full">
       <Card
-        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid h-[220px]" : ""} p-4 rounded-[20px] cursor-pointer group ${visualClasses}`}
+        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid h-[220px]" : ""} p-4 rounded-[20px] cursor-pointer group transform-gpu transition-[opacity,transform] duration-150 ease-out ${deletingClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
         role="button"
@@ -262,7 +239,7 @@ const FileCard = memo(function FileCard({
           </div>
         )}
       </Card>
-    </motion.div>
+    </div>
   );
 });
 
@@ -425,8 +402,6 @@ export default function FileTranscribe() {
     deletingRef.current = id;
     setDeletingId(id);
     try {
-      await new Promise((resolve) => setTimeout(resolve, DELETE_GLITCH_DURATION_MS));
-
       const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
         method: "DELETE",
         credentials: "include",
@@ -698,10 +673,9 @@ export default function FileTranscribe() {
             hasMore={transcriptsQuery.hasNextPage}
             isLoadingMore={transcriptsQuery.isFetchingNextPage}
             onLoadMore={() => transcriptsQuery.fetchNextPage()}
-            renderItem={(item, index) => (
+            renderItem={(item) => (
               <FileCard
                 item={item}
-                index={index}
                 viewMode={viewMode}
                 isDeleting={deletingId === item.id}
                 isCopying={copyingId === item.id}

@@ -932,29 +932,33 @@ class TranscriptionCallbackProcessor(FrameProcessor):
         on_transcription: Optional[Callable[[str, bool], None]],
         *,
         enable_speaker_diarization: bool = False,
+        on_final_transcription: Optional[Callable[[], None]] = None,
     ):
         super().__init__()
         self.on_transcription = on_transcription
         self.enable_speaker_diarization = bool(enable_speaker_diarization)
+        self.on_final_transcription = on_final_transcription
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
 
         cb = self.on_transcription
-        if cb:
-            try:
-                if isinstance(frame, InterimTranscriptionFrame):
-                    if frame.text:
-                        cb(frame.text, False)
-                elif isinstance(frame, TranscriptionFrame):
-                    if self.enable_speaker_diarization:
-                        text = _diarized_text_from_frame_result(frame.result) or frame.text
-                    else:
-                        text = frame.text
-                    if text:
+        try:
+            if isinstance(frame, InterimTranscriptionFrame):
+                if frame.text and cb:
+                    cb(frame.text, False)
+            elif isinstance(frame, TranscriptionFrame):
+                if self.enable_speaker_diarization:
+                    text = _diarized_text_from_frame_result(frame.result) or frame.text
+                else:
+                    text = frame.text
+                if text:
+                    if self.on_final_transcription:
+                        self.on_final_transcription()
+                    if cb:
                         cb(text, True)
-            except Exception as e:
-                logger.error(f"TranscriptionCallback error: {e}")
+        except Exception as e:
+            logger.error(f"TranscriptionCallback error: {e}")
 
         await self.push_frame(frame, direction)
 
@@ -996,11 +1000,79 @@ class ScriberPipeline:
         self._audio_cleanup_lock = asyncio.Lock()
         self._start_done = asyncio.Event()
         self._start_done.set()
+        self._final_transcription_received = asyncio.Event()
 
     def _record_terminal_error(self, error_msg: str) -> None:
         normalized = str(error_msg or "").strip()
         if normalized and not self._terminal_error:
             self._terminal_error = normalized
+
+    def _mark_final_transcription_received(self) -> None:
+        self._final_transcription_received.set()
+
+    @staticmethod
+    def _soniox_realtime_stop_final_timeout_seconds() -> float:
+        raw = os.getenv("SCRIBER_SONIOX_RT_STOP_FINAL_TIMEOUT_SECONDS", "3.0")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 3.0
+        return min(10.0, max(0.25, value))
+
+    async def _wait_for_soniox_realtime_final_or_receive_done(
+        self,
+        receive_task: asyncio.Task | None,
+        *,
+        timeout_seconds: float,
+    ) -> str:
+        if self._final_transcription_received.is_set():
+            return "final"
+
+        if receive_task and receive_task.done():
+            try:
+                await receive_task
+            except asyncio.CancelledError:
+                return "cancelled"
+            except Exception as exc:
+                logger.debug(f"Soniox receive task completed with error: {exc}")
+                return "error"
+            return "receive_done"
+
+        final_task = asyncio.create_task(
+            self._final_transcription_received.wait(),
+            name="soniox_rt_final_transcription_wait",
+        )
+        waitables: set[asyncio.Future] = {final_task}
+        receive_wait: asyncio.Future | None = None
+        if receive_task is not None:
+            receive_wait = asyncio.shield(receive_task)
+            waitables.add(receive_wait)
+
+        try:
+            done, _pending = await asyncio.wait(
+                waitables,
+                timeout=timeout_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            if not final_task.done():
+                final_task.cancel()
+                await asyncio.gather(final_task, return_exceptions=True)
+
+        if final_task in done and self._final_transcription_received.is_set():
+            return "final"
+        if receive_wait is not None and receive_wait in done:
+            try:
+                await receive_wait
+            except asyncio.CancelledError:
+                return "cancelled"
+            except Exception as exc:
+                logger.debug(f"Soniox receive task completed with error: {exc}")
+                return "error"
+            return "receive_done"
+        if self._final_transcription_received.is_set():
+            return "final"
+        return "timeout"
 
     async def _cleanup_audio_input(self) -> None:
         audio_input = self.audio_input
@@ -1407,6 +1479,7 @@ class ScriberPipeline:
         logger.info(f"Starting Scriber Pipeline with {self.service_name}")
         self._terminal_error = None
         self._vad_observer = None
+        self._final_transcription_received.clear()
         self._start_done.clear()
         try:
             async with aiohttp.ClientSession() as session:
@@ -1469,11 +1542,15 @@ class ScriberPipeline:
                     on_injection_marker=self.on_injection_marker,
                 )
                 self.text_injector = text_injector
+                needs_soniox_realtime_final_signal = (
+                    self.service_name == "soniox" and Config.SONIOX_MODE != "async"
+                )
                 transcript_cb = (
                     TranscriptionCallbackProcessor(
                         self.on_transcription,
                         enable_speaker_diarization=self.enable_speaker_diarization,
-                    ) if self.on_transcription else None
+                        on_final_transcription=self._mark_final_transcription_received,
+                    ) if (self.on_transcription or needs_soniox_realtime_final_signal) else None
                 )
 
                 # Create cleanup callback to stop microphone on connection errors
@@ -2108,42 +2185,51 @@ class ScriberPipeline:
                             # Wait for receive task to complete (gets final tokens + finished=True)
                             receive_task = getattr(step, "_receive_task", None)
                             if receive_task and not receive_task.done():
-                                try:
-                                    # Use 10s timeout - increased from 5s to give Soniox more time
-                                    # to process final audio, especially for longer recordings
-                                    await asyncio.wait_for(asyncio.shield(receive_task), timeout=10.0)
+                                final_timeout = self._soniox_realtime_stop_final_timeout_seconds()
+                                wait_result = await self._wait_for_soniox_realtime_final_or_receive_done(
+                                    receive_task,
+                                    timeout_seconds=final_timeout,
+                                )
+                                if wait_result in {"final", "receive_done"}:
                                     soniox_manual_stop_done = True
-                                    logger.debug("Soniox receive task completed successfully")
-                                except asyncio.TimeoutError:
-                                    # Log detailed diagnostics when timeout occurs
+                                    logger.debug(
+                                        f"Soniox realtime stop completed via {wait_result} before pipeline shutdown"
+                                    )
+                                elif wait_result == "timeout":
                                     ws_state = websocket.state if websocket else "no websocket"
                                     logger.warning(
-                                        f"Soniox receive task timeout (10s) - "
-                                        f"ws_state={ws_state}, audio_bytes_sent={audio_bytes_sent}"
+                                        f"Soniox realtime stop wait timeout ({final_timeout:g}s) - "
+                                        f"ws_state={ws_state}, audio_bytes_sent={audio_bytes_sent}, "
+                                        f"final_received={self._final_transcription_received.is_set()}"
                                     )
-                                    
-                                    # RETRY: Try sending stop signal again in case first one was lost
                                     if websocket and websocket.state is State.OPEN:
                                         logger.debug("Retrying stop_recording signal to Soniox")
                                         try:
                                             await websocket.send("")
-                                            # Wait another 5 seconds for response
-                                            await asyncio.wait_for(asyncio.shield(receive_task), timeout=5.0)
-                                            soniox_manual_stop_done = True
-                                            logger.debug("Soniox receive task completed on retry")
-                                        except asyncio.TimeoutError:
-                                            logger.error("Soniox receive task failed even after retry")
                                         except Exception as retry_err:
-                                            logger.debug(f"Soniox retry error: {retry_err}")
-                                except asyncio.CancelledError:
-                                    pass
-                                except Exception as e:
-                                    logger.debug(f"Soniox receive task error: {e}")
+                                            logger.debug(f"Soniox retry send error: {retry_err}")
+                                    if self._final_transcription_received.is_set():
+                                        soniox_manual_stop_done = True
+                                elif wait_result == "cancelled":
+                                    logger.debug("Soniox receive task was cancelled during stop")
+                                else:
+                                    logger.debug(
+                                        f"Soniox receive task did not finish cleanly during stop: {wait_result}"
+                                    )
                             else:
                                 if receive_task and receive_task.done():
+                                    wait_result = await self._wait_for_soniox_realtime_final_or_receive_done(
+                                        receive_task,
+                                        timeout_seconds=0.25,
+                                    )
+                                    soniox_manual_stop_done = wait_result in {"final", "receive_done"}
                                     logger.debug("Soniox receive task was already done")
                                 else:
-                                    logger.warning("No Soniox receive task found")
+                                    if self._final_transcription_received.is_set():
+                                        soniox_manual_stop_done = True
+                                        logger.debug("Soniox final transcription received without receive task")
+                                    else:
+                                        logger.warning("No Soniox receive task found")
                         elif websocket:
                             logger.warning(f"Soniox websocket not open on stop (state={websocket.state}) - transcription may be incomplete")
                         else:

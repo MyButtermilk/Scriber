@@ -10,7 +10,6 @@ import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { useLocation } from "wouter";
 import type { BackendStateResponse } from "@/lib/api-types";
 
-const DELETE_GLITCH_DURATION_MS = 1200;
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
 const MIC_VISUAL_NOISE_FLOOR = 0.00003;
 const MIC_VISUAL_DISPLAY_SCALE = 90;
@@ -77,21 +76,14 @@ const TranscriptCard = memo(function TranscriptCard({
   onNavigate,
   onHover,
 }: TranscriptCardProps) {
-  const durationClass = "duration-[1200ms]";
-  const listLayoutClasses = `grid transition-[grid-template-rows,margin-bottom] ease-in-out ${durationClass} ${isDeleting
-    ? "grid-rows-[0fr] mb-0 overflow-hidden"
-    : "grid-rows-[1fr] mb-4 last:mb-0 overflow-visible"
-    }`;
-  const layoutClasses = viewMode === "list" ? listLayoutClasses : "block";
-  const visualClasses = `!transition-all !ease-out !duration-[1200ms] w-full origin-top transform-gpu ${isDeleting
-    ? "hue-rotate-180 saturate-200 blur-md skew-x-[40deg] scale-y-50 translate-x-12 opacity-0"
-    : "hue-rotate-0 saturate-100 blur-0 skew-x-0 scale-y-100 translate-x-0 opacity-100"
-    }`;
+  const deletingClasses = isDeleting
+    ? "pointer-events-none opacity-[0.55] scale-[0.985]"
+    : "opacity-100 scale-100";
 
   return (
-    <div className={layoutClasses}>
+    <div className="w-full">
       <Card
-        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} p-4 rounded-[20px] cursor-pointer group ${visualClasses}`}
+        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} p-4 rounded-[20px] cursor-pointer group transform-gpu transition-[opacity,transform] duration-150 ease-out ${deletingClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
         role="button"
@@ -789,8 +781,6 @@ export default function LiveMic() {
 
     setDeletingId(id);
     try {
-      await new Promise((resolve) => setTimeout(resolve, DELETE_GLITCH_DURATION_MS));
-
       const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
         method: "DELETE",
         credentials: "include",
