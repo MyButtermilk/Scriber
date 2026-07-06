@@ -208,11 +208,17 @@ NSIS install, upgrade, shortcut, or uninstall behavior.
 Release workflow:
 
 - `.github/workflows/release-windows.yml` builds Profile B with MSYS2/UCRT64.
-- The workflow caches stable heavy dependencies: a project-local Python `.venv`
-  keyed by Python version plus requirements files, `Frontend\node_modules`
-  keyed by the frontend lockfile, and the Profile B media-tool output keyed by
-  FFmpeg ref plus Profile-B/media-smoke scripts. Cache hits still run the
-  relevant validation gates before the installer consumes the restored outputs.
+- The workflow caches stable heavy build inputs and outputs: a project-local
+  Python `.venv` keyed by Python version plus requirements files,
+  `Frontend\node_modules` keyed by the frontend lockfile, Cargo release
+  dependency artifacts keyed by the Rust lockfile/source set, the Tauri bundler
+  download cache, the PyInstaller/Rust-audio sidecar caches, and the Profile B
+  media-tool output keyed by FFmpeg ref plus Profile-B/media-smoke scripts.
+  Cache hits still run the relevant validation gates before the installer
+  consumes restored outputs.
+- Workflow concurrency cancels older in-progress release builds for the same
+  ref so stale branch builds do not keep consuming runner time after a newer
+  commit starts.
 - It passes the produced media tools into `scripts/build_windows.ps1`.
 - It collects size, media-preparation, runtime dependency, and timing evidence.
 - Authenticode and Tauri updater signing gates are available but require real

@@ -6,6 +6,10 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: release-windows-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -22,6 +26,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements-base.txt
+            requirements-dev.txt
+            requirements-build.txt
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -32,6 +41,31 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust build cache
+        id: rust-build-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            Frontend/src-tauri/target/release/.fingerprint
+            Frontend/src-tauri/target/release/build
+            Frontend/src-tauri/target/release/deps
+            Frontend/src-tauri/target/release/incremental
+          key: scriber-rust-release-${{ runner.os }}-${{ hashFiles('Frontend/src-tauri/Cargo.lock', 'Frontend/src-tauri/Cargo.toml', 'Frontend/src-tauri/build.rs', 'Frontend/src-tauri/src/**/*.rs') }}
+          restore-keys: |
+            scriber-rust-release-${{ runner.os }}-
+
+      - name: Restore Tauri bundler cache
+        id: tauri-bundler-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/tauri
+            ~\AppData\Local\tauri
+          key: scriber-tauri-bundler-${{ runner.os }}-nsis-3.11
 
       - name: Restore Python dependency cache
         id: python-venv-cache
@@ -46,6 +80,17 @@ jobs:
         with:
           path: Frontend/node_modules
           key: scriber-frontend-node-modules-${{ runner.os }}-node20-${{ hashFiles('Frontend/package-lock.json') }}
+
+      - name: Restore backend sidecar cache
+        id: backend-sidecar-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/tauri-sidecar-cache
+            build/rust-audio-sidecar-cache
+          key: scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('requirements-base.txt', 'requirements-dev.txt', 'requirements-build.txt', 'packaging/scriber-backend.spec', 'scripts/build_tauri_backend_sidecar.ps1', 'src/**/*.py', 'Frontend/src-tauri/Cargo.lock', 'Frontend/src-tauri/Cargo.toml', 'Frontend/src-tauri/build.rs', 'Frontend/src-tauri/src/audio_sidecar.rs', 'Frontend/src-tauri/src/audio_sidecar_client.rs', 'Frontend/src-tauri/src/audio_frame_pipe.rs', 'Frontend/src-tauri/src/redaction.rs') }}
+          restore-keys: |
+            scriber-backend-sidecar-${{ runner.os }}-
 
       - name: Restore FFmpeg Profile B cache
         id: ffmpeg-profile-b-cache
@@ -189,6 +234,7 @@ jobs:
             "-MediaToolsDir",
             $env:SCRIBER_RELEASE_MEDIA_TOOLS_DIR,
             "-ValidateSlimMediaTools",
+            "-ReuseSidecarIfUnchanged",
             "-MaxScipyRuntimeDependencyMB",
             "0.001",
             "-MaxOnnxRuntimeDependencyMB",
