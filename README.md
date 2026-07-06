@@ -47,6 +47,19 @@ OpenAI, OpenRouter for summaries/fallback, Deepgram, AssemblyAI, Mistral,
 Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs/fal.ai, Google, ONNX, and
 NeMo.
 
+Settings separates STT choices by how results are produced:
+
+- Cloud streaming providers keep a live realtime stream open, for example
+  Soniox Realtime, Smallest AI Realtime, Deepgram, Gladia, Google Cloud, and
+  Speechmatics Realtime.
+- Cloud live / segmented providers work from the live microphone but finalize
+  speech segments through provider transcription APIs, for example OpenAI,
+  Groq, Mistral live, and ElevenLabs.
+- Cloud async / batch providers upload completed audio or finalize after
+  recording stops. Scriber exposes direct async paths for Soniox, Mistral,
+  Smallest AI, Deepgram, Gladia, OpenAI, Speechmatics, AssemblyAI, and
+  Microsoft Azure MAI.
+
 ## Screenshots
 
 ### Speak Once, Use It Anywhere
