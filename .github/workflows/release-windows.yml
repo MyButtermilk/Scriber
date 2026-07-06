@@ -18,6 +18,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
+        id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -31,6 +32,20 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Python dependency cache
+        id: python-venv-cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-dev.txt', 'requirements-build.txt') }}
+
+      - name: Restore frontend dependency cache
+        id: frontend-node-modules-cache
+        uses: actions/cache@v4
+        with:
+          path: Frontend/node_modules
+          key: scriber-frontend-node-modules-${{ runner.os }}-node20-${{ hashFiles('Frontend/package-lock.json') }}
 
       - name: Restore FFmpeg Profile B cache
         id: ffmpeg-profile-b-cache
@@ -54,14 +69,31 @@ jobs:
       - name: Install Python dependencies
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-base.txt
-          python -m pip install -r requirements-dev.txt
-          python -m pip install -r requirements-build.txt
+          $venvPython = ".\.venv\Scripts\python.exe"
+          if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
+            python -m venv .venv
+          }
+          if ("${{ steps.python-venv-cache.outputs.cache-hit }}" -ne "true") {
+            & $venvPython -m pip install --upgrade pip
+            & $venvPython -m pip install -r requirements-base.txt
+            & $venvPython -m pip install -r requirements-dev.txt
+            & $venvPython -m pip install -r requirements-build.txt
+          } else {
+            & $venvPython -m pip check
+          }
+          (Resolve-Path ".\.venv\Scripts").Path | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          & $venvPython --version
+          & $venvPython -m pip --version
 
       - name: Install frontend dependencies
+        if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
         working-directory: Frontend
         run: npm ci
+
+      - name: Use cached frontend dependencies
+        if: steps.frontend-node-modules-cache.outputs.cache-hit == 'true'
+        working-directory: Frontend
+        run: npm ls --depth=0 --silent
 
       - name: Use cached FFmpeg Profile B media tools
         if: steps.ffmpeg-profile-b-cache.outputs.cache-hit == 'true'
