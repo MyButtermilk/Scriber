@@ -107,11 +107,15 @@ jobs:
             "-MaxPillowRuntimeDependencyMB",
             "6"
           )
-          if ($env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY -and ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)) {
+          $hasUpdaterSigning = $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY -and ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)
+          $isTagRelease = $env:GITHUB_REF_TYPE -eq "tag"
+          if ($hasUpdaterSigning -and $isTagRelease) {
             $buildArgs += "-EnableTauriUpdater"
             if ($env:SCRIBER_TAURI_UPDATER_ENDPOINT) {
               $buildArgs += @("-UpdaterEndpoint", $env:SCRIBER_TAURI_UPDATER_ENDPOINT)
             }
+          } elseif ($hasUpdaterSigning) {
+            Write-Host "Skipping Tauri updater signing for non-tag workflow build; installer artifacts will be uploaded to GitHub Actions only."
           }
           if ($env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE -eq "1") {
             $buildArgs += "-RequireAuthenticodeSignature"
