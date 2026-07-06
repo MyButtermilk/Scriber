@@ -32,7 +32,20 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Restore FFmpeg Profile B cache
+        id: ffmpeg-profile-b-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/ffmpeg-profile-b-msys2/dist/scriber-ffmpeg-profile-b
+            build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-manifest.json
+            build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-fixtures.json
+            build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
+            build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
+          key: scriber-ffmpeg-profile-b-msys2-n7.0-${{ runner.os }}-${{ hashFiles('scripts/ffmpeg/**', 'scripts/smoke_media_preparation.py') }}
+
       - name: Set up MSYS2
+        if: steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true'
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -50,7 +63,61 @@ jobs:
         working-directory: Frontend
         run: npm ci
 
+      - name: Use cached FFmpeg Profile B media tools
+        if: steps.ffmpeg-profile-b-cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          $buildRoot = "build\ffmpeg-profile-b-msys2"
+          $mediaToolsDir = (Resolve-Path "$buildRoot\dist\scriber-ffmpeg-profile-b\bin").Path
+          $ffmpeg = Join-Path $mediaToolsDir "ffmpeg.exe"
+          $ffprobe = Join-Path $mediaToolsDir "ffprobe.exe"
+          if (-not (Test-Path -LiteralPath $ffmpeg -PathType Leaf)) {
+            throw "Cached Profile B ffmpeg was not found: $ffmpeg"
+          }
+          if (-not (Test-Path -LiteralPath $ffprobe -PathType Leaf)) {
+            throw "Cached Profile B ffprobe was not found: $ffprobe"
+          }
+          python scripts\ffmpeg\validate_ffmpeg_profile.py `
+            --media-tools-dir $mediaToolsDir `
+            --profile B `
+            --require-lgpl `
+            --output "$buildRoot\ffmpeg-profile-b-manifest.json"
+          python scripts\smoke_media_preparation.py `
+            --media-tools-dir $mediaToolsDir `
+            --require-ffprobe `
+            --output "$buildRoot\media-preparation-smoke-profile-b.json"
+          $payload = [ordered]@{
+            apiVersion = "1"
+            ok = $true
+            mode = "cache"
+            cacheHit = $true
+            sourceUrl = "https://git.ffmpeg.org/ffmpeg.git"
+            gitRef = "n7.0"
+            mediaToolsDir = $mediaToolsDir
+            ffmpeg = @{
+              path = $ffmpeg
+              exists = $true
+              sizeBytes = (Get-Item -LiteralPath $ffmpeg).Length
+              sha256 = (Get-FileHash -LiteralPath $ffmpeg -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+            ffprobe = @{
+              path = $ffprobe
+              exists = $true
+              sizeBytes = (Get-Item -LiteralPath $ffprobe).Length
+              sha256 = (Get-FileHash -LiteralPath $ffprobe -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+            reports = @{
+              manifest = "$buildRoot\ffmpeg-profile-b-manifest.json"
+              mediaSmoke = "$buildRoot\media-preparation-smoke-profile-b.json"
+            }
+          }
+          $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$buildRoot\profile-b-msys2-build-report.json" -Encoding utf8
+          "SCRIBER_RELEASE_MEDIA_TOOLS_DIR=$mediaToolsDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & $ffmpeg -version
+          & $ffprobe -version
+
       - name: Build FFmpeg Profile B media tools
+        if: steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ffmpeg\build_profile_b_msys2.ps1 `
