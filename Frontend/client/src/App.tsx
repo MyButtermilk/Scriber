@@ -11,13 +11,14 @@ import { useSharedWebSocket, WebSocketProvider, type ScriberWebSocketMessage } f
 import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
 import { useToast } from "@/hooks/use-toast";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { isTauriRuntime, loadBackendBaseUrlFromTauri } from "@/lib/backend";
+import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState } from "@/lib/backend";
 import { preloadPrimaryTabChunks } from "@/lib/route-preload";
 import { preloadPrimaryTabData } from "@/lib/tab-data-preload";
 import { ToastAction } from "@/components/ui/toast";
 import {
   checkDesktopUpdateIfDue,
   getCachedDesktopUpdateStatus,
+  publishDesktopUpdateStatusToTray,
   shouldNotifyDesktopUpdate,
   subscribeDesktopUpdateStatus,
   type DesktopUpdateStatus,
@@ -159,6 +160,107 @@ function isBusyForUpdatePrompt(msg: ScriberWebSocketMessage): boolean | null {
   return null;
 }
 
+function trayRecordingStateFromMessage(
+  msg: ScriberWebSocketMessage,
+): { active: boolean; mode: string } | null {
+  if (msg.type === "session_started") {
+    return { active: true, mode: "initializing" };
+  }
+  if (msg.type === "transcribing") {
+    return { active: false, mode: "transcribing" };
+  }
+  if (msg.type === "session_finished" || msg.type === "error") {
+    return { active: false, mode: "idle" };
+  }
+  if (msg.type !== "state" && msg.type !== "status") {
+    return null;
+  }
+
+  const recordingState = String(msg.recordingState || "").toLowerCase();
+  if (recordingState === "initializing") {
+    return { active: true, mode: "initializing" };
+  }
+  if (recordingState === "recording" || msg.listening) {
+    return { active: true, mode: "recording" };
+  }
+  if (recordingState === "finalizing" || msg.transcribing) {
+    return { active: false, mode: "transcribing" };
+  }
+  if (["idle", "completed", "failed", "stopped"].includes(recordingState)) {
+    return { active: false, mode: "idle" };
+  }
+  return null;
+}
+
+function TrayRecordingStateBridge() {
+  const lastStateRef = useRef("");
+
+  const publish = useCallback((active: boolean, mode: string) => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    const key = `${active}:${mode}`;
+    if (lastStateRef.current === key) {
+      return;
+    }
+    lastStateRef.current = key;
+    void setTrayRecordingState(active, mode).catch((error) => {
+      console.debug("Tray recording state sync failed.", error);
+    });
+  }, []);
+
+  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
+    const next = trayRecordingStateFromMessage(msg);
+    if (!next) {
+      return;
+    }
+    publish(next.active, next.mode);
+  }, [publish]);
+
+  useSharedWebSocket(handleWsMessage);
+
+  useEffect(() => {
+    publish(false, "idle");
+  }, [publish]);
+
+  return null;
+}
+
+function TauriNavigationBridge() {
+  const [, setLocation] = useLocation();
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<{ path?: string }>("scriber-navigate", (event) => {
+          const path = String(event.payload?.path || "").trim();
+          if (path.startsWith("/")) {
+            setLocation(path);
+          }
+        }),
+      )
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+        } else {
+          unlisten = cleanup;
+        }
+      })
+      .catch((error) => console.debug("Tauri navigation listener failed.", error));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [setLocation]);
+
+  return null;
+}
+
 function DesktopUpdateAutoCheckBridge() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
@@ -212,6 +314,9 @@ function DesktopUpdateAutoCheckBridge() {
     if (!isTauriRuntime()) {
       return;
     }
+    const cached = getCachedDesktopUpdateStatus();
+    publishDesktopUpdateStatusToTray(cached);
+    maybeNotify(cached);
     const unsubscribe = subscribeDesktopUpdateStatus(maybeNotify);
     const startupTimer = window.setTimeout(checkIfDue, DESKTOP_UPDATE_STARTUP_DELAY_MS);
     const interval = window.setInterval(checkIfDue, DESKTOP_UPDATE_BACKGROUND_POLL_MS);
@@ -239,6 +344,8 @@ function RuntimeShell() {
     <WebSocketProvider path="/ws" autoReconnect={true} reconnectDelay={1000} enabled={websocketEnabled}>
       <RecordingErrorToastBridge />
       <TranscriptHistoryInvalidationBridge />
+      <TrayRecordingStateBridge />
+      <TauriNavigationBridge />
       <DesktopUpdateAutoCheckBridge />
       <BackendOfflineBanner />
       <Router />

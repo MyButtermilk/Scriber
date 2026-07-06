@@ -13,8 +13,14 @@ window.addEventListener("error", resizeObserverErr);
 const root = createRoot(document.getElementById("root")!);
 const isOverlayWindow =
     typeof window !== "undefined" && window.location.search.includes("overlay=1");
+const isTrayWindow =
+    typeof window !== "undefined" && window.location.search.includes("tray=1");
 
-if (isOverlayWindow) {
+if (isTrayWindow) {
+    void import("./components/TrayPanel").then(({ default: TrayPanel }) => {
+        root.render(<TrayPanel />);
+    });
+} else if (isOverlayWindow) {
     void import("./components/NativeRecordingOverlay").then(({ default: NativeRecordingOverlay }) => {
         root.render(<NativeRecordingOverlay />);
     });

@@ -31,6 +31,31 @@ interface BackendAccess {
   sessionToken: string;
 }
 
+export interface TrayStatus {
+  recordingActive: boolean;
+  recordingMode: string;
+  updateAvailable: boolean;
+  updateInstalling: boolean;
+  updateVersion?: string;
+  updateMessage: string;
+}
+
+export interface TrayUpdateStatusPayload {
+  available: boolean;
+  installing: boolean;
+  version?: string;
+  message?: string;
+}
+
+export interface DesktopHotkeyStatus {
+  registered: boolean;
+  available: boolean;
+  hotkey: string;
+  mode: string;
+  message: string;
+  captureSuspended: boolean;
+}
+
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -189,12 +214,12 @@ export async function setAutostartEnabled(enabled: boolean): Promise<AutostartSt
   return (await res.json()) as AutostartStatus;
 }
 
-export async function refreshGlobalHotkey(): Promise<void> {
+export async function refreshGlobalHotkey(): Promise<DesktopHotkeyStatus | null> {
   if (!isTauriRuntime()) {
-    return;
+    return null;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("refresh_global_hotkey");
+  return invoke<DesktopHotkeyStatus>("refresh_global_hotkey");
 }
 
 export async function setGlobalHotkeyCaptureActive(active: boolean): Promise<void> {
@@ -203,6 +228,54 @@ export async function setGlobalHotkeyCaptureActive(active: boolean): Promise<voi
   }
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("set_global_hotkey_capture_active", { active });
+}
+
+export async function getGlobalHotkeyStatus(): Promise<DesktopHotkeyStatus | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<DesktopHotkeyStatus>("global_hotkey_status");
+}
+
+export async function getTrayStatus(): Promise<TrayStatus | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TrayStatus>("tray_status");
+}
+
+export async function setTrayUpdateStatus(status: TrayUpdateStatusPayload): Promise<TrayStatus | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TrayStatus>("set_tray_update_status", { status });
+}
+
+export async function setTrayRecordingState(active: boolean, mode?: string): Promise<TrayStatus | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TrayStatus>("set_tray_recording_state", { active, mode });
+}
+
+export async function trayAction(action: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("tray_action", { action });
+}
+
+export async function hideTrayPanel(): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("hide_tray_panel");
 }
 
 export function wsUrl(path: string): string {

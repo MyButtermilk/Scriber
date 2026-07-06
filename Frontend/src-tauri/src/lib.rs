@@ -5,7 +5,7 @@ mod native_overlay;
 mod redaction;
 mod shell_ipc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     env,
@@ -18,9 +18,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
+    image::Image,
     menu::{IsMenuItem, Menu, MenuBuilder, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, Runtime,
+    AppHandle, Emitter, LogicalPosition, Manager, Runtime, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 #[cfg(windows)]
@@ -82,16 +84,90 @@ const NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS: u64 = 1000;
 const NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL: Duration = Duration::from_secs(900);
 const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_ID: &str = "scriber-tray";
+const TRAY_PANEL_LABEL: &str = "tray-panel";
+const TRAY_STATUS_EVENT: &str = "scriber-tray-status";
+const TRAY_NAVIGATE_EVENT: &str = "scriber-navigate";
+const TRAY_PANEL_WIDTH: f64 = 386.0;
+const TRAY_PANEL_HEIGHT: f64 = 620.0;
+const TRAY_PANEL_MARGIN: f64 = 14.0;
 const MENU_ITEM_SHOW_WINDOW: &str = "scriber-show-window";
+const MENU_ITEM_START_LIVE: &str = "scriber-start-live";
+const MENU_ITEM_YOUTUBE: &str = "scriber-open-youtube";
+const MENU_ITEM_FILE: &str = "scriber-open-file";
+const MENU_ITEM_SETTINGS: &str = "scriber-open-settings";
+const MENU_ITEM_INSTALL_UPDATE: &str = "scriber-install-update";
 const MENU_ITEM_RESTART_BACKEND: &str = "scriber-restart-backend";
 const MENU_ITEM_REFRESH_RECENT: &str = "scriber-refresh-recent";
 const MENU_ITEM_QUIT: &str = "scriber-quit";
 const MENU_ITEM_COPY_TRANSCRIPT_PREFIX: &str = "scriber-copy-transcript-";
+#[allow(dead_code)]
 const MENU_RECENT_TRANSCRIPTS: &str = "scriber-recent-transcripts";
+#[allow(dead_code)]
 const MENU_ITEM_EMPTY_RECENT: &str = "scriber-empty-recent";
 const TRAY_RECENT_TRANSCRIPT_LIMIT: usize = 5;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[derive(Debug, Default)]
+struct TrayState {
+    inner: Mutex<TrayStatusInner>,
+}
+
+#[derive(Debug, Clone)]
+struct TrayStatusInner {
+    recording_active: bool,
+    recording_mode: String,
+    update_available: bool,
+    update_installing: bool,
+    update_version: Option<String>,
+    update_message: String,
+}
+
+impl Default for TrayStatusInner {
+    fn default() -> Self {
+        Self {
+            recording_active: false,
+            recording_mode: "idle".to_string(),
+            update_available: false,
+            update_installing: false,
+            update_version: None,
+            update_message: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayStatus {
+    recording_active: bool,
+    recording_mode: String,
+    update_available: bool,
+    update_installing: bool,
+    update_version: Option<String>,
+    update_message: String,
+}
+
+impl From<&TrayStatusInner> for TrayStatus {
+    fn from(value: &TrayStatusInner) -> Self {
+        Self {
+            recording_active: value.recording_active,
+            recording_mode: value.recording_mode.clone(),
+            update_available: value.update_available,
+            update_installing: value.update_installing,
+            update_version: value.update_version.clone(),
+            update_message: value.update_message.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayUpdateStatusInput {
+    available: bool,
+    installing: bool,
+    version: Option<String>,
+    message: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,6 +190,7 @@ pub struct BackendAccess {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct RecentTranscriptMenuEntry {
     id: String,
     title: String,
@@ -736,6 +813,59 @@ fn set_desktop_window_chrome_theme(app: AppHandle, theme: String) -> Result<(), 
     apply_desktop_window_chrome_theme(&window, theme)
 }
 
+#[tauri::command]
+fn tray_status(app: AppHandle) -> TrayStatus {
+    tray_status_for_app(&app)
+}
+
+#[tauri::command]
+fn set_tray_update_status(
+    app: AppHandle,
+    status: TrayUpdateStatusInput,
+) -> Result<TrayStatus, String> {
+    let next = update_tray_status_for_app(&app, |state| {
+        state.update_available = status.available;
+        state.update_installing = status.installing;
+        state.update_version = status
+            .version
+            .map(|value| sanitize_update_field(&value, 32))
+            .filter(|value| !value.is_empty());
+        state.update_message = status
+            .message
+            .map(|value| sanitize_update_field(&value, 96))
+            .unwrap_or_default();
+    });
+    Ok(next)
+}
+
+#[tauri::command]
+fn set_tray_recording_state(
+    app: AppHandle,
+    active: bool,
+    mode: Option<String>,
+) -> Result<TrayStatus, String> {
+    let next = update_tray_status_for_app(&app, |state| {
+        state.recording_active = active;
+        state.recording_mode = normalize_tray_recording_mode(mode.as_deref(), active);
+    });
+    Ok(next)
+}
+
+#[tauri::command]
+fn show_tray_panel(app: AppHandle) -> Result<(), String> {
+    show_tray_panel_for_app(&app)
+}
+
+#[tauri::command]
+fn hide_tray_panel(app: AppHandle) -> Result<(), String> {
+    hide_tray_panel_for_app(&app)
+}
+
+#[tauri::command]
+fn tray_action(app: AppHandle, action: String) -> Result<(), String> {
+    handle_tray_action(&app, &action)
+}
+
 fn apply_desktop_window_chrome_theme<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     theme: DesktopWindowChromeTheme,
@@ -872,6 +1002,7 @@ pub fn run() {
         })
         .manage(single_instance_guard)
         .manage(DesktopHotkeyState::new())
+        .manage(TrayState::default())
         .manage(NativeDeviceEventsState::new())
         .manage(ShellIpcState::new(shell_ipc_config, shell_ipc_handle))
         .manage(backend_manager)
@@ -915,7 +1046,13 @@ pub fn run() {
             global_hotkey_status,
             refresh_global_hotkey,
             set_global_hotkey_capture_active,
-            set_desktop_window_chrome_theme
+            set_desktop_window_chrome_theme,
+            tray_status,
+            set_tray_update_status,
+            set_tray_recording_state,
+            show_tray_panel,
+            hide_tray_panel,
+            tray_action
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Scriber desktop shell");
@@ -936,6 +1073,7 @@ pub fn run() {
 }
 
 fn configure_desktop_shell<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
+    apply_desktop_window_icon(app.handle());
     install_tray(app)?;
     Ok(())
 }
@@ -1018,32 +1156,59 @@ fn persist_desktop_autostart_user_choice<R: Runtime>(app: &AppHandle<R>, enabled
 }
 
 fn install_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
-    let handle = app.handle();
-    let tray_menu = build_tray_menu(handle)?;
     let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Scriber")
-        .menu(&tray_menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
-            if should_show_window_for_tray_event(&event) {
-                show_main_window(tray.app_handle());
+            if should_show_tray_panel_for_event(&event) {
+                if let Err(err) = show_tray_panel_for_app(tray.app_handle()) {
+                    write_shell_log(&format!("tray panel show failed from tray click: {err}"));
+                }
             }
         });
 
-    if let Some(icon) = app.default_window_icon().cloned() {
-        tray = tray.icon(icon);
-    }
+    tray = tray.icon(tray_icon_image(TrayIconKind::Normal));
 
     tray.build(app)?;
     Ok(())
 }
 
+#[allow(dead_code)]
 fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let status = tray_status_for_app(app);
+    let live_label = if status.recording_active {
+        "Stop Recording"
+    } else {
+        "Start Live Transcription"
+    };
+    let live_item = MenuItem::with_id(app, MENU_ITEM_START_LIVE, live_label, true, None::<&str>)?;
+    let youtube_item = MenuItem::with_id(
+        app,
+        MENU_ITEM_YOUTUBE,
+        "YouTube Transcription",
+        true,
+        None::<&str>,
+    )?;
+    let file_item = MenuItem::with_id(app, MENU_ITEM_FILE, "Transcribe File", true, None::<&str>)?;
     let show_item = MenuItem::with_id(
         app,
         MENU_ITEM_SHOW_WINDOW,
-        "Open Scriber",
+        "Open Main Window",
         true,
+        None::<&str>,
+    )?;
+    let settings_item = MenuItem::with_id(app, MENU_ITEM_SETTINGS, "Settings", true, None::<&str>)?;
+    let update_label = match &status.update_version {
+        Some(version) if !version.trim().is_empty() => {
+            format!("Update available: Scriber {version}")
+        }
+        _ => "Update available, install now".to_string(),
+    };
+    let update_item = MenuItem::with_id(
+        app,
+        MENU_ITEM_INSTALL_UPDATE,
+        update_label,
+        status.update_available || status.update_installing,
         None::<&str>,
     )?;
     let refresh_item = MenuItem::with_id(
@@ -1063,10 +1228,24 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let quit_item = MenuItem::with_id(app, MENU_ITEM_QUIT, "Quit", true, None::<&str>)?;
     let recent_submenu = build_recent_transcripts_submenu(app)?;
 
-    MenuBuilder::new(app)
-        .item(&show_item)
+    let builder = MenuBuilder::new(app)
+        .item(&live_item)
+        .item(&youtube_item)
+        .item(&file_item)
+        .separator()
         .item(&recent_submenu)
         .item(&refresh_item)
+        .item(&show_item)
+        .separator()
+        .item(&settings_item);
+
+    let builder = if status.update_available || status.update_installing {
+        builder.item(&update_item)
+    } else {
+        builder
+    };
+
+    builder
         .separator()
         .item(&restart_item)
         .separator()
@@ -1074,6 +1253,7 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .build()
 }
 
+#[allow(dead_code)]
 fn build_recent_transcripts_submenu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Submenu<R>> {
     let mut recent_items: Vec<MenuItem<R>> = Vec::new();
     if let Some(manager) = app.try_state::<BackendManager>() {
@@ -1134,7 +1314,35 @@ fn handle_shell_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
     }
 
     match item_id {
-        MENU_ITEM_SHOW_WINDOW => show_main_window(app),
+        MENU_ITEM_SHOW_WINDOW => {
+            show_main_window(app);
+            let _ = hide_tray_panel_for_app(app);
+        }
+        MENU_ITEM_START_LIVE => {
+            if let Err(err) = toggle_live_recording_from_shell(app) {
+                write_shell_log(&format!("live recording tray action failed: {err}"));
+            }
+        }
+        MENU_ITEM_YOUTUBE => {
+            let _ = show_main_window_path(app, "/youtube");
+            let _ = hide_tray_panel_for_app(app);
+        }
+        MENU_ITEM_FILE => {
+            let _ = show_main_window_path(app, "/file");
+            let _ = hide_tray_panel_for_app(app);
+        }
+        MENU_ITEM_SETTINGS => {
+            let _ = show_main_window_path(app, "/settings");
+            let _ = hide_tray_panel_for_app(app);
+        }
+        MENU_ITEM_INSTALL_UPDATE => {
+            if let Err(err) = show_tray_panel_for_app(app) {
+                write_shell_log(&format!("tray update panel show failed: {err}"));
+            }
+            if let Err(err) = app.emit(TRAY_STATUS_EVENT, tray_status_for_app(app)) {
+                write_shell_log(&format!("tray update status emit failed: {err}"));
+            }
+        }
         MENU_ITEM_RESTART_BACKEND => restart_backend_from_shell(app),
         MENU_ITEM_REFRESH_RECENT => refresh_tray_menu_for_app(app, "manual refresh"),
         MENU_ITEM_QUIT => {
@@ -1501,6 +1709,11 @@ fn is_shell_menu_item(item_id: &str) -> bool {
     matches!(
         item_id,
         MENU_ITEM_SHOW_WINDOW
+            | MENU_ITEM_START_LIVE
+            | MENU_ITEM_YOUTUBE
+            | MENU_ITEM_FILE
+            | MENU_ITEM_SETTINGS
+            | MENU_ITEM_INSTALL_UPDATE
             | MENU_ITEM_RESTART_BACKEND
             | MENU_ITEM_REFRESH_RECENT
             | MENU_ITEM_QUIT
@@ -1514,14 +1727,314 @@ fn refresh_tray_menu_for_app<R: Runtime>(app: &AppHandle<R>, reason: &str) {
         ));
         return;
     };
-    match build_tray_menu(app) {
-        Ok(menu) => {
-            if let Err(err) = tray.set_menu(Some(menu)) {
-                write_shell_log(&format!("tray menu refresh failed ({reason}): {err}"));
+    if let Err(err) = tray.set_menu(None::<Menu<R>>) {
+        write_shell_log(&format!("tray native menu clear failed ({reason}): {err}"));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayIconKind {
+    Normal,
+    Update,
+    Recording,
+}
+
+fn tray_icon_image(kind: TrayIconKind) -> Image<'static> {
+    let bytes: &'static [u8] = match kind {
+        TrayIconKind::Normal => include_bytes!("../icons/tray-normal.rgba"),
+        TrayIconKind::Update => include_bytes!("../icons/tray-update.rgba"),
+        TrayIconKind::Recording => include_bytes!("../icons/tray-recording.rgba"),
+    };
+    Image::new(bytes, 32, 32)
+}
+
+fn desktop_window_icon_image() -> Image<'static> {
+    Image::new(include_bytes!("../icons/window-icon.rgba"), 64, 64)
+}
+
+fn apply_desktop_window_icon<R: Runtime>(app: &AppHandle<R>) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        write_shell_log("desktop window icon skipped: main window not found");
+        return;
+    };
+    if let Err(err) = window.set_icon(desktop_window_icon_image()) {
+        write_shell_log(&format!("desktop window icon update failed: {err}"));
+    }
+}
+
+fn tray_icon_kind(status: &TrayStatus) -> TrayIconKind {
+    if status.recording_active {
+        return TrayIconKind::Recording;
+    }
+    if status.update_available || status.update_installing {
+        return TrayIconKind::Update;
+    }
+    TrayIconKind::Normal
+}
+
+fn tray_tooltip(status: &TrayStatus) -> String {
+    if status.recording_active {
+        return "Scriber is recording".to_string();
+    }
+    if status.update_installing {
+        return "Scriber is installing an update".to_string();
+    }
+    if status.update_available {
+        if let Some(version) = status.update_version.as_deref() {
+            if !version.trim().is_empty() {
+                return format!("Scriber {version} is ready to install");
             }
         }
-        Err(err) => write_shell_log(&format!("tray menu rebuild failed ({reason}): {err}")),
+        return "Scriber update is ready to install".to_string();
     }
+    "Scriber".to_string()
+}
+
+fn tray_status_for_app<R: Runtime>(app: &AppHandle<R>) -> TrayStatus {
+    let Some(state) = app.try_state::<TrayState>() else {
+        return TrayStatus::from(&TrayStatusInner::default());
+    };
+    let state = state.inner.lock().unwrap();
+    TrayStatus::from(&*state)
+}
+
+fn update_tray_status_for_app<R: Runtime>(
+    app: &AppHandle<R>,
+    update: impl FnOnce(&mut TrayStatusInner),
+) -> TrayStatus {
+    let status = {
+        let state = app.state::<TrayState>();
+        let mut inner = state.inner.lock().unwrap();
+        update(&mut inner);
+        TrayStatus::from(&*inner)
+    };
+    refresh_tray_visuals_for_app(app, &status);
+    refresh_tray_menu_for_app(app, "tray status");
+    emit_tray_status_for_app(app, &status);
+    status
+}
+
+fn refresh_tray_visuals_for_app<R: Runtime>(app: &AppHandle<R>, status: &TrayStatus) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    if let Err(err) = tray.set_icon(Some(tray_icon_image(tray_icon_kind(status)))) {
+        write_shell_log(&format!("tray icon refresh failed: {err}"));
+    }
+    let tooltip = tray_tooltip(status);
+    if let Err(err) = tray.set_tooltip(Some(&tooltip)) {
+        write_shell_log(&format!("tray tooltip refresh failed: {err}"));
+    }
+}
+
+fn emit_tray_status_for_app<R: Runtime>(app: &AppHandle<R>, status: &TrayStatus) {
+    let _ = app.emit(TRAY_STATUS_EVENT, status.clone());
+    let _ = app.emit_to(TRAY_PANEL_LABEL, TRAY_STATUS_EVENT, status.clone());
+}
+
+fn show_tray_panel_for_app<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let window = if let Some(window) = app.get_webview_window(TRAY_PANEL_LABEL) {
+        window
+    } else {
+        WebviewWindowBuilder::new(
+            app,
+            TRAY_PANEL_LABEL,
+            WebviewUrl::App("index.html?tray=1".into()),
+        )
+        .title("Scriber Tray")
+        .inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
+        .min_inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
+        .max_inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .build()
+        .map_err(|err| format!("tray panel create failed: {err}"))?
+    };
+
+    position_tray_panel_window(&window)
+        .map_err(|err| format!("tray panel position failed: {err}"))?;
+    window
+        .show()
+        .map_err(|err| format!("tray panel show failed: {err}"))?;
+    window
+        .set_focus()
+        .map_err(|err| format!("tray panel focus failed: {err}"))?;
+    emit_tray_status_for_app(app, &tray_status_for_app(app));
+    Ok(())
+}
+
+fn hide_tray_panel_for_app<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(TRAY_PANEL_LABEL) {
+        window
+            .hide()
+            .map_err(|err| format!("tray panel hide failed: {err}"))?;
+    }
+    Ok(())
+}
+
+fn position_tray_panel_window<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
+    let monitor = window
+        .current_monitor()?
+        .or(window.primary_monitor()?)
+        .or_else(|| {
+            window
+                .available_monitors()
+                .ok()
+                .and_then(|monitors| monitors.into_iter().next())
+        });
+    if let Some(monitor) = monitor {
+        let work_area = monitor.work_area();
+        let scale = monitor.scale_factor().max(0.25);
+        let (x, y) = tray_panel_position_for_work_area(
+            f64::from(work_area.position.x) / scale,
+            f64::from(work_area.position.y) / scale,
+            f64::from(work_area.size.width) / scale,
+            f64::from(work_area.size.height) / scale,
+            TRAY_PANEL_WIDTH,
+            TRAY_PANEL_HEIGHT,
+            TRAY_PANEL_MARGIN,
+        );
+        window.set_position(LogicalPosition::new(x, y))?;
+    }
+    Ok(())
+}
+
+fn tray_panel_position_for_work_area(
+    work_x: f64,
+    work_y: f64,
+    work_width: f64,
+    work_height: f64,
+    panel_width: f64,
+    panel_height: f64,
+    margin: f64,
+) -> (f64, f64) {
+    let x = work_x + (work_width - panel_width - margin).max(0.0);
+    let y = work_y + (work_height - panel_height - margin).max(0.0);
+    (x.round(), y.round())
+}
+
+fn show_main_window_path<R: Runtime>(app: &AppHandle<R>, path: &str) -> Result<(), String> {
+    show_main_window(app);
+    app.emit_to(
+        MAIN_WINDOW_LABEL,
+        TRAY_NAVIGATE_EVENT,
+        json!({ "path": path }),
+    )
+    .map_err(|err| format!("main window navigation event failed: {err}"))
+}
+
+fn handle_tray_action<R: Runtime>(app: &AppHandle<R>, action: &str) -> Result<(), String> {
+    match action.trim() {
+        "toggle_live" | "start_live" => toggle_live_recording_from_shell(app),
+        "open_youtube" => {
+            show_main_window_path(app, "/youtube")?;
+            hide_tray_panel_for_app(app)
+        }
+        "open_file" => {
+            show_main_window_path(app, "/file")?;
+            hide_tray_panel_for_app(app)
+        }
+        "open_settings" => {
+            show_main_window_path(app, "/settings")?;
+            hide_tray_panel_for_app(app)
+        }
+        "open_recent" | "show_window" => {
+            show_main_window(app);
+            hide_tray_panel_for_app(app)
+        }
+        "restart_backend" => {
+            restart_backend_from_shell(app);
+            hide_tray_panel_for_app(app)
+        }
+        "restart_app" => {
+            let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("shellRestartApp");
+            if stopped > 0 {
+                write_shell_log(&format!(
+                    "stopped {stopped} audio sidecar(s) before shell app restart"
+                ));
+            }
+            write_shell_log("application restart requested from tray panel");
+            app.request_restart();
+            Ok(())
+        }
+        "quit" => {
+            let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("shellQuit");
+            if stopped > 0 {
+                write_shell_log(&format!(
+                    "stopped {stopped} audio sidecar(s) before shell quit"
+                ));
+            }
+            app.exit(0);
+            Ok(())
+        }
+        "hide" => hide_tray_panel_for_app(app),
+        copy_action if copy_action.starts_with("copy_transcript:") => {
+            let transcript_id = copy_action
+                .strip_prefix("copy_transcript:")
+                .unwrap_or_default()
+                .trim();
+            if copy_recent_transcript_from_shell(app, transcript_id) {
+                Ok(())
+            } else {
+                Err("could not copy transcript".to_string())
+            }
+        }
+        other => Err(format!("unsupported tray action: {other}")),
+    }
+}
+
+fn toggle_live_recording_from_shell<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let manager = app.state::<BackendManager>();
+    let backend_status = manager.ensure_started();
+    if !backend_status.ready {
+        return Err(format!(
+            "backend is not ready for live recording: {}",
+            backend_status.message
+        ));
+    }
+
+    let current = tray_status_for_app(app);
+    let (path, active, mode) = if current.recording_active {
+        ("/api/live-mic/stop", false, "transcribing")
+    } else {
+        ("/api/live-mic/start", true, "initializing")
+    };
+    request_backend_json(&manager.access(), "POST", path)?;
+    update_tray_status_for_app(app, |state| {
+        state.recording_active = active;
+        state.recording_mode = mode.to_string();
+    });
+    Ok(())
+}
+
+fn normalize_tray_recording_mode(raw: Option<&str>, active: bool) -> String {
+    let mode = raw.unwrap_or_default().trim().to_ascii_lowercase();
+    match mode.as_str() {
+        "initializing" | "recording" | "transcribing" | "idle" | "hidden" => mode,
+        _ if active => "recording".to_string(),
+        _ => "idle".to_string(),
+    }
+}
+
+fn sanitize_update_field(value: &str, max_chars: usize) -> String {
+    let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if max_chars == 0 || collapsed.chars().count() <= max_chars {
+        return collapsed;
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let mut truncated = collapsed
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 fn fetch_recent_transcripts(
@@ -1618,6 +2131,7 @@ fn is_safe_transcript_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+#[allow(dead_code)]
 fn recent_transcript_label(entry: &RecentTranscriptMenuEntry) -> String {
     let kind = match entry.transcript_type.as_str() {
         "youtube" => "YouTube",
@@ -1634,6 +2148,7 @@ fn recent_transcript_label(entry: &RecentTranscriptMenuEntry) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn sanitize_menu_label(value: &str, fallback: &str, max_chars: usize) -> String {
     let mut collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.is_empty() {
@@ -1711,28 +2226,36 @@ fn copy_text_to_clipboard(_text: &str) -> Result<(), String> {
     Err("clipboard copy is only implemented on Windows".to_string())
 }
 
-fn should_show_window_for_tray_event(event: &TrayIconEvent) -> bool {
+fn should_show_tray_panel_for_event(event: &TrayIconEvent) -> bool {
     match event {
         TrayIconEvent::Click {
             button,
             button_state,
             ..
-        } => should_show_window_for_tray_click(*button, Some(*button_state)),
+        } => should_show_tray_panel_for_click(*button, Some(*button_state)),
         TrayIconEvent::DoubleClick { button, .. } => {
-            should_show_window_for_tray_click(*button, None)
+            should_show_tray_panel_for_click(*button, None)
         }
         _ => false,
     }
 }
 
+fn should_show_tray_panel_for_click(
+    button: MouseButton,
+    button_state: Option<MouseButtonState>,
+) -> bool {
+    matches!(button, MouseButton::Left | MouseButton::Right)
+        && button_state
+            .map(|state| state == MouseButtonState::Up)
+            .unwrap_or(true)
+}
+
+#[cfg(test)]
 fn should_show_window_for_tray_click(
     button: MouseButton,
     button_state: Option<MouseButtonState>,
 ) -> bool {
-    button == MouseButton::Left
-        && button_state
-            .map(|state| state == MouseButtonState::Up)
-            .unwrap_or(true)
+    should_show_tray_panel_for_click(button, button_state)
 }
 
 fn status_from_state(state: &BackendState, ready: bool) -> BackendStatus {
@@ -3589,7 +4112,7 @@ mod tests {
     }
 
     #[test]
-    fn tray_left_click_reopens_main_window() {
+    fn tray_click_opens_custom_panel() {
         assert!(should_show_window_for_tray_click(
             MouseButton::Left,
             Some(MouseButtonState::Up)
@@ -3599,7 +4122,7 @@ mod tests {
             MouseButton::Left,
             Some(MouseButtonState::Down)
         ));
-        assert!(!should_show_window_for_tray_click(
+        assert!(should_show_window_for_tray_click(
             MouseButton::Right,
             Some(MouseButtonState::Up)
         ));

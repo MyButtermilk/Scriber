@@ -1,4 +1,4 @@
-import { isTauriRuntime } from "@/lib/backend";
+import { isTauriRuntime, setTrayUpdateStatus } from "@/lib/backend";
 
 export type DesktopUpdatePhase =
   | "idle"
@@ -174,6 +174,25 @@ export function shouldNotifyDesktopUpdate(status: DesktopUpdateStatus): boolean 
     !status.dismissed &&
     !status.deferred,
   );
+}
+
+export function publishDesktopUpdateStatusToTray(status: DesktopUpdateStatus): void {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  const actionable = Boolean(
+    status.enabled &&
+    status.available &&
+    status.version &&
+    !status.dismissed &&
+    !status.deferred,
+  );
+  void setTrayUpdateStatus({
+    available: actionable,
+    installing: status.phase === "installing",
+    version: status.version,
+    message: status.message,
+  }).catch((error) => console.debug("Tray update status sync failed.", error));
 }
 
 export function skipDesktopUpdateVersion(version?: string): DesktopUpdateStatus {
@@ -479,6 +498,7 @@ function writeJson(key: string, value: unknown): void {
 }
 
 function emitStatus(status: DesktopUpdateStatus): void {
+  publishDesktopUpdateStatusToTray(status);
   if (typeof window === "undefined") {
     return;
   }

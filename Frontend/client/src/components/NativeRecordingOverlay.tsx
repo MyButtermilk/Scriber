@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Square } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import { apiUrl, isTauriRuntime, loadBackendBaseUrlFromTauri, wsUrl } from "@/lib/backend";
+import {
+  apiUrl,
+  isTauriRuntime,
+  loadBackendBaseUrlFromTauri,
+  setTrayRecordingState,
+  wsUrl,
+} from "@/lib/backend";
 import {
   DEFAULT_VISUALIZER_BAR_COUNT,
   loadVisualizerBarCount,
@@ -362,6 +368,15 @@ export default function NativeRecordingOverlay() {
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const active = mode === "initializing" || mode === "recording";
+    const trayMode = visible ? mode : "idle";
+    void setTrayRecordingState(active, trayMode).catch((error) => {
+      console.debug("Native overlay tray state sync failed.", error);
+    });
+  }, [mode, visible]);
 
   useEffect(() => {
     if (!backendReady || isDevOverlayPreview) return;
