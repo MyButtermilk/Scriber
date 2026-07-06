@@ -3242,7 +3242,6 @@ html:has(body[data-scroll-locked]) {
   min-width: 0;
 }
 
-.settings-page .mic-device-dropdown-header,
 .settings-page .language-dropdown-header,
 .settings-page .model-dropdown-header {
   min-height: 56px;
@@ -3251,10 +3250,85 @@ html:has(body[data-scroll-locked]) {
   padding: 14px 18px;
 }
 
-.settings-page .mic-device-dropdown-selected-text,
 .settings-page .language-dropdown-selected-text,
 .settings-page .model-dropdown-selected-text {
   font-size: 0.98rem;
+}
+
+.settings-page .mic-device-dropdown-header {
+  min-height: 38px;
+  gap: 8px;
+  border-radius: 12px;
+  padding: 9px 12px;
+}
+
+.settings-page .mic-device-dropdown-selected-text {
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1.2;
+  text-shadow: none;
+}
+
+.settings-page .mic-device-dropdown-selected-text.is-selected {
+  color: hsl(var(--foreground));
+}
+
+.settings-page .mic-device-dropdown-chevron {
+  width: 16px;
+  height: 16px;
+}
+
+.settings-page .mic-device-dropdown-tray {
+  margin-top: -6px;
+}
+
+.settings-page .mic-device-dropdown.is-open .mic-device-dropdown-tray {
+  margin-top: 3px;
+}
+
+.settings-page .mic-device-dropdown-tray-inner {
+  margin: 6px 0;
+  padding: 6px;
+  border-radius: 14px;
+}
+
+.settings-page .mic-device-list {
+  gap: 2px;
+}
+
+.settings-page .mic-device-item {
+  border-radius: 10px;
+}
+
+.settings-page .mic-device-label {
+  gap: 6px;
+  padding: 7px 8px;
+}
+
+.settings-page .mic-device-name {
+  font-size: 0.78rem;
+  font-weight: 550;
+  line-height: 1.2;
+  text-shadow: none;
+}
+
+.settings-page .mic-device-divider {
+  margin: 6px 0;
+}
+
+.settings-page .mic-device-check {
+  width: 14px;
+  height: 14px;
+  stroke-width: 3;
+}
+
+.settings-page .mic-device-star-label {
+  padding: 0 9px;
+}
+
+.settings-page .mic-device-star {
+  width: 15px;
+  height: 15px;
 }
 
 .settings-page .model-dropdown,

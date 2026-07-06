@@ -1,16 +1,43 @@
-import { User, CreditCard, Keyboard, Shield, Zap, Globe, ChevronDown, LogOut, Eye, EyeOff, Check, Mic, Mic2, MousePointerClick, ToggleLeft, AudioLines, BarChart3, Power, Key, Settings2, Star, Download, Trash2, Loader2, RefreshCw, ExternalLink, AlertTriangle } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  BarChart3,
+  Check,
+  ChevronDown,
+  Cloud,
+  Cpu,
+  Download,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  FileText,
+  Globe,
+  Keyboard,
+  Key,
+  Languages,
+  Loader2,
+  Mic,
+  RefreshCw,
+  Save,
+  Shield,
+  Sparkles,
+  Star,
+  ToggleLeft,
+  Trash2,
+  type LucideIcon,
+} from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   apiUrl,
   refreshGlobalHotkey,
@@ -31,7 +58,6 @@ import type {
   SettingsResponse,
   SettingsUpdatePayload,
 } from "@/lib/api-types";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
@@ -67,11 +93,11 @@ const LANGUAGE_OPTIONS = [
 const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "onnx_local", label: "Local (ONNX) - No API Key" },
   { value: "nemo_local", label: "Local (NeMo) - Primeline" },
-  { value: "soniox-realtime", label: "Soniox Realtime" },
+  { value: "soniox-realtime", label: "Soniox STT Streaming" },
   { value: "soniox-async", label: "Soniox Async" },
-  { value: "mistral-realtime", label: "Mistral Realtime (Voxtral RT)" },
+  { value: "mistral-realtime", label: "Mistral STT Streaming (Voxtral)" },
   { value: "mistral-async", label: "Mistral Async (Voxtral V2)" },
-  { value: "smallest-realtime", label: "Smallest AI Realtime (Pulse)" },
+  { value: "smallest-realtime", label: "Smallest AI STT Streaming (Pulse)" },
   { value: "smallest-async", label: "Smallest AI Async (Pulse)" },
   { value: "assemblyai", label: "Assembly AI Universal-3-Pro" },
   { value: "deepgram", label: "Deepgram" },
@@ -128,17 +154,25 @@ function hotkeyDisplayFromKeyboardEvent(event: HotkeyCaptureEvent): string {
   return keys.join(" + ");
 }
 
-const SUMMARIZATION_MODEL_OPTIONS = [
-  { value: "gemini-flash-latest", label: "Gemini Flash Latest (Recommended)" },
-  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
-  { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview" },
-  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite Preview" },
-  { value: "gemini-3-pro-preview", label: "Gemini 3 Pro" },
-  { value: "minimax/minimax-m3:nitro", label: "OpenRouter MiniMax M3 (Nitro)" },
-  { value: "z-ai/glm-5.2:nitro", label: "OpenRouter GLM 5.2 (Nitro)" },
-  { value: "gpt-5.2", label: "OpenAI GPT 5.2" },
-  { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini" },
-  { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano" },
+type SummarizationModelOption = {
+  value: string;
+  label: string;
+  detail: string;
+  group: "gemini" | "openrouter" | "openai";
+  icon: ProviderIconKey;
+};
+
+const SUMMARIZATION_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
+  { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: "Default fast summary model", group: "gemini", icon: "gemini" },
+  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: "Fast Google summary model", group: "gemini", icon: "gemini" },
+  { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview", detail: "Preview Flash model", group: "gemini", icon: "gemini" },
+  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: "Compact preview model", group: "gemini", icon: "gemini" },
+  { value: "gemini-3-pro-preview", label: "Gemini 3 Pro", detail: "Higher reasoning preview", group: "gemini", icon: "gemini" },
+  { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: "OpenRouter Nitro route", group: "openrouter", icon: "openrouter" },
+  { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: "OpenRouter Nitro route", group: "openrouter", icon: "openrouter" },
+  { value: "gpt-5.2", label: "OpenAI GPT 5.2", detail: "OpenAI summary model", group: "openai", icon: "openai" },
+  { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini", detail: "Lower latency OpenAI model", group: "openai", icon: "openai" },
+  { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano", detail: "Smallest OpenAI model", group: "openai", icon: "openai" },
 ] as const;
 
 const API_KEY_HELP_LINKS = {
@@ -191,15 +225,6 @@ function ApiKeyLink({ helpKey, children = "Get key" }: { helpKey: ApiKeyHelpKey;
       {children}
       <ExternalLink className="h-3 w-3" aria-hidden="true" />
     </a>
-  );
-}
-
-function ApiKeyLabel({ children, helpKey }: { children: ReactNode; helpKey: ApiKeyHelpKey }) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <Label>{children}</Label>
-      <ApiKeyLink helpKey={helpKey} />
-    </div>
   );
 }
 
@@ -282,6 +307,353 @@ function LanguageFlag({ value, className }: { value: string; className?: string 
   );
 }
 
+const PROVIDER_ICON_PATHS = {
+  anthropic: "/provider-icons/anthropic.svg",
+  assemblyai: "/provider-icons/assemblyai.svg",
+  azure: "/provider-icons/azure.svg",
+  deepgram: "/provider-icons/deepgram.svg",
+  elevenlabs: "/provider-icons/elevenlabs.svg",
+  fal: "/provider-icons/fal.svg",
+  gemini: "/provider-icons/gemini.svg",
+  gladia: "/provider-icons/gladia.svg",
+  googlecloud: "/provider-icons/googlecloud.svg",
+  groq: "/provider-icons/groq.svg",
+  mistral: "/provider-icons/mistral.svg",
+  openai: "/provider-icons/openai.svg",
+  openrouter: "/provider-icons/openrouter.svg",
+  soniox: "/provider-icons/soniox.svg",
+  smallest: "/provider-icons/smallest.png",
+  speechmatics: "/provider-icons/speechmatics.svg",
+  youtube: "/provider-icons/youtube.svg",
+} as const;
+
+type ProviderIconKey = keyof typeof PROVIDER_ICON_PATHS;
+
+interface ProviderModelOption {
+  value: string;
+  label: string;
+  detail: string;
+  group: "cloud_realtime" | "cloud_async" | "local";
+  icon?: ProviderIconKey;
+}
+
+const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
+  { value: "onnx_local", label: "Local ONNX", detail: "Runs fully on this device", group: "local" },
+  { value: "nemo_local", label: "Local NeMo", detail: "Uses local NeMo toolkit models", group: "local" },
+  { value: "soniox-realtime", label: "Soniox", detail: "Realtime STT model for dictation", group: "cloud_realtime", icon: "soniox" },
+  { value: "mistral-realtime", label: "Mistral", detail: "Voxtral realtime STT", group: "cloud_realtime", icon: "mistral" },
+  { value: "smallest-realtime", label: "Smallest AI", detail: "Pulse realtime WebSocket STT", group: "cloud_realtime", icon: "smallest" },
+  { value: "deepgram", label: "Deepgram", detail: "Streaming STT; file-capable", group: "cloud_realtime", icon: "deepgram" },
+  { value: "gladia", label: "Gladia", detail: "Live STT plus pre-recorded upload", group: "cloud_realtime", icon: "gladia" },
+  { value: "google", label: "Google Cloud", detail: "StreamingRecognition and batch API", group: "cloud_realtime", icon: "googlecloud" },
+  { value: "speechmatics", label: "Speechmatics", detail: "Realtime API; batch-capable", group: "cloud_realtime", icon: "speechmatics" },
+  { value: "elevenlabs", label: "ElevenLabs", detail: "Segmented live transcription", group: "cloud_realtime", icon: "elevenlabs" },
+  { value: "openai", label: "OpenAI", detail: "Segmented live transcription", group: "cloud_realtime", icon: "openai" },
+  { value: "groq", label: "Groq", detail: "Segmented live transcription", group: "cloud_realtime", icon: "groq" },
+  { value: "soniox-async", label: "Soniox", detail: "Direct file and final transcript", group: "cloud_async", icon: "soniox" },
+  { value: "mistral-async", label: "Mistral", detail: "Voxtral batch transcription", group: "cloud_async", icon: "mistral" },
+  { value: "smallest-async", label: "Smallest AI", detail: "Pulse pre-recorded STT", group: "cloud_async", icon: "smallest" },
+  { value: "assemblyai", label: "AssemblyAI", detail: "Universal-3-Pro async", group: "cloud_async", icon: "assemblyai" },
+  { value: "azure_mai", label: "Microsoft MAI", detail: "Azure MAI batch STT", group: "cloud_async", icon: "azure" },
+];
+
+function ProviderIcon({
+  icon,
+  label,
+  className,
+}: {
+  icon?: ProviderIconKey;
+  label: string;
+  className?: string;
+}) {
+  if (!icon) {
+    return null;
+  }
+  return (
+    <span
+      className={cn(
+        "flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-md bg-white p-1 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.08)]",
+        className,
+      )}
+    >
+      <img
+        src={PROVIDER_ICON_PATHS[icon]}
+        alt={`${label} logo`}
+        className="h-full w-full object-contain"
+        draggable={false}
+      />
+    </span>
+  );
+}
+
+function SectionPanel({
+  title,
+  description,
+  icon: Icon,
+  children,
+  className,
+}: {
+  title: string;
+  description: string;
+  icon?: LucideIcon;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={cn("settings-section min-w-0 border-t border-slate-300/70 pb-3 pt-4 dark:border-slate-800", className)}>
+      <div className="mb-3 flex min-w-0 items-start gap-2.5">
+        {Icon ? (
+          <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/70 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] dark:bg-slate-900/70 dark:text-slate-400">
+            <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
+        ) : null}
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[14px] font-semibold leading-5 text-slate-950 dark:text-slate-100">{title}</h2>
+          <p className="mt-0.5 max-w-[46ch] text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">
+            {description}
+          </p>
+        </div>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function SettingLine({
+  label,
+  description,
+  children,
+  className,
+}: {
+  label: string;
+  description?: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn("grid gap-2 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(150px,220px)] sm:items-center", className)}>
+      <div className="min-w-0">
+        <Label className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">{label}</Label>
+        {description ? (
+          <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">{description}</p>
+        ) : null}
+      </div>
+      <div className="min-w-0 sm:justify-self-end">{children}</div>
+    </div>
+  );
+}
+
+function ProviderChoice({
+  option,
+  selected,
+  onSelect,
+}: {
+  option: ProviderModelOption;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onSelect}
+      className={cn(
+        "group flex min-h-[35px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
+        "active:translate-y-px",
+        "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
+        selected
+          ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
+          : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-slate-900",
+      )}
+    >
+      {option.icon ? (
+        <ProviderIcon icon={option.icon} label={option.label} />
+      ) : (
+        <span className="h-7 w-7 shrink-0" aria-hidden="true" />
+      )}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[11.5px] font-semibold leading-[15px]">{option.label}</span>
+        <span className="block truncate text-[10px] leading-3 text-slate-500 dark:text-slate-400">{option.detail}</span>
+      </span>
+      <span
+        className={cn(
+          "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
+          selected ? "border-blue-600 bg-blue-600" : "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-950",
+        )}
+        aria-hidden="true"
+      >
+        {selected ? <span className="h-1.5 w-1.5 rounded-full bg-white" /> : null}
+      </span>
+    </button>
+  );
+}
+
+function SummaryModelChoice({
+  option,
+  selected,
+  onSelect,
+}: {
+  option: SummarizationModelOption;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onSelect}
+      className={cn(
+        "group flex min-h-[35px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
+        "active:translate-y-px",
+        "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
+        selected
+          ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
+          : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-slate-900",
+      )}
+    >
+      <ProviderIcon icon={option.icon} label={option.label} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[11.5px] font-semibold leading-[15px]">{option.label}</span>
+        <span className="block truncate text-[10px] leading-3 text-slate-500 dark:text-slate-400">{option.detail}</span>
+      </span>
+      <span
+        className={cn(
+          "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
+          selected ? "border-blue-600 bg-blue-600" : "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-950",
+        )}
+        aria-hidden="true"
+      >
+        {selected ? <span className="h-1.5 w-1.5 rounded-full bg-white" /> : null}
+      </span>
+    </button>
+  );
+}
+
+function FieldShell({
+  label,
+  children,
+  detail,
+}: {
+  label: string;
+  children: ReactNode;
+  detail?: string;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-[10.5px] font-semibold text-slate-600 dark:text-slate-300">{label}</Label>
+      {children}
+      {detail ? <p className="text-[10.5px] leading-4 text-slate-500 dark:text-slate-400">{detail}</p> : null}
+    </div>
+  );
+}
+
+function maskedSecret(value: string): string {
+  return hasValue(value) ? "************" : "Not set";
+}
+
+function ApiCredentialRow({
+  provider,
+  icon,
+  value,
+  onValueChange,
+  show,
+  onShowChange,
+  helpKey,
+  saved,
+  onSave,
+  note,
+  placeholder,
+  inputType = "password",
+  children,
+}: {
+  provider: string;
+  icon?: ProviderIconKey;
+  value: string;
+  onValueChange: (value: string) => void;
+  show?: boolean;
+  onShowChange?: (value: boolean) => void;
+  helpKey: ApiKeyHelpKey;
+  saved: boolean;
+  onSave: () => void;
+  note?: string;
+  placeholder?: string;
+  inputType?: "password" | "text";
+  children?: ReactNode;
+}) {
+  const hasCredential = hasValue(value);
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 rounded-lg px-2 py-1.5 text-left outline-none transition-colors hover:bg-slate-100/80 focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:hover:bg-slate-900"
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <ProviderIcon icon={icon} label={provider} className="h-5.5 w-5.5 rounded-[7px] p-1" />
+            <span className="min-w-0">
+              <span className="block truncate text-[11.5px] font-semibold leading-[15px] text-slate-950 dark:text-slate-100">
+                {provider}
+              </span>
+              <span className={cn("block truncate font-mono text-[10px] leading-3", hasCredential ? "text-slate-500" : "text-slate-400")}>
+                {maskedSecret(value)}
+              </span>
+            </span>
+          </span>
+          <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold text-blue-600 group-hover:text-blue-700 dark:text-blue-400">
+            Open
+            <ArrowRight className="h-3 w-3" aria-hidden="true" />
+          </span>
+        </button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle>{provider}</DialogTitle>
+          <DialogDescription>
+            {note || "Add or update the credential for this provider."}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <FieldShell label="Credential">
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Input
+                  type={inputType === "text" ? "text" : show ? "text" : "password"}
+                  value={value}
+                  onChange={(event) => onValueChange(event.target.value)}
+                  placeholder={placeholder || `Enter ${provider} credential`}
+                  className="pr-10 font-mono text-sm"
+                />
+                {typeof show === "boolean" && onShowChange ? (
+                  <button
+                    type="button"
+                    onClick={() => onShowChange(!show)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 transition-colors hover:text-slate-950 dark:hover:text-slate-100"
+                    aria-label={show ? "Hide credential" : "Show credential"}
+                  >
+                    {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                ) : null}
+              </div>
+              <Button
+                variant={saved ? "default" : "outline"}
+                onClick={onSave}
+                className={cn(saved && "border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700")}
+              >
+                {saved ? <Check className="mr-2 h-4 w-4" /> : <Save className="mr-2 h-4 w-4" />}
+                {saved ? "Saved" : "Save"}
+              </Button>
+            </div>
+          </FieldShell>
+          {children}
+          <ApiKeyLink helpKey={helpKey}>Open provider page</ApiKeyLink>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function Settings() {
   const [openAIKey, setOpenAIKey] = useState("");
   const [deepgramKey, setDeepgramKey] = useState("");
@@ -347,7 +719,6 @@ export default function Settings() {
   const [isMicDropdownOpen, setIsMicDropdownOpen] = useState(false);
   const [isLanguageDropdownOpen, setIsLanguageDropdownOpen] = useState(false);
   const [isTranscriptionModelDropdownOpen, setIsTranscriptionModelDropdownOpen] = useState(false);
-  const [isSummarizationModelDropdownOpen, setIsSummarizationModelDropdownOpen] = useState(false);
 
   const [onnxAvailable, setOnnxAvailable] = useState<boolean | null>(null);
   const [onnxMessage, setOnnxMessage] = useState("");
@@ -1000,6 +1371,7 @@ export default function Settings() {
   };
 
   const handleSummarizationModelChange = async (value: string) => {
+    const previousValue = summarizationModel;
     setSummarizationModel(value);
     try {
       await updateSettings({ summarizationModel: value });
@@ -1009,19 +1381,13 @@ export default function Settings() {
         duration: 2000,
       });
     } catch (e: any) {
+      setSummarizationModel(previousValue);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
         duration: 4000,
       });
     }
-  };
-
-  const handleSummarizationModelSelectFromDropdown = async (value: string) => {
-    await handleSummarizationModelChange(value);
-    window.setTimeout(() => {
-      setIsSummarizationModelDropdownOpen(false);
-    }, 500);
   };
 
   const handleAutoSummarizeChange = async (enabled: boolean) => {
@@ -1352,7 +1718,6 @@ export default function Settings() {
   const hasSelectedMic = Boolean(selectedMicDevice || selectedDeviceId === "default");
   const selectedLanguage = LANGUAGE_OPTIONS.find((option) => option.value === language) || LANGUAGE_OPTIONS[0];
   const selectedTranscriptionModelOption = TRANSCRIPTION_MODEL_OPTIONS.find((option) => option.value === transcriptionModel);
-  const selectedSummarizationModelOption = SUMMARIZATION_MODEL_OPTIONS.find((option) => option.value === summarizationModel);
   const supportedQuantizations = selectedOnnxModel?.supportedQuantizations || ["int8", "fp32"];
   const quantizationSupported = supportedQuantizations.includes(onnxQuantization);
   const formatSize = (sizeMb?: number) => {
@@ -1404,8 +1769,58 @@ export default function Settings() {
     return "No newer version";
   })();
 
+  const customVocabularyTermCount = customVocabulary
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean).length;
+  const providerGroups = [
+    {
+      key: "cloud_realtime",
+      label: "Cloud live / streaming",
+      description: "Live microphone providers.",
+      items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_realtime"),
+    },
+    {
+      key: "cloud_async",
+      label: "Cloud async / batch",
+      description: "Providers for completed audio.",
+      items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_async"),
+    },
+    {
+      key: "local",
+      label: "Local",
+      description: "Runs on this device.",
+      items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "local"),
+    },
+  ];
+  const summaryModelGroups = [
+    {
+      key: "gemini",
+      label: "Gemini",
+      description: "Fast Google summaries.",
+      items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "gemini"),
+    },
+    {
+      key: "openrouter",
+      label: "OpenRouter",
+      description: "Nitro routes for long output.",
+      items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "openrouter"),
+    },
+    {
+      key: "openai",
+      label: "OpenAI",
+      description: "OpenAI summary models.",
+      items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "openai"),
+    },
+  ];
+  const compactTranscriptionModelLabel =
+    selectedTranscriptionModelOption?.label.replace(" - No API Key", "") || transcriptionModel || "Select provider";
+
   return (
-    <div className={`settings-page max-w-screen-md mx-auto px-4 py-6 md:py-8 transition-opacity duration-150 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
+    <div className={cn(
+      "settings-page mx-auto w-full max-w-[1400px] px-4 py-5 text-[13px] transition-opacity duration-150 md:px-5 md:py-6",
+      settingsLoaded ? "opacity-100" : "opacity-0",
+    )}>
       {settingsError && (
         <QueryErrorState
           className="mb-4"
@@ -1414,1452 +1829,683 @@ export default function Settings() {
           onRetry={() => window.location.reload()}
         />
       )}
-      <header className="mb-6 space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight text-foreground">Settings</h1>
-        <p className="text-muted-foreground">Manage your preferences and API keys</p>
+
+      <header className="mb-4 border-b border-slate-200 pb-3 dark:border-slate-800">
+        <h1 className="text-[34px] font-semibold leading-none tracking-normal text-slate-950 dark:text-slate-100">
+          Settings
+        </h1>
+        <p className="mt-1.5 max-w-[64ch] text-[12px] leading-4 text-slate-500 dark:text-slate-400">
+          Configure transcription, providers, summaries, credentials, updates, and language behavior.
+        </p>
       </header>
-      <Accordion type="multiple" defaultValue={["transcription", "api-keys"]} className="space-y-4">
 
-        {/* Transcription Settings */}
-        <AccordionItem value="transcription" className="border-0">
-          <div className="neu-panel-raised bg-card rounded-xl overflow-hidden">
-            <AccordionTrigger className="px-6 py-4 hover:no-underline">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-primary/10 text-primary">
-                  <Settings2 className="w-5 h-5" />
-                </div>
-                <div className="text-left">
-                  <h2 className="font-semibold text-foreground">Transcription Settings</h2>
-                  <p className="text-sm text-muted-foreground">Recording, language, and model preferences</p>
-                </div>
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <div className="px-6 pb-6 space-y-6">
+      <div className="grid gap-x-7 gap-y-9 lg:grid-cols-2">
+        <SectionPanel
+          title="Transcription"
+          description="Control how audio is captured and how the recording hotkey behaves."
+          icon={Mic}
+        >
+          <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
+            {autostartAvailable && (
+              <SettingLine label="Start with Windows" description="Launch Scriber when you log in.">
+                <Switch checked={autostartEnabled} onCheckedChange={handleAutostartChange} />
+              </SettingLine>
+            )}
 
-                {autostartAvailable && (
-                  <>
-                    <div className="settings-control-row">
-                      <div className="space-y-0.5">
-                        <Label className="text-base">Autostart with Windows</Label>
-                        <p className="text-sm text-muted-foreground">Launch Scriber automatically when you log in</p>
-                      </div>
-                      <Switch
-                        checked={autostartEnabled}
-                        onCheckedChange={handleAutostartChange}
-                      />
-                    </div>
+            <SettingLine label="Input device" description="Select the active microphone.">
+              <div className={cn("mic-device-dropdown w-full", isMicDropdownOpen && "is-open")}>
+                <button
+                  type="button"
+                  className="mic-device-dropdown-header"
+                  onClick={() => setIsMicDropdownOpen((prev) => !prev)}
+                  aria-label="Select input device"
+                  aria-expanded={isMicDropdownOpen}
+                  aria-controls="mic-device-dropdown-tray"
+                >
+                  <span className="mic-device-dropdown-header-info">
+                    <span className={cn("mic-device-dropdown-selected-text", hasSelectedMic && "is-selected")}>
+                      {selectedMicLabel || "Select a device..."}
+                    </span>
+                  </span>
+                  <ChevronDown className="mic-device-dropdown-chevron" />
+                </button>
 
-                    <Separator />
-                  </>
-                )}
-
-                <div className="space-y-3">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">Input Device</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Select microphone for recording. Star a device to always use it when available.
-                    </p>
-                  </div>
-                  <div className={cn("mic-device-dropdown", isMicDropdownOpen && "is-open")}>
-                    <button
-                      type="button"
-                      className="mic-device-dropdown-header"
-                      onClick={() => setIsMicDropdownOpen((prev) => !prev)}
-                      aria-label="Select input device"
-                      aria-expanded={isMicDropdownOpen}
-                      aria-controls="mic-device-dropdown-tray"
-                    >
-                      <span className="mic-device-dropdown-header-info">
-                        <span className={cn("mic-device-dropdown-selected-text", hasSelectedMic && "is-selected")}>
-                          {selectedMicLabel || "Select a device..."}
-                        </span>
-                      </span>
-                      <ChevronDown className="mic-device-dropdown-chevron" />
-                    </button>
-
-                    <div
-                      id="mic-device-dropdown-tray"
-                      className="mic-device-dropdown-tray"
-                      aria-hidden={!isMicDropdownOpen}
-                    >
-                      <div className="mic-device-dropdown-content">
-                        <div className="mic-device-dropdown-tray-inner">
-                          <div className="mic-device-list">
-                            {inputDevices.length === 0 ? (
-                              <div className="text-sm text-muted-foreground py-2 px-2">Loading devices...</div>
-                            ) : (
-                              inputDevices.map((device, index) => {
-                                const deviceValue = device.deviceId || `device-${index}`;
-                                const deviceLabel = device.label || `Device ${index + 1}`;
-                                const micInputId = `mic-device-${index}`;
-                                const favoriteInputId = `favorite-mic-${index}`;
-                                const isSelected = selectedDeviceId === deviceValue;
-                                const isFavorite = favoriteMic === deviceValue;
-                                return (
-                                  <div
-                                    key={`${deviceValue}-${index}`}
-                                    className={cn(
-                                      "mic-device-item",
-                                      isSelected && "is-selected",
-                                      isFavorite && "is-favorite"
-                                    )}
-                                  >
-                                    <div className="mic-device-row-waves" aria-hidden="true">
-                                      <div className="mic-device-wave-row" />
-                                    </div>
-
-                                    <input
-                                      type="radio"
-                                      id={micInputId}
-                                      name="mic-input-device"
-                                      className="mic-device-radio sr-only"
-                                      checked={isSelected}
-                                      onChange={() => handleMicDeviceSelectFromDropdown(deviceValue)}
-                                      aria-label={`Select microphone ${deviceLabel}`}
-                                    />
-                                    <label htmlFor={micInputId} className="mic-device-label">
-                                      <span className="mic-device-icon-wrapper" aria-hidden="true">
-                                        <AudioLines className="mic-device-icon" />
-                                      </span>
-                                      <span className="mic-device-name">{deviceLabel}</span>
-                                      <svg className="mic-device-check" viewBox="0 0 24 24" aria-hidden="true">
-                                        <path d="M 4 12 L 10 18 L 20 6" />
-                                      </svg>
-                                    </label>
-
-                                    <div className="mic-device-divider" aria-hidden="true" />
-
-                                    <input
-                                      type="checkbox"
-                                      id={favoriteInputId}
-                                      className="mic-device-star-radio sr-only"
-                                      checked={isFavorite}
-                                      onChange={() => handleSetFavoriteMic(deviceValue)}
-                                      aria-label={isFavorite ? `Remove ${deviceLabel} from favorites` : `Set ${deviceLabel} as favorite`}
-                                    />
-                                    <label
-                                      htmlFor={favoriteInputId}
-                                      className="mic-device-star-label"
-                                      title={isFavorite ? "Remove from favorites" : "Set as favorite"}
-                                    >
-                                      <svg className="mic-device-star" viewBox="0 0 24 24" aria-hidden="true">
-                                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-                                      </svg>
-                                    </label>
-                                  </div>
-                                );
-                              })
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  {favoriteMic && (
-                    <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
-                      <Star className="w-3 h-3 fill-current" />
-                      Favorite mic will be used automatically when connected
-                    </p>
-                  )}
-                </div>
-
-                <div className="settings-control-row">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">Mic Pre-warming</Label>
-                    <p className="text-sm text-muted-foreground">Keep microphone in standby for instant recording start</p>
-                  </div>
-                  <Switch
-                    checked={micAlwaysOn}
-                    onCheckedChange={handleMicAlwaysOnChange}
-                  />
-                </div>
-
-                <Separator />
-
-                <div className="settings-control-row">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">Transcription Model</Label>
-                    <p className="text-sm text-muted-foreground">Select the AI model for live transcription</p>
-                  </div>
-                  <div className="w-full space-y-2 sm:w-auto">
-                    <div className={cn("model-dropdown w-[320px]", isTranscriptionModelDropdownOpen && "is-open")}>
-                      <button
-                        type="button"
-                        className="model-dropdown-header"
-                        onClick={() => setIsTranscriptionModelDropdownOpen((prev) => !prev)}
-                        aria-label="Select live transcription model"
-                        aria-expanded={isTranscriptionModelDropdownOpen}
-                        aria-controls="transcription-model-dropdown-tray"
-                      >
-                        <span className="model-dropdown-header-info">
-                          <span className="model-dropdown-selected-text is-selected">
-                            {selectedTranscriptionModelOption?.label || transcriptionModel || "Select model..."}
-                          </span>
-                        </span>
-                        <ChevronDown className="model-dropdown-chevron" />
-                      </button>
-
-                      <div
-                        id="transcription-model-dropdown-tray"
-                        className="model-dropdown-tray"
-                        aria-hidden={!isTranscriptionModelDropdownOpen}
-                      >
-                        <div className="model-dropdown-content">
-                          <div className="model-dropdown-tray-inner">
-                            <div className="model-list">
-                              {TRANSCRIPTION_MODEL_OPTIONS.map((option) => {
-                                const isSelected = option.value === transcriptionModel;
-                                const inputId = `transcription-model-option-${option.value}`;
-                                return (
-                                  <div
-                                    key={option.value}
-                                    className={cn("model-item", isSelected && "is-selected")}
-                                  >
-                                    <div className="model-row-waves" aria-hidden="true">
-                                      <div className="model-wave-row" />
-                                    </div>
-
-                                    <input
-                                      type="radio"
-                                      id={inputId}
-                                      name="transcription-model-option"
-                                      className="model-radio sr-only"
-                                      checked={isSelected}
-                                      onChange={() => handleTranscriptionModelSelectFromDropdown(option.value)}
-                                      aria-label={`Select ${option.label} as transcription model`}
-                                    />
-                                    <label htmlFor={inputId} className="model-option-label">
-                                      <span className="model-name">{option.label}</span>
-                                      <svg className="model-check" viewBox="0 0 24 24" aria-hidden="true">
-                                        <path d="M 4 12 L 10 18 L 20 6" />
-                                      </svg>
-                                    </label>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    {transcriptionModel === "assemblyai" && (
-                      <p className="text-xs text-muted-foreground">
-                        Async mode: live transcript appears after you stop recording.
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">Local Models</Label>
-                    <p className="text-sm text-muted-foreground">Run speech recognition locally without API keys</p>
-                  </div>
-
-                  {transcriptionModel !== "onnx_local" && (
-                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                      Select "Local (ONNX) - No API Key" above to load ONNX models.
-                    </div>
-                  )}
-
-                  {transcriptionModel === "onnx_local" && onnxAvailable === null && (
-                    <div className="text-sm text-muted-foreground">Loading local models...</div>
-                  )}
-
-                  {transcriptionModel === "onnx_local" && onnxAvailable === false && (
-                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                      {onnxMessage || "onnx-asr not installed. Run: pip install onnx-asr[cpu,hub]"}
-                    </div>
-                  )}
-
-                  {transcriptionModel === "onnx_local" && onnxAvailable && (
-                    <div className="space-y-4 rounded-lg border border-border/60 bg-secondary/20 p-4">
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <div className="space-y-1.5">
-                          <Label className="text-sm">Model</Label>
-                          <Select value={onnxModel} onValueChange={handleOnnxModelChange}>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select local model" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {onnxModels.map((model) => (
-                                <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <Label className="text-sm">Quantization</Label>
-                          <Select value={onnxQuantization} onValueChange={handleOnnxQuantizationChange}>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select quantization" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="int8" disabled={!supportedQuantizations.includes("int8")}>int8 (fast)</SelectItem>
-                              <SelectItem value="fp16" disabled={!supportedQuantizations.includes("fp16")}>fp16 (balanced)</SelectItem>
-                              <SelectItem value="fp32" disabled={!supportedQuantizations.includes("fp32")}>fp32 (accurate)</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-
-                      {selectedOnnxModel ? (
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="text-sm font-medium">{selectedOnnxModel.name}</div>
-                            <Badge variant={getStatusVariant(selectedOnnxModel.status)}>
-                              {getStatusLabel(selectedOnnxModel.status)}
-                            </Badge>
-                          </div>
-                          <p className="text-sm text-muted-foreground">{selectedOnnxModel.description}</p>
-                          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                            {(() => {
-                              const sizeForQuant =
-                                selectedOnnxModel.sizeMbByQuantization?.[onnxQuantization] ??
-                                selectedOnnxModel.sizeMb;
-                              return sizeForQuant ? (
-                                <span>Size ({onnxQuantization}): {formatSize(sizeForQuant)}</span>
-                              ) : null;
-                            })()}
-                            {selectedOnnxModel.languages?.length ? (
-                              <span>Languages: {selectedOnnxModel.languages.join(", ")}</span>
-                            ) : null}
-                          </div>
-
-                          {!quantizationSupported && (
-                            <div className="text-xs text-destructive">
-                              Quantization "{onnxQuantization}" is not supported for this model.
-                            </div>
-                          )}
-
-                          {selectedOnnxModel.status === "downloading" && (
-                            <div className="space-y-2">
-                              <Progress value={selectedOnnxModel.progress || 0} />
-                              <div className="text-xs text-muted-foreground flex items-center gap-2">
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                <span>{selectedOnnxModel.message || "Downloading..."}</span>
-                                <span className="ml-auto">{Math.round(selectedOnnxModel.progress || 0)}%</span>
-                              </div>
-                            </div>
-                          )}
-
-                          {selectedOnnxModel.status === "error" && selectedOnnxModel.message && (
-                            <div className="text-xs text-destructive">{selectedOnnxModel.message}</div>
-                          )}
-
-                          <div className="flex items-center gap-2">
-                            <Button
-                              size="sm"
-                              onClick={() => handleOnnxDownload(selectedOnnxModel.id)}
-                              disabled={
-                                selectedOnnxModel.status === "downloading" ||
-                                selectedOnnxModel.downloaded ||
-                                !quantizationSupported
-                              }
-                            >
-                              {selectedOnnxModel.status === "downloading" ? (
-                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                              ) : (
-                                <Download className="w-4 h-4 mr-2" />
-                              )}
-                              Download
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleOnnxDelete(selectedOnnxModel.id)}
-                              disabled={!selectedOnnxModel.downloaded || selectedOnnxModel.status === "downloading"}
-                            >
-                              <Trash2 className="w-4 h-4 mr-2" />
-                              Delete
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-sm text-muted-foreground">No local models available.</div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">NeMo Local Models</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Run .nemo models locally (requires NeMo toolkit)
-                    </p>
-                  </div>
-
-                  {transcriptionModel !== "nemo_local" && (
-                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                      Select "Local (NeMo) - Primeline" above to load NeMo models.
-                    </div>
-                  )}
-
-                  {transcriptionModel === "nemo_local" && nemoAvailable === null && (
-                    <div className="text-sm text-muted-foreground">Loading NeMo models...</div>
-                  )}
-
-                  {transcriptionModel === "nemo_local" && nemoAvailable === false && (
-                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                      {nemoMessage || "NeMo toolkit not installed. Run: pip install nemo_toolkit[asr]"}
-                    </div>
-                  )}
-
-                  {transcriptionModel === "nemo_local" && nemoAvailable && (
-                    <div className="space-y-4 rounded-lg border border-border/60 bg-secondary/20 p-4">
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <div className="space-y-1.5">
-                          <Label className="text-sm">Model</Label>
-                          <Select value={nemoModel} onValueChange={handleNemoModelChange}>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select NeMo model" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {nemoModels.map((model) => (
-                                <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-
-                      {selectedNemoModel ? (
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="text-sm font-medium">{selectedNemoModel.name}</div>
-                            <Badge variant={getStatusVariant(selectedNemoModel.status)}>
-                              {getStatusLabel(selectedNemoModel.status)}
-                            </Badge>
-                          </div>
-                          <p className="text-sm text-muted-foreground">{selectedNemoModel.description}</p>
-                          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                            {selectedNemoModel.sizeMb ? (
-                              <span>Size: {formatSize(selectedNemoModel.sizeMb)}</span>
-                            ) : null}
-                            {selectedNemoModel.languages?.length ? (
-                              <span>Languages: {selectedNemoModel.languages.join(", ")}</span>
-                            ) : null}
-                          </div>
-
-                          {selectedNemoModel.status === "downloading" && (
-                            <div className="space-y-2">
-                              <Progress value={selectedNemoModel.progress || 0} />
-                              <div className="text-xs text-muted-foreground flex items-center gap-2">
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                <span>{selectedNemoModel.message || "Downloading..."}</span>
-                                <span className="ml-auto">{Math.round(selectedNemoModel.progress || 0)}%</span>
-                              </div>
-                            </div>
-                          )}
-
-                          {selectedNemoModel.status === "error" && selectedNemoModel.message && (
-                            <div className="text-xs text-destructive">{selectedNemoModel.message}</div>
-                          )}
-
-                          <div className="flex items-center gap-2">
-                            <Button
-                              size="sm"
-                              onClick={() => handleNemoDownload(selectedNemoModel.id)}
-                              disabled={selectedNemoModel.status === "downloading" || selectedNemoModel.downloaded}
-                            >
-                              {selectedNemoModel.status === "downloading" ? (
-                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                              ) : (
-                                <Download className="w-4 h-4 mr-2" />
-                              )}
-                              Download
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleNemoDelete(selectedNemoModel.id)}
-                              disabled={!selectedNemoModel.downloaded || selectedNemoModel.status === "downloading"}
-                            >
-                              <Trash2 className="w-4 h-4 mr-2" />
-                              Delete
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-sm text-muted-foreground">No NeMo models available.</div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <Separator />
-
-                <div className="settings-control-row">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">Default Language</Label>
-                    <p className="text-sm text-muted-foreground">Fallback language for detection</p>
-                  </div>
-                  <div className={cn("language-dropdown w-[320px]", isLanguageDropdownOpen && "is-open")}>
-                    <button
-                      type="button"
-                      className="language-dropdown-header"
-                      onClick={() => setIsLanguageDropdownOpen((prev) => !prev)}
-                      aria-label="Select default transcription language"
-                      aria-expanded={isLanguageDropdownOpen}
-                      aria-controls="language-dropdown-tray"
-                    >
-                      <span className="language-dropdown-header-info">
-                        <span className="language-dropdown-selected-value-wrapper">
-                          <LanguageFlag value={selectedLanguage.value} className="language-header-flag" />
-                          <span className="language-dropdown-selected-text is-selected">{selectedLanguage.label}</span>
-                        </span>
-                      </span>
-                      <ChevronDown className="language-dropdown-chevron" />
-                    </button>
-
-                    <div
-                      id="language-dropdown-tray"
-                      className="language-dropdown-tray"
-                      aria-hidden={!isLanguageDropdownOpen}
-                    >
-                      <div className="language-dropdown-content">
-                        <div className="language-dropdown-tray-inner">
-                          <div className="language-list">
-                            {LANGUAGE_OPTIONS.map((option) => {
-                              const isSelected = option.value === language;
-                              const inputId = `lang-option-${option.value}`;
-                              return (
-                                <div
-                                  key={option.value}
-                                  className={cn("language-item", isSelected && "is-selected")}
-                                >
-                                  <div className="language-row-waves" aria-hidden="true">
-                                    <div className="language-wave-row" />
-                                  </div>
-
-                                  <input
-                                    type="radio"
-                                    id={inputId}
-                                    name="default-transcription-language"
-                                    className="language-radio sr-only"
-                                    checked={isSelected}
-                                    onChange={() => handleLanguageSelectFromDropdown(option.value)}
-                                    aria-label={`Select ${option.label} as default transcription language`}
-                                  />
-                                  <label htmlFor={inputId} className="language-option-label">
-                                    <LanguageFlag value={option.value} />
-                                    <span className="language-name">{option.label}</span>
-                                    <svg className="language-check" viewBox="0 0 24 24" aria-hidden="true">
-                                      <path d="M 4 12 L 10 18 L 20 6" />
-                                    </svg>
-                                  </label>
+                <div id="mic-device-dropdown-tray" className="mic-device-dropdown-tray" aria-hidden={!isMicDropdownOpen}>
+                  <div className="mic-device-dropdown-content">
+                    <div className="mic-device-dropdown-tray-inner">
+                      <div className="mic-device-list">
+                        {inputDevices.length === 0 ? (
+                          <div className="px-2 py-2 text-sm text-muted-foreground">Loading devices...</div>
+                        ) : (
+                          inputDevices.map((device, index) => {
+                            const deviceValue = device.deviceId || `device-${index}`;
+                            const deviceLabel = device.label || `Device ${index + 1}`;
+                            const micInputId = `mic-device-${index}`;
+                            const favoriteInputId = `favorite-mic-${index}`;
+                            const isSelected = selectedDeviceId === deviceValue;
+                            const isFavorite = favoriteMic === deviceValue;
+                            return (
+                              <div
+                                key={`${deviceValue}-${index}`}
+                                className={cn("mic-device-item", isSelected && "is-selected", isFavorite && "is-favorite")}
+                              >
+                                <div className="mic-device-row-waves" aria-hidden="true">
+                                  <div className="mic-device-wave-row" />
                                 </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="settings-control-row">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">Summarization Model</Label>
-                    <p className="text-sm text-muted-foreground">Select model for summarizing transcripts</p>
-                  </div>
-                  <div className={cn("model-dropdown w-[320px]", isSummarizationModelDropdownOpen && "is-open")}>
-                    <button
-                      type="button"
-                      className="model-dropdown-header"
-                      onClick={() => setIsSummarizationModelDropdownOpen((prev) => !prev)}
-                      aria-label="Select summarization model"
-                      aria-expanded={isSummarizationModelDropdownOpen}
-                      aria-controls="summarization-model-dropdown-tray"
-                    >
-                      <span className="model-dropdown-header-info">
-                        <span className="model-dropdown-selected-text is-selected">
-                          {selectedSummarizationModelOption?.label || summarizationModel || "Select model..."}
-                        </span>
-                      </span>
-                      <ChevronDown className="model-dropdown-chevron" />
-                    </button>
-
-                    <div
-                      id="summarization-model-dropdown-tray"
-                      className="model-dropdown-tray"
-                      aria-hidden={!isSummarizationModelDropdownOpen}
-                    >
-                      <div className="model-dropdown-content">
-                        <div className="model-dropdown-tray-inner">
-                          <div className="model-list">
-                            {SUMMARIZATION_MODEL_OPTIONS.map((option) => {
-                              const isSelected = option.value === summarizationModel;
-                              const inputId = `summarization-model-option-${option.value}`;
-                              return (
-                                <div
-                                  key={option.value}
-                                  className={cn("model-item", isSelected && "is-selected")}
+                                <input
+                                  type="radio"
+                                  id={micInputId}
+                                  name="mic-input-device"
+                                  className="mic-device-radio sr-only"
+                                  checked={isSelected}
+                                  onChange={() => handleMicDeviceSelectFromDropdown(deviceValue)}
+                                  aria-label={`Select microphone ${deviceLabel}`}
+                                />
+                                <label htmlFor={micInputId} className="mic-device-label">
+                                  <span className="mic-device-name">{deviceLabel}</span>
+                                  <svg className="mic-device-check" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M 4 12 L 10 18 L 20 6" />
+                                  </svg>
+                                </label>
+                                <div className="mic-device-divider" aria-hidden="true" />
+                                <input
+                                  type="checkbox"
+                                  id={favoriteInputId}
+                                  className="mic-device-star-radio sr-only"
+                                  checked={isFavorite}
+                                  onChange={() => handleSetFavoriteMic(deviceValue)}
+                                  aria-label={isFavorite ? `Remove ${deviceLabel} from favorites` : `Set ${deviceLabel} as favorite`}
+                                />
+                                <label
+                                  htmlFor={favoriteInputId}
+                                  className="mic-device-star-label"
+                                  title={isFavorite ? "Remove from favorites" : "Set as favorite"}
                                 >
-                                  <div className="model-row-waves" aria-hidden="true">
-                                    <div className="model-wave-row" />
-                                  </div>
-
-                                  <input
-                                    type="radio"
-                                    id={inputId}
-                                    name="summarization-model-option"
-                                    className="model-radio sr-only"
-                                    checked={isSelected}
-                                    onChange={() => handleSummarizationModelSelectFromDropdown(option.value)}
-                                    aria-label={`Select ${option.label} as summarization model`}
-                                  />
-                                  <label htmlFor={inputId} className="model-option-label">
-                                    <span className="model-name">{option.label}</span>
-                                    <svg className="model-check" viewBox="0 0 24 24" aria-hidden="true">
-                                      <path d="M 4 12 L 10 18 L 20 6" />
-                                    </svg>
-                                  </label>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
+                                  <svg className="mic-device-star" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                                  </svg>
+                                </label>
+                              </div>
+                            );
+                          })
+                        )}
                       </div>
                     </div>
                   </div>
                 </div>
-
-                <div className="settings-control-row">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">Auto-Summarize</Label>
-                    <p className="text-sm text-muted-foreground">Automatically summarize transcripts when completed</p>
-                  </div>
-                  <Switch
-                    checked={autoSummarize}
-                    onCheckedChange={handleAutoSummarizeChange}
-                  />
-                </div>
-
-
-                <Separator />
-
-                <div className="settings-control-row">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">Global Hotkey</Label>
-                    <p className="text-sm text-muted-foreground">Shortcut to start/stop recording</p>
-                  </div>
-
-                  <Dialog open={isRecordingHotkey} onOpenChange={setIsRecordingHotkey}>
-                    <DialogTrigger asChild>
-                      <Button variant="outline" className="min-w-[140px] font-mono">
-                        <Keyboard className="w-4 h-4 mr-2 text-muted-foreground" />
-                        {hotkey}
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent className="sm:max-w-[425px]">
-                      <DialogHeader>
-                        <DialogTitle>Record Hotkey</DialogTitle>
-                        <DialogDescription>
-                          Press the combination of keys you want to use as a shortcut.
-                        </DialogDescription>
-                      </DialogHeader>
-                      <div
-                        ref={hotkeyCaptureRef}
-                        className="flex items-center justify-center h-32 border-2 border-dashed rounded-lg bg-secondary/20 outline-none focus:border-primary focus:bg-primary/5 transition-colors"
-                        tabIndex={0}
-                        aria-label="Hotkey capture area"
-                      >
-                        <p className="text-lg font-medium text-primary animate-pulse">{hotkey}</p>
-                      </div>
-                      <div className="flex justify-end gap-2">
-                        <Button variant="ghost" onClick={() => setIsRecordingHotkey(false)}>Cancel</Button>
-                        <Button onClick={handleSaveHotkey}>Save</Button>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
-
-                </div>
-
-                <Separator />
-
-                <div className="flex flex-col gap-4">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">Recording Mode</Label>
-                    <p className="text-sm text-muted-foreground">Choose how the hotkey behaves</p>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div
-                      className={cn(
-                        "flex flex-col gap-2 p-4 rounded-xl border-2 cursor-pointer transition-all hover:bg-accent/5",
-                        recordingMode === "press_hold"
-                          ? "border-primary bg-primary/5"
-                          : "border-border/60 hover:border-primary/50"
-                      )}
-                      onClick={() => handleRecordingModeChange("press_hold")}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className={cn(
-                          "p-2 rounded-lg",
-                          recordingMode === "press_hold" ? "bg-primary/10 text-primary" : "bg-secondary text-muted-foreground"
-                        )}>
-                          <Mic className="w-5 h-5" />
-                        </div>
-                        <div className="space-y-1">
-                          <p className="font-medium text-sm leading-none">Push and Hold</p>
-                          <p className="text-xs text-muted-foreground">Hold key to record, release to stop</p>
-                        </div>
-                        {recordingMode === "press_hold" && <Check className="w-4 h-4 text-primary ml-auto" />}
-                      </div>
-                    </div>
-
-                    <div
-                      className={cn(
-                        "flex flex-col gap-2 p-4 rounded-xl border-2 cursor-pointer transition-all hover:bg-accent/5",
-                        recordingMode === "start_stop"
-                          ? "border-primary bg-primary/5"
-                          : "border-border/60 hover:border-primary/50"
-                      )}
-                      onClick={() => handleRecordingModeChange("start_stop")}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className={cn(
-                          "p-2 rounded-lg",
-                          recordingMode === "start_stop" ? "bg-primary/10 text-primary" : "bg-secondary text-muted-foreground"
-                        )}>
-                          <ToggleLeft className="w-5 h-5" />
-                        </div>
-                        <div className="space-y-1">
-                          <p className="font-medium text-sm leading-none">Start / Stop</p>
-                          <p className="text-xs text-muted-foreground">Press once to start, again to stop</p>
-                        </div>
-                        {recordingMode === "start_stop" && <Check className="w-4 h-4 text-primary ml-auto" />}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">Custom Vocabulary</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Add specific words or phrases to improve accuracy (comma separated). Used as Keyterms Prompting for Assembly AI Universal-3-Pro.
-                    </p>
-                  </div>
-                  <Textarea
-                    value={customVocabulary}
-                    onChange={(e) => setCustomVocabulary(e.target.value)}
-                    onBlur={handleCustomVocabBlur}
-                    placeholder="e.g. Replit, TypeScript, OpenAI, specific product names..."
-                    className="min-h-[80px] font-mono text-sm resize-none bg-secondary/20"
-                  />
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <div className="settings-control-row">
-                    <div className="space-y-0.5">
-                      <Label className="text-base">Visualizer Bars</Label>
-                      <p className="text-sm text-muted-foreground">Number of bars in the audio visualizer ({visualizerBarCount})</p>
-                    </div>
-                    <div className="flex items-center gap-3 w-[200px]">
-                      <BarChart3 className="w-4 h-4 text-muted-foreground" />
-                      <Slider
-                        value={[visualizerBarCount]}
-                        onValueChange={handleVisualizerBarCountChange}
-                        onValueCommit={handleVisualizerBarCountCommit}
-                        min={MIN_VISUALIZER_BAR_COUNT}
-                        max={MAX_VISUALIZER_BAR_COUNT}
-                        step={1}
-                        className="flex-1"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <div className="space-y-0.5">
-                    <Label className="text-base">Summarization Prompt</Label>
-                    <p className="text-sm text-muted-foreground">Custom prompt used by the LLM to summarize transcripts</p>
-                  </div>
-                  <Textarea
-                    value={summarizationPrompt}
-                    onChange={(e) => setSummarizationPrompt(e.target.value)}
-                    onBlur={handleSummarizationPromptBlur}
-                    placeholder="e.g. Summarize the following transcript in bullet points, focusing on key decisions and action items..."
-                    className="min-h-[100px] text-sm resize-none bg-secondary/20"
-                  />
-                </div>
-
               </div>
-            </AccordionContent>
+            </SettingLine>
+
+            {favoriteMic && (
+              <div className="flex items-center gap-1.5 py-2 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                <Star className="h-3 w-3 fill-current" />
+                Favorite microphone is used automatically when connected.
+              </div>
+            )}
+
+            <SettingLine label="Mic always on" description="Keep capture pre-warmed for minimum latency.">
+              <Switch checked={micAlwaysOn} onCheckedChange={handleMicAlwaysOnChange} />
+            </SettingLine>
+
+            <SettingLine label="Recording mode" description="Choose how the hotkey behaves.">
+              <ToggleGroup
+                type="single"
+                value={recordingMode}
+                onValueChange={(value) => value && void handleRecordingModeChange(value)}
+                className="grid w-[220px] max-w-full grid-cols-2 rounded-lg bg-slate-100 p-1 dark:bg-slate-900"
+              >
+                <ToggleGroupItem value="start_stop" className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800">
+                  <ToggleLeft className="h-4 w-4" />
+                  Toggle
+                </ToggleGroupItem>
+                <ToggleGroupItem value="press_hold" className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800">
+                  <Mic className="h-4 w-4" />
+                  Push-to-talk
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </SettingLine>
+
+            <SettingLine label="Global hotkey" description="Shortcut to start or stop recording.">
+                <Dialog open={isRecordingHotkey} onOpenChange={setIsRecordingHotkey}>
+                <DialogTrigger asChild>
+                  <Button variant="outline" className="h-8 w-[220px] max-w-full justify-start font-mono text-[11px]">
+                    <Keyboard className="mr-2 h-4 w-4 text-muted-foreground" />
+                    {hotkey}
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="sm:max-w-[425px]">
+                  <DialogHeader>
+                    <DialogTitle>Record hotkey</DialogTitle>
+                    <DialogDescription>Press the key combination you want to use as a shortcut.</DialogDescription>
+                  </DialogHeader>
+                  <div
+                    ref={hotkeyCaptureRef}
+                    className="flex h-32 items-center justify-center rounded-lg border-2 border-dashed bg-secondary/20 outline-none transition-colors focus:border-primary focus:bg-primary/5"
+                    tabIndex={0}
+                    aria-label="Hotkey capture area"
+                  >
+                    <p className="text-lg font-medium text-primary">{hotkey}</p>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="ghost" onClick={() => setIsRecordingHotkey(false)}>Cancel</Button>
+                    <Button onClick={handleSaveHotkey}>Save</Button>
+                  </div>
+                </DialogContent>
+              </Dialog>
+            </SettingLine>
+
+            <SettingLine label="Visualizer bars" description={`Current count: ${visualizerBarCount}`}>
+              <div className="flex w-full items-center gap-2">
+                <BarChart3 className="h-4 w-4 shrink-0 text-slate-500" />
+                <Slider
+                  value={[visualizerBarCount]}
+                  onValueChange={handleVisualizerBarCountChange}
+                  onValueCommit={handleVisualizerBarCountCommit}
+                  min={MIN_VISUALIZER_BAR_COUNT}
+                  max={MAX_VISUALIZER_BAR_COUNT}
+                  step={1}
+                  className="min-w-[132px] flex-1"
+                />
+              </div>
+            </SettingLine>
           </div>
-        </AccordionItem>
+        </SectionPanel>
 
-        {/* Desktop Updates */}
-        <AccordionItem value="updates" className="border-0">
-          <div className="neu-panel-raised bg-card rounded-xl overflow-hidden">
-            <AccordionTrigger className="px-6 py-4 hover:no-underline">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                  <Shield className="w-5 h-5" />
-                </div>
-                <div className="text-left">
-                  <h2 className="font-semibold text-foreground">Desktop Updates</h2>
-                  <p className="text-sm text-muted-foreground">Signed app updates for the installed Windows build</p>
-                </div>
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <div className="px-6 pb-6 space-y-5">
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div className="space-y-1">
-                    <Label className="text-base">Update status</Label>
-                    <p className="text-sm text-muted-foreground">{desktopUpdate.message}</p>
-                    {desktopUpdate.deferred && desktopUpdate.deferredUntil && (
-                      <p className="text-xs text-muted-foreground">
-                        Reminder paused until {new Date(desktopUpdate.deferredUntil).toLocaleString()}.
+        <SectionPanel
+          title="Speech-to-text provider"
+          description="Choose the primary transcription provider."
+          icon={Cloud}
+        >
+          <div className="mb-2.5 rounded-xl bg-slate-50 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+            <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Current provider</p>
+            <div className="mt-1 flex items-center gap-2">
+              <ProviderIcon
+                icon={PROVIDER_MODEL_OPTIONS.find((option) => option.value === transcriptionModel)?.icon}
+                label={compactTranscriptionModelLabel}
+              />
+              <p className="truncate text-[14px] font-semibold text-slate-950 dark:text-slate-100">
+                {compactTranscriptionModelLabel}
+              </p>
+            </div>
+            {transcriptionModel === "assemblyai" && (
+              <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                Async mode returns the live transcript after recording stops.
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-2.5">
+            <div className="space-y-2.5">
+              {providerGroups.map((group) => (
+                <div
+                  key={group.key}
+                  role="radiogroup"
+                  aria-label={`${group.label} transcription providers`}
+                  className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60"
+                >
+                  <div className="mb-1.5">
+                    <div className="min-w-0">
+                      <h3 className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">
+                        {group.label}
+                      </h3>
+                      <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                        {group.description}
                       </p>
-                    )}
+                    </div>
                   </div>
-                  <Badge variant={desktopUpdateBadgeVariant} className="w-fit">
-                    {desktopUpdateBadgeLabel}
-                  </Badge>
+                  <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
+                    {group.items.map((option) => (
+                      <ProviderChoice
+                        key={option.value}
+                        option={option}
+                        selected={transcriptionModel === option.value}
+                        onSelect={() => void handleTranscriptionModelChange(option.value)}
+                      />
+                    ))}
+                  </div>
                 </div>
+              ))}
+            </div>
+          </div>
+        </SectionPanel>
 
-                <div className="settings-control-row rounded-lg border border-border/60 bg-secondary/20 p-3">
-                  <div className="space-y-0.5">
-                    <Label className="text-sm">Automatic checks</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Scriber checks GitHub in the background about once per week and never interrupts active recording.
+        <SectionPanel
+          title="Custom vocabulary"
+          description="Add preferred terms, names, brands, and domain vocabulary."
+          icon={FileText}
+        >
+          <div className="flex flex-col gap-2">
+            <Textarea
+              value={customVocabulary}
+              onChange={(event) => setCustomVocabulary(event.target.value)}
+              onBlur={handleCustomVocabBlur}
+              placeholder="Enter terms, one per line..."
+              className="min-h-[128px] resize-none bg-white/70 font-mono text-[12px] leading-5 md:min-h-[150px] dark:bg-slate-950/60"
+            />
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">{customVocabularyTermCount} terms</span>
+              <Button size="sm" onClick={() => void handleCustomVocabBlur()}>
+                Save vocabulary
+              </Button>
+            </div>
+          </div>
+        </SectionPanel>
+
+        <SectionPanel
+          title="Local models"
+          description="Select and manage offline transcription models."
+          icon={Cpu}
+        >
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-xl bg-slate-50/90 p-4 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">ONNX model</p>
+                  <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Whisper ONNX runtime</p>
+                </div>
+                {selectedOnnxModel ? (
+                  <Badge variant={getStatusVariant(selectedOnnxModel.status)}>{getStatusLabel(selectedOnnxModel.status)}</Badge>
+                ) : null}
+              </div>
+
+              {transcriptionModel !== "onnx_local" ? (
+                <Button size="sm" variant="outline" className="w-full" onClick={() => void handleTranscriptionModelChange("onnx_local")}>
+                  Use ONNX
+                </Button>
+              ) : onnxAvailable === null ? (
+                <p className="text-[12px] text-slate-500">Loading local models...</p>
+              ) : onnxAvailable === false ? (
+                <p className="text-[12px] leading-4 text-slate-500">{onnxMessage || "onnx-asr is not installed."}</p>
+              ) : (
+                <div className="space-y-3">
+                  <FieldShell label="Model">
+                    <Select value={onnxModel} onValueChange={handleOnnxModelChange}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue placeholder="Select local model" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {onnxModels.map((model) => (
+                          <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </FieldShell>
+                  <FieldShell label="Quantization">
+                    <Select value={onnxQuantization} onValueChange={handleOnnxQuantizationChange}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue placeholder="Select quantization" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="int8" disabled={!supportedQuantizations.includes("int8")}>int8</SelectItem>
+                        <SelectItem value="fp16" disabled={!supportedQuantizations.includes("fp16")}>fp16</SelectItem>
+                        <SelectItem value="fp32" disabled={!supportedQuantizations.includes("fp32")}>fp32</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </FieldShell>
+                  {selectedOnnxModel?.description ? (
+                    <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedOnnxModel.description}</p>
+                  ) : null}
+                  {selectedOnnxModel?.status === "downloading" && (
+                    <div className="space-y-1.5">
+                      <Progress value={selectedOnnxModel.progress || 0} />
+                      <p className="flex items-center gap-2 text-[11px] text-slate-500">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        {selectedOnnxModel.message || "Downloading..."}
+                        <span className="ml-auto">{Math.round(selectedOnnxModel.progress || 0)}%</span>
+                      </p>
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => selectedOnnxModel && handleOnnxDownload(selectedOnnxModel.id)}
+                      disabled={!selectedOnnxModel || selectedOnnxModel.status === "downloading" || selectedOnnxModel.downloaded || !quantizationSupported}
+                    >
+                      <Download className="mr-2 h-4 w-4" />
+                      Download
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => selectedOnnxModel && handleOnnxDelete(selectedOnnxModel.id)}
+                      disabled={!selectedOnnxModel?.downloaded || selectedOnnxModel.status === "downloading"}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl bg-slate-50/90 p-4 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">NeMo model</p>
+                  <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Local .nemo toolkit</p>
+                </div>
+                {selectedNemoModel ? (
+                  <Badge variant={getStatusVariant(selectedNemoModel.status)}>{getStatusLabel(selectedNemoModel.status)}</Badge>
+                ) : null}
+              </div>
+
+              {transcriptionModel !== "nemo_local" ? (
+                <Button size="sm" variant="outline" className="w-full" onClick={() => void handleTranscriptionModelChange("nemo_local")}>
+                  Use NeMo
+                </Button>
+              ) : nemoAvailable === null ? (
+                <p className="text-[12px] text-slate-500">Loading NeMo models...</p>
+              ) : nemoAvailable === false ? (
+                <p className="text-[12px] leading-4 text-slate-500">{nemoMessage || "NeMo toolkit is not installed."}</p>
+              ) : (
+                <div className="space-y-3">
+                  <FieldShell label="Model">
+                    <Select value={nemoModel} onValueChange={handleNemoModelChange}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue placeholder="Select NeMo model" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {nemoModels.map((model) => (
+                          <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </FieldShell>
+                  {selectedNemoModel?.description ? (
+                    <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedNemoModel.description}</p>
+                  ) : null}
+                  {selectedNemoModel?.status === "downloading" && (
+                    <div className="space-y-1.5">
+                      <Progress value={selectedNemoModel.progress || 0} />
+                      <p className="flex items-center gap-2 text-[11px] text-slate-500">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        {selectedNemoModel.message || "Downloading..."}
+                        <span className="ml-auto">{Math.round(selectedNemoModel.progress || 0)}%</span>
+                      </p>
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => selectedNemoModel && handleNemoDownload(selectedNemoModel.id)}
+                      disabled={!selectedNemoModel || selectedNemoModel.status === "downloading" || selectedNemoModel.downloaded}
+                    >
+                      <Download className="mr-2 h-4 w-4" />
+                      Download
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => selectedNemoModel && handleNemoDelete(selectedNemoModel.id)}
+                      disabled={!selectedNemoModel?.downloaded || selectedNemoModel.status === "downloading"}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </SectionPanel>
+
+        <SectionPanel
+          title="API keys"
+          description="Manage provider credentials without expanding the whole page."
+          icon={Key}
+        >
+          <div className="space-y-2">
+            {selectedCredentialRequirement && (
+              <div className="rounded-xl border border-amber-500/35 bg-amber-50 p-2.5 text-[11px] leading-[15px] text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+                <div className="flex gap-2">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
+                  <div>
+                    <p className="font-semibold">{selectedModelLabel} needs credentials.</p>
+                    <p className="mt-1">Add {selectedCredentialRequirement.label}, or choose a local model.</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!hasAnyManagedCloudSttCredential && (
+              <div className="rounded-xl bg-slate-50 p-2.5 text-[11px] leading-[15px] text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                No cloud STT credentials are saved yet.
+              </div>
+            )}
+
+            <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
+              <ApiCredentialRow provider="OpenAI" icon="openai" value={openAIKey} onValueChange={setOpenAIKey} show={showOpenAIKey} onShowChange={setShowOpenAIKey} helpKey="openai" saved={savedKeys.OpenAI === true} onSave={() => handleSaveApiKey("OpenAI")} note="Used for OpenAI STT and summarization." />
+              <ApiCredentialRow provider="Gemini" icon="gemini" value={geminiKey} onValueChange={setGeminiKey} show={showGeminiKey} onShowChange={setShowGeminiKey} helpKey="gemini" saved={savedKeys.Gemini === true} onSave={() => handleSaveApiKey("Gemini")} />
+              <ApiCredentialRow provider="OpenRouter" icon="openrouter" value={openRouterKey} onValueChange={setOpenRouterKey} show={showOpenRouterKey} onShowChange={setShowOpenRouterKey} helpKey="openrouter" saved={savedKeys.OpenRouter === true} onSave={() => handleSaveApiKey("OpenRouter")} />
+              <ApiCredentialRow provider="YouTube" icon="youtube" value={youtubeKey} onValueChange={setYoutubeKey} show={showYoutubeKey} onShowChange={setShowYoutubeKey} helpKey="youtube" saved={savedKeys.YouTube === true} onSave={() => handleSaveApiKey("YouTube")} note="Used for search and metadata in the YouTube tab." />
+              <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={setSonioxKey} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} />
+              <ApiCredentialRow provider="Mistral" icon="mistral" value={mistralKey} onValueChange={setMistralKey} show={showMistralKey} onShowChange={setShowMistralKey} helpKey="mistral" saved={savedKeys.Mistral === true} onSave={() => handleSaveApiKey("Mistral")} />
+              <ApiCredentialRow provider="Smallest AI" icon="smallest" value={smallestKey} onValueChange={setSmallestKey} show={showSmallestKey} onShowChange={setShowSmallestKey} helpKey="smallest" saved={savedKeys["Smallest AI"] === true} onSave={() => handleSaveApiKey("Smallest AI")} />
+              <ApiCredentialRow provider="AssemblyAI" icon="assemblyai" value={assemblyAIKey} onValueChange={setAssemblyAIKey} show={showAssemblyAIKey} onShowChange={setShowAssemblyAIKey} helpKey="assemblyai" saved={savedKeys.AssemblyAI === true} onSave={() => handleSaveApiKey("AssemblyAI")} />
+              <ApiCredentialRow provider="Deepgram" icon="deepgram" value={deepgramKey} onValueChange={setDeepgramKey} show={showDeepgramKey} onShowChange={setShowDeepgramKey} helpKey="deepgram" saved={savedKeys.Deepgram === true} onSave={() => handleSaveApiKey("Deepgram")} />
+              <ApiCredentialRow provider="Gladia" icon="gladia" value={gladiaKey} onValueChange={setGladiaKey} show={showGladiaKey} onShowChange={setShowGladiaKey} helpKey="gladia" saved={savedKeys.Gladia === true} onSave={() => handleSaveApiKey("Gladia")} />
+              <ApiCredentialRow provider="Groq" icon="groq" value={groqKey} onValueChange={setGroqKey} show={showGroqKey} onShowChange={setShowGroqKey} helpKey="groq" saved={savedKeys.Groq === true} onSave={() => handleSaveApiKey("Groq")} />
+              <ApiCredentialRow provider="Speechmatics" icon="speechmatics" value={speechmaticsKey} onValueChange={setSpeechmaticsKey} show={showSpeechmaticsKey} onShowChange={setShowSpeechmaticsKey} helpKey="speechmatics" saved={savedKeys.Speechmatics === true} onSave={() => handleSaveApiKey("Speechmatics")} />
+              <ApiCredentialRow provider="ElevenLabs" icon="elevenlabs" value={elevenLabsKey} onValueChange={setElevenLabsKey} show={showElevenLabsKey} onShowChange={setShowElevenLabsKey} helpKey="fal" saved={savedKeys.ElevenLabs === true} onSave={() => handleSaveApiKey("ElevenLabs")} note="Scriber stores the fal.ai key for this provider." />
+              <ApiCredentialRow provider="Google Cloud" icon="googlecloud" value={googleApplicationCredentials} onValueChange={setGoogleApplicationCredentials} helpKey="googleCloud" saved={savedKeys["Google Cloud"] === true} onSave={() => handleSaveApiKey("Google Cloud")} inputType="text" placeholder="C:\\path\\to\\service-account.json" note="Path to the service account JSON used by Google Cloud STT." />
+              <ApiCredentialRow provider="Azure MAI" icon="azure" value={azureMaiKey} onValueChange={setAzureMaiKey} show={showAzureMaiKey} onShowChange={setShowAzureMaiKey} helpKey="azure" saved={savedKeys.Azure === true} onSave={() => handleSaveApiKey("Azure")} note="The key must belong to a region that supports the configured model.">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <FieldShell label="Region">
+                    <Input value={azureMaiRegion} onChange={(event) => setAzureMaiRegion(event.target.value)} placeholder="northeurope" className="font-mono text-sm" />
+                  </FieldShell>
+                  <FieldShell label="Model">
+                    <Input value={azureMaiModel} onChange={(event) => setAzureMaiModel(event.target.value)} placeholder="mai-transcribe-1.5" className="font-mono text-sm" />
+                  </FieldShell>
+                </div>
+              </ApiCredentialRow>
+            </div>
+          </div>
+        </SectionPanel>
+
+        <SectionPanel
+          title="Summarization"
+          description="Configure automatic summaries and the long-form prompt."
+          icon={Sparkles}
+        >
+          <div className="space-y-4">
+            <div
+              role="radiogroup"
+              aria-label="Summary models"
+              className="space-y-2"
+            >
+              {summaryModelGroups.map((group) => (
+                <div
+                  key={group.key}
+                  className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60"
+                >
+                  <div className="mb-1.5">
+                    <h3 className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">
+                      {group.label}
+                    </h3>
+                    <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                      {group.description}
                     </p>
                   </div>
-                  <Switch
-                    checked={desktopUpdate.autoCheckEnabled}
-                    onCheckedChange={handleDesktopAutoCheckChange}
-                    disabled={isInstallingDesktopUpdate}
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                  <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
-                    <p className="text-xs text-muted-foreground">Current version</p>
-                    <p className="font-medium text-foreground">{desktopUpdate.currentVersion || "Unknown"}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
-                    <p className="text-xs text-muted-foreground">Available update</p>
-                    <p className="font-medium text-foreground">{desktopUpdateAvailableVersionLabel}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
-                    <p className="text-xs text-muted-foreground">Last checked</p>
-                    <p className="font-medium text-foreground">{desktopUpdateLastCheckedLabel}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
-                    <p className="text-xs text-muted-foreground">Next automatic check</p>
-                    <p className="font-medium text-foreground">{desktopUpdateNextCheckLabel}</p>
+                  <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
+                    {group.items.map((option) => (
+                      <SummaryModelChoice
+                        key={option.value}
+                        option={option}
+                        selected={summarizationModel === option.value}
+                        onSelect={() => void handleSummarizationModelChange(option.value)}
+                      />
+                    ))}
                   </div>
                 </div>
+              ))}
+            </div>
 
-                {desktopUpdate.notes && (
-                  <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
-                    <p className="text-xs text-muted-foreground mb-1">Release notes</p>
-                    <p className="text-sm text-foreground whitespace-pre-wrap">{desktopUpdate.notes}</p>
-                  </div>
-                )}
+            <SettingLine label="Auto-summarize" description="Summarize new transcripts automatically.">
+              <Switch checked={autoSummarize} onCheckedChange={handleAutoSummarizeChange} />
+            </SettingLine>
 
-                {desktopUpdateProgress && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                      <span>{desktopUpdateProgress.message}</span>
-                      {typeof desktopUpdateProgress.percent === "number" && (
-                        <span>{desktopUpdateProgress.percent}%</span>
-                      )}
-                    </div>
-                    <Progress value={desktopUpdateProgress.percent ?? 0} />
-                  </div>
-                )}
-
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={handleCheckDesktopUpdate}
-                    disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}
-                  >
-                    {isCheckingDesktopUpdate ? (
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-4 h-4 mr-2" />
-                    )}
-                    Check for updates
-                  </Button>
-                  <Button
-                    onClick={handleInstallDesktopUpdate}
-                    disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}
-                  >
-                    {isInstallingDesktopUpdate ? (
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    ) : (
-                      <Download className="w-4 h-4 mr-2" />
-                    )}
-                    Install and restart
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={handleRemindDesktopUpdateLater}
-                    disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}
-                  >
-                    Remind tomorrow
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={handleSkipDesktopUpdateVersion}
-                    disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}
-                  >
-                    Skip this version
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={handleOpenDesktopUpdateReleaseNotes}
-                    disabled={isInstallingDesktopUpdate}
-                  >
-                    <ExternalLink className="w-4 h-4 mr-2" />
-                    Release notes
-                  </Button>
-                </div>
-              </div>
-            </AccordionContent>
+            <FieldShell label="Custom prompt">
+              <Textarea
+                value={summarizationPrompt}
+                onChange={(event) => setSummarizationPrompt(event.target.value)}
+                onBlur={handleSummarizationPromptBlur}
+                placeholder="Summarize the key points, decisions, and action items. Keep it concise and structured."
+                className="min-h-[130px] resize-none bg-white/70 text-sm dark:bg-slate-950/60"
+              />
+            </FieldShell>
           </div>
-        </AccordionItem>
+        </SectionPanel>
 
-        {/* API Keys */}
-        <AccordionItem value="api-keys" className="border-0">
-          <div className="neu-panel-raised bg-card rounded-xl overflow-hidden">
-            <AccordionTrigger className="px-6 py-4 hover:no-underline">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                  <Key className="w-5 h-5" />
-                </div>
-                <div className="text-left">
-                  <h2 className="font-semibold text-foreground">API Configuration</h2>
-                  <p className="text-sm text-muted-foreground">Manage API keys for STT and AI services</p>
-                </div>
+        <SectionPanel
+          title="Update app"
+          description="Keep Scriber current without interrupting recordings."
+          icon={Shield}
+        >
+          <div className="space-y-3">
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+              <div>
+                <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Update status</p>
+                <p className="mt-0.5 text-[11px] leading-[15px] text-slate-500 dark:text-slate-400">{desktopUpdate.message}</p>
               </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <div className="px-6 pb-6 space-y-4">
-                {selectedCredentialRequirement && (
-                  <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 p-4 text-sm text-amber-900 dark:text-amber-100">
-                    <div className="flex gap-3">
-                      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
-                      <div className="space-y-1.5">
-                        <p className="font-semibold">
-                          {selectedModelLabel} needs credentials before transcription will work.
-                        </p>
-                        <p className="text-amber-900/80 dark:text-amber-100/80">
-                          {"externalOnly" in selectedCredentialRequirement
-                            ? `Configure ${selectedCredentialRequirement.label}, or choose a local model such as ONNX/NeMo if you want to run without a cloud key.`
-                            : `Add ${selectedCredentialRequirement.label} below, or choose a local model such as ONNX/NeMo if you want to run without a cloud key.`}
-                        </p>
-                        <ApiKeyLink helpKey={selectedCredentialRequirement.helpKey}>
-                          Open setup page
-                        </ApiKeyLink>
+              <Badge variant={desktopUpdateBadgeVariant}>{desktopUpdateBadgeLabel}</Badge>
+            </div>
+
+            <div className="grid gap-2 rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center dark:bg-slate-900/60">
+              <div>
+                <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Automatic checks</p>
+                <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">Weekly background checks via GitHub.</p>
+              </div>
+              <Switch checked={desktopUpdate.autoCheckEnabled} onCheckedChange={handleDesktopAutoCheckChange} disabled={isInstallingDesktopUpdate} />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-[11px]">
+              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                <p className="text-[10px] leading-3 text-slate-500">Current</p>
+                <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdate.currentVersion || "Unknown"}</p>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                <p className="text-[10px] leading-3 text-slate-500">Available</p>
+                <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdateAvailableVersionLabel}</p>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                <p className="text-[10px] leading-3 text-slate-500">Last check</p>
+                <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdateLastCheckedLabel}</p>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                <p className="text-[10px] leading-3 text-slate-500">Next check</p>
+                <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdateNextCheckLabel}</p>
+              </div>
+            </div>
+
+            {desktopUpdateProgress && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
+                  <span>{desktopUpdateProgress.message}</span>
+                  {typeof desktopUpdateProgress.percent === "number" && <span>{desktopUpdateProgress.percent}%</span>}
+                </div>
+                <Progress value={desktopUpdateProgress.percent ?? 0} />
+              </div>
+            )}
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Button variant="outline" className="h-8 text-[12px]" onClick={handleCheckDesktopUpdate} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
+                {isCheckingDesktopUpdate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                Check for updates
+              </Button>
+              <Button className="h-8 text-[12px]" onClick={handleInstallDesktopUpdate} disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
+                {isInstallingDesktopUpdate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+                Install and restart
+              </Button>
+            </div>
+            {desktopUpdate.available && (
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="outline" className="h-8 text-[12px]" onClick={handleRemindDesktopUpdateLater} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
+                  Remind tomorrow
+                </Button>
+                <Button variant="outline" className="h-8 text-[12px]" onClick={handleSkipDesktopUpdateVersion} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
+                  Skip version
+                </Button>
+              </div>
+            )}
+            <Button variant="ghost" size="sm" className="h-8 justify-start px-1 text-[12px]" onClick={handleOpenDesktopUpdateReleaseNotes} disabled={isInstallingDesktopUpdate}>
+              <ExternalLink className="mr-2 h-4 w-4" />
+              Release notes
+            </Button>
+          </div>
+        </SectionPanel>
+
+        <SectionPanel
+          title="Language"
+          description="Auto-detect or choose a preferred transcription language."
+          icon={Languages}
+        >
+          <div className="space-y-4">
+            <SettingLine label="Auto-detect language" description="Let the provider infer spoken language.">
+              <Switch
+                checked={language === "auto"}
+                onCheckedChange={(enabled) => void handleLanguageChange(enabled ? "auto" : "en")}
+              />
+            </SettingLine>
+
+            <SettingLine label="Preferred language" description="Used when auto-detect is off.">
+              <div className={cn("language-dropdown w-full", isLanguageDropdownOpen && "is-open")}>
+                <button
+                  type="button"
+                  className="language-dropdown-header"
+                  onClick={() => setIsLanguageDropdownOpen((prev) => !prev)}
+                  aria-label="Select default transcription language"
+                  aria-expanded={isLanguageDropdownOpen}
+                  aria-controls="language-dropdown-tray"
+                >
+                  <span className="language-dropdown-header-info">
+                    <span className="language-dropdown-selected-value-wrapper">
+                      <LanguageFlag value={selectedLanguage.value} className="language-header-flag" />
+                      <span className="language-dropdown-selected-text is-selected">{selectedLanguage.label}</span>
+                    </span>
+                  </span>
+                  <ChevronDown className="language-dropdown-chevron" />
+                </button>
+
+                <div id="language-dropdown-tray" className="language-dropdown-tray" aria-hidden={!isLanguageDropdownOpen}>
+                  <div className="language-dropdown-content">
+                    <div className="language-dropdown-tray-inner">
+                      <div className="language-list">
+                        {LANGUAGE_OPTIONS.map((option) => {
+                          const isSelected = option.value === language;
+                          const inputId = `lang-option-${option.value}`;
+                          return (
+                            <div key={option.value} className={cn("language-item", isSelected && "is-selected")}>
+                              <div className="language-row-waves" aria-hidden="true">
+                                <div className="language-wave-row" />
+                              </div>
+                              <input
+                                type="radio"
+                                id={inputId}
+                                name="default-transcription-language"
+                                className="language-radio sr-only"
+                                checked={isSelected}
+                                onChange={() => handleLanguageSelectFromDropdown(option.value)}
+                                aria-label={`Select ${option.label} as default transcription language`}
+                              />
+                              <label htmlFor={inputId} className="language-option-label">
+                                <LanguageFlag value={option.value} />
+                                <span className="language-name">{option.label}</span>
+                                <svg className="language-check" viewBox="0 0 24 24" aria-hidden="true">
+                                  <path d="M 4 12 L 10 18 L 20 6" />
+                                </svg>
+                              </label>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
-                )}
-
-                {!hasAnyManagedCloudSttCredential && (
-                  <div className="rounded-xl border border-border bg-muted/45 p-4 text-sm text-muted-foreground">
-                    <p className="font-medium text-foreground">No cloud STT credentials are saved yet.</p>
-                    <p className="mt-1">
-                      Live microphone, file, and YouTube transcription need a key for the selected cloud provider. YouTube search and metadata also need a YouTube Data API key.
-                    </p>
-                  </div>
-                )}
-
-                <div className="space-y-2">
-                  <ApiKeyLabel helpKey="openai">OpenAI API Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showOpenAIKey ? "text" : "password"}
-                        value={openAIKey}
-                        onChange={(e) => setOpenAIKey(e.target.value)}
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowOpenAIKey(!showOpenAIKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showOpenAIKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['OpenAI'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('OpenAI')}
-                      className={savedKeys['OpenAI'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['OpenAI'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['OpenAI'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">Used for summarization and advanced analysis</p>
                 </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="deepgram">Deepgram API Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showDeepgramKey ? "text" : "password"}
-                        value={deepgramKey}
-                        onChange={(e) => setDeepgramKey(e.target.value)}
-                        placeholder="Enter your Deepgram key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowDeepgramKey(!showDeepgramKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showDeepgramKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['Deepgram'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('Deepgram')}
-                      className={savedKeys['Deepgram'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['Deepgram'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['Deepgram'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="assemblyai">AssemblyAI API Key (Universal-3-Pro)</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showAssemblyAIKey ? "text" : "password"}
-                        value={assemblyAIKey}
-                        onChange={(e) => setAssemblyAIKey(e.target.value)}
-                        placeholder="Enter your AssemblyAI key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowAssemblyAIKey(!showAssemblyAIKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showAssemblyAIKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['AssemblyAI'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('AssemblyAI')}
-                      className={savedKeys['AssemblyAI'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['AssemblyAI'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['AssemblyAI'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="gemini">Gemini API Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showGeminiKey ? "text" : "password"}
-                        value={geminiKey}
-                        onChange={(e) => setGeminiKey(e.target.value)}
-                        placeholder="Enter your Gemini key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowGeminiKey(!showGeminiKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showGeminiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['Gemini'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('Gemini')}
-                      className={savedKeys['Gemini'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['Gemini'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['Gemini'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="openrouter">OpenRouter API Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showOpenRouterKey ? "text" : "password"}
-                        value={openRouterKey}
-                        onChange={(e) => setOpenRouterKey(e.target.value)}
-                        placeholder="Enter your OpenRouter key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowOpenRouterKey(!showOpenRouterKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showOpenRouterKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['OpenRouter'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('OpenRouter')}
-                      className={savedKeys['OpenRouter'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['OpenRouter'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['OpenRouter'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="youtube">YouTube API Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showYoutubeKey ? "text" : "password"}
-                        value={youtubeKey}
-                        onChange={(e) => setYoutubeKey(e.target.value)}
-                        placeholder="Enter your YouTube key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowYoutubeKey(!showYoutubeKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showYoutubeKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys["YouTube"] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey("YouTube")}
-                      className={savedKeys["YouTube"] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys["YouTube"] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys["YouTube"] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">Used for the Youtube tab (search / metadata). Enable the YouTube Data API v3 on the same Google Cloud project.</p>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="soniox">Soniox API Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showSonioxKey ? "text" : "password"}
-                        value={sonioxKey}
-                        onChange={(e) => setSonioxKey(e.target.value)}
-                        placeholder="Enter your Soniox key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowSonioxKey(!showSonioxKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showSonioxKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['Soniox'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('Soniox')}
-                      className={savedKeys['Soniox'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['Soniox'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['Soniox'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="smallest">Smallest AI API Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showSmallestKey ? "text" : "password"}
-                        value={smallestKey}
-                        onChange={(e) => setSmallestKey(e.target.value)}
-                        placeholder="Enter your Smallest AI key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowSmallestKey(!showSmallestKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showSmallestKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['Smallest AI'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('Smallest AI')}
-                      className={savedKeys['Smallest AI'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['Smallest AI'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['Smallest AI'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="mistral">Mistral API Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showMistralKey ? "text" : "password"}
-                        value={mistralKey}
-                        onChange={(e) => setMistralKey(e.target.value)}
-                        placeholder="Enter your Mistral key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowMistralKey(!showMistralKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showMistralKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['Mistral'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('Mistral')}
-                      className={savedKeys['Mistral'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['Mistral'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['Mistral'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="fal">ElevenLabs API Key (via Fal.ai)</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showElevenLabsKey ? "text" : "password"}
-                        value={elevenLabsKey}
-                        onChange={(e) => setElevenLabsKey(e.target.value)}
-                        placeholder="Enter your Fal.ai key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowElevenLabsKey(!showElevenLabsKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showElevenLabsKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['ElevenLabs'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('ElevenLabs')}
-                      className={savedKeys['ElevenLabs'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['ElevenLabs'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['ElevenLabs'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="azure">Azure MAI Speech Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showAzureMaiKey ? "text" : "password"}
-                        value={azureMaiKey}
-                        onChange={(e) => setAzureMaiKey(e.target.value)}
-                        placeholder="Enter your Azure MAI Speech key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowAzureMaiKey(!showAzureMaiKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showAzureMaiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['Azure'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('Azure')}
-                      className={savedKeys['Azure'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['Azure'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['Azure'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">Must belong to a region that supports the configured MAI Transcribe model.</p>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <Label>Azure MAI Region</Label>
-                  <Input
-                    value={azureMaiRegion}
-                    onChange={(e) => setAzureMaiRegion(e.target.value)}
-                    placeholder="northeurope"
-                    className="font-mono text-sm"
-                  />
-                  <p className="text-xs text-muted-foreground">Nearest supported Europe region is usually northeurope.</p>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <Label>Azure MAI Model</Label>
-                  <Input
-                    value={azureMaiModel}
-                    onChange={(e) => setAzureMaiModel(e.target.value)}
-                    placeholder="mai-transcribe-1.5"
-                    className="font-mono text-sm"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Default is mai-transcribe-1.5; set mai-transcribe-1 if your Azure region has not enabled 1.5 yet.
-                  </p>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="gladia">Gladia API Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showGladiaKey ? "text" : "password"}
-                        value={gladiaKey}
-                        onChange={(e) => setGladiaKey(e.target.value)}
-                        placeholder="Enter your Gladia key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowGladiaKey(!showGladiaKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showGladiaKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['Gladia'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('Gladia')}
-                      className={savedKeys['Gladia'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['Gladia'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['Gladia'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="groq">Groq API Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showGroqKey ? "text" : "password"}
-                        value={groqKey}
-                        onChange={(e) => setGroqKey(e.target.value)}
-                        placeholder="Enter your Groq key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowGroqKey(!showGroqKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showGroqKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['Groq'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('Groq')}
-                      className={savedKeys['Groq'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['Groq'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['Groq'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="speechmatics">Speechmatics API Key</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        type={showSpeechmaticsKey ? "text" : "password"}
-                        value={speechmaticsKey}
-                        onChange={(e) => setSpeechmaticsKey(e.target.value)}
-                        placeholder="Enter your Speechmatics key"
-                        className="font-mono text-sm pr-10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowSpeechmaticsKey(!showSpeechmaticsKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showSpeechmaticsKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <Button
-                      variant={savedKeys['Speechmatics'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('Speechmatics')}
-                      className={savedKeys['Speechmatics'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['Speechmatics'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['Speechmatics'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <ApiKeyLabel helpKey="googleCloud">Google Cloud credentials JSON path</ApiKeyLabel>
-                  <div className="flex gap-2">
-                    <Input
-                      value={googleApplicationCredentials}
-                      onChange={(e) => setGoogleApplicationCredentials(e.target.value)}
-                      placeholder="C:\\path\\to\\service-account.json"
-                      className="font-mono text-sm"
-                    />
-                    <Button
-                      variant={savedKeys['Google Cloud'] ? "default" : "outline"}
-                      onClick={() => handleSaveApiKey('Google Cloud')}
-                      className={savedKeys['Google Cloud'] ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}
-                    >
-                      {savedKeys['Google Cloud'] ? <Check className="w-4 h-4 mr-2" /> : null}
-                      {savedKeys['Google Cloud'] ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">Used by Google Cloud STT via the GOOGLE_APPLICATION_CREDENTIALS path.</p>
-                </div>
-
               </div>
-            </AccordionContent>
+            </SettingLine>
           </div>
-        </AccordionItem>
-
-      </Accordion>
+        </SectionPanel>
+      </div>
     </div>
   );
 }
