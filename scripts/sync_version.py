@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -19,6 +20,21 @@ def read_version() -> str:
     if not match:
         raise RuntimeError(f"Could not find __version__ in {VERSION_FILE}")
     return match.group(1)
+
+
+def normalize_tag_version(value: str) -> str:
+    version = value.strip()
+    if version.startswith("v"):
+        version = version[1:]
+    return version
+
+
+def expected_ci_tag_version() -> str | None:
+    ref_type = os.getenv("GITHUB_REF_TYPE", "").strip().lower()
+    ref_name = os.getenv("GITHUB_REF_NAME", "").strip()
+    if ref_type == "tag" and ref_name.startswith("v"):
+        return normalize_tag_version(ref_name)
+    return None
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -72,6 +88,13 @@ def update_cargo_toml(version: str) -> bool:
 
 def main() -> int:
     version = read_version()
+    expected_tag_version = expected_ci_tag_version()
+    if expected_tag_version and version != expected_tag_version:
+        raise RuntimeError(
+            "Scriber version mismatch: "
+            f"src/version.py has {version}, but CI tag is v{expected_tag_version}. "
+            "Update src/version.py before publishing a signed release."
+        )
     changed = {
         "tauriConf": update_tauri_conf(version),
         "cargoToml": update_cargo_toml(version),

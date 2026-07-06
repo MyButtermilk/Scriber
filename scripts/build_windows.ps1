@@ -586,8 +586,12 @@ try {
         )
         if ($currentArtifacts.Count -gt 0) {
             $artifacts = @($currentArtifacts | Select-Object -ExpandProperty FullName)
-        } else {
-            $artifacts = @($allArtifacts | Select-Object -ExpandProperty FullName)
+        } elseif ($allArtifacts.Count -gt 0) {
+            throw (
+                "Windows release artifacts were found, but none match current version " +
+                "${currentVersion}: " +
+                (($allArtifacts | ForEach-Object { $_.Name }) -join ", ")
+            )
         }
         if ($artifacts.Count -gt 0) {
             Write-Host (

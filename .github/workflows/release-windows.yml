@@ -277,8 +277,22 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
-          Get-ChildItem Frontend\src-tauri\target\release\bundle -Recurse -File -Include *.exe,*.msi,*.sig |
-            Copy-Item -Destination release-artifacts\
+          $metadata = Get-Content -Raw Frontend\src-tauri\target\release\release-metadata\latest.json | ConvertFrom-Json
+          $artifactNames = @($metadata.artifacts | ForEach-Object { $_.name })
+          if ($artifactNames.Count -eq 0) {
+            throw "latest.json does not list release artifacts."
+          }
+          foreach ($artifactName in $artifactNames) {
+            $matches = @(Get-ChildItem Frontend\src-tauri\target\release\bundle -Recurse -File -Filter $artifactName)
+            if ($matches.Count -ne 1) {
+              throw "Expected exactly one release artifact named '$artifactName', found $($matches.Count)."
+            }
+            Copy-Item -LiteralPath $matches[0].FullName -Destination release-artifacts\
+            $signaturePath = "$($matches[0].FullName).sig"
+            if (Test-Path -LiteralPath $signaturePath -PathType Leaf) {
+              Copy-Item -LiteralPath $signaturePath -Destination release-artifacts\
+            }
+          }
           Copy-Item Frontend\src-tauri\target\release\release-metadata\*.json release-artifacts\
           Copy-Item Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt release-artifacts\
 

@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-06-17
+Last verified: 2026-07-06
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -91,6 +91,12 @@ Performance/packaging:
 
 ## Installer Builds
 
+`src/version.py` is the leading release version. `scripts\sync_version.py`
+copies that value into Tauri, Cargo, and frontend package metadata before
+building. In GitHub Actions tag releases, the sync step must match the `v*`
+tag; if `src/version.py` still contains an older version, the signed release
+build fails instead of silently publishing an installer with the wrong version.
+
 Fast local Profile B installer:
 
 ```powershell
@@ -109,7 +115,7 @@ for a faster but larger local-only package.
 Typical output:
 
 ```text
-Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.2_x64-setup.exe
+Frontend\src-tauri\target\release\bundle\nsis\Scriber_<current-version>_x64-setup.exe
 ```
 
 Broader local installed workflow smoke:
