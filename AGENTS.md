@@ -299,7 +299,12 @@ Packaging and scripts:
   provider imports require `nltk` at runtime. Gladia live transcription uses
   Pipecat's Gladia service; Gladia file and YouTube transcription use the
   direct pre-recorded HTTP upload/polling API and should not be routed through
-  the live WebSocket pipeline.
+  the live WebSocket pipeline. The direct async adapters
+  `deepgram_async`, `gladia_async`, `openai_async`, and `speechmatics_async`
+  live in `src/cloud_async_stt.py`; keep them as direct HTTP/batch adapters
+  unless a measured provider SDK change justifies adding more packaged
+  dependencies. Do not add `speechmatics-batch` to the standard sidecar while
+  the direct Speechmatics batch API path is sufficient.
 - FFmpeg Profile B is the standard Windows bundled media-tool path. Gyan
   Essentials is explicit fallback only.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`

@@ -39,6 +39,7 @@ STANDARD_PROVIDER_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("src.assemblyai_async_stt", "AssemblyAI async STT adapter"),
     ("src.mistral_stt", "Mistral realtime and async STT adapters"),
     ("src.smallest_stt", "Smallest AI realtime and async STT adapters"),
+    ("src.cloud_async_stt", "Deepgram, Gladia, OpenAI, and Speechmatics async STT adapters"),
     ("src.azure_mai_stt", "Microsoft MAI Transcribe adapter"),
     ("pipecat.services.google.stt", "Google Cloud STT provider"),
     ("pipecat.services.elevenlabs.stt", "ElevenLabs STT provider"),
@@ -91,12 +92,28 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[ProviderRuntimeDependency, ...]] = {
             "Deepgram realtime transcription SDK",
         ),
     ),
+    "deepgram_async": (
+        ProviderRuntimeDependency(
+            "deepgram_async",
+            "src.cloud_async_stt",
+            "requirements-base.txt",
+            "Deepgram pre-recorded transcription adapter",
+        ),
+    ),
     "openai": (
         ProviderRuntimeDependency(
             "openai",
             "pipecat.services.openai.stt",
             "openai",
             "OpenAI transcription SDK",
+        ),
+    ),
+    "openai_async": (
+        ProviderRuntimeDependency(
+            "openai_async",
+            "src.cloud_async_stt",
+            "requirements-base.txt",
+            "OpenAI audio transcription adapter",
         ),
     ),
     "groq": (
@@ -121,6 +138,22 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[ProviderRuntimeDependency, ...]] = {
             "pipecat.services.speechmatics.stt",
             "speechmatics-rt",
             "Speechmatics realtime SDK",
+        ),
+    ),
+    "gladia_async": (
+        ProviderRuntimeDependency(
+            "gladia_async",
+            "src.cloud_async_stt",
+            "requirements-base.txt",
+            "Gladia pre-recorded transcription adapter",
+        ),
+    ),
+    "speechmatics_async": (
+        ProviderRuntimeDependency(
+            "speechmatics_async",
+            "src.cloud_async_stt",
+            "requirements-base.txt",
+            "Speechmatics batch transcription adapter",
         ),
     ),
 }

@@ -258,6 +258,10 @@ Current packaging choices:
   `google-genai` namespace dependency; OpenAI STT, Groq STT, and Pipecat's
   provider import path remain supported through explicit `openai`, `groq`, and
   `nltk` runtime dependencies.
+- Deepgram Async, Gladia Async, OpenAI Async, and Speechmatics Batch use direct
+  HTTP/batch adapters in `src/cloud_async_stt.py`. Speechmatics Batch does not
+  add `speechmatics-batch`; the standard sidecar keeps only the existing
+  Speechmatics realtime/runtime packages.
 - Pillow AVIF binaries are excluded.
 - Runtime dependency footprint gates reject SciPy, AWS SDK packages, PySide6,
   customtkinter, Tk, and unused provider SDK reintroduction in the packaged

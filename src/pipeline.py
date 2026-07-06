@@ -113,7 +113,17 @@ class _AnalyzerCache:
 def _live_service_uses_async_finalization(service_name: str) -> bool:
     normalized = str(service_name or "")
     return (
-        normalized in {"soniox_async", "mistral_async", "smallest_async", "azure_mai", "assemblyai"}
+        normalized in {
+            "soniox_async",
+            "mistral_async",
+            "smallest_async",
+            "deepgram_async",
+            "gladia_async",
+            "openai_async",
+            "speechmatics_async",
+            "azure_mai",
+            "assemblyai",
+        }
         or (normalized == "soniox" and Config.SONIOX_MODE == "async")
     )
 
@@ -684,6 +694,18 @@ from src.assemblyai_async_stt import (
 from src.gladia_stt import (
     gladia_transcript_payload_to_text,
     transcribe_with_gladia_pre_recorded,
+)
+from src.cloud_async_stt import (
+    DeepgramAsyncProcessor,
+    GladiaAsyncProcessor,
+    OpenAIAsyncProcessor,
+    SpeechmaticsAsyncProcessor,
+    deepgram_transcript_payload_to_text,
+    openai_transcript_payload_to_text,
+    speechmatics_transcript_payload_to_text,
+    transcribe_with_deepgram_pre_recorded,
+    transcribe_with_openai_audio_transcription,
+    transcribe_with_speechmatics_batch,
 )
 
 LANGUAGE_MAP = {
@@ -1377,6 +1399,19 @@ class ScriberPipeline:
                 else None
             )
             return DeepgramSTTService(api_key=_get_api_key("deepgram"), live_options=live_options)
+
+        elif self.service_name == "deepgram_async":
+            if not _get_api_key("deepgram"):
+                raise ValueError("Deepgram API Key is missing.")
+            logger.info("Using Deepgram async pre-recorded transcription mode")
+            return DeepgramAsyncProcessor(
+                api_key=_get_api_key("deepgram"),
+                language=Config.LANGUAGE,
+                custom_vocab=Config.CUSTOM_VOCAB,
+                session=session,
+                on_progress=self.on_progress,
+                diarize=self.enable_speaker_diarization,
+            )
         
         elif self.service_name == "openai":
             # Lazy import - only loaded when OpenAI is used
@@ -1388,6 +1423,20 @@ class ScriberPipeline:
                 aiohttp_session=session,
                 language=_selected_language(),
                 model=Config.OPENAI_STT_MODEL,
+            )
+
+        elif self.service_name == "openai_async":
+            if not _get_api_key("openai"):
+                raise ValueError("OpenAI API Key is missing.")
+            logger.info("Using OpenAI async audio transcription mode")
+            return OpenAIAsyncProcessor(
+                api_key=_get_api_key("openai"),
+                model=Config.OPENAI_STT_MODEL,
+                language=Config.LANGUAGE,
+                custom_vocab=Config.CUSTOM_VOCAB,
+                session=session,
+                on_progress=self.on_progress,
+                diarize=self.enable_speaker_diarization,
             )
         
         elif self.service_name == "azure_mai":
@@ -1409,6 +1458,19 @@ class ScriberPipeline:
             GladiaSTTService = module.GladiaSTTService
             if not _get_api_key("gladia"): raise ValueError("Gladia API Key is missing.")
             return GladiaSTTService(api_key=_get_api_key("gladia"), aiohttp_session=session)
+
+        elif self.service_name == "gladia_async":
+            if not _get_api_key("gladia"):
+                raise ValueError("Gladia API Key is missing.")
+            logger.info("Using Gladia pre-recorded async transcription mode")
+            return GladiaAsyncProcessor(
+                api_key=_get_api_key("gladia"),
+                language=Config.LANGUAGE,
+                custom_vocab=Config.CUSTOM_VOCAB,
+                session=session,
+                on_progress=self.on_progress,
+                diarize=self.enable_speaker_diarization,
+            )
         
         elif self.service_name == "groq":
             # Lazy import - only loaded when Groq is used
@@ -1425,6 +1487,7 @@ class ScriberPipeline:
             params_cls = getattr(SpeechmaticsSTTService, "InputParams", None)
             params = (
                 params_cls(
+                    language=Config.LANGUAGE if Config.LANGUAGE != "auto" else "en",
                     enable_diarization=self.enable_speaker_diarization,
                     speaker_active_format="[Speaker {speaker_id}]: {text}",
                     speaker_passive_format="[Speaker {speaker_id}]: {text}",
@@ -1433,6 +1496,19 @@ class ScriberPipeline:
                 else None
             )
             return SpeechmaticsSTTService(api_key=_get_api_key("speechmatics"), params=params)
+
+        elif self.service_name == "speechmatics_async":
+            if not _get_api_key("speechmatics"):
+                raise ValueError("Speechmatics API Key is missing.")
+            logger.info("Using Speechmatics batch async transcription mode")
+            return SpeechmaticsAsyncProcessor(
+                api_key=_get_api_key("speechmatics"),
+                language=Config.LANGUAGE,
+                custom_vocab=Config.CUSTOM_VOCAB,
+                session=session,
+                on_progress=self.on_progress,
+                diarize=self.enable_speaker_diarization,
+            )
         
         elif self.service_name == "onnx_local":
             from src.onnx_local_service import OnnxLocalBufferedSTTService, OnnxLocalSTTService
@@ -1868,6 +1944,71 @@ class ScriberPipeline:
                     self.on_progress("Completed")
                 return
 
+            if self.service_name == "deepgram_async":
+                api_key = Config.get_api_key("deepgram")
+                if not api_key:
+                    raise ValueError("Deepgram API key is missing")
+
+                async with aiohttp.ClientSession() as session:
+                    with open(path, "rb") as f:
+                        payload = await transcribe_with_deepgram_pre_recorded(
+                            session=session,
+                            api_key=api_key,
+                            audio_source=f,
+                            filename=path.name,
+                            content_type=content_type,
+                            language=Config.LANGUAGE,
+                            custom_vocab=Config.CUSTOM_VOCAB or "",
+                            diarize=True,
+                            on_progress=self.on_progress,
+                            timeout_secs=900.0,
+                        )
+
+                text = deepgram_transcript_payload_to_text(
+                    payload,
+                    prefer_speaker_labels=True,
+                )
+                if text and self.on_transcription:
+                    logger.info(f"Deepgram direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
+            if self.service_name == "openai_async":
+                api_key = Config.get_api_key("openai")
+                if not api_key:
+                    raise ValueError("OpenAI API key is missing")
+
+                async with aiohttp.ClientSession() as session:
+                    with open(path, "rb") as f:
+                        payload = await transcribe_with_openai_audio_transcription(
+                            session=session,
+                            api_key=api_key,
+                            audio_source=f,
+                            filename=path.name,
+                            content_type=content_type,
+                            model=Config.OPENAI_STT_MODEL,
+                            language=Config.LANGUAGE,
+                            custom_vocab=Config.CUSTOM_VOCAB or "",
+                            diarize=True,
+                            on_progress=self.on_progress,
+                            timeout_secs=900.0,
+                        )
+
+                text = openai_transcript_payload_to_text(
+                    payload,
+                    prefer_speaker_labels=True,
+                )
+                if text and self.on_transcription:
+                    logger.info(f"OpenAI direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
             if self.service_name == "azure_mai":
                 api_key = Config.get_api_key("azure_mai")
                 if not api_key:
@@ -1901,7 +2042,7 @@ class ScriberPipeline:
                     self.on_progress("Completed")
                 return
 
-            if self.service_name == "gladia":
+            if self.service_name in ("gladia", "gladia_async"):
                 api_key = Config.get_api_key("gladia")
                 if not api_key:
                     raise ValueError("Gladia API key is missing")
@@ -1927,6 +2068,38 @@ class ScriberPipeline:
                 )
                 if text and self.on_transcription:
                     logger.info(f"Gladia direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
+            if self.service_name == "speechmatics_async":
+                api_key = Config.get_api_key("speechmatics")
+                if not api_key:
+                    raise ValueError("Speechmatics API key is missing")
+
+                async with aiohttp.ClientSession() as session:
+                    with open(path, "rb") as f:
+                        payload = await transcribe_with_speechmatics_batch(
+                            session=session,
+                            api_key=api_key,
+                            audio_source=f,
+                            filename=path.name,
+                            content_type=content_type,
+                            language=Config.LANGUAGE,
+                            custom_vocab=Config.CUSTOM_VOCAB or "",
+                            diarize=True,
+                            on_progress=self.on_progress,
+                            timeout_secs=900.0,
+                        )
+
+                text = speechmatics_transcript_payload_to_text(
+                    payload,
+                    prefer_speaker_labels=True,
+                )
+                if text and self.on_transcription:
+                    logger.info(f"Speechmatics direct transcription completed ({len(text)} chars)")
                     self.on_transcription(text, True)
 
                 if self.on_progress:
@@ -2111,17 +2284,7 @@ class ScriberPipeline:
             self.service_name == "soniox_async"
             or (self.service_name == "soniox" and Config.SONIOX_MODE == "async")
         )
-        is_mistral_async = self.service_name == "mistral_async"
-        is_smallest_async = self.service_name == "smallest_async"
-        is_azure_mai_async = self.service_name == "azure_mai"
-        is_assemblyai_async = self.service_name == "assemblyai"
-        is_async_finalization = (
-            is_soniox_async
-            or is_mistral_async
-            or is_smallest_async
-            or is_azure_mai_async
-            or is_assemblyai_async
-        )
+        is_async_finalization = _live_service_uses_async_finalization(self.service_name)
         if self.on_status_change:
             self.on_status_change("Transcribing..." if is_async_finalization else "Stopping...")
         # Force flush of segmented STT buffers before stopping audio input (EndFrame closes pipeline).

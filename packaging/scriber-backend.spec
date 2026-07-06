@@ -22,6 +22,7 @@ def exclude_datas(datas, excluded_destination_prefixes):
 hiddenimports = [
     "src.assemblyai_async_stt",
     "src.azure_mai_stt",
+    "src.cloud_async_stt",
     "src.mistral_stt",
     "src.smallest_stt",
     "scripts.check_backend_runtime_imports",

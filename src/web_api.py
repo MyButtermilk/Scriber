@@ -214,6 +214,8 @@ _PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, dict[str, Any]] = {
     "azure_mai": {"max_bytes": 300 * 1024 * 1024, "label": "300MB"},
     # AssemblyAI local uploads go through /v2/upload, documented at 2.2GB.
     "assemblyai": {"max_bytes": 2_200_000_000, "label": "2.2GB"},
+    # OpenAI audio transcriptions accept relatively small direct uploads.
+    "openai_async": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
 }
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -6999,6 +7001,8 @@ def _prewarm_stt_service(service_name: str) -> None:
             import_provider_runtime_module("elevenlabs", "pipecat.services.elevenlabs.stt")
         elif service_name == "deepgram":
             import_provider_runtime_module("deepgram", "pipecat.services.deepgram.stt")
+        elif service_name in {"deepgram_async", "gladia_async", "openai_async", "speechmatics_async"}:
+            import_provider_runtime_module(service_name, "src.cloud_async_stt")
         elif service_name == "openai":
             import_provider_runtime_module("openai", "pipecat.services.openai.stt")
         elif service_name == "gladia":

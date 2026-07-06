@@ -95,19 +95,23 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "nemo_local", label: "Local (NeMo) - Primeline" },
   { value: "soniox-realtime", label: "Soniox STT Streaming" },
   { value: "soniox-async", label: "Soniox Async" },
-  { value: "mistral-realtime", label: "Mistral STT Streaming (Voxtral)" },
+  { value: "mistral-realtime", label: "Mistral Live Segmented (Voxtral)" },
   { value: "mistral-async", label: "Mistral Async (Voxtral V2)" },
   { value: "smallest-realtime", label: "Smallest AI STT Streaming (Pulse)" },
   { value: "smallest-async", label: "Smallest AI Async (Pulse)" },
   { value: "assemblyai", label: "Assembly AI Universal-3-Pro" },
-  { value: "deepgram", label: "Deepgram" },
-  { value: "openai", label: "OpenAI" },
+  { value: "deepgram", label: "Deepgram STT Streaming" },
+  { value: "deepgram-async", label: "Deepgram Async" },
+  { value: "openai", label: "OpenAI Live Segmented" },
+  { value: "openai-async", label: "OpenAI Async" },
   { value: "azure_mai", label: "Microsoft MAI Transcribe" },
-  { value: "gladia", label: "Gladia" },
-  { value: "groq", label: "Groq" },
-  { value: "speechmatics", label: "Speechmatics" },
-  { value: "elevenlabs", label: "ElevenLabs" },
-  { value: "google", label: "Google Cloud STT" },
+  { value: "gladia", label: "Gladia STT Streaming" },
+  { value: "gladia-async", label: "Gladia Async" },
+  { value: "groq", label: "Groq Live Segmented" },
+  { value: "speechmatics", label: "Speechmatics STT Streaming" },
+  { value: "speechmatics-async", label: "Speechmatics Batch" },
+  { value: "elevenlabs", label: "ElevenLabs Live Segmented" },
+  { value: "google", label: "Google Cloud STT Streaming" },
 ] as const;
 
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
@@ -333,26 +337,30 @@ interface ProviderModelOption {
   value: string;
   label: string;
   detail: string;
-  group: "cloud_realtime" | "cloud_async" | "local";
+  group: "cloud_streaming" | "cloud_segmented" | "cloud_async" | "local";
   icon?: ProviderIconKey;
 }
 
 const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "onnx_local", label: "Local ONNX", detail: "Runs fully on this device", group: "local" },
   { value: "nemo_local", label: "Local NeMo", detail: "Uses local NeMo toolkit models", group: "local" },
-  { value: "soniox-realtime", label: "Soniox", detail: "Realtime STT model for dictation", group: "cloud_realtime", icon: "soniox" },
-  { value: "mistral-realtime", label: "Mistral", detail: "Voxtral realtime STT", group: "cloud_realtime", icon: "mistral" },
-  { value: "smallest-realtime", label: "Smallest AI", detail: "Pulse realtime WebSocket STT", group: "cloud_realtime", icon: "smallest" },
-  { value: "deepgram", label: "Deepgram", detail: "Streaming STT; file-capable", group: "cloud_realtime", icon: "deepgram" },
-  { value: "gladia", label: "Gladia", detail: "Live STT plus pre-recorded upload", group: "cloud_realtime", icon: "gladia" },
-  { value: "google", label: "Google Cloud", detail: "StreamingRecognition and batch API", group: "cloud_realtime", icon: "googlecloud" },
-  { value: "speechmatics", label: "Speechmatics", detail: "Realtime API; batch-capable", group: "cloud_realtime", icon: "speechmatics" },
-  { value: "elevenlabs", label: "ElevenLabs", detail: "Segmented live transcription", group: "cloud_realtime", icon: "elevenlabs" },
-  { value: "openai", label: "OpenAI", detail: "Segmented live transcription", group: "cloud_realtime", icon: "openai" },
-  { value: "groq", label: "Groq", detail: "Segmented live transcription", group: "cloud_realtime", icon: "groq" },
+  { value: "soniox-realtime", label: "Soniox", detail: "stt-rt-v5 WebSocket stream", group: "cloud_streaming", icon: "soniox" },
+  { value: "smallest-realtime", label: "Smallest AI", detail: "Pulse realtime WebSocket", group: "cloud_streaming", icon: "smallest" },
+  { value: "deepgram", label: "Deepgram", detail: "Listen WebSocket streaming", group: "cloud_streaming", icon: "deepgram" },
+  { value: "gladia", label: "Gladia", detail: "Live v2 WebSocket; files use pre-recorded API", group: "cloud_streaming", icon: "gladia" },
+  { value: "google", label: "Google Cloud", detail: "Speech-to-Text streaming", group: "cloud_streaming", icon: "googlecloud" },
+  { value: "speechmatics", label: "Speechmatics", detail: "Realtime WebSocket API", group: "cloud_streaming", icon: "speechmatics" },
+  { value: "mistral-realtime", label: "Mistral", detail: "Voxtral API per speech segment", group: "cloud_segmented", icon: "mistral" },
+  { value: "openai", label: "OpenAI", detail: "Transcription API per speech segment", group: "cloud_segmented", icon: "openai" },
+  { value: "groq", label: "Groq", detail: "Whisper API per speech segment", group: "cloud_segmented", icon: "groq" },
+  { value: "elevenlabs", label: "ElevenLabs", detail: "File API per speech segment", group: "cloud_segmented", icon: "elevenlabs" },
   { value: "soniox-async", label: "Soniox", detail: "Direct file and final transcript", group: "cloud_async", icon: "soniox" },
   { value: "mistral-async", label: "Mistral", detail: "Voxtral batch transcription", group: "cloud_async", icon: "mistral" },
   { value: "smallest-async", label: "Smallest AI", detail: "Pulse pre-recorded STT", group: "cloud_async", icon: "smallest" },
+  { value: "deepgram-async", label: "Deepgram", detail: "Pre-recorded Listen API", group: "cloud_async", icon: "deepgram" },
+  { value: "gladia-async", label: "Gladia", detail: "Pre-recorded v2 API", group: "cloud_async", icon: "gladia" },
+  { value: "openai-async", label: "OpenAI", detail: "Audio transcription API", group: "cloud_async", icon: "openai" },
+  { value: "speechmatics-async", label: "Speechmatics", detail: "Batch transcription API", group: "cloud_async", icon: "speechmatics" },
   { value: "assemblyai", label: "AssemblyAI", detail: "Universal-3-Pro async", group: "cloud_async", icon: "assemblyai" },
   { value: "azure_mai", label: "Microsoft MAI", detail: "Azure MAI batch STT", group: "cloud_async", icon: "azure" },
 ];
@@ -761,10 +769,12 @@ export default function Settings() {
           ? null
           : { label: "AssemblyAI API key", helpKey: "assemblyai" as const };
       case "deepgram":
+      case "deepgram-async":
         return hasValue(deepgramKey)
           ? null
           : { label: "Deepgram API key", helpKey: "deepgram" as const };
       case "openai":
+      case "openai-async":
         return hasValue(openAIKey)
           ? null
           : { label: "OpenAI API key", helpKey: "openai" as const };
@@ -773,6 +783,7 @@ export default function Settings() {
           ? null
           : { label: "Azure MAI Speech key and region", helpKey: "azure" as const };
       case "gladia":
+      case "gladia-async":
         return hasValue(gladiaKey)
           ? null
           : { label: "Gladia API key", helpKey: "gladia" as const };
@@ -781,6 +792,7 @@ export default function Settings() {
           ? null
           : { label: "Groq API key", helpKey: "groq" as const };
       case "speechmatics":
+      case "speechmatics-async":
         return hasValue(speechmaticsKey)
           ? null
           : { label: "Speechmatics API key", helpKey: "speechmatics" as const };
@@ -871,6 +883,18 @@ export default function Settings() {
       }
       if (service === "smallest" || service === "smallest_async") {
         return service === "smallest_async" ? "smallest-async" : "smallest-realtime";
+      }
+      if (service === "deepgram_async") {
+        return "deepgram-async";
+      }
+      if (service === "gladia_async") {
+        return "gladia-async";
+      }
+      if (service === "openai_async") {
+        return "openai-async";
+      }
+      if (service === "speechmatics_async") {
+        return "speechmatics-async";
       }
       return service || "soniox-realtime";
     };
@@ -1137,6 +1161,14 @@ export default function Settings() {
         await updateSettings({ defaultSttService: "smallest_async" });
       } else if (value === "smallest-realtime") {
         await updateSettings({ defaultSttService: "smallest" });
+      } else if (value === "deepgram-async") {
+        await updateSettings({ defaultSttService: "deepgram_async" });
+      } else if (value === "gladia-async") {
+        await updateSettings({ defaultSttService: "gladia_async" });
+      } else if (value === "openai-async") {
+        await updateSettings({ defaultSttService: "openai_async" });
+      } else if (value === "speechmatics-async") {
+        await updateSettings({ defaultSttService: "speechmatics_async" });
       } else {
         await updateSettings({ defaultSttService: value });
       }
@@ -1775,15 +1807,21 @@ export default function Settings() {
     .filter(Boolean).length;
   const providerGroups = [
     {
-      key: "cloud_realtime",
-      label: "Cloud live / streaming",
-      description: "Live microphone providers.",
-      items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_realtime"),
+      key: "cloud_streaming",
+      label: "Cloud streaming",
+      description: "True realtime STT streams.",
+      items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_streaming"),
+    },
+    {
+      key: "cloud_segmented",
+      label: "Cloud live / segmented",
+      description: "Live microphone mode with per-segment finalization.",
+      items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_segmented"),
     },
     {
       key: "cloud_async",
       label: "Cloud async / batch",
-      description: "Providers for completed audio.",
+      description: "Final transcript after upload or recording stop.",
       items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_async"),
     },
     {

@@ -267,17 +267,16 @@ feature. File and YouTube jobs enable provider diarization where the current
 backend adapter has both a supported provider request flag and a stable
 speaker-output path. This covers Soniox async/direct, Mistral async/direct,
 Smallest AI async/direct, AssemblyAI async/direct, Gladia pre-recorded
-file/YouTube transcription, Deepgram result formatting, and Speechmatics speaker
-formatting when those providers are used for batch jobs. These paths produce
+file/YouTube transcription, Deepgram async/direct, OpenAI async/direct, and
+Speechmatics async/direct when those providers are used for batch jobs. These paths produce
 anonymous `[Speaker n]` labels. Live microphone transcription explicitly
 disables speaker diarization and ignores provider speaker metadata at the
 callback boundary so single-speaker dictation is inserted as plain text. True
 known-speaker name identification is not enabled unless Scriber gains a
 UI/config source for provider-specific known speaker names or enrollment
-identifiers. The current Pipecat OpenAI STT bridge remains plain transcription
-because OpenAI's diarize model is exposed through the transcriptions API
-response format and needs a dedicated full-audio adapter rather than a safe
-factory flag.
+identifiers. The Pipecat OpenAI STT bridge remains a segmented-live path; full
+recording/file OpenAI transcription is exposed through the dedicated
+`openai_async` direct adapter.
 
 The standard sidecar keeps runtime support for the shipped cloud/external
 providers exposed in Settings, but the dependency boundary is explicit. Local
@@ -291,12 +290,15 @@ OpenRouter summary models are sent with `:nitro` variants and are used as the
 automatic cross-provider summary fallback when an OpenRouter key is configured.
 OpenAI STT uses the explicit `openai` SDK dependency, Groq STT uses Pipecat's
 `groq` SDK dependency, and Pipecat provider imports require `nltk` at runtime.
-Gladia live transcription
-still uses Pipecat's Gladia service, while file and YouTube transcription use
-Gladia's pre-recorded HTTP upload/polling API directly to avoid empty
-live-WebSocket finalization for complete files. Build-time runtime import checks
-cover the offered standard provider modules, and the footprint analyzer rejects
-unused provider SDKs if PyInstaller pulls them back in.
+Gladia live transcription still uses Pipecat's Gladia service, while
+`gladia_async`, file, and YouTube transcription use Gladia's pre-recorded HTTP
+upload/polling API directly to avoid empty live-WebSocket finalization for
+complete files. `deepgram_async`, `openai_async`, and `speechmatics_async` are
+implemented as direct HTTP/batch adapters in `src/cloud_async_stt.py`; the
+Speechmatics batch path intentionally avoids adding the separate
+`speechmatics-batch` SDK to the standard sidecar. Build-time runtime import
+checks cover the offered standard provider modules, and the footprint analyzer
+rejects unused provider SDKs if PyInstaller pulls them back in.
 
 ## Media Boundary
 

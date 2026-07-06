@@ -11,7 +11,7 @@ class ProviderCapabilities:
 
 
 _DEFAULT = ProviderCapabilities(
-    supports_live_streaming=True,
+    supports_live_streaming=False,
     supports_direct_file_upload=False,
     injects_immediately_in_live_mode=False,
 )
@@ -23,17 +23,17 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         injects_immediately_in_live_mode=True,  # when configured realtime
     ),
     "soniox_async": ProviderCapabilities(
-        supports_live_streaming=True,
+        supports_live_streaming=False,
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
     ),
     "mistral": ProviderCapabilities(
-        supports_live_streaming=True,
+        supports_live_streaming=False,
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=True,
     ),
     "mistral_async": ProviderCapabilities(
-        supports_live_streaming=True,
+        supports_live_streaming=False,
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
     ),
@@ -43,17 +43,17 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         injects_immediately_in_live_mode=True,
     ),
     "smallest_async": ProviderCapabilities(
-        supports_live_streaming=True,
+        supports_live_streaming=False,
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
     ),
     "assemblyai": ProviderCapabilities(
-        supports_live_streaming=True,
+        supports_live_streaming=False,
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
     ),
     "azure_mai": ProviderCapabilities(
-        supports_live_streaming=True,
+        supports_live_streaming=False,
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
     ),
@@ -62,13 +62,63 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
     ),
-    "onnx_local": ProviderCapabilities(
+    "gladia_async": ProviderCapabilities(
+        supports_live_streaming=False,
+        supports_direct_file_upload=True,
+        injects_immediately_in_live_mode=False,
+    ),
+    "deepgram": ProviderCapabilities(
         supports_live_streaming=True,
         supports_direct_file_upload=False,
         injects_immediately_in_live_mode=False,
     ),
-    "nemo_local": ProviderCapabilities(
+    "deepgram_async": ProviderCapabilities(
+        supports_live_streaming=False,
+        supports_direct_file_upload=True,
+        injects_immediately_in_live_mode=False,
+    ),
+    "google": ProviderCapabilities(
         supports_live_streaming=True,
+        supports_direct_file_upload=False,
+        injects_immediately_in_live_mode=False,
+    ),
+    "speechmatics": ProviderCapabilities(
+        supports_live_streaming=True,
+        supports_direct_file_upload=False,
+        injects_immediately_in_live_mode=False,
+    ),
+    "speechmatics_async": ProviderCapabilities(
+        supports_live_streaming=False,
+        supports_direct_file_upload=True,
+        injects_immediately_in_live_mode=False,
+    ),
+    "openai": ProviderCapabilities(
+        supports_live_streaming=False,
+        supports_direct_file_upload=False,
+        injects_immediately_in_live_mode=False,
+    ),
+    "openai_async": ProviderCapabilities(
+        supports_live_streaming=False,
+        supports_direct_file_upload=True,
+        injects_immediately_in_live_mode=False,
+    ),
+    "groq": ProviderCapabilities(
+        supports_live_streaming=False,
+        supports_direct_file_upload=False,
+        injects_immediately_in_live_mode=False,
+    ),
+    "elevenlabs": ProviderCapabilities(
+        supports_live_streaming=False,
+        supports_direct_file_upload=False,
+        injects_immediately_in_live_mode=False,
+    ),
+    "onnx_local": ProviderCapabilities(
+        supports_live_streaming=False,
+        supports_direct_file_upload=False,
+        injects_immediately_in_live_mode=False,
+    ),
+    "nemo_local": ProviderCapabilities(
+        supports_live_streaming=False,
         supports_direct_file_upload=False,
         injects_immediately_in_live_mode=False,
     ),
