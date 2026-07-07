@@ -1,6 +1,6 @@
 {
   "name": "rest-express",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -19,6 +19,8 @@
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
+    "@carrot-kpi/switzer-font": "^0.1.0",
+    "@fontsource/inter": "^5.2.8",
     "@hookform/resolvers": "^3.10.0",
     "@jridgewell/trace-mapping": "^0.3.25",
     "@radix-ui/react-accordion": "^1.2.12",

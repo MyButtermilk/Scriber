@@ -64,6 +64,7 @@ import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/Web
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import {
   checkDesktopUpdate,
+  checkDesktopUpdateIfDue,
   initialDesktopUpdateStatus,
   installDesktopUpdate,
   openDesktopUpdateReleaseNotes,
@@ -99,7 +100,8 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "mistral-async", label: "Mistral Async (Voxtral V2)" },
   { value: "smallest-realtime", label: "Smallest AI STT Streaming (Pulse)" },
   { value: "smallest-async", label: "Smallest AI Async (Pulse)" },
-  { value: "assemblyai", label: "Assembly AI Universal-3-Pro" },
+  { value: "assemblyai-realtime", label: "AssemblyAI Universal-3.5 Pro Realtime" },
+  { value: "assemblyai", label: "AssemblyAI Universal-3.5 Pro Async" },
   { value: "deepgram", label: "Deepgram STT Streaming" },
   { value: "deepgram-async", label: "Deepgram Async" },
   { value: "openai", label: "OpenAI Live Segmented" },
@@ -115,6 +117,21 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
 ] as const;
 
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
+const DEFAULT_POST_PROCESSING_PROMPT = `You are Scriber's live dictation cleanup engine.
+
+Task: transform the raw live microphone transcript into paste-ready text.
+
+Rules:
+- Return only the final cleaned text. Do not explain your changes.
+- Preserve the speaker's language, meaning, tone, and level of detail.
+- Fix obvious spelling, casing, punctuation, and grammar errors.
+- Remove filler words and false starts when they do not change meaning.
+- Preserve intentional repetitions, names, technical terms, numbers, and citations.
+- Convert spoken punctuation and formatting commands when obvious.
+- If the transcript ends with a command like "format: email", "format: bullet list", or "format: summary", apply that format and remove the command.
+
+Raw transcript:
+\${output}`;
 
 type HotkeyCaptureEvent = Pick<
   KeyboardEvent,
@@ -350,6 +367,7 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "gladia", label: "Gladia", detail: "Live v2 WebSocket; files use pre-recorded API", group: "cloud_streaming", icon: "gladia" },
   { value: "google", label: "Google Cloud", detail: "Speech-to-Text streaming", group: "cloud_streaming", icon: "googlecloud" },
   { value: "speechmatics", label: "Speechmatics", detail: "Realtime WebSocket API", group: "cloud_streaming", icon: "speechmatics" },
+  { value: "assemblyai-realtime", label: "AssemblyAI", detail: "Universal-3.5 Pro realtime", group: "cloud_streaming", icon: "assemblyai" },
   { value: "mistral-realtime", label: "Mistral", detail: "Voxtral API per speech segment", group: "cloud_segmented", icon: "mistral" },
   { value: "openai", label: "OpenAI", detail: "Transcription API per speech segment", group: "cloud_segmented", icon: "openai" },
   { value: "groq", label: "Groq", detail: "Whisper API per speech segment", group: "cloud_segmented", icon: "groq" },
@@ -361,7 +379,7 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "gladia-async", label: "Gladia", detail: "Pre-recorded v2 API", group: "cloud_async", icon: "gladia" },
   { value: "openai-async", label: "OpenAI", detail: "Audio transcription API", group: "cloud_async", icon: "openai" },
   { value: "speechmatics-async", label: "Speechmatics", detail: "Batch transcription API", group: "cloud_async", icon: "speechmatics" },
-  { value: "assemblyai", label: "AssemblyAI", detail: "Universal-3-Pro async", group: "cloud_async", icon: "assemblyai" },
+  { value: "assemblyai", label: "AssemblyAI", detail: "Universal-3.5 Pro async", group: "cloud_async", icon: "assemblyai" },
   { value: "azure_mai", label: "Microsoft MAI", detail: "Azure MAI batch STT", group: "cloud_async", icon: "azure" },
 ];
 
@@ -683,6 +701,7 @@ export default function Settings() {
 
   const [customVocabulary, setCustomVocabulary] = useState("");
   const [summarizationPrompt, setSummarizationPrompt] = useState("");
+  const [postProcessingPrompt, setPostProcessingPrompt] = useState(DEFAULT_POST_PROCESSING_PROMPT);
 
   const [showOpenAIKey, setShowOpenAIKey] = useState(false);
   const [showDeepgramKey, setShowDeepgramKey] = useState(false);
@@ -700,9 +719,12 @@ export default function Settings() {
   const [showSpeechmaticsKey, setShowSpeechmaticsKey] = useState(false);
 
   const [hotkey, setHotkey] = useState("Ctrl + Shift + S");
+  const [postProcessingHotkey, setPostProcessingHotkey] = useState("Ctrl + Shift + P");
   const [recordingMode, setRecordingMode] = useState("press_hold");
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
+  const [isRecordingPostProcessingHotkey, setIsRecordingPostProcessingHotkey] = useState(false);
   const hotkeyCaptureRef = useRef<HTMLDivElement | null>(null);
+  const postProcessingHotkeyCaptureRef = useRef<HTMLDivElement | null>(null);
   const { toast } = useToast();
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
 
@@ -711,6 +733,7 @@ export default function Settings() {
   const [transcriptionModel, setTranscriptionModel] = useState("soniox-realtime");
   const [summarizationModel, setSummarizationModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
   const [autoSummarize, setAutoSummarize] = useState(false);
+  const [postProcessingEnabled, setPostProcessingEnabled] = useState(true);
   const [language, setLanguage] = useState("auto");
   const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
   const [savedVisualizerBarCount, setSavedVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
@@ -743,6 +766,25 @@ export default function Settings() {
     return subscribeDesktopUpdateStatus(setDesktopUpdate);
   }, []);
 
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    let cancelled = false;
+    void checkDesktopUpdateIfDue({ force: true })
+      .then((result) => {
+        if (!cancelled) {
+          setDesktopUpdate(result.status);
+        }
+      })
+      .catch((error) => {
+        console.debug("Settings update background check failed.", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const selectedModelLabel =
     TRANSCRIPTION_MODEL_OPTIONS.find((option) => option.value === transcriptionModel)?.label ||
     transcriptionModel;
@@ -765,6 +807,7 @@ export default function Settings() {
           ? null
           : { label: "Smallest AI API key", helpKey: "smallest" as const };
       case "assemblyai":
+      case "assemblyai-realtime":
         return hasValue(assemblyAIKey)
           ? null
           : { label: "AssemblyAI API key", helpKey: "assemblyai" as const };
@@ -884,6 +927,9 @@ export default function Settings() {
       if (service === "smallest" || service === "smallest_async") {
         return service === "smallest_async" ? "smallest-async" : "smallest-realtime";
       }
+      if (service === "assemblyai_realtime") {
+        return "assemblyai-realtime";
+      }
       if (service === "deepgram_async") {
         return "deepgram-async";
       }
@@ -909,6 +955,7 @@ export default function Settings() {
         setAutostartEnabled(autostart.enabled || false);
         setAutostartAvailable(autostart.available || false);
         setHotkey(settings.hotkey || settings.hotkeyRaw || "");
+        setPostProcessingHotkey(settings.postProcessingHotkey || settings.postProcessingHotkeyRaw || "Ctrl + Shift + P");
         setRecordingMode(settings.mode === "push_to_talk" ? "press_hold" : "start_stop");
         setSelectedDeviceId(settings.micDevice || "default");
         setLanguage(settings.language || "auto");
@@ -917,6 +964,8 @@ export default function Settings() {
         setSummarizationPrompt(settings.summarizationPrompt || "");
         setSummarizationModel(settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
         setAutoSummarize(settings.autoSummarize === true);
+        setPostProcessingEnabled(settings.postProcessingEnabled !== false);
+        setPostProcessingPrompt(settings.postProcessingPrompt || DEFAULT_POST_PROCESSING_PROMPT);
         const loadedVisualizerBarCount = normalizeVisualizerBarCount(settings.visualizerBarCount);
         setVisualizerBarCount(loadedVisualizerBarCount);
         setSavedVisualizerBarCount(loadedVisualizerBarCount);
@@ -1071,6 +1120,19 @@ export default function Settings() {
     }
   }, []);
 
+  const handlePostProcessingHotkeyRecord = useCallback((event: HotkeyCaptureEvent) => {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    if (event.key === "Escape") {
+      setIsRecordingPostProcessingHotkey(false);
+      return;
+    }
+    const nextHotkey = hotkeyDisplayFromKeyboardEvent(event);
+    if (nextHotkey) {
+      setPostProcessingHotkey(nextHotkey);
+    }
+  }, []);
+
   useEffect(() => {
     if (!isRecordingHotkey) {
       return;
@@ -1093,6 +1155,29 @@ export default function Settings() {
       });
     };
   }, [handleHotkeyRecord, isRecordingHotkey]);
+
+  useEffect(() => {
+    if (!isRecordingPostProcessingHotkey) {
+      return;
+    }
+    void setGlobalHotkeyCaptureActive(true).catch((error) => {
+      console.debug("Could not suspend global hotkey while recording post-processing shortcut.", error);
+    });
+    const focusFrame = window.requestAnimationFrame(() => {
+      postProcessingHotkeyCaptureRef.current?.focus();
+    });
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      handlePostProcessingHotkeyRecord(event);
+    };
+    window.addEventListener("keydown", handleWindowKeyDown, true);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", handleWindowKeyDown, true);
+      void setGlobalHotkeyCaptureActive(false).catch((error) => {
+        console.debug("Could not resume global hotkey after recording post-processing shortcut.", error);
+      });
+    };
+  }, [handlePostProcessingHotkeyRecord, isRecordingPostProcessingHotkey]);
 
   const handleMicDeviceChange = async (deviceId: string) => {
     const previousDeviceId = selectedDeviceId;
@@ -1161,6 +1246,8 @@ export default function Settings() {
         await updateSettings({ defaultSttService: "smallest_async" });
       } else if (value === "smallest-realtime") {
         await updateSettings({ defaultSttService: "smallest" });
+      } else if (value === "assemblyai-realtime") {
+        await updateSettings({ defaultSttService: "assemblyai_realtime" });
       } else if (value === "deepgram-async") {
         await updateSettings({ defaultSttService: "deepgram_async" });
       } else if (value === "gladia-async") {
@@ -1440,6 +1527,26 @@ export default function Settings() {
     }
   };
 
+  const handlePostProcessingEnabledChange = async (enabled: boolean) => {
+    setPostProcessingEnabled(enabled);
+    try {
+      await updateSettings({ postProcessingEnabled: enabled });
+      await refreshGlobalHotkey();
+      toast({
+        title: "Saved",
+        description: enabled ? "Live post-processing enabled." : "Live post-processing disabled.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      setPostProcessingEnabled(!enabled);
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
   const handleSaveHotkey = async () => {
     try {
       const updated = await updateSettings({ hotkey });
@@ -1459,6 +1566,28 @@ export default function Settings() {
       });
     } finally {
       setIsRecordingHotkey(false);
+    }
+  };
+
+  const handleSavePostProcessingHotkey = async () => {
+    try {
+      const updated = await updateSettings({ postProcessingHotkey });
+      setPostProcessingHotkey(updated.postProcessingHotkey || postProcessingHotkey);
+      await setGlobalHotkeyCaptureActive(false);
+      await refreshGlobalHotkey();
+      toast({
+        title: "Saved",
+        description: "Post-processing hotkey updated.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    } finally {
+      setIsRecordingPostProcessingHotkey(false);
     }
   };
 
@@ -1578,6 +1707,41 @@ export default function Settings() {
       });
     } finally {
       setIsCheckingDesktopUpdate(false);
+    }
+  };
+
+  const handlePostProcessingPromptBlur = async () => {
+    try {
+      await updateSettings({ postProcessingPrompt });
+      toast({
+        title: "Saved",
+        description: "Live post-processing prompt updated.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
+  const handleResetPostProcessingPrompt = async () => {
+    setPostProcessingPrompt(DEFAULT_POST_PROCESSING_PROMPT);
+    try {
+      await updateSettings({ postProcessingPrompt: DEFAULT_POST_PROCESSING_PROMPT });
+      toast({
+        title: "Saved",
+        description: "Live post-processing prompt reset.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
     }
   };
 
@@ -2067,7 +2231,12 @@ export default function Settings() {
             </div>
             {transcriptionModel === "assemblyai" && (
               <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-                Async mode returns the live transcript after recording stops.
+                Async mode returns the transcript after recording stops.
+              </p>
+            )}
+            {transcriptionModel === "assemblyai-realtime" && (
+              <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                Realtime mode uses AssemblyAI Universal-3.5 Pro through Pipecat.
               </p>
             )}
           </div>
@@ -2381,6 +2550,68 @@ export default function Settings() {
             <SettingLine label="Auto-summarize" description="Summarize new transcripts automatically.">
               <Switch checked={autoSummarize} onCheckedChange={handleAutoSummarizeChange} />
             </SettingLine>
+
+            <div className="rounded-xl bg-slate-50/90 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Live post-processing</p>
+                  <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                    Uses a separate shortcut to clean live dictation before paste. File and YouTube transcripts are unchanged.
+                  </p>
+                </div>
+                <Switch checked={postProcessingEnabled} onCheckedChange={handlePostProcessingEnabledChange} />
+              </div>
+
+              <div className="mt-3 grid gap-3">
+                <SettingLine label="Post-processing hotkey" description="Starts Live Mic with cleanup enabled.">
+                  <Dialog open={isRecordingPostProcessingHotkey} onOpenChange={setIsRecordingPostProcessingHotkey}>
+                    <DialogTrigger asChild>
+                      <Button variant="outline" className="h-8 w-[220px] max-w-full justify-start font-mono text-[11px]" disabled={!postProcessingEnabled}>
+                        <Keyboard className="mr-2 h-4 w-4 text-muted-foreground" />
+                        {postProcessingHotkey}
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-[425px]">
+                      <DialogHeader>
+                        <DialogTitle>Post-processing hotkey</DialogTitle>
+                        <DialogDescription>Press the key combination for cleaned live dictation.</DialogDescription>
+                      </DialogHeader>
+                      <div
+                        ref={postProcessingHotkeyCaptureRef}
+                        className="flex h-32 items-center justify-center rounded-lg border-2 border-dashed bg-secondary/20 outline-none transition-colors focus:border-primary focus:bg-primary/5"
+                        tabIndex={0}
+                        aria-label="Post-processing hotkey capture area"
+                      >
+                        <p className="text-lg font-medium text-primary">{postProcessingHotkey}</p>
+                      </div>
+                      <div className="flex justify-end gap-2">
+                        <Button variant="ghost" onClick={() => setIsRecordingPostProcessingHotkey(false)}>Cancel</Button>
+                        <Button onClick={handleSavePostProcessingHotkey}>Save</Button>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </SettingLine>
+
+                <FieldShell label="Live cleanup prompt">
+                  <Textarea
+                    value={postProcessingPrompt}
+                    onChange={(event) => setPostProcessingPrompt(event.target.value)}
+                    onBlur={handlePostProcessingPromptBlur}
+                    placeholder={DEFAULT_POST_PROCESSING_PROMPT}
+                    className="min-h-[150px] resize-none bg-white/70 text-sm dark:bg-slate-950/60"
+                    disabled={!postProcessingEnabled}
+                  />
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                      Use <span className="font-mono">${"{output}"}</span> where the raw transcript should be inserted.
+                    </p>
+                    <Button size="sm" variant="outline" onClick={handleResetPostProcessingPrompt} disabled={!postProcessingEnabled}>
+                      Reset prompt
+                    </Button>
+                  </div>
+                </FieldShell>
+              </div>
+            </div>
 
             <FieldShell label="Custom prompt">
               <Textarea

@@ -25,11 +25,17 @@ supervisor injects a per-run session token for local control endpoints.
 Live mic:
 
 1. Tauri registers the configured global hotkey.
-2. Hotkey calls existing backend live-mic endpoints.
+2. Hotkey calls backend live-mic endpoints. A second optional post-processing
+   hotkey calls the dedicated live-mic post-processing endpoint; the normal
+   hotkey always keeps plain STT output.
 3. Python resolves the microphone under the PortAudio guard.
 4. Optional idle prewarm stream can be adopted and prepend its rolling prebuffer.
 5. Pipecat/provider pipeline processes audio.
-6. Transcript text is injected into the active app and saved to SQLite.
+6. Transcript text is injected into the active app and saved to SQLite. When a
+   session was started through the post-processing hotkey, pipeline raw-text
+   injection is suppressed, the completed live transcript is sent through the
+   configured LLM prompt using `${output}`, and the processed result is pasted
+   after provider finalization. File and YouTube jobs do not use this path.
 7. Frontend receives versioned WebSocket state, audio, transcript, and history
    events.
 
@@ -124,6 +130,8 @@ but are expected to report that release updater configuration is missing.
 - Pass `SCRIBER_SESSION_TOKEN` and `SCRIBER_DATA_DIR` to managed workers.
 - Enforce a Windows single-instance mutex.
 - Register global hotkey through Tauri.
+- Register the optional live post-processing hotkey through Tauri and dispatch
+  it to `/api/live-mic/toggle-post-processing`.
 - Own Windows autostart through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - Own tray/menu shell actions: open/focus, restart backend, quit.
 - Initialize the Tauri updater plugin. Release builds provide updater endpoint,
@@ -278,11 +286,18 @@ identifiers. The Pipecat OpenAI STT bridge remains a segmented-live path; full
 recording/file OpenAI transcription is exposed through the dedicated
 `openai_async` direct adapter.
 
+AssemblyAI is exposed as both a direct async/batch provider and a realtime
+Pipecat provider. Both default to Universal-3.5-Pro. The async adapter sends
+the configured model through AssemblyAI's `speech_models` field; the realtime
+path uses Pipecat `AssemblyAISTTService.Settings` when available and keeps a
+legacy connection-params fallback only for older Pipecat runtimes.
+
 The standard sidecar keeps runtime support for the shipped cloud/external
-providers exposed in Settings, but the dependency boundary is explicit. Local
-ASR choices such as ONNX and NeMo are configuration/UI surfaces with fail-closed
-readiness handling in the standard build; a successful installed local-ASR
-transcription path requires a separate local-ASR sidecar or packaging decision.
+providers exposed in Settings, but the dependency boundary is explicit. The
+standard build bundles the CPU ONNX local-ASR runtime through `onnx-asr`. The
+NeMo Settings surface falls back to that ONNX local model path when full
+NeMo/Torch is unavailable; full NeMo/Torch remains excluded from the standard
+sidecar because it would dominate installer size.
 Google Cloud STT is packaged through `google-cloud-speech` plus Pipecat's
 required `google-genai` namespace dependency; Gemini and OpenRouter
 summarization use direct HTTP and do not require `google-generativeai`.

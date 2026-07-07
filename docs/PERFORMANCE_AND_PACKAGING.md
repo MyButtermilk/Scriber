@@ -241,14 +241,18 @@ No-feature-loss constraints:
 - Provider runtime support remains bundled when the provider is still supported
   by backend or UI configuration, but provider SDKs are explicit rather than
   broad Pipecat extras.
-- Local ASR packaging remains separate from the standard cloud-provider sidecar.
+- CPU ONNX local-ASR support is part of the standard sidecar. Full NeMo/Torch
+  packaging remains outside the standard cloud-provider sidecar.
 
 Current packaging choices:
 
 - `pyloudnorm` is provided locally without SciPy in the packaged sidecar.
 - ONNXRuntime remains because Pipecat Silero VAD needs it.
-- SciPy, Torch, NeMo, ONNX-ASR, ONNX tooling, numba, llvmlite, and unused
-  ONNXRuntime tooling are excluded from the standard sidecar.
+- SciPy, Torch, full NeMo, ONNX training/tooling stacks, numba, llvmlite, and
+  unused ONNXRuntime tooling are excluded from the standard sidecar. The
+  installed local-ASR path keeps `onnx-asr[cpu,hub]` plus ONNXRuntime so the
+  Settings ONNX path works and the NeMo surface can fall back to ONNX when
+  full NeMo/Torch is unavailable.
 - AWS Transcribe is no longer exposed in frontend or backend settings. The
   standard sidecar excludes `boto3`, `botocore`, `s3transfer`, `aioboto3`,
   `aiobotocore`, and Pipecat AWS service modules.
@@ -262,6 +266,9 @@ Current packaging choices:
   HTTP/batch adapters in `src/cloud_async_stt.py`. Speechmatics Batch does not
   add `speechmatics-batch`; the standard sidecar keeps only the existing
   Speechmatics realtime/runtime packages.
+- AssemblyAI uses Universal-3.5-Pro by default for both direct async/batch and
+  realtime Pipecat paths. Runtime import checks include Pipecat's AssemblyAI
+  realtime module.
 - Pillow AVIF binaries are excluded.
 - Runtime dependency footprint gates reject SciPy, AWS SDK packages, PySide6,
   customtkinter, Tk, and unused provider SDK reintroduction in the packaged

@@ -7,6 +7,7 @@ from aiohttp import WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 
 from src import web_api
+from src.config import Config
 from src.web_api import APP_SHUTDOWN_EVENT, ScriberWebController
 
 
@@ -169,7 +170,7 @@ async def test_live_mic_toggle_acknowledges_stop_without_waiting(monkeypatch, tm
     assert payload["finalizing"] is True
 
 
-def _fake_local_model_module(*, kind: str, model_id: str = "local-smoke-model"):
+def _fake_local_model_module(*, kind: str, model_id: str = "local-smoke-model", available: bool = True):
     module = types.ModuleType(f"src.{kind}_stt")
     state = {"downloading": False, "downloaded": False, "deleted": False}
     info = {
@@ -212,7 +213,7 @@ def _fake_local_model_module(*, kind: str, model_id: str = "local-smoke-model"):
         return deleted
 
     def is_available():
-        return True
+        return available
 
     def list_available_models(**_kwargs):
         return [{"id": model_id, **info, "downloaded": state["downloaded"]}]
@@ -292,6 +293,36 @@ async def test_local_model_routes_handle_invalid_and_boundary_states(monkeypatch
     assert payloads["busy_nemo"]["modelId"] == "nemo-smoke"
     assert not_cached_nemo.status == 404
     assert payloads["not_cached_nemo"]["message"] == "Delete failed"
+
+
+@pytest.mark.asyncio
+async def test_nemo_model_route_uses_onnx_fallback_when_nemo_runtime_is_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(Config, "NEMO_MODEL", "parakeet-primeline")
+    monkeypatch.setattr(Config, "ONNX_MODEL", "onnx-fallback")
+    nemo_module = _fake_local_model_module(kind="nemo", model_id="nemo-smoke", available=False)
+    onnx_module = _fake_local_model_module(kind="onnx", model_id="onnx-fallback", available=True)
+    monkeypatch.setitem(sys.modules, "src.nemo_stt", nemo_module)
+    monkeypatch.setitem(sys.modules, "src.onnx_stt", onnx_module)
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.get("/api/nemo/models")
+        payload = await response.json()
+    finally:
+        await client.close()
+        ctl.shutdown()
+
+    assert response.status == 200
+    assert payload["available"] is True
+    assert payload["backend"] == "onnx"
+    assert payload["currentModel"] == "onnx-fallback"
+    assert payload["models"][0]["id"] == "onnx-fallback"
+    assert "ONNX" in payload["message"]
 
 
 class _FakeTransport:

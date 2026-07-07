@@ -25,6 +25,12 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from src.nemo_stt import is_nemo_available, transcribe_audio_bytes
+from src.onnx_stt import (
+    DEFAULT_MODEL as DEFAULT_ONNX_MODEL,
+    ONNX_MODELS,
+    is_onnx_available,
+    transcribe_audio_bytes as transcribe_onnx_audio_bytes,
+)
 
 
 def _language_to_code(language: Optional[Language] | str | None) -> str:
@@ -43,22 +49,31 @@ class NemoLocalBufferedSTTService(STTService):
         *,
         model_name: str,
         language: Optional[str] = "auto",
+        quantization: str = "int8",
         sample_rate: int = 16000,
         channels: int = 1,
         max_buffer_secs: int = 300,
         **kwargs,
     ):
-        if not is_nemo_available():
+        nemo_available = is_nemo_available()
+        onnx_available = is_onnx_available()
+        if not nemo_available and not onnx_available:
             raise ImportError(
-                "NeMo toolkit not installed. Install with: pip install nemo_toolkit[asr]"
+                "Local NeMo requires nemo_toolkit[asr] or the bundled onnx-asr runtime."
             )
 
         super().__init__(sample_rate=sample_rate, **kwargs)
+        self._backend = "nemo" if nemo_available else "onnx"
         self._model_name = model_name
+        if self._backend == "onnx" and self._model_name not in ONNX_MODELS:
+            self._model_name = DEFAULT_ONNX_MODEL
         self._language = _language_to_code(language)
+        self._quantization = quantization
         self._settings = {
             "model": self._model_name,
             "language": self._language,
+            "backend": self._backend,
+            "quantization": self._quantization,
         }
         self._buffer = bytearray()
         self._channels = max(1, int(channels or 1))
@@ -67,7 +82,7 @@ class NemoLocalBufferedSTTService(STTService):
         self._min_flush_secs = 0.2
 
         logger.info(
-            f"NemoLocalBufferedSTTService initialized (model={self._model_name})"
+            f"NemoLocalBufferedSTTService initialized (backend={self._backend}, model={self._model_name})"
         )
 
     async def start(self, frame):
@@ -139,12 +154,22 @@ class NemoLocalBufferedSTTService(STTService):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         try:
-            text = await transcribe_audio_bytes(
-                audio,
-                sample_rate=self.sample_rate,
-                channels=self._channels,
-                model_name=self._model_name,
-            )
+            if self._backend == "onnx":
+                text = await transcribe_onnx_audio_bytes(
+                    audio,
+                    sample_rate=self.sample_rate,
+                    model_name=self._model_name,
+                    language=self._language,
+                    quantization=self._quantization,
+                    use_vad=False,
+                )
+            else:
+                text = await transcribe_audio_bytes(
+                    audio,
+                    sample_rate=self.sample_rate,
+                    channels=self._channels,
+                    model_name=self._model_name,
+                )
             text = (text or "").strip()
             if text:
                 yield TranscriptionFrame(

@@ -688,7 +688,9 @@ from src.azure_mai_stt import (
 )
 from src.assemblyai_async_stt import (
     AssemblyAIUniversal3ProAsyncProcessor,
+    assemblyai_universal_35_language_code,
     assemblyai_transcript_payload_to_text,
+    build_keyterms_from_vocab,
     transcribe_with_assemblyai_pre_recorded,
 )
 from src.gladia_stt import (
@@ -722,6 +724,60 @@ LANGUAGE_MAP = {
 def _selected_language():
     lang = LANGUAGE_MAP.get(Config.LANGUAGE)
     return lang if lang else None
+
+
+def _create_assemblyai_realtime_service(
+    *,
+    api_key: str,
+    enable_speaker_diarization: bool,
+) -> object:
+    module = import_provider_runtime_module("assemblyai_realtime", "pipecat.services.assemblyai.stt")
+    service_cls = getattr(module, "AssemblyAISTTService", None)
+    if service_cls is None:
+        raise RuntimeError("AssemblyAI Pipecat STT service is unavailable in this build.")
+
+    settings_cls = getattr(service_cls, "Settings", None)
+    language_code = assemblyai_universal_35_language_code(Config.LANGUAGE)
+    keyterms = build_keyterms_from_vocab(Config.CUSTOM_VOCAB)
+
+    if settings_cls is not None:
+        settings_kwargs = {"model": Config.ASSEMBLYAI_RT_MODEL}
+        if language_code:
+            settings_kwargs["language_code"] = language_code
+        if keyterms:
+            settings_kwargs["keyterms_prompt"] = keyterms[:100]
+        if enable_speaker_diarization:
+            settings_kwargs["speaker_labels"] = True
+        return service_cls(
+            api_key=api_key,
+            settings=settings_cls(**settings_kwargs),
+            vad_force_turn_endpoint=True,
+        )
+
+    params_cls = getattr(module, "AssemblyAIConnectionParams", None)
+    if params_cls is None:
+        raise RuntimeError(
+            "AssemblyAI realtime transcription requires a Pipecat build with "
+            "AssemblyAISTTService.Settings support."
+        )
+
+    try:
+        params = params_cls(
+            sample_rate=Config.SAMPLE_RATE,
+            keyterms_prompt=keyterms[:100] or None,
+            speech_model=Config.ASSEMBLYAI_RT_MODEL,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "AssemblyAI Universal-3.5 Pro realtime requires a newer Pipecat "
+            "AssemblyAI STT service. Update the bundled Pipecat runtime."
+        ) from exc
+
+    return service_cls(
+        api_key=api_key,
+        connection_params=params,
+        vad_force_turn_endpoint=True,
+    )
 
 
 def _load_soniox_realtime_classes():
@@ -999,6 +1055,7 @@ class ScriberPipeline:
         on_error: Optional[Callable[[str], None]] = None,
         mic_prewarm_manager=None,
         enable_speaker_diarization: bool = False,
+        text_injection_enabled: bool = True,
     ):
         self.service_name = service_name
         self.on_status_change = on_status_change
@@ -1012,6 +1069,7 @@ class ScriberPipeline:
         self.on_error = on_error
         self.mic_prewarm_manager = mic_prewarm_manager
         self.enable_speaker_diarization = bool(enable_speaker_diarization)
+        self.text_injection_enabled = bool(text_injection_enabled)
         self.pipeline = None
         self.task = None
         self.runner = None
@@ -1355,7 +1413,7 @@ class ScriberPipeline:
         elif self.service_name == "assemblyai":
             if not _get_api_key("assemblyai"):
                 raise ValueError("AssemblyAI API Key is missing.")
-            logger.info("Using AssemblyAI Universal-3-Pro async transcription mode")
+            logger.info("Using AssemblyAI Universal-3.5-Pro async transcription mode")
             return AssemblyAIUniversal3ProAsyncProcessor(
                 api_key=_get_api_key("assemblyai"),
                 language=Config.LANGUAGE,
@@ -1363,6 +1421,16 @@ class ScriberPipeline:
                 session=session,
                 on_progress=self.on_progress,
                 speaker_labels=self.enable_speaker_diarization,
+                model=Config.ASSEMBLYAI_ASYNC_MODEL,
+            )
+
+        elif self.service_name == "assemblyai_realtime":
+            if not _get_api_key("assemblyai"):
+                raise ValueError("AssemblyAI API Key is missing.")
+            logger.info("Using AssemblyAI Universal-3.5-Pro realtime transcription mode")
+            return _create_assemblyai_realtime_service(
+                api_key=_get_api_key("assemblyai"),
+                enable_speaker_diarization=self.enable_speaker_diarization,
             )
         
         elif self.service_name == "google":
@@ -1531,6 +1599,7 @@ class ScriberPipeline:
             return NemoLocalBufferedSTTService(
                 model_name=Config.NEMO_MODEL,
                 language=Config.LANGUAGE,
+                quantization=Config.ONNX_QUANTIZATION,
                 sample_rate=Config.SAMPLE_RATE,
                 channels=Config.CHANNELS,
             )
@@ -1614,6 +1683,7 @@ class ScriberPipeline:
                 )
                 text_injector = TextInjector(
                     inject_immediately=inject_immediately,
+                    enabled=self.text_injection_enabled,
                     on_injected=self.on_text_injected,
                     on_injection_marker=self.on_injection_marker,
                 )
@@ -1850,6 +1920,7 @@ class ScriberPipeline:
                             language=Config.LANGUAGE,
                             custom_vocab=Config.CUSTOM_VOCAB or "",
                             speaker_labels=True,  # File/Youtube: diarization enabled
+                            model=Config.ASSEMBLYAI_ASYNC_MODEL,
                             on_progress=self.on_progress,
                             timeout_secs=900.0,
                         )

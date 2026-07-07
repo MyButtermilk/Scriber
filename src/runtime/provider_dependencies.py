@@ -37,6 +37,7 @@ class ProviderRuntimeDependencyError(RuntimeError):
 STANDARD_PROVIDER_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pipecat.services.soniox.stt", "Soniox realtime STT provider"),
     ("src.assemblyai_async_stt", "AssemblyAI async STT adapter"),
+    ("pipecat.services.assemblyai.stt", "AssemblyAI realtime STT provider"),
     ("src.mistral_stt", "Mistral realtime and async STT adapters"),
     ("src.smallest_stt", "Smallest AI realtime and async STT adapters"),
     ("src.cloud_async_stt", "Deepgram, Gladia, OpenAI, and Speechmatics async STT adapters"),
@@ -66,6 +67,14 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[ProviderRuntimeDependency, ...]] = {
             "src.smallest_stt",
             "websockets",
             "Smallest AI realtime WebSocket transcription",
+        ),
+    ),
+    "assemblyai_realtime": (
+        ProviderRuntimeDependency(
+            "assemblyai_realtime",
+            "pipecat.services.assemblyai.stt",
+            "pipecat-ai[silero]>=1.4.0",
+            "AssemblyAI Universal-3.5 Pro realtime transcription",
         ),
     ),
     "elevenlabs": (

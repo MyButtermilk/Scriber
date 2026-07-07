@@ -504,6 +504,64 @@ async def summarize_text(
     return _normalize_summary_markdown(summary)
 
 
+async def generate_text_with_model(
+    prompt: str,
+    model: str | None = None,
+    *,
+    max_output_tokens: int = 2048,
+) -> str:
+    """Generate text with the configured summary LLM routing.
+
+    This is intentionally narrower than ``summarize_text``: callers supply the
+    complete prompt and receive the raw model text. It reuses the same provider
+    adapters, API keys, timeout, and OpenRouter fallback behavior.
+    """
+    if not prompt or not prompt.strip():
+        return ""
+
+    selected_model = model or getattr(Config, "SUMMARIZATION_MODEL", Config.DEFAULT_SUMMARIZATION_MODEL)
+    if _is_openrouter_model(selected_model):
+        selected_model = _openrouter_nitro_model(selected_model)
+    model_key = _openrouter_nitro_model(selected_model) if _is_openrouter_model(selected_model) else selected_model
+    token_cap = _MODEL_OUTPUT_TOKEN_CAPS.get(model_key, max_output_tokens)
+    output_tokens = max(128, min(max_output_tokens, token_cap))
+    timeout_seconds = _summary_timeout_seconds()
+
+    try:
+        return (
+            await asyncio.wait_for(
+                _summarize_with_model(prompt, selected_model, output_tokens),
+                timeout=timeout_seconds,
+            )
+        ).strip()
+    except asyncio.TimeoutError as exc:
+        timeout_display = max(1, int(round(timeout_seconds)))
+        timeout_error = RuntimeError(
+            f"Text generation timed out after {timeout_display}s. Please try again."
+        )
+        fallback = await _try_openrouter_summary_fallback(
+            prompt,
+            primary_model=selected_model,
+            primary_error=timeout_error,
+            max_output_tokens=output_tokens,
+            timeout_seconds=timeout_seconds,
+        )
+        if fallback is not None:
+            return fallback.strip()
+        raise timeout_error from exc
+    except Exception as exc:
+        fallback = await _try_openrouter_summary_fallback(
+            prompt,
+            primary_model=selected_model,
+            primary_error=exc,
+            max_output_tokens=output_tokens,
+            timeout_seconds=timeout_seconds,
+        )
+        if fallback is not None:
+            return fallback.strip()
+        raise
+
+
 async def _summarize_openai(prompt: str, model: str, max_output_tokens: int) -> str:
     """Summarize using OpenAI API."""
     api_key = Config.OPENAI_API_KEY

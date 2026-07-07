@@ -718,7 +718,14 @@ def _provider_readiness_error(provider: str) -> str | None:
                 return None
         except Exception:
             pass
-        return "Local NeMo transcription is unavailable in this Scriber build. Switch provider or install a build with local NeMo support."
+        try:
+            from src.onnx_stt import is_onnx_available
+
+            if is_onnx_available():
+                return None
+        except Exception:
+            pass
+        return "Local NeMo transcription is unavailable in this Scriber build. Switch provider or install a build with local ONNX/NeMo support."
 
     api_key_attr = Config.SERVICE_API_KEY_MAP.get(provider)
     if api_key_attr and not Config.get_api_key(provider).strip():
@@ -1456,6 +1463,15 @@ class TranscriptRecord:
             )
         self.updated_at = datetime.now().isoformat()
 
+    def replace_content(self, text: str) -> None:
+        self.content = ""
+        self._pending_content_segments.clear()
+        self._last_segment = ""
+        self._preview = ""
+        self._preview_words.clear()
+        self._preview_has_more = False
+        self.append_final_text(text)
+
 
 class ScriberWebController:
     def __init__(
@@ -1568,6 +1584,7 @@ class ScriberWebController:
         )
         self._started_at_monotonic = time.monotonic()
         self._session_id: str | None = None
+        self._post_processing_session_ids: set[str] = set()
         self._recording_state_machine = RecordingStateMachine()
         self._hot_path_tracers: dict[str, HotPathTracer] = {}
         self._hot_path_reports_emitted: set[str] = set()
@@ -3477,6 +3494,125 @@ class ScriberWebController:
                 lambda: asyncio.create_task(_safe_cleanup())
             )
 
+    async def _inject_live_transcript_text(
+        self,
+        text: str,
+        *,
+        record: TranscriptRecord,
+        session_id: str | None,
+        provider: str | None,
+        post_processed: bool,
+    ) -> bool:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return False
+
+        from src.injector import inject_text_once
+
+        def on_text_injected(_text: str) -> None:
+            self._mark_hot_path(session_id, "first_paste")
+            self._emit_hot_path_report_once(session_id)
+            self._emit_workflow_event(
+                message="Post-processed text injected" if post_processed else "Text injected",
+                event="injector.paste.succeeded",
+                workflow="live_mic",
+                stage="inject_done",
+                component="injector",
+                session_id=session_id,
+                record=record,
+                provider=provider,
+                milestone=True,
+                outcome="success",
+                meta={"chars": len(_text or ""), "post_processed": post_processed},
+            )
+
+        def on_injection_marker(marker: str, timestamp_ns: int | None = None) -> None:
+            if marker in {"clipboard_set", "paste"}:
+                self._mark_hot_path(session_id, marker, timestamp_ns=timestamp_ns)
+
+        return inject_text_once(
+            f"{cleaned} ",
+            on_injected=on_text_injected,
+            on_injection_marker=on_injection_marker,
+        )
+
+    async def _post_process_and_inject_live_transcript(
+        self,
+        record: TranscriptRecord,
+        *,
+        session_id: str | None,
+        provider: str | None,
+    ) -> None:
+        raw_text = record.content_text().strip()
+        if not raw_text:
+            return
+
+        await self.broadcast(status_event("Post-processing...", False, session_id=session_id))
+        self._emit_workflow_event(
+            message="Live mic post-processing started",
+            event="post_processing.started",
+            workflow="live_mic",
+            stage="post_processing",
+            component="llm",
+            session_id=session_id,
+            record=record,
+            provider=provider,
+            milestone=True,
+            outcome="started",
+            meta={"model": Config.POST_PROCESSING_MODEL or Config.SUMMARIZATION_MODEL},
+        )
+
+        post_processed = False
+        try:
+            from src.post_processing import post_process_live_transcript
+
+            started = time.monotonic()
+            processed_text = await post_process_live_transcript(raw_text)
+            if processed_text.strip():
+                record.replace_content(processed_text)
+                post_processed = True
+            self._emit_workflow_event(
+                message="Live mic post-processing completed",
+                event="post_processing.completed",
+                workflow="live_mic",
+                stage="post_processing",
+                component="llm",
+                session_id=session_id,
+                record=record,
+                provider=provider,
+                milestone=True,
+                duration_ms=(time.monotonic() - started) * 1000,
+                outcome="success",
+                meta={"raw_chars": len(raw_text), "processed_chars": len(record.content_text())},
+            )
+        except Exception as exc:
+            logger.warning(f"Live mic post-processing failed; inserting raw transcript: {exc}")
+            await self.broadcast(
+                status_event("Post-processing failed; inserting raw transcript", False, session_id=session_id)
+            )
+            self._emit_workflow_event(
+                message="Live mic post-processing failed; raw transcript retained",
+                event="post_processing.failed",
+                workflow="live_mic",
+                stage="post_processing",
+                level="WARNING",
+                component="llm",
+                session_id=session_id,
+                record=record,
+                provider=provider,
+                milestone=True,
+                outcome="failure",
+                meta={"error": str(exc)[:240], "raw_chars": len(raw_text)},
+            )
+
+        await self._inject_live_transcript_text(
+            record.content_text() or raw_text,
+            record=record,
+            session_id=session_id,
+            provider=provider,
+            post_processed=post_processed,
+        )
+
     @staticmethod
     def _history_update_payload_for_record(
         record: TranscriptRecord | None,
@@ -4217,7 +4353,7 @@ class ScriberWebController:
             except Exception as cleanup_err:
                 logger.warning(f"Failed to cleanup uploaded file: {cleanup_err}")
 
-    async def start_listening(self) -> ProviderUserError | None:
+    async def start_listening(self, *, post_process: bool = False) -> ProviderUserError | None:
         # Acquire lock for entire operation - no parallel start/stop allowed
         async with self._listening_lock:
             # Don't start if already listening or if stop is in progress
@@ -4262,6 +4398,8 @@ class ScriberWebController:
             with self._current_lock:
                 self._current = rec
             self._session_id = session_id
+            if post_process and Config.POST_PROCESSING_ENABLED:
+                self._post_processing_session_ids.add(session_id)
             self._clear_input_warning_state(session_id=session_id, broadcast=True)
             self._start_hot_path_tracer(session_id)
             self._mark_hot_path(session_id, "controller_accepted")
@@ -4275,6 +4413,7 @@ class ScriberWebController:
                 record=rec,
                 milestone=True,
                 outcome="started",
+                meta={"post_processing": bool(post_process and Config.POST_PROCESSING_ENABLED)},
             )
 
             # Show initializing overlay immediately for user feedback without
@@ -4403,6 +4542,7 @@ class ScriberWebController:
                 on_error=on_pipeline_error,
                 mic_prewarm_manager=mic_prewarm_manager,
                 enable_speaker_diarization=False,
+                text_injection_enabled=not (post_process and Config.POST_PROCESSING_ENABLED),
             )
             if mic_prewarm_manager is None:
                 await self._pause_idle_mic_prewarm_for_capture()
@@ -4586,6 +4726,11 @@ class ScriberWebController:
                 current = self._current
             session_id = self._session_id
             provider_used = self._active_provider
+            post_processing_requested = bool(
+                session_id
+                and session_id in self._post_processing_session_ids
+                and Config.POST_PROCESSING_ENABLED
+            )
             pipeline_audio_diagnostics = (
                 pipeline.audio_diagnostics()
                 if pipeline and callable(getattr(pipeline, "audio_diagnostics", None))
@@ -4619,6 +4764,7 @@ class ScriberWebController:
                     "quiet_recording": quiet_recording,
                     "audible_audio_observed": audible_audio_observed,
                     "stop_timeout_seconds": stop_timeout_secs,
+                    "post_processing": post_processing_requested,
                     "audio": {
                         "sampleCount": (pipeline_audio_diagnostics or {}).get("audioLevelSampleCount")
                         if isinstance(pipeline_audio_diagnostics, dict)
@@ -4649,6 +4795,7 @@ class ScriberWebController:
             pipeline and 
             pipeline.service_name == "soniox" and 
             Config.SONIOX_MODE == "realtime"
+            and not post_processing_requested
         )
         current_has_text = bool(current and current.content_text().strip())
         silent_early_exit = bool(
@@ -4731,7 +4878,7 @@ class ScriberWebController:
                     self._current = None
              
             # Hide overlay for async services after processing completes
-            if not is_realtime_service:
+            if not is_realtime_service and not post_processing_requested:
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
             
@@ -4741,6 +4888,15 @@ class ScriberWebController:
                     await pipeline_task
                 except asyncio.CancelledError:
                     pass
+
+            if post_processing_requested and current and not silent_early_exit:
+                await self._post_process_and_inject_live_transcript(
+                    current,
+                    session_id=session_id,
+                    provider=provider_used,
+                )
+                self._overlay_audio_enabled = False
+                self._hide_recording_overlay_async(session_id=session_id)
         except Exception as exc:
             stop_error = exc
             stop_error_info = self._provider_user_error(exc, provider=provider_used)
@@ -4824,12 +4980,14 @@ class ScriberWebController:
             self._clear_hot_path_tracer(session_id)
             if not retrigger_hotkey_toggle:
                 self._resume_idle_mic_prewarm_after_capture()
+            if session_id:
+                self._post_processing_session_ids.discard(session_id)
         if retrigger_hotkey_toggle:
             logger.info("Applying deferred hotkey event after stop completed.")
             await self.start_listening()
         return stop_error_info
 
-    async def toggle_listening(self) -> None:
+    async def toggle_listening(self, *, post_process: bool = False) -> None:
         # Quick check without lock - if operation in progress, ignore
         if self._is_stopping:
             return
@@ -4837,7 +4995,7 @@ class ScriberWebController:
         if self._is_listening:
             await self.stop_listening()
         else:
-            await self.start_listening()
+            await self.start_listening(post_process=post_process)
 
     def _dispatch_hotkey_toggle(self) -> None:
         now = time.monotonic()
@@ -4850,6 +5008,21 @@ class ScriberWebController:
             )
         except Exception as exc:
             logger.error(f"Failed to dispatch hotkey event: {exc}")
+
+    def _dispatch_post_processing_hotkey_toggle(self) -> None:
+        now = time.monotonic()
+        if now - self._last_hotkey_dispatch_at < self._hotkey_dispatch_debounce_seconds:
+            return
+        self._last_hotkey_dispatch_at = now
+        try:
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(
+                    self._handle_post_processing_hotkey_toggle(),
+                    name="post_processing_hotkey_toggle",
+                )
+            )
+        except Exception as exc:
+            logger.error(f"Failed to dispatch post-processing hotkey event: {exc}")
 
     async def _toggle_hotkey_poll_loop(self) -> None:
         """
@@ -4889,6 +5062,21 @@ class ScriberWebController:
             self.request_background_stop_listening()
             return
         await self.start_listening()
+
+    async def _handle_post_processing_hotkey_toggle(self) -> None:
+        if self._is_stopping:
+            self._pending_hotkey_toggle = True
+            now = time.monotonic()
+            if now - self._last_hotkey_deferred_log >= 1.0:
+                self._last_hotkey_deferred_log = now
+                logger.info("Post-processing hotkey pressed while stop is in progress; deferring until stop completes.")
+            return
+        if self._is_listening:
+            if self._should_ignore_duplicate_start_toggle():
+                return
+            self.request_background_stop_listening()
+            return
+        await self.start_listening(post_process=True)
 
     def register_hotkeys(self) -> None:
         if os.getenv(_DISABLE_HOTKEYS_ENV, "").strip().lower() in {"1", "true", "yes"}:
@@ -4946,11 +5134,20 @@ class ScriberWebController:
                     Config.HOTKEY,
                     self._dispatch_hotkey_toggle,
                 )
+                if Config.POST_PROCESSING_ENABLED and Config.POST_PROCESSING_HOTKEY:
+                    kb.add_hotkey(
+                        Config.POST_PROCESSING_HOTKEY,
+                        self._dispatch_post_processing_hotkey_toggle,
+                    )
                 self._toggle_hotkey_poll_task = asyncio.create_task(
                     self._toggle_hotkey_poll_loop(),
                     name="toggle_hotkey_poll",
                 )
                 logger.info(f"Hotkey registered: {Config.HOTKEY} (Toggle)")
+                if Config.POST_PROCESSING_ENABLED and Config.POST_PROCESSING_HOTKEY:
+                    logger.info(
+                        f"Post-processing hotkey registered: {Config.POST_PROCESSING_HOTKEY} (Toggle)"
+                    )
                 logger.debug(f"Toggle hotkey polling fallback active: {Config.HOTKEY}")
         except Exception as exc:
             logger.error(f"Failed to register hotkey: {exc}")
@@ -5117,6 +5314,11 @@ class ScriberWebController:
             "summarizationPrompt": Config.SUMMARIZATION_PROMPT or "",
             "summarizationModel": Config.SUMMARIZATION_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL,
             "autoSummarize": bool(Config.AUTO_SUMMARIZE),
+            "postProcessingEnabled": bool(Config.POST_PROCESSING_ENABLED),
+            "postProcessingHotkey": _hotkey_to_display(Config.POST_PROCESSING_HOTKEY),
+            "postProcessingHotkeyRaw": Config.POST_PROCESSING_HOTKEY,
+            "postProcessingPrompt": Config.POST_PROCESSING_PROMPT or Config._DEFAULT_POST_PROCESSING_PROMPT,
+            "postProcessingModel": Config.POST_PROCESSING_MODEL or Config.SUMMARIZATION_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL,
             "openaiSttModel": Config.OPENAI_STT_MODEL,
             "onnxModel": Config.ONNX_MODEL,
             "onnxQuantization": Config.ONNX_QUANTIZATION,
@@ -5147,6 +5349,7 @@ class ScriberWebController:
 
     async def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         old_hotkey = Config.HOTKEY
+        old_post_processing_hotkey = Config.POST_PROCESSING_HOTKEY
         old_mode = Config.MODE
         validated_mode: str | None = None
         validated_service: str | None = None
@@ -5164,11 +5367,19 @@ class ScriberWebController:
             validated_soniox_mode = _validate_soniox_mode(payload["sonioxMode"])
         if "summarizationModel" in payload and isinstance(payload["summarizationModel"], str):
             validated_summarization_model = _validate_summarization_model(payload["summarizationModel"])
+        validated_post_processing_model: str | None = None
+        if "postProcessingModel" in payload and isinstance(payload["postProcessingModel"], str):
+            validated_post_processing_model = _validate_summarization_model(payload["postProcessingModel"])
 
         if "hotkey" in payload and isinstance(payload["hotkey"], str):
             normalized = _normalize_hotkey_for_backend(payload["hotkey"])
             if normalized:
                 Config.set_hotkey(normalized)
+
+        if "postProcessingHotkey" in payload and isinstance(payload["postProcessingHotkey"], str):
+            normalized = _normalize_hotkey_for_backend(payload["postProcessingHotkey"])
+            if normalized:
+                Config.set_post_processing_hotkey(normalized)
 
         if validated_mode is not None:
             Config.set_mode(validated_mode)
@@ -5216,10 +5427,20 @@ class ScriberWebController:
             Config.SUMMARIZATION_MODEL = validated_summarization_model
             os.environ["SCRIBER_SUMMARIZATION_MODEL"] = Config.SUMMARIZATION_MODEL
 
+        if validated_post_processing_model is not None:
+            Config.set_post_processing_model(validated_post_processing_model)
+
         auto_summarize = _payload_bool(payload, "autoSummarize")
         if auto_summarize is not None:
             Config.AUTO_SUMMARIZE = auto_summarize
             os.environ["SCRIBER_AUTO_SUMMARIZE"] = "1" if Config.AUTO_SUMMARIZE else "0"
+
+        post_processing_enabled = _payload_bool(payload, "postProcessingEnabled")
+        if post_processing_enabled is not None:
+            Config.set_post_processing_enabled(post_processing_enabled)
+
+        if "postProcessingPrompt" in payload and isinstance(payload["postProcessingPrompt"], str):
+            Config.set_post_processing_prompt(payload["postProcessingPrompt"])
 
         if "openaiSttModel" in payload and isinstance(payload["openaiSttModel"], str):
             Config.set_openai_stt_model(payload["openaiSttModel"])
@@ -5287,7 +5508,11 @@ class ScriberWebController:
         # Persist current settings to .env once rapid setting changes settle.
         self._schedule_settings_persist()
 
-        if Config.HOTKEY != old_hotkey or Config.MODE != old_mode:
+        if (
+            Config.HOTKEY != old_hotkey
+            or Config.POST_PROCESSING_HOTKEY != old_post_processing_hotkey
+            or Config.MODE != old_mode
+        ):
             self.register_hotkeys()
 
         if mic_runtime_changed:
@@ -5787,6 +6012,16 @@ def create_app(controller: ScriberWebController) -> web.Application:
             )
         return web.json_response(ctl.get_state())
 
+    async def start_live_post_processing(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        start_error = await ctl.start_listening(post_process=True)
+        if start_error is not None:
+            return web.json_response(
+                version_event_payload(ctl._provider_error_event_from_info(start_error)),
+                status=400,
+            )
+        return web.json_response(ctl.get_state())
+
     async def stop_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         stop_error = await ctl.stop_listening()
@@ -5813,6 +6048,24 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response(payload, status=202)
 
         await ctl.start_listening()
+        return web.json_response(ctl.get_state())
+
+    async def toggle_live_post_processing(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        if ctl._is_listening or ctl._is_stopping:
+            if ctl._should_ignore_duplicate_start_toggle():
+                payload = ctl.get_state()
+                payload["stopAccepted"] = False
+                payload["finalizing"] = False
+                payload["duplicateStartIgnored"] = True
+                return web.json_response(payload)
+            accepted = ctl.request_background_stop_listening()
+            payload = ctl.get_state()
+            payload["stopAccepted"] = bool(accepted)
+            payload["finalizing"] = True
+            return web.json_response(payload, status=202)
+
+        await ctl.start_listening(post_process=True)
         return web.json_response(ctl.get_state())
 
     async def get_settings(request: web.Request):
@@ -6478,8 +6731,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_post("/api/runtime/support-bundle", create_runtime_support_bundle)
     app.router.add_get("/api/metrics/hot-path", get_hot_path_metrics)
     app.router.add_post("/api/live-mic/start", start_live)
+    app.router.add_post("/api/live-mic/start-post-processing", start_live_post_processing)
     app.router.add_post("/api/live-mic/stop", stop_live)
     app.router.add_post("/api/live-mic/toggle", toggle_live)
+    app.router.add_post("/api/live-mic/toggle-post-processing", toggle_live_post_processing)
 
     app.router.add_get("/api/settings", get_settings)
     app.router.add_put("/api/settings", put_settings)
@@ -6705,17 +6960,32 @@ def create_app(controller: ScriberWebController) -> web.Application:
             def _load_nemo_models() -> dict[str, Any]:
                 from src.nemo_stt import list_available_models, is_nemo_available
 
-                if not is_nemo_available():
+                if is_nemo_available():
                     return {
-                        "available": False,
-                        "message": "NeMo toolkit not installed. Run: pip install nemo_toolkit[asr]",
-                        "models": [],
+                        "available": True,
+                        "models": list_available_models(),
+                        "currentModel": Config.NEMO_MODEL,
+                        "backend": "nemo",
                     }
 
+                from src.onnx_stt import list_available_models as list_onnx_models, is_onnx_available
+
+                if is_onnx_available():
+                    models = list_onnx_models(quantization=Config.ONNX_QUANTIZATION)
+                    model_ids = {str(model.get("id", "")) for model in models}
+                    current_model = Config.NEMO_MODEL if Config.NEMO_MODEL in model_ids else Config.ONNX_MODEL
+                    return {
+                        "available": True,
+                        "models": models,
+                        "currentModel": current_model,
+                        "backend": "onnx",
+                        "quantization": Config.ONNX_QUANTIZATION,
+                        "message": "Using bundled ONNX local models because the full NeMo toolkit is not bundled.",
+                    }
                 return {
-                    "available": True,
-                    "models": list_available_models(),
-                    "currentModel": Config.NEMO_MODEL,
+                    "available": False,
+                    "message": "Local NeMo requires nemo_toolkit[asr] or the bundled onnx-asr runtime.",
+                    "models": [],
                 }
 
             payload = await asyncio.to_thread(_load_nemo_models)
@@ -6736,18 +7006,41 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Missing modelId"}, status=400)
 
         try:
-            from src.nemo_stt import (
-                download_model,
-                get_model_info,
-                get_model_status,
-                is_model_downloading,
-            )
+            from src.nemo_stt import is_nemo_available
+
+            backend = "nemo"
+            quantization = Config.ONNX_QUANTIZATION
+            if is_nemo_available():
+                from src.nemo_stt import (
+                    download_model,
+                    get_model_info,
+                    get_model_status,
+                    is_model_downloading,
+                )
+            else:
+                backend = "onnx"
+                from src.onnx_stt import (
+                    download_model,
+                    get_model_info,
+                    get_model_status,
+                    is_model_downloading,
+                    is_onnx_available,
+                )
+
+                if not is_onnx_available():
+                    return web.json_response({
+                        "message": "Local NeMo requires nemo_toolkit[asr] or the bundled onnx-asr runtime.",
+                    }, status=503)
 
             info = get_model_info(model_id)
             if not info:
                 return web.json_response({"message": "Unknown model"}, status=404)
 
-            status = get_model_status(model_id)
+            status = (
+                get_model_status(model_id, quantization=quantization)
+                if backend == "onnx"
+                else get_model_status(model_id)
+            )
             if status.get("downloaded"):
                 return web.json_response({
                     "success": True,
@@ -6783,10 +7076,17 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     lambda: asyncio.create_task(ctl.broadcast(payload))
                 )
 
-            logger.info(f"Starting NeMo model download: {model_id}")
-            success = await download_model(model_id, on_progress=on_progress)
+            logger.info(f"Starting local NeMo model download via {backend}: {model_id}")
+            if backend == "onnx":
+                success = await download_model(model_id, quantization=quantization, on_progress=on_progress)
+            else:
+                success = await download_model(model_id, on_progress=on_progress)
 
-            final_status = get_model_status(model_id)
+            final_status = (
+                get_model_status(model_id, quantization=quantization)
+                if backend == "onnx"
+                else get_model_status(model_id)
+            )
             await ctl.broadcast({
                 "type": "nemo_download_progress",
                 "modelId": model_id,
@@ -6818,13 +7118,30 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Missing model ID"}, status=400)
 
         try:
-            from src.nemo_stt import delete_model, get_model_info
+            from src.nemo_stt import is_nemo_available
+
+            backend = "nemo"
+            quantization = Config.ONNX_QUANTIZATION
+            if is_nemo_available():
+                from src.nemo_stt import delete_model, get_model_info
+            else:
+                backend = "onnx"
+                from src.onnx_stt import delete_model, get_model_info, is_onnx_available
+
+                if not is_onnx_available():
+                    return web.json_response({
+                        "message": "Local NeMo requires nemo_toolkit[asr] or the bundled onnx-asr runtime.",
+                    }, status=503)
 
             info = get_model_info(model_id)
             if not info:
                 return web.json_response({"message": "Unknown model"}, status=404)
 
-            success = delete_model(model_id)
+            success = (
+                delete_model(model_id, quantization=quantization)
+                if backend == "onnx"
+                else delete_model(model_id)
+            )
 
             if success:
                 ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -6995,6 +7312,8 @@ def _prewarm_stt_service(service_name: str) -> None:
     try:
         if service_name == "assemblyai":
             from src.assemblyai_async_stt import AssemblyAIUniversal3ProAsyncProcessor  # noqa: F401
+        elif service_name == "assemblyai_realtime":
+            import_provider_runtime_module("assemblyai_realtime", "pipecat.services.assemblyai.stt")
         elif service_name == "google":
             import_provider_runtime_module("google", "pipecat.services.google.stt")
         elif service_name == "elevenlabs":

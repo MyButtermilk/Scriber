@@ -36,6 +36,12 @@ class TestConfig(unittest.TestCase):
         self.assertIn("azure_mai", Config.SERVICE_API_KEY_MAP)
         self.assertIn("azure_mai", Config.SERVICE_LABELS)
 
+    def test_assemblyai_service_mapping_exists(self):
+        self.assertIn("assemblyai", Config.SERVICE_API_KEY_MAP)
+        self.assertIn("assemblyai_realtime", Config.SERVICE_API_KEY_MAP)
+        self.assertIn("assemblyai", Config.SERVICE_LABELS)
+        self.assertIn("assemblyai_realtime", Config.SERVICE_LABELS)
+
     def test_openrouter_service_mapping_exists(self):
         self.assertIn("openrouter", Config.SERVICE_API_KEY_MAP)
         self.assertNotIn("openrouter", Config.SERVICE_LABELS)
@@ -124,3 +130,29 @@ def test_persist_to_env_file_includes_soniox_realtime_v5_default(monkeypatch, tm
     Config.persist_to_env_file(str(target))
 
     assert "SCRIBER_SONIOX_RT_MODEL=stt-rt-v5" in target.read_text(encoding="utf-8")
+
+
+def test_persist_to_env_file_includes_assemblyai_models(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "ASSEMBLYAI_ASYNC_MODEL", Config.DEFAULT_ASSEMBLYAI_ASYNC_MODEL)
+    monkeypatch.setattr(Config, "ASSEMBLYAI_RT_MODEL", Config.DEFAULT_ASSEMBLYAI_RT_MODEL)
+
+    Config.persist_to_env_file(str(target))
+
+    contents = target.read_text(encoding="utf-8")
+    assert "SCRIBER_ASSEMBLYAI_ASYNC_MODEL=universal-3-5-pro" in contents
+    assert "SCRIBER_ASSEMBLYAI_RT_MODEL=universal-3-5-pro" in contents
+
+
+def test_persist_to_env_file_includes_post_processing_settings(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "POST_PROCESSING_ENABLED", True)
+    monkeypatch.setattr(Config, "POST_PROCESSING_HOTKEY", "ctrl+shift+p")
+    monkeypatch.setattr(Config, "POST_PROCESSING_MODEL", "gemini-flash-latest")
+
+    Config.persist_to_env_file(str(target))
+
+    contents = target.read_text(encoding="utf-8")
+    assert "SCRIBER_POST_PROCESSING_ENABLED=1" in contents
+    assert "SCRIBER_POST_PROCESSING_HOTKEY=ctrl+shift+p" in contents
+    assert "SCRIBER_POST_PROCESSING_MODEL=gemini-flash-latest" in contents

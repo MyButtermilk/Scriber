@@ -1,4 +1,6 @@
 import { createRoot } from "react-dom/client";
+import "@fontsource/inter/400.css";
+import "@carrot-kpi/switzer-font/latin-400.css";
 import "./index.css";
 
 // Ignore ResizeObserver loop error - this is a known harmless error that occurs

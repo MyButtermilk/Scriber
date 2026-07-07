@@ -52,6 +52,11 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
     ),
+    "assemblyai_realtime": ProviderCapabilities(
+        supports_live_streaming=True,
+        supports_direct_file_upload=False,
+        injects_immediately_in_live_mode=False,
+    ),
     "azure_mai": ProviderCapabilities(
         supports_live_streaming=False,
         supports_direct_file_upload=True,

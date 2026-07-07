@@ -176,6 +176,8 @@ def _normalize_provider(provider: str | None, raw: str) -> str:
         "smallest_ai": "smallest",
         "assembly_ai": "assemblyai",
         "assemblyai": "assemblyai",
+        "assemblyai_realtime": "assemblyai_realtime",
+        "assembly_ai_realtime": "assemblyai_realtime",
         "azure_mai": "azure_mai",
         "azure_mai_transcribe": "azure_mai",
         "deepgram": "deepgram",
@@ -192,7 +194,7 @@ def _normalize_provider(provider: str | None, raw: str) -> str:
     if "azure mai" in text or "mai transcribe" in text:
         return "azure_mai"
     if "assemblyai" in text or "assembly ai" in text:
-        return "assemblyai"
+        return "assemblyai_realtime" if "realtime" in text else "assemblyai"
     if "mistral" in text or "voxtral" in text:
         return "mistral_async" if "async" in text else "mistral"
     if "smallest" in text:

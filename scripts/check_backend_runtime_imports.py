@@ -16,6 +16,7 @@ from src.runtime.provider_dependencies import STANDARD_PROVIDER_RUNTIME_IMPORTS
 CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pyloudnorm", "local Pipecat loudness compatibility dependency"),
     ("onnxruntime", "Silero VAD native runtime dependency"),
+    ("onnx_asr", "bundled local ONNX speech-to-text runtime dependency"),
     ("pipecat.frames.frames", "Pipecat startup dependency"),
     ("pipecat.audio.vad.vad_analyzer", "Pipecat VAD startup dependency"),
     ("pipecat.audio.vad.silero", "Silero VAD startup dependency"),

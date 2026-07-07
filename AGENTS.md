@@ -125,6 +125,10 @@ Packaging and scripts:
   the runtime backend.
 - Rust owns Windows autostart, global hotkey registration, single-instance
   startup, tray/menu shell actions, and worker crash recovery.
+- Rust registers both live-mic shortcuts. The normal hotkey must keep plain
+  live dictation output. The post-processing hotkey must dispatch only to the
+  dedicated live-mic post-processing endpoint and must not affect File or
+  YouTube jobs.
 - Rust initializes the Tauri updater plugin, but frontend code owns update
   checks and user-facing update UX. Keep update checks non-blocking, cached,
   about weekly by default, and suppress automatic prompts while recording or
@@ -275,6 +279,12 @@ Packaging and scripts:
   diarization. Keep `enable_speaker_diarization=False` for live pipelines so
   single-speaker dictation inserts plain text. File and YouTube jobs may enable
   diarization where the provider adapter has stable anonymous speaker output.
+- Live microphone post-processing is opt-in per session through the second
+  hotkey. When active, suppress pipeline raw-text injection, wait for final STT
+  text after stop, run the configured LLM prompt with the `${output}` raw text
+  placeholder, and paste the processed output. If post-processing fails, retain
+  and insert the raw transcript. Do not route File or YouTube jobs through this
+  path.
 - Azure MAI defaults to `mai-transcribe-1.5`.
 - Keep `SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1` available as region/resource
   fallback.
@@ -282,6 +292,10 @@ Packaging and scripts:
 - Azure MAI upload preparation is latency-first: existing MP3 uploads directly,
   non-MP3 inputs are transcoded to mono 64k MP3, and live PCM buffers are encoded
   to MP3 before upload. Do not restore WAV upload without measured provider need.
+- AssemblyAI defaults to Universal-3.5-Pro for both async/batch and realtime
+  paths. Keep `SCRIBER_ASSEMBLYAI_ASYNC_MODEL` and
+  `SCRIBER_ASSEMBLYAI_RT_MODEL` as temporary compatibility overrides, but do not
+  restore Universal-3 as the release default.
 - AWS Transcribe is no longer a supported frontend/backend provider. Keep
   `boto3`, `botocore`, `s3transfer`, `aioboto3`, `aiobotocore`, and Pipecat AWS
   service modules out of the standard sidecar unless AWS support is explicitly
@@ -304,7 +318,9 @@ Packaging and scripts:
   live in `src/cloud_async_stt.py`; keep them as direct HTTP/batch adapters
   unless a measured provider SDK change justifies adding more packaged
   dependencies. Do not add `speechmatics-batch` to the standard sidecar while
-  the direct Speechmatics batch API path is sufficient.
+  the direct Speechmatics batch API path is sufficient. Keep `onnx-asr[cpu,hub]`
+  in the standard sidecar for the ONNX local-ASR path and NeMo UI fallback, but
+  keep full NeMo/Torch out of the standard sidecar.
 - FFmpeg Profile B is the standard Windows bundled media-tool path. Gyan
   Essentials is explicit fallback only.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`

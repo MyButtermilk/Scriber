@@ -25,9 +25,11 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
 
     assert "pyloudnorm" in required_modules
     assert "onnxruntime" in required_modules
+    assert "onnx_asr" in required_modules
     assert "pipecat.audio.vad.silero" in required_modules
     assert "src.web_api" in required_modules
     assert "pipecat.services.soniox.stt" in required_modules
+    assert "pipecat.services.assemblyai.stt" in required_modules
     assert "pipecat.services.deepgram.stt" in required_modules
     assert "pipecat.services.google.stt" in required_modules
     assert "pipecat.services.speechmatics.stt" in required_modules
@@ -41,6 +43,7 @@ def test_standard_requirements_include_audio_runtime_dependencies():
 
     assert "scipy" not in requirements
     assert "onnxruntime" in requirements
+    assert "onnx-asr[cpu,hub]>=0.10.2,<0.11" in requirements
     assert "pipecat-ai[silero]==1.4.0" in requirements
     assert "deepgram-sdk==7.4.0" in requirements
     assert "google-cloud-speech<3,>=2.33.0" in requirements
@@ -119,6 +122,7 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
 
     assert "collect_dynamic_libs" in spec
     assert '"onnxruntime"' in spec
+    assert '"onnx_asr"' in spec
     assert '"azure.cognitiveservices.speech"' not in spec
     assert "collect_required_dynamic_libs" in spec
     assert "upx=False" in spec
@@ -126,6 +130,7 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"pipecat.services.aws.stt"' not in spec
     assert '"pipecat.services.azure.stt"' not in spec
     assert '"pipecat.services.soniox.stt"' in spec
+    assert '"pipecat.services.assemblyai.stt"' in spec
     assert '"pyloudnorm.meter"' in spec
     assert '"scipy",' in spec
     assert '"scipy.signal"' not in spec
@@ -136,6 +141,7 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"onnxruntime"' not in collect_submodules_packages
     assert "copy_metadata" in spec
     assert 'copy_metadata("pipecat-ai")' in spec
+    assert 'copy_metadata("onnx-asr")' in spec
     assert "collect_data_files(" in spec
     assert '"onnxruntime",' in spec
     assert "includes=[" in spec

@@ -19,6 +19,7 @@ loguru
 pillow
 numpy
 onnxruntime
+onnx-asr[cpu,hub]>=0.10.2,<0.11
 yt-dlp
 python-docx
 reportlab

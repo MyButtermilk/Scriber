@@ -88,6 +88,15 @@ Performance/packaging:
   `speechmatics-voice` must move together: unpinned Pipecat or provider SDK
   drift can break fresh CI runners, while `pipecat-ai[speechmatics]` would pull
   `transformers`/HuggingFace into the standard installer.
+- The frozen runtime import gate also covers the AssemblyAI realtime Pipecat
+  module and `onnx_asr`. This protects the installed AssemblyAI Universal-3.5
+  realtime path and the bundled ONNX local-ASR fallback used when full NeMo is
+  unavailable.
+- Live-mic post-processing coverage should include prompt-template tests,
+  Settings payload typing, and Rust global-hotkey dispatch tests. The expected
+  behavior is a second shortcut that posts to
+  `/api/live-mic/toggle-post-processing`; the normal shortcut must keep plain
+  output.
 
 ## Installer Builds
 

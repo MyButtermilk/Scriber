@@ -83,13 +83,14 @@ def test_missing_api_key_is_provider_specific_configuration_error():
 
 def test_missing_api_key_uses_provider_specific_labels_for_async_and_optional_providers():
     cases = {
-        "assemblyai": "Assembly AI Universal-3-Pro",
+        "assemblyai": "Assembly AI Universal-3.5-Pro",
+        "assemblyai_realtime": "Assembly AI Universal-3.5-Pro Realtime",
         "mistral": "Mistral (Realtime)",
         "mistral_async": "Mistral (Async)",
         "smallest": "Smallest AI (Realtime)",
         "smallest_async": "Smallest AI (Async)",
         "elevenlabs": "ElevenLabs",
-        "gladia": "Gladia",
+        "gladia": "Gladia (Streaming)",
     }
 
     for provider, label in cases.items():

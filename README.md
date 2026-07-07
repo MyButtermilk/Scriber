@@ -29,6 +29,8 @@ calm place to capture it, understand it, and reuse it.
 ## What It Can Do
 
 - Live microphone dictation with a global Windows hotkey.
+- Live microphone post-processing with a separate hotkey that can clean
+  filler words, punctuation, formatting, and grammar before paste.
 - Optional mic pre-warming for faster recording starts.
 - Native recording overlay with waveform visualization.
 - YouTube search, URL lookup, download, transcription, and summarization.
@@ -50,8 +52,8 @@ NeMo.
 Settings separates STT choices by how results are produced:
 
 - Cloud streaming providers keep a live realtime stream open, for example
-  Soniox Realtime, Smallest AI Realtime, Deepgram, Gladia, Google Cloud, and
-  Speechmatics Realtime.
+  Soniox Realtime, AssemblyAI Realtime, Smallest AI Realtime, Deepgram,
+  Gladia, Google Cloud, and Speechmatics Realtime.
 - Cloud live / segmented providers work from the live microphone but finalize
   speech segments through provider transcription APIs, for example OpenAI,
   Groq, Mistral live, and ElevenLabs.
@@ -59,6 +61,17 @@ Settings separates STT choices by how results are produced:
   recording stops. Scriber exposes direct async paths for Soniox, Mistral,
   Smallest AI, Deepgram, Gladia, OpenAI, Speechmatics, AssemblyAI, and
   Microsoft Azure MAI.
+- AssemblyAI defaults to Universal-3.5-Pro for both the direct async path and
+  the realtime Pipecat path. The async path sends the model through
+  `speech_models` and keeps the provider's current language constraints.
+- The standard installer includes the ONNX local-ASR runtime. The NeMo Settings
+  surface falls back to the ONNX local model path when the full NeMo/Torch
+  runtime is not bundled.
+- Live microphone post-processing is intentionally separate from normal
+  dictation. The normal shortcut pastes plain STT output; the post-processing
+  shortcut runs the completed live transcript through the configured LLM prompt
+  before paste. The prompt supports the `${output}` placeholder for the raw live
+  transcript. File and YouTube transcription are not post-processed.
 
 ## Screenshots
 
@@ -92,8 +105,8 @@ actions together.
 
 ### Configure Once
 
-Choose your microphone, model, language, hotkey, autostart behavior, and API
-keys from one Settings screen.
+Choose your microphone, model, language, hotkeys, live post-processing prompt,
+autostart behavior, and API keys from one Settings screen.
 
 ![Settings view](docs/screenshots/settings.png)
 
@@ -229,6 +242,9 @@ Recent local release evidence:
   not part of the standard backend sidecar.
 - Supported provider SDKs are bundled explicitly; unused Google
   Generative-AI/TTS SDKs are kept out of the standard backend sidecar.
+- ONNX local ASR support is bundled through `onnx-asr[cpu,hub]`; full
+  NeMo/Torch remains outside the standard sidecar and uses the ONNX fallback in
+  the installed app.
 - Installed frontend and media-preparation smokes pass in the standard local
   build flow.
 

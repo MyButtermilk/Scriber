@@ -273,6 +273,11 @@ export interface SettingsResponse {
   summarizationPrompt?: string;
   summarizationModel?: string;
   autoSummarize?: boolean;
+  postProcessingEnabled?: boolean;
+  postProcessingHotkey?: string;
+  postProcessingHotkeyRaw?: string;
+  postProcessingPrompt?: string;
+  postProcessingModel?: string;
   openaiSttModel?: string;
   onnxModel?: string;
   onnxQuantization?: string;
@@ -298,6 +303,10 @@ export interface SettingsUpdatePayload {
   summarizationPrompt?: string;
   summarizationModel?: string;
   autoSummarize?: boolean;
+  postProcessingEnabled?: boolean;
+  postProcessingHotkey?: string;
+  postProcessingPrompt?: string;
+  postProcessingModel?: string;
   openaiSttModel?: string;
   onnxModel?: string;
   onnxQuantization?: string;

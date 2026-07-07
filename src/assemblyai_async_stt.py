@@ -1,4 +1,4 @@
-"""AssemblyAI Universal-3-Pro async transcription helpers and processor."""
+"""AssemblyAI Universal-3.5-Pro async transcription helpers and processor."""
 
 from __future__ import annotations
 
@@ -26,8 +26,27 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.time import time_now_iso8601
 
 _ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com/v2"
-_ASSEMBLYAI_U3PRO_MODEL = "universal-3-pro"
-_ASSEMBLYAI_U3PRO_SUPPORTED_LANGUAGES = {"en", "es", "pt", "fr", "de", "it"}
+DEFAULT_ASSEMBLYAI_UNIVERSAL_35_PRO_MODEL = "universal-3-5-pro"
+_ASSEMBLYAI_U35_SUPPORTED_LANGUAGES = {
+    "ar",
+    "da",
+    "de",
+    "en",
+    "es",
+    "fi",
+    "fr",
+    "he",
+    "hi",
+    "it",
+    "ja",
+    "nl",
+    "no",
+    "pt",
+    "sv",
+    "tr",
+    "vi",
+    "zh",
+}
 _VOCAB_SPLIT_RE = re.compile(r"[,\n;]+")
 _MULTISPACE_RE = re.compile(r"\s+")
 _MAX_KEYTERMS = 1000
@@ -76,26 +95,33 @@ def build_keyterms_from_vocab(custom_vocab: str) -> list[str]:
     return out
 
 
+def assemblyai_universal_35_language_code(config_lang: str | None) -> str | None:
+    lang = (config_lang or "").strip().lower()
+    if not lang or lang == "auto":
+        return None
+
+    lang_base = lang.replace("_", "-").split("-", 1)[0]
+    if lang_base in _ASSEMBLYAI_U35_SUPPORTED_LANGUAGES:
+        return lang_base
+
+    logger.warning(
+        f"AssemblyAI Universal-3.5-Pro does not support manual language '{lang}'; "
+        "falling back to language_detection=true"
+    )
+    return None
+
+
 def build_u3pro_language_fields(config_lang: str | None) -> dict[str, Any]:
-    """Build language fields for Universal-3-Pro payloads.
+    """Build language fields for Universal-3.5-Pro payloads.
 
     Rules:
     - auto/empty -> language_detection=True
     - supported manual language -> language_code=<lang>
     - unsupported manual language -> language_detection=True
     """
-    lang = (config_lang or "").strip().lower()
-    if not lang or lang == "auto":
-        return {"language_detection": True}
-
-    lang_base = lang.replace("_", "-").split("-", 1)[0]
-    if lang_base in _ASSEMBLYAI_U3PRO_SUPPORTED_LANGUAGES:
-        return {"language_code": lang_base}
-
-    logger.warning(
-        f"AssemblyAI U3-Pro does not support manual language '{lang}'; "
-        "falling back to language_detection=true"
-    )
+    lang_code = assemblyai_universal_35_language_code(config_lang)
+    if lang_code:
+        return {"language_code": lang_code}
     return {"language_detection": True}
 
 
@@ -157,10 +183,11 @@ async def transcribe_with_assemblyai_pre_recorded(
     language: str | None,
     custom_vocab: str = "",
     speaker_labels: bool = False,
+    model: str = DEFAULT_ASSEMBLYAI_UNIVERSAL_35_PRO_MODEL,
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
 ) -> dict[str, Any]:
-    """Upload + transcribe with AssemblyAI Universal-3-Pro pre-recorded API."""
+    """Upload + transcribe with AssemblyAI Universal-3.5-Pro pre-recorded API."""
     headers = {"authorization": api_key}
 
     _report_progress(on_progress, "Uploading audio...")
@@ -182,7 +209,7 @@ async def transcribe_with_assemblyai_pre_recorded(
 
     submit_payload: dict[str, Any] = {
         "audio_url": upload_url,
-        "speech_models": [_ASSEMBLYAI_U3PRO_MODEL],
+        "speech_models": [model or DEFAULT_ASSEMBLYAI_UNIVERSAL_35_PRO_MODEL],
         "speaker_labels": bool(speaker_labels),
     }
     submit_payload.update(build_u3pro_language_fields(language))
@@ -250,8 +277,8 @@ async def transcribe_with_assemblyai_pre_recorded(
         await asyncio.sleep(poll_delay)
 
 
-class AssemblyAIUniversal3ProAsyncProcessor(FrameProcessor):
-    """Buffered async STT via AssemblyAI Universal-3-Pro pre-recorded API."""
+class AssemblyAIUniversal35ProAsyncProcessor(FrameProcessor):
+    """Buffered async STT via AssemblyAI Universal-3.5-Pro pre-recorded API."""
 
     def __init__(
         self,
@@ -262,6 +289,7 @@ class AssemblyAIUniversal3ProAsyncProcessor(FrameProcessor):
         session: aiohttp.ClientSession | None = None,
         on_progress: Callable[[str], None] | None = None,
         speaker_labels: bool = False,
+        model: str = DEFAULT_ASSEMBLYAI_UNIVERSAL_35_PRO_MODEL,
     ) -> None:
         super().__init__()
         self._api_key = api_key
@@ -270,6 +298,7 @@ class AssemblyAIUniversal3ProAsyncProcessor(FrameProcessor):
         self._session = session
         self._on_progress = on_progress
         self._speaker_labels = bool(speaker_labels)
+        self._model = model or DEFAULT_ASSEMBLYAI_UNIVERSAL_35_PRO_MODEL
         self._buffer = self._create_buffer()
         self._buffer_size = 0
         self._sample_rate = 16000
@@ -301,6 +330,7 @@ class AssemblyAIUniversal3ProAsyncProcessor(FrameProcessor):
                 language=self._language,
                 custom_vocab=self._custom_vocab,
                 speaker_labels=self._speaker_labels,
+                model=self._model,
                 on_progress=self._on_progress,
                 timeout_secs=900.0,
             )
@@ -360,3 +390,6 @@ class AssemblyAIUniversal3ProAsyncProcessor(FrameProcessor):
             return
 
         await self.push_frame(frame, direction)
+
+
+AssemblyAIUniversal3ProAsyncProcessor = AssemblyAIUniversal35ProAsyncProcessor

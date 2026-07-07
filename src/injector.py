@@ -794,11 +794,13 @@ class TextInjector(FrameProcessor):
     def __init__(
         self,
         inject_immediately: bool = False,
+        enabled: bool = True,
         on_injected: Optional[Callable[[str], None]] = None,
         on_injection_marker: Optional[Callable[..., None]] = None,
     ):
         super().__init__()
         self.inject_immediately = inject_immediately
+        self.enabled = bool(enabled)
         self.on_injected = on_injected
         self.on_injection_marker = on_injection_marker
         self._buffer = []
@@ -813,7 +815,9 @@ class TextInjector(FrameProcessor):
             return
         if isinstance(frame, TranscriptionFrame):
             if frame.text and frame.text != self._last_injected:
-                if self.inject_immediately:
+                if not self.enabled:
+                    pass
+                elif self.inject_immediately:
                     self._inject_text_safely(frame.text.strip() + " ")
                 else:
                     # Buffer finalized transcript segments; inject as one block at end of utterance.
@@ -828,6 +832,9 @@ class TextInjector(FrameProcessor):
         await self.push_frame(frame, direction)
 
     def flush(self):
+        if not self.enabled:
+            self._buffer = []
+            return
         if self._buffer:
             text = " ".join(self._buffer).strip()
             if text:
@@ -985,3 +992,18 @@ class TextInjector(FrameProcessor):
                 logger.debug(f"TextInjector on_injection_marker callback failed: {fallback_exc}")
         except Exception as exc:
             logger.debug(f"TextInjector on_injection_marker callback failed: {exc}")
+
+
+def inject_text_once(
+    text: str,
+    *,
+    on_injected: Optional[Callable[[str], None]] = None,
+    on_injection_marker: Optional[Callable[..., None]] = None,
+) -> bool:
+    injector = TextInjector(
+        inject_immediately=True,
+        enabled=True,
+        on_injected=on_injected,
+        on_injection_marker=on_injection_marker,
+    )
+    return injector._inject_text_safely(text)

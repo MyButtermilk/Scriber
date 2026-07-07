@@ -52,6 +52,8 @@ _json_settings = _load_json_settings()
 class Config:
     DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v5"
     DEFAULT_SONIOX_RT_MODEL = "stt-rt-v5"
+    DEFAULT_ASSEMBLYAI_ASYNC_MODEL = "universal-3-5-pro"
+    DEFAULT_ASSEMBLYAI_RT_MODEL = "universal-3-5-pro"
 
     # API Keys
     SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
@@ -79,6 +81,8 @@ class Config:
     SONIOX_MODE = os.getenv("SCRIBER_SONIOX_MODE", "realtime").lower()  # realtime | async
     SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", DEFAULT_SONIOX_ASYNC_MODEL)
     SONIOX_RT_MODEL = os.getenv("SCRIBER_SONIOX_RT_MODEL", DEFAULT_SONIOX_RT_MODEL)
+    ASSEMBLYAI_ASYNC_MODEL = os.getenv("SCRIBER_ASSEMBLYAI_ASYNC_MODEL", DEFAULT_ASSEMBLYAI_ASYNC_MODEL)
+    ASSEMBLYAI_RT_MODEL = os.getenv("SCRIBER_ASSEMBLYAI_RT_MODEL", DEFAULT_ASSEMBLYAI_RT_MODEL)
     MISTRAL_RT_MODEL = os.getenv("SCRIBER_MISTRAL_RT_MODEL", "voxtral-mini-transcribe-realtime-2602")
     MISTRAL_ASYNC_MODEL = os.getenv("SCRIBER_MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
@@ -113,6 +117,7 @@ class Config:
         "smallest": "SMALLEST_API_KEY",
         "smallest_async": "SMALLEST_API_KEY",
         "assemblyai": "ASSEMBLYAI_API_KEY",
+        "assemblyai_realtime": "ASSEMBLYAI_API_KEY",
         "elevenlabs": "ELEVENLABS_API_KEY",
         "deepgram": "DEEPGRAM_API_KEY",
         "deepgram_async": "DEEPGRAM_API_KEY",
@@ -136,7 +141,8 @@ class Config:
         "mistral_async": "Mistral (Async)",
         "smallest": "Smallest AI (Realtime)",
         "smallest_async": "Smallest AI (Async)",
-        "assemblyai": "Assembly AI Universal-3-Pro",
+        "assemblyai": "Assembly AI Universal-3.5-Pro",
+        "assemblyai_realtime": "Assembly AI Universal-3.5-Pro Realtime",
         "google": "Google Cloud",
         "elevenlabs": "ElevenLabs",
         "deepgram": "Deepgram (Streaming)",
@@ -195,6 +201,43 @@ Input:"""
     # Auto-summarize transcripts when completed
     AUTO_SUMMARIZE = os.getenv("SCRIBER_AUTO_SUMMARIZE", "0") in ("1", "true", "True")
 
+    _DEFAULT_POST_PROCESSING_PROMPT = """You are Scriber's live dictation cleanup engine.
+
+Task: transform the raw live microphone transcript into paste-ready text.
+
+Rules:
+- Return only the final cleaned text. Do not explain your changes.
+- Preserve the speaker's language, meaning, tone, and level of detail.
+- Fix obvious spelling, casing, punctuation, and grammar errors.
+- Remove filler words and false starts when they do not change meaning.
+- Preserve intentional repetitions, names, technical terms, numbers, and citations.
+- Convert spoken punctuation and formatting commands when obvious.
+- If the transcript ends with a command like "format: email", "format: bullet list", or "format: summary", apply that format and remove the command.
+
+Raw transcript:
+${output}"""
+    POST_PROCESSING_ENABLED = (
+        str(_json_settings.get("postProcessingEnabled", os.getenv("SCRIBER_POST_PROCESSING_ENABLED", "1")))
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+    )
+    POST_PROCESSING_HOTKEY = (
+        _json_settings.get("postProcessingHotkey")
+        or os.getenv("SCRIBER_POST_PROCESSING_HOTKEY")
+        or "ctrl+shift+p"
+    )
+    POST_PROCESSING_PROMPT = (
+        _json_settings.get("postProcessingPrompt")
+        or os.getenv("SCRIBER_POST_PROCESSING_PROMPT")
+        or _DEFAULT_POST_PROCESSING_PROMPT
+    )
+    POST_PROCESSING_MODEL = (
+        _json_settings.get("postProcessingModel")
+        or os.getenv("SCRIBER_POST_PROCESSING_MODEL")
+        or ""
+    )
+
     # OpenAI Speech-to-Text model
     OPENAI_STT_MODEL = os.getenv("SCRIBER_OPENAI_STT_MODEL", "gpt-4o-mini-transcribe-2025-12-15")
 
@@ -231,6 +274,14 @@ Input:"""
     def set_hotkey(cls, hotkey: str) -> None:
         cls.HOTKEY = hotkey.strip()
         os.environ["SCRIBER_HOTKEY"] = cls.HOTKEY
+
+    @classmethod
+    def set_post_processing_hotkey(cls, hotkey: str) -> None:
+        cls.POST_PROCESSING_HOTKEY = hotkey.strip()
+        os.environ["SCRIBER_POST_PROCESSING_HOTKEY"] = cls.POST_PROCESSING_HOTKEY
+        global _json_settings
+        _json_settings["postProcessingHotkey"] = cls.POST_PROCESSING_HOTKEY
+        _save_json_settings(_json_settings)
 
     @classmethod
     def set_mode(cls, mode: str) -> None:
@@ -319,6 +370,29 @@ Input:"""
         _save_json_settings(_json_settings)
 
     @classmethod
+    def set_post_processing_enabled(cls, enabled: bool) -> None:
+        cls.POST_PROCESSING_ENABLED = bool(enabled)
+        os.environ["SCRIBER_POST_PROCESSING_ENABLED"] = "1" if cls.POST_PROCESSING_ENABLED else "0"
+        global _json_settings
+        _json_settings["postProcessingEnabled"] = cls.POST_PROCESSING_ENABLED
+        _save_json_settings(_json_settings)
+
+    @classmethod
+    def set_post_processing_prompt(cls, prompt: str) -> None:
+        cls.POST_PROCESSING_PROMPT = prompt.strip() if prompt else cls._DEFAULT_POST_PROCESSING_PROMPT
+        global _json_settings
+        _json_settings["postProcessingPrompt"] = cls.POST_PROCESSING_PROMPT
+        _save_json_settings(_json_settings)
+
+    @classmethod
+    def set_post_processing_model(cls, model: str) -> None:
+        cls.POST_PROCESSING_MODEL = model.strip() or cls.SUMMARIZATION_MODEL or cls.DEFAULT_SUMMARIZATION_MODEL
+        os.environ["SCRIBER_POST_PROCESSING_MODEL"] = cls.POST_PROCESSING_MODEL
+        global _json_settings
+        _json_settings["postProcessingModel"] = cls.POST_PROCESSING_MODEL
+        _save_json_settings(_json_settings)
+
+    @classmethod
     def persist_to_env_file(cls, path: str | None = None) -> None:
         """Persist current settings and API keys to the .env file."""
         target_path = env_path() if path is None else path
@@ -352,11 +426,14 @@ Input:"""
         add("SPEECHMATICS_API_KEY", cls.SPEECHMATICS_API_KEY or "")
 
         add("SCRIBER_HOTKEY", cls.HOTKEY)
+        add("SCRIBER_POST_PROCESSING_HOTKEY", cls.POST_PROCESSING_HOTKEY)
         add("SCRIBER_DEFAULT_STT", cls.DEFAULT_STT_SERVICE)
         add("SCRIBER_MODE", cls.MODE)
         add("SCRIBER_SONIOX_MODE", cls.SONIOX_MODE)
         add("SCRIBER_SONIOX_ASYNC_MODEL", cls.SONIOX_ASYNC_MODEL)
         add("SCRIBER_SONIOX_RT_MODEL", cls.SONIOX_RT_MODEL)
+        add("SCRIBER_ASSEMBLYAI_ASYNC_MODEL", cls.ASSEMBLYAI_ASYNC_MODEL)
+        add("SCRIBER_ASSEMBLYAI_RT_MODEL", cls.ASSEMBLYAI_RT_MODEL)
         add("SCRIBER_MISTRAL_RT_MODEL", cls.MISTRAL_RT_MODEL)
         add("SCRIBER_MISTRAL_ASYNC_MODEL", cls.MISTRAL_ASYNC_MODEL)
         add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
@@ -364,6 +441,8 @@ Input:"""
         # The default prompt from config.py will be used
         add("SCRIBER_SUMMARIZATION_MODEL", cls.SUMMARIZATION_MODEL or cls.DEFAULT_SUMMARIZATION_MODEL)
         add("SCRIBER_AUTO_SUMMARIZE", "1" if cls.AUTO_SUMMARIZE else "0")
+        add("SCRIBER_POST_PROCESSING_ENABLED", "1" if cls.POST_PROCESSING_ENABLED else "0")
+        add("SCRIBER_POST_PROCESSING_MODEL", cls.POST_PROCESSING_MODEL or cls.SUMMARIZATION_MODEL or cls.DEFAULT_SUMMARIZATION_MODEL)
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)
         add("SCRIBER_OPENAI_STT_MODEL", cls.OPENAI_STT_MODEL)

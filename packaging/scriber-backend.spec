@@ -30,10 +30,12 @@ hiddenimports = [
     "pyloudnorm.meter",
     "pyloudnorm.normalize",
     "pyloudnorm.util",
+    "onnx_asr",
     "onnxruntime",
     "pipecat.audio.vad.silero",
     "yt_dlp",
     "pipecat.services.soniox.stt",
+    "pipecat.services.assemblyai.stt",
     "pipecat.services.google.stt",
     "pipecat.services.deepgram.stt",
     "pipecat.services.openai.stt",
@@ -50,6 +52,7 @@ for package in (
     "pyautogui",
     "PIL",
     "yt_dlp",
+    "huggingface_hub",
 ):
     try:
         hiddenimports += collect_submodules(package)
@@ -67,6 +70,8 @@ binaries = collect_required_dynamic_libs("onnxruntime")
 
 datas = []
 datas += copy_metadata("pipecat-ai")
+datas += copy_metadata("onnx-asr")
+datas += copy_metadata("huggingface-hub")
 assets_dir = repo_root / "src" / "assets"
 if assets_dir.exists():
     datas.append((str(assets_dir), "src/assets"))
@@ -152,7 +157,6 @@ a = Analysis(
         "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
         "nemo",
         "nemo_toolkit",
-        "onnx_asr",
     ],
     noarchive=False,
     optimize=0,

@@ -136,6 +136,82 @@ def test_buffered_provider_factories_enable_diarization_for_batch_jobs(monkeypat
     assert assemblyai._speaker_labels is True
 
 
+def test_assemblyai_realtime_factory_uses_new_pipecat_settings(monkeypatch):
+    class _Settings:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _AssemblyAISTTService:
+        Settings = _Settings
+
+        def __init__(self, *, api_key, settings, vad_force_turn_endpoint):
+            self.api_key = api_key
+            self.settings = settings
+            self.vad_force_turn_endpoint = vad_force_turn_endpoint
+
+    module = type(
+        "AssemblyAIModule",
+        (),
+        {"AssemblyAISTTService": _AssemblyAISTTService},
+    )
+
+    monkeypatch.setattr(Config, "ASSEMBLYAI_API_KEY", "key")
+    monkeypatch.setattr(Config, "ASSEMBLYAI_RT_MODEL", "universal-3-5-pro")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+
+    service = ScriberPipeline(
+        service_name="assemblyai_realtime",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object())
+
+    assert service.api_key == "key"
+    assert service.vad_force_turn_endpoint is True
+    assert service.settings.kwargs == {
+        "model": "universal-3-5-pro",
+        "language_code": "de",
+        "keyterms_prompt": ["Scriber", "Pipecat"],
+        "speaker_labels": True,
+    }
+
+
+def test_assemblyai_realtime_factory_supports_legacy_pipecat_connection_params(monkeypatch):
+    class _AssemblyAIConnectionParams:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _AssemblyAISTTService:
+        def __init__(self, *, api_key, connection_params, vad_force_turn_endpoint):
+            self.api_key = api_key
+            self.connection_params = connection_params
+            self.vad_force_turn_endpoint = vad_force_turn_endpoint
+
+    module = type(
+        "AssemblyAIModule",
+        (),
+        {
+            "AssemblyAISTTService": _AssemblyAISTTService,
+            "AssemblyAIConnectionParams": _AssemblyAIConnectionParams,
+        },
+    )
+
+    monkeypatch.setattr(Config, "ASSEMBLYAI_API_KEY", "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "auto")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+
+    service = ScriberPipeline(service_name="assemblyai_realtime")._create_stt_service(object())
+
+    assert service.api_key == "key"
+    assert service.vad_force_turn_endpoint is True
+    assert service.connection_params.kwargs == {
+        "sample_rate": Config.SAMPLE_RATE,
+        "keyterms_prompt": None,
+        "speech_model": "universal-3-5-pro",
+    }
+
+
 def test_deepgram_factory_disables_live_diarization_by_default(monkeypatch):
     class _LiveOptions:
         def __init__(self, **kwargs):
@@ -192,6 +268,7 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
 
     assert service.params.kwargs == {
         "enable_diarization": False,
+        "language": "de",
         "speaker_active_format": "[Speaker {speaker_id}]: {text}",
         "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
     }
@@ -203,6 +280,7 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
 
     assert service_with_speakers.params.kwargs == {
         "enable_diarization": True,
+        "language": "de",
         "speaker_active_format": "[Speaker {speaker_id}]: {text}",
         "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
     }
@@ -263,6 +341,7 @@ def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
 
     assert service.params.kwargs == {
         "enable_diarization": True,
+        "language": "de",
         "speaker_active_format": "[Speaker {speaker_id}]: {text}",
         "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
     }

@@ -24,7 +24,7 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, Manager, Runtime, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 #[cfg(windows)]
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
@@ -104,6 +104,7 @@ const MENU_ITEM_COPY_TRANSCRIPT_PREFIX: &str = "scriber-copy-transcript-";
 const MENU_RECENT_TRANSCRIPTS: &str = "scriber-recent-transcripts";
 #[allow(dead_code)]
 const MENU_ITEM_EMPTY_RECENT: &str = "scriber-empty-recent";
+const MIN_MAIN_WINDOW_VISIBLE_PX: i32 = 96;
 const TRAY_RECENT_TRANSCRIPT_LIMIT: usize = 5;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -225,6 +226,7 @@ pub struct DesktopHotkeyStatus {
     registered: bool,
     available: bool,
     hotkey: String,
+    post_processing_hotkey: String,
     mode: String,
     message: String,
     capture_suspended: bool,
@@ -366,6 +368,10 @@ impl ShellIpcState {
 
 struct DesktopHotkeyStateInner {
     registered_hotkey: Option<String>,
+    registered_hotkey_id: Option<u32>,
+    post_processing_hotkey: Option<String>,
+    post_processing_hotkey_id: Option<u32>,
+    post_processing_enabled: bool,
     mode: String,
     available: bool,
     message: String,
@@ -378,6 +384,10 @@ impl DesktopHotkeyState {
         Self {
             inner: Mutex::new(DesktopHotkeyStateInner {
                 registered_hotkey: None,
+                registered_hotkey_id: None,
+                post_processing_hotkey: None,
+                post_processing_hotkey_id: None,
+                post_processing_enabled: false,
                 mode: "toggle".to_string(),
                 available: false,
                 message: "Global hotkey not initialized".to_string(),
@@ -394,6 +404,7 @@ impl DesktopHotkeyState {
                 registered: state.registered_hotkey.is_some(),
                 available: state.available,
                 hotkey: state.registered_hotkey.clone().unwrap_or_default(),
+                post_processing_hotkey: state.post_processing_hotkey.clone().unwrap_or_default(),
                 mode: state.mode.clone(),
                 message: state.message.clone(),
                 capture_suspended: state.capture_suspended,
@@ -402,15 +413,36 @@ impl DesktopHotkeyState {
                 registered: false,
                 available: false,
                 hotkey: String::new(),
+                post_processing_hotkey: String::new(),
                 mode: "toggle".to_string(),
                 message: "Global hotkey state lock is poisoned".to_string(),
                 capture_suspended: false,
             })
     }
 
-    fn set_registered(&self, hotkey: String, mode: String, message: String) {
+    fn set_registered(
+        &self,
+        hotkey: String,
+        post_processing_hotkey: String,
+        post_processing_enabled: bool,
+        mode: String,
+        message: String,
+    ) {
         if let Ok(mut state) = self.inner.lock() {
+            state.registered_hotkey_id = shortcut_id_for_hotkey(&hotkey);
             state.registered_hotkey = Some(hotkey);
+            state.post_processing_hotkey_id = if post_processing_enabled {
+                shortcut_id_for_hotkey(&post_processing_hotkey)
+            } else {
+                None
+            };
+            state.post_processing_hotkey =
+                if post_processing_enabled && !post_processing_hotkey.is_empty() {
+                    Some(post_processing_hotkey)
+                } else {
+                    None
+                };
+            state.post_processing_enabled = post_processing_enabled;
             state.mode = mode;
             state.available = true;
             state.message = message;
@@ -419,13 +451,28 @@ impl DesktopHotkeyState {
         }
     }
 
-    fn is_registered_config(&self, hotkey: &str, mode: &str) -> bool {
+    fn is_registered_config(
+        &self,
+        hotkey: &str,
+        post_processing_hotkey: &str,
+        post_processing_enabled: bool,
+        mode: &str,
+    ) -> bool {
         self.inner
             .lock()
             .map(|state| {
                 state.available
                     && !state.capture_suspended
                     && state.registered_hotkey.as_deref() == Some(hotkey)
+                    && state.post_processing_hotkey.as_deref()
+                        == if post_processing_enabled
+                            && !post_processing_hotkey.is_empty()
+                            && post_processing_hotkey != hotkey
+                        {
+                            Some(post_processing_hotkey)
+                        } else {
+                            None
+                        }
                     && state.mode == mode
             })
             .unwrap_or(false)
@@ -434,6 +481,10 @@ impl DesktopHotkeyState {
     fn set_unregistered(&self, mode: String, available: bool, message: String) {
         if let Ok(mut state) = self.inner.lock() {
             state.registered_hotkey = None;
+            state.registered_hotkey_id = None;
+            state.post_processing_hotkey = None;
+            state.post_processing_hotkey_id = None;
+            state.post_processing_enabled = false;
             state.mode = mode;
             state.available = available;
             state.message = message;
@@ -455,14 +506,29 @@ impl DesktopHotkeyState {
             state.message = message;
             if suspended {
                 state.registered_hotkey = None;
+                state.registered_hotkey_id = None;
+                state.post_processing_hotkey = None;
+                state.post_processing_hotkey_id = None;
+                state.post_processing_enabled = false;
                 state.last_dispatched_at = None;
             }
         }
     }
 
-    fn action_for_event(&self, event_state: ShortcutState, now: Instant) -> Option<&'static str> {
+    fn action_for_event(
+        &self,
+        shortcut_id: u32,
+        event_state: ShortcutState,
+        now: Instant,
+    ) -> Option<&'static str> {
         let mut state = self.inner.lock().ok()?;
         if state.capture_suspended {
+            return None;
+        }
+        let is_primary = state.registered_hotkey_id == Some(shortcut_id);
+        let is_post_processing =
+            state.post_processing_enabled && state.post_processing_hotkey_id == Some(shortcut_id);
+        if !is_primary && !is_post_processing {
             return None;
         }
         match event_state {
@@ -475,14 +541,16 @@ impl DesktopHotkeyState {
                     return None;
                 }
                 state.last_dispatched_at = Some(now);
-                if state.mode == "push_to_talk" {
+                if is_post_processing {
+                    Some("/api/live-mic/toggle-post-processing")
+                } else if state.mode == "push_to_talk" {
                     Some("/api/live-mic/start")
                 } else {
                     Some("/api/live-mic/toggle")
                 }
             }
             ShortcutState::Released => {
-                if state.mode == "push_to_talk" {
+                if is_primary && state.mode == "push_to_talk" {
                     Some("/api/live-mic/stop")
                 } else {
                     None
@@ -992,8 +1060,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    handle_global_shortcut_event(app, event.state);
+                .with_handler(|app, shortcut, event| {
+                    handle_global_shortcut_event(app, shortcut, event.state);
                 })
                 .build(),
         )
@@ -1364,6 +1432,9 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
         return;
     };
 
+    if let Err(err) = ensure_main_window_visible(&window) {
+        write_shell_log(&format!("main window visibility check failed: {err}"));
+    }
     if let Err(err) = window.show() {
         write_shell_log(&format!("main window show failed: {err}"));
     }
@@ -1373,6 +1444,96 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Err(err) = window.set_focus() {
         write_shell_log(&format!("main window focus failed: {err}"));
     }
+}
+
+fn ensure_main_window_visible<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
+    let monitors = window
+        .available_monitors()
+        .map_err(|err| format!("available monitor lookup failed: {err}"))?;
+    if monitors.is_empty() {
+        return Ok(());
+    }
+
+    let position = window
+        .outer_position()
+        .map_err(|err| format!("main window position lookup failed: {err}"))?;
+    let size = window
+        .outer_size()
+        .map_err(|err| format!("main window size lookup failed: {err}"))?;
+
+    let is_visible = monitors.iter().any(|monitor| {
+        let work_area = monitor.work_area();
+        physical_rect_has_min_visible_area(
+            position.x,
+            position.y,
+            size.width,
+            size.height,
+            work_area.position.x,
+            work_area.position.y,
+            work_area.size.width,
+            work_area.size.height,
+            MIN_MAIN_WINDOW_VISIBLE_PX,
+        )
+    });
+    if is_visible {
+        return Ok(());
+    }
+
+    let target_monitor = window
+        .current_monitor()
+        .map_err(|err| format!("current monitor lookup failed: {err}"))?
+        .or(window
+            .primary_monitor()
+            .map_err(|err| format!("primary monitor lookup failed: {err}"))?)
+        .or_else(|| monitors.into_iter().next());
+
+    let Some(monitor) = target_monitor else {
+        return Ok(());
+    };
+    let work_area = monitor.work_area();
+    let scale = monitor.scale_factor().max(0.25);
+    let work_x = work_area.position.x as f64 / scale;
+    let work_y = work_area.position.y as f64 / scale;
+    let work_width = work_area.size.width as f64 / scale;
+    let work_height = work_area.size.height as f64 / scale;
+    let window_width = (size.width as f64 / scale).min(work_width);
+    let window_height = (size.height as f64 / scale).min(work_height);
+    let x = work_x + ((work_width - window_width) / 2.0).max(0.0);
+    let y = work_y + ((work_height - window_height) / 2.0).max(0.0);
+
+    window
+        .set_position(LogicalPosition::new(x.round(), y.round()))
+        .map_err(|err| format!("main window reposition failed: {err}"))?;
+    write_shell_log("main window was off-screen and has been moved to a visible monitor");
+    Ok(())
+}
+
+fn physical_rect_has_min_visible_area(
+    window_x: i32,
+    window_y: i32,
+    window_width: u32,
+    window_height: u32,
+    work_x: i32,
+    work_y: i32,
+    work_width: u32,
+    work_height: u32,
+    min_visible_px: i32,
+) -> bool {
+    if window_width == 0 || window_height == 0 || work_width == 0 || work_height == 0 {
+        return false;
+    }
+    let minimum = i64::from(min_visible_px.max(1));
+    let window_left = i64::from(window_x);
+    let window_top = i64::from(window_y);
+    let window_right = window_left + i64::from(window_width);
+    let window_bottom = window_top + i64::from(window_height);
+    let work_left = i64::from(work_x);
+    let work_top = i64::from(work_y);
+    let work_right = work_left + i64::from(work_width);
+    let work_bottom = work_top + i64::from(work_height);
+    let visible_width = (window_right.min(work_right) - window_left.max(work_left)).max(0);
+    let visible_height = (window_bottom.min(work_bottom) - window_top.max(work_top)).max(0);
+    visible_width >= minimum && visible_height >= minimum
 }
 
 fn start_shell_menu_smoke_actions<R>(app: AppHandle<R>)
@@ -1577,9 +1738,11 @@ fn run_shell_menu_smoke_hotkey_event<R: Runtime>(
             return;
         }
     };
-    let path = app
-        .try_state::<DesktopHotkeyState>()
-        .and_then(|state| state.action_for_event(event_state, Instant::now()));
+    let path = app.try_state::<DesktopHotkeyState>().and_then(|state| {
+        shortcut_id_for_hotkey(&status.hotkey).and_then(|shortcut_id| {
+            state.action_for_event(shortcut_id, event_state, Instant::now())
+        })
+    });
     let Some(path) = path else {
         write_shell_log(&format!(
             "shell menu smoke action {label} completed elapsedMs={} mode={} path=none dispatched=false posted=false",
@@ -2684,7 +2847,12 @@ fn refresh_global_hotkey_for_app<R: Runtime>(
         return Ok(hotkey_state.status());
     }
 
-    if hotkey_state.is_registered_config(&config.hotkey, &config.mode) {
+    if hotkey_state.is_registered_config(
+        &config.hotkey,
+        &config.post_processing_hotkey,
+        config.post_processing_enabled,
+        &config.mode,
+    ) {
         return Ok(hotkey_state.status());
     }
 
@@ -2699,20 +2867,49 @@ fn refresh_global_hotkey_for_app<R: Runtime>(
                 config.hotkey
             )
         })?;
+    let post_hotkey_registered = config.post_processing_enabled
+        && !config.post_processing_hotkey.is_empty()
+        && config.post_processing_hotkey != config.hotkey;
+    if post_hotkey_registered {
+        app.global_shortcut()
+            .register(config.post_processing_hotkey.as_str())
+            .map_err(|err| {
+                format!(
+                    "Could not register post-processing hotkey '{}': {err}",
+                    config.post_processing_hotkey
+                )
+            })?;
+    }
 
     let message = format!(
-        "Global hotkey registered: {} ({})",
-        config.hotkey, config.mode
+        "Global hotkey registered: {} ({}){}",
+        config.hotkey,
+        config.mode,
+        if post_hotkey_registered {
+            format!(", post-processing: {}", config.post_processing_hotkey)
+        } else {
+            String::new()
+        }
     );
     write_shell_log(&message);
-    hotkey_state.set_registered(config.hotkey, config.mode, message);
+    hotkey_state.set_registered(
+        config.hotkey,
+        if post_hotkey_registered {
+            config.post_processing_hotkey
+        } else {
+            String::new()
+        },
+        post_hotkey_registered,
+        config.mode,
+        message,
+    );
     Ok(hotkey_state.status())
 }
 
-fn handle_global_shortcut_event(app: &AppHandle, event_state: ShortcutState) {
+fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_state: ShortcutState) {
     let Some(path) = app
         .try_state::<DesktopHotkeyState>()
-        .and_then(|state| state.action_for_event(event_state, Instant::now()))
+        .and_then(|state| state.action_for_event(shortcut.id(), event_state, Instant::now()))
     else {
         return;
     };
@@ -2845,8 +3042,17 @@ fn tauri_global_hotkey_enabled() -> bool {
         .unwrap_or(true)
 }
 
+fn shortcut_id_for_hotkey(hotkey: &str) -> Option<u32> {
+    hotkey
+        .parse::<Shortcut>()
+        .ok()
+        .map(|shortcut| shortcut.id())
+}
+
 struct BackendHotkeyConfig {
     hotkey: String,
+    post_processing_hotkey: String,
+    post_processing_enabled: bool,
     mode: String,
 }
 
@@ -2861,9 +3067,20 @@ fn fetch_backend_hotkey_config(access: &BackendAccess) -> Result<BackendHotkeyCo
         .get("mode")
         .and_then(Value::as_str)
         .unwrap_or("toggle");
+    let raw_post_processing_hotkey = value
+        .get("postProcessingHotkeyRaw")
+        .or_else(|| value.get("postProcessingHotkey"))
+        .and_then(Value::as_str)
+        .unwrap_or("ctrl+shift+p");
+    let post_processing_enabled = value
+        .get("postProcessingEnabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
 
     Ok(BackendHotkeyConfig {
         hotkey: normalize_global_shortcut(raw_hotkey),
+        post_processing_hotkey: normalize_global_shortcut(raw_post_processing_hotkey),
+        post_processing_enabled,
         mode: normalize_hotkey_mode(raw_mode),
     })
 }
@@ -3461,12 +3678,12 @@ mod tests {
         normalize_global_shortcut, normalize_hotkey_mode, parse_loopback_backend_url,
         parse_shell_menu_smoke_actions, recent_transcript_label, recent_transcripts_from_value,
         resolve_session_token, sanitize_menu_label, shell_ipc, shell_ipc_env_pairs,
-        should_refresh_hotkey_after_backend_ready, should_show_window_for_tray_click,
-        split_http_response, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
-        RecentTranscriptMenuEntry, ShellMenuSmokeAction, AUTOSTART_DEFAULT_ENV,
-        BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, HOTKEY_DISPATCH_DEBOUNCE,
-        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
-        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        shortcut_id_for_hotkey, should_refresh_hotkey_after_backend_ready,
+        should_show_window_for_tray_click, split_http_response, DesktopHotkeyState,
+        NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
+        AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
+        HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
+        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
@@ -3548,6 +3765,26 @@ mod tests {
             super::DesktopWindowChromeTheme::Dark
         );
         assert!(super::DesktopWindowChromeTheme::parse("sepia").is_err());
+    }
+
+    #[test]
+    fn window_visibility_accepts_window_with_enough_visible_area() {
+        assert!(super::physical_rect_has_min_visible_area(
+            1800, 900, 900, 700, 0, 0, 1920, 1080, 96
+        ));
+        assert!(super::physical_rect_has_min_visible_area(
+            0, 0, 900, 700, 0, 0, 1920, 1080, 96
+        ));
+    }
+
+    #[test]
+    fn window_visibility_rejects_offscreen_or_tiny_slivers() {
+        assert!(!super::physical_rect_has_min_visible_area(
+            2200, 100, 900, 700, 0, 0, 1920, 1080, 96
+        ));
+        assert!(!super::physical_rect_has_min_visible_area(
+            1900, 100, 900, 700, 0, 0, 1920, 1080, 96
+        ));
     }
 
     #[cfg(windows)]
@@ -3794,30 +4031,39 @@ mod tests {
     #[test]
     fn desktop_hotkey_toggle_dispatches_backend_toggle_only_on_press() {
         let state = DesktopHotkeyState::new();
+        let primary_id = shortcut_id_for_hotkey("ctrl+alt+s").unwrap();
         state.set_registered(
             "ctrl+alt+s".to_string(),
+            String::new(),
+            false,
             "toggle".to_string(),
             "registered".to_string(),
         );
         let now = Instant::now();
 
         assert_eq!(
-            state.action_for_event(ShortcutState::Pressed, now),
+            state.action_for_event(primary_id, ShortcutState::Pressed, now),
             Some("/api/live-mic/toggle")
         );
         assert_eq!(
             state.action_for_event(
+                primary_id,
                 ShortcutState::Pressed,
                 now + HOTKEY_DISPATCH_DEBOUNCE - Duration::from_millis(1)
             ),
             None
         );
         assert_eq!(
-            state.action_for_event(ShortcutState::Released, now + HOTKEY_DISPATCH_DEBOUNCE),
+            state.action_for_event(
+                primary_id,
+                ShortcutState::Released,
+                now + HOTKEY_DISPATCH_DEBOUNCE
+            ),
             None
         );
         assert_eq!(
             state.action_for_event(
+                primary_id,
                 ShortcutState::Pressed,
                 now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1)
             ),
@@ -3828,8 +4074,11 @@ mod tests {
     #[test]
     fn desktop_hotkey_capture_suspension_blocks_dispatch() {
         let state = DesktopHotkeyState::new();
+        let primary_id = shortcut_id_for_hotkey("ctrl+alt+s").unwrap();
         state.set_registered(
             "ctrl+alt+s".to_string(),
+            String::new(),
+            false,
             "toggle".to_string(),
             "registered".to_string(),
         );
@@ -3839,21 +4088,31 @@ mod tests {
         let suspended_status = state.status();
         assert!(suspended_status.capture_suspended);
         assert!(!suspended_status.registered);
-        assert_eq!(state.action_for_event(ShortcutState::Pressed, now), None);
         assert_eq!(
-            state.action_for_event(ShortcutState::Released, now + Duration::from_millis(25)),
+            state.action_for_event(primary_id, ShortcutState::Pressed, now),
+            None
+        );
+        assert_eq!(
+            state.action_for_event(
+                primary_id,
+                ShortcutState::Released,
+                now + Duration::from_millis(25)
+            ),
             None
         );
 
         state.set_capture_suspended(false, "resuming".to_string());
         state.set_registered(
             "ctrl+alt+s".to_string(),
+            String::new(),
+            false,
             "toggle".to_string(),
             "registered".to_string(),
         );
         assert!(!state.status().capture_suspended);
         assert_eq!(
             state.action_for_event(
+                primary_id,
                 ShortcutState::Pressed,
                 now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1)
             ),
@@ -3864,38 +4123,84 @@ mod tests {
     #[test]
     fn desktop_hotkey_state_detects_already_registered_config() {
         let state = DesktopHotkeyState::new();
-        assert!(!state.is_registered_config("ctrl+alt+s", "toggle"));
+        assert!(!state.is_registered_config("ctrl+alt+s", "", false, "toggle"));
 
         state.set_registered(
             "ctrl+alt+s".to_string(),
+            "ctrl+shift+p".to_string(),
+            true,
             "toggle".to_string(),
             "registered".to_string(),
         );
-        assert!(state.is_registered_config("ctrl+alt+s", "toggle"));
-        assert!(!state.is_registered_config("ctrl+shift+s", "toggle"));
-        assert!(!state.is_registered_config("ctrl+alt+s", "push_to_talk"));
+        assert!(state.is_registered_config("ctrl+alt+s", "ctrl+shift+p", true, "toggle"));
+        assert!(!state.is_registered_config("ctrl+shift+s", "ctrl+shift+p", true, "toggle"));
+        assert!(!state.is_registered_config("ctrl+alt+s", "ctrl+shift+x", true, "toggle"));
+        assert!(!state.is_registered_config("ctrl+alt+s", "ctrl+shift+p", true, "push_to_talk"));
 
         state.set_capture_suspended(true, "suspended".to_string());
-        assert!(!state.is_registered_config("ctrl+alt+s", "toggle"));
+        assert!(!state.is_registered_config("ctrl+alt+s", "ctrl+shift+p", true, "toggle"));
     }
 
     #[test]
     fn desktop_hotkey_push_to_talk_maps_press_and_release_to_backend_endpoints() {
         let state = DesktopHotkeyState::new();
+        let primary_id = shortcut_id_for_hotkey("ctrl+alt+s").unwrap();
         state.set_registered(
             "ctrl+alt+s".to_string(),
+            String::new(),
+            false,
             "push_to_talk".to_string(),
             "registered".to_string(),
         );
         let now = Instant::now();
 
         assert_eq!(
-            state.action_for_event(ShortcutState::Pressed, now),
+            state.action_for_event(primary_id, ShortcutState::Pressed, now),
             Some("/api/live-mic/start")
         );
         assert_eq!(
-            state.action_for_event(ShortcutState::Released, now + Duration::from_millis(25)),
+            state.action_for_event(
+                primary_id,
+                ShortcutState::Released,
+                now + Duration::from_millis(25)
+            ),
             Some("/api/live-mic/stop")
+        );
+    }
+
+    #[test]
+    fn desktop_hotkey_post_processing_maps_to_dedicated_toggle() {
+        let state = DesktopHotkeyState::new();
+        let primary_id = shortcut_id_for_hotkey("ctrl+alt+s").unwrap();
+        let post_id = shortcut_id_for_hotkey("ctrl+shift+p").unwrap();
+        state.set_registered(
+            "ctrl+alt+s".to_string(),
+            "ctrl+shift+p".to_string(),
+            true,
+            "push_to_talk".to_string(),
+            "registered".to_string(),
+        );
+        let now = Instant::now();
+
+        assert_eq!(
+            state.action_for_event(post_id, ShortcutState::Pressed, now),
+            Some("/api/live-mic/toggle-post-processing")
+        );
+        assert_eq!(
+            state.action_for_event(
+                post_id,
+                ShortcutState::Released,
+                now + Duration::from_millis(25)
+            ),
+            None
+        );
+        assert_eq!(
+            state.action_for_event(
+                primary_id,
+                ShortcutState::Pressed,
+                now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1),
+            ),
+            Some("/api/live-mic/start")
         );
     }
 
