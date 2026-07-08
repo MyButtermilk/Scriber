@@ -168,6 +168,19 @@ Add-RawFileEntry -Entries $rustEntries -Path "Frontend/src-tauri/build.rs"
 Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/src" -Filter "*.rs"
 Write-KeyFile -Name "rust-release.txt" -Entries $rustEntries
 
+$rustAudioEntries = New-EntryList
+Add-ContentEntry -Entries $rustAudioEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
+Add-ContentEntry -Entries $rustAudioEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
+foreach ($path in @(
+    "Frontend/src-tauri/build.rs",
+    "Frontend/src-tauri/src/audio_sidecar.rs",
+    "Frontend/src-tauri/src/audio_frame_pipe.rs",
+    "Frontend/src-tauri/src/redaction.rs"
+)) {
+    Add-RawFileEntry -Entries $rustAudioEntries -Path $path
+}
+Write-KeyFile -Name "rust-audio-sidecar.txt" -Entries $rustAudioEntries
+
 $backendEntries = New-EntryList
 foreach ($path in @(
     "requirements-base.txt",

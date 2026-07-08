@@ -67,6 +67,15 @@ jobs:
           restore-keys: |
             scriber-rust-release-${{ runner.os }}-
 
+      - name: Restore Rust audio sidecar cache
+        id: rust-audio-sidecar-cache
+        uses: actions/cache@v6
+        with:
+          path: build/rust-audio-sidecar-cache
+          key: scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}
+          restore-keys: |
+            scriber-rust-audio-sidecar-${{ runner.os }}-
+
       - name: Restore Tauri bundler cache
         id: tauri-bundler-cache
         uses: actions/cache@v6
@@ -107,9 +116,7 @@ jobs:
         id: backend-sidecar-cache
         uses: actions/cache@v6
         with:
-          path: |
-            build/tauri-sidecar-cache
-            build/rust-audio-sidecar-cache
+          path: build/tauri-sidecar-cache
           key: scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}
           restore-keys: |
             scriber-backend-sidecar-${{ runner.os }}-
@@ -149,6 +156,7 @@ jobs:
           Write-Host "Python wheelhouse cache hit: ${{ steps.python-wheelhouse-cache.outputs.cache-hit }}"
           Write-Host "Frontend node_modules cache hit: ${{ steps.frontend-node-modules-cache.outputs.cache-hit }}"
           Write-Host "Backend sidecar cache hit: ${{ steps.backend-sidecar-cache.outputs.cache-hit }}"
+          Write-Host "Rust audio sidecar cache hit: ${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}"
           Write-Host "FFmpeg Profile B cache hit: ${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}"
           Write-Host "FFmpeg Profile B release artifact restored: ${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}"
 

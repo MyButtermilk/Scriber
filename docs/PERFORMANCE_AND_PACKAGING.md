@@ -136,6 +136,10 @@ Packaging/build:
 - GitHub release builds compute normalized cache-key inputs so patch version
   bumps do not invalidate frontend dependency, Rust build, or backend sidecar
   scratch caches unless their real inputs changed.
+- GitHub release builds cache `build\rust-audio-sidecar-cache` separately from
+  the Python backend sidecar cache. The audio sidecar cache key normalizes the
+  app package version in Cargo metadata, so patch version bumps do not force a
+  rebuild of `scriber-audio-sidecar.exe` when its Rust inputs are unchanged.
 - FFmpeg Profile B has a reusable GitHub release artifact fallback in addition
   to Actions cache restore, so new app tags do not need to rebuild FFmpeg when
   the Profile B source/ref/profile is unchanged.

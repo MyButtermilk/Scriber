@@ -323,6 +323,7 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "scripts\\ci\\write_release_cache_keys.ps1" in workflow
     assert "build/cache-keys/frontend-dependencies.txt" in workflow
     assert "build/cache-keys/rust-release.txt" in workflow
+    assert "build/cache-keys/rust-audio-sidecar.txt" in workflow
     assert "build/cache-keys/backend-sidecar.txt" in workflow
     assert "Restore Python wheelhouse cache" in workflow
     assert "scriber-python-wheelhouse-" in workflow
@@ -333,6 +334,11 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "Resolve cached FFmpeg Profile B media tools" in workflow
     assert "Restore FFmpeg Profile B release artifact" in workflow
     assert "Publish FFmpeg Profile B release artifact" in workflow
+    assert "Restore Rust audio sidecar cache" in workflow
+    assert "scriber-rust-audio-sidecar-" in workflow
+    assert "Rust audio sidecar cache hit" in workflow
+    assert "path: build/tauri-sidecar-cache" in workflow
+    assert "build/rust-audio-sidecar-cache\n          key: scriber-backend-sidecar" not in workflow
     assert "restore_profile_b_release_artifact.ps1" in workflow
     assert "publish_profile_b_release_artifact.ps1" in workflow
     assert "ffmpeg-profile-b-n7.0-v2" in workflow
@@ -350,12 +356,24 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
 
     assert "frontend-dependencies.txt" in script
     assert "rust-release.txt" in script
+    assert "rust-audio-sidecar.txt" in script
     assert "backend-sidecar.txt" in script
     assert "__app_version__" in script
     assert "Normalize-FirstJsonVersionProperties" in script
     assert "Normalize-CargoToml" in script
     assert "Normalize-CargoLock" in script
     assert "Normalize-PythonVersionFile" in script
+
+
+def test_rust_audio_sidecar_cache_key_ignores_app_version_only_churn() -> None:
+    script = read_script("scripts/build_tauri_backend_sidecar.ps1")
+
+    assert "Normalize-CargoTomlForCache" in script
+    assert "Normalize-CargoLockForCache" in script
+    assert 'version = "__app_version__"' in script
+    assert "scriber-desktop" in script
+    assert "Get-NormalizedFileHashEntry -Root $Root -RelativePath \"Frontend\\src-tauri\\Cargo.toml\"" in script
+    assert "Get-NormalizedFileHashEntry -Root $Root -RelativePath \"Frontend\\src-tauri\\Cargo.lock\"" in script
 
 
 def test_native_recording_overlay_is_tauri_owned() -> None:

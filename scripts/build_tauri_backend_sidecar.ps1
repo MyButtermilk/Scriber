@@ -113,6 +113,37 @@ function Get-Sha256Hex {
     }
 }
 
+function Normalize-CargoTomlForCache {
+    param([string]$Text)
+
+    $lines = $Text -split "\r\n|\n|\r"
+    $inPackage = $false
+    $output = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in $lines) {
+        if ($line -match '^\[package\]\s*$') {
+            $inPackage = $true
+        } elseif ($line -match '^\[') {
+            $inPackage = $false
+        }
+        if ($inPackage -and $line -match '^version\s*=') {
+            $output.Add('version = "__app_version__"')
+        } else {
+            $output.Add($line)
+        }
+    }
+    return ($output -join "`n")
+}
+
+function Normalize-CargoLockForCache {
+    param([string]$Text)
+
+    return [regex]::Replace(
+        $Text,
+        '(?ms)(\[\[package\]\]\s+name = "scriber-desktop"\s+version = )"[^"]+"',
+        '$1"__app_version__"'
+    )
+}
+
 function Get-RelativePath {
     param(
         [string]$Root,
@@ -128,6 +159,34 @@ function Get-RelativePath {
     $pathUri = [System.Uri]::new($pathFull)
     $relative = $rootUri.MakeRelativeUri($pathUri).ToString()
     return ([System.Uri]::UnescapeDataString($relative)).Replace("/", [System.IO.Path]::DirectorySeparatorChar)
+}
+
+function Get-ContentHashEntry {
+    param(
+        [string]$Root,
+        [string]$Path,
+        [string]$Content
+    )
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
+    return [ordered]@{
+        path = (Get-RelativePath -Root $Root -Path $Path)
+        length = [int64]$bytes.Length
+        sha256 = Get-StringSha256 -Value $Content
+    }
+}
+
+function Get-NormalizedFileHashEntry {
+    param(
+        [string]$Root,
+        [string]$RelativePath,
+        [scriptblock]$Normalizer
+    )
+
+    $path = Join-Path $Root $RelativePath
+    $content = Get-Content -LiteralPath $path -Raw
+    $normalized = & $Normalizer $content
+    return Get-ContentHashEntry -Root $Root -Path $path -Content $normalized
 }
 
 function Get-FileHashEntry {
@@ -398,8 +457,6 @@ function Get-RustAudioSidecarInputManifest {
     param([string]$Root)
 
     $relativePaths = @(
-        "Frontend\src-tauri\Cargo.toml",
-        "Frontend\src-tauri\Cargo.lock",
         "Frontend\src-tauri\build.rs",
         "Frontend\src-tauri\src\audio_sidecar.rs",
         "Frontend\src-tauri\src\audio_frame_pipe.rs",
@@ -424,9 +481,14 @@ function Get-RustAudioSidecarInputManifest {
         }
     }
 
+    $entries = @()
+    $entries += Get-NormalizedFileHashEntry -Root $Root -RelativePath "Frontend\src-tauri\Cargo.toml" -Normalizer ${function:Normalize-CargoTomlForCache}
+    $entries += Get-NormalizedFileHashEntry -Root $Root -RelativePath "Frontend\src-tauri\Cargo.lock" -Normalizer ${function:Normalize-CargoLockForCache}
+    $entries += Get-InputFileEntries -Root $Root -RelativePaths $relativePaths
+
     return [ordered]@{
         apiVersion = "1"
-        files = Get-InputFileEntries -Root $Root -RelativePaths $relativePaths
+        files = $entries
     }
 }
 

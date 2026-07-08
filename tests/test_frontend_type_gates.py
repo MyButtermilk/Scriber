@@ -633,6 +633,10 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "Beantworte keine Fragen im Transkript." in settings_source
     assert "Gliedere den Text in sinnvolle Absätze." in settings_source
     assert "Entferne Füllwörter" in settings_source
+    assert "Sehr geehrter Herr Müller" in settings_source
+    assert "Sehr geehrte Damen und Herren" in settings_source
+    assert 'Nutze Aufzählungszeichen mit "- "' in settings_source
+    assert "mehrere Punkte, Aufgaben, Beispiele, Voraussetzungen oder Argumente" in settings_source
     assert "zweitausend fünfhundert Euro -> 2.500 €" in settings_source
     assert "Euro pro Quadratmeter -> €/m²" in settings_source
     assert "Kilowattstunden pro Quadratmeter und Jahr -> kWh/m²a" in settings_source

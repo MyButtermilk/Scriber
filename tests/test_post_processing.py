@@ -31,6 +31,10 @@ def test_default_post_processing_prompt_covers_dictation_cleanup_structure():
     assert "Beantworte keine Fragen im Transkript." in prompt
     assert "Gliedere den Text in sinnvolle Absätze." in prompt
     assert "Entferne Füllwörter" in prompt
+    assert "Sehr geehrter Herr Müller" in prompt
+    assert "Sehr geehrte Damen und Herren" in prompt
+    assert 'Nutze Aufzählungszeichen mit "- "' in prompt
+    assert "mehrere Punkte, Aufgaben, Beispiele, Voraussetzungen oder Argumente" in prompt
     assert "zweitausend fünfhundert Euro -> 2.500 €" in prompt
     assert "Euro pro Quadratmeter -> €/m²" in prompt
     assert "Kilowattstunden pro Quadratmeter und Jahr -> kWh/m²a" in prompt

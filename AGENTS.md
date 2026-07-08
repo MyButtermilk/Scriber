@@ -368,7 +368,11 @@ Already implemented and should not be regressed:
   release resource flags.
 - Rust audio sidecar hash cache that avoids recompiling when inputs are
   unchanged; the cache key is limited to the Rust audio sidecar dependency set,
-  and the normal Tauri Cargo target is used by default.
+  normalizes app-version-only Cargo metadata churn, and the normal Tauri Cargo
+  target is used by default. GitHub release builds keep
+  `build\rust-audio-sidecar-cache` in a separate Actions cache from the Python
+  backend sidecar cache so Python/backend changes do not force an audio sidecar
+  executable rebuild.
 - Release workflow cache keys normalize app-version-only files before hashing
   dependency/build caches, so patch version bumps do not invalidate frontend,
   Rust, or backend scratch caches without real input changes.
