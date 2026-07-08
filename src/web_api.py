@@ -174,7 +174,7 @@ _ALLOWED_UPLOAD_EXTENSIONS = _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS
 _VALID_STT_SERVICES = frozenset(Config.SERVICE_LABELS.keys())
 _VALID_MODES = {"toggle", "push_to_talk"}
 _VALID_SONIOX_MODES = {"realtime", "async"}
-_VALID_SUMMARIZATION_MODEL_PREFIXES = ("gemini-", "gpt-", "google/", "minimax/", "openai/", "z-ai/")
+_VALID_SUMMARIZATION_MODEL_PREFIXES = ("gemini-", "gpt-", "google/", "minimax/", "openai/", "z-ai/", "cerebras/")
 _INPUT_WARNING_CODE_LOW_LEVEL = "mic_level_very_low"
 _SETTINGS_URI_SOUND = "ms-settings:sound"
 _SETTINGS_URI_SOUND_INPUT_PROPERTIES = "ms-settings:sound-defaultinputproperties"
@@ -5464,6 +5464,7 @@ class ScriberWebController:
                 "deepgram": Config.DEEPGRAM_API_KEY or "",
                 "openai": Config.OPENAI_API_KEY or "",
                 "openrouter": getattr(Config, "OPENROUTER_API_KEY", "") or "",
+                "cerebras": getattr(Config, "CEREBRAS_API_KEY", "") or "",
                 "azureMaiSpeechKey": getattr(Config, "AZURE_MAI_SPEECH_KEY", "") or "",
                 "azureMaiRegion": getattr(Config, "AZURE_MAI_REGION", "") or "northeurope",
                 "azureMaiModel": getattr(Config, "AZURE_MAI_MODEL", "") or "mai-transcribe-1.5",
@@ -5605,6 +5606,7 @@ class ScriberWebController:
                 "deepgram": ("deepgram", lambda v: Config.set_api_key("deepgram", v)),
                 "openai": ("openai", lambda v: Config.set_api_key("openai", v)),
                 "openrouter": ("openrouter", lambda v: Config.set_api_key("openrouter", v)),
+                "cerebras": ("cerebras", lambda v: Config.set_api_key("cerebras", v)),
                 "gladia": ("gladia", lambda v: Config.set_api_key("gladia", v)),
                 "groq": ("groq", lambda v: Config.set_api_key("groq", v)),
                 "speechmatics": ("speechmatics", lambda v: Config.set_api_key("speechmatics", v)),

@@ -1098,6 +1098,10 @@ def test_validate_default_stt_service_rejects_removed_aws_provider():
 def test_validate_summarization_model_accepts_known_prefixes():
     assert web_api._validate_summarization_model("gemini-flash-latest") == "gemini-flash-latest"
     assert web_api._validate_summarization_model("gemini-3.5-flash") == "gemini-3.5-flash"
+    assert web_api._validate_summarization_model("gemini-3.1-pro-preview") == "gemini-3.1-pro-preview"
+    assert web_api._validate_summarization_model("gpt-5.5") == "gpt-5.5"
+    assert web_api._validate_summarization_model("gpt-5.4-mini") == "gpt-5.4-mini"
+    assert web_api._validate_summarization_model("gpt-5.4-nano") == "gpt-5.4-nano"
     assert web_api._validate_summarization_model("gpt-5-mini") == "gpt-5-mini"
     assert (
         web_api._validate_summarization_model("google/gemini-2.5-flash-lite:nitro")
@@ -1108,6 +1112,7 @@ def test_validate_summarization_model_accepts_known_prefixes():
         web_api._validate_summarization_model("openai/gpt-oss-120b:cerebras")
         == "openai/gpt-oss-120b:cerebras"
     )
+    assert web_api._validate_summarization_model("cerebras/gemma-4-31b") == "cerebras/gemma-4-31b"
 
 
 def test_validate_summarization_model_rejects_invalid_prefix():

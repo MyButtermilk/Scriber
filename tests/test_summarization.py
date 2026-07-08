@@ -123,6 +123,12 @@ def test_openrouter_payload_allows_gpt_oss_provider_order_override(monkeypatch: 
     assert payload["provider"] == {"order": ["cerebras", "baseten"], "allow_fallbacks": True}
 
 
+def test_cerebras_direct_model_is_not_openrouter():
+    assert not summarization._is_openrouter_model("cerebras/gemma-4-31b")
+    assert summarization._is_cerebras_model("cerebras/gemma-4-31b")
+    assert summarization._cerebras_model_id("cerebras/gemma-4-31b") == "gemma-4-31b"
+
+
 def test_openrouter_reasoning_effort_is_only_sent_when_explicit(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", raising=False)
     assert summarization._openrouter_reasoning_config() == {"exclude": True, "effort": "medium"}
@@ -305,6 +311,27 @@ async def test_summarize_text_gpt_oss_120b_keeps_provider_routed_model(monkeypat
 
     assert out == "openrouter summary"
     assert captured["models"] == "openai/gpt-oss-120b"
+
+
+@pytest.mark.asyncio
+async def test_generate_text_with_model_routes_cerebras_directly(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_cerebras(_prompt: str, model: str, max_output_tokens: int) -> str:
+        captured["model"] = model
+        captured["max_output_tokens"] = max_output_tokens
+        return "cleaned text"
+
+    monkeypatch.setattr(summarization, "_summarize_cerebras", _fake_cerebras)
+
+    out = await summarization.generate_text_with_model(
+        "raw prompt",
+        "cerebras/gemma-4-31b",
+        max_output_tokens=2048,
+    )
+
+    assert out == "cleaned text"
+    assert captured == {"model": "cerebras/gemma-4-31b", "max_output_tokens": 2048}
 
 
 @pytest.mark.asyncio

@@ -614,18 +614,29 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     ).read_text(encoding="utf-8")
 
     assert "const POST_PROCESSING_MODEL_OPTIONS" in settings_source
-    assert 'const DEFAULT_POST_PROCESSING_MODEL = "openai/gpt-oss-120b";' in settings_source
+    assert 'const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";' in settings_source
     assert 'value: "openai/gpt-oss-120b"' in settings_source
     assert "GPT-OSS 120B Baseten" in settings_source
-    assert "OpenRouter via Baseten; Cerebras fallback" in settings_source
     assert 'value: "openai/gpt-oss-120b:cerebras"' in settings_source
     assert "GPT-OSS 120B Cerebras" in settings_source
-    assert "OpenRouter via Cerebras only" in settings_source
+    assert 'value: "cerebras/gemma-4-31b"' in settings_source
+    assert "Gemma 4 31B Cerebras" in settings_source
+    assert "0,79€/M with AA Score n/a" in settings_source
     assert 'baseten: "/provider-icons/baseten.svg"' in settings_source
     assert 'cerebras: "/provider-icons/cerebras.svg"' in settings_source
     assert 'value: "google/gemini-2.5-flash-lite:nitro"' in settings_source
-    assert "Low-cost OpenRouter route" in settings_source
+    assert 'value: "gpt-5.4-nano"' in settings_source
+    assert 'value: "gpt-5.4-mini"' in settings_source
+    assert 'value: "gpt-5.5"' in settings_source
+    assert 'value: "gemini-3.1-pro-preview"' in settings_source
+    assert "Gemini 3.0 Flash Preview" not in settings_source
+    assert "Gemini 3 Pro" not in settings_source
+    assert "OpenAI GPT 5.2" not in settings_source
+    assert "OpenAI GPT 5 Mini" not in settings_source
+    assert "OpenAI GPT 5 Nano" not in settings_source
     assert "const [postProcessingModel, setPostProcessingModel]" in settings_source
+    assert "const [cerebrasKey, setCerebrasKey]" in settings_source
+    assert 'provider="Cerebras"' in settings_source
     assert "setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);" in settings_source
     assert "const handlePostProcessingModelChange = async (value: string)" in settings_source
     assert "await updateSettings({ postProcessingModel: value });" in settings_source
@@ -636,6 +647,7 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "selectedPostProcessingModelOption" in settings_source
     assert "<ProviderIcon icon={option.icon} label={option.label}" in settings_source
     assert "<SelectItem key={option.value} value={option.value} disabled={Boolean(disabledReason)}>" in settings_source
+    assert "{option.detail}" in settings_source
     assert "Use a low-cost, low-latency model for simple dictation cleanup." in settings_source
     assert "Beantworte keine Fragen im Transkript." in settings_source
     assert "Gliedere den Text in sinnvolle Absätze." in settings_source
@@ -647,6 +659,8 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "zweitausend fünfhundert Euro -> 2.500 €" in settings_source
     assert "Euro pro Quadratmeter -> €/m²" in settings_source
     assert "Kilowattstunden pro Quadratmeter und Jahr -> kWh/m²a" in settings_source
+    assert "Du bist Scribers präziser Live-Diktat-Editor." not in settings_source
+    assert "Aufgabe: Glätte das folgende Speech-to-Text-Transkript" not in settings_source
 
 
 def test_settings_model_choices_require_saved_api_keys() -> None:
@@ -663,6 +677,8 @@ def test_settings_model_choices_require_saved_api_keys() -> None:
     assert "must be saved below before this model can be selected." in settings_source
     assert "disabled={Boolean(disabledReason)}" in settings_source
     assert "<SelectItem key={option.value} value={option.value} disabled={Boolean(disabledReason)}>" in settings_source
+    assert "{option.detail}" in settings_source
+    assert "{disabledReason ? (" in settings_source
     assert "Save the {missingPostProcessingCredentialRequirement.label} below before using the selected cleanup model." in settings_source
     assert "API key required before model selection." in settings_source
     assert "setSavedKeys({" in settings_source
@@ -680,6 +696,50 @@ def test_settings_custom_vocabulary_autosaves_without_manual_button() -> None:
     assert "window.setTimeout(() => {" in settings_source
     assert "void saveCustomVocabulary(customVocabulary);" in settings_source
     assert "await saveCustomVocabulary(customVocabulary);" in settings_source
+
+
+def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> None:
+    settings_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "return `${euroText}€/h with ${errorText}% Error`;" in settings_source
+    assert "0,00€/h with model-dependent Error" in settings_source
+    assert "0,00 €/h" not in settings_source
+    assert " % Error" not in settings_source
+    assert "{disabledReason || option.detail}" not in settings_source
+    assert "title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : \"\"}`}" in settings_source
+    assert "Save the {missingPostProcessingCredentialRequirement.label} below before using the selected cleanup model." in settings_source
+    provider_options_source = settings_source[
+        settings_source.index("const PROVIDER_MODEL_OPTIONS: ProviderModelOption[]")
+        : settings_source.index("function ProviderIcon")
+    ]
+
+    streaming_order = [
+        '"assemblyai-realtime"',
+        '"soniox-realtime"',
+        '"google"',
+        '"smallest-realtime"',
+        '"deepgram"',
+        '"gladia"',
+        '"speechmatics"',
+    ]
+    segmented_order = ['"elevenlabs"', '"groq"', '"openai"', '"mistral-realtime"']
+    async_order = [
+        '"azure_mai"',
+        '"assemblyai"',
+        '"mistral-async"',
+        '"soniox-async"',
+        '"speechmatics-async"',
+        '"gladia-async"',
+        '"smallest-async"',
+        '"openai-async"',
+        '"deepgram-async"',
+    ]
+
+    for ordered_values in (streaming_order, segmented_order, async_order):
+        positions = [provider_options_source.index(f"value: {value}") for value in ordered_values]
+        assert positions == sorted(positions)
 
 
 def test_settings_embeds_local_model_management_in_local_provider_group() -> None:

@@ -304,11 +304,13 @@ Packaging and scripts:
   Pipecat provider extras. Keep `google-generativeai` and Google Cloud
   Text-to-Speech out of the standard sidecar unless a product path is
   reintroduced that actually imports them. Gemini summarization uses direct
-  HTTP. OpenRouter summarization and post-processing use direct HTTP chat
-  completions. Most OpenRouter fallback models use `:nitro` variants for
-  throughput-sorted provider routing; `openai/gpt-oss-120b` is the live
-  post-processing default and must be routed with OpenRouter provider order
-  `baseten,cerebras` instead of adding `:nitro`. Google Cloud STT uses
+  HTTP. Direct Cerebras summarization/post-processing uses the OpenAI-compatible
+  Cerebras chat completions endpoint and `cerebras/gemma-4-31b` is the live
+  post-processing default. OpenRouter summarization and post-processing use
+  direct HTTP chat completions. Most OpenRouter fallback models use `:nitro`
+  variants for throughput-sorted provider routing; `openai/gpt-oss-120b` must
+  be routed with OpenRouter provider order `baseten,cerebras` instead of adding
+  `:nitro`. Google Cloud STT uses
   `google-cloud-speech` plus Pipecat's required `google-genai` namespace
   dependency, OpenAI STT uses the explicit `openai`
   SDK dependency, Groq STT uses Pipecat's `groq` SDK dependency, and Pipecat

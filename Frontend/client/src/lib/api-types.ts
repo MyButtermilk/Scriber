@@ -274,6 +274,7 @@ export interface SettingsApiKeys {
   deepgram?: string;
   openai?: string;
   openrouter?: string;
+  cerebras?: string;
   azureMaiSpeechKey?: string;
   azureMaiRegion?: string;
   azureMaiModel?: string;

@@ -58,7 +58,7 @@ def test_post_processing_output_token_budget_is_bounded():
 
 
 @pytest.mark.asyncio
-async def test_post_process_live_transcript_uses_gpt_oss_default(monkeypatch):
+async def test_post_process_live_transcript_uses_cerebras_gemma_default(monkeypatch):
     captured = {}
 
     async def fake_generate_text_with_model(_prompt, model, *, max_output_tokens):
@@ -67,13 +67,13 @@ async def test_post_process_live_transcript_uses_gpt_oss_default(monkeypatch):
         return "Cleaned text: Standardtext"
 
     monkeypatch.setattr(post_processing.Config, "POST_PROCESSING_MODEL", "", raising=False)
-    monkeypatch.setattr(post_processing.Config, "DEFAULT_POST_PROCESSING_MODEL", "openai/gpt-oss-120b", raising=False)
+    monkeypatch.setattr(post_processing.Config, "DEFAULT_POST_PROCESSING_MODEL", "cerebras/gemma-4-31b", raising=False)
     monkeypatch.setattr(post_processing, "generate_text_with_model", fake_generate_text_with_model)
 
     out = await post_process_live_transcript("rohtext")
 
     assert out == "Standardtext"
-    assert captured["model"] == "openai/gpt-oss-120b"
+    assert captured["model"] == "cerebras/gemma-4-31b"
     assert captured["max_output_tokens"] >= 512
 
 

@@ -68,6 +68,7 @@ class Config:
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
     AZURE_MAI_SPEECH_KEY = os.getenv("AZURE_MAI_SPEECH_KEY")
     AZURE_MAI_REGION = os.getenv("SCRIBER_AZURE_MAI_REGION", "northeurope")
     AZURE_MAI_MODEL = os.getenv("SCRIBER_AZURE_MAI_MODEL", "mai-transcribe-1.5")
@@ -124,6 +125,7 @@ class Config:
         "openai": "OPENAI_API_KEY",
         "openai_async": "OPENAI_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
+        "cerebras": "CEREBRAS_API_KEY",
         "azure_mai": "AZURE_MAI_SPEECH_KEY",
         "gladia": "GLADIA_API_KEY",
         "gladia_async": "GLADIA_API_KEY",
@@ -201,11 +203,9 @@ Input:"""
     # Auto-summarize transcripts when completed
     AUTO_SUMMARIZE = os.getenv("SCRIBER_AUTO_SUMMARIZE", "0") in ("1", "true", "True")
 
-    DEFAULT_POST_PROCESSING_MODEL = "openai/gpt-oss-120b"
-    _LEGACY_DEFAULT_POST_PROCESSING_MODELS = {"", "gpt-5-nano", "google/gemini-2.5-flash-lite:nitro"}
-    _DEFAULT_POST_PROCESSING_PROMPT = """Du bist Scribers präziser Live-Diktat-Editor.
-
-Aufgabe: Glätte das folgende Speech-to-Text-Transkript sprachlich, typografisch und strukturell, ohne Inhalt zu verändern, zu kürzen, zu interpretieren oder neue Informationen hinzuzufügen.
+    DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b"
+    _LEGACY_DEFAULT_POST_PROCESSING_MODELS = {"", "gpt-5-nano", "google/gemini-2.5-flash-lite:nitro", "openai/gpt-oss-120b"}
+    _DEFAULT_POST_PROCESSING_PROMPT = """Glätte das folgende Speech-to-Text-Transkript sprachlich, typografisch und strukturell, ohne Inhalt zu verändern, zu kürzen, zu interpretieren oder neue Informationen hinzuzufügen.
 
 Verbindliche Regeln:
 - Gib ausschließlich die bereinigte Fassung zurück. Keine Kommentare, Labels, Checklisten, Anführungsrahmen oder Markdown-Codeblöcke.
@@ -450,6 +450,7 @@ ${output}"""
         add("DEEPGRAM_API_KEY", cls.DEEPGRAM_API_KEY or "")
         add("OPENAI_API_KEY", cls.OPENAI_API_KEY or "")
         add("OPENROUTER_API_KEY", cls.OPENROUTER_API_KEY or "")
+        add("CEREBRAS_API_KEY", cls.CEREBRAS_API_KEY or "")
         add("AZURE_MAI_SPEECH_KEY", cls.AZURE_MAI_SPEECH_KEY or "")
         add("SCRIBER_AZURE_MAI_REGION", cls.AZURE_MAI_REGION or "northeurope")
         add("SCRIBER_AZURE_MAI_MODEL", cls.AZURE_MAI_MODEL or "mai-transcribe-1.5")

@@ -116,10 +116,8 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
 ] as const;
 
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
-const DEFAULT_POST_PROCESSING_MODEL = "openai/gpt-oss-120b";
-const DEFAULT_POST_PROCESSING_PROMPT = `Du bist Scribers präziser Live-Diktat-Editor.
-
-Aufgabe: Glätte das folgende Speech-to-Text-Transkript sprachlich, typografisch und strukturell, ohne Inhalt zu verändern, zu kürzen, zu interpretieren oder neue Informationen hinzuzufügen.
+const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";
+const DEFAULT_POST_PROCESSING_PROMPT = `Glätte das folgende Speech-to-Text-Transkript sprachlich, typografisch und strukturell, ohne Inhalt zu verändern, zu kürzen, zu interpretieren oder neue Informationen hinzuzufügen.
 
 Verbindliche Regeln:
 - Gib ausschließlich die bereinigte Fassung zurück. Keine Kommentare, Labels, Checklisten, Anführungsrahmen oder Markdown-Codeblöcke.
@@ -203,21 +201,21 @@ type SummarizationModelOption = {
   value: string;
   label: string;
   detail: string;
-  group: "gemini" | "openrouter" | "openai";
+  group: "gemini" | "openrouter" | "openai" | "cerebras";
   icon: ProviderIconKey;
 };
 
 const SUMMARIZATION_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
-  { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: "Default fast summary model", group: "gemini", icon: "gemini" },
-  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: "Fast Google summary model", group: "gemini", icon: "gemini" },
-  { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview", detail: "Preview Flash model", group: "gemini", icon: "gemini" },
-  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: "Compact preview model", group: "gemini", icon: "gemini" },
-  { value: "gemini-3-pro-preview", label: "Gemini 3 Pro", detail: "Higher reasoning preview", group: "gemini", icon: "gemini" },
-  { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: "OpenRouter Nitro route", group: "openrouter", icon: "openrouter" },
-  { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: "OpenRouter Nitro route", group: "openrouter", icon: "openrouter" },
-  { value: "gpt-5.2", label: "OpenAI GPT 5.2", detail: "OpenAI summary model", group: "openai", icon: "openai" },
-  { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini", detail: "Lower latency OpenAI model", group: "openai", icon: "openai" },
-  { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano", detail: "Smallest OpenAI model", group: "openai", icon: "openai" },
+  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: aaLanguageBenchmarkDetail(0.22, 25), group: "gemini", icon: "gemini" },
+  { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: aaLanguageBenchmarkDetail(1.31, 45), group: "gemini", icon: "gemini" },
+  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: aaLanguageBenchmarkDetail(1.31, 45), group: "gemini", icon: "gemini" },
+  { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", detail: aaLanguageBenchmarkDetail(1.74, 46), group: "gemini", icon: "gemini" },
+  { value: "cerebras/gemma-4-31b", label: "Gemma 4 31B", detail: "0,79€/M with AA Score n/a", group: "cerebras", icon: "cerebras" },
+  { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: aaLanguageBenchmarkDetail(0.22, 44), group: "openrouter", icon: "openrouter" },
+  { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: aaLanguageBenchmarkDetail(0.90, 51), group: "openrouter", icon: "openrouter" },
+  { value: "gpt-5.5", label: "OpenAI GPT 5.5", detail: "1,38€/M with AA Score n/a", group: "openai", icon: "openai" },
+  { value: "gpt-5.4-mini", label: "OpenAI GPT 5.4 Mini", detail: aaLanguageBenchmarkDetail(0.65, 30), group: "openai", icon: "openai" },
+  { value: "gpt-5.4-nano", label: "OpenAI GPT 5.4 Nano", detail: aaLanguageBenchmarkDetail(0.18, 18), group: "openai", icon: "openai" },
 ] as const;
 
 const USD_TO_EUR_FOR_ESTIMATES = 0.877;
@@ -233,7 +231,16 @@ function languageModelBenchmarkDetail(
     minimumFractionDigits: euroPerMillionBlendedTokens < 1 ? 2 : 1,
     maximumFractionDigits: euroPerMillionBlendedTokens < 1 ? 2 : 1,
   });
-  return `${priceText} €/M blended, ~${tokensPerSecond} Token/s`;
+  return `${priceText}€/M blended, ~${tokensPerSecond} Token/s`;
+}
+
+function aaLanguageBenchmarkDetail(usdPerMillionTokens: number, intelligenceScore: number): string {
+  const euroPerMillionTokens = usdPerMillionTokens * USD_TO_EUR_FOR_ESTIMATES;
+  const priceText = euroPerMillionTokens.toLocaleString("de-DE", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${priceText}€/M with AA Score ${intelligenceScore}`;
 }
 
 function expandPromptTextarea(element: HTMLTextAreaElement, minimumHeightPx: number): void {
@@ -242,19 +249,19 @@ function expandPromptTextarea(element: HTMLTextAreaElement, minimumHeightPx: num
 }
 
 const POST_PROCESSING_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
+  { value: "cerebras/gemma-4-31b", label: "Gemma 4 31B Cerebras", detail: languageModelBenchmarkDetail(0.0000006, 0.0000012, 500), group: "cerebras", icon: "cerebras" },
   { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B Baseten", detail: languageModelBenchmarkDetail(0.0000001, 0.0000005, 189), group: "openrouter", icon: "baseten" },
   { value: "openai/gpt-oss-120b:cerebras", label: "GPT-OSS 120B Cerebras", detail: languageModelBenchmarkDetail(0.00000035, 0.00000075, 768), group: "openrouter", icon: "cerebras" },
   { value: "google/gemini-2.5-flash-lite:nitro", label: "Gemini 2.5 Flash Lite Nitro", detail: languageModelBenchmarkDetail(0.0000001, 0.0000004, 45), group: "openrouter", icon: "openrouter" },
-  { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano", detail: languageModelBenchmarkDetail(0.00000005, 0.0000004, 81), group: "openai", icon: "openai" },
+  { value: "gpt-5.4-nano", label: "OpenAI GPT 5.4 Nano", detail: languageModelBenchmarkDetail(0.00000005, 0.0000004, 81), group: "openai", icon: "openai" },
   { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: languageModelBenchmarkDetail(0.00000025, 0.0000015, 81), group: "gemini", icon: "gemini" },
   { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: languageModelBenchmarkDetail(0.0000003, 0.0000012, 58), group: "openrouter", icon: "openrouter" },
   { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: languageModelBenchmarkDetail(0.0000015, 0.000009, 69), group: "gemini", icon: "gemini" },
-  { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini", detail: languageModelBenchmarkDetail(0.00000025, 0.000002, 72), group: "openai", icon: "openai" },
+  { value: "gpt-5.4-mini", label: "OpenAI GPT 5.4 Mini", detail: languageModelBenchmarkDetail(0.00000025, 0.000002, 72), group: "openai", icon: "openai" },
   { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: languageModelBenchmarkDetail(0.00000093, 0.000003, 30), group: "openrouter", icon: "openrouter" },
   { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: languageModelBenchmarkDetail(0.0000015, 0.000009, 69), group: "gemini", icon: "gemini" },
-  { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview", detail: languageModelBenchmarkDetail(0.0000005, 0.000003, 64), group: "gemini", icon: "gemini" },
-  { value: "gpt-5.2", label: "OpenAI GPT 5.2", detail: languageModelBenchmarkDetail(0.00000175, 0.000014, 39), group: "openai", icon: "openai" },
-  { value: "gemini-3-pro-preview", label: "Gemini 3 Pro", detail: languageModelBenchmarkDetail(0.000002, 0.000012, 95), group: "gemini", icon: "gemini" },
+  { value: "gpt-5.5", label: "OpenAI GPT 5.5", detail: languageModelBenchmarkDetail(0.00000175, 0.000014, 39), group: "openai", icon: "openai" },
+  { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", detail: languageModelBenchmarkDetail(0.000002, 0.000012, 95), group: "gemini", icon: "gemini" },
 ] as const;
 
 const API_KEY_HELP_LINKS = {
@@ -263,6 +270,7 @@ const API_KEY_HELP_LINKS = {
   assemblyai: { href: "https://www.assemblyai.com/dashboard", label: "AssemblyAI dashboard" },
   gemini: { href: "https://aistudio.google.com/app/apikey", label: "Google AI Studio" },
   openrouter: { href: "https://openrouter.ai/settings/keys", label: "OpenRouter keys" },
+  cerebras: { href: "https://cloud.cerebras.ai/", label: "Cerebras Cloud" },
   youtube: { href: "https://console.cloud.google.com/apis/credentials", label: "Google Cloud credentials" },
   soniox: { href: "https://console.soniox.com/", label: "Soniox console" },
   smallest: { href: "https://app.smallest.ai/", label: "Smallest AI console" },
@@ -449,32 +457,32 @@ function sttBenchmarkDetail(usdPerThousandMinutes: number, wordErrorRatePercent:
     minimumFractionDigits: wordErrorRatePercent % 1 === 0 ? 0 : 1,
     maximumFractionDigits: 1,
   });
-  return `${euroText} €/h, ${errorText} % Error`;
+  return `${euroText}€/h with ${errorText}% Error`;
 }
 
 const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
-  { value: "onnx_local", label: "Local ONNX", detail: "0,00 €/h, model-dependent Error", group: "local" },
-  { value: "nemo_local", label: "Local NeMo", detail: "0,00 €/h, model-dependent Error", group: "local" },
+  { value: "assemblyai-realtime", label: "AssemblyAI", detail: sttBenchmarkDetail(7.50, 4.1), group: "cloud_streaming", icon: "assemblyai" },
   { value: "soniox-realtime", label: "Soniox", detail: sttBenchmarkDetail(2.00, 4.5), group: "cloud_streaming", icon: "soniox" },
+  { value: "google", label: "Google Cloud", detail: sttBenchmarkDetail(16.00, 4.8), group: "cloud_streaming", icon: "googlecloud" },
   { value: "smallest-realtime", label: "Smallest AI", detail: sttBenchmarkDetail(8.00, 6.5), group: "cloud_streaming", icon: "smallest" },
   { value: "deepgram", label: "Deepgram", detail: sttBenchmarkDetail(4.80, 6.6), group: "cloud_streaming", icon: "deepgram" },
   { value: "gladia", label: "Gladia", detail: sttBenchmarkDetail(12.50, 7.8), group: "cloud_streaming", icon: "gladia" },
-  { value: "google", label: "Google Cloud", detail: sttBenchmarkDetail(16.00, 4.8), group: "cloud_streaming", icon: "googlecloud" },
   { value: "speechmatics", label: "Speechmatics", detail: sttBenchmarkDetail(17.50, 8.0), group: "cloud_streaming", icon: "speechmatics" },
-  { value: "assemblyai-realtime", label: "AssemblyAI", detail: sttBenchmarkDetail(7.50, 4.1), group: "cloud_streaming", icon: "assemblyai" },
-  { value: "mistral-realtime", label: "Mistral", detail: sttBenchmarkDetail(6.00, 5.2), group: "cloud_segmented", icon: "mistral" },
-  { value: "openai", label: "OpenAI", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_segmented", icon: "openai" },
-  { value: "groq", label: "Groq", detail: sttBenchmarkDetail(4.00, 3.7), group: "cloud_segmented", icon: "groq" },
   { value: "elevenlabs", label: "ElevenLabs", detail: sttBenchmarkDetail(6.50, 3.6), group: "cloud_segmented", icon: "elevenlabs" },
-  { value: "soniox-async", label: "Soniox", detail: sttBenchmarkDetail(1.66, 3.8), group: "cloud_async", icon: "soniox" },
-  { value: "mistral-async", label: "Mistral", detail: sttBenchmarkDetail(3.00, 3.6), group: "cloud_async", icon: "mistral" },
-  { value: "smallest-async", label: "Smallest AI", detail: sttBenchmarkDetail(5.00, 4.4), group: "cloud_async", icon: "smallest" },
-  { value: "deepgram-async", label: "Deepgram", detail: sttBenchmarkDetail(4.30, 5.2), group: "cloud_async", icon: "deepgram" },
-  { value: "gladia-async", label: "Gladia", detail: sttBenchmarkDetail(4.07, 4.1), group: "cloud_async", icon: "gladia" },
-  { value: "openai-async", label: "OpenAI", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_async", icon: "openai" },
-  { value: "speechmatics-async", label: "Speechmatics", detail: sttBenchmarkDetail(6.70, 4.0), group: "cloud_async", icon: "speechmatics" },
-  { value: "assemblyai", label: "AssemblyAI", detail: sttBenchmarkDetail(3.50, 3.1), group: "cloud_async", icon: "assemblyai" },
+  { value: "groq", label: "Groq", detail: sttBenchmarkDetail(4.00, 3.7), group: "cloud_segmented", icon: "groq" },
+  { value: "openai", label: "OpenAI", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_segmented", icon: "openai" },
+  { value: "mistral-realtime", label: "Mistral", detail: sttBenchmarkDetail(6.00, 5.2), group: "cloud_segmented", icon: "mistral" },
   { value: "azure_mai", label: "Microsoft MAI", detail: sttBenchmarkDetail(6.00, 2.4), group: "cloud_async", icon: "azure" },
+  { value: "assemblyai", label: "AssemblyAI", detail: sttBenchmarkDetail(3.50, 3.1), group: "cloud_async", icon: "assemblyai" },
+  { value: "mistral-async", label: "Mistral", detail: sttBenchmarkDetail(3.00, 3.6), group: "cloud_async", icon: "mistral" },
+  { value: "soniox-async", label: "Soniox", detail: sttBenchmarkDetail(1.66, 3.8), group: "cloud_async", icon: "soniox" },
+  { value: "speechmatics-async", label: "Speechmatics", detail: sttBenchmarkDetail(6.70, 4.0), group: "cloud_async", icon: "speechmatics" },
+  { value: "gladia-async", label: "Gladia", detail: sttBenchmarkDetail(4.07, 4.1), group: "cloud_async", icon: "gladia" },
+  { value: "smallest-async", label: "Smallest AI", detail: sttBenchmarkDetail(5.00, 4.4), group: "cloud_async", icon: "smallest" },
+  { value: "openai-async", label: "OpenAI", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_async", icon: "openai" },
+  { value: "deepgram-async", label: "Deepgram", detail: sttBenchmarkDetail(4.30, 5.2), group: "cloud_async", icon: "deepgram" },
+  { value: "onnx_local", label: "Local ONNX", detail: "0,00€/h with model-dependent Error", group: "local" },
+  { value: "nemo_local", label: "Local NeMo", detail: "0,00€/h with model-dependent Error", group: "local" },
 ];
 
 function ProviderIcon({
@@ -528,7 +536,7 @@ function SectionPanel({
           </span>
         ) : null}
         <div className="min-w-0 flex-1">
-          <h2 className="text-[14px] !font-bold leading-5 text-slate-950 dark:text-slate-100">{title}</h2>
+          <h2 className="text-[16px] !font-extrabold leading-5 text-slate-950 dark:text-slate-100 md:text-[17px]">{title}</h2>
           <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 lg:whitespace-nowrap dark:text-slate-400">
             {description}
           </p>
@@ -625,13 +633,13 @@ function ProviderChoice({
       aria-disabled={disabled || undefined}
       disabled={disabled}
       onClick={onSelect}
-      title={disabledReason}
+      title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : ""}`}
       className={cn(
-        "group flex min-h-[35px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
+        "group flex min-h-[40px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
         !disabled && "active:translate-y-px",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
         disabled
-          ? "cursor-not-allowed text-slate-400 opacity-65 dark:text-slate-600"
+          ? "cursor-not-allowed text-slate-700 dark:text-slate-300"
           : selected
           ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
           : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-slate-900",
@@ -645,13 +653,15 @@ function ProviderChoice({
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[11.5px] font-semibold leading-[15px]">{option.label}</span>
         <span
-          className={cn(
-            "block truncate text-[10px] leading-3",
-            disabled ? "text-amber-600 dark:text-amber-400" : "text-slate-500 dark:text-slate-400",
-          )}
+          className="block truncate text-[10px] leading-3 text-slate-500 dark:text-slate-400"
         >
-          {disabledReason || option.detail}
+          {option.detail}
         </span>
+        {disabledReason ? (
+          <span className="block truncate text-[10px] font-medium leading-3 text-amber-600 dark:text-amber-400">
+            {disabledReason}
+          </span>
+        ) : null}
       </span>
       <span
         className={cn(
@@ -691,13 +701,13 @@ function SummaryModelChoice({
       aria-disabled={disabled || undefined}
       disabled={disabled}
       onClick={onSelect}
-      title={disabledReason}
+      title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : ""}`}
       className={cn(
-        "group flex min-h-[35px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
+        "group flex min-h-[40px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
         !disabled && "active:translate-y-px",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
         disabled
-          ? "cursor-not-allowed text-slate-400 opacity-65 dark:text-slate-600"
+          ? "cursor-not-allowed text-slate-700 dark:text-slate-300"
           : selected
           ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
           : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-slate-900",
@@ -707,13 +717,15 @@ function SummaryModelChoice({
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[11.5px] font-semibold leading-[15px]">{option.label}</span>
         <span
-          className={cn(
-            "block truncate text-[10px] leading-3",
-            disabled ? "text-amber-600 dark:text-amber-400" : "text-slate-500 dark:text-slate-400",
-          )}
+          className="block truncate text-[10px] leading-3 text-slate-500 dark:text-slate-400"
         >
-          {disabledReason || option.detail}
+          {option.detail}
         </span>
+        {disabledReason ? (
+          <span className="block truncate text-[10px] font-medium leading-3 text-amber-600 dark:text-amber-400">
+            {disabledReason}
+          </span>
+        ) : null}
       </span>
       <span
         className={cn(
@@ -861,6 +873,7 @@ export default function Settings() {
   const [assemblyAIKey, setAssemblyAIKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
   const [openRouterKey, setOpenRouterKey] = useState("");
+  const [cerebrasKey, setCerebrasKey] = useState("");
   const [youtubeKey, setYoutubeKey] = useState("");
   const [sonioxKey, setSonioxKey] = useState("");
   const [mistralKey, setMistralKey] = useState("");
@@ -884,6 +897,7 @@ export default function Settings() {
   const [showAssemblyAIKey, setShowAssemblyAIKey] = useState(false);
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [showOpenRouterKey, setShowOpenRouterKey] = useState(false);
+  const [showCerebrasKey, setShowCerebrasKey] = useState(false);
   const [showYoutubeKey, setShowYoutubeKey] = useState(false);
   const [showSonioxKey, setShowSonioxKey] = useState(false);
   const [showMistralKey, setShowMistralKey] = useState(false);
@@ -976,6 +990,8 @@ export default function Settings() {
         return savedCredentialAvailable("Gemini", geminiKey);
       case "OpenRouter":
         return savedCredentialAvailable("OpenRouter", openRouterKey);
+      case "Cerebras":
+        return savedCredentialAvailable("Cerebras", cerebrasKey);
       case "Soniox":
         return savedCredentialAvailable("Soniox", sonioxKey);
       case "Mistral":
@@ -1051,6 +1067,9 @@ export default function Settings() {
     }
     if (model.startsWith("gemini-")) {
       return { provider: "Gemini", label: "Gemini API key", helpKey: "gemini" };
+    }
+    if (model.startsWith("cerebras/")) {
+      return { provider: "Cerebras", label: "Cerebras API key", helpKey: "cerebras" };
     }
     if (model.includes("/")) {
       return { provider: "OpenRouter", label: "OpenRouter API key", helpKey: "openrouter" };
@@ -1214,6 +1233,7 @@ export default function Settings() {
         setOpenAIKey(keys.openai || "");
         setGeminiKey(keys.googleApiKey || "");
         setOpenRouterKey(keys.openrouter || "");
+        setCerebrasKey(keys.cerebras || "");
         setYoutubeKey(keys.youtubeApiKey || "");
         setElevenLabsKey(keys.elevenlabs || "");
         setAzureMaiKey(keys.azureMaiSpeechKey || "");
@@ -1227,6 +1247,7 @@ export default function Settings() {
           OpenAI: hasValue(keys.openai),
           Gemini: hasValue(keys.googleApiKey),
           OpenRouter: hasValue(keys.openrouter),
+          Cerebras: hasValue(keys.cerebras),
           YouTube: hasValue(keys.youtubeApiKey),
           Soniox: hasValue(keys.soniox),
           Mistral: hasValue(keys.mistral),
@@ -1353,6 +1374,7 @@ export default function Settings() {
       if (provider === "AssemblyAI") apiKeys.assemblyai = assemblyAIKey;
       if (provider === "Gemini") apiKeys.googleApiKey = geminiKey;
       if (provider === "OpenRouter") apiKeys.openrouter = openRouterKey;
+      if (provider === "Cerebras") apiKeys.cerebras = cerebrasKey;
       if (provider === "YouTube") apiKeys.youtubeApiKey = youtubeKey;
       if (provider === "Soniox") apiKeys.soniox = sonioxKey;
       if (provider === "Mistral") apiKeys.mistral = mistralKey;
@@ -2318,6 +2340,11 @@ export default function Settings() {
       items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "gemini"),
     },
     {
+      key: "cerebras",
+      label: "Cerebras",
+      items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "cerebras"),
+    },
+    {
       key: "openrouter",
       label: "OpenRouter",
       items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "openrouter"),
@@ -2414,8 +2441,13 @@ export default function Settings() {
                       <span className="min-w-0">
                         <span className="block truncate text-[12px] font-semibold leading-4">{option.label}</span>
                         <span className="block truncate text-[10.5px] leading-3 text-slate-500 dark:text-slate-400">
-                          {disabledReason || option.detail}
+                          {option.detail}
                         </span>
+                        {disabledReason ? (
+                          <span className="block truncate text-[10.5px] font-medium leading-3 text-amber-600 dark:text-amber-400">
+                            {disabledReason}
+                          </span>
+                        ) : null}
                       </span>
                     </span>
                   </SelectItem>
@@ -2977,6 +3009,7 @@ export default function Settings() {
               <ApiCredentialRow provider="OpenAI" icon="openai" value={openAIKey} onValueChange={markCredentialChanged("OpenAI", setOpenAIKey)} show={showOpenAIKey} onShowChange={setShowOpenAIKey} helpKey="openai" saved={savedKeys.OpenAI === true} onSave={() => handleSaveApiKey("OpenAI")} note="Used for OpenAI STT and summarization." />
               <ApiCredentialRow provider="Gemini" icon="gemini" value={geminiKey} onValueChange={markCredentialChanged("Gemini", setGeminiKey)} show={showGeminiKey} onShowChange={setShowGeminiKey} helpKey="gemini" saved={savedKeys.Gemini === true} onSave={() => handleSaveApiKey("Gemini")} />
               <ApiCredentialRow provider="OpenRouter" icon="openrouter" value={openRouterKey} onValueChange={markCredentialChanged("OpenRouter", setOpenRouterKey)} show={showOpenRouterKey} onShowChange={setShowOpenRouterKey} helpKey="openrouter" saved={savedKeys.OpenRouter === true} onSave={() => handleSaveApiKey("OpenRouter")} />
+              <ApiCredentialRow provider="Cerebras" icon="cerebras" value={cerebrasKey} onValueChange={markCredentialChanged("Cerebras", setCerebrasKey)} show={showCerebrasKey} onShowChange={setShowCerebrasKey} helpKey="cerebras" saved={savedKeys.Cerebras === true} onSave={() => handleSaveApiKey("Cerebras")} note="Used for direct Cerebras summary and cleanup models." />
               <ApiCredentialRow provider="YouTube" icon="youtube" value={youtubeKey} onValueChange={markCredentialChanged("YouTube", setYoutubeKey)} show={showYoutubeKey} onShowChange={setShowYoutubeKey} helpKey="youtube" saved={savedKeys.YouTube === true} onSave={() => handleSaveApiKey("YouTube")} note="Used for search and metadata in the YouTube tab." />
               <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={markCredentialChanged("Soniox", setSonioxKey)} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} />
               <ApiCredentialRow provider="Mistral" icon="mistral" value={mistralKey} onValueChange={markCredentialChanged("Mistral", setMistralKey)} show={showMistralKey} onShowChange={setShowMistralKey} helpKey="mistral" saved={savedKeys.Mistral === true} onSave={() => handleSaveApiKey("Mistral")} />

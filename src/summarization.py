@@ -21,7 +21,11 @@ SummarizationModel = Literal[
     "gemini-3.5-flash",
     "gemini-3-flash-preview",
     "gemini-3.1-flash-lite-preview",
+    "gemini-3.1-pro-preview",
     "gemini-3-pro-preview",
+    "gpt-5.5",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
     "gpt-5.2",
     "gpt-5-mini",
     "gpt-5-nano",
@@ -29,24 +33,30 @@ SummarizationModel = Literal[
     "minimax/minimax-m3:nitro",
     "openai/gpt-oss-120b",
     "openai/gpt-oss-120b:cerebras",
+    "cerebras/gemma-4-31b",
     "z-ai/glm-5.2:nitro",
 ]
 _OPENROUTER_DEFAULT_MODELS = ("minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro")
 _OPENROUTER_PROVIDER_ROUTED_MODELS = frozenset({"openai/gpt-oss-120b"})
 _OPENROUTER_PROVIDER_ROUTE_SUFFIXES = frozenset({"baseten", "cerebras"})
 _MODEL_OUTPUT_TOKEN_CAPS = {
+    "gpt-5.4-nano": 4096,
     "gpt-5-nano": 4096,
+    "gpt-5.4-mini": 8192,
     "gpt-5-mini": 8192,
+    "gpt-5.5": 8192,
     "gpt-5.2": 8192,
     "gemini-flash-latest": 65536,
     "gemini-3.5-flash": 65536,
     "gemini-3-flash-preview": 8192,
     "gemini-3.1-flash-lite-preview": 8192,
+    "gemini-3.1-pro-preview": 12288,
     "gemini-3-pro-preview": 12288,
     "google/gemini-2.5-flash-lite:nitro": 4096,
     "minimax/minimax-m3:nitro": 8192,
     "openai/gpt-oss-120b": 4096,
     "openai/gpt-oss-120b:cerebras": 4096,
+    "cerebras/gemma-4-31b": 8192,
     "z-ai/glm-5.2:nitro": 8192,
 }
 _MARKDOWN_OUTPUT_GUARDRAIL = (
@@ -101,7 +111,16 @@ def _should_fallback_to_openrouter() -> bool:
 
 
 def _is_openrouter_model(model: str) -> bool:
-    return "/" in (model or "") and not model.startswith(("http://", "https://"))
+    return "/" in (model or "") and not model.startswith(("http://", "https://", "cerebras/"))
+
+
+def _is_cerebras_model(model: str) -> bool:
+    return (model or "").strip().startswith("cerebras/")
+
+
+def _cerebras_model_id(model: str) -> str:
+    raw = (model or "").strip()
+    return raw.split("/", 1)[1] if raw.startswith("cerebras/") else raw
 
 
 def _openrouter_nitro_model(model: str) -> str:
@@ -388,6 +407,8 @@ async def _summarize_with_model(prompt: str, model: str, max_output_tokens: int)
         return await _summarize_openai(prompt, model, max_output_tokens)
     if model.startswith("gemini-"):
         return await _summarize_gemini(prompt, model, max_output_tokens)
+    if _is_cerebras_model(model):
+        return await _summarize_cerebras(prompt, model, max_output_tokens)
     if _is_openrouter_model(model):
         return await _summarize_openrouter(prompt, model, max_output_tokens)
     raise ValueError(f"Unknown summarization model: {model}")
@@ -1039,6 +1060,56 @@ async def _summarize_openrouter(
     except json.JSONDecodeError as e:
         logger.exception("OpenRouter summarization parse error")
         raise RuntimeError(f"OpenRouter response parse failed: {e}")
+
+
+async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -> str:
+    """Generate text through direct Cerebras OpenAI-compatible Chat Completions."""
+    api_key = getattr(Config, "CEREBRAS_API_KEY", "") or ""
+    if not api_key:
+        raise ValueError("Cerebras API key not configured. Please add it in Settings.")
+
+    timeout_seconds = _summary_timeout_seconds()
+    timeout = aiohttp.ClientTimeout(
+        total=timeout_seconds,
+        connect=min(15, timeout_seconds),
+        sock_connect=min(15, timeout_seconds),
+        sock_read=timeout_seconds,
+    )
+    payload = {
+        "model": _cerebras_model_id(model),
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_output_tokens,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post("https://api.cerebras.ai/v1/chat/completions", headers=headers, json=payload) as resp:
+                raw = await resp.text()
+                if resp.status >= 400:
+                    detail = raw[:600]
+                    raise RuntimeError(f"Cerebras API error {resp.status}: {detail}")
+                data = json.loads(raw)
+
+        content = _extract_openrouter_response_text(data).strip()
+        if not content:
+            detail = _openrouter_empty_response_detail(data)
+            raise RuntimeError(f"Cerebras returned empty response. detail={detail}")
+        logger.info(
+            "Cerebras text generation complete: {} chars (model={})",
+            len(content),
+            payload["model"],
+        )
+        return content
+    except aiohttp.ClientError as e:
+        logger.exception("Cerebras summarization HTTP error")
+        raise RuntimeError(f"Cerebras summarization failed: {e}")
+    except json.JSONDecodeError as e:
+        logger.exception("Cerebras summarization parse error")
+        raise RuntimeError(f"Cerebras response parse failed: {e}")
 
 
 def _build_gemini_payload(prompt: str, model: str, max_output_tokens: int) -> dict[str, Any]:

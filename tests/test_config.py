@@ -56,9 +56,10 @@ class TestConfig(unittest.TestCase):
     def test_soniox_realtime_default_model_is_v5(self):
         self.assertEqual(Config.DEFAULT_SONIOX_RT_MODEL, "stt-rt-v5")
 
-    def test_post_processing_default_model_is_gpt_oss_120b(self):
-        self.assertEqual(Config.DEFAULT_POST_PROCESSING_MODEL, "openai/gpt-oss-120b")
+    def test_post_processing_default_model_is_cerebras_gemma(self):
+        self.assertEqual(Config.DEFAULT_POST_PROCESSING_MODEL, "cerebras/gemma-4-31b")
         self.assertIn("google/gemini-2.5-flash-lite:nitro", Config._LEGACY_DEFAULT_POST_PROCESSING_MODELS)
+        self.assertIn("openai/gpt-oss-120b", Config._LEGACY_DEFAULT_POST_PROCESSING_MODELS)
 
 
 def test_bootstrap_runtime_env_reads_only_path_keys(monkeypatch, tmp_path):

@@ -317,13 +317,14 @@ NeMo Settings surface falls back to that ONNX local model path when full
 NeMo/Torch is unavailable; full NeMo/Torch remains excluded from the standard
 sidecar because it would dominate installer size.
 Google Cloud STT is packaged through `google-cloud-speech` plus Pipecat's
-required `google-genai` namespace dependency; Gemini and OpenRouter
+required `google-genai` namespace dependency; Gemini, Cerebras, and OpenRouter
 summarization/post-processing use direct HTTP and do not require
-`google-generativeai`. Most OpenRouter summary fallback models are sent with
-`:nitro` variants. Live post-processing defaults to `openai/gpt-oss-120b`
-without `:nitro` and sends OpenRouter provider order `baseten,cerebras`.
-OpenRouter remains the automatic cross-provider summary fallback when an
-OpenRouter key is configured.
+`google-generativeai`. Direct Cerebras calls use `cerebras/gemma-4-31b`, which
+is the live post-processing default. Most OpenRouter summary fallback models are
+sent with `:nitro` variants; `openai/gpt-oss-120b` keeps explicit OpenRouter
+provider ordering through `baseten,cerebras` when selected. OpenRouter remains
+the automatic cross-provider summary fallback when an OpenRouter key is
+configured.
 OpenAI STT uses the explicit `openai` SDK dependency, Groq STT uses Pipecat's
 `groq` SDK dependency, and Pipecat provider imports require `nltk` at runtime.
 Gladia live transcription still uses Pipecat's Gladia service, while
