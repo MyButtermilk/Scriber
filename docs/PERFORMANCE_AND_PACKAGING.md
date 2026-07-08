@@ -144,10 +144,15 @@ Packaging/build:
   to Actions cache restore, so new app tags do not need to rebuild FFmpeg when
   the Profile B source/ref/profile is unchanged.
 - GitHub release builds also restore the Python wheelhouse, backend
-  PyInstaller sidecar cache, and Rust audio sidecar cache from internal
-  release artifacts when the normal Actions cache misses. This is required
-  because GitHub Actions caches are ref-scoped and sibling app tags can miss
-  even when their cache keys are identical.
+  PyInstaller sidecar cache, main Rust/Tauri release cache, and Rust audio
+  sidecar cache from internal release artifacts when the normal Actions cache
+  misses. This is required because GitHub Actions caches are ref-scoped and
+  sibling app tags can miss even when their cache keys are identical.
+- The release Python wheelhouse cache is built with `pip wheel`, not
+  `pip download`, so packages that only publish sdists are built once into
+  reusable wheels. Release installs use `--no-index --find-links` against that
+  wheelhouse and a `.venv` requirements-key marker skips pip entirely when a
+  restored virtualenv is already current and passes `pip check`.
 
 ## FFmpeg Profile B
 
@@ -241,10 +246,11 @@ Release workflow:
 
 - `.github/workflows/release-windows.yml` builds Profile B with MSYS2/UCRT64.
 - The workflow caches stable heavy build inputs and outputs: a project-local
-  Python `.venv` keyed by Python version plus release requirements,
-  a Python wheelhouse for incremental package restores, `Frontend\node_modules`
-  keyed by the frontend lockfile with npm's package cache as fallback, Cargo
-  release dependency artifacts keyed by the Rust lockfile/source set, the Tauri
+  Python `.venv` keyed by Python version plus release requirements, a v2 Python
+  wheelhouse of built wheels for package restores, `Frontend\node_modules`
+  keyed by the frontend lockfile with npm's package cache as fallback,
+  project-local Cargo registry/git caches plus selected `target\release`
+  dependency build directories keyed by the Rust lockfile/source set, the Tauri
   bundler download cache, the PyInstaller/Rust-audio sidecar caches, and the
   Profile B media-tool output keyed by FFmpeg ref plus a manual cache profile
   version. Cache hits and restore-key hits still run the relevant validation
@@ -252,19 +258,20 @@ Release workflow:
   output fails validation, the workflow falls back to a fresh MSYS2 build.
 - Actions cache is treated as the fast first layer, not the durable layer. When
   sibling tag refs cannot see each other's caches, the workflow restores
-  durable internal release artifacts from `release-cache-python-wheelhouse-v1`,
-  `release-cache-backend-sidecar-v1`, `release-cache-rust-audio-sidecar-v1`,
-  and `ffmpeg-profile-b-n7.0-v2`. Those releases are implementation caches, not
-  user-facing app updates, and are published with `--latest=false`.
+  durable internal release artifacts from `release-cache-python-wheelhouse-v2`,
+  `release-cache-backend-sidecar-v1`, `release-cache-rust-build-v1`,
+  `release-cache-rust-audio-sidecar-v1`, and `ffmpeg-profile-b-n7.0-v2`.
+  Those releases are implementation caches, not user-facing app updates, and
+  are published with `--latest=false`.
 - Version-only app releases must not invalidate durable cache artifacts unless
   their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
   Python backend at launch, so a version-normalized backend sidecar can still
   report the installed app version through `/api/health`.
-- The main Tauri desktop binary still uses the normal Cargo Actions cache. A
-  full `target\release` artifact is intentionally not published yet because it
-  is hundreds of MiB and may cost more to upload/download than it saves. If
-  Tauri compilation remains the release bottleneck, add a measured dedicated
-  Rust cache strategy rather than an opaque large release artifact.
+- The main Tauri desktop binary uses a two-layer Rust cache: Actions cache
+  first, then a normalized internal release artifact that contains Cargo
+  registry/git data plus selected `target\release` dependency directories.
+  The artifact is intentionally scoped to reusable dependency build state, not
+  a blindly archived final installer output.
 - The signed release workflow installs only `requirements-base.txt` and
   `requirements-build.txt`. `requirements-dev.txt` is intentionally excluded
   because the packaging step skips the Python unit suite; run tests before
