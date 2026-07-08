@@ -209,13 +209,19 @@ Release workflow:
 
 - `.github/workflows/release-windows.yml` builds Profile B with MSYS2/UCRT64.
 - The workflow caches stable heavy build inputs and outputs: a project-local
-  Python `.venv` keyed by Python version plus requirements files,
-  `Frontend\node_modules` keyed by the frontend lockfile, Cargo release
-  dependency artifacts keyed by the Rust lockfile/source set, the Tauri bundler
-  download cache, the PyInstaller/Rust-audio sidecar caches, and the Profile B
-  media-tool output keyed by FFmpeg ref plus Profile-B/media-smoke scripts.
-  Cache hits still run the relevant validation gates before the installer
-  consumes restored outputs.
+  Python `.venv` keyed by Python version plus release requirements,
+  a Python wheelhouse for incremental package restores, `Frontend\node_modules`
+  keyed by the frontend lockfile with npm's package cache as fallback, Cargo
+  release dependency artifacts keyed by the Rust lockfile/source set, the Tauri
+  bundler download cache, the PyInstaller/Rust-audio sidecar caches, and the
+  Profile B media-tool output keyed by FFmpeg ref plus a manual cache profile
+  version. Cache hits and restore-key hits still run the relevant validation
+  gates before the installer consumes restored outputs. If a restored Profile B
+  output fails validation, the workflow falls back to a fresh MSYS2 build.
+- The signed release workflow installs only `requirements-base.txt` and
+  `requirements-build.txt`. `requirements-dev.txt` is intentionally excluded
+  because the packaging step skips the Python unit suite; run tests before
+  tagging or through PR/readiness gates instead.
 - Workflow concurrency cancels older in-progress release builds for the same
   ref so stale branch builds do not keep consuming runner time after a newer
   commit starts.

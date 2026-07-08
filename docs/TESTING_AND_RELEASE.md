@@ -530,10 +530,15 @@ the workflows do not fall back to deprecated Node action runtimes.
 It:
 
 - sets up Python, Node, Rust, and MSYS2/UCRT64,
-- builds FFmpeg Profile B,
+- restores release caches for Python `.venv`, Python wheels, frontend
+  `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools,
+- validates restored Profile B media tools before reuse and builds FFmpeg
+  Profile B only when no restored output passes validation,
 - passes the produced media tools to `scripts/build_windows.ps1`,
 - skips the full Python unit suite in the packaging step; run it before release
-  or through PR/readiness gates,
+  or through PR/readiness gates. The release workflow therefore installs
+  `requirements-base.txt` and `requirements-build.txt`, but not
+  `requirements-dev.txt`,
 - runs media-preparation and runtime dependency footprint gates,
 - uploads or publishes NSIS artifacts and release metadata,
 - optionally validates Authenticode signatures and Tauri updater metadata when

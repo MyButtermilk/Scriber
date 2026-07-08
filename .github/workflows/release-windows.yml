@@ -29,7 +29,6 @@ jobs:
           cache: "pip"
           cache-dependency-path: |
             requirements-base.txt
-            requirements-dev.txt
             requirements-build.txt
 
       - name: Set up Node
@@ -72,7 +71,18 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .venv
-          key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-dev.txt', 'requirements-build.txt') }}
+          key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+          restore-keys: |
+            scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-
+
+      - name: Restore Python wheelhouse cache
+        id: python-wheelhouse-cache
+        uses: actions/cache@v6
+        with:
+          path: build/python-wheelhouse
+          key: scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+          restore-keys: |
+            scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-
 
       - name: Restore frontend dependency cache
         id: frontend-node-modules-cache
@@ -80,6 +90,8 @@ jobs:
         with:
           path: Frontend/node_modules
           key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('Frontend/package-lock.json') }}
+          restore-keys: |
+            scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-
 
       - name: Restore backend sidecar cache
         id: backend-sidecar-cache
@@ -88,7 +100,7 @@ jobs:
           path: |
             build/tauri-sidecar-cache
             build/rust-audio-sidecar-cache
-          key: scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('requirements-base.txt', 'requirements-dev.txt', 'requirements-build.txt', 'packaging/scriber-backend.spec', 'scripts/build_tauri_backend_sidecar.ps1', 'src/**/*.py', 'Frontend/src-tauri/Cargo.lock', 'Frontend/src-tauri/Cargo.toml', 'Frontend/src-tauri/build.rs', 'Frontend/src-tauri/src/audio_sidecar.rs', 'Frontend/src-tauri/src/audio_sidecar_client.rs', 'Frontend/src-tauri/src/audio_frame_pipe.rs', 'Frontend/src-tauri/src/redaction.rs') }}
+          key: scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'packaging/scriber-backend.spec', 'scripts/build_tauri_backend_sidecar.ps1', 'src/**/*.py', 'Frontend/src-tauri/Cargo.lock', 'Frontend/src-tauri/Cargo.toml', 'Frontend/src-tauri/build.rs', 'Frontend/src-tauri/src/audio_sidecar.rs', 'Frontend/src-tauri/src/audio_sidecar_client.rs', 'Frontend/src-tauri/src/audio_frame_pipe.rs', 'Frontend/src-tauri/src/redaction.rs') }}
           restore-keys: |
             scriber-backend-sidecar-${{ runner.os }}-
 
@@ -102,27 +114,39 @@ jobs:
             build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-fixtures.json
             build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
             build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
-          key: scriber-ffmpeg-profile-b-msys2-n7.0-${{ runner.os }}-${{ hashFiles('scripts/ffmpeg/**', 'scripts/smoke_media_preparation.py') }}
+          key: scriber-ffmpeg-profile-b-msys2-n7.0-v2-${{ runner.os }}
+          restore-keys: |
+            scriber-ffmpeg-profile-b-msys2-n7.0-v2-${{ runner.os }}
+            scriber-ffmpeg-profile-b-msys2-n7.0-${{ runner.os }}-
 
-      - name: Set up MSYS2
-        if: steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true'
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
+      - name: Report release cache hits
+        shell: pwsh
+        run: |
+          Write-Host "Python venv cache hit: ${{ steps.python-venv-cache.outputs.cache-hit }}"
+          Write-Host "Python wheelhouse cache hit: ${{ steps.python-wheelhouse-cache.outputs.cache-hit }}"
+          Write-Host "Frontend node_modules cache hit: ${{ steps.frontend-node-modules-cache.outputs.cache-hit }}"
+          Write-Host "Backend sidecar cache hit: ${{ steps.backend-sidecar-cache.outputs.cache-hit }}"
+          Write-Host "FFmpeg Profile B cache hit: ${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}"
 
       - name: Install Python dependencies
         shell: pwsh
         run: |
           $venvPython = ".\.venv\Scripts\python.exe"
+          $wheelhouse = "build\python-wheelhouse"
+          New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
           if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
             python -m venv .venv
           }
           if ("${{ steps.python-venv-cache.outputs.cache-hit }}" -ne "true") {
             & $venvPython -m pip install --upgrade pip
-            & $venvPython -m pip install -r requirements-base.txt
-            & $venvPython -m pip install -r requirements-dev.txt
-            & $venvPython -m pip install -r requirements-build.txt
+            if ("${{ steps.python-wheelhouse-cache.outputs.cache-hit }}" -ne "true") {
+              & $venvPython -m pip download --dest $wheelhouse --prefer-binary -r requirements-base.txt -r requirements-build.txt
+            } else {
+              Write-Host "Using cached Python wheelhouse."
+            }
+            $resolvedWheelhouse = (Resolve-Path $wheelhouse).Path
+            & $venvPython -m pip install --prefer-binary --find-links $resolvedWheelhouse -r requirements-base.txt
+            & $venvPython -m pip install --prefer-binary --find-links $resolvedWheelhouse -r requirements-build.txt
           } else {
             & $venvPython -m pip check
           }
@@ -133,68 +157,98 @@ jobs:
       - name: Install frontend dependencies
         if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
         working-directory: Frontend
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --fund=false
 
       - name: Use cached frontend dependencies
         if: steps.frontend-node-modules-cache.outputs.cache-hit == 'true'
         working-directory: Frontend
         run: npm ls --depth=0 --silent
 
-      - name: Use cached FFmpeg Profile B media tools
-        if: steps.ffmpeg-profile-b-cache.outputs.cache-hit == 'true'
+      - name: Resolve cached FFmpeg Profile B media tools
+        id: ffmpeg-profile-b-resolve
         shell: pwsh
         run: |
           $buildRoot = "build\ffmpeg-profile-b-msys2"
-          $mediaToolsDir = (Resolve-Path "$buildRoot\dist\scriber-ffmpeg-profile-b\bin").Path
-          $ffmpeg = Join-Path $mediaToolsDir "ffmpeg.exe"
-          $ffprobe = Join-Path $mediaToolsDir "ffprobe.exe"
-          if (-not (Test-Path -LiteralPath $ffmpeg -PathType Leaf)) {
-            throw "Cached Profile B ffmpeg was not found: $ffmpeg"
+          $mediaToolsDirCandidate = "$buildRoot\dist\scriber-ffmpeg-profile-b\bin"
+          $mediaToolsDir = $null
+          $usable = "false"
+          $mode = "miss"
+          $cacheHit = "${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}" -eq "true"
+          if ($cacheHit) {
+            $mode = "cache-exact"
+          } else {
+            $mode = "cache-restored"
           }
-          if (-not (Test-Path -LiteralPath $ffprobe -PathType Leaf)) {
-            throw "Cached Profile B ffprobe was not found: $ffprobe"
+          if (Test-Path -LiteralPath $mediaToolsDirCandidate -PathType Container) {
+            $mediaToolsDir = (Resolve-Path $mediaToolsDirCandidate).Path
           }
-          python scripts\ffmpeg\validate_ffmpeg_profile.py `
-            --media-tools-dir $mediaToolsDir `
-            --profile B `
-            --require-lgpl `
-            --output "$buildRoot\ffmpeg-profile-b-manifest.json"
-          python scripts\smoke_media_preparation.py `
-            --media-tools-dir $mediaToolsDir `
-            --require-ffprobe `
-            --output "$buildRoot\media-preparation-smoke-profile-b.json"
-          $payload = [ordered]@{
-            apiVersion = "1"
-            ok = $true
-            mode = "cache"
-            cacheHit = $true
-            sourceUrl = "https://git.ffmpeg.org/ffmpeg.git"
-            gitRef = "n7.0"
-            mediaToolsDir = $mediaToolsDir
-            ffmpeg = @{
-              path = $ffmpeg
-              exists = $true
-              sizeBytes = (Get-Item -LiteralPath $ffmpeg).Length
-              sha256 = (Get-FileHash -LiteralPath $ffmpeg -Algorithm SHA256).Hash.ToLowerInvariant()
+          $ffmpeg = Join-Path $mediaToolsDirCandidate "ffmpeg.exe"
+          $ffprobe = Join-Path $mediaToolsDirCandidate "ffprobe.exe"
+          if ($mediaToolsDir -and (Test-Path -LiteralPath $ffmpeg -PathType Leaf) -and (Test-Path -LiteralPath $ffprobe -PathType Leaf)) {
+            try {
+              python scripts\ffmpeg\validate_ffmpeg_profile.py `
+                --media-tools-dir $mediaToolsDir `
+                --profile B `
+                --require-lgpl `
+                --output "$buildRoot\ffmpeg-profile-b-manifest.json"
+              if ($LASTEXITCODE -ne 0) {
+                throw "Profile B manifest validation failed with exit code $LASTEXITCODE."
+              }
+              python scripts\smoke_media_preparation.py `
+                --media-tools-dir $mediaToolsDir `
+                --require-ffprobe `
+                --output "$buildRoot\media-preparation-smoke-profile-b.json"
+              if ($LASTEXITCODE -ne 0) {
+                throw "Profile B media preparation smoke failed with exit code $LASTEXITCODE."
+              }
+              $payload = [ordered]@{
+                apiVersion = "1"
+                ok = $true
+                mode = $mode
+                cacheHit = $cacheHit
+                sourceUrl = "https://git.ffmpeg.org/ffmpeg.git"
+                gitRef = "n7.0"
+                mediaToolsDir = $mediaToolsDir
+                ffmpeg = @{
+                  path = $ffmpeg
+                  exists = $true
+                  sizeBytes = (Get-Item -LiteralPath $ffmpeg).Length
+                  sha256 = (Get-FileHash -LiteralPath $ffmpeg -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+                ffprobe = @{
+                  path = $ffprobe
+                  exists = $true
+                  sizeBytes = (Get-Item -LiteralPath $ffprobe).Length
+                  sha256 = (Get-FileHash -LiteralPath $ffprobe -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+                reports = @{
+                  manifest = "$buildRoot\ffmpeg-profile-b-manifest.json"
+                  mediaSmoke = "$buildRoot\media-preparation-smoke-profile-b.json"
+                }
+              }
+              $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$buildRoot\profile-b-msys2-build-report.json" -Encoding utf8
+              "SCRIBER_RELEASE_MEDIA_TOOLS_DIR=$mediaToolsDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+              & $ffmpeg -version
+              & $ffprobe -version
+              $usable = "true"
+            } catch {
+              Write-Warning "Restored Profile B media tools were not usable: $($_.Exception.Message)"
             }
-            ffprobe = @{
-              path = $ffprobe
-              exists = $true
-              sizeBytes = (Get-Item -LiteralPath $ffprobe).Length
-              sha256 = (Get-FileHash -LiteralPath $ffprobe -Algorithm SHA256).Hash.ToLowerInvariant()
-            }
-            reports = @{
-              manifest = "$buildRoot\ffmpeg-profile-b-manifest.json"
-              mediaSmoke = "$buildRoot\media-preparation-smoke-profile-b.json"
-            }
+          } else {
+            Write-Host "No cached Profile B ffmpeg/ffprobe pair found."
           }
-          $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$buildRoot\profile-b-msys2-build-report.json" -Encoding utf8
-          "SCRIBER_RELEASE_MEDIA_TOOLS_DIR=$mediaToolsDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          & $ffmpeg -version
-          & $ffprobe -version
+          "usable=$usable" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "mode=$mode" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Set up MSYS2
+        if: steps.ffmpeg-profile-b-resolve.outputs.usable != 'true'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
 
       - name: Build FFmpeg Profile B media tools
-        if: steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true'
+        if: steps.ffmpeg-profile-b-resolve.outputs.usable != 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ffmpeg\build_profile_b_msys2.ps1 `
