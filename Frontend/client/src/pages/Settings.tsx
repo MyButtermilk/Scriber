@@ -115,6 +115,7 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "google", label: "Google Cloud STT Streaming" },
 ] as const;
 
+const USD_TO_EUR_FOR_ESTIMATES = 0.877;
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
 const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";
 const DEFAULT_POST_PROCESSING_PROMPT = `Glätte das folgende Speech-to-Text-Transkript sprachlich, typografisch und strukturell, ohne Inhalt zu verändern, zu kürzen, zu interpretieren oder neue Informationen hinzuzufügen.
@@ -207,18 +208,16 @@ type SummarizationModelOption = {
 
 const SUMMARIZATION_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
   { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: aaLanguageBenchmarkDetail(0.22, 25), group: "gemini", icon: "gemini" },
-  { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: aaLanguageBenchmarkDetail(1.31, 45), group: "gemini", icon: "gemini" },
-  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: aaLanguageBenchmarkDetail(1.31, 45), group: "gemini", icon: "gemini" },
+  { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: aaLanguageBenchmarkDetail(1.31, 50), group: "gemini", icon: "gemini" },
+  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: aaLanguageBenchmarkDetail(1.31, 50), group: "gemini", icon: "gemini" },
   { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", detail: aaLanguageBenchmarkDetail(1.74, 46), group: "gemini", icon: "gemini" },
-  { value: "cerebras/gemma-4-31b", label: "Gemma 4 31B", detail: "0,79€/M with AA Score n/a", group: "cerebras", icon: "cerebras" },
+  { value: "cerebras/gemma-4-31b", label: "Gemma 4 31B", detail: aaLanguageBenchmarkDetail(1.04, 29), group: "cerebras", icon: "cerebras" },
   { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: aaLanguageBenchmarkDetail(0.22, 44), group: "openrouter", icon: "openrouter" },
   { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: aaLanguageBenchmarkDetail(0.90, 51), group: "openrouter", icon: "openrouter" },
-  { value: "gpt-5.5", label: "OpenAI GPT 5.5", detail: "1,38€/M with AA Score n/a", group: "openai", icon: "openai" },
+  { value: "gpt-5.5", label: "OpenAI GPT 5.5", detail: aaLanguageBenchmarkDetail(4.35, 53), group: "openai", icon: "openai" },
   { value: "gpt-5.4-mini", label: "OpenAI GPT 5.4 Mini", detail: aaLanguageBenchmarkDetail(0.65, 30), group: "openai", icon: "openai" },
   { value: "gpt-5.4-nano", label: "OpenAI GPT 5.4 Nano", detail: aaLanguageBenchmarkDetail(0.18, 18), group: "openai", icon: "openai" },
 ] as const;
-
-const USD_TO_EUR_FOR_ESTIMATES = 0.877;
 
 function languageModelBenchmarkDetail(
   inputUsdPerToken: number,
@@ -917,6 +916,7 @@ export default function Settings() {
   const postProcessingHotkeyCaptureRef = useRef<HTMLDivElement | null>(null);
   const { toast } = useToast();
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
+  const [credentialReadyKeys, setCredentialReadyKeys] = useState<Record<string, boolean>>({});
 
   const [inputDevices, setInputDevices] = useState<MicrophoneDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState("default");
@@ -977,7 +977,7 @@ export default function Settings() {
   }, []);
 
   const savedCredentialAvailable = (provider: string, value: string, extraValue?: string) =>
-    savedKeys[provider] === true && hasValue(value) && (extraValue === undefined || hasValue(extraValue));
+    credentialReadyKeys[provider] === true && hasValue(value) && (extraValue === undefined || hasValue(extraValue));
 
   const isCredentialReady = (requirement: CredentialRequirement | null) => {
     if (!requirement) {
@@ -1115,6 +1115,7 @@ export default function Settings() {
   const markCredentialChanged = (provider: string, setter: (value: string) => void) => (value: string) => {
     setter(value);
     setSavedKeys((prev) => ({ ...prev, [provider]: false }));
+    setCredentialReadyKeys((prev) => ({ ...prev, [provider]: false }));
   };
 
   const loadOnnxModels = useCallback(async () => {
@@ -1243,7 +1244,7 @@ export default function Settings() {
         setGroqKey(keys.groq || "");
         setSpeechmaticsKey(keys.speechmatics || "");
         setGoogleApplicationCredentials(keys.googleApplicationCredentials || "");
-        setSavedKeys({
+        const loadedCredentialReadyKeys = {
           OpenAI: hasValue(keys.openai),
           Gemini: hasValue(keys.googleApiKey),
           OpenRouter: hasValue(keys.openrouter),
@@ -1260,7 +1261,9 @@ export default function Settings() {
           ElevenLabs: hasValue(keys.elevenlabs),
           Azure: hasValue(keys.azureMaiSpeechKey) && hasValue(keys.azureMaiRegion || "northeurope"),
           "Google Cloud": hasValue(keys.googleApplicationCredentials),
-        });
+        };
+        setCredentialReadyKeys(loadedCredentialReadyKeys);
+        setSavedKeys(loadedCredentialReadyKeys);
 
         let microphonePayload = mics;
         if (!Array.isArray(microphonePayload.devices)) {
@@ -1392,7 +1395,47 @@ export default function Settings() {
 
       await updateSettings({ apiKeys });
 
-      setSavedKeys((prev) => ({ ...prev, [provider]: true }));
+      const credentialReady = (() => {
+        switch (provider) {
+          case "OpenAI":
+            return hasValue(openAIKey);
+          case "Deepgram":
+            return hasValue(deepgramKey);
+          case "AssemblyAI":
+            return hasValue(assemblyAIKey);
+          case "Gemini":
+            return hasValue(geminiKey);
+          case "OpenRouter":
+            return hasValue(openRouterKey);
+          case "Cerebras":
+            return hasValue(cerebrasKey);
+          case "YouTube":
+            return hasValue(youtubeKey);
+          case "Soniox":
+            return hasValue(sonioxKey);
+          case "Mistral":
+            return hasValue(mistralKey);
+          case "Smallest AI":
+            return hasValue(smallestKey);
+          case "ElevenLabs":
+            return hasValue(elevenLabsKey);
+          case "Azure":
+            return hasValue(azureMaiKey) && hasValue(azureMaiRegion || "northeurope");
+          case "Gladia":
+            return hasValue(gladiaKey);
+          case "Groq":
+            return hasValue(groqKey);
+          case "Speechmatics":
+            return hasValue(speechmaticsKey);
+          case "Google Cloud":
+            return hasValue(googleApplicationCredentials);
+          default:
+            return false;
+        }
+      })();
+
+      setCredentialReadyKeys((prev) => ({ ...prev, [provider]: credentialReady }));
+      setSavedKeys((prev) => ({ ...prev, [provider]: credentialReady }));
       toast({
         title: "Saved",
         description: `${provider} settings updated.`,
