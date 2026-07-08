@@ -220,20 +220,41 @@ const SUMMARIZATION_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
   { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano", detail: "Smallest OpenAI model", group: "openai", icon: "openai" },
 ] as const;
 
+const USD_TO_EUR_FOR_ESTIMATES = 0.877;
+
+function languageModelBenchmarkDetail(
+  inputUsdPerToken: number,
+  outputUsdPerToken: number,
+  tokensPerSecond: number,
+): string {
+  const euroPerMillionBlendedTokens =
+    ((inputUsdPerToken + outputUsdPerToken) / 2) * 1_000_000 * USD_TO_EUR_FOR_ESTIMATES;
+  const priceText = euroPerMillionBlendedTokens.toLocaleString("de-DE", {
+    minimumFractionDigits: euroPerMillionBlendedTokens < 1 ? 2 : 1,
+    maximumFractionDigits: euroPerMillionBlendedTokens < 1 ? 2 : 1,
+  });
+  return `${priceText} €/M blended, ~${tokensPerSecond} Token/s`;
+}
+
+function expandPromptTextarea(element: HTMLTextAreaElement, minimumHeightPx: number): void {
+  element.style.height = "auto";
+  element.style.height = `${Math.max(element.scrollHeight + 2, minimumHeightPx)}px`;
+}
+
 const POST_PROCESSING_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
-  { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B Baseten", detail: "OpenRouter via Baseten; Cerebras fallback", group: "openrouter", icon: "baseten" },
-  { value: "openai/gpt-oss-120b:cerebras", label: "GPT-OSS 120B Cerebras", detail: "OpenRouter via Cerebras only", group: "openrouter", icon: "cerebras" },
-  { value: "google/gemini-2.5-flash-lite:nitro", label: "Gemini 2.5 Flash Lite Nitro", detail: "Low-cost OpenRouter route", group: "openrouter", icon: "openrouter" },
-  { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano", detail: "Low-cost cleanup model", group: "openai", icon: "openai" },
-  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: "Compact Gemini cleanup", group: "gemini", icon: "gemini" },
-  { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: "Fast OpenRouter Nitro route", group: "openrouter", icon: "openrouter" },
-  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: "Fast Gemini fallback", group: "gemini", icon: "gemini" },
-  { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini", detail: "Fast cleanup with more headroom", group: "openai", icon: "openai" },
-  { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: "OpenRouter fallback route", group: "openrouter", icon: "openrouter" },
-  { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: "Shared summary default", group: "gemini", icon: "gemini" },
-  { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview", detail: "Preview Flash model", group: "gemini", icon: "gemini" },
-  { value: "gpt-5.2", label: "OpenAI GPT 5.2", detail: "Higher-cost fallback", group: "openai", icon: "openai" },
-  { value: "gemini-3-pro-preview", label: "Gemini 3 Pro", detail: "Higher-cost fallback", group: "gemini", icon: "gemini" },
+  { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B Baseten", detail: languageModelBenchmarkDetail(0.0000001, 0.0000005, 189), group: "openrouter", icon: "baseten" },
+  { value: "openai/gpt-oss-120b:cerebras", label: "GPT-OSS 120B Cerebras", detail: languageModelBenchmarkDetail(0.00000035, 0.00000075, 768), group: "openrouter", icon: "cerebras" },
+  { value: "google/gemini-2.5-flash-lite:nitro", label: "Gemini 2.5 Flash Lite Nitro", detail: languageModelBenchmarkDetail(0.0000001, 0.0000004, 45), group: "openrouter", icon: "openrouter" },
+  { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano", detail: languageModelBenchmarkDetail(0.00000005, 0.0000004, 81), group: "openai", icon: "openai" },
+  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: languageModelBenchmarkDetail(0.00000025, 0.0000015, 81), group: "gemini", icon: "gemini" },
+  { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: languageModelBenchmarkDetail(0.0000003, 0.0000012, 58), group: "openrouter", icon: "openrouter" },
+  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: languageModelBenchmarkDetail(0.0000015, 0.000009, 69), group: "gemini", icon: "gemini" },
+  { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini", detail: languageModelBenchmarkDetail(0.00000025, 0.000002, 72), group: "openai", icon: "openai" },
+  { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: languageModelBenchmarkDetail(0.00000093, 0.000003, 30), group: "openrouter", icon: "openrouter" },
+  { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: languageModelBenchmarkDetail(0.0000015, 0.000009, 69), group: "gemini", icon: "gemini" },
+  { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview", detail: languageModelBenchmarkDetail(0.0000005, 0.000003, 64), group: "gemini", icon: "gemini" },
+  { value: "gpt-5.2", label: "OpenAI GPT 5.2", detail: languageModelBenchmarkDetail(0.00000175, 0.000014, 39), group: "openai", icon: "openai" },
+  { value: "gemini-3-pro-preview", label: "Gemini 3 Pro", detail: languageModelBenchmarkDetail(0.000002, 0.000012, 95), group: "gemini", icon: "gemini" },
 ] as const;
 
 const API_KEY_HELP_LINKS = {
@@ -418,29 +439,42 @@ interface ProviderModelOption {
   icon?: ProviderIconKey;
 }
 
+function sttBenchmarkDetail(usdPerThousandMinutes: number, wordErrorRatePercent: number): string {
+  const euroPerHour = usdPerThousandMinutes * USD_TO_EUR_FOR_ESTIMATES * 0.06;
+  const euroText = euroPerHour.toLocaleString("de-DE", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const errorText = wordErrorRatePercent.toLocaleString("de-DE", {
+    minimumFractionDigits: wordErrorRatePercent % 1 === 0 ? 0 : 1,
+    maximumFractionDigits: 1,
+  });
+  return `${euroText} €/h, ${errorText} % Error`;
+}
+
 const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
-  { value: "onnx_local", label: "Local ONNX", detail: "Runs fully on this device", group: "local" },
-  { value: "nemo_local", label: "Local NeMo", detail: "Uses local NeMo toolkit models", group: "local" },
-  { value: "soniox-realtime", label: "Soniox", detail: "stt-rt-v5 WebSocket stream", group: "cloud_streaming", icon: "soniox" },
-  { value: "smallest-realtime", label: "Smallest AI", detail: "Pulse realtime WebSocket", group: "cloud_streaming", icon: "smallest" },
-  { value: "deepgram", label: "Deepgram", detail: "Listen WebSocket streaming", group: "cloud_streaming", icon: "deepgram" },
-  { value: "gladia", label: "Gladia", detail: "Live v2 WebSocket; files use pre-recorded API", group: "cloud_streaming", icon: "gladia" },
-  { value: "google", label: "Google Cloud", detail: "Speech-to-Text streaming", group: "cloud_streaming", icon: "googlecloud" },
-  { value: "speechmatics", label: "Speechmatics", detail: "Realtime WebSocket API", group: "cloud_streaming", icon: "speechmatics" },
-  { value: "assemblyai-realtime", label: "AssemblyAI", detail: "Universal-3.5 Pro realtime", group: "cloud_streaming", icon: "assemblyai" },
-  { value: "mistral-realtime", label: "Mistral", detail: "Voxtral API per speech segment", group: "cloud_segmented", icon: "mistral" },
-  { value: "openai", label: "OpenAI", detail: "Transcription API per speech segment", group: "cloud_segmented", icon: "openai" },
-  { value: "groq", label: "Groq", detail: "Whisper API per speech segment", group: "cloud_segmented", icon: "groq" },
-  { value: "elevenlabs", label: "ElevenLabs", detail: "File API per speech segment", group: "cloud_segmented", icon: "elevenlabs" },
-  { value: "soniox-async", label: "Soniox", detail: "Direct file and final transcript", group: "cloud_async", icon: "soniox" },
-  { value: "mistral-async", label: "Mistral", detail: "Voxtral batch transcription", group: "cloud_async", icon: "mistral" },
-  { value: "smallest-async", label: "Smallest AI", detail: "Pulse pre-recorded STT", group: "cloud_async", icon: "smallest" },
-  { value: "deepgram-async", label: "Deepgram", detail: "Pre-recorded Listen API", group: "cloud_async", icon: "deepgram" },
-  { value: "gladia-async", label: "Gladia", detail: "Pre-recorded v2 API", group: "cloud_async", icon: "gladia" },
-  { value: "openai-async", label: "OpenAI", detail: "Audio transcription API", group: "cloud_async", icon: "openai" },
-  { value: "speechmatics-async", label: "Speechmatics", detail: "Batch transcription API", group: "cloud_async", icon: "speechmatics" },
-  { value: "assemblyai", label: "AssemblyAI", detail: "Universal-3.5 Pro async", group: "cloud_async", icon: "assemblyai" },
-  { value: "azure_mai", label: "Microsoft MAI", detail: "Azure MAI batch STT", group: "cloud_async", icon: "azure" },
+  { value: "onnx_local", label: "Local ONNX", detail: "0,00 €/h, model-dependent Error", group: "local" },
+  { value: "nemo_local", label: "Local NeMo", detail: "0,00 €/h, model-dependent Error", group: "local" },
+  { value: "soniox-realtime", label: "Soniox", detail: sttBenchmarkDetail(2.00, 4.5), group: "cloud_streaming", icon: "soniox" },
+  { value: "smallest-realtime", label: "Smallest AI", detail: sttBenchmarkDetail(8.00, 6.5), group: "cloud_streaming", icon: "smallest" },
+  { value: "deepgram", label: "Deepgram", detail: sttBenchmarkDetail(4.80, 6.6), group: "cloud_streaming", icon: "deepgram" },
+  { value: "gladia", label: "Gladia", detail: sttBenchmarkDetail(12.50, 7.8), group: "cloud_streaming", icon: "gladia" },
+  { value: "google", label: "Google Cloud", detail: sttBenchmarkDetail(16.00, 4.8), group: "cloud_streaming", icon: "googlecloud" },
+  { value: "speechmatics", label: "Speechmatics", detail: sttBenchmarkDetail(17.50, 8.0), group: "cloud_streaming", icon: "speechmatics" },
+  { value: "assemblyai-realtime", label: "AssemblyAI", detail: sttBenchmarkDetail(7.50, 4.1), group: "cloud_streaming", icon: "assemblyai" },
+  { value: "mistral-realtime", label: "Mistral", detail: sttBenchmarkDetail(6.00, 5.2), group: "cloud_segmented", icon: "mistral" },
+  { value: "openai", label: "OpenAI", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_segmented", icon: "openai" },
+  { value: "groq", label: "Groq", detail: sttBenchmarkDetail(4.00, 3.7), group: "cloud_segmented", icon: "groq" },
+  { value: "elevenlabs", label: "ElevenLabs", detail: sttBenchmarkDetail(6.50, 3.6), group: "cloud_segmented", icon: "elevenlabs" },
+  { value: "soniox-async", label: "Soniox", detail: sttBenchmarkDetail(1.66, 3.8), group: "cloud_async", icon: "soniox" },
+  { value: "mistral-async", label: "Mistral", detail: sttBenchmarkDetail(3.00, 3.6), group: "cloud_async", icon: "mistral" },
+  { value: "smallest-async", label: "Smallest AI", detail: sttBenchmarkDetail(5.00, 4.4), group: "cloud_async", icon: "smallest" },
+  { value: "deepgram-async", label: "Deepgram", detail: sttBenchmarkDetail(4.30, 5.2), group: "cloud_async", icon: "deepgram" },
+  { value: "gladia-async", label: "Gladia", detail: sttBenchmarkDetail(4.07, 4.1), group: "cloud_async", icon: "gladia" },
+  { value: "openai-async", label: "OpenAI", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_async", icon: "openai" },
+  { value: "speechmatics-async", label: "Speechmatics", detail: sttBenchmarkDetail(6.70, 4.0), group: "cloud_async", icon: "speechmatics" },
+  { value: "assemblyai", label: "AssemblyAI", detail: sttBenchmarkDetail(3.50, 3.1), group: "cloud_async", icon: "assemblyai" },
+  { value: "azure_mai", label: "Microsoft MAI", detail: sttBenchmarkDetail(6.00, 2.4), group: "cloud_async", icon: "azure" },
 ];
 
 function ProviderIcon({
@@ -494,8 +528,8 @@ function SectionPanel({
           </span>
         ) : null}
         <div className="min-w-0 flex-1">
-          <h2 className="text-[14px] font-semibold leading-5 text-slate-950 dark:text-slate-100">{title}</h2>
-          <p className="mt-0.5 max-w-[46ch] text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">
+          <h2 className="text-[14px] !font-bold leading-5 text-slate-950 dark:text-slate-100">{title}</h2>
+          <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 lg:whitespace-nowrap dark:text-slate-400">
             {description}
           </p>
         </div>
@@ -519,7 +553,7 @@ function SettingLine({
   return (
     <div className={cn("grid gap-2 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(150px,220px)] sm:items-center", className)}>
       <div className="min-w-0">
-        <Label className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">{label}</Label>
+        <Label className="text-[12px] font-bold leading-4 text-slate-950 dark:text-slate-100">{label}</Label>
         {description ? (
           <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">{description}</p>
         ) : null}
@@ -559,8 +593,8 @@ function SettingsSubsection({
             </span>
           ) : null}
           <div className="min-w-0">
-            <h3 className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">{title}</h3>
-            <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">{description}</p>
+            <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">{title}</h3>
+            <p className="mt-0.5 text-[11px] leading-4 text-slate-500 xl:whitespace-nowrap dark:text-slate-400">{description}</p>
           </div>
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
@@ -709,7 +743,7 @@ function FieldShell({
 }) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-[10.5px] font-semibold text-slate-600 dark:text-slate-300">{label}</Label>
+      <Label className="text-[10.5px] font-bold text-slate-600 dark:text-slate-300">{label}</Label>
       {children}
       {detail ? <p className="text-[10.5px] leading-4 text-slate-500 dark:text-slate-400">{detail}</p> : null}
     </div>
@@ -2251,10 +2285,6 @@ export default function Settings() {
     return "No newer version";
   })();
 
-  const customVocabularyTermCount = customVocabulary
-    .split(/[\n,]+/)
-    .map((item) => item.trim())
-    .filter(Boolean).length;
   const providerGroups = [
     {
       key: "cloud_streaming",
@@ -2306,9 +2336,6 @@ export default function Settings() {
       label="Custom vocabulary"
       detail="Names, brands, and domain terms passed to supported STT providers."
     >
-      <div className="mb-1 flex justify-end">
-        <Badge variant="secondary">{customVocabularyTermCount} terms</Badge>
-      </div>
       <Textarea
         value={customVocabulary}
         onChange={(event) => setCustomVocabulary(event.target.value)}
@@ -2406,10 +2433,17 @@ export default function Settings() {
         <FieldShell label="Live cleanup prompt">
           <Textarea
             value={postProcessingPrompt}
-            onChange={(event) => setPostProcessingPrompt(event.target.value)}
-            onBlur={handlePostProcessingPromptBlur}
+            onFocus={(event) => expandPromptTextarea(event.currentTarget, 560)}
+            onChange={(event) => {
+              setPostProcessingPrompt(event.target.value);
+              expandPromptTextarea(event.currentTarget, 560);
+            }}
+            onBlur={(event) => {
+              event.currentTarget.style.height = "";
+              void handlePostProcessingPromptBlur();
+            }}
             placeholder={DEFAULT_POST_PROCESSING_PROMPT}
-            className="min-h-[64px] resize-none bg-white/70 text-sm dark:bg-slate-950/60"
+            className="min-h-[64px] resize-none overflow-hidden bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-slate-950/60 dark:focus:border-blue-700"
             disabled={!postProcessingEnabled}
           />
           <div className="mt-2 flex items-center justify-between gap-3">
@@ -2432,10 +2466,17 @@ export default function Settings() {
     >
       <Textarea
         value={summarizationPrompt}
-        onChange={(event) => setSummarizationPrompt(event.target.value)}
-        onBlur={handleSummarizationPromptBlur}
+        onFocus={(event) => expandPromptTextarea(event.currentTarget, 420)}
+        onChange={(event) => {
+          setSummarizationPrompt(event.target.value);
+          expandPromptTextarea(event.currentTarget, 420);
+        }}
+        onBlur={(event) => {
+          event.currentTarget.style.height = "";
+          void handleSummarizationPromptBlur();
+        }}
         placeholder="Summarize the key points, decisions, and action items. Keep it concise and structured."
-        className="min-h-[60px] resize-none bg-white/70 text-sm dark:bg-slate-950/60"
+        className="min-h-[60px] resize-none overflow-hidden bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-slate-950/60 dark:focus:border-blue-700"
       />
     </FieldShell>
   );
@@ -2444,7 +2485,7 @@ export default function Settings() {
     <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">ONNX model</p>
+          <p className="text-[13px] font-bold text-slate-950 dark:text-slate-100">ONNX model</p>
           <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Whisper / Parakeet ONNX runtime</p>
         </div>
         {selectedOnnxModel ? (
@@ -2525,7 +2566,7 @@ export default function Settings() {
     <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">NeMo model</p>
+          <p className="text-[13px] font-bold text-slate-950 dark:text-slate-100">NeMo model</p>
           <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Local .nemo toolkit</p>
         </div>
         {selectedNemoModel ? (
@@ -2610,10 +2651,10 @@ export default function Settings() {
       )}
 
       <header className="mb-4 border-b border-slate-200 pb-3 dark:border-slate-800">
-        <h1 className="text-[34px] font-semibold leading-none tracking-normal text-slate-950 dark:text-slate-100">
+        <h1 className="text-[34px] !font-bold leading-none tracking-normal text-slate-950 dark:text-slate-100">
           Settings
         </h1>
-        <p className="mt-1.5 max-w-[64ch] text-[12px] leading-4 text-slate-500 dark:text-slate-400">
+        <p className="mt-1.5 text-[12px] leading-4 text-slate-500 lg:whitespace-nowrap dark:text-slate-400">
           Configure transcription, providers, summaries, credentials, updates, and language behavior.
         </p>
       </header>
@@ -2864,7 +2905,7 @@ export default function Settings() {
                 >
                   <div className="mb-1.5">
                     <div className="min-w-0">
-                      <h3 className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">
+                      <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">
                         {group.label}
                       </h3>
                       <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
@@ -2978,7 +3019,7 @@ export default function Settings() {
                   className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60"
                 >
                   <div className="mb-1.5">
-                    <h3 className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">
+                    <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">
                       {group.label}
                     </h3>
                   </div>
