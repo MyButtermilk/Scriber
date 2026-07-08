@@ -376,6 +376,10 @@ Already implemented and should not be regressed:
 - Release workflow cache keys normalize app-version-only files before hashing
   dependency/build caches, so patch version bumps do not invalidate frontend,
   Rust, or backend scratch caches without real input changes.
+- Release workflow Actions caches are backed by internal GitHub release
+  artifacts for the Python wheelhouse, backend sidecar cache, Rust audio
+  sidecar cache, and FFmpeg Profile B so sibling tag builds can reuse heavy
+  outputs even when ref-scoped Actions caches miss.
 - FFmpeg Profile B release builds restore from Actions cache first, then from
   the internal reusable GitHub release artifact `ffmpeg-profile-b-n7.0-v2`, and
   rebuild through MSYS2 only when restored Profile B tools are absent or fail

@@ -59,6 +59,7 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
 const BACKEND_START_TIMEOUT_ENV: &str = "SCRIBER_BACKEND_START_TIMEOUT_MS";
 const BACKEND_SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
@@ -3239,6 +3240,7 @@ fn spawn_backend(
         .current_dir(&spec.working_dir)
         .env("SCRIBER_WEB_HOST", DEFAULT_HOST)
         .env("SCRIBER_WEB_PORT", port.to_string())
+        .env("SCRIBER_VERSION", APP_VERSION)
         .env("SCRIBER_RUNTIME_MODE", "tauri-supervised")
         .env("SCRIBER_BACKEND_LAUNCH_KIND", &spec.launch_kind)
         .env(SESSION_TOKEN_ENV, session_token)

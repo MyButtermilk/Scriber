@@ -143,6 +143,11 @@ Packaging/build:
 - FFmpeg Profile B has a reusable GitHub release artifact fallback in addition
   to Actions cache restore, so new app tags do not need to rebuild FFmpeg when
   the Profile B source/ref/profile is unchanged.
+- GitHub release builds also restore the Python wheelhouse, backend
+  PyInstaller sidecar cache, and Rust audio sidecar cache from internal
+  release artifacts when the normal Actions cache misses. This is required
+  because GitHub Actions caches are ref-scoped and sibling app tags can miss
+  even when their cache keys are identical.
 
 ## FFmpeg Profile B
 
@@ -245,6 +250,21 @@ Release workflow:
   version. Cache hits and restore-key hits still run the relevant validation
   gates before the installer consumes restored outputs. If a restored Profile B
   output fails validation, the workflow falls back to a fresh MSYS2 build.
+- Actions cache is treated as the fast first layer, not the durable layer. When
+  sibling tag refs cannot see each other's caches, the workflow restores
+  durable internal release artifacts from `release-cache-python-wheelhouse-v1`,
+  `release-cache-backend-sidecar-v1`, `release-cache-rust-audio-sidecar-v1`,
+  and `ffmpeg-profile-b-n7.0-v2`. Those releases are implementation caches, not
+  user-facing app updates, and are published with `--latest=false`.
+- Version-only app releases must not invalidate durable cache artifacts unless
+  their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
+  Python backend at launch, so a version-normalized backend sidecar can still
+  report the installed app version through `/api/health`.
+- The main Tauri desktop binary still uses the normal Cargo Actions cache. A
+  full `target\release` artifact is intentionally not published yet because it
+  is hundreds of MiB and may cost more to upload/download than it saves. If
+  Tauri compilation remains the release bottleneck, add a measured dedicated
+  Rust cache strategy rather than an opaque large release artifact.
 - The signed release workflow installs only `requirements-base.txt` and
   `requirements-build.txt`. `requirements-dev.txt` is intentionally excluded
   because the packaging step skips the Python unit suite; run tests before

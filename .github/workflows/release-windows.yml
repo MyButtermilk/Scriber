@@ -21,6 +21,9 @@ jobs:
     env:
       SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG: ffmpeg-profile-b-n7.0-v2
       SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME: scriber-ffmpeg-profile-b-n7.0-v2-Windows.zip
+      SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG: release-cache-python-wheelhouse-v1
+      SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG: release-cache-backend-sidecar-v1
+      SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG: release-cache-rust-audio-sidecar-v1
 
     steps:
       - name: Checkout
@@ -121,6 +124,45 @@ jobs:
           restore-keys: |
             scriber-backend-sidecar-${{ runner.os }}-
 
+      - name: Restore Python wheelhouse release artifact
+        id: python-wheelhouse-artifact
+        if: steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG `
+            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
+            -DestinationPath build\python-wheelhouse
+
+      - name: Restore Rust audio sidecar release artifact
+        id: rust-audio-sidecar-artifact
+        if: steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG `
+            -AssetName "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip" `
+            -DestinationPath build\rust-audio-sidecar-cache
+
+      - name: Restore backend sidecar release artifact
+        id: backend-sidecar-artifact
+        if: steps.backend-sidecar-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG `
+            -AssetName "scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" `
+            -DestinationPath build\tauri-sidecar-cache
+
       - name: Restore FFmpeg Profile B cache
         id: ffmpeg-profile-b-cache
         uses: actions/cache@v6
@@ -157,6 +199,9 @@ jobs:
           Write-Host "Frontend node_modules cache hit: ${{ steps.frontend-node-modules-cache.outputs.cache-hit }}"
           Write-Host "Backend sidecar cache hit: ${{ steps.backend-sidecar-cache.outputs.cache-hit }}"
           Write-Host "Rust audio sidecar cache hit: ${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}"
+          Write-Host "Python wheelhouse release artifact restored: ${{ steps.python-wheelhouse-artifact.outputs.restored }}"
+          Write-Host "Backend sidecar release artifact restored: ${{ steps.backend-sidecar-artifact.outputs.restored }}"
+          Write-Host "Rust audio sidecar release artifact restored: ${{ steps.rust-audio-sidecar-artifact.outputs.restored }}"
           Write-Host "FFmpeg Profile B cache hit: ${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}"
           Write-Host "FFmpeg Profile B release artifact restored: ${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}"
 
@@ -171,10 +216,10 @@ jobs:
           }
           if ("${{ steps.python-venv-cache.outputs.cache-hit }}" -ne "true") {
             & $venvPython -m pip install --upgrade pip
-            if ("${{ steps.python-wheelhouse-cache.outputs.cache-hit }}" -ne "true") {
+            if (("${{ steps.python-wheelhouse-cache.outputs.cache-hit }}" -ne "true") -and ("${{ steps.python-wheelhouse-artifact.outputs.restored }}" -ne "true")) {
               & $venvPython -m pip download --dest $wheelhouse --prefer-binary -r requirements-base.txt -r requirements-build.txt
             } else {
-              Write-Host "Using cached Python wheelhouse."
+              Write-Host "Using cached/restored Python wheelhouse."
             }
             $resolvedWheelhouse = (Resolve-Path $wheelhouse).Path
             & $venvPython -m pip install --prefer-binary --find-links $resolvedWheelhouse -r requirements-base.txt
@@ -185,6 +230,19 @@ jobs:
           (Resolve-Path ".\.venv\Scripts").Path | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           & $venvPython --version
           & $venvPython -m pip --version
+
+      - name: Publish Python wheelhouse release artifact
+        if: steps.python-wheelhouse-cache.outputs.cache-hit != 'true' && steps.python-wheelhouse-artifact.outputs.restored != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG `
+            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
+            -SourcePath build\python-wheelhouse `
+            -Title "Scriber Python Wheelhouse Cache v1"
 
       - name: Install frontend dependencies
         if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
@@ -374,6 +432,32 @@ jobs:
             }
           }
           powershell @buildArgs
+
+      - name: Publish Rust audio sidecar release artifact
+        if: steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-audio-sidecar-artifact.outputs.restored != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG `
+            -AssetName "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip" `
+            -SourcePath build\rust-audio-sidecar-cache `
+            -Title "Scriber Rust Audio Sidecar Cache v1"
+
+      - name: Publish backend sidecar release artifact
+        if: steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG `
+            -AssetName "scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" `
+            -SourcePath build\tauri-sidecar-cache `
+            -Title "Scriber Backend Sidecar Cache v1"
 
       - name: Collect release artifacts
         shell: pwsh
