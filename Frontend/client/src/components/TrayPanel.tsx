@@ -99,12 +99,32 @@ function statusLabel(status: TrayStatus): string {
   return "Ready";
 }
 
-function statusDotClass(status: TrayStatus): string {
-  if (status.recordingActive) return "bg-red-500 shadow-[0_0_0_4px_rgba(239,68,68,0.12)]";
-  if (status.updateAvailable || status.updateInstalling) {
-    return "bg-blue-500 shadow-[0_0_0_4px_rgba(37,99,235,0.12)]";
+function StatusIndicator({ status }: { status: TrayStatus }) {
+  if (status.recordingActive) {
+    return (
+      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-white shadow-[0_0_0_4px_rgba(239,68,68,0.12)]">
+        <Square className="h-2 w-2 fill-current" aria-hidden="true" />
+      </span>
+    );
   }
-  return "bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.12)]";
+
+  if (status.updateInstalling) {
+    return (
+      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-blue-600 text-white shadow-[0_0_0_4px_rgba(37,99,235,0.12)]">
+        <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden="true" />
+      </span>
+    );
+  }
+
+  if (status.updateAvailable) {
+    return (
+      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-blue-600 text-white shadow-[0_0_0_4px_rgba(37,99,235,0.12)]">
+        <Download className="h-2.5 w-2.5" strokeWidth={2.4} aria-hidden="true" />
+      </span>
+    );
+  }
+
+  return <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.12)]" />;
 }
 
 function TrayRow({
@@ -418,7 +438,7 @@ export default function TrayPanel() {
   }, []);
 
   const installUpdate = useCallback(async () => {
-    if (installing || (!status.updateAvailable && !status.updateInstalling)) {
+    if (installing || status.updateInstalling || !status.updateAvailable) {
       return;
     }
     setInstalling(true);
@@ -465,10 +485,20 @@ export default function TrayPanel() {
   const updateCheckDetail = useMemo(() => {
     if (checkingUpdates) return "Checking GitHub";
     if (updateCheckMessage) return updateCheckMessage;
-    if (status.updateAvailable && status.updateVersion) return `Scriber ${status.updateVersion} is available`;
-    if (status.updateAvailable) return "Update ready";
+    if (status.updateAvailable) return "Check GitHub again";
     return "Manual update check";
   }, [checkingUpdates, status.updateAvailable, status.updateVersion, updateCheckMessage]);
+
+  const showUpdateInstallBanner = status.updateAvailable || status.updateInstalling || installing;
+  const updateInstallTitle = (() => {
+    if (installing || status.updateInstalling) return "Installing update";
+    if (status.updateVersion) return `Install Scriber ${status.updateVersion}`;
+    return "Install update";
+  })();
+  const updateInstallDetail = (() => {
+    if (installing || status.updateInstalling) return updateDetail;
+    return "Download, install, and restart Scriber.";
+  })();
 
   return (
     <main className="flex h-screen w-screen items-center justify-center bg-transparent p-2 text-slate-950 antialiased">
@@ -485,13 +515,46 @@ export default function TrayPanel() {
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-[21px] font-semibold leading-6 tracking-normal text-slate-950">Scriber</h1>
             <div className="mt-0.5 flex items-center gap-2 text-[11px] font-medium text-slate-500">
-              <span className={cn("h-2 w-2 rounded-full", statusDotClass(status))} />
+              <StatusIndicator status={status} />
               <span className="truncate">{statusLabel(status)}</span>
             </div>
           </div>
         </header>
 
         <div className="h-px bg-slate-200/80" />
+
+        {view === "main" && showUpdateInstallBanner ? (
+          <div className="pt-2.5">
+            <motion.button
+              type="button"
+              whileTap={installing || status.updateInstalling ? undefined : { scale: 0.985 }}
+              onClick={installUpdate}
+              disabled={installing || status.updateInstalling || !status.updateAvailable}
+              className={cn(
+                "flex h-[50px] w-full items-center gap-3 rounded-[14px] bg-blue-600 px-3 text-left text-white outline-none transition-colors",
+                "shadow-[0_16px_30px_-20px_rgba(37,99,235,0.95)] hover:bg-blue-500",
+                "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white/80",
+                (installing || status.updateInstalling) && "cursor-default hover:bg-blue-600",
+              )}
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-white/16">
+                {installing || status.updateInstalling ? (
+                  <Loader2 className="h-[18px] w-[18px] animate-spin" aria-hidden="true" />
+                ) : (
+                  <Download className="h-[18px] w-[18px]" strokeWidth={2.35} aria-hidden="true" />
+                )}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[14px] font-semibold leading-[18px]">
+                  {updateInstallTitle}
+                </span>
+                <span className="mt-px block truncate text-[11px] font-medium leading-[13px] text-white/78">
+                  {updateInstallDetail}
+                </span>
+              </span>
+            </motion.button>
+          </div>
+        ) : null}
 
         <div className="min-h-0 flex-1 overflow-hidden py-2.5">
           {view === "main" ? (
@@ -541,21 +604,11 @@ export default function TrayPanel() {
               />
               <TrayRow
                 icon={checkingUpdates ? Loader2 : RefreshCw}
-                label="Check for Updates"
+                label={status.updateAvailable ? "Check Again" : "Check for Updates"}
                 detail={updateCheckDetail}
                 disabled={checkingUpdates || installing}
                 onClick={() => void checkForUpdates()}
               />
-              {(status.updateAvailable || status.updateInstalling || installing) && (
-                <TrayRow
-                  icon={installing || status.updateInstalling ? Loader2 : Download}
-                  label={installing || status.updateInstalling ? "Installing update" : "Update available, install now."}
-                  detail={updateDetail}
-                  variant="update"
-                  disabled={installing || status.updateInstalling}
-                  onClick={installUpdate}
-                />
-              )}
               <TrayRow
                 icon={RotateCcw}
                 label="Restart Backend"

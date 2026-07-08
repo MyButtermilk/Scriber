@@ -69,7 +69,7 @@ class NemoLocalBufferedSTTService(STTService):
             self._model_name = DEFAULT_ONNX_MODEL
         self._language = _language_to_code(language)
         self._quantization = quantization
-        self._settings = {
+        self._local_settings = {
             "model": self._model_name,
             "language": self._language,
             "backend": self._backend,
@@ -92,7 +92,7 @@ class NemoLocalBufferedSTTService(STTService):
 
     async def set_language(self, language: Language):
         self._language = _language_to_code(language)
-        self._settings["language"] = self._language
+        self._local_settings["language"] = self._language
 
     async def process_audio_frame(self, frame: AudioRawFrame, direction: FrameDirection):
         if self._muted:

@@ -2054,6 +2054,302 @@ export default function Settings() {
   const compactTranscriptionModelLabel =
     selectedTranscriptionModelOption?.label.replace(" - No API Key", "") || transcriptionModel || "Select provider";
 
+  const customVocabularySettings = (
+    <div className="rounded-xl bg-slate-50/90 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <FileText className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" aria-hidden="true" />
+            <p className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Custom vocabulary</p>
+          </div>
+          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+            Names, brands, and domain terms passed to supported STT providers.
+          </p>
+        </div>
+        <Badge variant="secondary">{customVocabularyTermCount} terms</Badge>
+      </div>
+      <Textarea
+        value={customVocabulary}
+        onChange={(event) => setCustomVocabulary(event.target.value)}
+        onBlur={handleCustomVocabBlur}
+        placeholder="Enter terms, one per line..."
+        className="min-h-[54px] resize-none bg-white/70 font-mono text-[12px] leading-5 dark:bg-slate-950/60"
+      />
+      <div className="mt-2 flex justify-end">
+        <Button size="sm" onClick={() => void handleCustomVocabBlur()}>
+          Save vocabulary
+        </Button>
+      </div>
+    </div>
+  );
+
+  const livePostProcessingSettings = (
+    <div className="rounded-xl bg-slate-50/90 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Live post-processing</p>
+          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+            A separate live-mic shortcut cleans dictation before paste. Files and YouTube stay unchanged.
+          </p>
+        </div>
+        <Switch checked={postProcessingEnabled} onCheckedChange={handlePostProcessingEnabledChange} />
+      </div>
+
+      <div className="mt-3 grid gap-3">
+        <SettingLine label="Post-processing hotkey" description="Starts Live Mic with cleanup enabled.">
+          <Dialog open={isRecordingPostProcessingHotkey} onOpenChange={setIsRecordingPostProcessingHotkey}>
+            <DialogTrigger asChild>
+              <Button variant="outline" className="h-8 w-[220px] max-w-full justify-start font-mono text-[11px]" disabled={!postProcessingEnabled}>
+                <Keyboard className="mr-2 h-4 w-4 text-muted-foreground" />
+                {postProcessingHotkey}
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[425px]">
+              <DialogHeader>
+                <DialogTitle>Post-processing hotkey</DialogTitle>
+                <DialogDescription>Press the key combination for cleaned live dictation.</DialogDescription>
+              </DialogHeader>
+              <div
+                ref={postProcessingHotkeyCaptureRef}
+                className="flex h-32 items-center justify-center rounded-lg border-2 border-dashed bg-secondary/20 outline-none transition-colors focus:border-primary focus:bg-primary/5"
+                tabIndex={0}
+                aria-label="Post-processing hotkey capture area"
+              >
+                <p className="text-lg font-medium text-primary">{postProcessingHotkey}</p>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" onClick={() => setIsRecordingPostProcessingHotkey(false)}>Cancel</Button>
+                <Button onClick={handleSavePostProcessingHotkey}>Save</Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </SettingLine>
+
+        <FieldShell
+          label="Post-processing model"
+          detail="Use a low-cost, low-latency model for simple dictation cleanup."
+        >
+          <Select value={postProcessingModel} onValueChange={(value) => void handlePostProcessingModelChange(value)}>
+            <SelectTrigger className="h-9 bg-white/70 dark:bg-slate-950/40">
+              <SelectValue placeholder="Select cleanup model" />
+            </SelectTrigger>
+            <SelectContent>
+            {POST_PROCESSING_MODEL_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+            </SelectContent>
+          </Select>
+        </FieldShell>
+
+        <FieldShell label="Live cleanup prompt">
+          <Textarea
+            value={postProcessingPrompt}
+            onChange={(event) => setPostProcessingPrompt(event.target.value)}
+            onBlur={handlePostProcessingPromptBlur}
+            placeholder={DEFAULT_POST_PROCESSING_PROMPT}
+            className="min-h-[64px] resize-none bg-white/70 text-sm dark:bg-slate-950/60"
+            disabled={!postProcessingEnabled}
+          />
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+              Use <span className="font-mono">${"{output}"}</span> where the raw transcript should be inserted.
+            </p>
+            <Button size="sm" variant="outline" onClick={handleResetPostProcessingPrompt} disabled={!postProcessingEnabled}>
+              Reset prompt
+            </Button>
+          </div>
+        </FieldShell>
+      </div>
+    </div>
+  );
+
+  const summarizationPromptSettings = (
+    <div className="rounded-xl bg-slate-50/90 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+      <FieldShell
+        label="Summarization prompt"
+        detail="Used for automatic and manual transcript summaries."
+      >
+        <Textarea
+          value={summarizationPrompt}
+          onChange={(event) => setSummarizationPrompt(event.target.value)}
+          onBlur={handleSummarizationPromptBlur}
+          placeholder="Summarize the key points, decisions, and action items. Keep it concise and structured."
+          className="min-h-[60px] resize-none bg-white/70 text-sm dark:bg-slate-950/60"
+        />
+      </FieldShell>
+    </div>
+  );
+
+  const localModelManagement = (
+    <div className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+      <div className="mb-2 flex items-start gap-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/70 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] dark:bg-slate-950/50 dark:text-slate-400">
+          <Cpu className="h-3.5 w-3.5" aria-hidden="true" />
+        </span>
+        <div className="min-w-0">
+          <h3 className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Local model files</h3>
+          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+            Manage the offline models used by the Local ONNX and Local NeMo providers above.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">ONNX model</p>
+              <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Whisper / Parakeet ONNX runtime</p>
+            </div>
+            {selectedOnnxModel ? (
+              <Badge variant={getStatusVariant(selectedOnnxModel.status)}>{getStatusLabel(selectedOnnxModel.status)}</Badge>
+            ) : null}
+          </div>
+
+          {transcriptionModel !== "onnx_local" ? (
+            <Button size="sm" variant="outline" className="w-full" onClick={() => void handleTranscriptionModelChange("onnx_local")}>
+              Use ONNX
+            </Button>
+          ) : onnxAvailable === null ? (
+            <p className="text-[12px] text-slate-500">Loading local models...</p>
+          ) : onnxAvailable === false ? (
+            <p className="text-[12px] leading-4 text-slate-500">{onnxMessage || "onnx-asr is not installed."}</p>
+          ) : (
+            <div className="space-y-3">
+              <FieldShell label="Model">
+                <Select value={onnxModel} onValueChange={handleOnnxModelChange}>
+                  <SelectTrigger className="h-9">
+                    <SelectValue placeholder="Select local model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {onnxModels.map((model) => (
+                      <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FieldShell>
+              <FieldShell label="Quantization">
+                <Select value={onnxQuantization} onValueChange={handleOnnxQuantizationChange}>
+                  <SelectTrigger className="h-9">
+                    <SelectValue placeholder="Select quantization" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="int8" disabled={!supportedQuantizations.includes("int8")}>int8</SelectItem>
+                    <SelectItem value="fp16" disabled={!supportedQuantizations.includes("fp16")}>fp16</SelectItem>
+                    <SelectItem value="fp32" disabled={!supportedQuantizations.includes("fp32")}>fp32</SelectItem>
+                  </SelectContent>
+                </Select>
+              </FieldShell>
+              {selectedOnnxModel?.description ? (
+                <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedOnnxModel.description}</p>
+              ) : null}
+              {selectedOnnxModel?.status === "downloading" && (
+                <div className="space-y-1.5">
+                  <Progress value={selectedOnnxModel.progress || 0} />
+                  <p className="flex items-center gap-2 text-[11px] text-slate-500">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {selectedOnnxModel.message || "Downloading..."}
+                    <span className="ml-auto">{Math.round(selectedOnnxModel.progress || 0)}%</span>
+                  </p>
+                </div>
+              )}
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => selectedOnnxModel && handleOnnxDownload(selectedOnnxModel.id)}
+                  disabled={!selectedOnnxModel || selectedOnnxModel.status === "downloading" || selectedOnnxModel.downloaded || !quantizationSupported}
+                >
+                  <Download className="mr-2 h-4 w-4" />
+                  Download
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => selectedOnnxModel && handleOnnxDelete(selectedOnnxModel.id)}
+                  disabled={!selectedOnnxModel?.downloaded || selectedOnnxModel.status === "downloading"}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">NeMo model</p>
+              <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Local .nemo toolkit</p>
+            </div>
+            {selectedNemoModel ? (
+              <Badge variant={getStatusVariant(selectedNemoModel.status)}>{getStatusLabel(selectedNemoModel.status)}</Badge>
+            ) : null}
+          </div>
+
+          {transcriptionModel !== "nemo_local" ? (
+            <Button size="sm" variant="outline" className="w-full" onClick={() => void handleTranscriptionModelChange("nemo_local")}>
+              Use NeMo
+            </Button>
+          ) : nemoAvailable === null ? (
+            <p className="text-[12px] text-slate-500">Loading NeMo models...</p>
+          ) : nemoAvailable === false ? (
+            <p className="text-[12px] leading-4 text-slate-500">{nemoMessage || "NeMo toolkit is not installed."}</p>
+          ) : (
+            <div className="space-y-3">
+              <FieldShell label="Model">
+                <Select value={nemoModel} onValueChange={handleNemoModelChange}>
+                  <SelectTrigger className="h-9">
+                    <SelectValue placeholder="Select NeMo model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {nemoModels.map((model) => (
+                      <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FieldShell>
+              {selectedNemoModel?.description ? (
+                <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedNemoModel.description}</p>
+              ) : null}
+              {selectedNemoModel?.status === "downloading" && (
+                <div className="space-y-1.5">
+                  <Progress value={selectedNemoModel.progress || 0} />
+                  <p className="flex items-center gap-2 text-[11px] text-slate-500">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {selectedNemoModel.message || "Downloading..."}
+                    <span className="ml-auto">{Math.round(selectedNemoModel.progress || 0)}%</span>
+                  </p>
+                </div>
+              )}
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => selectedNemoModel && handleNemoDownload(selectedNemoModel.id)}
+                  disabled={!selectedNemoModel || selectedNemoModel.status === "downloading" || selectedNemoModel.downloaded}
+                >
+                  <Download className="mr-2 h-4 w-4" />
+                  Download
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => selectedNemoModel && handleNemoDelete(selectedNemoModel.id)}
+                  disabled={!selectedNemoModel?.downloaded || selectedNemoModel.status === "downloading"}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div className={cn(
       "settings-page mx-auto w-full max-w-[1400px] px-4 py-5 text-[13px] transition-opacity duration-150 md:px-5 md:py-6",
@@ -2247,6 +2543,11 @@ export default function Settings() {
               </div>
             </SettingLine>
           </div>
+          <div className="mt-4 space-y-4">
+            {customVocabularySettings}
+            {livePostProcessingSettings}
+            {summarizationPromptSettings}
+          </div>
         </SectionPanel>
 
         <SectionPanel
@@ -2309,186 +2610,7 @@ export default function Settings() {
                 </div>
               ))}
             </div>
-          </div>
-        </SectionPanel>
-
-        <SectionPanel
-          title="Custom vocabulary"
-          description="Add preferred terms, names, brands, and domain vocabulary."
-          icon={FileText}
-        >
-          <div className="flex flex-col gap-2">
-            <Textarea
-              value={customVocabulary}
-              onChange={(event) => setCustomVocabulary(event.target.value)}
-              onBlur={handleCustomVocabBlur}
-              placeholder="Enter terms, one per line..."
-              className="min-h-[128px] resize-none bg-white/70 font-mono text-[12px] leading-5 md:min-h-[150px] dark:bg-slate-950/60"
-            />
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-[11px] text-slate-500 dark:text-slate-400">{customVocabularyTermCount} terms</span>
-              <Button size="sm" onClick={() => void handleCustomVocabBlur()}>
-                Save vocabulary
-              </Button>
-            </div>
-          </div>
-        </SectionPanel>
-
-        <SectionPanel
-          title="Local models"
-          description="Select and manage offline transcription models."
-          icon={Cpu}
-        >
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="rounded-xl bg-slate-50/90 p-4 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
-              <div className="mb-3 flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">ONNX model</p>
-                  <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Whisper ONNX runtime</p>
-                </div>
-                {selectedOnnxModel ? (
-                  <Badge variant={getStatusVariant(selectedOnnxModel.status)}>{getStatusLabel(selectedOnnxModel.status)}</Badge>
-                ) : null}
-              </div>
-
-              {transcriptionModel !== "onnx_local" ? (
-                <Button size="sm" variant="outline" className="w-full" onClick={() => void handleTranscriptionModelChange("onnx_local")}>
-                  Use ONNX
-                </Button>
-              ) : onnxAvailable === null ? (
-                <p className="text-[12px] text-slate-500">Loading local models...</p>
-              ) : onnxAvailable === false ? (
-                <p className="text-[12px] leading-4 text-slate-500">{onnxMessage || "onnx-asr is not installed."}</p>
-              ) : (
-                <div className="space-y-3">
-                  <FieldShell label="Model">
-                    <Select value={onnxModel} onValueChange={handleOnnxModelChange}>
-                      <SelectTrigger className="h-9">
-                        <SelectValue placeholder="Select local model" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {onnxModels.map((model) => (
-                          <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </FieldShell>
-                  <FieldShell label="Quantization">
-                    <Select value={onnxQuantization} onValueChange={handleOnnxQuantizationChange}>
-                      <SelectTrigger className="h-9">
-                        <SelectValue placeholder="Select quantization" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="int8" disabled={!supportedQuantizations.includes("int8")}>int8</SelectItem>
-                        <SelectItem value="fp16" disabled={!supportedQuantizations.includes("fp16")}>fp16</SelectItem>
-                        <SelectItem value="fp32" disabled={!supportedQuantizations.includes("fp32")}>fp32</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </FieldShell>
-                  {selectedOnnxModel?.description ? (
-                    <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedOnnxModel.description}</p>
-                  ) : null}
-                  {selectedOnnxModel?.status === "downloading" && (
-                    <div className="space-y-1.5">
-                      <Progress value={selectedOnnxModel.progress || 0} />
-                      <p className="flex items-center gap-2 text-[11px] text-slate-500">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        {selectedOnnxModel.message || "Downloading..."}
-                        <span className="ml-auto">{Math.round(selectedOnnxModel.progress || 0)}%</span>
-                      </p>
-                    </div>
-                  )}
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => selectedOnnxModel && handleOnnxDownload(selectedOnnxModel.id)}
-                      disabled={!selectedOnnxModel || selectedOnnxModel.status === "downloading" || selectedOnnxModel.downloaded || !quantizationSupported}
-                    >
-                      <Download className="mr-2 h-4 w-4" />
-                      Download
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => selectedOnnxModel && handleOnnxDelete(selectedOnnxModel.id)}
-                      disabled={!selectedOnnxModel?.downloaded || selectedOnnxModel.status === "downloading"}
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="rounded-xl bg-slate-50/90 p-4 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
-              <div className="mb-3 flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">NeMo model</p>
-                  <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Local .nemo toolkit</p>
-                </div>
-                {selectedNemoModel ? (
-                  <Badge variant={getStatusVariant(selectedNemoModel.status)}>{getStatusLabel(selectedNemoModel.status)}</Badge>
-                ) : null}
-              </div>
-
-              {transcriptionModel !== "nemo_local" ? (
-                <Button size="sm" variant="outline" className="w-full" onClick={() => void handleTranscriptionModelChange("nemo_local")}>
-                  Use NeMo
-                </Button>
-              ) : nemoAvailable === null ? (
-                <p className="text-[12px] text-slate-500">Loading NeMo models...</p>
-              ) : nemoAvailable === false ? (
-                <p className="text-[12px] leading-4 text-slate-500">{nemoMessage || "NeMo toolkit is not installed."}</p>
-              ) : (
-                <div className="space-y-3">
-                  <FieldShell label="Model">
-                    <Select value={nemoModel} onValueChange={handleNemoModelChange}>
-                      <SelectTrigger className="h-9">
-                        <SelectValue placeholder="Select NeMo model" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {nemoModels.map((model) => (
-                          <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </FieldShell>
-                  {selectedNemoModel?.description ? (
-                    <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedNemoModel.description}</p>
-                  ) : null}
-                  {selectedNemoModel?.status === "downloading" && (
-                    <div className="space-y-1.5">
-                      <Progress value={selectedNemoModel.progress || 0} />
-                      <p className="flex items-center gap-2 text-[11px] text-slate-500">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        {selectedNemoModel.message || "Downloading..."}
-                        <span className="ml-auto">{Math.round(selectedNemoModel.progress || 0)}%</span>
-                      </p>
-                    </div>
-                  )}
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => selectedNemoModel && handleNemoDownload(selectedNemoModel.id)}
-                      disabled={!selectedNemoModel || selectedNemoModel.status === "downloading" || selectedNemoModel.downloaded}
-                    >
-                      <Download className="mr-2 h-4 w-4" />
-                      Download
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => selectedNemoModel && handleNemoDelete(selectedNemoModel.id)}
-                      disabled={!selectedNemoModel?.downloaded || selectedNemoModel.status === "downloading"}
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
+            {localModelManagement}
           </div>
         </SectionPanel>
 
@@ -2547,7 +2669,7 @@ export default function Settings() {
 
         <SectionPanel
           title="Summarization"
-          description="Configure automatic summaries and the long-form prompt."
+          description="Choose the model and automatic summary behavior."
           icon={Sparkles}
         >
           <div className="space-y-4">
@@ -2586,103 +2708,6 @@ export default function Settings() {
             <SettingLine label="Auto-summarize" description="Summarize new transcripts automatically.">
               <Switch checked={autoSummarize} onCheckedChange={handleAutoSummarizeChange} />
             </SettingLine>
-
-            <div className="rounded-xl bg-slate-50/90 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Live post-processing</p>
-                  <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-                    Uses a separate shortcut to clean live dictation before paste. File and YouTube transcripts are unchanged.
-                  </p>
-                </div>
-                <Switch checked={postProcessingEnabled} onCheckedChange={handlePostProcessingEnabledChange} />
-              </div>
-
-              <div className="mt-3 grid gap-3">
-                <SettingLine label="Post-processing hotkey" description="Starts Live Mic with cleanup enabled.">
-                  <Dialog open={isRecordingPostProcessingHotkey} onOpenChange={setIsRecordingPostProcessingHotkey}>
-                    <DialogTrigger asChild>
-                      <Button variant="outline" className="h-8 w-[220px] max-w-full justify-start font-mono text-[11px]" disabled={!postProcessingEnabled}>
-                        <Keyboard className="mr-2 h-4 w-4 text-muted-foreground" />
-                        {postProcessingHotkey}
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent className="sm:max-w-[425px]">
-                      <DialogHeader>
-                        <DialogTitle>Post-processing hotkey</DialogTitle>
-                        <DialogDescription>Press the key combination for cleaned live dictation.</DialogDescription>
-                      </DialogHeader>
-                      <div
-                        ref={postProcessingHotkeyCaptureRef}
-                        className="flex h-32 items-center justify-center rounded-lg border-2 border-dashed bg-secondary/20 outline-none transition-colors focus:border-primary focus:bg-primary/5"
-                        tabIndex={0}
-                        aria-label="Post-processing hotkey capture area"
-                      >
-                        <p className="text-lg font-medium text-primary">{postProcessingHotkey}</p>
-                      </div>
-                      <div className="flex justify-end gap-2">
-                        <Button variant="ghost" onClick={() => setIsRecordingPostProcessingHotkey(false)}>Cancel</Button>
-                        <Button onClick={handleSavePostProcessingHotkey}>Save</Button>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
-                </SettingLine>
-
-                <div
-                  role="radiogroup"
-                  aria-label="Live post-processing models"
-                  className="rounded-xl bg-white/70 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40"
-                >
-                  <div className="mb-2">
-                    <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">
-                      Post-processing model
-                    </p>
-                    <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-                      Use a low-cost, low-latency model for simple dictation cleanup.
-                    </p>
-                  </div>
-                  <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
-                    {POST_PROCESSING_MODEL_OPTIONS.map((option) => (
-                      <SummaryModelChoice
-                        key={option.value}
-                        option={option}
-                        selected={postProcessingModel === option.value}
-                        onSelect={() => void handlePostProcessingModelChange(option.value)}
-                      />
-                    ))}
-                  </div>
-                </div>
-
-                <FieldShell label="Live cleanup prompt">
-                  <Textarea
-                    value={postProcessingPrompt}
-                    onChange={(event) => setPostProcessingPrompt(event.target.value)}
-                    onBlur={handlePostProcessingPromptBlur}
-                    placeholder={DEFAULT_POST_PROCESSING_PROMPT}
-                    className="min-h-[150px] resize-none bg-white/70 text-sm dark:bg-slate-950/60"
-                    disabled={!postProcessingEnabled}
-                  />
-                  <div className="mt-2 flex items-center justify-between gap-3">
-                    <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-                      Use <span className="font-mono">${"{output}"}</span> where the raw transcript should be inserted.
-                    </p>
-                    <Button size="sm" variant="outline" onClick={handleResetPostProcessingPrompt} disabled={!postProcessingEnabled}>
-                      Reset prompt
-                    </Button>
-                  </div>
-                </FieldShell>
-              </div>
-            </div>
-
-            <FieldShell label="Custom prompt">
-              <Textarea
-                value={summarizationPrompt}
-                onChange={(event) => setSummarizationPrompt(event.target.value)}
-                onBlur={handleSummarizationPromptBlur}
-                placeholder="Summarize the key points, decisions, and action items. Keep it concise and structured."
-                className="min-h-[130px] resize-none bg-white/70 text-sm dark:bg-slate-950/60"
-              />
-            </FieldShell>
           </div>
         </SectionPanel>
 

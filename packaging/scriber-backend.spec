@@ -85,6 +85,19 @@ for package in ("pipecat", "yt_dlp"):
 datas = exclude_datas(datas, ("pipecat/services/aws",))
 
 try:
+    # onnx-asr loads small package-local preprocessor ONNX files at runtime
+    # for models such as Parakeet TDT. Model weights stay in the user cache.
+    datas += collect_data_files(
+        "onnx_asr",
+        includes=[
+            "preprocessors/*.onnx",
+            "preprocessors/*.py",
+        ],
+    )
+except Exception:
+    pass
+
+try:
     # ONNXRuntime runtime DLLs are handled by collect_dynamic_libs(). Keep legal
     # notices, but avoid bundling sample models and mobile-helper docs.
     datas += collect_data_files(

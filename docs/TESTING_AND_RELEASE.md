@@ -552,7 +552,10 @@ briefly after startup, checks the configured updater endpoint in the background
 about once per week, caches the latest result locally, and suppresses update
 notifications while recording or transcription is active. Settings exposes
 manual check, install/restart, release notes, one-day deferral, per-version
-skip, and an automatic-check toggle.
+skip, and an automatic-check toggle. The tray panel also surfaces actionable
+updates with a prominent install-and-restart button, while the Windows tray icon
+switches to a blue download badge for available updates and a recording badge
+while capture is active.
 
 The Python backend must not run an updater cron or ping. Update publication is
 validated at release time through signed Tauri metadata.

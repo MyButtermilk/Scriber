@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-06-17
+Last verified: 2026-07-08
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -129,6 +129,10 @@ Packaging/build:
   runtime paths.
 - Installed desktop stability smokes include per-role process-tree metrics for
   Tauri shell, backend, WebView2, audio sidecar, and other child processes.
+- Local ONNX STT intentionally bundles only the small `onnx_asr/preprocessors`
+  package data files required at runtime by models such as Parakeet TDT. Actual
+  model weights remain in the user/model cache and are not embedded in the
+  backend sidecar.
 
 ## FFmpeg Profile B
 

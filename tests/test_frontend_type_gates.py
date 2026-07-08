@@ -615,10 +615,31 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);" in settings_source
     assert "const handlePostProcessingModelChange = async (value: string)" in settings_source
     assert "await updateSettings({ postProcessingModel: value });" in settings_source
-    assert 'aria-label="Live post-processing models"' in settings_source
+    assert 'label="Post-processing model"' in settings_source
+    assert 'value={postProcessingModel}' in settings_source
+    assert "onValueChange={(value) => void handlePostProcessingModelChange(value)}" in settings_source
     assert "POST_PROCESSING_MODEL_OPTIONS.map((option)" in settings_source
-    assert "selected={postProcessingModel === option.value}" in settings_source
+    assert "<SelectItem key={option.value} value={option.value}>" in settings_source
     assert "Use a low-cost, low-latency model for simple dictation cleanup." in settings_source
+
+
+def test_tray_panel_exposes_direct_update_install_action() -> None:
+    tray_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "TrayPanel.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "function StatusIndicator" in tray_source
+    assert "showUpdateInstallBanner" in tray_source
+    assert "Install Scriber" in tray_source
+    assert "Download, install, and restart Scriber." in tray_source
+    assert 'label={status.updateAvailable ? "Check Again" : "Check for Updates"}' in tray_source
+    assert "status.updateInstalling || !status.updateAvailable" in tray_source
+    assert '<Download className="h-2.5 w-2.5"' in tray_source
+    assert "statusDotClass" not in tray_source
+
+    tray_icon_dir = REPO_ROOT / "Frontend" / "src-tauri" / "icons"
+    assert (tray_icon_dir / "tray-update.png").read_bytes().startswith(b"\x89PNG")
+    assert len((tray_icon_dir / "tray-update.rgba").read_bytes()) == 32 * 32 * 4
 
 
 def test_transcript_detail_uses_typed_rest_queries() -> None:

@@ -142,6 +142,9 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert "copy_metadata" in spec
     assert 'copy_metadata("pipecat-ai")' in spec
     assert 'copy_metadata("onnx-asr")' in spec
+    assert 'collect_data_files(\n        "onnx_asr",' in spec
+    assert '"preprocessors/*.onnx"' in spec
+    assert '"preprocessors/*.py"' in spec
     assert "collect_data_files(" in spec
     assert '"onnxruntime",' in spec
     assert "includes=[" in spec
@@ -171,6 +174,17 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert "_internal\\onnxruntime" in build_script
     assert "_internal\\onnxruntime\\capi" in build_script
     assert "_internal\\scipy" not in build_script
+
+
+def test_local_stt_services_do_not_override_pipecat_settings_object():
+    repo_root = Path(__file__).resolve().parents[1]
+    onnx_service = (repo_root / "src" / "onnx_local_service.py").read_text(encoding="utf-8")
+    nemo_service = (repo_root / "src" / "nemo_local_service.py").read_text(encoding="utf-8")
+
+    assert "self._local_settings" in onnx_service
+    assert "self._local_settings" in nemo_service
+    assert "self._settings = {" not in onnx_service
+    assert "self._settings = {" not in nemo_service
 
 
 def test_backend_runtime_import_check_reports_missing_modules():

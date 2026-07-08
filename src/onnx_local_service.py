@@ -54,7 +54,7 @@ class OnnxLocalSTTService(SegmentedSTTService):
         self._model_name = model_name
         self._language = _language_to_code(language)
         self._quantization = quantization
-        self._settings = {
+        self._local_settings = {
             "model": self._model_name,
             "language": self._language,
             "quantization": self._quantization,
@@ -66,7 +66,7 @@ class OnnxLocalSTTService(SegmentedSTTService):
 
     async def set_language(self, language: Language):
         self._language = _language_to_code(language)
-        self._settings["language"] = self._language
+        self._local_settings["language"] = self._language
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         try:
@@ -114,7 +114,7 @@ class OnnxLocalBufferedSTTService(STTService):
         self._model_name = model_name
         self._language = _language_to_code(language)
         self._quantization = quantization
-        self._settings = {
+        self._local_settings = {
             "model": self._model_name,
             "language": self._language,
             "quantization": self._quantization,
@@ -136,7 +136,7 @@ class OnnxLocalBufferedSTTService(STTService):
 
     async def set_language(self, language: Language):
         self._language = _language_to_code(language)
-        self._settings["language"] = self._language
+        self._local_settings["language"] = self._language
 
     async def process_audio_frame(self, frame: AudioRawFrame, direction: FrameDirection):
         if self._muted:

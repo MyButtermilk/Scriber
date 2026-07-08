@@ -118,8 +118,10 @@ work. Installed builds check the configured Tauri updater endpoint in the
 background after startup and then about once per week, cache the result in
 local storage, and suppress update prompts while recording or transcription is
 active. Users can install, defer for a day, skip the current version, or open
-release notes from Settings. Unsigned/dev builds keep the updater plugin wired
-but are expected to report that release updater configuration is missing.
+release notes from Settings. The custom tray panel mirrors actionable update
+state with a blue download indicator and exposes a direct install-and-restart
+action when an update is available. Unsigned/dev builds keep the updater plugin
+wired but are expected to report that release updater configuration is missing.
 
 ## Tauri Shell
 
@@ -133,7 +135,8 @@ but are expected to report that release updater configuration is missing.
 - Register the optional live post-processing hotkey through Tauri and dispatch
   it to `/api/live-mic/toggle-post-processing`.
 - Own Windows autostart through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
-- Own tray/menu shell actions: open/focus, restart backend, quit.
+- Own tray/menu shell actions: open/focus, restart backend, quit, and tray
+  status/icon updates for recording and available desktop updates.
 - Initialize the Tauri updater plugin. Release builds provide updater endpoint,
   public key, and signed artifacts through build-time configuration; Windows
   updater installation runs in Tauri's passive mode.
