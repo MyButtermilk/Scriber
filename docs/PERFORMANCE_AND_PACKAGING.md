@@ -148,6 +148,11 @@ Packaging/build:
   audio sidecar cache from internal release artifacts when the normal Actions
   cache misses. This is required because GitHub Actions caches are ref-scoped
   and sibling app tags can miss even when their cache keys are identical.
+- Normal tag releases do not repack or clobber those large internal
+  release-cache artifacts. Cache asset refresh is opt-in via the manual
+  `release-windows.yml` workflow input `refresh_release_cache_artifacts=true`,
+  so routine app releases avoid minutes of `.venv`/wheelhouse/Rust/backend
+  artifact compression and upload when only app code or prompts changed.
 - The release Python wheelhouse cache is built with `pip wheel`, not
   `pip download`, so packages that only publish sdists are built once into
   reusable wheels. Release installs use `--no-index --find-links` against that
@@ -186,9 +191,9 @@ In GitHub release builds, Profile B reuse is layered:
 3. Validate the restored tools and media-preparation behavior.
 4. Build through MSYS2 only if both restored sources are absent or invalid.
 
-When a real Profile B rebuild is required, the workflow republishes that
-internal artifact with `--clobber`. App version changes alone must not require a
-Profile B rebuild.
+When a real Profile B rebuild is required, refresh the internal artifact through
+the manual release-cache refresh workflow path. Normal app version changes
+alone must not rebuild or republish Profile B.
 
 Profile B keeps required Scriber capabilities:
 

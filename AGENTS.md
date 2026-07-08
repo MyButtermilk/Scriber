@@ -383,8 +383,10 @@ Already implemented and should not be regressed:
   main Rust/Tauri build cache, Rust audio sidecar cache, and FFmpeg Profile B so
   sibling tag builds can reuse heavy outputs even when ref-scoped Actions caches
   miss. The main Rust/Tauri release artifact supports a latest-prefix fallback
-  as a warm start when the exact key is absent, then republishes the new exact
-  key after Cargo rebuilds changed crates.
+  as a warm start when the exact key is absent. Normal tag releases must restore
+  these large release-cache artifacts without repacking or clobbering them;
+  refresh them only through the manual `release-windows.yml`
+  `refresh_release_cache_artifacts=true` maintenance path.
 - FFmpeg Profile B release builds restore from Actions cache first, then from
   the internal reusable GitHub release artifact `ffmpeg-profile-b-n7.0-v2`, and
   rebuild through MSYS2 only when restored Profile B tools are absent or fail

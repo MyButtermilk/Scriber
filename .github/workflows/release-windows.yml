@@ -2,6 +2,12 @@ name: Release Windows
 
 on:
   workflow_dispatch:
+    inputs:
+      refresh_release_cache_artifacts:
+        description: "Refresh large reusable release-cache artifacts"
+        required: false
+        type: boolean
+        default: false
   push:
     branches:
       - main
@@ -26,6 +32,7 @@ jobs:
       SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG: release-cache-backend-sidecar-v1
       SCRIBER_RUST_BUILD_ARTIFACT_TAG: release-cache-rust-build-v1
       SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG: release-cache-rust-audio-sidecar-v1
+      SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true' && 'true' || 'false' }}
       CARGO_HOME: ${{ github.workspace }}/.cargo
 
     steps:
@@ -251,6 +258,7 @@ jobs:
           Write-Host "Rust audio sidecar release artifact restored: ${{ steps.rust-audio-sidecar-artifact.outputs.restored }}"
           Write-Host "FFmpeg Profile B cache hit: ${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}"
           Write-Host "FFmpeg Profile B release artifact restored: ${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}"
+          Write-Host "Refresh release cache artifacts: $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS"
 
       - name: Install Python dependencies
         id: python-dependencies
@@ -303,7 +311,7 @@ jobs:
           }
 
       - name: Publish Python venv release artifact
-        if: steps.python-dependencies.outputs.venv-rebuilt == 'true' || (steps.python-venv-cache.outputs.cache-hit != 'true' && steps.python-venv-artifact.outputs.restored != 'true')
+        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && (steps.python-dependencies.outputs.venv-rebuilt == 'true' || (steps.python-venv-cache.outputs.cache-hit != 'true' && steps.python-venv-artifact.outputs.restored != 'true'))
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -316,7 +324,7 @@ jobs:
             -Title "Scriber Python Virtualenv Cache v1"
 
       - name: Publish Python wheelhouse release artifact
-        if: steps.python-wheelhouse-cache.outputs.cache-hit != 'true' && steps.python-wheelhouse-artifact.outputs.restored != 'true'
+        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true' && steps.python-wheelhouse-artifact.outputs.restored != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -442,7 +450,7 @@ jobs:
           & $report.ffprobe.path -version
 
       - name: Publish FFmpeg Profile B release artifact
-        if: steps.ffmpeg-profile-b-resolve.outputs.usable != 'true'
+        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.ffmpeg-profile-b-resolve.outputs.usable != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -529,7 +537,7 @@ jobs:
             -TargetDir Frontend\src-tauri\target
 
       - name: Publish Rust build release artifact
-        if: steps.rust-build-cache.outputs.cache-hit != 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-build-artifact-export.outputs.staged == 'true'
+        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-build-artifact-export.outputs.staged == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -542,7 +550,7 @@ jobs:
             -Title "Scriber Rust Build Cache v1"
 
       - name: Publish Rust audio sidecar release artifact
-        if: steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-audio-sidecar-artifact.outputs.restored != 'true'
+        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-audio-sidecar-artifact.outputs.restored != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -555,7 +563,7 @@ jobs:
             -Title "Scriber Rust Audio Sidecar Cache v1"
 
       - name: Publish backend sidecar release artifact
-        if: steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true'
+        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

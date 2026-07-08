@@ -548,8 +548,7 @@ It:
   artifact when the ref-scoped Actions cache is cold, so unchanged Python
   requirements can skip pip installation entirely after `pip check`,
 - can import the newest internal Rust/Tauri cache artifact as a prefix fallback
-  when the exact Rust cache key is absent, then republishes a new exact artifact
-  after the build so future tags do not recompile the full dependency graph,
+  when the exact Rust cache key is absent,
 - restores Profile B from a reusable GitHub release artifact when the
   per-ref Actions cache is cold, validates restored Profile B media tools before
   reuse, and builds FFmpeg Profile B only when neither restored source passes
@@ -564,6 +563,14 @@ It:
 - optionally validates Authenticode signatures and Tauri updater metadata when
   signing/updater secrets are configured.
 
+Normal tag releases restore internal release-cache artifacts but do not
+automatically repack and clobber the large Python `.venv`, wheelhouse, Rust,
+backend sidecar, Rust audio sidecar, or FFmpeg cache assets. Refreshing those
+internal artifacts is an explicit maintenance action through
+`workflow_dispatch` with `refresh_release_cache_artifacts=true`; app release
+builds should spend time on changed installer inputs, not on re-uploading
+unchanged reusable cache payloads.
+
 `scripts\ci\write_release_cache_keys.ps1` writes the normalized key inputs used
 by the release workflow. Keep this normalization in place when changing release
 version files; otherwise patch-only version bumps will cause avoidable cache
@@ -576,7 +583,8 @@ tag `ffmpeg-profile-b-n7.0-v2` as
 release. It is only a fallback source for future release builds when GitHub
 Actions cache scope isolation prevents a new tag from seeing a previously saved
 cache. Every restored copy is still validated with the Profile B manifest and
-media-preparation smoke before it can be bundled.
+media-preparation smoke before it can be bundled. Refresh it only through the
+manual release-cache refresh workflow path after real Profile B input changes.
 
 ## Signing And Updater Status
 
