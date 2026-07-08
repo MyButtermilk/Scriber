@@ -19,11 +19,11 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
         id: setup-python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: "pip"
@@ -33,9 +33,9 @@ jobs:
             requirements-build.txt
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: "npm"
           cache-dependency-path: Frontend/package-lock.json
 
@@ -44,7 +44,7 @@ jobs:
 
       - name: Restore Rust build cache
         id: rust-build-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -60,7 +60,7 @@ jobs:
 
       - name: Restore Tauri bundler cache
         id: tauri-bundler-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/tauri
@@ -69,21 +69,21 @@ jobs:
 
       - name: Restore Python dependency cache
         id: python-venv-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .venv
           key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-dev.txt', 'requirements-build.txt') }}
 
       - name: Restore frontend dependency cache
         id: frontend-node-modules-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: Frontend/node_modules
-          key: scriber-frontend-node-modules-${{ runner.os }}-node20-${{ hashFiles('Frontend/package-lock.json') }}
+          key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('Frontend/package-lock.json') }}
 
       - name: Restore backend sidecar cache
         id: backend-sidecar-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             build/tauri-sidecar-cache
@@ -94,7 +94,7 @@ jobs:
 
       - name: Restore FFmpeg Profile B cache
         id: ffmpeg-profile-b-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             build/ffmpeg-profile-b-msys2/dist/scriber-ffmpeg-profile-b
@@ -297,14 +297,14 @@ jobs:
           Copy-Item Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt release-artifacts\
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scriber-windows-release
           path: release-artifacts/*
 
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: release-artifacts/*
           generate_release_notes: true
@@ -336,7 +336,7 @@ jobs:
 
       - name: Upload publication evidence
         if: startsWith(github.ref, 'refs/tags/') && hashFiles('release-artifacts/updater-publication.json') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scriber-windows-publication-evidence
           path: release-artifacts/updater-publication.json

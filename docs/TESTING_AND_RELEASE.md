@@ -520,6 +520,10 @@ Other available installed smokes include:
 
 It runs focused hybrid Python gates, frontend typecheck/build, and Tauri Rust
 tests. It intentionally does not build the full NSIS installer on every PR.
+Node setup uses the repository `.node-version` file so CI stays aligned with
+`Frontend/package.json` engines. Keep GitHub-owned actions on current majors
+(`checkout`, `setup-python`, `setup-node`, `cache`, and `upload-artifact`) so
+the workflows do not fall back to deprecated Node action runtimes.
 
 `.github/workflows/release-windows.yml` is the Windows release build.
 
