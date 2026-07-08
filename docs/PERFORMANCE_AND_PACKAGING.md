@@ -136,6 +136,12 @@ Packaging/build:
 - GitHub release builds compute normalized cache-key inputs so patch version
   bumps do not invalidate frontend dependency, Rust build, or backend sidecar
   scratch caches unless their real inputs changed.
+- The backend sidecar cache key is also stable inside
+  `scripts\build_tauri_backend_sidecar.ps1`: it normalizes `src/version.py`,
+  hashes bundled media tools by SHA-256 instead of file timestamps, and no
+  longer imports PyInstaller just to compute the cache key. On a restored
+  backend sidecar hit, PyInstaller checks and backend runtime import checks are
+  skipped because the frozen sidecar itself is validated instead.
 - GitHub release builds cache `build\rust-audio-sidecar-cache` separately from
   the Python backend sidecar cache. The audio sidecar cache key normalizes the
   app package version in Cargo metadata, so patch version bumps do not force a
@@ -154,6 +160,11 @@ Packaging/build:
   `release-windows.yml` workflow input `refresh_release_cache_artifacts=true`.
   Routine signed app releases avoid minutes of `.venv`/wheelhouse/Rust/backend
   artifact compression and upload when only app code or prompts changed.
+- Normal tag releases now use `actions/cache/restore` for heavyweight caches and
+  never run the matching `actions/cache/save` steps. Explicit cache saves are
+  gated to `main` and manual refresh runs. The backend sidecar restore is
+  attempted before Python `.venv`/wheelhouse restore, so a durable prebuilt
+  sidecar can skip the Python dependency install path entirely.
 - Release artifact upload through `actions/upload-artifact` uses
   `compression-level: 0` because the Windows installer is already NSIS
   compressed and updater signatures/JSON reports are small. This avoids
@@ -166,6 +177,9 @@ Packaging/build:
   restored virtualenv is already current and passes `pip check`. The internal
   `release-cache-python-venv-v1` artifact gives tag builds a durable exact
   virtualenv restore path when the ref-scoped Actions cache is cold.
+- The Rust release cache and internal Rust release artifact intentionally omit
+  `target\release\incremental`; CI builds set `CARGO_INCREMENTAL=0` and cache
+  only reusable registry/git plus release dependency build directories.
 
 ## FFmpeg Profile B
 

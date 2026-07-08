@@ -365,6 +365,10 @@ Already implemented and should not be regressed:
 - JobStore and latency metrics store connection reuse.
 - CORS origin decision cache.
 - Sidecar hash cache that avoids PyInstaller when inputs are unchanged.
+  The sidecar cache key normalizes `src/version.py`, uses media-tool content
+  hashes instead of timestamps, and must be computed before requiring
+  PyInstaller/backend runtime imports so restored sidecars skip Python
+  dependency work.
 - Target-current sidecar metadata that skips restoring/copying the backend tree
   when `target\release\backend` already matches the current cache key and
   release resource flags.
@@ -387,7 +391,8 @@ Already implemented and should not be regressed:
   these large release-cache artifacts without repacking or clobbering them;
   refresh them on `main` cache-warming pushes or through the manual
   `release-windows.yml` `refresh_release_cache_artifacts=true` maintenance
-  path.
+  path. Heavy Actions caches are restore-only on tag releases; explicit
+  `actions/cache/save` steps are allowed only on that refresh path.
 - The release workflow's cache summary distinguishes `actions-cache`,
   `release-artifact`, and `miss`. Treat only effective `miss` as evidence that
   a component may rebuild. Tag-scoped Actions cache misses can still be healthy

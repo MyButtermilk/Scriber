@@ -542,8 +542,16 @@ It:
   version-only changes in `package-lock.json`, `Cargo.toml`, `Cargo.lock`, and
   `src/version.py` do not invalidate dependency caches that do not actually
   depend on the app version,
+- restores heavyweight caches with `actions/cache/restore` and saves them only
+  on `main` or an explicit cache-refresh dispatch. Signed `v*` tag releases are
+  restore-only for those large caches, so they do not spend post-job time
+  uploading tag-scoped cache payloads that sibling tags cannot reliably reuse,
 - restores release caches for Python `.venv`, Python wheels, frontend
   `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools,
+- restores the backend sidecar cache before Python `.venv` and wheelhouse
+  restore. When a prebuilt backend sidecar is available, the workflow skips the
+  Python dependency environment entirely and lets the sidecar builder perform
+  only the frozen-sidecar validation/copy path,
 - restores Python `.venv` from the internal `release-cache-python-venv-v1`
   artifact when the ref-scoped Actions cache is cold, so unchanged Python
   requirements can skip pip installation entirely after `pip check`,
@@ -578,6 +586,12 @@ misses. A manual maintenance refresh is also available through
 `workflow_dispatch` with `refresh_release_cache_artifacts=true`. Signed app
 release tags should spend time on changed installer inputs, not on re-uploading
 unchanged reusable cache payloads.
+
+The Python backend sidecar cache is allowed to be version-neutral for
+`src/version.py` because the Tauri supervisor passes the installed app version
+through `SCRIBER_VERSION` at runtime and `src.version.app_version()` reads that
+environment override. Keep that runtime contract intact when changing version
+reporting; otherwise a cached sidecar could report the wrong installed version.
 
 For build-time triage, use `build-timing.json` before removing checks. The
 v0.4.15 GitHub release build showed that media-preparation smoke and runtime

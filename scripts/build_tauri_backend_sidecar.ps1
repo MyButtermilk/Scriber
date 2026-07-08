@@ -144,6 +144,16 @@ function Normalize-CargoLockForCache {
     )
 }
 
+function Normalize-PythonVersionForCache {
+    param([string]$Text)
+
+    return [regex]::Replace(
+        $Text,
+        '(?m)^__version__\s*=\s*"[^"]+"',
+        '__version__ = "__app_version__"'
+    )
+}
+
 function Get-RelativePath {
     param(
         [string]$Root,
@@ -192,21 +202,15 @@ function Get-NormalizedFileHashEntry {
 function Get-FileHashEntry {
     param(
         [string]$Root,
-        [string]$Path,
-        [bool]$HashContent = $true
+        [string]$Path
     )
 
     $item = Get-Item -LiteralPath $Path
-    $entry = [ordered]@{
+    return [ordered]@{
         path = (Get-RelativePath -Root $Root -Path $item.FullName)
         length = [int64]$item.Length
+        sha256 = Get-Sha256Hex -Path $item.FullName
     }
-    if ($HashContent) {
-        $entry["sha256"] = Get-Sha256Hex -Path $item.FullName
-    } else {
-        $entry["lastWriteTimeUtc"] = $item.LastWriteTimeUtc.ToString("o")
-    }
-    return $entry
 }
 
 function Get-InputFileEntries {
@@ -230,10 +234,22 @@ function Get-InputFileEntries {
                 } |
                 Sort-Object FullName
             foreach ($file in $files) {
-                $entries += Get-FileHashEntry -Root $Root -Path $file.FullName
+                $relative = Get-RelativePath -Root $Root -Path $file.FullName
+                $normalizedRelative = $relative -replace '/', '\'
+                if ($normalizedRelative -eq "src\version.py") {
+                    $entries += Get-ContentHashEntry -Root $Root -Path $file.FullName -Content (Normalize-PythonVersionForCache -Text (Get-Content -LiteralPath $file.FullName -Raw))
+                } else {
+                    $entries += Get-FileHashEntry -Root $Root -Path $file.FullName
+                }
             }
         } else {
-            $entries += Get-FileHashEntry -Root $Root -Path $item.FullName
+            $relative = Get-RelativePath -Root $Root -Path $item.FullName
+            $normalizedRelative = $relative -replace '/', '\'
+            if ($normalizedRelative -eq "src\version.py") {
+                $entries += Get-ContentHashEntry -Root $Root -Path $item.FullName -Content (Normalize-PythonVersionForCache -Text (Get-Content -LiteralPath $item.FullName -Raw))
+            } else {
+                $entries += Get-FileHashEntry -Root $Root -Path $item.FullName
+            }
         }
     }
     return $entries
@@ -289,7 +305,7 @@ function Get-ToolMetadataEntry {
         resolvedPath = $item.FullName
         exists = $true
         length = [int64]$item.Length
-        lastWriteTimeUtc = $item.LastWriteTimeUtc.ToString("o")
+        sha256 = Get-Sha256Hex -Path $item.FullName
     }
 }
 
@@ -307,7 +323,6 @@ function Get-SidecarInputManifest {
     )
 
     $pythonVersion = (& $Python -c "import sys; print(sys.version)" 2>$null) -join "`n"
-    $pyInstallerVersion = (& $Python -c "import PyInstaller; print(PyInstaller.__version__)" 2>$null) -join "`n"
     $inputPaths = @(
         "src",
         "packaging\scriber-backend.spec",
@@ -327,7 +342,6 @@ function Get-SidecarInputManifest {
     return [ordered]@{
         apiVersion = "1"
         python = $pythonVersion
-        pyInstaller = $pyInstallerVersion
         flags = [ordered]@{
             bundleMediaTools = $BundleTools
             useProfileBFfmpeg = $UseProfileB
@@ -1178,20 +1192,6 @@ if ($UseProfileBFfmpeg -and -not $MediaToolsDir) {
     Write-Host "Using explicit MediaToolsDir; skipping Gyan FFmpeg essentials download."
 }
 
-if (-not (Test-PyInstaller -Python $PythonPath)) {
-    if (-not $InstallPyInstaller) {
-        throw "PyInstaller is not installed for $PythonPath. Re-run with -InstallPyInstaller or install pyinstaller manually."
-    }
-    & $PythonPath -m pip install pyinstaller
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install PyInstaller."
-    }
-}
-
-Invoke-TimedStep -Label "backend-runtime-import-check" -Command {
-    Invoke-BackendRuntimeImportCheck -Python $PythonPath -Root $RepoRoot
-}
-
 if (-not $SkipFrontendBuild) {
     Invoke-TimedStep -Label "frontend-build" -Command {
         Push-Location (Join-Path $RepoRoot "Frontend")
@@ -1296,6 +1296,20 @@ if ($cacheEnabled) {
 }
 
 if (-not $cacheHit) {
+    if (-not (Test-PyInstaller -Python $PythonPath)) {
+        if (-not $InstallPyInstaller) {
+            throw "PyInstaller is not installed for $PythonPath. Re-run with -InstallPyInstaller or install pyinstaller manually."
+        }
+        & $PythonPath -m pip install pyinstaller
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install PyInstaller."
+        }
+    }
+
+    Invoke-TimedStep -Label "backend-runtime-import-check" -Command {
+        Invoke-BackendRuntimeImportCheck -Python $PythonPath -Root $RepoRoot
+    }
+
     Invoke-TimedStep -Label "pyinstaller-build" -Command {
         $oldRepoRoot = $env:SCRIBER_REPO_ROOT
         $env:SCRIBER_REPO_ROOT = $RepoRoot
