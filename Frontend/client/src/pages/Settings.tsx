@@ -117,6 +117,7 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
 ] as const;
 
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
+const DEFAULT_POST_PROCESSING_MODEL = "gpt-5-nano";
 const DEFAULT_POST_PROCESSING_PROMPT = `You are Scriber's live dictation cleanup engine.
 
 Task: transform the raw live microphone transcript into paste-ready text.
@@ -194,6 +195,19 @@ const SUMMARIZATION_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
   { value: "gpt-5.2", label: "OpenAI GPT 5.2", detail: "OpenAI summary model", group: "openai", icon: "openai" },
   { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini", detail: "Lower latency OpenAI model", group: "openai", icon: "openai" },
   { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano", detail: "Smallest OpenAI model", group: "openai", icon: "openai" },
+] as const;
+
+const POST_PROCESSING_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
+  { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano", detail: "Low-cost cleanup model", group: "openai", icon: "openai" },
+  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: "Compact Gemini cleanup", group: "gemini", icon: "gemini" },
+  { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: "Fast OpenRouter Nitro route", group: "openrouter", icon: "openrouter" },
+  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: "Fast Gemini fallback", group: "gemini", icon: "gemini" },
+  { value: "gpt-5-mini", label: "OpenAI GPT 5 Mini", detail: "Fast cleanup with more headroom", group: "openai", icon: "openai" },
+  { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: "OpenRouter fallback route", group: "openrouter", icon: "openrouter" },
+  { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: "Shared summary default", group: "gemini", icon: "gemini" },
+  { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash Preview", detail: "Preview Flash model", group: "gemini", icon: "gemini" },
+  { value: "gpt-5.2", label: "OpenAI GPT 5.2", detail: "Higher-cost fallback", group: "openai", icon: "openai" },
+  { value: "gemini-3-pro-preview", label: "Gemini 3 Pro", detail: "Higher-cost fallback", group: "gemini", icon: "gemini" },
 ] as const;
 
 const API_KEY_HELP_LINKS = {
@@ -732,6 +746,7 @@ export default function Settings() {
   const [selectedDeviceId, setSelectedDeviceId] = useState("default");
   const [transcriptionModel, setTranscriptionModel] = useState("soniox-realtime");
   const [summarizationModel, setSummarizationModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
+  const [postProcessingModel, setPostProcessingModel] = useState(DEFAULT_POST_PROCESSING_MODEL);
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [postProcessingEnabled, setPostProcessingEnabled] = useState(true);
   const [language, setLanguage] = useState("auto");
@@ -963,6 +978,7 @@ export default function Settings() {
         setCustomVocabulary(settings.customVocab || "");
         setSummarizationPrompt(settings.summarizationPrompt || "");
         setSummarizationModel(settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
+        setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);
         setAutoSummarize(settings.autoSummarize === true);
         setPostProcessingEnabled(settings.postProcessingEnabled !== false);
         setPostProcessingPrompt(settings.postProcessingPrompt || DEFAULT_POST_PROCESSING_PROMPT);
@@ -1501,6 +1517,26 @@ export default function Settings() {
       });
     } catch (e: any) {
       setSummarizationModel(previousValue);
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
+  const handlePostProcessingModelChange = async (value: string) => {
+    const previousValue = postProcessingModel;
+    setPostProcessingModel(value);
+    try {
+      await updateSettings({ postProcessingModel: value });
+      toast({
+        title: "Saved",
+        description: "Live post-processing model updated.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      setPostProcessingModel(previousValue);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
@@ -2591,6 +2627,31 @@ export default function Settings() {
                     </DialogContent>
                   </Dialog>
                 </SettingLine>
+
+                <div
+                  role="radiogroup"
+                  aria-label="Live post-processing models"
+                  className="rounded-xl bg-white/70 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40"
+                >
+                  <div className="mb-2">
+                    <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">
+                      Post-processing model
+                    </p>
+                    <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                      Use a low-cost, low-latency model for simple dictation cleanup.
+                    </p>
+                  </div>
+                  <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
+                    {POST_PROCESSING_MODEL_OPTIONS.map((option) => (
+                      <SummaryModelChoice
+                        key={option.value}
+                        option={option}
+                        selected={postProcessingModel === option.value}
+                        onSelect={() => void handlePostProcessingModelChange(option.value)}
+                      />
+                    ))}
+                  </div>
+                </div>
 
                 <FieldShell label="Live cleanup prompt">
                   <Textarea

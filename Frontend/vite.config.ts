@@ -2,7 +2,10 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { readFileSync } from "node:fs";
 import { metaImagesPlugin } from "./vite-plugin-meta-images";
+
+const packageJson = JSON.parse(readFileSync(path.resolve(import.meta.dirname, "package.json"), "utf-8"));
 
 export default defineConfig({
   plugins: [
@@ -27,6 +30,9 @@ export default defineConfig({
       "@shared": path.resolve(import.meta.dirname, "shared"),
       "@assets": path.resolve(import.meta.dirname, "attached_assets"),
     },
+  },
+  define: {
+    __SCRIBER_APP_VERSION__: JSON.stringify(packageJson.version || ""),
   },
   css: {
     postcss: {

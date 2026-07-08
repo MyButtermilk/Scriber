@@ -1,5 +1,7 @@
 import { isTauriRuntime, setTrayUpdateStatus } from "@/lib/backend";
 
+declare const __SCRIBER_APP_VERSION__: string | undefined;
+
 export type DesktopUpdatePhase =
   | "idle"
   | "checking"
@@ -171,6 +173,7 @@ export function shouldNotifyDesktopUpdate(status: DesktopUpdateStatus): boolean 
     status.enabled &&
     status.available &&
     status.version &&
+    isVersionNewerThanCurrent(status.version, status.currentVersion) &&
     !status.dismissed &&
     !status.deferred,
   );
@@ -184,13 +187,14 @@ export function publishDesktopUpdateStatusToTray(status: DesktopUpdateStatus): v
     status.enabled &&
     status.available &&
     status.version &&
+    isVersionNewerThanCurrent(status.version, status.currentVersion) &&
     !status.dismissed &&
     !status.deferred,
   );
   void setTrayUpdateStatus({
     available: actionable,
     installing: status.phase === "installing",
-    version: status.version,
+    version: actionable ? status.version : undefined,
     message: status.message,
   }).catch((error) => console.debug("Tray update status sync failed.", error));
 }
@@ -256,6 +260,18 @@ export async function installDesktopUpdate(
   const { relaunch } = await import("@tauri-apps/plugin-process");
   const update = await check();
   if (!update) {
+    const status = cacheAndBuildStatus({
+      phase: "current",
+      enabled: true,
+      available: false,
+      currentVersion,
+      message: "Scriber is up to date.",
+    });
+    emitStatus(status);
+    return status;
+  }
+
+  if (!isVersionNewerThanCurrent(update.version, currentVersion)) {
     const status = cacheAndBuildStatus({
       phase: "current",
       enabled: true,
@@ -343,6 +359,16 @@ async function performDesktopUpdateCheck(): Promise<DesktopUpdateStatus> {
       });
     }
 
+    if (!isVersionNewerThanCurrent(update.version, currentVersion)) {
+      return cacheAndBuildStatus({
+        phase: "current",
+        enabled: true,
+        available: false,
+        currentVersion,
+        message: "Scriber is up to date.",
+      });
+    }
+
     return cacheAndBuildStatus({
       phase: "available",
       enabled: true,
@@ -366,13 +392,13 @@ async function performDesktopUpdateCheck(): Promise<DesktopUpdateStatus> {
 
 async function getCurrentVersion(): Promise<string> {
   if (!isTauriRuntime()) {
-    return "";
+    return buildVersion();
   }
   try {
     const { getVersion } = await import("@tauri-apps/api/app");
-    return await getVersion();
+    return (await getVersion()) || buildVersion();
   } catch {
-    return "";
+    return buildVersion();
   }
 }
 
@@ -387,16 +413,17 @@ function cacheAndBuildStatus(input: {
   message: string;
 }): DesktopUpdateStatus {
   const previous = readCache();
+  const inputAvailable = Boolean(input.available && isVersionNewerThanCurrent(input.version, input.currentVersion));
   const sameVersion = Boolean(input.version && input.version === previous?.version);
   const cache: DesktopUpdateCache = {
-    phase: input.phase,
+    phase: inputAvailable ? input.phase : input.phase === "available" ? "current" : input.phase,
     enabled: input.enabled,
     currentVersion: input.currentVersion,
-    version: input.available ? input.version : undefined,
-    date: input.available ? input.date : undefined,
-    notes: input.available ? input.notes : undefined,
+    version: inputAvailable ? input.version : undefined,
+    date: inputAvailable ? input.date : undefined,
+    notes: inputAvailable ? input.notes : undefined,
     lastCheckedAt: new Date().toISOString(),
-    message: input.message,
+    message: inputAvailable || input.phase !== "available" ? input.message : "Scriber is up to date.",
     dismissedVersion: sameVersion ? previous?.dismissedVersion : undefined,
     deferredVersion: sameVersion ? previous?.deferredVersion : undefined,
     deferredUntil: sameVersion ? previous?.deferredUntil : undefined,
@@ -414,7 +441,10 @@ function statusFromCache(cache: DesktopUpdateCache | null, settings: DesktopUpda
     };
   }
 
-  const available = cache.phase === "available" && Boolean(cache.version);
+  const currentVersion = latestKnownCurrentVersion(cache.currentVersion);
+  const rawAvailable = cache.phase === "available" && Boolean(cache.version);
+  const available = Boolean(rawAvailable && isVersionNewerThanCurrent(cache.version, currentVersion));
+  const staleAvailable = Boolean(rawAvailable && !available);
   const dismissed = Boolean(available && cache.dismissedVersion === cache.version);
   const deferred = Boolean(
     available &&
@@ -423,22 +453,65 @@ function statusFromCache(cache: DesktopUpdateCache | null, settings: DesktopUpda
     Date.parse(cache.deferredUntil) > Date.now(),
   );
   return {
-    phase: cache.phase || "idle",
+    phase: staleAvailable ? "current" : cache.phase || "idle",
     enabled: Boolean(cache.enabled),
     available,
     autoCheckEnabled: settings.autoCheckEnabled,
-    currentVersion: cache.currentVersion,
-    version: cache.version,
-    date: cache.date,
-    notes: cache.notes,
+    currentVersion,
+    version: available ? cache.version : undefined,
+    date: available ? cache.date : undefined,
+    notes: available ? cache.notes : undefined,
     lastCheckedAt: cache.lastCheckedAt,
     nextCheckAt: nextCheckTime(cache.lastCheckedAt, settings).toISOString(),
     releaseNotesUrl: DESKTOP_UPDATE_RELEASE_NOTES_URL,
     dismissed,
     deferred,
     deferredUntil: cache.deferredUntil,
-    message: cache.message || NOT_CHECKED_STATUS.message,
+    message: staleAvailable ? "Scriber is up to date." : cache.message || NOT_CHECKED_STATUS.message,
   };
+}
+
+function buildVersion(): string {
+  return typeof __SCRIBER_APP_VERSION__ === "string" ? __SCRIBER_APP_VERSION__ : "";
+}
+
+function latestKnownCurrentVersion(cachedCurrentVersion: string | undefined): string {
+  const bundledVersion = buildVersion();
+  return bundledVersion || cachedCurrentVersion || "";
+}
+
+function isVersionNewerThanCurrent(candidateVersion: string | undefined, currentVersion: string | undefined): boolean {
+  const candidate = parseVersion(candidateVersion);
+  const current = parseVersion(currentVersion || buildVersion());
+  if (!candidate || !current) {
+    return Boolean(candidateVersion);
+  }
+  for (let index = 0; index < Math.max(candidate.length, current.length); index += 1) {
+    const left = candidate[index] || 0;
+    const right = current[index] || 0;
+    if (left > right) {
+      return true;
+    }
+    if (left < right) {
+      return false;
+    }
+  }
+  return false;
+}
+
+function parseVersion(value: string | undefined): number[] | null {
+  const normalized = (value || "")
+    .trim()
+    .replace(/^v/i, "")
+    .split(/[+-]/, 1)[0];
+  if (!normalized) {
+    return null;
+  }
+  const parts = normalized.split(".");
+  if (!parts.length || parts.some((part) => !/^\d+$/.test(part))) {
+    return null;
+  }
+  return parts.map((part) => Number.parseInt(part, 10));
 }
 
 function nextCheckTime(lastCheckedAt: string | undefined, settings: DesktopUpdateSettings): Date {

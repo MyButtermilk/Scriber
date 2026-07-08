@@ -579,6 +579,48 @@ def test_theme_reveal_controls_desktop_chrome_and_card_repaints() -> None:
     assert 'html[data-theme-reveal-active="true"] .theme-reveal-overlay' in css
 
 
+def test_desktop_update_status_filters_same_version_updates() -> None:
+    update_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "desktop-updates.ts"
+    ).read_text(encoding="utf-8")
+    app_source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(
+        encoding="utf-8"
+    )
+    vite_config = (REPO_ROOT / "Frontend" / "vite.config.ts").read_text(encoding="utf-8")
+
+    assert "__SCRIBER_APP_VERSION__" in vite_config
+    assert 'JSON.stringify(packageJson.version || "")' in vite_config
+    assert "function isVersionNewerThanCurrent" in update_source
+    assert "function parseVersion" in update_source
+    assert "function latestKnownCurrentVersion" in update_source
+    assert "const currentVersion = latestKnownCurrentVersion(cache.currentVersion);" in update_source
+    assert "status.version &&\n    isVersionNewerThanCurrent(status.version, status.currentVersion)" in update_source
+    assert "status.version &&\n    isVersionNewerThanCurrent(status.version, status.currentVersion)" in update_source[
+        update_source.index("export function publishDesktopUpdateStatusToTray") :
+    ]
+    assert "if (!isVersionNewerThanCurrent(update.version, currentVersion))" in update_source
+    assert "const staleAvailable = Boolean(rawAvailable && !available);" in update_source
+    assert 'phase: staleAvailable ? "current" : cache.phase || "idle"' in update_source
+    assert "maybeNotify(cached);" in app_source
+
+
+def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
+    settings_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "const POST_PROCESSING_MODEL_OPTIONS" in settings_source
+    assert 'const DEFAULT_POST_PROCESSING_MODEL = "gpt-5-nano";' in settings_source
+    assert "const [postProcessingModel, setPostProcessingModel]" in settings_source
+    assert "setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);" in settings_source
+    assert "const handlePostProcessingModelChange = async (value: string)" in settings_source
+    assert "await updateSettings({ postProcessingModel: value });" in settings_source
+    assert 'aria-label="Live post-processing models"' in settings_source
+    assert "POST_PROCESSING_MODEL_OPTIONS.map((option)" in settings_source
+    assert "selected={postProcessingModel === option.value}" in settings_source
+    assert "Use a low-cost, low-latency model for simple dictation cleanup." in settings_source
+
+
 def test_transcript_detail_uses_typed_rest_queries() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
         encoding="utf-8"
