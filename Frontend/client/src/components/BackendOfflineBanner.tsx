@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useBackendStatus } from "@/hooks/use-backend-status";
-import { AlertCircle, RefreshCw, Loader2, AudioLines } from "lucide-react";
+import { AlertCircle, RefreshCw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const STARTUP_GRACE_MS = 9000;
@@ -56,8 +56,14 @@ export function BackendOfflineBanner() {
                     <div className="flex flex-col items-center text-center">
                         <div className="relative mb-6 flex h-20 w-20 items-center justify-center">
                             <div className="absolute inset-0 rounded-full bg-primary/10 scriber-startup-pulse" />
-                            <div className="relative flex h-14 w-14 items-center justify-center rounded-full border border-primary/20 bg-primary/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.24)]">
-                                <AudioLines className="h-7 w-7 text-primary" aria-hidden="true" />
+                            <div className="relative flex h-14 w-14 items-center justify-center rounded-full border border-primary/20 bg-card shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
+                                <img
+                                    src="/favicon.svg"
+                                    alt=""
+                                    aria-hidden="true"
+                                    className="h-9 w-9 object-contain"
+                                    draggable={false}
+                                />
                             </div>
                         </div>
 
