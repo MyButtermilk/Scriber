@@ -544,6 +544,12 @@ It:
   depend on the app version,
 - restores release caches for Python `.venv`, Python wheels, frontend
   `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools,
+- restores Python `.venv` from the internal `release-cache-python-venv-v1`
+  artifact when the ref-scoped Actions cache is cold, so unchanged Python
+  requirements can skip pip installation entirely after `pip check`,
+- can import the newest internal Rust/Tauri cache artifact as a prefix fallback
+  when the exact Rust cache key is absent, then republishes a new exact artifact
+  after the build so future tags do not recompile the full dependency graph,
 - restores Profile B from a reusable GitHub release artifact when the
   per-ref Actions cache is cold, validates restored Profile B media tools before
   reuse, and builds FFmpeg Profile B only when neither restored source passes

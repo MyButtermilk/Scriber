@@ -377,9 +377,12 @@ Already implemented and should not be regressed:
   dependency/build caches, so patch version bumps do not invalidate frontend,
   Rust, or backend scratch caches without real input changes.
 - Release workflow Actions caches are backed by internal GitHub release
-  artifacts for the Python wheelhouse, backend sidecar cache, Rust audio
-  sidecar cache, and FFmpeg Profile B so sibling tag builds can reuse heavy
-  outputs even when ref-scoped Actions caches miss.
+  artifacts for the Python virtualenv, Python wheelhouse, backend sidecar cache,
+  main Rust/Tauri build cache, Rust audio sidecar cache, and FFmpeg Profile B so
+  sibling tag builds can reuse heavy outputs even when ref-scoped Actions caches
+  miss. The main Rust/Tauri release artifact supports a latest-prefix fallback
+  as a warm start when the exact key is absent, then republishes the new exact
+  key after Cargo rebuilds changed crates.
 - FFmpeg Profile B release builds restore from Actions cache first, then from
   the internal reusable GitHub release artifact `ffmpeg-profile-b-n7.0-v2`, and
   rebuild through MSYS2 only when restored Profile B tools are absent or fail

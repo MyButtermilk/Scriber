@@ -21,6 +21,7 @@ jobs:
     env:
       SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG: ffmpeg-profile-b-n7.0-v2
       SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME: scriber-ffmpeg-profile-b-n7.0-v2-Windows.zip
+      SCRIBER_PYTHON_VENV_ARTIFACT_TAG: release-cache-python-venv-v1
       SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG: release-cache-python-wheelhouse-v2
       SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG: release-cache-backend-sidecar-v1
       SCRIBER_RUST_BUILD_ARTIFACT_TAG: release-cache-rust-build-v1
@@ -83,6 +84,7 @@ jobs:
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_RUST_BUILD_ARTIFACT_TAG `
             -AssetName "scriber-rust-build-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-release.txt') }}.zip" `
+            -FallbackAssetNamePrefix "scriber-rust-build-${{ runner.os }}-" `
             -DestinationPath build\rust-release-cache
 
       - name: Import Rust build release artifact
@@ -122,6 +124,19 @@ jobs:
           key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
           restore-keys: |
             scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-
+
+      - name: Restore Python venv release artifact
+        id: python-venv-artifact
+        if: steps.python-venv-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_PYTHON_VENV_ARTIFACT_TAG `
+            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
+            -DestinationPath .venv
 
       - name: Restore Python wheelhouse cache
         id: python-wheelhouse-cache
@@ -221,11 +236,14 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Python venv cache hit: ${{ steps.python-venv-cache.outputs.cache-hit }}"
+          Write-Host "Python venv release artifact restored: ${{ steps.python-venv-artifact.outputs.restored }}"
           Write-Host "Python wheelhouse cache hit: ${{ steps.python-wheelhouse-cache.outputs.cache-hit }}"
           Write-Host "Frontend node_modules cache hit: ${{ steps.frontend-node-modules-cache.outputs.cache-hit }}"
           Write-Host "Backend sidecar cache hit: ${{ steps.backend-sidecar-cache.outputs.cache-hit }}"
           Write-Host "Rust build cache hit: ${{ steps.rust-build-cache.outputs.cache-hit }}"
           Write-Host "Rust build release artifact restored: ${{ steps.rust-build-artifact.outputs.restored }}"
+          Write-Host "Rust build release artifact exact: ${{ steps.rust-build-artifact.outputs.exact }}"
+          Write-Host "Rust build release artifact asset: ${{ steps.rust-build-artifact.outputs.asset }}"
           Write-Host "Rust build release artifact imported: ${{ steps.rust-build-artifact-import.outputs.imported }}"
           Write-Host "Rust audio sidecar cache hit: ${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}"
           Write-Host "Python wheelhouse release artifact restored: ${{ steps.python-wheelhouse-artifact.outputs.restored }}"
@@ -235,18 +253,20 @@ jobs:
           Write-Host "FFmpeg Profile B release artifact restored: ${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}"
 
       - name: Install Python dependencies
+        id: python-dependencies
         shell: pwsh
         run: |
           $venvPython = ".\.venv\Scripts\python.exe"
           $wheelhouse = "build\python-wheelhouse"
           $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}"
           $markerPath = ".\.venv\.scriber-release-python-dependencies-key"
+          $venvRebuilt = $false
           New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
           if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
             python -m venv .venv
           }
 
-          $allowMissingMarker = "${{ steps.python-venv-cache.outputs.cache-hit }}" -eq "true"
+          $allowMissingMarker = ("${{ steps.python-venv-cache.outputs.cache-hit }}" -eq "true") -or ("${{ steps.python-venv-artifact.outputs.restored }}" -eq "true")
           $markerMatches = (Test-Path -LiteralPath $markerPath -PathType Leaf) -and ((Get-Content -LiteralPath $markerPath -Raw).Trim() -eq $requirementsKey)
           $venvUsable = $false
           if ($allowMissingMarker -or $markerMatches) {
@@ -262,6 +282,7 @@ jobs:
           if ($venvUsable) {
             Write-Host "Using restored Python venv; requirements key is current."
           } else {
+            $venvRebuilt = $true
             & $venvPython -m pip install --upgrade pip
             if (("${{ steps.python-wheelhouse-cache.outputs.cache-hit }}" -ne "true") -and ("${{ steps.python-wheelhouse-artifact.outputs.restored }}" -ne "true")) {
               & $venvPython -m pip wheel --wheel-dir $wheelhouse --prefer-binary -r requirements-base.txt -r requirements-build.txt
@@ -277,6 +298,22 @@ jobs:
           (Resolve-Path ".\.venv\Scripts").Path | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           & $venvPython --version
           & $venvPython -m pip --version
+          if ($env:GITHUB_OUTPUT) {
+            "venv-rebuilt=$(if ($venvRebuilt) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
+      - name: Publish Python venv release artifact
+        if: steps.python-dependencies.outputs.venv-rebuilt == 'true' || (steps.python-venv-cache.outputs.cache-hit != 'true' && steps.python-venv-artifact.outputs.restored != 'true')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_PYTHON_VENV_ARTIFACT_TAG `
+            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
+            -SourcePath .venv `
+            -Title "Scriber Python Virtualenv Cache v1"
 
       - name: Publish Python wheelhouse release artifact
         if: steps.python-wheelhouse-cache.outputs.cache-hit != 'true' && steps.python-wheelhouse-artifact.outputs.restored != 'true'
@@ -482,7 +519,7 @@ jobs:
 
       - name: Export Rust build release artifact
         id: rust-build-artifact-export
-        if: steps.rust-build-cache.outputs.cache-hit != 'true' && steps.rust-build-artifact.outputs.restored != 'true'
+        if: steps.rust-build-cache.outputs.cache-hit != 'true' && steps.rust-build-artifact.outputs.exact != 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\sync_rust_release_cache_artifact.ps1 `
@@ -492,7 +529,7 @@ jobs:
             -TargetDir Frontend\src-tauri\target
 
       - name: Publish Rust build release artifact
-        if: steps.rust-build-cache.outputs.cache-hit != 'true' && steps.rust-build-artifact.outputs.restored != 'true' && steps.rust-build-artifact-export.outputs.staged == 'true'
+        if: steps.rust-build-cache.outputs.cache-hit != 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-build-artifact-export.outputs.staged == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

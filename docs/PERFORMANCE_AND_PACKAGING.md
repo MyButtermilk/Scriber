@@ -143,16 +143,18 @@ Packaging/build:
 - FFmpeg Profile B has a reusable GitHub release artifact fallback in addition
   to Actions cache restore, so new app tags do not need to rebuild FFmpeg when
   the Profile B source/ref/profile is unchanged.
-- GitHub release builds also restore the Python wheelhouse, backend
-  PyInstaller sidecar cache, main Rust/Tauri release cache, and Rust audio
-  sidecar cache from internal release artifacts when the normal Actions cache
-  misses. This is required because GitHub Actions caches are ref-scoped and
-  sibling app tags can miss even when their cache keys are identical.
+- GitHub release builds also restore the Python virtualenv, Python wheelhouse,
+  backend PyInstaller sidecar cache, main Rust/Tauri release cache, and Rust
+  audio sidecar cache from internal release artifacts when the normal Actions
+  cache misses. This is required because GitHub Actions caches are ref-scoped
+  and sibling app tags can miss even when their cache keys are identical.
 - The release Python wheelhouse cache is built with `pip wheel`, not
   `pip download`, so packages that only publish sdists are built once into
   reusable wheels. Release installs use `--no-index --find-links` against that
   wheelhouse and a `.venv` requirements-key marker skips pip entirely when a
-  restored virtualenv is already current and passes `pip check`.
+  restored virtualenv is already current and passes `pip check`. The internal
+  `release-cache-python-venv-v1` artifact gives tag builds a durable exact
+  virtualenv restore path when the ref-scoped Actions cache is cold.
 
 ## FFmpeg Profile B
 
@@ -258,11 +260,11 @@ Release workflow:
   output fails validation, the workflow falls back to a fresh MSYS2 build.
 - Actions cache is treated as the fast first layer, not the durable layer. When
   sibling tag refs cannot see each other's caches, the workflow restores
-  durable internal release artifacts from `release-cache-python-wheelhouse-v2`,
-  `release-cache-backend-sidecar-v1`, `release-cache-rust-build-v1`,
-  `release-cache-rust-audio-sidecar-v1`, and `ffmpeg-profile-b-n7.0-v2`.
-  Those releases are implementation caches, not user-facing app updates, and
-  are published with `--latest=false`.
+  durable internal release artifacts from `release-cache-python-venv-v1`,
+  `release-cache-python-wheelhouse-v2`, `release-cache-backend-sidecar-v1`,
+  `release-cache-rust-build-v1`, `release-cache-rust-audio-sidecar-v1`, and
+  `ffmpeg-profile-b-n7.0-v2`. Those releases are implementation caches, not
+  user-facing app updates, and are published with `--latest=false`.
 - Version-only app releases must not invalidate durable cache artifacts unless
   their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
   Python backend at launch, so a version-normalized backend sidecar can still
@@ -271,7 +273,10 @@ Release workflow:
   first, then a normalized internal release artifact that contains Cargo
   registry/git data plus selected `target\release` dependency directories.
   The artifact is intentionally scoped to reusable dependency build state, not
-  a blindly archived final installer output.
+  a blindly archived final installer output. If the exact Rust key is absent,
+  the workflow can import the newest `scriber-rust-build-Windows-*` artifact as
+  a warm-start and republishes a new exact artifact after Cargo has rebuilt the
+  changed crates.
 - The signed release workflow installs only `requirements-base.txt` and
   `requirements-build.txt`. `requirements-dev.txt` is intentionally excluded
   because the packaging step skips the Python unit suite; run tests before
