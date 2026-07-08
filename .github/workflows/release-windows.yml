@@ -32,7 +32,7 @@ jobs:
       SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG: release-cache-backend-sidecar-v1
       SCRIBER_RUST_BUILD_ARTIFACT_TAG: release-cache-rust-build-v1
       SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG: release-cache-rust-audio-sidecar-v1
-      SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true' && 'true' || 'false' }}
+      SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}
       CARGO_HOME: ${{ github.workspace }}/.cargo
 
     steps:
@@ -242,23 +242,93 @@ jobs:
       - name: Report release cache hits
         shell: pwsh
         run: |
-          Write-Host "Python venv cache hit: ${{ steps.python-venv-cache.outputs.cache-hit }}"
-          Write-Host "Python venv release artifact restored: ${{ steps.python-venv-artifact.outputs.restored }}"
-          Write-Host "Python wheelhouse cache hit: ${{ steps.python-wheelhouse-cache.outputs.cache-hit }}"
-          Write-Host "Frontend node_modules cache hit: ${{ steps.frontend-node-modules-cache.outputs.cache-hit }}"
-          Write-Host "Backend sidecar cache hit: ${{ steps.backend-sidecar-cache.outputs.cache-hit }}"
-          Write-Host "Rust build cache hit: ${{ steps.rust-build-cache.outputs.cache-hit }}"
-          Write-Host "Rust build release artifact restored: ${{ steps.rust-build-artifact.outputs.restored }}"
-          Write-Host "Rust build release artifact exact: ${{ steps.rust-build-artifact.outputs.exact }}"
-          Write-Host "Rust build release artifact asset: ${{ steps.rust-build-artifact.outputs.asset }}"
-          Write-Host "Rust build release artifact imported: ${{ steps.rust-build-artifact-import.outputs.imported }}"
-          Write-Host "Rust audio sidecar cache hit: ${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}"
-          Write-Host "Python wheelhouse release artifact restored: ${{ steps.python-wheelhouse-artifact.outputs.restored }}"
-          Write-Host "Backend sidecar release artifact restored: ${{ steps.backend-sidecar-artifact.outputs.restored }}"
-          Write-Host "Rust audio sidecar release artifact restored: ${{ steps.rust-audio-sidecar-artifact.outputs.restored }}"
-          Write-Host "FFmpeg Profile B cache hit: ${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}"
-          Write-Host "FFmpeg Profile B release artifact restored: ${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}"
+          function Normalize-CacheOutput {
+            param([string]$Value)
+            if ([string]::IsNullOrWhiteSpace($Value)) {
+              return "false"
+            }
+            return $Value
+          }
+
+          function Get-EffectiveCacheSource {
+            param(
+              [string]$ActionsCacheHit,
+              [string]$ReleaseArtifactRestored
+            )
+            if ($ActionsCacheHit -eq "true") {
+              return "actions-cache"
+            }
+            if ($ReleaseArtifactRestored -eq "true") {
+              return "release-artifact"
+            }
+            return "miss"
+          }
+
+          $pythonVenvCacheHit = Normalize-CacheOutput "${{ steps.python-venv-cache.outputs.cache-hit }}"
+          $pythonVenvArtifactRestored = Normalize-CacheOutput "${{ steps.python-venv-artifact.outputs.restored }}"
+          $pythonWheelhouseCacheHit = Normalize-CacheOutput "${{ steps.python-wheelhouse-cache.outputs.cache-hit }}"
+          $pythonWheelhouseArtifactRestored = Normalize-CacheOutput "${{ steps.python-wheelhouse-artifact.outputs.restored }}"
+          $frontendNodeModulesCacheHit = Normalize-CacheOutput "${{ steps.frontend-node-modules-cache.outputs.cache-hit }}"
+          $backendSidecarCacheHit = Normalize-CacheOutput "${{ steps.backend-sidecar-cache.outputs.cache-hit }}"
+          $backendSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.backend-sidecar-artifact.outputs.restored }}"
+          $rustBuildCacheHit = Normalize-CacheOutput "${{ steps.rust-build-cache.outputs.cache-hit }}"
+          $rustBuildArtifactRestored = Normalize-CacheOutput "${{ steps.rust-build-artifact.outputs.restored }}"
+          $rustBuildArtifactExact = Normalize-CacheOutput "${{ steps.rust-build-artifact.outputs.exact }}"
+          $rustBuildArtifactImported = Normalize-CacheOutput "${{ steps.rust-build-artifact-import.outputs.imported }}"
+          $rustBuildArtifactAsset = "${{ steps.rust-build-artifact.outputs.asset }}"
+          if ([string]::IsNullOrWhiteSpace($rustBuildArtifactAsset)) {
+            $rustBuildArtifactAsset = "none"
+          }
+          $rustAudioSidecarCacheHit = Normalize-CacheOutput "${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}"
+          $rustAudioSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.rust-audio-sidecar-artifact.outputs.restored }}"
+          $ffmpegProfileBCacheHit = Normalize-CacheOutput "${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}"
+          $ffmpegProfileBArtifactRestored = Normalize-CacheOutput "${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}"
+          $tauriBundlerCacheHit = Normalize-CacheOutput "${{ steps.tauri-bundler-cache.outputs.cache-hit }}"
+
+          if ($rustBuildCacheHit -eq "true") {
+            $rustBuildEffective = "actions-cache"
+          } elseif ($rustBuildArtifactImported -eq "true") {
+            $rustBuildEffective = "release-artifact"
+          } elseif ($rustBuildArtifactRestored -eq "true") {
+            $rustBuildEffective = "release-artifact-restored-not-imported"
+          } else {
+            $rustBuildEffective = "miss"
+          }
+
+          $rows = @(
+            [ordered]@{ Name = "Python venv"; Actions = $pythonVenvCacheHit; ReleaseArtifact = $pythonVenvArtifactRestored; Effective = (Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored) }
+            [ordered]@{ Name = "Python wheelhouse"; Actions = $pythonWheelhouseCacheHit; ReleaseArtifact = $pythonWheelhouseArtifactRestored; Effective = (Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored) }
+            [ordered]@{ Name = "Frontend node_modules"; Actions = $frontendNodeModulesCacheHit; ReleaseArtifact = "n/a"; Effective = $(if ($frontendNodeModulesCacheHit -eq "true") { "actions-cache" } else { "miss" }) }
+            [ordered]@{ Name = "Backend sidecar"; Actions = $backendSidecarCacheHit; ReleaseArtifact = $backendSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $backendSidecarCacheHit $backendSidecarArtifactRestored) }
+            [ordered]@{ Name = "Rust build"; Actions = $rustBuildCacheHit; ReleaseArtifact = $rustBuildArtifactRestored; Effective = $rustBuildEffective }
+            [ordered]@{ Name = "Rust audio sidecar"; Actions = $rustAudioSidecarCacheHit; ReleaseArtifact = $rustAudioSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $rustAudioSidecarCacheHit $rustAudioSidecarArtifactRestored) }
+            [ordered]@{ Name = "FFmpeg Profile B"; Actions = $ffmpegProfileBCacheHit; ReleaseArtifact = $ffmpegProfileBArtifactRestored; Effective = (Get-EffectiveCacheSource $ffmpegProfileBCacheHit $ffmpegProfileBArtifactRestored) }
+            [ordered]@{ Name = "Tauri bundler"; Actions = $tauriBundlerCacheHit; ReleaseArtifact = "n/a"; Effective = $(if ($tauriBundlerCacheHit -eq "true") { "actions-cache" } else { "miss" }) }
+          )
+
+          Write-Host "Cache layer summary:"
+          foreach ($row in $rows) {
+            Write-Host ("  {0}: actions={1}; releaseArtifact={2}; effective={3}" -f $row.Name, $row.Actions, $row.ReleaseArtifact, $row.Effective)
+          }
+          Write-Host "Rust build release artifact exact: $rustBuildArtifactExact"
+          Write-Host "Rust build release artifact asset: $rustBuildArtifactAsset"
+          Write-Host "Note: an Actions cache miss can still be an effective cache hit when the internal release-artifact fallback restored the output."
           Write-Host "Refresh release cache artifacts: $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS"
+
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $summary = @(
+              "### Scriber release cache summary",
+              "",
+              "| Component | Actions cache | Release artifact | Effective source |",
+              "| --- | --- | --- | --- |"
+            )
+            foreach ($row in $rows) {
+              $summary += ("| {0} | {1} | {2} | {3} |" -f $row.Name, $row.Actions, $row.ReleaseArtifact, $row.Effective)
+            }
+            $summary += ""
+            $summary += "Internal release-cache artifacts are the durable fallback for sibling tag refs; plain Actions caches are still the fastest first layer."
+            $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
 
       - name: Install Python dependencies
         id: python-dependencies
@@ -603,6 +673,8 @@ jobs:
         with:
           name: scriber-windows-release
           path: release-artifacts/*
+          if-no-files-found: error
+          compression-level: 0
 
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/')
@@ -642,3 +714,5 @@ jobs:
         with:
           name: scriber-windows-publication-evidence
           path: release-artifacts/updater-publication.json
+          if-no-files-found: error
+          compression-level: 0

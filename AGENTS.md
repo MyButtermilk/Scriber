@@ -385,8 +385,16 @@ Already implemented and should not be regressed:
   miss. The main Rust/Tauri release artifact supports a latest-prefix fallback
   as a warm start when the exact key is absent. Normal tag releases must restore
   these large release-cache artifacts without repacking or clobbering them;
-  refresh them only through the manual `release-windows.yml`
-  `refresh_release_cache_artifacts=true` maintenance path.
+  refresh them on `main` cache-warming pushes or through the manual
+  `release-windows.yml` `refresh_release_cache_artifacts=true` maintenance
+  path.
+- The release workflow's cache summary distinguishes `actions-cache`,
+  `release-artifact`, and `miss`. Treat only effective `miss` as evidence that
+  a component may rebuild. Tag-scoped Actions cache misses can still be healthy
+  when the internal release-artifact fallback restored the payload.
+- GitHub release artifact upload uses `compression-level: 0`; NSIS installers
+  and updater metadata are already compressed or small, so recompressing them in
+  `actions/upload-artifact` wastes runner CPU.
 - FFmpeg Profile B release builds restore from Actions cache first, then from
   the internal reusable GitHub release artifact `ffmpeg-profile-b-n7.0-v2`, and
   rebuild through MSYS2 only when restored Profile B tools are absent or fail

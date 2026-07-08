@@ -149,10 +149,16 @@ Packaging/build:
   cache misses. This is required because GitHub Actions caches are ref-scoped
   and sibling app tags can miss even when their cache keys are identical.
 - Normal tag releases do not repack or clobber those large internal
-  release-cache artifacts. Cache asset refresh is opt-in via the manual
-  `release-windows.yml` workflow input `refresh_release_cache_artifacts=true`,
-  so routine app releases avoid minutes of `.venv`/wheelhouse/Rust/backend
+  release-cache artifacts. Cache asset refresh runs on `main` pushes, which are
+  the cache-warming path, and is also opt-in via the manual
+  `release-windows.yml` workflow input `refresh_release_cache_artifacts=true`.
+  Routine signed app releases avoid minutes of `.venv`/wheelhouse/Rust/backend
   artifact compression and upload when only app code or prompts changed.
+- Release artifact upload through `actions/upload-artifact` uses
+  `compression-level: 0` because the Windows installer is already NSIS
+  compressed and updater signatures/JSON reports are small. This avoids
+  spending runner CPU trying to recompress release outputs that cannot shrink
+  meaningfully.
 - The release Python wheelhouse cache is built with `pip wheel`, not
   `pip download`, so packages that only publish sdists are built once into
   reusable wheels. Release installs use `--no-index --find-links` against that
@@ -269,7 +275,21 @@ Release workflow:
   `release-cache-python-wheelhouse-v2`, `release-cache-backend-sidecar-v1`,
   `release-cache-rust-build-v1`, `release-cache-rust-audio-sidecar-v1`, and
   `ffmpeg-profile-b-n7.0-v2`. Those releases are implementation caches, not
-  user-facing app updates, and are published with `--latest=false`.
+  user-facing app updates, and are published with `--latest=false`. `main`
+  pushes may refresh them after real cache misses; signed `v*` tag releases
+  normally only restore them.
+- The release workflow prints a cache-layer summary that separates plain
+  Actions cache hits from internal release-artifact fallbacks. A yellow
+  `Cache not found` line in an Actions restore step is not by itself a rebuild
+  signal; the effective source is `actions-cache`, `release-artifact`, or
+  `miss`. Only `miss` means that component lacked both cache layers and may
+  rebuild.
+- The cheap validation gates are intentionally kept in the tag release path.
+  For example, the v0.4.15 GitHub build recorded media-preparation smoke at
+  about 1.4 seconds and runtime dependency footprint at about 0.25 seconds,
+  while PyInstaller backend sidecar work took about 81 seconds after a backend
+  cache miss and Tauri/NSIS bundling took about 203 seconds. Removing those
+  small gates would save almost nothing and would reduce release evidence.
 - Version-only app releases must not invalidate durable cache artifacts unless
   their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
   Python backend at launch, so a version-normalized backend sidecar can still

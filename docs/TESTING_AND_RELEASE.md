@@ -553,23 +553,37 @@ It:
   per-ref Actions cache is cold, validates restored Profile B media tools before
   reuse, and builds FFmpeg Profile B only when neither restored source passes
   validation,
+- reports cache reuse as effective sources (`actions-cache`,
+  `release-artifact`, or `miss`) so a ref-scoped Actions cache miss is not
+  confused with a required rebuild when the internal release-artifact fallback
+  was restored,
 - passes the produced media tools to `scripts/build_windows.ps1`,
 - skips the full Python unit suite in the packaging step; run it before release
   or through PR/readiness gates. The release workflow therefore installs
   `requirements-base.txt` and `requirements-build.txt`, but not
   `requirements-dev.txt`,
 - runs media-preparation and runtime dependency footprint gates,
-- uploads or publishes NSIS artifacts and release metadata,
+- uploads or publishes NSIS artifacts and release metadata; GitHub Actions
+  artifact upload uses `compression-level: 0` because the installer is already
+  compressed and double-compressing it burns runner time with little or no size
+  benefit,
 - optionally validates Authenticode signatures and Tauri updater metadata when
   signing/updater secrets are configured.
 
 Normal tag releases restore internal release-cache artifacts but do not
 automatically repack and clobber the large Python `.venv`, wheelhouse, Rust,
-backend sidecar, Rust audio sidecar, or FFmpeg cache assets. Refreshing those
-internal artifacts is an explicit maintenance action through
-`workflow_dispatch` with `refresh_release_cache_artifacts=true`; app release
-builds should spend time on changed installer inputs, not on re-uploading
+backend sidecar, Rust audio sidecar, or FFmpeg cache assets. `main` pushes are
+the cache-warming path and may refresh those internal artifacts after real cache
+misses. A manual maintenance refresh is also available through
+`workflow_dispatch` with `refresh_release_cache_artifacts=true`. Signed app
+release tags should spend time on changed installer inputs, not on re-uploading
 unchanged reusable cache payloads.
+
+For build-time triage, use `build-timing.json` before removing checks. The
+v0.4.15 GitHub release build showed that media-preparation smoke and runtime
+dependency footprint were about 1.4 seconds and 0.25 seconds respectively,
+while backend PyInstaller and Tauri/NSIS dominated the build. Keep the cheap
+release evidence gates unless they become a measured bottleneck.
 
 `scripts\ci\write_release_cache_keys.ps1` writes the normalized key inputs used
 by the release workflow. Keep this normalization in place when changing release
