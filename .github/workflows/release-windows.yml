@@ -589,7 +589,6 @@ jobs:
             "scripts\build_windows.ps1",
             "-SkipSmoke",
             "-SkipPythonTests",
-            "-RunMediaPreparationSmoke",
             "-RunRuntimeDependencyFootprint",
             "-MediaToolsDir",
             $env:SCRIBER_RELEASE_MEDIA_TOOLS_DIR,
@@ -612,6 +611,12 @@ jobs:
             "-MaxPillowRuntimeDependencyMB",
             "6"
           )
+          $pythonDependenciesReady = "${{ steps.python-dependencies.outcome }}" -eq "success"
+          if ($pythonDependenciesReady -or (Test-Path -LiteralPath ".\.venv\Scripts\python.exe" -PathType Leaf)) {
+            $buildArgs += "-RunMediaPreparationSmoke"
+          } else {
+            Write-Host "Skipping source media preparation smoke because this cached sidecar fast path did not install Python dependencies."
+          }
           $hasUpdaterSigning = $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY -and ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)
           $isTagRelease = $env:GITHUB_REF_TYPE -eq "tag"
           if ($hasUpdaterSigning -and $isTagRelease) {
