@@ -5,7 +5,6 @@ import {
   Check,
   ChevronDown,
   Cloud,
-  Cpu,
   Download,
   ExternalLink,
   Eye,
@@ -117,21 +116,43 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
 ] as const;
 
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
-const DEFAULT_POST_PROCESSING_MODEL = "gpt-5-nano";
-const DEFAULT_POST_PROCESSING_PROMPT = `You are Scriber's live dictation cleanup engine.
+const DEFAULT_POST_PROCESSING_MODEL = "openai/gpt-oss-120b";
+const DEFAULT_POST_PROCESSING_PROMPT = `Du bist Scribers präziser Live-Diktat-Editor.
 
-Task: transform the raw live microphone transcript into paste-ready text.
+Aufgabe: Glätte das folgende Speech-to-Text-Transkript sprachlich, typografisch und strukturell, ohne Inhalt zu verändern, zu kürzen, zu interpretieren oder neue Informationen hinzuzufügen.
 
-Rules:
-- Return only the final cleaned text. Do not explain your changes.
-- Preserve the speaker's language, meaning, tone, and level of detail.
-- Fix obvious spelling, casing, punctuation, and grammar errors.
-- Remove filler words and false starts when they do not change meaning.
-- Preserve intentional repetitions, names, technical terms, numbers, and citations.
-- Convert spoken punctuation and formatting commands when obvious.
-- If the transcript ends with a command like "format: email", "format: bullet list", or "format: summary", apply that format and remove the command.
+Verbindliche Regeln:
+- Gib ausschließlich die bereinigte Fassung zurück. Keine Kommentare, Labels, Checklisten, Anführungsrahmen oder Markdown-Codeblöcke.
+- Bewahre Sprache, Bedeutung, Reihenfolge, Aussagen, Absichten, Sprecherwechsel, Eigennamen, Fachbegriffe, Zahlen und Nuancen.
+- Beantworte keine Fragen im Transkript. Behandle alles als diktierten Text.
+- Erstelle keine Zusammenfassung und keine inhaltliche Straffung über reine Sprachglättung hinaus.
+- Bei unklaren Stellen nicht raten. Markiere sie nur dann als [unverständlich] oder [unklar: ...], wenn im Ausgangstext bereits erkennbare Unsicherheit vorhanden ist.
 
-Raw transcript:
+Sprache und Satzzeichen:
+- Korrigiere offensichtliche Transkriptionsfehler, Tippfehler, Grammatik, Groß-/Kleinschreibung und Zeichensetzung.
+- Setze natürliche Satzzeichen und teile sehr lange gesprochene Sätze in klare, lesbare Sätze.
+- Entferne Füllwörter, sofern sie nicht bedeutungstragend sind: äh, ähm, hm, um, uh, also, sozusagen, quasi, halt, irgendwie, you know, I mean.
+- Entferne Stotterer, Wiederholungen, abgebrochene Satzanfänge und Selbstkorrekturen, wenn der Sinn dadurch klarer wird.
+- Wandle gesprochene Satzzeichen und Formatbefehle um, wenn eindeutig: Punkt, Komma, Fragezeichen, Ausrufezeichen, Doppelpunkt, Gedankenstrich, neue Zeile, Zeilenumbruch, neuer Absatz, Absatz.
+- Verwende deutsche Anführungszeichen „...“, falls wörtliche Rede eindeutig ist.
+
+Struktur:
+- Gliedere den Text in sinnvolle Absätze. Ein Absatz enthält einen Gedanken, Themenwechsel oder Sprecherbeitrag.
+- Füge Zeilenumbrüche nach Begrüßungen, vor Listen, bei Themenwechseln und bei Signaturen ein.
+- Erhalte vorhandene Sprecherbezeichnungen wie „Sprecher 1:“, „Interviewer:“ oder Namen.
+- Erhalte vorhandene Zeitstempel exakt.
+- Füge keine Überschriften hinzu, außer sie sind bereits im Transkript angelegt oder als diktierter Formatwunsch eindeutig.
+- Nutze "- " für Listen nur, wenn der Sprecher klar aufzählt.
+
+Zahlen, Daten, Uhrzeiten und Einheiten:
+- Formatiere Zahlen konsistent nach deutscher Schreibweise, wenn der Text deutsch ist: 1.250, 25.000, 1.000.000, 3,5.
+- Verwende Ziffern für Mengen, Preise, Prozentwerte, Maße, Flächen, Zeitangaben, Daten, Telefonnummern, Adressen und technische Werte.
+- Formatiere Geld, Prozent, Daten und Uhrzeiten, wenn eindeutig: fünfzehn Prozent -> 15 %, zweitausend fünfhundert Euro -> 2.500 €, am dritten vierten zwanzig vierundzwanzig -> am 03.04.2024, vierzehn Uhr dreißig -> 14:30 Uhr.
+- Formatiere Einheiten kompakt und professionell: Euro pro Quadratmeter -> €/m², Quadratmeter -> m², Kubikmeter -> m³, Kilometer pro Stunde -> km/h, Kilowattstunden -> kWh, Kilowattstunden pro Quadratmeter und Jahr -> kWh/m²a, Grad Celsius -> °C, Meter -> m, Zentimeter -> cm, Kilogramm -> kg.
+- Setze zwischen Zahl und Einheit ein Leerzeichen, sofern üblich: 25 m², 3,5 kg, 120 km/h, 15 %.
+- Bei zusammengesetzten Einheiten ohne vorangestellte Zahl nutze kompakte Schreibweise: €/m², kWh/m²a.
+
+Transkript:
 \${output}`;
 
 type HotkeyCaptureEvent = Pick<
@@ -198,6 +219,8 @@ const SUMMARIZATION_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
 ] as const;
 
 const POST_PROCESSING_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
+  { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B Baseten", detail: "Default OpenRouter route: Baseten, Cerebras fallback", group: "openrouter", icon: "openai" },
+  { value: "google/gemini-2.5-flash-lite:nitro", label: "Gemini 2.5 Flash Lite Nitro", detail: "Low-cost OpenRouter route", group: "openrouter", icon: "openrouter" },
   { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano", detail: "Low-cost cleanup model", group: "openai", icon: "openai" },
   { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: "Compact Gemini cleanup", group: "gemini", icon: "gemini" },
   { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: "Fast OpenRouter Nitro route", group: "openrouter", icon: "openrouter" },
@@ -229,6 +252,11 @@ const API_KEY_HELP_LINKS = {
 } as const;
 
 type ApiKeyHelpKey = keyof typeof API_KEY_HELP_LINKS;
+type CredentialRequirement = {
+  provider: string;
+  label: string;
+  helpKey: ApiKeyHelpKey;
+};
 
 async function openExternalHelpUrl(url: string): Promise<void> {
   if (isTauriRuntime()) {
@@ -265,6 +293,19 @@ function ApiKeyLink({ helpKey, children = "Get key" }: { helpKey: ApiKeyHelpKey;
 
 function hasValue(value: string | undefined): boolean {
   return Boolean((value || "").trim());
+}
+
+function uniqueCredentialRequirements(requirements: Array<CredentialRequirement | null>): CredentialRequirement[] {
+  const seen = new Set<string>();
+  const unique: CredentialRequirement[] = [];
+  for (const requirement of requirements) {
+    if (!requirement || seen.has(requirement.provider)) {
+      continue;
+    }
+    seen.add(requirement.provider);
+    unique.push(requirement);
+  }
+  return unique;
 }
 
 function LanguageFlag({ value, className }: { value: string; className?: string }) {
@@ -487,22 +528,31 @@ function ProviderChoice({
   option,
   selected,
   onSelect,
+  disabled,
+  disabledReason,
 }: {
   option: ProviderModelOption;
   selected: boolean;
   onSelect: () => void;
+  disabled?: boolean;
+  disabledReason?: string;
 }) {
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
+      aria-disabled={disabled || undefined}
+      disabled={disabled}
       onClick={onSelect}
+      title={disabledReason}
       className={cn(
         "group flex min-h-[35px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
-        "active:translate-y-px",
+        !disabled && "active:translate-y-px",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
-        selected
+        disabled
+          ? "cursor-not-allowed text-slate-400 opacity-65 dark:text-slate-600"
+          : selected
           ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
           : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-slate-900",
       )}
@@ -514,12 +564,23 @@ function ProviderChoice({
       )}
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[11.5px] font-semibold leading-[15px]">{option.label}</span>
-        <span className="block truncate text-[10px] leading-3 text-slate-500 dark:text-slate-400">{option.detail}</span>
+        <span
+          className={cn(
+            "block truncate text-[10px] leading-3",
+            disabled ? "text-amber-600 dark:text-amber-400" : "text-slate-500 dark:text-slate-400",
+          )}
+        >
+          {disabledReason || option.detail}
+        </span>
       </span>
       <span
         className={cn(
           "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
-          selected ? "border-blue-600 bg-blue-600" : "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-950",
+          disabled
+            ? "border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/30"
+            : selected
+              ? "border-blue-600 bg-blue-600"
+              : "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-950",
         )}
         aria-hidden="true"
       >
@@ -533,22 +594,31 @@ function SummaryModelChoice({
   option,
   selected,
   onSelect,
+  disabled,
+  disabledReason,
 }: {
   option: SummarizationModelOption;
   selected: boolean;
   onSelect: () => void;
+  disabled?: boolean;
+  disabledReason?: string;
 }) {
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
+      aria-disabled={disabled || undefined}
+      disabled={disabled}
       onClick={onSelect}
+      title={disabledReason}
       className={cn(
         "group flex min-h-[35px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
-        "active:translate-y-px",
+        !disabled && "active:translate-y-px",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
-        selected
+        disabled
+          ? "cursor-not-allowed text-slate-400 opacity-65 dark:text-slate-600"
+          : selected
           ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
           : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-slate-900",
       )}
@@ -556,12 +626,23 @@ function SummaryModelChoice({
       <ProviderIcon icon={option.icon} label={option.label} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[11.5px] font-semibold leading-[15px]">{option.label}</span>
-        <span className="block truncate text-[10px] leading-3 text-slate-500 dark:text-slate-400">{option.detail}</span>
+        <span
+          className={cn(
+            "block truncate text-[10px] leading-3",
+            disabled ? "text-amber-600 dark:text-amber-400" : "text-slate-500 dark:text-slate-400",
+          )}
+        >
+          {disabledReason || option.detail}
+        </span>
       </span>
       <span
         className={cn(
           "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
-          selected ? "border-blue-600 bg-blue-600" : "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-950",
+          disabled
+            ? "border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/30"
+            : selected
+              ? "border-blue-600 bg-blue-600"
+              : "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-950",
         )}
         aria-hidden="true"
       >
@@ -628,7 +709,7 @@ function ApiCredentialRow({
       <DialogTrigger asChild>
         <button
           type="button"
-          className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 rounded-lg px-2 py-1.5 text-left outline-none transition-colors hover:bg-slate-100/80 focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:hover:bg-slate-900"
+          className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 rounded-lg px-2 py-2.5 text-left outline-none transition-colors hover:bg-slate-100/80 focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:hover:bg-slate-900"
         >
           <span className="flex min-w-0 items-center gap-2">
             <ProviderIcon icon={icon} label={provider} className="h-5.5 w-5.5 rounded-[7px] p-1" />
@@ -714,6 +795,7 @@ export default function Settings() {
   const [googleApplicationCredentials, setGoogleApplicationCredentials] = useState("");
 
   const [customVocabulary, setCustomVocabulary] = useState("");
+  const savedCustomVocabularyRef = useRef("");
   const [summarizationPrompt, setSummarizationPrompt] = useState("");
   const [postProcessingPrompt, setPostProcessingPrompt] = useState(DEFAULT_POST_PROCESSING_PROMPT);
 
@@ -800,72 +882,119 @@ export default function Settings() {
     };
   }, []);
 
-  const selectedModelLabel =
-    TRANSCRIPTION_MODEL_OPTIONS.find((option) => option.value === transcriptionModel)?.label ||
-    transcriptionModel;
+  const savedCredentialAvailable = (provider: string, value: string, extraValue?: string) =>
+    savedKeys[provider] === true && hasValue(value) && (extraValue === undefined || hasValue(extraValue));
 
-  const selectedCredentialRequirement = (() => {
-    switch (transcriptionModel) {
+  const isCredentialReady = (requirement: CredentialRequirement | null) => {
+    if (!requirement) {
+      return true;
+    }
+    switch (requirement.provider) {
+      case "OpenAI":
+        return savedCredentialAvailable("OpenAI", openAIKey);
+      case "Gemini":
+        return savedCredentialAvailable("Gemini", geminiKey);
+      case "OpenRouter":
+        return savedCredentialAvailable("OpenRouter", openRouterKey);
+      case "Soniox":
+        return savedCredentialAvailable("Soniox", sonioxKey);
+      case "Mistral":
+        return savedCredentialAvailable("Mistral", mistralKey);
+      case "Smallest AI":
+        return savedCredentialAvailable("Smallest AI", smallestKey);
+      case "AssemblyAI":
+        return savedCredentialAvailable("AssemblyAI", assemblyAIKey);
+      case "Deepgram":
+        return savedCredentialAvailable("Deepgram", deepgramKey);
+      case "Azure":
+        return savedCredentialAvailable("Azure", azureMaiKey, azureMaiRegion);
+      case "Gladia":
+        return savedCredentialAvailable("Gladia", gladiaKey);
+      case "Groq":
+        return savedCredentialAvailable("Groq", groqKey);
+      case "Speechmatics":
+        return savedCredentialAvailable("Speechmatics", speechmaticsKey);
+      case "ElevenLabs":
+        return savedCredentialAvailable("ElevenLabs", elevenLabsKey);
+      case "Google Cloud":
+        return savedCredentialAvailable("Google Cloud", googleApplicationCredentials);
+      default:
+        return false;
+    }
+  };
+
+  const missingCredentialReason = (requirement: CredentialRequirement | null) =>
+    requirement && !isCredentialReady(requirement) ? `${requirement.label} required` : undefined;
+
+  const requiredCredentialForTranscriptionModel = (model: string): CredentialRequirement | null => {
+    switch (model) {
       case "soniox-realtime":
       case "soniox-async":
-        return hasValue(sonioxKey)
-          ? null
-          : { label: "Soniox API key", helpKey: "soniox" as const };
+        return { provider: "Soniox", label: "Soniox API key", helpKey: "soniox" };
       case "mistral-realtime":
       case "mistral-async":
-        return hasValue(mistralKey)
-          ? null
-          : { label: "Mistral API key", helpKey: "mistral" as const };
+        return { provider: "Mistral", label: "Mistral API key", helpKey: "mistral" };
       case "smallest-realtime":
       case "smallest-async":
-        return hasValue(smallestKey)
-          ? null
-          : { label: "Smallest AI API key", helpKey: "smallest" as const };
+        return { provider: "Smallest AI", label: "Smallest AI API key", helpKey: "smallest" };
       case "assemblyai":
       case "assemblyai-realtime":
-        return hasValue(assemblyAIKey)
-          ? null
-          : { label: "AssemblyAI API key", helpKey: "assemblyai" as const };
+        return { provider: "AssemblyAI", label: "AssemblyAI API key", helpKey: "assemblyai" };
       case "deepgram":
       case "deepgram-async":
-        return hasValue(deepgramKey)
-          ? null
-          : { label: "Deepgram API key", helpKey: "deepgram" as const };
+        return { provider: "Deepgram", label: "Deepgram API key", helpKey: "deepgram" };
       case "openai":
       case "openai-async":
-        return hasValue(openAIKey)
-          ? null
-          : { label: "OpenAI API key", helpKey: "openai" as const };
+        return { provider: "OpenAI", label: "OpenAI API key", helpKey: "openai" };
       case "azure_mai":
-        return hasValue(azureMaiKey) && hasValue(azureMaiRegion)
-          ? null
-          : { label: "Azure MAI Speech key and region", helpKey: "azure" as const };
+        return { provider: "Azure", label: "Azure MAI Speech key and region", helpKey: "azure" };
       case "gladia":
       case "gladia-async":
-        return hasValue(gladiaKey)
-          ? null
-          : { label: "Gladia API key", helpKey: "gladia" as const };
+        return { provider: "Gladia", label: "Gladia API key", helpKey: "gladia" };
       case "groq":
-        return hasValue(groqKey)
-          ? null
-          : { label: "Groq API key", helpKey: "groq" as const };
+        return { provider: "Groq", label: "Groq API key", helpKey: "groq" };
       case "speechmatics":
       case "speechmatics-async":
-        return hasValue(speechmaticsKey)
-          ? null
-          : { label: "Speechmatics API key", helpKey: "speechmatics" as const };
+        return { provider: "Speechmatics", label: "Speechmatics API key", helpKey: "speechmatics" };
       case "elevenlabs":
-        return hasValue(elevenLabsKey)
-          ? null
-          : { label: "fal.ai API key for ElevenLabs", helpKey: "fal" as const };
+        return { provider: "ElevenLabs", label: "fal.ai API key for ElevenLabs", helpKey: "fal" };
       case "google":
-        return hasValue(googleApplicationCredentials)
-          ? null
-          : { label: "Google Cloud credentials JSON path", helpKey: "googleCloud" as const };
+        return { provider: "Google Cloud", label: "Google Cloud credentials JSON path", helpKey: "googleCloud" };
       default:
         return null;
     }
+  };
+
+  const requiredCredentialForLanguageModel = (model: string): CredentialRequirement | null => {
+    if (model.startsWith("gpt-")) {
+      return { provider: "OpenAI", label: "OpenAI API key", helpKey: "openai" };
+    }
+    if (model.startsWith("gemini-")) {
+      return { provider: "Gemini", label: "Gemini API key", helpKey: "gemini" };
+    }
+    if (model.includes("/")) {
+      return { provider: "OpenRouter", label: "OpenRouter API key", helpKey: "openrouter" };
+    }
+    return null;
+  };
+
+  const selectedCredentialRequirement = requiredCredentialForTranscriptionModel(transcriptionModel);
+  const missingSelectedCredentialRequirement = isCredentialReady(selectedCredentialRequirement)
+    ? null
+    : selectedCredentialRequirement;
+  const missingSummarizationCredentialRequirement = (() => {
+    const requirement = requiredCredentialForLanguageModel(summarizationModel);
+    return isCredentialReady(requirement) ? null : requirement;
   })();
+  const missingPostProcessingCredentialRequirement = (() => {
+    const requirement = requiredCredentialForLanguageModel(postProcessingModel);
+    return isCredentialReady(requirement) ? null : requirement;
+  })();
+  const missingActiveCredentialRequirements = uniqueCredentialRequirements([
+    missingSelectedCredentialRequirement,
+    missingSummarizationCredentialRequirement,
+    missingPostProcessingCredentialRequirement,
+  ]);
 
   const hasAnyManagedCloudSttCredential = [
     sonioxKey,
@@ -881,6 +1010,11 @@ export default function Settings() {
     elevenLabsKey,
     googleApplicationCredentials,
   ].some(hasValue);
+
+  const markCredentialChanged = (provider: string, setter: (value: string) => void) => (value: string) => {
+    setter(value);
+    setSavedKeys((prev) => ({ ...prev, [provider]: false }));
+  };
 
   const loadOnnxModels = useCallback(async () => {
     try {
@@ -975,7 +1109,8 @@ export default function Settings() {
         setSelectedDeviceId(settings.micDevice || "default");
         setLanguage(settings.language || "auto");
         setTranscriptionModel(serviceToModel(settings.defaultSttService || "", settings.sonioxMode || "realtime"));
-        setCustomVocabulary(settings.customVocab || "");
+        savedCustomVocabularyRef.current = settings.customVocab || "";
+        setCustomVocabulary(savedCustomVocabularyRef.current);
         setSummarizationPrompt(settings.summarizationPrompt || "");
         setSummarizationModel(settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
         setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);
@@ -1006,6 +1141,23 @@ export default function Settings() {
         setGroqKey(keys.groq || "");
         setSpeechmaticsKey(keys.speechmatics || "");
         setGoogleApplicationCredentials(keys.googleApplicationCredentials || "");
+        setSavedKeys({
+          OpenAI: hasValue(keys.openai),
+          Gemini: hasValue(keys.googleApiKey),
+          OpenRouter: hasValue(keys.openrouter),
+          YouTube: hasValue(keys.youtubeApiKey),
+          Soniox: hasValue(keys.soniox),
+          Mistral: hasValue(keys.mistral),
+          "Smallest AI": hasValue(keys.smallest),
+          AssemblyAI: hasValue(keys.assemblyai),
+          Deepgram: hasValue(keys.deepgram),
+          Gladia: hasValue(keys.gladia),
+          Groq: hasValue(keys.groq),
+          Speechmatics: hasValue(keys.speechmatics),
+          ElevenLabs: hasValue(keys.elevenlabs),
+          Azure: hasValue(keys.azureMaiSpeechKey) && hasValue(keys.azureMaiRegion || "northeurope"),
+          "Google Cloud": hasValue(keys.googleApplicationCredentials),
+        });
 
         let microphonePayload = mics;
         if (!Array.isArray(microphonePayload.devices)) {
@@ -1058,6 +1210,37 @@ export default function Settings() {
     invalidateSettingsBootstrap();
     return (await res.json()) as SettingsResponse;
   };
+
+  const saveCustomVocabulary = useCallback(async (nextValue: string) => {
+    if (nextValue === savedCustomVocabularyRef.current) {
+      return;
+    }
+
+    try {
+      await updateSettings({ customVocab: nextValue });
+      savedCustomVocabularyRef.current = nextValue;
+    } catch (e: any) {
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    if (!settingsLoaded || customVocabulary === savedCustomVocabularyRef.current) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void saveCustomVocabulary(customVocabulary);
+    }, 650);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [customVocabulary, saveCustomVocabulary, settingsLoaded]);
 
   const refreshMicrophones = useCallback(async () => {
     try {
@@ -1247,6 +1430,15 @@ export default function Settings() {
   };
 
   const handleTranscriptionModelChange = async (value: string) => {
+    const requirement = requiredCredentialForTranscriptionModel(value);
+    if (!isCredentialReady(requirement)) {
+      toast({
+        title: "API key required",
+        description: `${requirement?.label || "API key"} must be saved below before this model can be selected.`,
+        duration: 4000,
+      });
+      return;
+    }
     const previousValue = transcriptionModel;
     setTranscriptionModel(value);
     try {
@@ -1506,6 +1698,15 @@ export default function Settings() {
   };
 
   const handleSummarizationModelChange = async (value: string) => {
+    const requirement = requiredCredentialForLanguageModel(value);
+    if (!isCredentialReady(requirement)) {
+      toast({
+        title: "API key required",
+        description: `${requirement?.label || "API key"} must be saved below before this model can be selected.`,
+        duration: 4000,
+      });
+      return;
+    }
     const previousValue = summarizationModel;
     setSummarizationModel(value);
     try {
@@ -1526,6 +1727,15 @@ export default function Settings() {
   };
 
   const handlePostProcessingModelChange = async (value: string) => {
+    const requirement = requiredCredentialForLanguageModel(value);
+    if (!isCredentialReady(requirement)) {
+      toast({
+        title: "API key required",
+        description: `${requirement?.label || "API key"} must be saved below before this model can be selected.`,
+        duration: 4000,
+      });
+      return;
+    }
     const previousValue = postProcessingModel;
     setPostProcessingModel(value);
     try {
@@ -1642,15 +1852,7 @@ export default function Settings() {
   };
 
   const handleCustomVocabBlur = async () => {
-    try {
-      await updateSettings({ customVocab: customVocabulary });
-    } catch (e: any) {
-      toast({
-        title: "Save failed",
-        description: String(e?.message || e),
-        duration: 4000,
-      });
-    }
+    await saveCustomVocabulary(customVocabulary);
   };
 
   const handleSummarizationPromptBlur = async () => {
@@ -2035,19 +2237,16 @@ export default function Settings() {
     {
       key: "gemini",
       label: "Gemini",
-      description: "Fast Google summaries.",
       items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "gemini"),
     },
     {
       key: "openrouter",
       label: "OpenRouter",
-      description: "Nitro routes for long output.",
       items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "openrouter"),
     },
     {
       key: "openai",
       label: "OpenAI",
-      description: "OpenAI summary models.",
       items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "openai"),
     },
   ];
@@ -2075,11 +2274,6 @@ export default function Settings() {
         placeholder="Enter terms, one per line..."
         className="min-h-[54px] resize-none bg-white/70 font-mono text-[12px] leading-5 dark:bg-slate-950/60"
       />
-      <div className="mt-2 flex justify-end">
-        <Button size="sm" onClick={() => void handleCustomVocabBlur()}>
-          Save vocabulary
-        </Button>
-      </div>
     </div>
   );
 
@@ -2134,13 +2328,21 @@ export default function Settings() {
               <SelectValue placeholder="Select cleanup model" />
             </SelectTrigger>
             <SelectContent>
-            {POST_PROCESSING_MODEL_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
+              {POST_PROCESSING_MODEL_OPTIONS.map((option) => {
+                const disabledReason = missingCredentialReason(requiredCredentialForLanguageModel(option.value));
+                return (
+                  <SelectItem key={option.value} value={option.value} disabled={Boolean(disabledReason)}>
+                    {disabledReason ? `${option.label} - ${disabledReason}` : option.label}
+                  </SelectItem>
+                );
+              })}
             </SelectContent>
           </Select>
+          {missingPostProcessingCredentialRequirement ? (
+            <p className="text-[10.5px] leading-4 text-amber-600 dark:text-amber-400">
+              Save the {missingPostProcessingCredentialRequirement.label} below before using the selected cleanup model.
+            </p>
+          ) : null}
         </FieldShell>
 
         <FieldShell label="Live cleanup prompt">
@@ -2182,173 +2384,160 @@ export default function Settings() {
     </div>
   );
 
-  const localModelManagement = (
-    <div className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
-      <div className="mb-2 flex items-start gap-2">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/70 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] dark:bg-slate-950/50 dark:text-slate-400">
-          <Cpu className="h-3.5 w-3.5" aria-hidden="true" />
-        </span>
+  const onnxLocalModelSettings = (
+    <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40">
+      <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Local model files</h3>
-          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-            Manage the offline models used by the Local ONNX and Local NeMo providers above.
-          </p>
+          <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">ONNX model</p>
+          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Whisper / Parakeet ONNX runtime</p>
         </div>
+        {selectedOnnxModel ? (
+          <Badge variant={getStatusVariant(selectedOnnxModel.status)}>{getStatusLabel(selectedOnnxModel.status)}</Badge>
+        ) : null}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40">
-          <div className="mb-3 flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">ONNX model</p>
-              <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Whisper / Parakeet ONNX runtime</p>
-            </div>
-            {selectedOnnxModel ? (
-              <Badge variant={getStatusVariant(selectedOnnxModel.status)}>{getStatusLabel(selectedOnnxModel.status)}</Badge>
-            ) : null}
+      {onnxAvailable === null ? (
+        <p className="text-[12px] text-slate-500">Loading local models...</p>
+      ) : onnxAvailable === false ? (
+        <p className="text-[12px] leading-4 text-slate-500">{onnxMessage || "onnx-asr is not installed."}</p>
+      ) : (
+        <div className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <FieldShell label="Model">
+              <Select value={onnxModel} onValueChange={handleOnnxModelChange}>
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="Select local model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {onnxModels.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FieldShell>
+            <FieldShell label="Quantization">
+              <Select value={onnxQuantization} onValueChange={handleOnnxQuantizationChange}>
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="Select quantization" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="int8" disabled={!supportedQuantizations.includes("int8")}>int8</SelectItem>
+                  <SelectItem value="fp16" disabled={!supportedQuantizations.includes("fp16")}>fp16</SelectItem>
+                  <SelectItem value="fp32" disabled={!supportedQuantizations.includes("fp32")}>fp32</SelectItem>
+                </SelectContent>
+              </Select>
+            </FieldShell>
           </div>
-
-          {transcriptionModel !== "onnx_local" ? (
-            <Button size="sm" variant="outline" className="w-full" onClick={() => void handleTranscriptionModelChange("onnx_local")}>
-              Use ONNX
-            </Button>
-          ) : onnxAvailable === null ? (
-            <p className="text-[12px] text-slate-500">Loading local models...</p>
-          ) : onnxAvailable === false ? (
-            <p className="text-[12px] leading-4 text-slate-500">{onnxMessage || "onnx-asr is not installed."}</p>
-          ) : (
-            <div className="space-y-3">
-              <FieldShell label="Model">
-                <Select value={onnxModel} onValueChange={handleOnnxModelChange}>
-                  <SelectTrigger className="h-9">
-                    <SelectValue placeholder="Select local model" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {onnxModels.map((model) => (
-                      <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </FieldShell>
-              <FieldShell label="Quantization">
-                <Select value={onnxQuantization} onValueChange={handleOnnxQuantizationChange}>
-                  <SelectTrigger className="h-9">
-                    <SelectValue placeholder="Select quantization" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="int8" disabled={!supportedQuantizations.includes("int8")}>int8</SelectItem>
-                    <SelectItem value="fp16" disabled={!supportedQuantizations.includes("fp16")}>fp16</SelectItem>
-                    <SelectItem value="fp32" disabled={!supportedQuantizations.includes("fp32")}>fp32</SelectItem>
-                  </SelectContent>
-                </Select>
-              </FieldShell>
-              {selectedOnnxModel?.description ? (
-                <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedOnnxModel.description}</p>
-              ) : null}
-              {selectedOnnxModel?.status === "downloading" && (
-                <div className="space-y-1.5">
-                  <Progress value={selectedOnnxModel.progress || 0} />
-                  <p className="flex items-center gap-2 text-[11px] text-slate-500">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    {selectedOnnxModel.message || "Downloading..."}
-                    <span className="ml-auto">{Math.round(selectedOnnxModel.progress || 0)}%</span>
-                  </p>
-                </div>
-              )}
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  onClick={() => selectedOnnxModel && handleOnnxDownload(selectedOnnxModel.id)}
-                  disabled={!selectedOnnxModel || selectedOnnxModel.status === "downloading" || selectedOnnxModel.downloaded || !quantizationSupported}
-                >
-                  <Download className="mr-2 h-4 w-4" />
-                  Download
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => selectedOnnxModel && handleOnnxDelete(selectedOnnxModel.id)}
-                  disabled={!selectedOnnxModel?.downloaded || selectedOnnxModel.status === "downloading"}
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
-                </Button>
-              </div>
+          {selectedOnnxModel?.description ? (
+            <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedOnnxModel.description}</p>
+          ) : null}
+          {selectedOnnxModel?.status === "downloading" && (
+            <div className="space-y-1.5">
+              <Progress value={selectedOnnxModel.progress || 0} />
+              <p className="flex items-center gap-2 text-[11px] text-slate-500">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {selectedOnnxModel.message || "Downloading..."}
+                <span className="ml-auto">{Math.round(selectedOnnxModel.progress || 0)}%</span>
+              </p>
             </div>
           )}
-        </div>
-
-        <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40">
-          <div className="mb-3 flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">NeMo model</p>
-              <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Local .nemo toolkit</p>
-            </div>
-            {selectedNemoModel ? (
-              <Badge variant={getStatusVariant(selectedNemoModel.status)}>{getStatusLabel(selectedNemoModel.status)}</Badge>
-            ) : null}
-          </div>
-
-          {transcriptionModel !== "nemo_local" ? (
-            <Button size="sm" variant="outline" className="w-full" onClick={() => void handleTranscriptionModelChange("nemo_local")}>
-              Use NeMo
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={() => selectedOnnxModel && handleOnnxDownload(selectedOnnxModel.id)}
+              disabled={!selectedOnnxModel || selectedOnnxModel.status === "downloading" || selectedOnnxModel.downloaded || !quantizationSupported}
+            >
+              <Download className="mr-2 h-4 w-4" />
+              Download
             </Button>
-          ) : nemoAvailable === null ? (
-            <p className="text-[12px] text-slate-500">Loading NeMo models...</p>
-          ) : nemoAvailable === false ? (
-            <p className="text-[12px] leading-4 text-slate-500">{nemoMessage || "NeMo toolkit is not installed."}</p>
-          ) : (
-            <div className="space-y-3">
-              <FieldShell label="Model">
-                <Select value={nemoModel} onValueChange={handleNemoModelChange}>
-                  <SelectTrigger className="h-9">
-                    <SelectValue placeholder="Select NeMo model" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {nemoModels.map((model) => (
-                      <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </FieldShell>
-              {selectedNemoModel?.description ? (
-                <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedNemoModel.description}</p>
-              ) : null}
-              {selectedNemoModel?.status === "downloading" && (
-                <div className="space-y-1.5">
-                  <Progress value={selectedNemoModel.progress || 0} />
-                  <p className="flex items-center gap-2 text-[11px] text-slate-500">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    {selectedNemoModel.message || "Downloading..."}
-                    <span className="ml-auto">{Math.round(selectedNemoModel.progress || 0)}%</span>
-                  </p>
-                </div>
-              )}
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  onClick={() => selectedNemoModel && handleNemoDownload(selectedNemoModel.id)}
-                  disabled={!selectedNemoModel || selectedNemoModel.status === "downloading" || selectedNemoModel.downloaded}
-                >
-                  <Download className="mr-2 h-4 w-4" />
-                  Download
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => selectedNemoModel && handleNemoDelete(selectedNemoModel.id)}
-                  disabled={!selectedNemoModel?.downloaded || selectedNemoModel.status === "downloading"}
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
-                </Button>
-              </div>
-            </div>
-          )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => selectedOnnxModel && handleOnnxDelete(selectedOnnxModel.id)}
+              disabled={!selectedOnnxModel?.downloaded || selectedOnnxModel.status === "downloading"}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
+
+  const nemoLocalModelSettings = (
+    <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">NeMo model</p>
+          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Local .nemo toolkit</p>
+        </div>
+        {selectedNemoModel ? (
+          <Badge variant={getStatusVariant(selectedNemoModel.status)}>{getStatusLabel(selectedNemoModel.status)}</Badge>
+        ) : null}
+      </div>
+
+      {nemoAvailable === null ? (
+        <p className="text-[12px] text-slate-500">Loading NeMo models...</p>
+      ) : nemoAvailable === false ? (
+        <p className="text-[12px] leading-4 text-slate-500">{nemoMessage || "NeMo toolkit is not installed."}</p>
+      ) : (
+        <div className="space-y-3">
+          <FieldShell label="Model">
+            <Select value={nemoModel} onValueChange={handleNemoModelChange}>
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Select NeMo model" />
+              </SelectTrigger>
+              <SelectContent>
+                {nemoModels.map((model) => (
+                  <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldShell>
+          {selectedNemoModel?.description ? (
+            <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedNemoModel.description}</p>
+          ) : null}
+          {selectedNemoModel?.status === "downloading" && (
+            <div className="space-y-1.5">
+              <Progress value={selectedNemoModel.progress || 0} />
+              <p className="flex items-center gap-2 text-[11px] text-slate-500">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {selectedNemoModel.message || "Downloading..."}
+                <span className="ml-auto">{Math.round(selectedNemoModel.progress || 0)}%</span>
+              </p>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={() => selectedNemoModel && handleNemoDownload(selectedNemoModel.id)}
+              disabled={!selectedNemoModel || selectedNemoModel.status === "downloading" || selectedNemoModel.downloaded}
+            >
+              <Download className="mr-2 h-4 w-4" />
+              Download
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => selectedNemoModel && handleNemoDelete(selectedNemoModel.id)}
+              disabled={!selectedNemoModel?.downloaded || selectedNemoModel.status === "downloading"}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const activeLocalModelSettings =
+    transcriptionModel === "onnx_local"
+      ? onnxLocalModelSettings
+      : transcriptionModel === "nemo_local"
+        ? nemoLocalModelSettings
+        : null;
 
   return (
     <div className={cn(
@@ -2598,19 +2787,29 @@ export default function Settings() {
                     </div>
                   </div>
                   <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
-                    {group.items.map((option) => (
-                      <ProviderChoice
-                        key={option.value}
-                        option={option}
-                        selected={transcriptionModel === option.value}
-                        onSelect={() => void handleTranscriptionModelChange(option.value)}
-                      />
-                    ))}
+                    {group.items.map((option) => {
+                      const requirement = requiredCredentialForTranscriptionModel(option.value);
+                      const disabledReason = missingCredentialReason(requirement);
+                      return (
+                        <ProviderChoice
+                          key={option.value}
+                          option={option}
+                          selected={transcriptionModel === option.value}
+                          disabled={Boolean(disabledReason)}
+                          disabledReason={disabledReason}
+                          onSelect={() => void handleTranscriptionModelChange(option.value)}
+                        />
+                      );
+                    })}
                   </div>
+                  {group.key === "local" && activeLocalModelSettings ? (
+                    <div className="mt-2 border-t border-slate-200/80 pt-2 dark:border-slate-800/80">
+                      {activeLocalModelSettings}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
-            {localModelManagement}
           </div>
         </SectionPanel>
 
@@ -2620,13 +2819,22 @@ export default function Settings() {
           icon={Key}
         >
           <div className="space-y-2">
-            {selectedCredentialRequirement && (
+            {missingActiveCredentialRequirements.length > 0 && (
               <div className="rounded-xl border border-amber-500/35 bg-amber-50 p-2.5 text-[11px] leading-[15px] text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
                 <div className="flex gap-2">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
                   <div>
-                    <p className="font-semibold">{selectedModelLabel} needs credentials.</p>
-                    <p className="mt-1">Add {selectedCredentialRequirement.label}, or choose a local model.</p>
+                    <p className="font-semibold">API key required before model selection.</p>
+                    <p className="mt-1">
+                      Save{" "}
+                      {missingActiveCredentialRequirements.map((requirement, index) => (
+                        <span key={requirement.provider}>
+                          {index > 0 ? ", " : ""}
+                          <ApiKeyLink helpKey={requirement.helpKey}>{requirement.label}</ApiKeyLink>
+                        </span>
+                      ))}{" "}
+                      below, or choose a model that already has credentials.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -2638,28 +2846,28 @@ export default function Settings() {
               </div>
             )}
 
-            <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
-              <ApiCredentialRow provider="OpenAI" icon="openai" value={openAIKey} onValueChange={setOpenAIKey} show={showOpenAIKey} onShowChange={setShowOpenAIKey} helpKey="openai" saved={savedKeys.OpenAI === true} onSave={() => handleSaveApiKey("OpenAI")} note="Used for OpenAI STT and summarization." />
-              <ApiCredentialRow provider="Gemini" icon="gemini" value={geminiKey} onValueChange={setGeminiKey} show={showGeminiKey} onShowChange={setShowGeminiKey} helpKey="gemini" saved={savedKeys.Gemini === true} onSave={() => handleSaveApiKey("Gemini")} />
-              <ApiCredentialRow provider="OpenRouter" icon="openrouter" value={openRouterKey} onValueChange={setOpenRouterKey} show={showOpenRouterKey} onShowChange={setShowOpenRouterKey} helpKey="openrouter" saved={savedKeys.OpenRouter === true} onSave={() => handleSaveApiKey("OpenRouter")} />
-              <ApiCredentialRow provider="YouTube" icon="youtube" value={youtubeKey} onValueChange={setYoutubeKey} show={showYoutubeKey} onShowChange={setShowYoutubeKey} helpKey="youtube" saved={savedKeys.YouTube === true} onSave={() => handleSaveApiKey("YouTube")} note="Used for search and metadata in the YouTube tab." />
-              <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={setSonioxKey} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} />
-              <ApiCredentialRow provider="Mistral" icon="mistral" value={mistralKey} onValueChange={setMistralKey} show={showMistralKey} onShowChange={setShowMistralKey} helpKey="mistral" saved={savedKeys.Mistral === true} onSave={() => handleSaveApiKey("Mistral")} />
-              <ApiCredentialRow provider="Smallest AI" icon="smallest" value={smallestKey} onValueChange={setSmallestKey} show={showSmallestKey} onShowChange={setShowSmallestKey} helpKey="smallest" saved={savedKeys["Smallest AI"] === true} onSave={() => handleSaveApiKey("Smallest AI")} />
-              <ApiCredentialRow provider="AssemblyAI" icon="assemblyai" value={assemblyAIKey} onValueChange={setAssemblyAIKey} show={showAssemblyAIKey} onShowChange={setShowAssemblyAIKey} helpKey="assemblyai" saved={savedKeys.AssemblyAI === true} onSave={() => handleSaveApiKey("AssemblyAI")} />
-              <ApiCredentialRow provider="Deepgram" icon="deepgram" value={deepgramKey} onValueChange={setDeepgramKey} show={showDeepgramKey} onShowChange={setShowDeepgramKey} helpKey="deepgram" saved={savedKeys.Deepgram === true} onSave={() => handleSaveApiKey("Deepgram")} />
-              <ApiCredentialRow provider="Gladia" icon="gladia" value={gladiaKey} onValueChange={setGladiaKey} show={showGladiaKey} onShowChange={setShowGladiaKey} helpKey="gladia" saved={savedKeys.Gladia === true} onSave={() => handleSaveApiKey("Gladia")} />
-              <ApiCredentialRow provider="Groq" icon="groq" value={groqKey} onValueChange={setGroqKey} show={showGroqKey} onShowChange={setShowGroqKey} helpKey="groq" saved={savedKeys.Groq === true} onSave={() => handleSaveApiKey("Groq")} />
-              <ApiCredentialRow provider="Speechmatics" icon="speechmatics" value={speechmaticsKey} onValueChange={setSpeechmaticsKey} show={showSpeechmaticsKey} onShowChange={setShowSpeechmaticsKey} helpKey="speechmatics" saved={savedKeys.Speechmatics === true} onSave={() => handleSaveApiKey("Speechmatics")} />
-              <ApiCredentialRow provider="ElevenLabs" icon="elevenlabs" value={elevenLabsKey} onValueChange={setElevenLabsKey} show={showElevenLabsKey} onShowChange={setShowElevenLabsKey} helpKey="fal" saved={savedKeys.ElevenLabs === true} onSave={() => handleSaveApiKey("ElevenLabs")} note="Scriber stores the fal.ai key for this provider." />
-              <ApiCredentialRow provider="Google Cloud" icon="googlecloud" value={googleApplicationCredentials} onValueChange={setGoogleApplicationCredentials} helpKey="googleCloud" saved={savedKeys["Google Cloud"] === true} onSave={() => handleSaveApiKey("Google Cloud")} inputType="text" placeholder="C:\\path\\to\\service-account.json" note="Path to the service account JSON used by Google Cloud STT." />
-              <ApiCredentialRow provider="Azure MAI" icon="azure" value={azureMaiKey} onValueChange={setAzureMaiKey} show={showAzureMaiKey} onShowChange={setShowAzureMaiKey} helpKey="azure" saved={savedKeys.Azure === true} onSave={() => handleSaveApiKey("Azure")} note="The key must belong to a region that supports the configured model.">
+            <div className="grid gap-x-2 gap-y-2 sm:grid-cols-2">
+              <ApiCredentialRow provider="OpenAI" icon="openai" value={openAIKey} onValueChange={markCredentialChanged("OpenAI", setOpenAIKey)} show={showOpenAIKey} onShowChange={setShowOpenAIKey} helpKey="openai" saved={savedKeys.OpenAI === true} onSave={() => handleSaveApiKey("OpenAI")} note="Used for OpenAI STT and summarization." />
+              <ApiCredentialRow provider="Gemini" icon="gemini" value={geminiKey} onValueChange={markCredentialChanged("Gemini", setGeminiKey)} show={showGeminiKey} onShowChange={setShowGeminiKey} helpKey="gemini" saved={savedKeys.Gemini === true} onSave={() => handleSaveApiKey("Gemini")} />
+              <ApiCredentialRow provider="OpenRouter" icon="openrouter" value={openRouterKey} onValueChange={markCredentialChanged("OpenRouter", setOpenRouterKey)} show={showOpenRouterKey} onShowChange={setShowOpenRouterKey} helpKey="openrouter" saved={savedKeys.OpenRouter === true} onSave={() => handleSaveApiKey("OpenRouter")} />
+              <ApiCredentialRow provider="YouTube" icon="youtube" value={youtubeKey} onValueChange={markCredentialChanged("YouTube", setYoutubeKey)} show={showYoutubeKey} onShowChange={setShowYoutubeKey} helpKey="youtube" saved={savedKeys.YouTube === true} onSave={() => handleSaveApiKey("YouTube")} note="Used for search and metadata in the YouTube tab." />
+              <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={markCredentialChanged("Soniox", setSonioxKey)} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} />
+              <ApiCredentialRow provider="Mistral" icon="mistral" value={mistralKey} onValueChange={markCredentialChanged("Mistral", setMistralKey)} show={showMistralKey} onShowChange={setShowMistralKey} helpKey="mistral" saved={savedKeys.Mistral === true} onSave={() => handleSaveApiKey("Mistral")} />
+              <ApiCredentialRow provider="Smallest AI" icon="smallest" value={smallestKey} onValueChange={markCredentialChanged("Smallest AI", setSmallestKey)} show={showSmallestKey} onShowChange={setShowSmallestKey} helpKey="smallest" saved={savedKeys["Smallest AI"] === true} onSave={() => handleSaveApiKey("Smallest AI")} />
+              <ApiCredentialRow provider="AssemblyAI" icon="assemblyai" value={assemblyAIKey} onValueChange={markCredentialChanged("AssemblyAI", setAssemblyAIKey)} show={showAssemblyAIKey} onShowChange={setShowAssemblyAIKey} helpKey="assemblyai" saved={savedKeys.AssemblyAI === true} onSave={() => handleSaveApiKey("AssemblyAI")} />
+              <ApiCredentialRow provider="Deepgram" icon="deepgram" value={deepgramKey} onValueChange={markCredentialChanged("Deepgram", setDeepgramKey)} show={showDeepgramKey} onShowChange={setShowDeepgramKey} helpKey="deepgram" saved={savedKeys.Deepgram === true} onSave={() => handleSaveApiKey("Deepgram")} />
+              <ApiCredentialRow provider="Gladia" icon="gladia" value={gladiaKey} onValueChange={markCredentialChanged("Gladia", setGladiaKey)} show={showGladiaKey} onShowChange={setShowGladiaKey} helpKey="gladia" saved={savedKeys.Gladia === true} onSave={() => handleSaveApiKey("Gladia")} />
+              <ApiCredentialRow provider="Groq" icon="groq" value={groqKey} onValueChange={markCredentialChanged("Groq", setGroqKey)} show={showGroqKey} onShowChange={setShowGroqKey} helpKey="groq" saved={savedKeys.Groq === true} onSave={() => handleSaveApiKey("Groq")} />
+              <ApiCredentialRow provider="Speechmatics" icon="speechmatics" value={speechmaticsKey} onValueChange={markCredentialChanged("Speechmatics", setSpeechmaticsKey)} show={showSpeechmaticsKey} onShowChange={setShowSpeechmaticsKey} helpKey="speechmatics" saved={savedKeys.Speechmatics === true} onSave={() => handleSaveApiKey("Speechmatics")} />
+              <ApiCredentialRow provider="ElevenLabs" icon="elevenlabs" value={elevenLabsKey} onValueChange={markCredentialChanged("ElevenLabs", setElevenLabsKey)} show={showElevenLabsKey} onShowChange={setShowElevenLabsKey} helpKey="fal" saved={savedKeys.ElevenLabs === true} onSave={() => handleSaveApiKey("ElevenLabs")} note="Scriber stores the fal.ai key for this provider." />
+              <ApiCredentialRow provider="Google Cloud" icon="googlecloud" value={googleApplicationCredentials} onValueChange={markCredentialChanged("Google Cloud", setGoogleApplicationCredentials)} helpKey="googleCloud" saved={savedKeys["Google Cloud"] === true} onSave={() => handleSaveApiKey("Google Cloud")} inputType="text" placeholder="C:\\path\\to\\service-account.json" note="Path to the service account JSON used by Google Cloud STT." />
+              <ApiCredentialRow provider="Azure MAI" icon="azure" value={azureMaiKey} onValueChange={markCredentialChanged("Azure", setAzureMaiKey)} show={showAzureMaiKey} onShowChange={setShowAzureMaiKey} helpKey="azure" saved={savedKeys.Azure === true} onSave={() => handleSaveApiKey("Azure")} note="The key must belong to a region that supports the configured model.">
                 <div className="grid gap-3 sm:grid-cols-2">
                   <FieldShell label="Region">
-                    <Input value={azureMaiRegion} onChange={(event) => setAzureMaiRegion(event.target.value)} placeholder="northeurope" className="font-mono text-sm" />
+                    <Input value={azureMaiRegion} onChange={(event) => markCredentialChanged("Azure", setAzureMaiRegion)(event.target.value)} placeholder="northeurope" className="font-mono text-sm" />
                   </FieldShell>
                   <FieldShell label="Model">
-                    <Input value={azureMaiModel} onChange={(event) => setAzureMaiModel(event.target.value)} placeholder="mai-transcribe-1.5" className="font-mono text-sm" />
+                    <Input value={azureMaiModel} onChange={(event) => markCredentialChanged("Azure", setAzureMaiModel)(event.target.value)} placeholder="mai-transcribe-1.5" className="font-mono text-sm" />
                   </FieldShell>
                 </div>
               </ApiCredentialRow>
@@ -2687,19 +2895,22 @@ export default function Settings() {
                     <h3 className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">
                       {group.label}
                     </h3>
-                    <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-                      {group.description}
-                    </p>
                   </div>
                   <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
-                    {group.items.map((option) => (
-                      <SummaryModelChoice
-                        key={option.value}
-                        option={option}
-                        selected={summarizationModel === option.value}
-                        onSelect={() => void handleSummarizationModelChange(option.value)}
-                      />
-                    ))}
+                    {group.items.map((option) => {
+                      const requirement = requiredCredentialForLanguageModel(option.value);
+                      const disabledReason = missingCredentialReason(requirement);
+                      return (
+                        <SummaryModelChoice
+                          key={option.value}
+                          option={option}
+                          selected={summarizationModel === option.value}
+                          disabled={Boolean(disabledReason)}
+                          disabledReason={disabledReason}
+                          onSelect={() => void handleSummarizationModelChange(option.value)}
+                        />
+                      );
+                    })}
                   </div>
                 </div>
               ))}

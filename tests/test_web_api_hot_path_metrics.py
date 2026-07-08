@@ -155,6 +155,45 @@ async def test_hot_path_metrics_summary_exposed(tmp_path):
     assert out["summary"]["count"] == 2
     assert len(out["items"]) == 2
     assert out["items"][0]["sessionId"] in {"a", "b"}
+    assert out["postProcessing"]["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_post_processing_diagnostics_are_exposed_without_transcript_text(tmp_path):
+    loop = asyncio.get_running_loop()
+    metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    ctl = ScriberWebController(loop, latency_metrics_store=metrics_store)
+
+    ctl._record_post_processing_diagnostic(
+        {
+            "sessionIdPrefix": "abcdef12",
+            "transcriptId": "transcript-1",
+            "provider": "soniox",
+            "model": "google/gemini-2.5-flash-lite:nitro",
+            "status": "failure",
+            "rawChars": 123,
+            "rawWords": 20,
+            "promptChars": 1800,
+            "maxOutputTokens": 512,
+            "fallbackToRaw": True,
+            "errorType": "RuntimeError",
+            "error": "provider failed",
+            "rawText": "private dictated transcript",
+        }
+    )
+
+    diagnostics = ctl.get_post_processing_diagnostics(limit=5)
+    item = diagnostics["latest"]
+
+    assert item["sessionIdPrefix"] == "abcdef12"
+    assert item["status"] == "failure"
+    assert item["fallbackToRaw"] is True
+    assert item["promptChars"] == 1800
+    assert "rawText" not in item
+    assert "private dictated transcript" not in str(diagnostics)
+
+    metrics = ctl.get_hot_path_metrics(limit=10)
+    assert metrics["postProcessing"]["latest"]["model"] == "google/gemini-2.5-flash-lite:nitro"
 
 
 @pytest.mark.asyncio

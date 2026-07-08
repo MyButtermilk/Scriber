@@ -2034,8 +2034,9 @@ class _PrewarmAwarePipeline:
     service_name = "openai"
     instances: list["_PrewarmAwarePipeline"] = []
 
-    def __init__(self, *_, mic_prewarm_manager=None, **__):
+    def __init__(self, *_, mic_prewarm_manager=None, **kwargs):
         self.mic_prewarm_manager = mic_prewarm_manager
+        self.text_injection_enabled = kwargs.get("text_injection_enabled")
         self.stop_gate = asyncio.Event()
         type(self).instances.append(self)
 
@@ -2234,6 +2235,60 @@ async def test_start_listening_passes_idle_prewarm_without_closing_it(monkeypatc
 
         assert pipeline.mic_prewarm_manager is manager
         assert manager.pause_calls == 0
+
+        pipeline.stop_gate.set()
+        await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_plain_live_start_stays_raw_when_post_processing_feature_is_enabled(monkeypatch):
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(web_api.Config, "POST_PROCESSING_ENABLED", True)
+    ctl = ScriberWebController(loop)
+    _PrewarmAwarePipeline.instances.clear()
+
+    with (
+        patch("src.web_api.ScriberPipeline", _PrewarmAwarePipeline),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay"),
+    ):
+        await ctl.start_listening()
+        pipeline = _PrewarmAwarePipeline.instances[-1]
+        assert pipeline.text_injection_enabled is True
+        assert ctl._session_id not in ctl._post_processing_session_ids
+
+        pipeline.stop_gate.set()
+        await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_dedicated_post_processing_start_marks_session_and_disables_raw_injection(monkeypatch):
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(web_api.Config, "POST_PROCESSING_ENABLED", True)
+    ctl = ScriberWebController(loop)
+    _PrewarmAwarePipeline.instances.clear()
+
+    with (
+        patch("src.web_api.ScriberPipeline", _PrewarmAwarePipeline),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay"),
+    ):
+        await ctl.start_listening(post_process=True)
+        pipeline = _PrewarmAwarePipeline.instances[-1]
+        assert pipeline.text_injection_enabled is False
+        assert ctl._session_id in ctl._post_processing_session_ids
 
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)

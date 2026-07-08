@@ -133,6 +133,12 @@ Packaging/build:
   package data files required at runtime by models such as Parakeet TDT. Actual
   model weights remain in the user/model cache and are not embedded in the
   backend sidecar.
+- GitHub release builds compute normalized cache-key inputs so patch version
+  bumps do not invalidate frontend dependency, Rust build, or backend sidecar
+  scratch caches unless their real inputs changed.
+- FFmpeg Profile B has a reusable GitHub release artifact fallback in addition
+  to Actions cache restore, so new app tags do not need to rebuild FFmpeg when
+  the Profile B source/ref/profile is unchanged.
 
 ## FFmpeg Profile B
 
@@ -154,6 +160,19 @@ run with the matching option. The produced tools are validated by:
 - Installed package media-preparation smoke.
 - Real file/YouTube workflow smoke when provider credentials and network are
   available.
+
+In GitHub release builds, Profile B reuse is layered:
+
+1. Restore the normal Actions cache for the current ref.
+2. If that misses, download the internal reusable release artifact
+   `scriber-ffmpeg-profile-b-n7.0-v2-Windows.zip` from tag
+   `ffmpeg-profile-b-n7.0-v2`.
+3. Validate the restored tools and media-preparation behavior.
+4. Build through MSYS2 only if both restored sources are absent or invalid.
+
+When a real Profile B rebuild is required, the workflow republishes that
+internal artifact with `--clobber`. App version changes alone must not require a
+Profile B rebuild.
 
 Profile B keeps required Scriber capabilities:
 

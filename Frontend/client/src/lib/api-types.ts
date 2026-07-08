@@ -119,6 +119,36 @@ export interface RuntimeLogsClearResponse {
   }>;
 }
 
+export interface PostProcessingDiagnostic {
+  apiVersion?: typeof REST_API_VERSION;
+  createdAt?: string;
+  durationMs?: number | null;
+  error?: string;
+  errorType?: string;
+  fallbackToRaw?: boolean;
+  maxOutputTokens?: number | null;
+  model?: string;
+  outputChanged?: boolean | null;
+  postProcessed?: boolean;
+  processedChars?: number | null;
+  promptChars?: number | null;
+  provider?: string | null;
+  providerResponseChars?: number | null;
+  rawChars?: number;
+  rawWords?: number;
+  sessionIdPrefix?: string;
+  status?: "started" | "success" | "failure" | "empty_output" | "skipped" | string;
+  transcriptId?: string;
+}
+
+export interface PostProcessingDiagnosticsResponse {
+  apiVersion: typeof REST_API_VERSION;
+  items: PostProcessingDiagnostic[];
+  latest: PostProcessingDiagnostic | null;
+  count: number;
+  limit: number;
+}
+
 export interface ApiMessageResponse {
   message?: string;
 }

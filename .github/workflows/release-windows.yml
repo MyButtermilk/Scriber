@@ -3,6 +3,8 @@ name: Release Windows
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
@@ -16,10 +18,18 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
+    env:
+      SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG: ffmpeg-profile-b-n7.0-v2
+      SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME: scriber-ffmpeg-profile-b-n7.0-v2-Windows.zip
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Compute release cache keys
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\write_release_cache_keys.ps1
 
       - name: Set up Python
         id: setup-python
@@ -36,7 +46,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: "npm"
-          cache-dependency-path: Frontend/package-lock.json
+          cache-dependency-path: build/cache-keys/frontend-dependencies.txt
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -53,7 +63,7 @@ jobs:
             Frontend/src-tauri/target/release/build
             Frontend/src-tauri/target/release/deps
             Frontend/src-tauri/target/release/incremental
-          key: scriber-rust-release-${{ runner.os }}-${{ hashFiles('Frontend/src-tauri/Cargo.lock', 'Frontend/src-tauri/Cargo.toml', 'Frontend/src-tauri/build.rs', 'Frontend/src-tauri/src/**/*.rs') }}
+          key: scriber-rust-release-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-release.txt') }}
           restore-keys: |
             scriber-rust-release-${{ runner.os }}-
 
@@ -89,7 +99,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: Frontend/node_modules
-          key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('Frontend/package-lock.json') }}
+          key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
           restore-keys: |
             scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-
 
@@ -100,7 +110,7 @@ jobs:
           path: |
             build/tauri-sidecar-cache
             build/rust-audio-sidecar-cache
-          key: scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'packaging/scriber-backend.spec', 'scripts/build_tauri_backend_sidecar.ps1', 'src/**/*.py', 'Frontend/src-tauri/Cargo.lock', 'Frontend/src-tauri/Cargo.toml', 'Frontend/src-tauri/build.rs', 'Frontend/src-tauri/src/audio_sidecar.rs', 'Frontend/src-tauri/src/audio_sidecar_client.rs', 'Frontend/src-tauri/src/audio_frame_pipe.rs', 'Frontend/src-tauri/src/redaction.rs') }}
+          key: scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}
           restore-keys: |
             scriber-backend-sidecar-${{ runner.os }}-
 
@@ -119,6 +129,19 @@ jobs:
             scriber-ffmpeg-profile-b-msys2-n7.0-v2-${{ runner.os }}
             scriber-ffmpeg-profile-b-msys2-n7.0-${{ runner.os }}-
 
+      - name: Restore FFmpeg Profile B release artifact
+        id: ffmpeg-profile-b-artifact
+        if: steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ffmpeg\restore_profile_b_release_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG `
+            -AssetName $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME `
+            -BuildRoot build\ffmpeg-profile-b-msys2
+
       - name: Report release cache hits
         shell: pwsh
         run: |
@@ -127,6 +150,7 @@ jobs:
           Write-Host "Frontend node_modules cache hit: ${{ steps.frontend-node-modules-cache.outputs.cache-hit }}"
           Write-Host "Backend sidecar cache hit: ${{ steps.backend-sidecar-cache.outputs.cache-hit }}"
           Write-Host "FFmpeg Profile B cache hit: ${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}"
+          Write-Host "FFmpeg Profile B release artifact restored: ${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}"
 
       - name: Install Python dependencies
         shell: pwsh
@@ -174,8 +198,11 @@ jobs:
           $usable = "false"
           $mode = "miss"
           $cacheHit = "${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}" -eq "true"
+          $artifactRestored = "${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}" -eq "true"
           if ($cacheHit) {
             $mode = "cache-exact"
+          } elseif ($artifactRestored) {
+            $mode = "release-artifact"
           } else {
             $mode = "cache-restored"
           }
@@ -206,6 +233,7 @@ jobs:
                 ok = $true
                 mode = $mode
                 cacheHit = $cacheHit
+                artifactRestored = $artifactRestored
                 sourceUrl = "https://git.ffmpeg.org/ffmpeg.git"
                 gitRef = "n7.0"
                 mediaToolsDir = $mediaToolsDir
@@ -262,6 +290,18 @@ jobs:
           "SCRIBER_RELEASE_MEDIA_TOOLS_DIR=$($report.mediaToolsDir)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & $report.ffmpeg.path -version
           & $report.ffprobe.path -version
+
+      - name: Publish FFmpeg Profile B release artifact
+        if: steps.ffmpeg-profile-b-resolve.outputs.usable != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ffmpeg\publish_profile_b_release_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG `
+            -AssetName $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME `
+            -BuildRoot build\ffmpeg-profile-b-msys2
 
       - name: Build Windows installer
         shell: pwsh

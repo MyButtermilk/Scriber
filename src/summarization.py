@@ -25,10 +25,13 @@ SummarizationModel = Literal[
     "gpt-5.2",
     "gpt-5-mini",
     "gpt-5-nano",
+    "google/gemini-2.5-flash-lite:nitro",
     "minimax/minimax-m3:nitro",
+    "openai/gpt-oss-120b",
     "z-ai/glm-5.2:nitro",
 ]
 _OPENROUTER_DEFAULT_MODELS = ("minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro")
+_OPENROUTER_PROVIDER_ROUTED_MODELS = frozenset({"openai/gpt-oss-120b"})
 _MODEL_OUTPUT_TOKEN_CAPS = {
     "gpt-5-nano": 4096,
     "gpt-5-mini": 8192,
@@ -38,7 +41,9 @@ _MODEL_OUTPUT_TOKEN_CAPS = {
     "gemini-3-flash-preview": 8192,
     "gemini-3.1-flash-lite-preview": 8192,
     "gemini-3-pro-preview": 12288,
+    "google/gemini-2.5-flash-lite:nitro": 4096,
     "minimax/minimax-m3:nitro": 8192,
+    "openai/gpt-oss-120b": 4096,
     "z-ai/glm-5.2:nitro": 8192,
 }
 _MARKDOWN_OUTPUT_GUARDRAIL = (
@@ -101,12 +106,32 @@ def _openrouter_nitro_model(model: str) -> str:
     if not raw:
         return _OPENROUTER_DEFAULT_MODELS[0]
     base = raw.split(":", 1)[0]
+    if base.lower() in _OPENROUTER_PROVIDER_ROUTED_MODELS:
+        return base
     return f"{base}:nitro"
 
 
 def _openrouter_model_family(model: str) -> str:
     base = (model or "").strip().split(":", 1)[0].lower()
     return re.sub(r"-\d{8}$", "", base)
+
+
+def _openrouter_provider_order_for_model(model: str) -> list[str]:
+    family = _openrouter_model_family(model)
+    if family != "openai/gpt-oss-120b":
+        return []
+    raw = os.getenv("SCRIBER_OPENROUTER_GPT_OSS_120B_PROVIDERS", "baseten,cerebras")
+    allowed = {"baseten", "cerebras"}
+    providers: list[str] = []
+    for item in raw.split(","):
+        provider = item.strip().lower()
+        if provider in allowed and provider not in providers:
+            providers.append(provider)
+    return providers or ["baseten", "cerebras"]
+
+
+def _is_openrouter_provider_routed_model(model: str) -> bool:
+    return _openrouter_model_family(model) in _OPENROUTER_PROVIDER_ROUTED_MODELS
 
 
 def _openrouter_fallback_models() -> list[str]:
@@ -648,6 +673,9 @@ def _build_openrouter_payload(
     }
     if len(normalized_models) == 1:
         payload["model"] = normalized_models[0]
+        provider_order = _openrouter_provider_order_for_model(normalized_models[0])
+        if provider_order:
+            payload["provider"] = {"order": provider_order, "allow_fallbacks": True}
     else:
         payload["models"] = normalized_models
     return payload
@@ -893,7 +921,9 @@ async def _summarize_openrouter(
         "X-OpenRouter-Title": "Scriber",
     }
     requested_models = _openrouter_model_candidates(models)
-    if isinstance(models, str):
+    if isinstance(models, str) and requested_models and _is_openrouter_provider_routed_model(requested_models[0]):
+        initial_models = requested_models
+    elif isinstance(models, str):
         initial_models = _openrouter_retry_candidates(
             requested_models,
             used_model="",

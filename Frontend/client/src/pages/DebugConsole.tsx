@@ -33,7 +33,13 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/backend";
 import { cn } from "@/lib/utils";
-import type { RuntimeLogEntry, RuntimeLogsClearResponse, RuntimeLogsResponse } from "@/lib/api-types";
+import type {
+  PostProcessingDiagnostic,
+  PostProcessingDiagnosticsResponse,
+  RuntimeLogEntry,
+  RuntimeLogsClearResponse,
+  RuntimeLogsResponse,
+} from "@/lib/api-types";
 
 const LEVELS = ["ALL", "CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "TRACE"] as const;
 const ALL_DATES_VALUE = "all";
@@ -157,11 +163,27 @@ function filenameFromDisposition(disposition: string | null) {
   return match?.[1] || `scriber-support-bundle-${Date.now()}.zip`;
 }
 
+function formatMs(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  if (value >= 1000) return `${(value / 1000).toFixed(2)} s`;
+  return `${Math.round(value)} ms`;
+}
+
+function postProcessingStatusLabel(item: PostProcessingDiagnostic | null | undefined) {
+  if (!item) return "No runs";
+  if (item.status === "success") return "Last run succeeded";
+  if (item.status === "failure") return "Last run failed";
+  if (item.status === "empty_output") return "Empty output";
+  if (item.status === "skipped") return "Skipped";
+  return item.status || "Unknown";
+}
+
 export default function DebugConsole() {
   const { toast } = useToast();
   const defaultDateFilter = useMemo(() => dateInputValue(new Date()), []);
   const [logs, setLogs] = useState<RuntimeLogEntry[]>([]);
   const [sources, setSources] = useState<string[]>([]);
+  const [postProcessingDiagnostics, setPostProcessingDiagnostics] = useState<PostProcessingDiagnostic[]>([]);
   const [selectedLevel, setSelectedLevel] = useState<(typeof LEVELS)[number]>("ALL");
   const [selectedSource, setSelectedSource] = useState("all");
   const [dateFilter, setDateFilter] = useState(defaultDateFilter);
@@ -196,6 +218,18 @@ export default function DebugConsole() {
       setLogs(payload.items || []);
       setSources(payload.sources || []);
       setTruncated(payload.truncated === true);
+      void fetch(apiUrl("/api/runtime/post-processing-diagnostics?limit=8"), { credentials: "include" })
+        .then(async (diagnosticsRes) => {
+          if (!diagnosticsRes.ok) return null;
+          return (await diagnosticsRes.json()) as PostProcessingDiagnosticsResponse;
+        })
+        .then((diagnosticsPayload) => {
+          if (loadGeneration !== logLoadGenerationRef.current || !diagnosticsPayload) return;
+          setPostProcessingDiagnostics(diagnosticsPayload.items || []);
+        })
+        .catch((diagnosticsError) => {
+          console.debug("Post-processing diagnostics refresh failed.", diagnosticsError);
+        });
       setLastUpdated(new Date());
     } catch (err: any) {
       if (loadGeneration !== logLoadGenerationRef.current) return;
@@ -267,6 +301,8 @@ export default function DebugConsole() {
   const errorCount = logs.filter((entry) => ["ERROR", "CRITICAL"].includes(normalizeLevel(entry.level))).length;
   const warningCount = logs.filter((entry) => normalizeLevel(entry.level) === "WARNING").length;
   const debugCount = logs.filter((entry) => ["DEBUG", "TRACE"].includes(normalizeLevel(entry.level))).length;
+  const latestPostProcessing = postProcessingDiagnostics[0] || null;
+  const postProcessingFailures = postProcessingDiagnostics.filter((item) => item.status === "failure").length;
   const hasActiveFilters =
     selectedLevel !== "ALL" ||
     selectedSource !== "all" ||
@@ -543,6 +579,38 @@ export default function DebugConsole() {
               {error}
             </div>
           )}
+
+          <div className="mt-3 grid gap-2 rounded-md border border-border/70 bg-background/40 p-3 text-sm md:grid-cols-[minmax(0,1.3fr)_minmax(0,2fr)]">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Bug className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium text-foreground">Post-processing diagnostics</span>
+                <Badge variant={postProcessingFailures ? "destructive" : "outline"}>
+                  {postProcessingFailures} failures
+                </Badge>
+              </div>
+              <p className="mt-1 text-muted-foreground">
+                {postProcessingStatusLabel(latestPostProcessing)}
+                {latestPostProcessing?.durationMs != null ? ` · ${formatMs(latestPostProcessing.durationMs)}` : ""}
+              </p>
+            </div>
+            <div className="grid gap-1 text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
+              <span className="truncate" title={latestPostProcessing?.model || ""}>
+                Model: {latestPostProcessing?.model || "--"}
+              </span>
+              <span>Input: {latestPostProcessing?.rawChars ?? "--"} chars</span>
+              <span>Output: {latestPostProcessing?.processedChars ?? latestPostProcessing?.providerResponseChars ?? "--"} chars</span>
+              <span>
+                Tokens: {latestPostProcessing?.maxOutputTokens ?? "--"}
+                {latestPostProcessing?.promptChars != null ? ` · prompt ${latestPostProcessing.promptChars} chars` : ""}
+              </span>
+              {latestPostProcessing?.fallbackToRaw ? (
+                <span className="truncate text-amber-700 dark:text-amber-300" title={latestPostProcessing.error || ""}>
+                  Raw fallback: {latestPostProcessing.errorType || latestPostProcessing.error || "yes"}
+                </span>
+              ) : null}
+            </div>
+          </div>
         </section>
       </div>
 

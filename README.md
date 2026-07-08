@@ -71,7 +71,9 @@ Settings separates STT choices by how results are produced:
   dictation. The normal shortcut pastes plain STT output; the post-processing
   shortcut runs the completed live transcript through the configured LLM prompt
   before paste. The prompt supports the `${output}` placeholder for the raw live
-  transcript. File and YouTube transcription are not post-processed.
+  transcript. By default this uses OpenRouter `openai/gpt-oss-120b` routed to
+  Baseten first with Cerebras as fallback. File and YouTube transcription are not
+  post-processed.
 
 ## Screenshots
 
@@ -107,6 +109,8 @@ actions together.
 
 Choose your microphone, model, language, hotkeys, live post-processing prompt,
 autostart behavior, and API keys from one Settings screen.
+Cloud model choices stay locked until the matching provider API key has been
+saved in the API keys section. Local models remain selectable without a key.
 
 ![Settings view](docs/screenshots/settings.png)
 

@@ -97,8 +97,8 @@ Key modules:
 - `Frontend/client/src/pages/YouTube.tsx`: YouTube search, URL workflow, recent
   videos, thumbnail display.
 - `Frontend/client/src/pages/FileUpload.tsx`: file upload and drag/drop flow.
-- `Frontend/client/src/pages/DebugConsole.tsx`: token-protected log viewer and
-  support bundle download.
+- `Frontend/client/src/pages/DebugConsole.tsx`: token-protected log viewer,
+  redacted post-processing diagnostics, and support bundle download.
 - `Frontend/client/src/contexts/WebSocketContext.tsx`: one shared WebSocket.
 - `Frontend/client/src/lib/backend.ts`: browser/dev/Tauri backend URL and token
   handling.
@@ -113,6 +113,10 @@ health is proven.
 Installed frontend assets are owned by Tauri through `frontendDist` and are
 loaded from the WebView origin (`http://tauri.localhost`), not from the Python
 backend loopback server.
+Settings model selectors are credential-gated in the UI: cloud STT,
+summarization, and live post-processing choices are disabled until the matching
+provider API key or credential path has been saved in the API keys section.
+Local transcription models remain selectable without credentials.
 Desktop update checks are frontend/Tauri-owned rather than Python-backend
 work. Installed builds check the configured Tauri updater endpoint in the
 background after startup and then about once per week, cache the result in
@@ -227,7 +231,11 @@ REST:
 - `/api/runtime` is token-protected when `SCRIBER_SESSION_TOKEN` is configured.
 - `/api/runtime/frontend-ready` records non-secret proof that the WebView reached
   the backend.
-- `/api/runtime/logs` and `/api/runtime/support-bundle` are token-protected.
+- `/api/runtime/logs`, `/api/runtime/post-processing-diagnostics`, and
+  `/api/runtime/support-bundle` are token-protected.
+- `/api/metrics/hot-path` includes a bounded `postProcessing` snapshot so live
+  dictation failures can be correlated with timing data without storing
+  transcript text.
 
 WebSocket:
 
@@ -257,6 +265,13 @@ Desktop runtime stores writable data under `SCRIBER_DATA_DIR`:
 - `support-bundles\`
 
 The installed app must not rely on writing to the install directory.
+
+Post-processing diagnostics are intentionally metadata-only. The backend records
+bounded recent attempts with status, configured model, prompt/output character
+counts, duration, fallback state, and sanitized error summaries. These entries
+are visible in the Debug Console, included in hot-path metrics, and written to
+support bundles as `post-processing-diagnostics.redacted.json`; neither raw
+transcript text nor processed output belongs in any of those surfaces.
 
 ## Provider Boundary
 
@@ -303,9 +318,12 @@ NeMo/Torch is unavailable; full NeMo/Torch remains excluded from the standard
 sidecar because it would dominate installer size.
 Google Cloud STT is packaged through `google-cloud-speech` plus Pipecat's
 required `google-genai` namespace dependency; Gemini and OpenRouter
-summarization use direct HTTP and do not require `google-generativeai`.
-OpenRouter summary models are sent with `:nitro` variants and are used as the
-automatic cross-provider summary fallback when an OpenRouter key is configured.
+summarization/post-processing use direct HTTP and do not require
+`google-generativeai`. Most OpenRouter summary fallback models are sent with
+`:nitro` variants. Live post-processing defaults to `openai/gpt-oss-120b`
+without `:nitro` and sends OpenRouter provider order `baseten,cerebras`.
+OpenRouter remains the automatic cross-provider summary fallback when an
+OpenRouter key is configured.
 OpenAI STT uses the explicit `openai` SDK dependency, Groq STT uses Pipecat's
 `groq` SDK dependency, and Pipecat provider imports require `nltk` at runtime.
 Gladia live transcription still uses Pipecat's Gladia service, while

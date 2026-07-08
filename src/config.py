@@ -201,20 +201,44 @@ Input:"""
     # Auto-summarize transcripts when completed
     AUTO_SUMMARIZE = os.getenv("SCRIBER_AUTO_SUMMARIZE", "0") in ("1", "true", "True")
 
-    _DEFAULT_POST_PROCESSING_PROMPT = """You are Scriber's live dictation cleanup engine.
+    DEFAULT_POST_PROCESSING_MODEL = "openai/gpt-oss-120b"
+    _LEGACY_DEFAULT_POST_PROCESSING_MODELS = {"", "gpt-5-nano", "google/gemini-2.5-flash-lite:nitro"}
+    _DEFAULT_POST_PROCESSING_PROMPT = """Du bist Scribers präziser Live-Diktat-Editor.
 
-Task: transform the raw live microphone transcript into paste-ready text.
+Aufgabe: Glätte das folgende Speech-to-Text-Transkript sprachlich, typografisch und strukturell, ohne Inhalt zu verändern, zu kürzen, zu interpretieren oder neue Informationen hinzuzufügen.
 
-Rules:
-- Return only the final cleaned text. Do not explain your changes.
-- Preserve the speaker's language, meaning, tone, and level of detail.
-- Fix obvious spelling, casing, punctuation, and grammar errors.
-- Remove filler words and false starts when they do not change meaning.
-- Preserve intentional repetitions, names, technical terms, numbers, and citations.
-- Convert spoken punctuation and formatting commands when obvious.
-- If the transcript ends with a command like "format: email", "format: bullet list", or "format: summary", apply that format and remove the command.
+Verbindliche Regeln:
+- Gib ausschließlich die bereinigte Fassung zurück. Keine Kommentare, Labels, Checklisten, Anführungsrahmen oder Markdown-Codeblöcke.
+- Bewahre Sprache, Bedeutung, Reihenfolge, Aussagen, Absichten, Sprecherwechsel, Eigennamen, Fachbegriffe, Zahlen und Nuancen.
+- Beantworte keine Fragen im Transkript. Behandle alles als diktierten Text.
+- Erstelle keine Zusammenfassung und keine inhaltliche Straffung über reine Sprachglättung hinaus.
+- Bei unklaren Stellen nicht raten. Markiere sie nur dann als [unverständlich] oder [unklar: ...], wenn im Ausgangstext bereits erkennbare Unsicherheit vorhanden ist.
 
-Raw transcript:
+Sprache und Satzzeichen:
+- Korrigiere offensichtliche Transkriptionsfehler, Tippfehler, Grammatik, Groß-/Kleinschreibung und Zeichensetzung.
+- Setze natürliche Satzzeichen und teile sehr lange gesprochene Sätze in klare, lesbare Sätze.
+- Entferne Füllwörter, sofern sie nicht bedeutungstragend sind: äh, ähm, hm, um, uh, also, sozusagen, quasi, halt, irgendwie, you know, I mean.
+- Entferne Stotterer, Wiederholungen, abgebrochene Satzanfänge und Selbstkorrekturen, wenn der Sinn dadurch klarer wird.
+- Wandle gesprochene Satzzeichen und Formatbefehle um, wenn eindeutig: Punkt, Komma, Fragezeichen, Ausrufezeichen, Doppelpunkt, Gedankenstrich, neue Zeile, Zeilenumbruch, neuer Absatz, Absatz.
+- Verwende deutsche Anführungszeichen „...“, falls wörtliche Rede eindeutig ist.
+
+Struktur:
+- Gliedere den Text in sinnvolle Absätze. Ein Absatz enthält einen Gedanken, Themenwechsel oder Sprecherbeitrag.
+- Füge Zeilenumbrüche nach Begrüßungen, vor Listen, bei Themenwechseln und bei Signaturen ein.
+- Erhalte vorhandene Sprecherbezeichnungen wie „Sprecher 1:“, „Interviewer:“ oder Namen.
+- Erhalte vorhandene Zeitstempel exakt.
+- Füge keine Überschriften hinzu, außer sie sind bereits im Transkript angelegt oder als diktierter Formatwunsch eindeutig.
+- Nutze "- " für Listen nur, wenn der Sprecher klar aufzählt.
+
+Zahlen, Daten, Uhrzeiten und Einheiten:
+- Formatiere Zahlen konsistent nach deutscher Schreibweise, wenn der Text deutsch ist: 1.250, 25.000, 1.000.000, 3,5.
+- Verwende Ziffern für Mengen, Preise, Prozentwerte, Maße, Flächen, Zeitangaben, Daten, Telefonnummern, Adressen und technische Werte.
+- Formatiere Geld, Prozent, Daten und Uhrzeiten, wenn eindeutig: fünfzehn Prozent -> 15 %, zweitausend fünfhundert Euro -> 2.500 €, am dritten vierten zwanzig vierundzwanzig -> am 03.04.2024, vierzehn Uhr dreißig -> 14:30 Uhr.
+- Formatiere Einheiten kompakt und professionell: Euro pro Quadratmeter -> €/m², Quadratmeter -> m², Kubikmeter -> m³, Kilometer pro Stunde -> km/h, Kilowattstunden -> kWh, Kilowattstunden pro Quadratmeter und Jahr -> kWh/m²a, Grad Celsius -> °C, Meter -> m, Zentimeter -> cm, Kilogramm -> kg.
+- Setze zwischen Zahl und Einheit ein Leerzeichen, sofern üblich: 25 m², 3,5 kg, 120 km/h, 15 %.
+- Bei zusammengesetzten Einheiten ohne vorangestellte Zahl nutze kompakte Schreibweise: €/m², kWh/m²a.
+
+Transkript:
 ${output}"""
     POST_PROCESSING_ENABLED = (
         str(_json_settings.get("postProcessingEnabled", os.getenv("SCRIBER_POST_PROCESSING_ENABLED", "1")))
@@ -232,10 +256,16 @@ ${output}"""
         or os.getenv("SCRIBER_POST_PROCESSING_PROMPT")
         or _DEFAULT_POST_PROCESSING_PROMPT
     )
+    _configured_post_processing_model = (_json_settings.get("postProcessingModel") or "").strip()
+    _env_post_processing_model = (os.getenv("SCRIBER_POST_PROCESSING_MODEL") or "").strip()
+    if _configured_post_processing_model in _LEGACY_DEFAULT_POST_PROCESSING_MODELS:
+        _configured_post_processing_model = ""
+    if _env_post_processing_model in _LEGACY_DEFAULT_POST_PROCESSING_MODELS:
+        _env_post_processing_model = ""
     POST_PROCESSING_MODEL = (
-        _json_settings.get("postProcessingModel")
-        or os.getenv("SCRIBER_POST_PROCESSING_MODEL")
-        or ""
+        _configured_post_processing_model
+        or _env_post_processing_model
+        or DEFAULT_POST_PROCESSING_MODEL
     )
 
     # OpenAI Speech-to-Text model
@@ -386,7 +416,7 @@ ${output}"""
 
     @classmethod
     def set_post_processing_model(cls, model: str) -> None:
-        cls.POST_PROCESSING_MODEL = model.strip() or cls.SUMMARIZATION_MODEL or cls.DEFAULT_SUMMARIZATION_MODEL
+        cls.POST_PROCESSING_MODEL = model.strip() or cls.DEFAULT_POST_PROCESSING_MODEL
         os.environ["SCRIBER_POST_PROCESSING_MODEL"] = cls.POST_PROCESSING_MODEL
         global _json_settings
         _json_settings["postProcessingModel"] = cls.POST_PROCESSING_MODEL
@@ -442,7 +472,7 @@ ${output}"""
         add("SCRIBER_SUMMARIZATION_MODEL", cls.SUMMARIZATION_MODEL or cls.DEFAULT_SUMMARIZATION_MODEL)
         add("SCRIBER_AUTO_SUMMARIZE", "1" if cls.AUTO_SUMMARIZE else "0")
         add("SCRIBER_POST_PROCESSING_ENABLED", "1" if cls.POST_PROCESSING_ENABLED else "0")
-        add("SCRIBER_POST_PROCESSING_MODEL", cls.POST_PROCESSING_MODEL or cls.SUMMARIZATION_MODEL or cls.DEFAULT_SUMMARIZATION_MODEL)
+        add("SCRIBER_POST_PROCESSING_MODEL", cls.POST_PROCESSING_MODEL or cls.DEFAULT_POST_PROCESSING_MODEL)
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)
         add("SCRIBER_OPENAI_STT_MODEL", cls.OPENAI_STT_MODEL)

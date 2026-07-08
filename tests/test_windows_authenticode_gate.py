@@ -10,6 +10,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTHENTICODE_SCRIPT = REPO_ROOT / "scripts" / "validate_windows_authenticode.ps1"
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_windows.ps1"
+RELEASE_CACHE_KEY_SCRIPT = REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1"
+RESTORE_FFMPEG_PROFILE_SCRIPT = REPO_ROOT / "scripts" / "ffmpeg" / "restore_profile_b_release_artifact.ps1"
+PUBLISH_FFMPEG_PROFILE_SCRIPT = REPO_ROOT / "scripts" / "ffmpeg" / "publish_profile_b_release_artifact.ps1"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
 
 
@@ -34,7 +37,16 @@ def run_powershell(*args: str, env: dict[str, str] | None = None) -> subprocess.
     )
 
 
-@pytest.mark.parametrize("script", [AUTHENTICODE_SCRIPT, BUILD_SCRIPT])
+@pytest.mark.parametrize(
+    "script",
+    [
+        AUTHENTICODE_SCRIPT,
+        BUILD_SCRIPT,
+        RELEASE_CACHE_KEY_SCRIPT,
+        RESTORE_FFMPEG_PROFILE_SCRIPT,
+        PUBLISH_FFMPEG_PROFILE_SCRIPT,
+    ],
+)
 def test_release_powershell_scripts_parse(script: Path) -> None:
     command = (
         "$tokens = $null; "

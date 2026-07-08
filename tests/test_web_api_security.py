@@ -555,6 +555,26 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
         assert support.status == 200
         assert (await support.read()).startswith(b"PK")
 
+        post_processing_unauthorized = await client.get("/api/runtime/post-processing-diagnostics")
+        assert post_processing_unauthorized.status == 401
+
+        ctl._record_post_processing_diagnostic(
+            {
+                "sessionIdPrefix": "abcdef12",
+                "model": "google/gemini-2.5-flash-lite:nitro",
+                "status": "success",
+                "rawChars": 12,
+            }
+        )
+        post_processing = await client.get(
+            "/api/runtime/post-processing-diagnostics?limit=5",
+            headers={"X-Scriber-Token": "secret"},
+        )
+        assert post_processing.status == 200
+        post_processing_payload = await post_processing.json()
+        assert post_processing_payload["apiVersion"] == "1"
+        assert post_processing_payload["latest"]["sessionIdPrefix"] == "abcdef12"
+
         logs_unauthorized = await client.get("/api/runtime/logs")
         assert logs_unauthorized.status == 401
 
@@ -1079,6 +1099,11 @@ def test_validate_summarization_model_accepts_known_prefixes():
     assert web_api._validate_summarization_model("gemini-flash-latest") == "gemini-flash-latest"
     assert web_api._validate_summarization_model("gemini-3.5-flash") == "gemini-3.5-flash"
     assert web_api._validate_summarization_model("gpt-5-mini") == "gpt-5-mini"
+    assert (
+        web_api._validate_summarization_model("google/gemini-2.5-flash-lite:nitro")
+        == "google/gemini-2.5-flash-lite:nitro"
+    )
+    assert web_api._validate_summarization_model("openai/gpt-oss-120b") == "openai/gpt-oss-120b"
 
 
 def test_validate_summarization_model_rejects_invalid_prefix():

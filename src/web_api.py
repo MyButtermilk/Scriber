@@ -9,6 +9,7 @@ import re
 import signal
 import time
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -69,7 +70,7 @@ from src.mic_prewarm import RustAudioPrewarmManager
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
 from src.runtime.debug_logs import clear_debug_logs, collect_debug_logs
-from src.runtime.support_bundle import create_support_bundle
+from src.runtime.support_bundle import create_support_bundle, redact_text
 from src.version import app_version
 from src.youtube_api import (
     UNSUPPORTED_YOUTUBE_URL_MESSAGE,
@@ -173,7 +174,7 @@ _ALLOWED_UPLOAD_EXTENSIONS = _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS
 _VALID_STT_SERVICES = frozenset(Config.SERVICE_LABELS.keys())
 _VALID_MODES = {"toggle", "push_to_talk"}
 _VALID_SONIOX_MODES = {"realtime", "async"}
-_VALID_SUMMARIZATION_MODEL_PREFIXES = ("gemini-", "gpt-", "minimax/", "z-ai/")
+_VALID_SUMMARIZATION_MODEL_PREFIXES = ("gemini-", "gpt-", "google/", "minimax/", "openai/", "z-ai/")
 _INPUT_WARNING_CODE_LOW_LEVEL = "mic_level_very_low"
 _SETTINGS_URI_SOUND = "ms-settings:sound"
 _SETTINGS_URI_SOUND_INPUT_PROPERTIES = "ms-settings:sound-defaultinputproperties"
@@ -1585,6 +1586,8 @@ class ScriberWebController:
         self._started_at_monotonic = time.monotonic()
         self._session_id: str | None = None
         self._post_processing_session_ids: set[str] = set()
+        self._post_processing_diagnostics: deque[dict[str, Any]] = deque(maxlen=30)
+        self._post_processing_diagnostics_lock = threading.Lock()
         self._recording_state_machine = RecordingStateMachine()
         self._hot_path_tracers: dict[str, HotPathTracer] = {}
         self._hot_path_reports_emitted: set[str] = set()
@@ -3151,7 +3154,57 @@ class ScriberWebController:
             "summary": summary,
             "items": items,
             "activeItems": active_items,
+            "postProcessing": self.get_post_processing_diagnostics(limit=min(query_limit, 30)),
             "includeActive": bool(include_active),
+            "limit": query_limit,
+        }
+
+    @staticmethod
+    def _post_processing_error_summary(exc: Exception) -> str:
+        message = redact_text(str(exc) or exc.__class__.__name__).replace("\n", " ").strip()
+        return message[:240]
+
+    def _record_post_processing_diagnostic(self, entry: dict[str, Any]) -> None:
+        allowed = {
+            "apiVersion",
+            "createdAt",
+            "durationMs",
+            "error",
+            "errorType",
+            "fallbackToRaw",
+            "maxOutputTokens",
+            "model",
+            "outputChanged",
+            "postProcessed",
+            "promptChars",
+            "processedChars",
+            "provider",
+            "providerResponseChars",
+            "rawChars",
+            "rawWords",
+            "sessionIdPrefix",
+            "status",
+            "transcriptId",
+        }
+        sanitized = {key: copy.deepcopy(value) for key, value in entry.items() if key in allowed}
+        sanitized.setdefault("apiVersion", _API_VERSION)
+        sanitized.setdefault(
+            "createdAt",
+            datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        )
+        with self._post_processing_diagnostics_lock:
+            self._post_processing_diagnostics.appendleft(sanitized)
+
+    def get_post_processing_diagnostics(self, *, limit: int = 20) -> dict[str, Any]:
+        query_limit = max(1, min(30, int(limit)))
+        with self._post_processing_diagnostics_lock:
+            items = [copy.deepcopy(item) for item in list(self._post_processing_diagnostics)[:query_limit]]
+            total_count = len(self._post_processing_diagnostics)
+        return {
+            "apiVersion": _API_VERSION,
+            "items": items,
+            "latest": items[0] if items else None,
+            "count": total_count,
             "limit": query_limit,
         }
 
@@ -3548,6 +3601,21 @@ class ScriberWebController:
             return
 
         await self.broadcast(status_event("Post-processing...", False, session_id=session_id))
+        selected_model = Config.POST_PROCESSING_MODEL or Config.DEFAULT_POST_PROCESSING_MODEL
+        diagnostic: dict[str, Any] = {
+            "apiVersion": _API_VERSION,
+            "createdAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "sessionIdPrefix": (session_id or "")[:8],
+            "transcriptId": str(record.id or ""),
+            "provider": provider,
+            "model": selected_model,
+            "status": "started",
+            "rawChars": len(raw_text),
+            "rawWords": len(raw_text.split()),
+            "fallbackToRaw": False,
+            "postProcessed": False,
+        }
+        self._mark_hot_path(session_id, "post_processing_started")
         self._emit_workflow_event(
             message="Live mic post-processing started",
             event="post_processing.started",
@@ -3559,18 +3627,41 @@ class ScriberWebController:
             provider=provider,
             milestone=True,
             outcome="started",
-            meta={"model": Config.POST_PROCESSING_MODEL or Config.SUMMARIZATION_MODEL},
+            meta={
+                "model": selected_model,
+                "raw_chars": len(raw_text),
+                "raw_words": len(raw_text.split()),
+            },
         )
 
         post_processed = False
+        processing_diagnostics: dict[str, Any] = {}
         try:
             from src.post_processing import post_process_live_transcript
 
             started = time.monotonic()
-            processed_text = await post_process_live_transcript(raw_text)
+            processed_text = await post_process_live_transcript(
+                raw_text,
+                model=selected_model,
+                diagnostics=processing_diagnostics,
+            )
             if processed_text.strip():
                 record.replace_content(processed_text)
                 post_processed = True
+            duration_ms = (time.monotonic() - started) * 1000
+            self._mark_hot_path(session_id, "post_processing_done")
+            diagnostic.update(
+                {
+                    "status": "success" if post_processed else "empty_output",
+                    "durationMs": processing_diagnostics.get("durationMs", duration_ms),
+                    "maxOutputTokens": processing_diagnostics.get("maxOutputTokens"),
+                    "promptChars": processing_diagnostics.get("promptChars"),
+                    "providerResponseChars": processing_diagnostics.get("providerResponseChars"),
+                    "processedChars": len(record.content_text()),
+                    "outputChanged": processing_diagnostics.get("outputChanged"),
+                    "postProcessed": post_processed,
+                }
+            )
             self._emit_workflow_event(
                 message="Live mic post-processing completed",
                 event="post_processing.completed",
@@ -3581,11 +3672,32 @@ class ScriberWebController:
                 record=record,
                 provider=provider,
                 milestone=True,
-                duration_ms=(time.monotonic() - started) * 1000,
+                duration_ms=duration_ms,
                 outcome="success",
-                meta={"raw_chars": len(raw_text), "processed_chars": len(record.content_text())},
+                meta={
+                    "model": selected_model,
+                    "raw_chars": len(raw_text),
+                    "raw_words": len(raw_text.split()),
+                    "processed_chars": len(record.content_text()),
+                    "provider_response_chars": processing_diagnostics.get("providerResponseChars"),
+                    "prompt_chars": processing_diagnostics.get("promptChars"),
+                    "max_output_tokens": processing_diagnostics.get("maxOutputTokens"),
+                    "output_changed": processing_diagnostics.get("outputChanged"),
+                },
             )
         except Exception as exc:
+            self._mark_hot_path(session_id, "post_processing_failed")
+            diagnostic.update(
+                {
+                    "status": "failure",
+                    "fallbackToRaw": True,
+                    "postProcessed": False,
+                    "errorType": exc.__class__.__name__,
+                    "error": self._post_processing_error_summary(exc),
+                    "promptChars": processing_diagnostics.get("promptChars"),
+                    "maxOutputTokens": processing_diagnostics.get("maxOutputTokens"),
+                }
+            )
             logger.warning(f"Live mic post-processing failed; inserting raw transcript: {exc}")
             await self.broadcast(
                 status_event("Post-processing failed; inserting raw transcript", False, session_id=session_id)
@@ -3602,8 +3714,19 @@ class ScriberWebController:
                 provider=provider,
                 milestone=True,
                 outcome="failure",
-                meta={"error": str(exc)[:240], "raw_chars": len(raw_text)},
+                meta={
+                    "model": selected_model,
+                    "error": self._post_processing_error_summary(exc),
+                    "error_type": exc.__class__.__name__,
+                    "raw_chars": len(raw_text),
+                    "raw_words": len(raw_text.split()),
+                    "prompt_chars": processing_diagnostics.get("promptChars"),
+                    "max_output_tokens": processing_diagnostics.get("maxOutputTokens"),
+                    "fallback_to_raw": True,
+                },
             )
+        finally:
+            self._record_post_processing_diagnostic(diagnostic)
 
         await self._inject_live_transcript_text(
             record.content_text() or raw_text,
@@ -4359,6 +4482,8 @@ class ScriberWebController:
             # Don't start if already listening or if stop is in progress
             if self._is_listening or self._is_stopping:
                 return None
+
+            self._post_processing_session_ids.clear()
 
             live_provider: str | None = None
             try:
@@ -5134,7 +5259,12 @@ class ScriberWebController:
                     Config.HOTKEY,
                     self._dispatch_hotkey_toggle,
                 )
-                if Config.POST_PROCESSING_ENABLED and Config.POST_PROCESSING_HOTKEY:
+                post_processing_hotkey_enabled = (
+                    Config.POST_PROCESSING_ENABLED
+                    and bool(Config.POST_PROCESSING_HOTKEY)
+                    and Config.POST_PROCESSING_HOTKEY != Config.HOTKEY
+                )
+                if post_processing_hotkey_enabled:
                     kb.add_hotkey(
                         Config.POST_PROCESSING_HOTKEY,
                         self._dispatch_post_processing_hotkey_toggle,
@@ -5144,7 +5274,7 @@ class ScriberWebController:
                     name="toggle_hotkey_poll",
                 )
                 logger.info(f"Hotkey registered: {Config.HOTKEY} (Toggle)")
-                if Config.POST_PROCESSING_ENABLED and Config.POST_PROCESSING_HOTKEY:
+                if post_processing_hotkey_enabled:
                     logger.info(
                         f"Post-processing hotkey registered: {Config.POST_PROCESSING_HOTKEY} (Toggle)"
                     )
@@ -5318,7 +5448,7 @@ class ScriberWebController:
             "postProcessingHotkey": _hotkey_to_display(Config.POST_PROCESSING_HOTKEY),
             "postProcessingHotkeyRaw": Config.POST_PROCESSING_HOTKEY,
             "postProcessingPrompt": Config.POST_PROCESSING_PROMPT or Config._DEFAULT_POST_PROCESSING_PROMPT,
-            "postProcessingModel": Config.POST_PROCESSING_MODEL or Config.SUMMARIZATION_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL,
+            "postProcessingModel": Config.POST_PROCESSING_MODEL or Config.DEFAULT_POST_PROCESSING_MODEL,
             "openaiSttModel": Config.OPENAI_STT_MODEL,
             "onnxModel": Config.ONNX_MODEL,
             "onnxQuantization": Config.ONNX_QUANTIZATION,
@@ -5930,6 +6060,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         return web.json_response(ctl.get_audio_diagnostics())
 
+    async def get_post_processing_diagnostics(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        try:
+            limit = int(request.query.get("limit", "20"))
+        except ValueError:
+            limit = 20
+        return web.json_response(ctl.get_post_processing_diagnostics(limit=limit))
+
     async def get_runtime_logs(request: web.Request):
         try:
             limit = int(request.query.get("limit", "500"))
@@ -5976,6 +6114,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 runtime_info=ctl.get_runtime_info(),
                 app_state=ctl.get_state(),
                 audio_diagnostics=ctl.get_audio_diagnostics(),
+                post_processing_diagnostics=ctl.get_post_processing_diagnostics(limit=30),
             )
         except Exception:
             logger.exception("Failed to create support bundle")
@@ -6725,6 +6864,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/runtime/frontend-ready", get_frontend_ready)
     app.router.add_post("/api/runtime/frontend-ready", post_frontend_ready)
     app.router.add_get("/api/runtime/audio-diagnostics", get_audio_diagnostics)
+    app.router.add_get("/api/runtime/post-processing-diagnostics", get_post_processing_diagnostics)
     app.router.add_get("/api/runtime/logs", get_runtime_logs)
     app.router.add_delete("/api/runtime/logs", delete_runtime_logs)
     app.router.add_post("/api/runtime/shutdown", shutdown_runtime)

@@ -305,6 +305,49 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
     assert shell_ipc["lastResponse"]["payload"]["foregroundBefore"]["titleHash"] == "title-hash"
 
 
+def test_support_bundle_includes_post_processing_diagnostics(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    logs_dir = data_dir / "logs"
+    repo_dir = tmp_path / "repo"
+    logs_dir.mkdir(parents=True)
+    repo_dir.mkdir()
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(data_dir))
+    monkeypatch.setattr(support_bundle, "repo_root", lambda: repo_dir)
+
+    bundle = create_support_bundle(
+        runtime_info={
+            "apiVersion": "1",
+            "runtimeMode": "tauri-supervised",
+            "launchKind": "sidecar",
+            "pid": 123,
+        },
+        app_state={"recordingState": "idle"},
+        post_processing_diagnostics={
+            "apiVersion": "1",
+            "items": [
+                {
+                    "sessionIdPrefix": "abcdef12",
+                    "model": "google/gemini-2.5-flash-lite:nitro",
+                    "status": "failure",
+                    "rawChars": 123,
+                    "promptChars": 1800,
+                    "error": "OPENAI_API_KEY=secret-value failed",
+                }
+            ],
+        },
+    )
+
+    with zipfile.ZipFile(bundle) as zf:
+        names = set(zf.namelist())
+        payload = json.loads(zf.read("post-processing-diagnostics.redacted.json"))
+        combined = "\n".join(zf.read(name).decode("utf-8", errors="replace") for name in names)
+
+    assert "post-processing-diagnostics.redacted.json" in names
+    assert payload["items"][0]["model"] == "google/gemini-2.5-flash-lite:nitro"
+    assert payload["items"][0]["error"] == "OPENAI_API_KEY=[REDACTED] failed"
+    assert "secret-value" not in combined
+
+
 def test_support_bundle_respects_runtime_log_clear_marker(monkeypatch, tmp_path):
     data_dir = tmp_path / "data"
     logs_dir = data_dir / "logs"

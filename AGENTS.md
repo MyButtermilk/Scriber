@@ -304,9 +304,11 @@ Packaging and scripts:
   Pipecat provider extras. Keep `google-generativeai` and Google Cloud
   Text-to-Speech out of the standard sidecar unless a product path is
   reintroduced that actually imports them. Gemini summarization uses direct
-  HTTP. OpenRouter summarization uses direct HTTP chat completions with
-  `:nitro` model variants for throughput-sorted provider routing, and is the
-  automatic summary fallback when configured. Google Cloud STT uses
+  HTTP. OpenRouter summarization and post-processing use direct HTTP chat
+  completions. Most OpenRouter fallback models use `:nitro` variants for
+  throughput-sorted provider routing; `openai/gpt-oss-120b` is the live
+  post-processing default and must be routed with OpenRouter provider order
+  `baseten,cerebras` instead of adding `:nitro`. Google Cloud STT uses
   `google-cloud-speech` plus Pipecat's required `google-genai` namespace
   dependency, OpenAI STT uses the explicit `openai`
   SDK dependency, Groq STT uses Pipecat's `groq` SDK dependency, and Pipecat
@@ -334,11 +336,16 @@ Packaging and scripts:
 - Legacy runtime data migration must not overwrite existing app-data files.
 - Support bundles must redact API keys, session tokens, bearer tokens, and known
   secret patterns.
+- Post-processing diagnostics are redacted runtime metadata only. They may
+  include model, prompt/output sizes, duration, status, and sanitized error type
+  or message, but must never include raw transcript text or processed output.
 - Backend logs: `logs\tauri-backend.log`.
 - Shell logs: `logs\tauri-shell.log`.
 - Crash metadata: `logs\backend-crash-metadata.jsonl`.
 - Debug console uses `/api/runtime/logs`, `DELETE /api/runtime/logs`, and
-  `/api/runtime/support-bundle`.
+  `/api/runtime/support-bundle`; post-processing debug state is exposed through
+  `/api/runtime/post-processing-diagnostics` and the `postProcessing` hot-path
+  metrics snapshot.
 
 ## Performance Status To Preserve
 
@@ -362,6 +369,13 @@ Already implemented and should not be regressed:
 - Rust audio sidecar hash cache that avoids recompiling when inputs are
   unchanged; the cache key is limited to the Rust audio sidecar dependency set,
   and the normal Tauri Cargo target is used by default.
+- Release workflow cache keys normalize app-version-only files before hashing
+  dependency/build caches, so patch version bumps do not invalidate frontend,
+  Rust, or backend scratch caches without real input changes.
+- FFmpeg Profile B release builds restore from Actions cache first, then from
+  the internal reusable GitHub release artifact `ffmpeg-profile-b-n7.0-v2`, and
+  rebuild through MSYS2 only when restored Profile B tools are absent or fail
+  validation.
 - Profile B ffmpeg media tools, about `4.98 MiB` installed.
 
 ## Commands

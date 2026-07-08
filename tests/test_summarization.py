@@ -86,6 +86,30 @@ def test_openrouter_payload_normalizes_models_to_nitro():
     assert payload["reasoning"] == {"exclude": True, "effort": "medium"}
 
 
+def test_openrouter_payload_routes_gpt_oss_120b_to_baseten_first():
+    payload = summarization._build_openrouter_payload(
+        "prompt",
+        "openai/gpt-oss-120b",
+        2048,
+    )
+
+    assert payload["model"] == "openai/gpt-oss-120b"
+    assert payload["provider"] == {"order": ["baseten", "cerebras"], "allow_fallbacks": True}
+    assert ":nitro" not in payload["model"]
+
+
+def test_openrouter_payload_allows_gpt_oss_provider_order_override(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SCRIBER_OPENROUTER_GPT_OSS_120B_PROVIDERS", "cerebras,baseten")
+
+    payload = summarization._build_openrouter_payload(
+        "prompt",
+        "openai/gpt-oss-120b",
+        2048,
+    )
+
+    assert payload["provider"] == {"order": ["cerebras", "baseten"], "allow_fallbacks": True}
+
+
 def test_openrouter_reasoning_effort_is_only_sent_when_explicit(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", raising=False)
     assert summarization._openrouter_reasoning_config() == {"exclude": True, "effort": "medium"}
@@ -254,6 +278,23 @@ async def test_summarize_text_openrouter_model_uses_nitro(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
+async def test_summarize_text_gpt_oss_120b_keeps_provider_routed_model(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _fake_openrouter(_prompt: str, models, _max_output_tokens: int) -> str:
+        captured["models"] = models
+        return "openrouter summary"
+
+    monkeypatch.setattr(summarization, "_summarize_openrouter", _fake_openrouter)
+
+    out = await summarization.summarize_text("x y z", model="openai/gpt-oss-120b")
+
+    assert out == "openrouter summary"
+    assert captured["models"] == "openai/gpt-oss-120b"
+
+
+@pytest.mark.asyncio
 async def test_summarize_openrouter_retries_empty_selected_model_with_default_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -294,6 +335,48 @@ async def test_summarize_openrouter_retries_empty_selected_model_with_default_fa
     assert calls[0]["max_tokens"] == 900
     assert calls[0]["reasoning"] == {"exclude": True, "effort": "medium"}
     assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
+
+
+@pytest.mark.asyncio
+async def test_summarize_openrouter_uses_gpt_oss_provider_route_before_default_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _fake_post(payload, _headers, _timeout):
+        calls.append(payload)
+        if len(calls) == 1:
+            return {
+                "model": "openai/gpt-oss-120b",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "native_finish_reason": "stop",
+                        "message": {"role": "assistant", "content": ""},
+                    }
+                ],
+            }
+        return {
+            "model": "minimax/minimax-m3:nitro",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "fallback summary"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    out = await summarization._summarize_openrouter("prompt", "openai/gpt-oss-120b", 900)
+
+    assert out == "fallback summary"
+    assert calls[0]["model"] == "openai/gpt-oss-120b"
+    assert calls[0]["provider"] == {"order": ["baseten", "cerebras"], "allow_fallbacks": True}
+    assert calls[1]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
+    assert "provider" not in calls[1]
 
 
 @pytest.mark.asyncio

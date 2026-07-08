@@ -152,7 +152,7 @@ def test_settings_provider_help_links_are_safe_external_links() -> None:
     assert "await openUrl(url);" in source
     assert 'value: "minimax/minimax-m3:nitro"' in source
     assert 'value: "z-ai/glm-5.2:nitro"' in source
-    assert "OpenRouter API Key" in source
+    assert 'provider="OpenRouter"' in source
     assert 'if (provider === "OpenRouter") apiKeys.openrouter = openRouterKey;' in source
 
 
@@ -470,10 +470,14 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "Download support bundle" in debug_source
     assert "Support bundle downloaded as ${filename}. Check your Downloads folder." in debug_source
     assert "was saved by the browser download manager" in debug_source
+    assert "/api/runtime/post-processing-diagnostics?limit=8" in debug_source
+    assert "Post-processing diagnostics" in debug_source
+    assert "Raw fallback" in debug_source
     assert 'className="compact-impact-switch"' in debug_source
 
     assert "settings-page" in settings_source
-    assert "settings-control-row" in settings_source
+    assert "function SettingLine" in settings_source
+    assert "sm:grid-cols-[minmax(0,1fr)_minmax(150px,220px)]" in settings_source
     assert "settings-page .impact-echo-switch" in css
     assert "--impact-switch-track-width: 64px" in css
     assert ".debug-console-actions" in css
@@ -610,7 +614,12 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     ).read_text(encoding="utf-8")
 
     assert "const POST_PROCESSING_MODEL_OPTIONS" in settings_source
-    assert 'const DEFAULT_POST_PROCESSING_MODEL = "gpt-5-nano";' in settings_source
+    assert 'const DEFAULT_POST_PROCESSING_MODEL = "openai/gpt-oss-120b";' in settings_source
+    assert 'value: "openai/gpt-oss-120b"' in settings_source
+    assert "GPT-OSS 120B Baseten" in settings_source
+    assert "Default OpenRouter route: Baseten, Cerebras fallback" in settings_source
+    assert 'value: "google/gemini-2.5-flash-lite:nitro"' in settings_source
+    assert "Low-cost OpenRouter route" in settings_source
     assert "const [postProcessingModel, setPostProcessingModel]" in settings_source
     assert "setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);" in settings_source
     assert "const handlePostProcessingModelChange = async (value: string)" in settings_source
@@ -619,8 +628,68 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert 'value={postProcessingModel}' in settings_source
     assert "onValueChange={(value) => void handlePostProcessingModelChange(value)}" in settings_source
     assert "POST_PROCESSING_MODEL_OPTIONS.map((option)" in settings_source
-    assert "<SelectItem key={option.value} value={option.value}>" in settings_source
+    assert "<SelectItem key={option.value} value={option.value} disabled={Boolean(disabledReason)}>" in settings_source
     assert "Use a low-cost, low-latency model for simple dictation cleanup." in settings_source
+    assert "Beantworte keine Fragen im Transkript." in settings_source
+    assert "Gliedere den Text in sinnvolle Absätze." in settings_source
+    assert "Entferne Füllwörter" in settings_source
+    assert "zweitausend fünfhundert Euro -> 2.500 €" in settings_source
+    assert "Euro pro Quadratmeter -> €/m²" in settings_source
+    assert "Kilowattstunden pro Quadratmeter und Jahr -> kWh/m²a" in settings_source
+
+
+def test_settings_model_choices_require_saved_api_keys() -> None:
+    settings_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "type CredentialRequirement" in settings_source
+    assert "savedKeys[provider] === true" in settings_source
+    assert "const requiredCredentialForTranscriptionModel = (model: string)" in settings_source
+    assert "const requiredCredentialForLanguageModel = (model: string)" in settings_source
+    assert "const missingCredentialReason = (requirement: CredentialRequirement | null)" in settings_source
+    assert 'title: "API key required"' in settings_source
+    assert "must be saved below before this model can be selected." in settings_source
+    assert "disabled={Boolean(disabledReason)}" in settings_source
+    assert "<SelectItem key={option.value} value={option.value} disabled={Boolean(disabledReason)}>" in settings_source
+    assert "Save the {missingPostProcessingCredentialRequirement.label} below before using the selected cleanup model." in settings_source
+    assert "API key required before model selection." in settings_source
+    assert "setSavedKeys({" in settings_source
+    assert 'OpenRouter: hasValue(keys.openrouter)' in settings_source
+
+
+def test_settings_custom_vocabulary_autosaves_without_manual_button() -> None:
+    settings_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "Save vocabulary" not in settings_source
+    assert "const savedCustomVocabularyRef = useRef(\"\");" in settings_source
+    assert "const saveCustomVocabulary = useCallback(async (nextValue: string)" in settings_source
+    assert "window.setTimeout(() => {" in settings_source
+    assert "void saveCustomVocabulary(customVocabulary);" in settings_source
+    assert "await saveCustomVocabulary(customVocabulary);" in settings_source
+
+
+def test_settings_embeds_local_model_management_in_local_provider_group() -> None:
+    settings_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "Local model files" not in settings_source
+    assert "const activeLocalModelSettings =" in settings_source
+    assert 'group.key === "local" && activeLocalModelSettings' in settings_source
+    assert "{localModelManagement}" not in settings_source
+
+
+def test_settings_summary_model_groups_do_not_render_secondary_descriptions() -> None:
+    settings_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "Fast Google summaries." not in settings_source
+    assert "Nitro routes for long output." not in settings_source
+    assert "OpenAI summary models." not in settings_source
 
 
 def test_tray_panel_exposes_direct_update_install_action() -> None:

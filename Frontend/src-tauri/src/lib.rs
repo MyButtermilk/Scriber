@@ -429,6 +429,8 @@ impl DesktopHotkeyState {
         message: String,
     ) {
         if let Ok(mut state) = self.inner.lock() {
+            let post_processing_enabled =
+                post_processing_enabled && !post_processing_hotkey.is_empty() && post_processing_hotkey != hotkey;
             state.registered_hotkey_id = shortcut_id_for_hotkey(&hotkey);
             state.registered_hotkey = Some(hotkey);
             state.post_processing_hotkey_id = if post_processing_enabled {
@@ -437,7 +439,7 @@ impl DesktopHotkeyState {
                 None
             };
             state.post_processing_hotkey =
-                if post_processing_enabled && !post_processing_hotkey.is_empty() {
+                if post_processing_enabled {
                     Some(post_processing_hotkey)
                 } else {
                     None
@@ -526,8 +528,9 @@ impl DesktopHotkeyState {
             return None;
         }
         let is_primary = state.registered_hotkey_id == Some(shortcut_id);
-        let is_post_processing =
-            state.post_processing_enabled && state.post_processing_hotkey_id == Some(shortcut_id);
+        let is_post_processing = state.post_processing_enabled
+            && state.post_processing_hotkey_id == Some(shortcut_id)
+            && state.registered_hotkey_id != Some(shortcut_id);
         if !is_primary && !is_post_processing {
             return None;
         }
@@ -4201,6 +4204,25 @@ mod tests {
                 now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1),
             ),
             Some("/api/live-mic/start")
+        );
+    }
+
+    #[test]
+    fn desktop_hotkey_primary_wins_when_post_processing_hotkey_matches_primary() {
+        let state = DesktopHotkeyState::new();
+        let primary_id = shortcut_id_for_hotkey("ctrl+alt+s").unwrap();
+        state.set_registered(
+            "ctrl+alt+s".to_string(),
+            "ctrl+alt+s".to_string(),
+            true,
+            "toggle".to_string(),
+            "registered".to_string(),
+        );
+        let status = state.status();
+        assert_eq!(status.post_processing_hotkey, "");
+        assert_eq!(
+            state.action_for_event(primary_id, ShortcutState::Pressed, Instant::now()),
+            Some("/api/live-mic/toggle")
         );
     }
 

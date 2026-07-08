@@ -96,7 +96,9 @@ Performance/packaging:
   Settings payload typing, and Rust global-hotkey dispatch tests. The expected
   behavior is a second shortcut that posts to
   `/api/live-mic/toggle-post-processing`; the normal shortcut must keep plain
-  output.
+  output. Debug coverage should also verify that post-processing diagnostics are
+  exposed only as redacted metadata through the Debug Console, hot-path metrics,
+  and support bundles.
 
 ## Installer Builds
 
@@ -491,6 +493,10 @@ Support bundle smoke verifies:
 - redacted audio/text-injection diagnostics, including the latest sanitized
   Tauri `injectText` attempt when present, and Shell IPC transport failures do
   not leak raw pipe names or session tokens,
+- redacted post-processing diagnostics in
+  `post-processing-diagnostics.redacted.json`, including status, model,
+  duration, size counters, and sanitized errors without raw transcript text or
+  processed output,
 - support-bundle text redaction removes raw Scriber Shell IPC named-pipe paths
   from env files and logs; the installed support-bundle smoke injects a dummy
   Shell IPC pipe path and fails if any raw `scriber-shell-*` pipe remains,
@@ -530,10 +536,18 @@ the workflows do not fall back to deprecated Node action runtimes.
 It:
 
 - sets up Python, Node, Rust, and MSYS2/UCRT64,
+- runs on `main` pushes as a cache-warming build and on `v*` tags as the signed
+  updater release path,
+- computes normalized release cache key files before dependency setup so
+  version-only changes in `package-lock.json`, `Cargo.toml`, `Cargo.lock`, and
+  `src/version.py` do not invalidate dependency caches that do not actually
+  depend on the app version,
 - restores release caches for Python `.venv`, Python wheels, frontend
   `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools,
-- validates restored Profile B media tools before reuse and builds FFmpeg
-  Profile B only when no restored output passes validation,
+- restores Profile B from a reusable GitHub release artifact when the
+  per-ref Actions cache is cold, validates restored Profile B media tools before
+  reuse, and builds FFmpeg Profile B only when neither restored source passes
+  validation,
 - passes the produced media tools to `scripts/build_windows.ps1`,
 - skips the full Python unit suite in the packaging step; run it before release
   or through PR/readiness gates. The release workflow therefore installs
@@ -543,6 +557,20 @@ It:
 - uploads or publishes NSIS artifacts and release metadata,
 - optionally validates Authenticode signatures and Tauri updater metadata when
   signing/updater secrets are configured.
+
+`scripts\ci\write_release_cache_keys.ps1` writes the normalized key inputs used
+by the release workflow. Keep this normalization in place when changing release
+version files; otherwise patch-only version bumps will cause avoidable cache
+misses for frontend dependencies, Rust build outputs, and backend sidecar
+scratch caches.
+
+The reusable FFmpeg Profile B artifact is published to the internal prerelease
+tag `ffmpeg-profile-b-n7.0-v2` as
+`scriber-ffmpeg-profile-b-n7.0-v2-Windows.zip`. That asset is not an app
+release. It is only a fallback source for future release builds when GitHub
+Actions cache scope isolation prevents a new tag from seeing a previously saved
+cache. Every restored copy is still validated with the Profile B manifest and
+media-preparation smoke before it can be bundled.
 
 ## Signing And Updater Status
 

@@ -318,17 +318,44 @@ def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> N
 def test_release_workflow_uses_incremental_dependency_caches() -> None:
     workflow = read_script(".github/workflows/release-windows.yml")
 
+    assert "branches:\n      - main" in workflow
+    assert "Compute release cache keys" in workflow
+    assert "scripts\\ci\\write_release_cache_keys.ps1" in workflow
+    assert "build/cache-keys/frontend-dependencies.txt" in workflow
+    assert "build/cache-keys/rust-release.txt" in workflow
+    assert "build/cache-keys/backend-sidecar.txt" in workflow
     assert "Restore Python wheelhouse cache" in workflow
     assert "scriber-python-wheelhouse-" in workflow
     assert "pip download --dest $wheelhouse --prefer-binary" in workflow
     assert "requirements-dev.txt" not in workflow
     assert "npm ci --prefer-offline --no-audit --fund=false" in workflow
+    assert "cache-dependency-path: build/cache-keys/frontend-dependencies.txt" in workflow
     assert "Resolve cached FFmpeg Profile B media tools" in workflow
+    assert "Restore FFmpeg Profile B release artifact" in workflow
+    assert "Publish FFmpeg Profile B release artifact" in workflow
+    assert "restore_profile_b_release_artifact.ps1" in workflow
+    assert "publish_profile_b_release_artifact.ps1" in workflow
+    assert "ffmpeg-profile-b-n7.0-v2" in workflow
+    assert "FFmpeg Profile B release artifact restored" in workflow
+    assert "mode = \"release-artifact\"" in workflow
     assert "ffmpeg-profile-b-resolve.outputs.usable != 'true'" in workflow
     assert "Restored Profile B media tools were not usable" in workflow
     assert "scriber-ffmpeg-profile-b-msys2-n7.0-v2-" in workflow
     assert "Restore backend sidecar cache" in workflow
     assert "Report release cache hits" in workflow
+
+
+def test_release_cache_key_script_normalizes_version_only_churn() -> None:
+    script = read_script("scripts/ci/write_release_cache_keys.ps1")
+
+    assert "frontend-dependencies.txt" in script
+    assert "rust-release.txt" in script
+    assert "backend-sidecar.txt" in script
+    assert "__app_version__" in script
+    assert "Normalize-FirstJsonVersionProperties" in script
+    assert "Normalize-CargoToml" in script
+    assert "Normalize-CargoLock" in script
+    assert "Normalize-PythonVersionFile" in script
 
 
 def test_native_recording_overlay_is_tauri_owned() -> None:

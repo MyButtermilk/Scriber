@@ -144,6 +144,7 @@ def _write_runtime_files(
     runtime_info: dict[str, Any],
     app_state: dict[str, Any],
     audio_diagnostics: dict[str, Any] | None = None,
+    post_processing_diagnostics: dict[str, Any] | None = None,
 ) -> None:
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     _write_json(
@@ -168,6 +169,8 @@ def _write_runtime_files(
     _write_json(zf, "state.redacted.json", _safe_state(app_state))
     if audio_diagnostics is not None:
         _write_json(zf, "audio-diagnostics.redacted.json", audio_diagnostics)
+    if post_processing_diagnostics is not None:
+        _write_json(zf, "post-processing-diagnostics.redacted.json", post_processing_diagnostics)
     _write_json(zf, "environment.redacted.json", _redacted_environment())
 
 
@@ -224,6 +227,7 @@ def create_support_bundle(
     runtime_info: dict[str, Any],
     app_state: dict[str, Any],
     audio_diagnostics: dict[str, Any] | None = None,
+    post_processing_diagnostics: dict[str, Any] | None = None,
     output_dir: Path | None = None,
 ) -> Path:
     target_dir = output_dir or support_bundles_dir()
@@ -237,6 +241,7 @@ def create_support_bundle(
             runtime_info=runtime_info,
             app_state=app_state,
             audio_diagnostics=audio_diagnostics,
+            post_processing_diagnostics=post_processing_diagnostics,
         )
         _write_config_files(zf)
         _write_log_files(zf)

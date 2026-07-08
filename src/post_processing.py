@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import time
+from typing import Any
 
 from loguru import logger
 
@@ -39,26 +41,63 @@ def post_processing_output_token_budget(raw_text: str) -> int:
     return max(minimum, min(maximum, estimated))
 
 
-async def post_process_live_transcript(raw_text: str, *, model: str | None = None) -> str:
+async def post_process_live_transcript(
+    raw_text: str,
+    *,
+    model: str | None = None,
+    diagnostics: dict[str, Any] | None = None,
+) -> str:
     """Clean live-mic transcript text before insertion into the active app."""
     transcript = (raw_text or "").strip()
     if not transcript:
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "status": "skipped",
+                    "skipReason": "empty_input",
+                    "rawChars": 0,
+                    "rawWords": 0,
+                }
+            )
         return ""
-    selected_model = model or Config.POST_PROCESSING_MODEL or Config.SUMMARIZATION_MODEL
+    selected_model = model or Config.POST_PROCESSING_MODEL or Config.DEFAULT_POST_PROCESSING_MODEL
     prompt = build_post_processing_prompt(transcript)
     max_output_tokens = post_processing_output_token_budget(transcript)
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "status": "started",
+                "model": selected_model,
+                "rawChars": len(transcript),
+                "rawWords": len(transcript.split()),
+                "promptChars": len(prompt),
+                "maxOutputTokens": max_output_tokens,
+            }
+        )
     logger.info(
         "Post-processing live transcript with {} ({} chars, max_output_tokens={})",
         selected_model,
         len(transcript),
         max_output_tokens,
     )
+    started = time.monotonic()
     processed = await generate_text_with_model(
         prompt,
         selected_model,
         max_output_tokens=max_output_tokens,
     )
     cleaned = clean_post_processing_output(processed)
+    duration_ms = (time.monotonic() - started) * 1000
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "status": "completed" if cleaned else "empty_output",
+                "providerResponseChars": len(processed or ""),
+                "cleanedChars": len(cleaned or ""),
+                "outputChanged": cleaned != transcript,
+                "durationMs": duration_ms,
+            }
+        )
     if not cleaned:
         raise RuntimeError("Post-processing returned an empty response.")
     return cleaned
