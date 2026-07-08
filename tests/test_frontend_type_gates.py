@@ -617,7 +617,12 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert 'const DEFAULT_POST_PROCESSING_MODEL = "openai/gpt-oss-120b";' in settings_source
     assert 'value: "openai/gpt-oss-120b"' in settings_source
     assert "GPT-OSS 120B Baseten" in settings_source
-    assert "Default OpenRouter route: Baseten, Cerebras fallback" in settings_source
+    assert "OpenRouter via Baseten; Cerebras fallback" in settings_source
+    assert 'value: "openai/gpt-oss-120b:cerebras"' in settings_source
+    assert "GPT-OSS 120B Cerebras" in settings_source
+    assert "OpenRouter via Cerebras only" in settings_source
+    assert 'baseten: "/provider-icons/baseten.svg"' in settings_source
+    assert 'cerebras: "/provider-icons/cerebras.svg"' in settings_source
     assert 'value: "google/gemini-2.5-flash-lite:nitro"' in settings_source
     assert "Low-cost OpenRouter route" in settings_source
     assert "const [postProcessingModel, setPostProcessingModel]" in settings_source
@@ -628,6 +633,8 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert 'value={postProcessingModel}' in settings_source
     assert "onValueChange={(value) => void handlePostProcessingModelChange(value)}" in settings_source
     assert "POST_PROCESSING_MODEL_OPTIONS.map((option)" in settings_source
+    assert "selectedPostProcessingModelOption" in settings_source
+    assert "<ProviderIcon icon={option.icon} label={option.label}" in settings_source
     assert "<SelectItem key={option.value} value={option.value} disabled={Boolean(disabledReason)}>" in settings_source
     assert "Use a low-cost, low-latency model for simple dictation cleanup." in settings_source
     assert "Beantworte keine Fragen im Transkript." in settings_source

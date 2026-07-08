@@ -28,10 +28,12 @@ SummarizationModel = Literal[
     "google/gemini-2.5-flash-lite:nitro",
     "minimax/minimax-m3:nitro",
     "openai/gpt-oss-120b",
+    "openai/gpt-oss-120b:cerebras",
     "z-ai/glm-5.2:nitro",
 ]
 _OPENROUTER_DEFAULT_MODELS = ("minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro")
 _OPENROUTER_PROVIDER_ROUTED_MODELS = frozenset({"openai/gpt-oss-120b"})
+_OPENROUTER_PROVIDER_ROUTE_SUFFIXES = frozenset({"baseten", "cerebras"})
 _MODEL_OUTPUT_TOKEN_CAPS = {
     "gpt-5-nano": 4096,
     "gpt-5-mini": 8192,
@@ -44,6 +46,7 @@ _MODEL_OUTPUT_TOKEN_CAPS = {
     "google/gemini-2.5-flash-lite:nitro": 4096,
     "minimax/minimax-m3:nitro": 8192,
     "openai/gpt-oss-120b": 4096,
+    "openai/gpt-oss-120b:cerebras": 4096,
     "z-ai/glm-5.2:nitro": 8192,
 }
 _MARKDOWN_OUTPUT_GUARDRAIL = (
@@ -107,7 +110,8 @@ def _openrouter_nitro_model(model: str) -> str:
         return _OPENROUTER_DEFAULT_MODELS[0]
     base = raw.split(":", 1)[0]
     if base.lower() in _OPENROUTER_PROVIDER_ROUTED_MODELS:
-        return base
+        route_suffix = _openrouter_provider_route_suffix(raw)
+        return f"{base}:{route_suffix}" if route_suffix else base
     return f"{base}:nitro"
 
 
@@ -116,10 +120,28 @@ def _openrouter_model_family(model: str) -> str:
     return re.sub(r"-\d{8}$", "", base)
 
 
+def _openrouter_provider_route_suffix(model: str) -> str:
+    raw_parts = (model or "").strip().lower().split(":")
+    if len(raw_parts) > 1 and raw_parts[-1] in _OPENROUTER_PROVIDER_ROUTE_SUFFIXES:
+        return raw_parts[-1]
+    return ""
+
+
+def _openrouter_payload_model(model: str) -> str:
+    if _is_openrouter_provider_routed_model(model):
+        return _openrouter_model_family(model)
+    return model
+
+
 def _openrouter_provider_order_for_model(model: str) -> list[str]:
     family = _openrouter_model_family(model)
     if family != "openai/gpt-oss-120b":
         return []
+    route_suffix = _openrouter_provider_route_suffix(model)
+    if route_suffix == "cerebras":
+        return ["cerebras"]
+    if route_suffix == "baseten":
+        return ["baseten", "cerebras"]
     raw = os.getenv("SCRIBER_OPENROUTER_GPT_OSS_120B_PROVIDERS", "baseten,cerebras")
     allowed = {"baseten", "cerebras"}
     providers: list[str] = []
@@ -128,6 +150,10 @@ def _openrouter_provider_order_for_model(model: str) -> list[str]:
         if provider in allowed and provider not in providers:
             providers.append(provider)
     return providers or ["baseten", "cerebras"]
+
+
+def _openrouter_provider_allow_fallbacks_for_model(model: str) -> bool:
+    return _openrouter_provider_route_suffix(model) != "cerebras"
 
 
 def _is_openrouter_provider_routed_model(model: str) -> bool:
@@ -672,10 +698,13 @@ def _build_openrouter_payload(
         "reasoning": _openrouter_reasoning_config(),
     }
     if len(normalized_models) == 1:
-        payload["model"] = normalized_models[0]
+        payload["model"] = _openrouter_payload_model(normalized_models[0])
         provider_order = _openrouter_provider_order_for_model(normalized_models[0])
         if provider_order:
-            payload["provider"] = {"order": provider_order, "allow_fallbacks": True}
+            payload["provider"] = {
+                "order": provider_order,
+                "allow_fallbacks": _openrouter_provider_allow_fallbacks_for_model(normalized_models[0]),
+            }
     else:
         payload["models"] = normalized_models
     return payload

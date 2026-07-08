@@ -1,6 +1,6 @@
 [package]
 name = "scriber-desktop"
-version = "0.4.11"
+version = "0.4.12"
 description = "Scriber desktop shell"
 authors = ["Scriber"]
 edition = "2021"

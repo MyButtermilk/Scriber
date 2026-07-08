@@ -1104,6 +1104,10 @@ def test_validate_summarization_model_accepts_known_prefixes():
         == "google/gemini-2.5-flash-lite:nitro"
     )
     assert web_api._validate_summarization_model("openai/gpt-oss-120b") == "openai/gpt-oss-120b"
+    assert (
+        web_api._validate_summarization_model("openai/gpt-oss-120b:cerebras")
+        == "openai/gpt-oss-120b:cerebras"
+    )
 
 
 def test_validate_summarization_model_rejects_invalid_prefix():

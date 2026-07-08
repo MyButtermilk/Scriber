@@ -98,6 +98,19 @@ def test_openrouter_payload_routes_gpt_oss_120b_to_baseten_first():
     assert ":nitro" not in payload["model"]
 
 
+def test_openrouter_payload_routes_gpt_oss_120b_to_cerebras_only():
+    payload = summarization._build_openrouter_payload(
+        "prompt",
+        "openai/gpt-oss-120b:cerebras",
+        2048,
+    )
+
+    assert payload["model"] == "openai/gpt-oss-120b"
+    assert payload["provider"] == {"order": ["cerebras"], "allow_fallbacks": False}
+    assert ":cerebras" not in payload["model"]
+    assert ":nitro" not in payload["model"]
+
+
 def test_openrouter_payload_allows_gpt_oss_provider_order_override(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SCRIBER_OPENROUTER_GPT_OSS_120B_PROVIDERS", "cerebras,baseten")
 

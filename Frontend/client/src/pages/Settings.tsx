@@ -221,7 +221,8 @@ const SUMMARIZATION_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
 ] as const;
 
 const POST_PROCESSING_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
-  { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B Baseten", detail: "Default OpenRouter route: Baseten, Cerebras fallback", group: "openrouter", icon: "openai" },
+  { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B Baseten", detail: "OpenRouter via Baseten; Cerebras fallback", group: "openrouter", icon: "baseten" },
+  { value: "openai/gpt-oss-120b:cerebras", label: "GPT-OSS 120B Cerebras", detail: "OpenRouter via Cerebras only", group: "openrouter", icon: "cerebras" },
   { value: "google/gemini-2.5-flash-lite:nitro", label: "Gemini 2.5 Flash Lite Nitro", detail: "Low-cost OpenRouter route", group: "openrouter", icon: "openrouter" },
   { value: "gpt-5-nano", label: "OpenAI GPT 5 Nano", detail: "Low-cost cleanup model", group: "openai", icon: "openai" },
   { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: "Compact Gemini cleanup", group: "gemini", icon: "gemini" },
@@ -389,6 +390,8 @@ const PROVIDER_ICON_PATHS = {
   anthropic: "/provider-icons/anthropic.svg",
   assemblyai: "/provider-icons/assemblyai.svg",
   azure: "/provider-icons/azure.svg",
+  baseten: "/provider-icons/baseten.svg",
+  cerebras: "/provider-icons/cerebras.svg",
   deepgram: "/provider-icons/deepgram.svg",
   elevenlabs: "/provider-icons/elevenlabs.svg",
   fal: "/provider-icons/fal.svg",
@@ -522,6 +525,47 @@ function SettingLine({
         ) : null}
       </div>
       <div className="min-w-0 sm:justify-self-end">{children}</div>
+    </div>
+  );
+}
+
+function SettingsSubsection({
+  title,
+  description,
+  icon: Icon,
+  action,
+  children,
+  className,
+}: {
+  title: string;
+  description: string;
+  icon?: LucideIcon;
+  action?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-xl bg-slate-50/90 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60",
+        className,
+      )}
+    >
+      <div className="mb-2.5 flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2">
+          {Icon ? (
+            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white/80 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] dark:bg-slate-950/50 dark:text-slate-400">
+              <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
+          ) : null}
+          <div className="min-w-0">
+            <h3 className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">{title}</h3>
+            <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">{description}</p>
+          </div>
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
+      {children}
     </div>
   );
 }
@@ -992,6 +1036,8 @@ export default function Settings() {
     const requirement = requiredCredentialForLanguageModel(postProcessingModel);
     return isCredentialReady(requirement) ? null : requirement;
   })();
+  const selectedPostProcessingModelOption =
+    POST_PROCESSING_MODEL_OPTIONS.find((option) => option.value === postProcessingModel) ?? null;
   const missingActiveCredentialRequirements = uniqueCredentialRequirements([
     missingSelectedCredentialRequirement,
     missingSummarizationCredentialRequirement,
@@ -2256,17 +2302,11 @@ export default function Settings() {
     selectedTranscriptionModelOption?.label.replace(" - No API Key", "") || transcriptionModel || "Select provider";
 
   const customVocabularySettings = (
-    <div className="rounded-xl bg-slate-50/90 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
-      <div className="mb-2 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
-            <FileText className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" aria-hidden="true" />
-            <p className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Custom vocabulary</p>
-          </div>
-          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-            Names, brands, and domain terms passed to supported STT providers.
-          </p>
-        </div>
+    <FieldShell
+      label="Custom vocabulary"
+      detail="Names, brands, and domain terms passed to supported STT providers."
+    >
+      <div className="mb-1 flex justify-end">
         <Badge variant="secondary">{customVocabularyTermCount} terms</Badge>
       </div>
       <Textarea
@@ -2276,22 +2316,17 @@ export default function Settings() {
         placeholder="Enter terms, one per line..."
         className="min-h-[54px] resize-none bg-white/70 font-mono text-[12px] leading-5 dark:bg-slate-950/60"
       />
-    </div>
+    </FieldShell>
   );
 
   const livePostProcessingSettings = (
-    <div className="rounded-xl bg-slate-50/90 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Live post-processing</p>
-          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-            A separate live-mic shortcut cleans dictation before paste. Files and YouTube stay unchanged.
-          </p>
-        </div>
-        <Switch checked={postProcessingEnabled} onCheckedChange={handlePostProcessingEnabledChange} />
-      </div>
-
-      <div className="mt-3 grid gap-3">
+    <SettingsSubsection
+      title="Live post-processing"
+      description="A separate live-mic shortcut cleans dictation before paste. Files and YouTube stay unchanged."
+      icon={Sparkles}
+      action={<Switch checked={postProcessingEnabled} onCheckedChange={handlePostProcessingEnabledChange} />}
+    >
+      <div className="grid gap-3">
         <SettingLine label="Post-processing hotkey" description="Starts Live Mic with cleanup enabled.">
           <Dialog open={isRecordingPostProcessingHotkey} onOpenChange={setIsRecordingPostProcessingHotkey}>
             <DialogTrigger asChild>
@@ -2326,15 +2361,36 @@ export default function Settings() {
           detail="Use a low-cost, low-latency model for simple dictation cleanup."
         >
           <Select value={postProcessingModel} onValueChange={(value) => void handlePostProcessingModelChange(value)}>
-            <SelectTrigger className="h-9 bg-white/70 dark:bg-slate-950/40">
-              <SelectValue placeholder="Select cleanup model" />
+            <SelectTrigger className="h-10 bg-white/70 dark:bg-slate-950/40">
+              {selectedPostProcessingModelOption ? (
+                <div className="flex min-w-0 items-center gap-2 text-left">
+                  <ProviderIcon
+                    icon={selectedPostProcessingModelOption.icon}
+                    label={selectedPostProcessingModelOption.label}
+                    className="h-5 w-5 rounded"
+                  />
+                  <span className="min-w-0 truncate text-[12px] font-semibold">
+                    {selectedPostProcessingModelOption.label}
+                  </span>
+                </div>
+              ) : (
+                <SelectValue placeholder="Select cleanup model" />
+              )}
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent className="min-w-[320px]">
               {POST_PROCESSING_MODEL_OPTIONS.map((option) => {
                 const disabledReason = missingCredentialReason(requiredCredentialForLanguageModel(option.value));
                 return (
                   <SelectItem key={option.value} value={option.value} disabled={Boolean(disabledReason)}>
-                    {disabledReason ? `${option.label} - ${disabledReason}` : option.label}
+                    <span className="flex min-w-0 items-center gap-2 py-0.5">
+                      <ProviderIcon icon={option.icon} label={option.label} className="h-5 w-5 rounded" />
+                      <span className="min-w-0">
+                        <span className="block truncate text-[12px] font-semibold leading-4">{option.label}</span>
+                        <span className="block truncate text-[10.5px] leading-3 text-slate-500 dark:text-slate-400">
+                          {disabledReason || option.detail}
+                        </span>
+                      </span>
+                    </span>
                   </SelectItem>
                 );
               })}
@@ -2366,24 +2422,22 @@ export default function Settings() {
           </div>
         </FieldShell>
       </div>
-    </div>
+    </SettingsSubsection>
   );
 
   const summarizationPromptSettings = (
-    <div className="rounded-xl bg-slate-50/90 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
-      <FieldShell
-        label="Summarization prompt"
-        detail="Used for automatic and manual transcript summaries."
-      >
-        <Textarea
-          value={summarizationPrompt}
-          onChange={(event) => setSummarizationPrompt(event.target.value)}
-          onBlur={handleSummarizationPromptBlur}
-          placeholder="Summarize the key points, decisions, and action items. Keep it concise and structured."
-          className="min-h-[60px] resize-none bg-white/70 text-sm dark:bg-slate-950/60"
-        />
-      </FieldShell>
-    </div>
+    <FieldShell
+      label="Summarization prompt"
+      detail="Used for automatic and manual transcript summaries."
+    >
+      <Textarea
+        value={summarizationPrompt}
+        onChange={(event) => setSummarizationPrompt(event.target.value)}
+        onBlur={handleSummarizationPromptBlur}
+        placeholder="Summarize the key points, decisions, and action items. Keep it concise and structured."
+        className="min-h-[60px] resize-none bg-white/70 text-sm dark:bg-slate-950/60"
+      />
+    </FieldShell>
   );
 
   const onnxLocalModelSettings = (
@@ -2570,127 +2624,147 @@ export default function Settings() {
           description="Control how audio is captured and how the recording hotkey behaves."
           icon={Mic}
         >
-          <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
+          <div className="space-y-3">
             {autostartAvailable && (
-              <SettingLine label="Start with Windows" description="Launch Scriber when you log in.">
-                <Switch checked={autostartEnabled} onCheckedChange={handleAutostartChange} />
-              </SettingLine>
+              <SettingsSubsection
+                title="Startup"
+                description="Control whether Scriber is ready after Windows login."
+                icon={Shield}
+              >
+                <SettingLine label="Start with Windows" description="Launch Scriber when you log in." className="py-0">
+                  <Switch checked={autostartEnabled} onCheckedChange={handleAutostartChange} />
+                </SettingLine>
+              </SettingsSubsection>
             )}
 
-            <SettingLine label="Input device" description="Select the active microphone.">
-              <div className={cn("mic-device-dropdown w-full", isMicDropdownOpen && "is-open")}>
-                <button
-                  type="button"
-                  className="mic-device-dropdown-header"
-                  onClick={() => setIsMicDropdownOpen((prev) => !prev)}
-                  aria-label="Select input device"
-                  aria-expanded={isMicDropdownOpen}
-                  aria-controls="mic-device-dropdown-tray"
-                >
-                  <span className="mic-device-dropdown-header-info">
-                    <span className={cn("mic-device-dropdown-selected-text", hasSelectedMic && "is-selected")}>
-                      {selectedMicLabel || "Select a device..."}
-                    </span>
-                  </span>
-                  <ChevronDown className="mic-device-dropdown-chevron" />
-                </button>
+            <SettingsSubsection
+              title="Microphone input"
+              description="Choose the active device and keep capture warm when low latency matters."
+              icon={Mic}
+            >
+              <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
+                <SettingLine label="Input device" description="Select the active microphone.">
+                  <div className={cn("mic-device-dropdown w-full", isMicDropdownOpen && "is-open")}>
+                    <button
+                      type="button"
+                      className="mic-device-dropdown-header"
+                      onClick={() => setIsMicDropdownOpen((prev) => !prev)}
+                      aria-label="Select input device"
+                      aria-expanded={isMicDropdownOpen}
+                      aria-controls="mic-device-dropdown-tray"
+                    >
+                      <span className="mic-device-dropdown-header-info">
+                        <span className={cn("mic-device-dropdown-selected-text", hasSelectedMic && "is-selected")}>
+                          {selectedMicLabel || "Select a device..."}
+                        </span>
+                      </span>
+                      <ChevronDown className="mic-device-dropdown-chevron" />
+                    </button>
 
-                <div id="mic-device-dropdown-tray" className="mic-device-dropdown-tray" aria-hidden={!isMicDropdownOpen}>
-                  <div className="mic-device-dropdown-content">
-                    <div className="mic-device-dropdown-tray-inner">
-                      <div className="mic-device-list">
-                        {inputDevices.length === 0 ? (
-                          <div className="px-2 py-2 text-sm text-muted-foreground">Loading devices...</div>
-                        ) : (
-                          inputDevices.map((device, index) => {
-                            const deviceValue = device.deviceId || `device-${index}`;
-                            const deviceLabel = device.label || `Device ${index + 1}`;
-                            const micInputId = `mic-device-${index}`;
-                            const favoriteInputId = `favorite-mic-${index}`;
-                            const isSelected = selectedDeviceId === deviceValue;
-                            const isFavorite = favoriteMic === deviceValue;
-                            return (
-                              <div
-                                key={`${deviceValue}-${index}`}
-                                className={cn("mic-device-item", isSelected && "is-selected", isFavorite && "is-favorite")}
-                              >
-                                <div className="mic-device-row-waves" aria-hidden="true">
-                                  <div className="mic-device-wave-row" />
-                                </div>
-                                <input
-                                  type="radio"
-                                  id={micInputId}
-                                  name="mic-input-device"
-                                  className="mic-device-radio sr-only"
-                                  checked={isSelected}
-                                  onChange={() => handleMicDeviceSelectFromDropdown(deviceValue)}
-                                  aria-label={`Select microphone ${deviceLabel}`}
-                                />
-                                <label htmlFor={micInputId} className="mic-device-label">
-                                  <span className="mic-device-name">{deviceLabel}</span>
-                                  <svg className="mic-device-check" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="M 4 12 L 10 18 L 20 6" />
-                                  </svg>
-                                </label>
-                                <div className="mic-device-divider" aria-hidden="true" />
-                                <input
-                                  type="checkbox"
-                                  id={favoriteInputId}
-                                  className="mic-device-star-radio sr-only"
-                                  checked={isFavorite}
-                                  onChange={() => handleSetFavoriteMic(deviceValue)}
-                                  aria-label={isFavorite ? `Remove ${deviceLabel} from favorites` : `Set ${deviceLabel} as favorite`}
-                                />
-                                <label
-                                  htmlFor={favoriteInputId}
-                                  className="mic-device-star-label"
-                                  title={isFavorite ? "Remove from favorites" : "Set as favorite"}
-                                >
-                                  <svg className="mic-device-star" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-                                  </svg>
-                                </label>
-                              </div>
-                            );
-                          })
-                        )}
+                    <div id="mic-device-dropdown-tray" className="mic-device-dropdown-tray" aria-hidden={!isMicDropdownOpen}>
+                      <div className="mic-device-dropdown-content">
+                        <div className="mic-device-dropdown-tray-inner">
+                          <div className="mic-device-list">
+                            {inputDevices.length === 0 ? (
+                              <div className="px-2 py-2 text-sm text-muted-foreground">Loading devices...</div>
+                            ) : (
+                              inputDevices.map((device, index) => {
+                                const deviceValue = device.deviceId || `device-${index}`;
+                                const deviceLabel = device.label || `Device ${index + 1}`;
+                                const micInputId = `mic-device-${index}`;
+                                const favoriteInputId = `favorite-mic-${index}`;
+                                const isSelected = selectedDeviceId === deviceValue;
+                                const isFavorite = favoriteMic === deviceValue;
+                                return (
+                                  <div
+                                    key={`${deviceValue}-${index}`}
+                                    className={cn("mic-device-item", isSelected && "is-selected", isFavorite && "is-favorite")}
+                                  >
+                                    <div className="mic-device-row-waves" aria-hidden="true">
+                                      <div className="mic-device-wave-row" />
+                                    </div>
+                                    <input
+                                      type="radio"
+                                      id={micInputId}
+                                      name="mic-input-device"
+                                      className="mic-device-radio sr-only"
+                                      checked={isSelected}
+                                      onChange={() => handleMicDeviceSelectFromDropdown(deviceValue)}
+                                      aria-label={`Select microphone ${deviceLabel}`}
+                                    />
+                                    <label htmlFor={micInputId} className="mic-device-label">
+                                      <span className="mic-device-name">{deviceLabel}</span>
+                                      <svg className="mic-device-check" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M 4 12 L 10 18 L 20 6" />
+                                      </svg>
+                                    </label>
+                                    <div className="mic-device-divider" aria-hidden="true" />
+                                    <input
+                                      type="checkbox"
+                                      id={favoriteInputId}
+                                      className="mic-device-star-radio sr-only"
+                                      checked={isFavorite}
+                                      onChange={() => handleSetFavoriteMic(deviceValue)}
+                                      aria-label={isFavorite ? `Remove ${deviceLabel} from favorites` : `Set ${deviceLabel} as favorite`}
+                                    />
+                                    <label
+                                      htmlFor={favoriteInputId}
+                                      className="mic-device-star-label"
+                                      title={isFavorite ? "Remove from favorites" : "Set as favorite"}
+                                    >
+                                      <svg className="mic-device-star" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                                      </svg>
+                                    </label>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
+                </SettingLine>
+
+                {favoriteMic && (
+                  <div className="flex items-center gap-1.5 py-2 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                    <Star className="h-3 w-3 fill-current" />
+                    Favorite microphone is used automatically when connected.
+                  </div>
+                )}
+
+                <SettingLine label="Mic always on" description="Keep capture pre-warmed for minimum latency.">
+                  <Switch checked={micAlwaysOn} onCheckedChange={handleMicAlwaysOnChange} />
+                </SettingLine>
               </div>
-            </SettingLine>
+            </SettingsSubsection>
 
-            {favoriteMic && (
-              <div className="flex items-center gap-1.5 py-2 text-[11px] font-medium text-amber-600 dark:text-amber-400">
-                <Star className="h-3 w-3 fill-current" />
-                Favorite microphone is used automatically when connected.
-              </div>
-            )}
+            <SettingsSubsection
+              title="Recording control"
+              description="Configure the main hotkey, trigger mode, and overlay density."
+              icon={Keyboard}
+            >
+              <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
+                <SettingLine label="Recording mode" description="Choose how the hotkey behaves.">
+                  <ToggleGroup
+                    type="single"
+                    value={recordingMode}
+                    onValueChange={(value) => value && void handleRecordingModeChange(value)}
+                    className="grid w-[220px] max-w-full grid-cols-2 rounded-lg bg-slate-100 p-1 dark:bg-slate-900"
+                  >
+                    <ToggleGroupItem value="start_stop" className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800">
+                      <ToggleLeft className="h-4 w-4" />
+                      Toggle
+                    </ToggleGroupItem>
+                    <ToggleGroupItem value="press_hold" className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800">
+                      <Mic className="h-4 w-4" />
+                      Push-to-talk
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                </SettingLine>
 
-            <SettingLine label="Mic always on" description="Keep capture pre-warmed for minimum latency.">
-              <Switch checked={micAlwaysOn} onCheckedChange={handleMicAlwaysOnChange} />
-            </SettingLine>
-
-            <SettingLine label="Recording mode" description="Choose how the hotkey behaves.">
-              <ToggleGroup
-                type="single"
-                value={recordingMode}
-                onValueChange={(value) => value && void handleRecordingModeChange(value)}
-                className="grid w-[220px] max-w-full grid-cols-2 rounded-lg bg-slate-100 p-1 dark:bg-slate-900"
-              >
-                <ToggleGroupItem value="start_stop" className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800">
-                  <ToggleLeft className="h-4 w-4" />
-                  Toggle
-                </ToggleGroupItem>
-                <ToggleGroupItem value="press_hold" className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800">
-                  <Mic className="h-4 w-4" />
-                  Push-to-talk
-                </ToggleGroupItem>
-              </ToggleGroup>
-            </SettingLine>
-
-            <SettingLine label="Global hotkey" description="Shortcut to start or stop recording.">
+                <SettingLine label="Global hotkey" description="Shortcut to start or stop recording.">
                 <Dialog open={isRecordingHotkey} onOpenChange={setIsRecordingHotkey}>
                 <DialogTrigger asChild>
                   <Button variant="outline" className="h-8 w-[220px] max-w-full justify-start font-mono text-[11px]">
@@ -2717,27 +2791,37 @@ export default function Settings() {
                   </div>
                 </DialogContent>
               </Dialog>
-            </SettingLine>
+                </SettingLine>
 
-            <SettingLine label="Visualizer bars" description={`Current count: ${visualizerBarCount}`}>
-              <div className="flex w-full items-center gap-2">
-                <BarChart3 className="h-4 w-4 shrink-0 text-slate-500" />
-                <Slider
-                  value={[visualizerBarCount]}
-                  onValueChange={handleVisualizerBarCountChange}
-                  onValueCommit={handleVisualizerBarCountCommit}
-                  min={MIN_VISUALIZER_BAR_COUNT}
-                  max={MAX_VISUALIZER_BAR_COUNT}
-                  step={1}
-                  className="min-w-[132px] flex-1"
-                />
+                <SettingLine label="Visualizer bars" description={`Current count: ${visualizerBarCount}`}>
+                  <div className="flex w-full items-center gap-2">
+                    <BarChart3 className="h-4 w-4 shrink-0 text-slate-500" />
+                    <Slider
+                      value={[visualizerBarCount]}
+                      onValueChange={handleVisualizerBarCountChange}
+                      onValueCommit={handleVisualizerBarCountCommit}
+                      min={MIN_VISUALIZER_BAR_COUNT}
+                      max={MAX_VISUALIZER_BAR_COUNT}
+                      step={1}
+                      className="min-w-[132px] flex-1"
+                    />
+                  </div>
+                </SettingLine>
               </div>
-            </SettingLine>
-          </div>
-          <div className="mt-4 space-y-4">
-            {customVocabularySettings}
+            </SettingsSubsection>
+
+            <SettingsSubsection
+              title="Transcript context"
+              description="Give providers and summaries the domain terms and summary behavior they need."
+              icon={FileText}
+            >
+              <div className="grid gap-3">
+                {customVocabularySettings}
+                {summarizationPromptSettings}
+              </div>
+            </SettingsSubsection>
+
             {livePostProcessingSettings}
-            {summarizationPromptSettings}
           </div>
         </SectionPanel>
 
