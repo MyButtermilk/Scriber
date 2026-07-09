@@ -189,6 +189,15 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"preprocessors/*.py"' in spec
     assert "collect_data_files(" in spec
     assert '"onnxruntime",' in spec
+    hidden_imports = spec.split("hiddenimports = [", 1)[1].split(
+        "]\n\nfor package in (", 1
+    )[0]
+    excluded_imports = spec.split("excludes=[", 1)[1].split(
+        "],\n    noarchive", 1
+    )[0]
+    smart_turn_module = '"pipecat.audio.turn.smart_turn.local_smart_turn_v3"'
+    assert smart_turn_module in hidden_imports
+    assert smart_turn_module not in excluded_imports
     assert "includes=[" in spec
     assert "ThirdPartyNotices.txt" in spec
     assert '"onnxruntime",' not in spec.split("excludes=[", 1)[1]
