@@ -1156,6 +1156,9 @@ Installer speed evidence:
   `8m9s`, `build_windows.ps1` took `413.9s`, and the Tauri bundle log showed
   `285` Cargo compile lines. Treat that path as rejected unless the Rust cache
   is intentionally rebuilt and remeasured.
+- Main run `29004179335` verified the rollback to `dtolnay`: the job returned
+  to `2m34s`, `build_windows.ps1` took `55.1s`, and the Tauri bundle log showed
+  only the expected single `scriber-desktop` compile line.
 
 These are evidence artifacts, not durable docs. Do not copy their full contents
 into permanent Markdown unless a concise current result belongs in

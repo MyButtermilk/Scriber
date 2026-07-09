@@ -467,6 +467,9 @@ Release workflow:
   `413.9s` inside `build_windows.ps1` because Cargo recompiled `285` crates.
   Keep the setup action unless a future cache/toolchain migration is measured
   end-to-end.
+- Main run `29004179335` verified the revert back to `dtolnay`: job time
+  returned to `2m34s`, `build_windows.ps1` took `55.1s`, the Tauri bundle took
+  `38.7s`, and the log again had only one `scriber-desktop` Cargo compile line.
 - Version-only app releases must not invalidate durable cache artifacts unless
   their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
   Python backend at launch, so a version-normalized backend sidecar can still
