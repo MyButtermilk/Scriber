@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "metric": "local_wux",
+  "baselineId": "readiness-inclusive-20260624-083431",
+  "source": "benchmarks/results/raw/fastlocal-20260624-083431.json",
+  "doctorSource": "benchmarks/results/raw/fastlocal-20260624-083431.json",
+  "previousBaseline": "provider-observer-ready-20260624-004127",
+  "notes": "Segment B5 readiness-inclusive baseline. local_wux now includes the user-visible hotkey-to-mic-ready and hotkey-to-first-audio-frame measurements, both collected with Always-On Mic enabled in the Microsoft MAI and Soniox overlay hotkey probes. Provider local tails still start after the UI Automation text observer is ready.",
+  "weights": {
+    "overlay_warm_p95_ms": 0.1,
+    "overlay_cold_p95_ms": 0.05,
+    "microsoft_local_tail_p95_ms": 0.15,
+    "soniox_local_tail_p95_ms": 0.2,
+    "app_ux_p95_ms": 0.1,
+    "hotkey_mic_ready_p95_ms": 0.25,
+    "hotkey_first_audio_frame_p95_ms": 0.15
+  },
+  "metrics": {
+    "local_wux": 1.0,
+    "overlay_warm_p95_ms": 127.184,
+    "overlay_cold_p95_ms": 143.899,
+    "microsoft_local_tail_p95_ms": 62.24,
+    "soniox_local_tail_p95_ms": 59.909,
+    "app_ux_p95_ms": 615.66,
+    "hotkey_mic_ready_p95_ms": 960.604,
+    "hotkey_first_audio_frame_p95_ms": 959.424,
+    "hotkey_first_audible_audio_frame_p95_ms": "unknown",
+    "text_errors": 0,
+    "focus_errors": 0,
+    "clipboard_errors": 0,
+    "overlay_errors": 0,
+    "ui_long_tasks_gt_200ms": 0,
+    "idle_cpu_pct": 0.0,
+    "working_set_mb": 87.57
+  }
+}

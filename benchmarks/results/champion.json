@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "metric": "local_wux",
+  "championId": "retained-local-20260624-041200",
+  "source": "benchmarks/results/raw/fastlocal-20260624-041200.json",
+  "segment": "B4-provider-observer-ready-baseline",
+  "generatedAtUtc": "2026-06-24T03:21:28Z",
+  "commit": "29d36289c6c6f082312add20ecbb8a15e13ec326",
+  "notes": "Best retained local package for Segment B4. Later focus-guard keeps are correctness/safety evidence and remain documented separately; they do not replace this local_wux champion.",
+  "evidenceLevel": "development",
+  "baseline": {
+    "source": "benchmarks/results/baseline.json",
+    "local_wux": 1.0
+  },
+  "metrics": {
+    "local_wux": 0.382043,
+    "overlay_warm_p95_ms": 123.458,
+    "overlay_cold_p95_ms": 135.114,
+    "microsoft_local_tail_p95_ms": 33.625,
+    "soniox_local_tail_p95_ms": 36.153,
+    "app_ux_p95_ms": 346.057,
+    "text_errors": 0,
+    "focus_errors": 0,
+    "clipboard_errors": 0,
+    "overlay_errors": 0,
+    "ui_long_tasks_gt_200ms": 0,
+    "idle_cpu_pct": 0.0,
+    "working_set_mb": 87.62
+  },
+  "liveHoldouts": {
+    "soniox": {
+      "source": "benchmarks/results/raw/livesoniox-20260624-050433.json",
+      "providerTranscriptP95Ms": 9441.739,
+      "textTargetP95Ms": 9711.359,
+      "focusErrors": 0,
+      "textErrors": 0,
+      "clipboardErrors": 0
+    },
+    "microsoft": {
+      "source": "benchmarks/results/raw/livemicrosoft-20260624-050507.json",
+      "providerTranscriptP95Ms": 11137.763,
+      "textTargetP95Ms": 10533.874,
+      "focusErrors": 0,
+      "textErrors": 0,
+      "clipboardErrors": 0
+    }
+  },
+  "productGradeAllowed": false
+}

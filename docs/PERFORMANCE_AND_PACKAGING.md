@@ -88,7 +88,15 @@ Data and frontend:
   metadata views.
 - Frontend history pages use infinite loading and scroll-container virtualization.
 - Production frontend build uses manual vendor chunks.
-- Route chunks are lazy for non-default pages.
+- Live Mic, YouTube, File, and Settings are eager primary-tab modules in the
+  local WebView. Debug Console, transcript detail, and not-found remain lazy.
+  The shared layout no longer creates a nested Wouter router or keyed page
+  remount on tab changes. A 2026-07-09 real-browser smoke measured zero blank
+  and zero loading samples across seven primary-tab transitions; the slowest
+  ready transition was about `499.5 ms` for Settings.
+- Motion/Framer Motion are kept on a React-19-compatible `12.42.x` release so
+  animated virtual history lists do not emit deprecated `element.ref` access
+  errors.
 
 I/O:
 

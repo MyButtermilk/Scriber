@@ -131,7 +131,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
   return (
     <div className="w-full">
       <Card
-        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} overflow-hidden rounded-[20px] group cursor-pointer transform-gpu transition-[opacity,transform] duration-150 ease-out ${deletingClasses}`}
+        className={`youtube-history-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} group cursor-pointer overflow-hidden rounded-[20px] transform-gpu ${deletingClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
         role="button"
@@ -146,12 +146,12 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
       >
         {viewMode === "list" ? (
           // List view
-          <div className="flex gap-4 p-4 min-w-0 overflow-hidden">
-            <div className="relative w-32 h-20 bg-muted rounded-md shrink-0 overflow-hidden">
+          <div className="flex min-w-0 gap-4 overflow-hidden p-4">
+            <div className="relative h-20 w-32 shrink-0 overflow-hidden rounded-[12px] bg-muted">
               <YoutubeThumbnail
                 thumbnailUrl={item.thumbnailUrl}
                 title={item.title}
-                className="w-full h-full object-cover opacity-90"
+                className="h-full w-full object-cover opacity-90 transition-transform duration-700 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:scale-[1.04]"
                 iconClassName="w-8 h-8"
               />
               <div className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">
@@ -161,7 +161,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
 
             <div className="flex-1 min-w-0 overflow-hidden">
               <div className="flex justify-between items-start gap-2">
-                <h3 className="font-medium text-foreground truncate text-base flex-1 min-w-0">{item.title}</h3>
+                <h3 className="min-w-0 flex-1 truncate font-heading text-[14px] font-medium text-foreground transition-colors duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:text-primary">{item.title}</h3>
                 {historyStatus === "processing" ? (
                   <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1 shrink-0">
                     <Loader2 className="w-3 h-3 animate-spin" />
@@ -208,11 +208,11 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
         ) : (
           // Grid view
           <div className="flex flex-col">
-            <div className="relative w-full aspect-video bg-muted overflow-hidden">
+            <div className="relative aspect-video w-full overflow-hidden bg-muted">
               <YoutubeThumbnail
                 thumbnailUrl={item.thumbnailUrl}
                 title={item.title}
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                className="h-full w-full object-cover transition-transform duration-700 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:scale-[1.045]"
                 iconClassName="w-12 h-12"
               />
               <div className="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded">
@@ -243,8 +243,8 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                 )}
               </div>
             </div>
-            <div className="p-3">
-              <h3 className="font-medium text-foreground line-clamp-2 text-sm group-hover:text-primary transition-colors">{item.title}</h3>
+            <div className="p-4">
+              <h3 className="line-clamp-2 font-heading text-[14px] font-medium leading-[1.35] text-foreground transition-colors duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:text-primary">{item.title}</h3>
               <p className="text-xs text-muted-foreground mt-1 truncate">{item.channel || item.channelTitle || "Unknown"}</p>
               <div className="flex items-center justify-between mt-2">
                 <span className="text-xs text-muted-foreground">{item.date}</span>
@@ -577,20 +577,25 @@ export default function Youtube() {
   }, [queryClient]);
 
   return (
-    <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
-      <header className="mb-6 space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight text-foreground">Youtube Transcription</h1>
-        <p className="text-muted-foreground">Paste a URL or search to transcribe video content</p>
+    <div className="transcription-page youtube-page mx-auto w-full max-w-[1320px] px-4 py-5 md:px-6 md:py-6">
+      <header className="transcription-intro mb-6">
+        <div className="mb-3 flex items-center gap-2.5 text-[9.5px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+          <span className="h-px w-7 bg-red-500/70" aria-hidden="true" />
+          Media capture · 02
+        </div>
+        <h1 className="font-heading text-[36px] font-semibold leading-[0.96] tracking-[-0.045em] text-foreground md:text-[42px]">YouTube transcription</h1>
+        <p className="mt-3 max-w-[62ch] text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">Paste a video URL or search YouTube, then turn the source into a searchable transcript.</p>
       </header>
 
-      {/* Input Section - Debossed neumorphic style */}
-      <div className="neu-status-well p-2 mb-6 rounded-xl">
-        <div className="flex items-center gap-2">
-          <div className="pl-3 text-muted-foreground">
-            <YoutubeIcon className="w-5 h-5" />
+      {/* Media discovery command bar */}
+      <div className="youtube-search-shell mb-7">
+        <div className="youtube-search-core">
+          <div className="flex items-center gap-3">
+          <div className="youtube-search-mark flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-red-500">
+            <YoutubeIcon className="h-5 w-5 stroke-[1.65px]" />
           </div>
           <Input
-            className="border-0 shadow-none focus-visible:ring-0 bg-transparent text-base h-12"
+            className="h-12 border-0 bg-transparent text-[15px] shadow-none focus-visible:ring-0"
             placeholder="Paste Youtube link or search videos..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -603,22 +608,30 @@ export default function Youtube() {
           />
           <Button
             size="icon"
-            className="h-10 w-10 shrink-0 rounded-lg"
+            className="group h-11 w-11 shrink-0 rounded-full shadow-[0_12px_28px_-18px_hsl(var(--primary))] transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.96]"
             onClick={runSearch}
             disabled={!query.trim() || isSearching}
             type="button"
             aria-label="Search YouTube"
           >
-            <ArrowRight className="w-5 h-5" />
+            <ArrowRight className="h-[18px] w-[18px] stroke-[1.7px] transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:translate-x-0.5" />
           </Button>
+          </div>
+          <div className="youtube-search-foot flex items-center justify-between gap-3 px-1 pt-3 text-[10.5px] text-muted-foreground">
+            <span>URL or keyword search</span>
+            <span className="font-mono tabular-nums">Enter ↵</span>
+          </div>
         </div>
       </div>
 
       {/* Search Results */}
       {(isSearching || searchError || searchResults.length > 0) && (
-        <div className="space-y-4 mb-8">
-          <div className="flex items-center justify-between px-2">
-            <h2 className="text-lg font-semibold">Search Results</h2>
+        <div className="transcription-results mb-8 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em]">Search results</h2>
+              <p className="mt-1 text-[12px] text-muted-foreground">Choose a source to begin transcription.</p>
+            </div>
             <div className="flex items-center gap-2">
               {isSearching && <span className="text-xs text-muted-foreground">Searching…</span>}
               {searchResults.length > 0 && !isSearching && (
@@ -667,14 +680,14 @@ export default function Youtube() {
           )}
 
           {sortedResults.length > 0 && (
-            <div className="grid gap-4 max-w-2xl mx-auto">
+            <div className="grid gap-4 xl:grid-cols-2">
               {sortedResults.map((item) => {
                 const published = item.publishedAt ? new Date(item.publishedAt).toLocaleDateString() : "";
                 const isStarting = startingVideoId === item.videoId;
                 return (
                   <Card
                     key={item.videoId}
-                    className="neu-recording-row perf-scroll-item overflow-hidden rounded-[20px] hover:scale-[1.01] transition-all group cursor-pointer"
+                    className="youtube-result-card perf-scroll-item group cursor-pointer overflow-hidden rounded-[20px]"
                     onClick={() => startTranscription(item)}
                     role="button"
                     tabIndex={0}
@@ -691,7 +704,7 @@ export default function Youtube() {
                         <YoutubeThumbnail
                           thumbnailUrl={item.thumbnailUrl}
                           title={item.title}
-                          className="w-full h-full object-cover opacity-90 group-hover:scale-105 transition-transform duration-500"
+                          className="h-full w-full object-cover opacity-90 transition-transform duration-700 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:scale-[1.045]"
                           iconClassName="w-8 h-8"
                           loading="eager"
                         />
@@ -745,44 +758,47 @@ export default function Youtube() {
       )}
 
       {/* Recent History */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Recent Videos</h2>
+      <div className="transcription-history space-y-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em]">Recent videos</h2>
+            <p className="mt-1 text-[12px] text-muted-foreground">Search, copy, or reopen your latest video transcripts.</p>
+          </div>
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            <div className="transcription-search relative min-w-0 flex-1 rounded-[13px] p-1 sm:w-[340px] sm:flex-none lg:w-[400px]">
+              <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                type="text"
+                placeholder="Search history..."
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                className="h-10 rounded-[10px] border-0 bg-transparent pl-9 pr-9 shadow-none focus-visible:ring-0"
+              />
+              {historySearch && (
+                <button
+                  type="button"
+                  onClick={() => setHistorySearch("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Clear YouTube history search"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
           <ToggleGroup
             type="single"
             value={viewMode}
             onValueChange={(val) => val && setViewMode(val as "list" | "grid")}
-            className="bg-secondary/50 rounded-lg p-1"
+            className="transcription-view-toggle shrink-0 rounded-[13px] p-1"
           >
-            <ToggleGroupItem value="list" aria-label="List view" className="h-8 w-8 p-0">
+            <ToggleGroupItem value="list" aria-label="List view" className="h-10 w-10 rounded-[10px] p-0 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]">
               <LayoutList className="h-4 w-4" />
             </ToggleGroupItem>
-            <ToggleGroupItem value="grid" aria-label="Grid view" className="h-8 w-8 p-0">
+            <ToggleGroupItem value="grid" aria-label="Grid view" className="h-10 w-10 rounded-[10px] p-0 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]">
               <LayoutGrid className="h-4 w-4" />
             </ToggleGroupItem>
           </ToggleGroup>
-        </div>
-
-        {/* History Search Bar */}
-        <div className="relative mt-3">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            type="text"
-            placeholder="Search history..."
-            value={historySearch}
-            onChange={(e) => setHistorySearch(e.target.value)}
-            className="pl-9 pr-9 h-9 bg-secondary/50"
-          />
-          {historySearch && (
-            <button
-              type="button"
-              onClick={() => setHistorySearch("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              aria-label="Clear YouTube history search"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
+          </div>
         </div>
 
         <div className="w-full py-2">

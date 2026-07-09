@@ -1,4 +1,4 @@
-import { Link, useLocation, Router } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Mic, Settings, Youtube, FolderOpen, Menu, Search, Terminal } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SidebarSearch } from "@/components/ui/sidebar-search";
@@ -6,7 +6,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { DesktopTitleBar } from "@/components/DesktopTitleBar";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { useState, useEffect, useCallback, lazy, Suspense } from "react";
+import { useState, useEffect, useCallback, lazy, Suspense, useRef } from "react";
 import { preloadRouteChunk } from "@/lib/route-preload";
 
 const CommandPalette = lazy(async () => {
@@ -22,6 +22,7 @@ interface AppLayoutProps {
 export function AppLayout({ children, path }: AppLayoutProps) {
   const [location, setLocation] = useLocation();
   const currentKey = path || location;
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -54,6 +55,10 @@ export function AppLayout({ children, path }: AppLayoutProps) {
   const handleNavIntent = useCallback((href: string) => {
     void preloadRouteChunk(href);
   }, []);
+
+  useEffect(() => {
+    scrollContainerRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [currentKey]);
 
   const tabs = [
     { href: "/", icon: Mic, label: "Live Mic" },
@@ -182,11 +187,9 @@ export function AppLayout({ children, path }: AppLayoutProps) {
         <main id="main-content" className="min-h-0 flex-1 flex flex-col pb-3 md:py-3 md:pr-3">
           {/* Content panel - rounded, inset within the sidebar-colored background */}
           <div className="flex-1 overflow-hidden md:bg-card md:rounded-xl md:neu-panel-inset">
-            <div className="h-full overflow-y-auto" data-app-scroll-container="true">
-              <div key={currentKey} className="min-h-full">
-                <Router hook={() => [currentKey, setLocation]}>
-                  {children}
-                </Router>
+            <div ref={scrollContainerRef} className="h-full overflow-y-auto" data-app-scroll-container="true">
+              <div className="min-h-full">
+                {children}
               </div>
             </div>
           </div>

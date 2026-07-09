@@ -16,7 +16,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.services.stt_service import SegmentedSTTService
+from pipecat.services.stt_service import SegmentedSTTService, STTService
 from pipecat.frames.frames import (
     InputAudioRawFrame,
     InterimTranscriptionFrame,
@@ -45,11 +45,11 @@ except ImportError:
 
 try:
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-    from pipecat.processors.user_idle_processor import UserIdleProcessor
     HAS_SMART_TURN = True
 except ImportError:
+    LocalSmartTurnAnalyzerV3 = None
     HAS_SMART_TURN = False
-    logger.warning("LocalSmartTurnAnalyzerV3 or UserIdleProcessor not available")
+    logger.debug("Optional Pipecat LocalSmartTurnAnalyzerV3 is not available")
 
 try:
     from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -180,21 +180,8 @@ def _redact_provider_error_text(message: str) -> str:
     text = re.sub(r"(?i)\bToken\s+[A-Za-z0-9._~+/=-]+", "Token [REDACTED]", text)
     return text
 
-_SONIOX_IMPORT_ERROR: BaseException | None = None
-try:
-    from pipecat.services.soniox.stt import SonioxSTTService, SonioxInputParams, SonioxContextObject
-except Exception as exc:
-    _SONIOX_IMPORT_ERROR = exc
-    SonioxSTTService = None
-    SonioxInputParams = None
-    SonioxContextObject = None
-
-# Fallback params object if older pipecat build lacks SonioxInputParams
-class _SonioxParamsFallback:
-    def __init__(self, context=None, vad_enabled=True, enable_speaker_diarization=False):
-        self.context = context
-        self.vad_enabled = vad_enabled
-        self.enable_speaker_diarization = enable_speaker_diarization
+SonioxSTTService = None
+SonioxContextObject = None
 
 
 def _format_speaker_transcript_tokens(tokens: list[dict[str, Any]]) -> str:
@@ -394,7 +381,7 @@ class SonioxAsyncProcessor(FrameProcessor):
 
     async def _transcribe_async(self, audio_bytes: bytes) -> str:
         """
-        Upload audio to Soniox async API. Prefer WebM/Opus; retry with WAV if Soniox rejects.
+        Upload audio to Soniox async API as WebM/Opus, with a local WAV encoding fallback.
         """
         if not audio_bytes:
             return ""
@@ -410,43 +397,59 @@ class SonioxAsyncProcessor(FrameProcessor):
 
         self._report_progress("Uploading audio...")
 
-        # OPTIMIZED: Smart format selection with single-pass fallback
-        # Try WebM first (smaller, faster upload), fall back to WAV on encoding failure only
-        # Avoids re-encoding on upload/API errors by caching both formats
-        file_bytes = None
-        content_type = None
-        filename = None
-        webm_encode_failed = False
+        file_bytes, content_type, filename = await self._encode_audio(
+            audio_bytes,
+            prefer_webm=True,
+        )
+        if Config.DEBUG:
+            logger.info(
+                f"Soniox async upload using {filename} ({len(file_bytes)} bytes)"
+            )
 
-        # Try WebM encoding first
-        try:
-            file_bytes, content_type, filename = await self._encode_audio(audio_bytes, prefer_webm=True)
-            if Config.DEBUG:
-                logger.info(f"Soniox async upload using WebM ({len(file_bytes)} bytes)")
-        except Exception as e:
-            logger.warning(f"WebM encoding failed ({e}), using WAV fallback")
-            webm_encode_failed = True
-            file_bytes, content_type, filename = await self._encode_audio(audio_bytes, prefer_webm=False)
-            if Config.DEBUG:
-                logger.info(f"Soniox async upload using WAV ({len(file_bytes)} bytes)")
-
-        # Upload and transcribe (single attempt, no retry loop)
-        try:
+        async def upload_file(
+            content: bytes,
+            *,
+            upload_content_type: str,
+            upload_filename: str,
+        ) -> str:
             data = aiohttp.FormData()
-            data.add_field("file", file_bytes, filename=filename, content_type=content_type)
+            data.add_field(
+                "file",
+                content,
+                filename=upload_filename,
+                content_type=upload_content_type,
+            )
             async with self.session.post(
                 f"{self.BASE_URL}/files",
                 data=data,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                # Accept both 200 OK and 201 Created as success (201 is standard for resource creation)
-                if resp.status not in (200, 201):
-                    # Capture actual error response from Soniox
-                    error_body = await resp.text()
-                    logger.error(f"Soniox file upload failed: status={resp.status}, body={error_body}")
-                    resp.raise_for_status()
-                file_id = (await resp.json())["id"]
+            ) as response:
+                if response.status in (200, 201):
+                    payload = await response.json()
+                    uploaded_file_id = str(payload.get("id") or "").strip()
+                    if not uploaded_file_id:
+                        raise RuntimeError("Soniox file upload response did not include an id")
+                    return uploaded_file_id
+
+                error_body = await response.text()
+                logger.error(
+                    "Soniox file upload failed: "
+                    f"status={response.status}, body={error_body}"
+                )
+                response.raise_for_status()
+                raise RuntimeError(f"Soniox file upload failed ({response.status})")
+
+        file_id: str | None = None
+        transcription_id: str | None = None
+        try:
+            file_id = await upload_file(
+                file_bytes,
+                upload_content_type=content_type,
+                upload_filename=filename,
+            )
+            if not file_id:
+                raise RuntimeError("Soniox file upload completed without a file id")
 
             payload = {"file_id": file_id, "model": self.model}
             # Build proper context object if custom_vocab is provided
@@ -551,8 +554,12 @@ class SonioxAsyncProcessor(FrameProcessor):
             logger.error(f"Soniox async transcription failed: {e}")
             # Try to clean up even on failure
             try:
-                if 'file_id' in dir():
-                    await self._cleanup_soniox_resources(file_id, transcription_id if 'transcription_id' in dir() else None, headers)
+                if file_id:
+                    await self._cleanup_soniox_resources(
+                        file_id,
+                        transcription_id,
+                        headers,
+                    )
             except Exception:
                 pass
             raise
@@ -776,20 +783,6 @@ def _filter_supported_kwargs(callable_obj: Any, kwargs: dict[str, Any]) -> dict[
     return {key: value for key, value in kwargs.items() if key in signature.parameters}
 
 
-def _assemblyai_realtime_legacy_speech_model(configured_model: str | None, language_code: str | None) -> str:
-    model = (configured_model or "").strip()
-    if model in {"universal-streaming-english", "universal-streaming-multilingual"}:
-        return model
-
-    fallback = "universal-streaming-english" if (language_code or "").lower() == "en" else "universal-streaming-multilingual"
-    logger.info(
-        "Mapping AssemblyAI realtime model '{}' to Pipecat legacy speech_model '{}'",
-        model or "<empty>",
-        fallback,
-    )
-    return fallback
-
-
 def _mistral_segmented_live_model() -> str:
     model = (Config.MISTRAL_RT_MODEL or "").strip()
     if "realtime" in model.lower():
@@ -806,7 +799,6 @@ def _mistral_segmented_live_model() -> str:
 def _create_assemblyai_realtime_service(
     *,
     api_key: str,
-    enable_speaker_diarization: bool,
 ) -> object:
     module = import_provider_runtime_module("assemblyai_realtime", "pipecat.services.assemblyai.stt")
     service_cls = getattr(module, "AssemblyAISTTService", None)
@@ -817,84 +809,36 @@ def _create_assemblyai_realtime_service(
     language_code = assemblyai_universal_35_language_code(Config.LANGUAGE)
     keyterms = build_keyterms_from_vocab(Config.CUSTOM_VOCAB)
 
-    if settings_cls is not None:
-        settings_candidates = {"model": Config.ASSEMBLYAI_RT_MODEL}
-        if language_code:
-            settings_candidates["language_code"] = language_code
-        if keyterms:
-            settings_candidates["keyterms_prompt"] = keyterms[:100]
-        if enable_speaker_diarization:
-            settings_candidates["speaker_labels"] = True
-        settings_kwargs = _filter_supported_kwargs(settings_cls, settings_candidates)
-        if keyterms and "keyterms_prompt" not in settings_kwargs:
-            settings_kwargs.update(
-                _filter_supported_kwargs(
-                    settings_cls,
-                    {"prompt": "Likely vocabulary: " + ", ".join(keyterms[:100])},
-                )
-            )
-        try:
-            settings = settings_cls(**settings_kwargs)
-        except TypeError as exc:
-            logger.warning("AssemblyAI Settings rejected available arguments ({}); trying legacy connection_params", exc)
-        else:
-            service_candidates: dict[str, Any] = {
-                "api_key": api_key,
-                "settings": settings,
-                "vad_force_turn_endpoint": True,
-            }
-            if language_code and "language_code" not in settings_kwargs:
-                service_candidates["language"] = _selected_language()
-            return service_cls(**_filter_supported_kwargs(service_cls, service_candidates))
+    if settings_cls is None:
+        raise RuntimeError("AssemblyAI realtime transcription requires Pipecat 1.5.0.")
 
-    params_cls = getattr(module, "AssemblyAIConnectionParams", None)
-    if params_cls is None:
-        raise RuntimeError(
-            "AssemblyAI realtime transcription requires a Pipecat build with "
-            "AssemblyAISTTService.Settings support."
-        )
-
-    try:
-        params = params_cls(
-            **_filter_supported_kwargs(
-                params_cls,
-                {
-                    "sample_rate": Config.SAMPLE_RATE,
-                    "keyterms_prompt": keyterms[:100] or None,
-                    "speech_model": _assemblyai_realtime_legacy_speech_model(
-                        Config.ASSEMBLYAI_RT_MODEL,
-                        language_code,
-                    ),
-                },
-            )
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            "AssemblyAI Universal-3.5 Pro realtime requires a newer Pipecat "
-            "AssemblyAI STT service. Update the bundled Pipecat runtime."
-        ) from exc
-
+    settings_candidates = {"model": Config.ASSEMBLYAI_RT_MODEL}
+    if language_code:
+        settings_candidates["language_code"] = language_code
+    if keyterms:
+        settings_candidates["keyterms_prompt"] = keyterms[:100]
+    settings_candidates["speaker_labels"] = False
+    settings_kwargs = _filter_supported_kwargs(settings_cls, settings_candidates)
+    settings = settings_cls(**settings_kwargs)
     service_candidates = {
         "api_key": api_key,
-        "connection_params": params,
+        "sample_rate": Config.SAMPLE_RATE,
+        "settings": settings,
         "vad_force_turn_endpoint": True,
     }
-    selected_language = _selected_language()
-    if selected_language is not None:
-        service_candidates["language"] = selected_language
+    if language_code and "language_code" not in settings_kwargs:
+        service_candidates["language"] = _selected_language()
     return service_cls(**_filter_supported_kwargs(service_cls, service_candidates))
 
 
 def _load_soniox_realtime_classes():
-    global SonioxSTTService, SonioxInputParams, SonioxContextObject, _SONIOX_IMPORT_ERROR
+    global SonioxSTTService, SonioxContextObject
     if SonioxSTTService:
-        return SonioxSTTService, SonioxInputParams, SonioxContextObject
+        return SonioxSTTService, SonioxContextObject
     module = import_provider_runtime_module("soniox", "pipecat.services.soniox.stt")
     SonioxSTTService = getattr(module, "SonioxSTTService", None)
-    SonioxInputParams = getattr(module, "SonioxInputParams", None)
     SonioxContextObject = getattr(module, "SonioxContextObject", None)
-    _SONIOX_IMPORT_ERROR = None
-    return SonioxSTTService, SonioxInputParams, SonioxContextObject
+    return SonioxSTTService, SonioxContextObject
 
 
 def _normalize_device_name(name: str) -> str:
@@ -1111,7 +1055,7 @@ class SegmentedSTTRecordingGate(FrameProcessor):
     """Controls whether Pipecat VAD cuts STT audio into multiple live segments.
 
     HTTP-style Pipecat STT services such as Groq/OpenAI/ElevenLabs/Mistral use
-    UserStarted/UserStopped frames to decide when to upload buffered audio. By
+    VADUserStarted/VADUserStopped frames to decide when to upload buffered audio. By
     default Scriber keeps one recording-wide segment so the stop hotkey
     transcribes the whole dictation. VAD frames are still observed before this
     gate for silent-session skips.
@@ -1139,18 +1083,18 @@ class SegmentedSTTRecordingGate(FrameProcessor):
             if not self.vad_segmentation_enabled:
                 self._whole_recording_open = True
                 logger.debug("Opening recording-wide segment for segmented STT service")
-                await self.push_frame(UserStartedSpeakingFrame(), direction)
+                await self.push_frame(VADUserStartedSpeakingFrame(), direction)
             return
 
         if self.vad_segmentation_enabled:
-            if isinstance(frame, UserStartedSpeakingFrame):
+            if isinstance(frame, VADUserStartedSpeakingFrame):
                 self._vad_user_speaking = True
-            elif isinstance(frame, UserStoppedSpeakingFrame):
+            elif isinstance(frame, VADUserStoppedSpeakingFrame):
                 self._vad_user_speaking = False
             await self.push_frame(frame, direction)
             return
 
-        if isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame)):
+        if isinstance(frame, (VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)):
             # VAD is still used upstream for silence detection, but it must not
             # split HTTP upload-based STT providers unless the user opted in.
             return
@@ -1168,17 +1112,17 @@ class SegmentedSTTRecordingGate(FrameProcessor):
                 return False
             self._vad_user_speaking = False
             logger.debug("Flushing active VAD segment for segmented STT service")
-            await self.push_frame(UserStoppedSpeakingFrame(), direction)
+            await self.push_frame(VADUserStoppedSpeakingFrame(), direction)
             return True
 
         if self._whole_recording_closed:
             return False
         if not self._whole_recording_open:
             self._whole_recording_open = True
-            await self.push_frame(UserStartedSpeakingFrame(), direction)
+            await self.push_frame(VADUserStartedSpeakingFrame(), direction)
         self._whole_recording_closed = True
         logger.debug("Closing recording-wide segment for segmented STT service")
-        await self.push_frame(UserStoppedSpeakingFrame(), direction)
+        await self.push_frame(VADUserStoppedSpeakingFrame(), direction)
         return True
 
 
@@ -1520,7 +1464,7 @@ class ScriberPipeline:
             if any(isinstance(step, SegmentedSTTService) for step in self._iter_pipeline_processors()):
                 logger.debug("Forcing segmented STT flush on stop")
                 await self.pipeline.push_frame(
-                    UserStoppedSpeakingFrame(),
+                    VADUserStoppedSpeakingFrame(),
                     direction=FrameDirection.DOWNSTREAM,
                 )
                 return True
@@ -1554,7 +1498,7 @@ class ScriberPipeline:
         try:
             logger.debug("Forcing live STT turn finalization on hotkey stop")
             await self.pipeline.push_frame(
-                UserStoppedSpeakingFrame(),
+                VADUserStoppedSpeakingFrame(),
                 direction=FrameDirection.DOWNSTREAM,
             )
             return True
@@ -1626,46 +1570,31 @@ class ScriberPipeline:
                     on_progress=self.on_progress,
                     enable_speaker_diarization=self.enable_speaker_diarization,
                 )
-            soniox_service_cls, soniox_input_params_cls, soniox_context_cls = _load_soniox_realtime_classes()
+            soniox_service_cls, soniox_context_cls = _load_soniox_realtime_classes()
             if not soniox_service_cls: raise RuntimeError("SonioxSTTService not available.")
+            settings_cls = getattr(soniox_service_cls, "Settings", None)
+            if settings_cls is None:
+                raise RuntimeError("Soniox realtime transcription requires Pipecat 1.5.0.")
             lang_hint = _selected_language()
-            # Use Soniox v5 realtime by default; SCRIBER_SONIOX_RT_MODEL remains an override.
             rt_model = Config.SONIOX_RT_MODEL
-            # Build params with model and context
+            settings_candidates: dict[str, Any] = {
+                "model": rt_model,
+                "language_hints": [lang_hint] if lang_hint else None,
+                "enable_speaker_diarization": self.enable_speaker_diarization if for_file else False,
+            }
             if Config.CUSTOM_VOCAB and soniox_context_cls:
                 terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
                 if terms:
                     logger.info(f"Applying custom vocabulary: {terms}")
-                    params = soniox_input_params_cls(
-                        model=rt_model,
-                        context=soniox_context_cls(terms=terms),
-                        language_hints=[lang_hint] if lang_hint else None,
-                        enable_speaker_diarization=self.enable_speaker_diarization,
-                    ) if soniox_input_params_cls else _SonioxParamsFallback(
-                        context=soniox_context_cls(terms=terms),
-                        enable_speaker_diarization=self.enable_speaker_diarization,
-                    )
-                else:
-                    params = soniox_input_params_cls(
-                        model=rt_model,
-                        language_hints=[lang_hint] if lang_hint else None,
-                        enable_speaker_diarization=self.enable_speaker_diarization,
-                    ) if soniox_input_params_cls else _SonioxParamsFallback(
-                        enable_speaker_diarization=self.enable_speaker_diarization,
-                    )
-            else:
-                params = soniox_input_params_cls(
-                    model=rt_model,
-                    language_hints=[lang_hint] if lang_hint else None,
-                    enable_speaker_diarization=self.enable_speaker_diarization,
-                ) if soniox_input_params_cls else _SonioxParamsFallback(
-                    enable_speaker_diarization=self.enable_speaker_diarization,
-                )
-            # vad_force_turn_endpoint=True disables automatic endpoint detection which would
-            # otherwise close the WebSocket connection when speech pauses are detected.
-            # This keeps the connection alive for the entire recording session.
-            logger.info(f"Creating SonioxSTTService with vad_force_turn_endpoint=True (endpoint detection DISABLED)")
-            return soniox_service_cls(api_key=_get_api_key("soniox"), params=params, vad_force_turn_endpoint=True)
+                    settings_candidates["context"] = soniox_context_cls(terms=terms)
+            settings = settings_cls(**_filter_supported_kwargs(settings_cls, settings_candidates))
+            logger.info("Creating SonioxSTTService with Pipecat 1.5 settings and forced turn endpointing")
+            return soniox_service_cls(
+                api_key=_get_api_key("soniox"),
+                sample_rate=Config.SAMPLE_RATE,
+                settings=settings,
+                vad_force_turn_endpoint=True,
+            )
 
         elif self.service_name in ("mistral", "mistral_async"):
             if not _get_api_key("mistral"):
@@ -1735,13 +1664,34 @@ class ScriberPipeline:
             logger.info("Using AssemblyAI Universal-3.5-Pro realtime transcription mode")
             return _create_assemblyai_realtime_service(
                 api_key=_get_api_key("assemblyai"),
-                enable_speaker_diarization=self.enable_speaker_diarization,
             )
         
         elif self.service_name == "google":
             # Lazy import - only loaded when Google is used
             module = import_provider_runtime_module("google", "pipecat.services.google.stt")
-            return module.GoogleSTTService()
+            GoogleSTTService = module.GoogleSTTService
+            credentials_path = str(Config.GOOGLE_APPLICATION_CREDENTIALS or "").strip()
+            if not credentials_path:
+                raise ValueError("Google Cloud credentials path is missing.")
+            settings_cls = getattr(GoogleSTTService, "Settings", None)
+            if settings_cls is None:
+                raise RuntimeError("Google Cloud streaming transcription requires Pipecat 1.5.0.")
+            selected_language = _selected_language()
+            settings_values = {
+                "enable_automatic_punctuation": True,
+                "enable_interim_results": True,
+                "enable_voice_activity_events": False,
+            }
+            if selected_language:
+                settings_values["languages"] = [selected_language]
+            settings = settings_cls(
+                **_filter_supported_kwargs(settings_cls, settings_values)
+            )
+            return GoogleSTTService(
+                credentials_path=credentials_path,
+                sample_rate=Config.SAMPLE_RATE,
+                settings=settings,
+            )
 
         elif self.service_name == "gemini_stt":
             api_key = Config.get_api_key("gemini_stt")
@@ -1764,27 +1714,33 @@ class ScriberPipeline:
 
             realtime_cls = getattr(module, "ElevenLabsRealtimeSTTService", None)
             if realtime_cls is None:
-                raise RuntimeError("ElevenLabs Live requires a Pipecat build with ElevenLabsRealtimeSTTService.")
+                raise RuntimeError("ElevenLabs Live requires Pipecat 1.5.0.")
             commit_strategy = getattr(getattr(module, "CommitStrategy", object), "MANUAL", None)
-            params_cls = getattr(realtime_cls, "InputParams", None)
-            params = None
-            lang_code = _selected_language_code()
-            if params_cls is not None:
-                params_candidates = {"language_code": lang_code}
-                if commit_strategy is not None:
-                    params_candidates["commit_strategy"] = commit_strategy
-                params = params_cls(**_filter_supported_kwargs(params_cls, params_candidates))
+            settings_cls = getattr(realtime_cls, "Settings", None)
+            if settings_cls is None or commit_strategy is None:
+                raise RuntimeError("ElevenLabs Live requires Pipecat 1.5.0 settings support.")
+            language = _selected_language()
+            settings = settings_cls(
+                **_filter_supported_kwargs(
+                    settings_cls,
+                    {
+                        "model": "scribe_v2_realtime",
+                        "language": language,
+                        "keyterms": build_keyterms_from_vocab(Config.CUSTOM_VOCAB)[:100] or None,
+                    },
+                )
+            )
 
-            logger.info(f"ElevenLabs realtime STT: Using language={lang_code or 'auto-detect'}")
+            logger.info(f"ElevenLabs realtime STT: Using language={_selected_language_code() or 'auto-detect'}")
 
             return realtime_cls(
                 **_filter_supported_kwargs(
                     realtime_cls,
                     {
                         "api_key": _get_api_key("elevenlabs"),
-                        "model": "scribe_v2_realtime",
                         "sample_rate": Config.SAMPLE_RATE,
-                        "params": params,
+                        "commit_strategy": commit_strategy,
+                        "settings": settings,
                     },
                 )
             )
@@ -1794,25 +1750,22 @@ class ScriberPipeline:
             module = import_provider_runtime_module("deepgram", "pipecat.services.deepgram.stt")
             DeepgramSTTService = module.DeepgramSTTService
             if not _get_api_key("deepgram"): raise ValueError("Deepgram API Key is missing.")
-            LiveOptions = getattr(module, "LiveOptions", None)
-            live_options = None
-            if LiveOptions:
-                deepgram_options = {
-                    "encoding": "linear16",
-                    "sample_rate": Config.SAMPLE_RATE,
-                    "channels": Config.CHANNELS,
-                    "model": "nova-3",
-                    "interim_results": True,
-                    "smart_format": True,
-                    "punctuate": True,
-                    "vad_events": False,
-                }
-                lang_code = _selected_language_code()
-                if lang_code:
-                    deepgram_options["language"] = lang_code
-                if self.enable_speaker_diarization:
-                    deepgram_options["diarize"] = True
-                live_options = LiveOptions(**deepgram_options)
+            settings_cls = getattr(DeepgramSTTService, "Settings", None)
+            if settings_cls is None:
+                raise RuntimeError("Deepgram streaming transcription requires Pipecat 1.5.0.")
+            deepgram_settings = settings_cls(
+                **_filter_supported_kwargs(
+                    settings_cls,
+                    {
+                        "model": "nova-3",
+                        "language": _selected_language(),
+                        "interim_results": True,
+                        "smart_format": True,
+                        "punctuate": True,
+                        "diarize": self.enable_speaker_diarization if for_file else False,
+                    },
+                )
+            )
 
             pipeline_ref = self
 
@@ -1828,8 +1781,10 @@ class ScriberPipeline:
 
             return ScriberDeepgramSTTService(
                 api_key=_get_api_key("deepgram"),
+                encoding="linear16",
+                channels=Config.CHANNELS,
                 sample_rate=Config.SAMPLE_RATE,
-                live_options=live_options,
+                settings=deepgram_settings,
             )
 
         elif self.service_name == "deepgram_async":
@@ -1851,13 +1806,11 @@ class ScriberPipeline:
             OpenAIRealtimeSTTService = getattr(module, "OpenAIRealtimeSTTService", None)
             if not _get_api_key("openai"): raise ValueError("OpenAI API Key is missing.")
             if OpenAIRealtimeSTTService is None:
-                raise RuntimeError("OpenAI Realtime STT requires pipecat-ai 1.4.0 or newer.")
+                raise RuntimeError("OpenAI Realtime STT requires Pipecat 1.5.0.")
             settings_cls = getattr(OpenAIRealtimeSTTService, "Settings", None)
-            settings = (
-                settings_cls(model=Config.OPENAI_REALTIME_STT_MODEL, language=_selected_language())
-                if settings_cls
-                else None
-            )
+            if settings_cls is None:
+                raise RuntimeError("OpenAI Realtime STT requires Pipecat 1.5.0 settings support.")
+            settings = settings_cls(model=Config.OPENAI_REALTIME_STT_MODEL, language=_selected_language())
             return OpenAIRealtimeSTTService(
                 api_key=_get_api_key("openai"),
                 settings=settings,
@@ -1900,8 +1853,7 @@ class ScriberPipeline:
 
             class ScriberGladiaSTTService(GladiaSTTService):
                 async def stop(self, frame: EndFrame):
-                    await super(GladiaSTTService, self).stop(frame)
-                    self._should_reconnect = False
+                    await STTService.stop(self, frame)
                     try:
                         await self._send_stop_recording()
                     except Exception as exc:
@@ -1925,11 +1877,21 @@ class ScriberPipeline:
                                 f"Timed out waiting {timeout:g}s for Gladia final transcription before websocket cleanup"
                             )
 
-                    if getattr(self, "_connection_task", None):
-                        await self.cancel_task(self._connection_task)
-                        self._connection_task = None
+                    await self._disconnect()
 
-                    await self._cleanup_connection()
+            settings_cls = getattr(GladiaSTTService, "Settings", None)
+            if settings_cls is None:
+                raise RuntimeError("Gladia realtime transcription requires Pipecat 1.5.0.")
+            gladia_settings = settings_cls(
+                **_filter_supported_kwargs(
+                    settings_cls,
+                    {
+                        "model": "solaria-1",
+                        "language": _selected_language(),
+                        "enable_vad": False,
+                    },
+                )
+            )
 
             return ScriberGladiaSTTService(
                 **_filter_supported_kwargs(
@@ -1937,7 +1899,8 @@ class ScriberPipeline:
                     {
                         "api_key": _get_api_key("gladia"),
                         "sample_rate": Config.SAMPLE_RATE,
-                        "model": "solaria-1",
+                        "channels": Config.CHANNELS,
+                        "settings": gladia_settings,
                     },
                 )
             )
@@ -1960,25 +1923,48 @@ class ScriberPipeline:
             module = import_provider_runtime_module("groq", "pipecat.services.groq.stt")
             GroqSTTService = module.GroqSTTService
             if not _get_api_key("groq"): raise ValueError("Groq API Key is missing.")
-            return GroqSTTService(api_key=_get_api_key("groq"), aiohttp_session=session, language=_selected_language())
+            settings_cls = getattr(GroqSTTService, "Settings", None)
+            if settings_cls is None:
+                raise RuntimeError("Groq transcription requires Pipecat 1.5.0.")
+            settings = settings_cls(
+                **_filter_supported_kwargs(
+                    settings_cls,
+                    {
+                        "language": _selected_language(),
+                        "prompt": (
+                            "Likely vocabulary: " + Config.CUSTOM_VOCAB
+                            if Config.CUSTOM_VOCAB
+                            else None
+                        ),
+                    },
+                )
+            )
+            return GroqSTTService(api_key=_get_api_key("groq"), settings=settings)
         
         elif self.service_name == "speechmatics":
             # Lazy import - only loaded when Speechmatics is used
             module = import_provider_runtime_module("speechmatics", "pipecat.services.speechmatics.stt")
             SpeechmaticsSTTService = module.SpeechmaticsSTTService
             if not _get_api_key("speechmatics"): raise ValueError("Speechmatics API Key is missing.")
-            params_cls = getattr(SpeechmaticsSTTService, "InputParams", None)
-            params = (
-                params_cls(
-                    language=Config.LANGUAGE if Config.LANGUAGE != "auto" else "en",
-                    enable_diarization=self.enable_speaker_diarization,
-                    speaker_active_format="[Speaker {speaker_id}]: {text}",
-                    speaker_passive_format="[Speaker {speaker_id}]: {text}",
+            settings_cls = getattr(SpeechmaticsSTTService, "Settings", None)
+            if settings_cls is None:
+                raise RuntimeError("Speechmatics realtime transcription requires Pipecat 1.5.0.")
+            settings = settings_cls(
+                **_filter_supported_kwargs(
+                    settings_cls,
+                    {
+                        "language": _selected_language() or Language.EN,
+                        "enable_diarization": self.enable_speaker_diarization if for_file else False,
+                        "speaker_active_format": "[Speaker {speaker_id}]: {text}",
+                        "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
+                    },
                 )
-                if params_cls
-                else None
             )
-            return SpeechmaticsSTTService(api_key=_get_api_key("speechmatics"), params=params)
+            return SpeechmaticsSTTService(
+                api_key=_get_api_key("speechmatics"),
+                sample_rate=Config.SAMPLE_RATE,
+                settings=settings,
+            )
 
         elif self.service_name == "speechmatics_async":
             if not _get_api_key("speechmatics"):

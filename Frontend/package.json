@@ -1,6 +1,6 @@
 {
   "name": "rest-express",
-  "version": "0.4.27",
+  "version": "0.4.28",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -67,11 +67,11 @@
     "express": "^4.21.2",
     "express-session": "^1.18.1",
     "flag-icons": "^7.5.0",
-    "framer-motion": "^12.23.24",
+    "framer-motion": "^12.42.2",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.545.0",
     "memorystore": "^1.6.7",
-    "motion": "^12.23.26",
+    "motion": "^12.42.2",
     "next-themes": "^0.4.6",
     "passport": "^0.7.0",
     "passport-local": "^1.0.0",

@@ -86,6 +86,14 @@ function formatEntryTime(entry: RuntimeLogEntry) {
       second: "2-digit",
     });
   }
+  const parsed = timestampToDate(entry.timestamp);
+  if (parsed) {
+    return parsed.toLocaleTimeString("de-DE", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
   return entry.timestamp || "";
 }
 
@@ -202,8 +210,11 @@ export default function DebugConsole() {
   const [truncated, setTruncated] = useState(false);
   const logScrollRef = useRef<HTMLElement | null>(null);
   const logLoadGenerationRef = useRef(0);
+  const logLoadInFlightRef = useRef(false);
 
   const loadLogs = useCallback(async () => {
+    if (logLoadInFlightRef.current) return;
+    logLoadInFlightRef.current = true;
     const loadGeneration = logLoadGenerationRef.current + 1;
     logLoadGenerationRef.current = loadGeneration;
     setLoading(true);
@@ -235,6 +246,7 @@ export default function DebugConsole() {
       if (loadGeneration !== logLoadGenerationRef.current) return;
       setError(String(err?.message || err));
     } finally {
+      logLoadInFlightRef.current = false;
       if (loadGeneration === logLoadGenerationRef.current) {
         setLoading(false);
       }
@@ -247,10 +259,19 @@ export default function DebugConsole() {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const timer = window.setInterval(() => {
-      void loadLogs();
-    }, 2500);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    let timer = 0;
+    const scheduleNextRefresh = () => {
+      timer = window.setTimeout(async () => {
+        await loadLogs();
+        if (!cancelled) scheduleNextRefresh();
+      }, 2500);
+    };
+    scheduleNextRefresh();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [autoRefresh, loadLogs]);
 
   const filteredLogs = useMemo(() => {
@@ -426,80 +447,96 @@ export default function DebugConsole() {
 
   return (
     <>
-    <div className="flex h-[calc(100vh-1.5rem)] min-h-0 flex-col overflow-hidden">
-      <div className="sticky top-0 z-20 shrink-0 border-b border-border/70 bg-background/95 backdrop-blur">
-        <header className="border-b border-border/70 px-4 py-3 md:px-6">
-          <div className="grid gap-3 xl:grid-cols-[minmax(260px,1fr)_minmax(0,auto)] xl:items-start">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <Terminal className="h-5 w-5 text-foreground" />
-                <h1 className="text-xl font-semibold tracking-tight text-foreground">Debug Console</h1>
+      <div className="debug-console-page">
+        <header className="debug-console-hero">
+          <div className="debug-console-intro">
+            <div className="debug-console-eyebrow">
+              <span className="debug-console-eyebrow-line" />
+              System observability · 04
+            </div>
+            <div className="debug-console-title-row">
+              <div className="debug-console-title-mark" aria-hidden="true">
+                <Terminal className="h-5 w-5" />
               </div>
-              <div className="mt-1 grid min-h-[3.25rem] gap-x-3 gap-y-1 text-sm text-muted-foreground sm:grid-cols-[auto_auto_auto]">
-                <span className="whitespace-nowrap">{filteredLogs.length} of {logs.length} entries</span>
-                <span className="whitespace-nowrap">{sources.length} sources</span>
-                <span className="whitespace-nowrap">{dateFilter === ALL_DATES_VALUE ? "All dates" : `Date ${dateFilter}`}</span>
-                <span className="whitespace-nowrap">
-                  Updated {lastUpdated ? lastUpdated.toLocaleTimeString("de-DE") : "--:--:--"}
-                </span>
-                <span className="whitespace-nowrap">{truncated ? "Tail view" : "Full view"}</span>
+              <div>
+                <h1>Debug console</h1>
+                <p>Inspect runtime events, isolate failures, and package diagnostics without leaving Scriber.</p>
               </div>
             </div>
-            <div className="grid gap-2 xl:justify-items-end">
-              <div className="grid w-full grid-cols-3 gap-2 xl:w-auto xl:min-w-[360px]">
-                <Badge className="justify-center" variant={errorCount ? "destructive" : "outline"}>{errorCount} errors</Badge>
-                <Badge className="justify-center" variant={warningCount ? "secondary" : "outline"}>{warningCount} warnings</Badge>
-                <Badge className="justify-center" variant={debugCount ? "outline" : "secondary"}>{debugCount} debug</Badge>
+          </div>
+
+          <div className="debug-console-overview">
+            <div className="debug-console-stats" aria-label="Runtime log summary">
+              <div className="debug-console-stat">
+                <span>Visible</span>
+                <strong>{filteredLogs.length}</strong>
+                <small>of {logs.length}</small>
               </div>
-              <div className="debug-console-actions">
-                <Button className="debug-console-action-button" title="Clear view" aria-label="Clear view" type="button" variant="outline" size="sm" onClick={clearConsoleView} disabled={!displayedLogs.length}>
-                  <Eraser className="h-4 w-4" />
-                  <span className="debug-console-action-label">Clear view</span>
-                </Button>
-                <Button
-                  className="debug-console-action-button"
-                  title="Clear logs"
-                  aria-label="Clear logs"
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setDeleteDialogOpen(true)}
-                  disabled={logFileClearLoading || (!logs.length && !sources.length)}
-                >
-                  <Trash2 className={cn("h-4 w-4", logFileClearLoading && "animate-pulse")} />
-                  <span className="debug-console-action-label">Clear logs</span>
-                </Button>
-                <Button className="debug-console-action-button" title="Copy visible logs" aria-label="Copy visible logs" type="button" variant="outline" size="sm" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
-                  <Clipboard className="h-4 w-4" />
-                  <span className="debug-console-action-label">Copy visible</span>
-                </Button>
-                <Button className="debug-console-action-button" title="Download support bundle" aria-label="Download support bundle" type="button" variant="outline" size="sm" onClick={() => void downloadSupportBundle()} disabled={supportBundleLoading}>
-                  <Download className={cn("h-4 w-4", supportBundleLoading && "animate-pulse")} />
-                  <span className="debug-console-action-label">Support bundle</span>
-                </Button>
-                <Button className="debug-console-action-button" title="Refresh logs" aria-label="Refresh logs" type="button" variant="outline" size="sm" onClick={() => void loadLogs()} disabled={loading}>
-                  <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-                  <span className="debug-console-action-label">Refresh</span>
-                </Button>
+              <div className="debug-console-stat" data-tone={errorCount ? "danger" : "quiet"}>
+                <span>Errors</span>
+                <strong>{errorCount}</strong>
+                <small>critical included</small>
               </div>
+              <div className="debug-console-stat" data-tone={warningCount ? "warning" : "quiet"}>
+                <span>Warnings</span>
+                <strong>{warningCount}</strong>
+                <small>needs review</small>
+              </div>
+              <div className="debug-console-stat">
+                <span>Sources</span>
+                <strong>{sources.length}</strong>
+                <small>{truncated ? "tail view" : "full view"}</small>
+              </div>
+            </div>
+
+            <div className="debug-console-actions" aria-label="Console actions">
+              <Button className="debug-console-action-button" title="Clear view" aria-label="Clear view" type="button" variant="outline" size="sm" onClick={clearConsoleView} disabled={!displayedLogs.length}>
+                <Eraser className="h-4 w-4" />
+                <span className="debug-console-action-label">Clear view</span>
+              </Button>
+              <Button
+                className="debug-console-action-button"
+                title="Clear logs"
+                aria-label="Clear logs"
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setDeleteDialogOpen(true)}
+                disabled={logFileClearLoading || (!logs.length && !sources.length)}
+              >
+                <Trash2 className={cn("h-4 w-4", logFileClearLoading && "animate-pulse")} />
+                <span className="debug-console-action-label">Clear logs</span>
+              </Button>
+              <Button className="debug-console-action-button" title="Copy visible logs" aria-label="Copy visible logs" type="button" variant="outline" size="sm" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
+                <Clipboard className="h-4 w-4" />
+                <span className="debug-console-action-label">Copy</span>
+              </Button>
+              <Button className="debug-console-action-button" title="Download support bundle" aria-label="Download support bundle" type="button" variant="outline" size="sm" onClick={() => void downloadSupportBundle()} disabled={supportBundleLoading}>
+                <Download className={cn("h-4 w-4", supportBundleLoading && "animate-pulse")} />
+                <span className="debug-console-action-label">Support</span>
+              </Button>
+              <Button className="debug-console-action-button debug-console-refresh-button" title="Refresh logs" aria-label="Refresh logs" type="button" size="sm" onClick={() => void loadLogs()} disabled={loading}>
+                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+                <span className="debug-console-action-label">Refresh</span>
+              </Button>
             </div>
           </div>
         </header>
 
-        <section className="px-4 py-3 md:px-6">
-          <div className="grid gap-2 2xl:grid-cols-[minmax(220px,1fr)_180px_160px_minmax(520px,auto)_auto]">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <section className="debug-command-deck" aria-label="Log controls">
+          <div className="debug-command-primary">
+            <div className="debug-search-field">
+              <Search className="pointer-events-none h-4 w-4" />
               <Input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                className="pl-9"
-                placeholder="Filter message, source, component..."
+                placeholder="Search messages, sources, or components"
                 aria-label="Filter logs"
               />
+              <span className="debug-search-hint">live filter</span>
             </div>
             <Select value={selectedSource} onValueChange={setSelectedSource}>
-              <SelectTrigger aria-label="Filter source">
+              <SelectTrigger className="debug-source-select" aria-label="Filter source">
                 <SelectValue placeholder="Source" />
               </SelectTrigger>
               <SelectContent>
@@ -509,176 +546,187 @@ export default function DebugConsole() {
                 ))}
               </SelectContent>
             </Select>
-            <div className="relative">
-              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <div className="debug-date-field">
+              <CalendarDays className="pointer-events-none h-4 w-4" />
               <Input
                 type="date"
                 value={dateFilter === ALL_DATES_VALUE ? "" : dateFilter}
                 onChange={(event) => setDateFilter(event.target.value || ALL_DATES_VALUE)}
-                className="pl-9"
                 aria-label="Filter log date"
               />
             </div>
-            <div className="min-w-0 overflow-x-auto rounded-md border border-border/70 bg-background/35 p-1">
-              <div className="flex min-w-max items-center gap-1">
-                <Filter className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
+          </div>
+
+          <div className="debug-command-secondary">
+            <div className="debug-level-filter" aria-label="Filter by severity">
+              <div className="debug-level-label">
+                <Filter className="h-4 w-4" />
+                Severity
+              </div>
+              <div className="debug-level-options">
                 {LEVELS.map((level) => (
                   <button
                     key={level}
                     type="button"
+                    aria-pressed={selectedLevel === level}
                     onClick={() => setSelectedLevel(level)}
-                    className={cn(
-                      "h-7 min-w-[70px] shrink-0 rounded px-2 text-xs font-medium transition-colors",
-                      selectedLevel === level
-                        ? "bg-foreground text-background"
-                        : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                    )}
+                    className={cn("debug-level-button", selectedLevel === level && "is-active")}
                   >
                     {level}
                   </button>
                 ))}
               </div>
             </div>
-            <Button className="shrink-0" type="button" variant="ghost" onClick={resetFilters} disabled={!hasActiveFilters}>
+            <Button className="debug-reset-button" type="button" variant="ghost" onClick={resetFilters} disabled={!hasActiveFilters}>
               <Eraser className="h-4 w-4" />
-              Reset filters
+              Reset
             </Button>
           </div>
 
-          <div className="mt-3 grid min-h-10 gap-3 text-sm text-muted-foreground xl:grid-cols-[auto_auto_auto_auto_minmax(180px,1fr)] xl:items-center">
-            <label className="flex items-center justify-between gap-2 rounded-md border border-border/70 px-3 py-1.5">
-              <span>Auto refresh</span>
-              <Switch className="compact-impact-switch" checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="Toggle auto refresh" />
-            </label>
-            <label className="flex items-center justify-between gap-2 rounded-md border border-border/70 px-3 py-1.5">
-              <span>Auto scroll</span>
-              <Switch className="compact-impact-switch" checked={autoScroll} onCheckedChange={setAutoScroll} aria-label="Toggle auto scroll" />
-            </label>
-            <label className="flex items-center justify-between gap-2 rounded-md border border-border/70 px-3 py-1.5">
-              <span>Newest first</span>
-              <Switch className="compact-impact-switch" checked={newestFirst} onCheckedChange={setNewestFirst} aria-label="Show newest logs first" />
-            </label>
-            <Button
-              className="justify-self-start"
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={jumpToLogEdge}
-              disabled={!displayedLogs.length}
-            >
+          <div className="debug-runtime-controls">
+            <div className="debug-toggle-group">
+              <label className="debug-toggle-control">
+                <span>Auto refresh</span>
+                <Switch className="compact-impact-switch" checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="Toggle auto refresh" />
+              </label>
+              <label className="debug-toggle-control">
+                <span>Auto scroll</span>
+                <Switch className="compact-impact-switch" checked={autoScroll} onCheckedChange={setAutoScroll} aria-label="Toggle auto scroll" />
+              </label>
+              <label className="debug-toggle-control">
+                <span>Newest first</span>
+                <Switch className="compact-impact-switch" checked={newestFirst} onCheckedChange={setNewestFirst} aria-label="Show newest logs first" />
+              </label>
+            </div>
+            <Button className="debug-edge-button" type="button" variant="ghost" size="sm" onClick={jumpToLogEdge} disabled={!displayedLogs.length}>
               <ArrowDownToLine className="h-4 w-4" />
-              {newestFirst ? "Top" : "Bottom"}
+              {newestFirst ? "Jump to top" : "Jump to bottom"}
             </Button>
-            <span className="min-h-5 min-w-0 truncate" aria-live="polite" title={actionStatus}>
-              {actionStatus || "\u00a0"}
-            </span>
+            <div className="debug-updated-status">
+              <span className={cn("debug-live-dot", autoRefresh && "is-live")} />
+              <span>{autoRefresh ? "Live" : "Paused"}</span>
+              <span className="debug-updated-time">{lastUpdated ? lastUpdated.toLocaleTimeString("de-DE") : "--:--:--"}</span>
+            </div>
           </div>
 
-          {error && (
-            <div className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
-              {error}
-            </div>
+          {actionStatus && (
+            <div className="debug-action-status" aria-live="polite" title={actionStatus}>{actionStatus}</div>
           )}
-
-          <div className="mt-3 grid gap-2 rounded-md border border-border/70 bg-background/40 p-3 text-sm md:grid-cols-[minmax(0,1.3fr)_minmax(0,2fr)]">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <Bug className="h-4 w-4 text-muted-foreground" />
-                <span className="font-medium text-foreground">Post-processing diagnostics</span>
-                <Badge variant={postProcessingFailures ? "destructive" : "outline"}>
-                  {postProcessingFailures} failures
-                </Badge>
-              </div>
-              <p className="mt-1 text-muted-foreground">
-                {postProcessingStatusLabel(latestPostProcessing)}
-                {latestPostProcessing?.durationMs != null ? ` · ${formatMs(latestPostProcessing.durationMs)}` : ""}
-              </p>
-            </div>
-            <div className="grid gap-1 text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
-              <span className="truncate" title={latestPostProcessing?.model || ""}>
-                Model: {latestPostProcessing?.model || "--"}
-              </span>
-              <span>Input: {latestPostProcessing?.rawChars ?? "--"} chars</span>
-              <span>Output: {latestPostProcessing?.processedChars ?? latestPostProcessing?.providerResponseChars ?? "--"} chars</span>
-              <span>
-                Tokens: {latestPostProcessing?.maxOutputTokens ?? "--"}
-                {latestPostProcessing?.promptChars != null ? ` · prompt ${latestPostProcessing.promptChars} chars` : ""}
-              </span>
-              {latestPostProcessing?.fallbackToRaw ? (
-                <span className="truncate text-amber-700 dark:text-amber-300" title={latestPostProcessing.error || ""}>
-                  Raw fallback: {latestPostProcessing.errorType || latestPostProcessing.error || "yes"}
-                </span>
-              ) : null}
-            </div>
-          </div>
+          {error && <div className="debug-error-banner">{error}</div>}
         </section>
+
+        <div className="debug-console-workspace">
+          <section className="debug-log-panel" aria-label="Runtime log stream">
+            <header className="debug-log-header">
+              <div>
+                <span className="debug-log-kicker">Runtime stream</span>
+                <h2>Live event feed</h2>
+              </div>
+              <div className="debug-log-meta">
+                <span>{displayedLogs.length} visible</span>
+                <span>{debugCount} debug</span>
+                <span>{dateFilter === ALL_DATES_VALUE ? "All dates" : dateFilter}</span>
+              </div>
+            </header>
+
+            <section ref={logScrollRef} className="debug-log-scroll">
+              {displayedLogs.length === 0 ? (
+                <div className="debug-empty-state">
+                  <div className="debug-empty-mark"><Terminal className="h-5 w-5" /></div>
+                  <strong>No matching events</strong>
+                  <span>Adjust the active filters or refresh the runtime stream.</span>
+                  {hasActiveFilters && (
+                    <Button type="button" variant="outline" size="sm" onClick={resetFilters}>Reset filters</Button>
+                  )}
+                </div>
+              ) : (
+                <div className="debug-log-list">
+                  {displayedLogs.map((entry, index) => {
+                    const level = normalizeLevel(entry.level);
+                    const Icon = iconForLevel(level);
+                    return (
+                      <article
+                        key={`${logEntryKey(entry)}-${index}`}
+                        className={cn("debug-log-row", rowStyles[level] || rowStyles.INFO)}
+                        data-level={level.toLowerCase()}
+                      >
+                        <time className="debug-log-time" title={entry.timestamp || ""}>{formatEntryTime(entry)}</time>
+                        <span className="debug-log-source" title={`${entry.source}:${entry.line}`}>{entry.source}:{entry.line}</span>
+                        <span className={cn("debug-log-level", levelStyles[level] || levelStyles.INFO)}>
+                          <Icon className="h-3 w-3" />
+                          {level}
+                        </span>
+                        <p className="debug-log-message">
+                          {entry.component && <span className="debug-log-component">{entry.component}</span>}
+                          {entry.message}
+                        </p>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </section>
+
+          <aside className="debug-diagnostics-panel" aria-label="Post-processing diagnostics">
+            <div className="debug-diagnostics-heading">
+              <div className="debug-diagnostics-mark"><Bug className="h-4 w-4" /></div>
+              <div>
+                <span>Pipeline</span>
+                <h2>Post-processing</h2>
+              </div>
+              <Badge className="debug-failure-badge" variant={postProcessingFailures ? "destructive" : "outline"}>
+                {postProcessingFailures} failed
+              </Badge>
+            </div>
+
+            <div className="debug-diagnostic-state" data-state={latestPostProcessing?.status || "idle"}>
+              <span className="debug-diagnostic-state-dot" />
+              <div>
+                <strong>{postProcessingStatusLabel(latestPostProcessing)}</strong>
+                <span>{latestPostProcessing?.durationMs != null ? formatMs(latestPostProcessing.durationMs) : "Waiting for a run"}</span>
+              </div>
+            </div>
+
+            <dl className="debug-diagnostic-list">
+              <div><dt>Model</dt><dd title={latestPostProcessing?.model || ""}>{latestPostProcessing?.model || "--"}</dd></div>
+              <div><dt>Input</dt><dd>{latestPostProcessing?.rawChars ?? "--"} chars</dd></div>
+              <div><dt>Output</dt><dd>{latestPostProcessing?.processedChars ?? latestPostProcessing?.providerResponseChars ?? "--"} chars</dd></div>
+              <div><dt>Token cap</dt><dd>{latestPostProcessing?.maxOutputTokens ?? "--"}</dd></div>
+              <div><dt>Prompt</dt><dd>{latestPostProcessing?.promptChars ?? "--"} chars</dd></div>
+            </dl>
+
+            {latestPostProcessing?.fallbackToRaw ? (
+              <div className="debug-fallback-note" title={latestPostProcessing.error || ""}>
+                Raw fallback · {latestPostProcessing.errorType || latestPostProcessing.error || "active"}
+              </div>
+            ) : null}
+
+            <div className="debug-diagnostics-foot">
+              <span>Diagnostics are redacted</span>
+              <span>{postProcessingDiagnostics.length} recent runs</span>
+            </div>
+          </aside>
+        </div>
       </div>
 
-      <section ref={logScrollRef} className="min-h-0 flex-1 overflow-auto px-3 py-3 md:px-5">
-        <div className="overflow-hidden rounded-md border border-border/70 bg-background/45">
-          {displayedLogs.length === 0 ? (
-            <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
-              No matching log entries.
-            </div>
-          ) : (
-            <div className="divide-y divide-border/60 font-mono text-[12px] leading-5">
-              {displayedLogs.map((entry, index) => {
-                const level = normalizeLevel(entry.level);
-                const Icon = iconForLevel(level);
-                return (
-                  <div
-                    key={`${logEntryKey(entry)}-${index}`}
-                    className={cn(
-                      "grid border-l-2 gap-2 px-3 py-2 md:grid-cols-[76px_160px_96px_minmax(0,1fr)]",
-                      rowStyles[level] || rowStyles.INFO,
-                    )}
-                  >
-                    <span className="text-muted-foreground">{formatEntryTime(entry)}</span>
-                    <span className="truncate text-muted-foreground" title={`${entry.source}:${entry.line}`}>
-                      {entry.source}:{entry.line}
-                    </span>
-                    <span
-                      className={cn(
-                        "inline-flex h-6 w-fit items-center gap-1 rounded border px-1.5 text-[11px] font-semibold",
-                        levelStyles[level] || levelStyles.INFO,
-                      )}
-                    >
-                      <Icon className="h-3 w-3" />
-                      {level}
-                    </span>
-                    <span className="min-w-0 whitespace-pre-wrap break-words text-foreground">
-                      {entry.component && (
-                        <span className="mr-2 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                          {entry.component}
-                        </span>
-                      )}
-                      {entry.message}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </section>
-    </div>
-    <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Clear runtime logs?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This clears the backend and shell logs for the debug console and for new support bundles. Existing support bundles are not changed.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={() => void deleteRuntimeLogs()} disabled={logFileClearLoading}>
-            <Trash2 className="h-4 w-4" />
-            Clear logs
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear runtime logs?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This clears the backend and shell logs for the debug console and for new support bundles. Existing support bundles are not changed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void deleteRuntimeLogs()} disabled={logFileClearLoading}>
+              <Trash2 className="h-4 w-4" />
+              Clear logs
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

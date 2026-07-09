@@ -5,10 +5,11 @@ from pipecat.frames.frames import (
     EndFrame,
     InputAudioRawFrame,
     TranscriptionFrame,
-    UserStartedSpeakingFrame,
-    UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
+from pipecat.transcriptions.language import Language
 from websockets.protocol import State
 
 from src.config import Config
@@ -16,6 +17,7 @@ from src.pipeline import (
     PipecatVadSpeechObserver,
     ScriberPipeline,
     SegmentedSTTRecordingGate,
+    SonioxAsyncProcessor,
     TranscriptionCallbackProcessor,
 )
 
@@ -77,6 +79,49 @@ class _BufferedProvider:
     def __init__(self):
         self._buffer_size = 1024
         self._skip_terminal_transcription = False
+
+
+class _RejectedUploadResponse:
+    status = 415
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    async def text(self):
+        return "unsupported request"
+
+    def raise_for_status(self):
+        raise RuntimeError("upload rejected")
+
+
+class _RejectedSonioxUploadSession:
+    def __init__(self):
+        self.post_calls = []
+
+    def post(self, url, **kwargs):
+        self.post_calls.append((url, kwargs))
+        return _RejectedUploadResponse()
+
+
+@pytest.mark.asyncio
+async def test_soniox_async_webm_upload_does_not_retry_as_wav_on_api_error():
+    session = _RejectedSonioxUploadSession()
+    processor = SonioxAsyncProcessor(api_key="test-key", session=session)
+
+    async def encode_webm(_audio_bytes, *, prefer_webm=True):
+        assert prefer_webm is True
+        return b"webm-audio", "audio/webm", "audio.webm"
+
+    processor._encode_audio = encode_webm
+
+    with pytest.raises(RuntimeError, match="upload rejected"):
+        await processor._transcribe_async(b"\0\0" * 160)
+
+    assert len(session.post_calls) == 1
+    assert session.post_calls[0][0] == "https://api.soniox.com/v1/files"
 
 
 class _DummyAudioInput:
@@ -187,7 +232,87 @@ def test_mistral_segmented_live_uses_transcribe_model_when_rt_model_is_realtime_
     assert service._model == "voxtral-mini-2602"
 
 
-def test_assemblyai_realtime_factory_uses_new_pipecat_settings(monkeypatch):
+@pytest.mark.parametrize(
+    ("service_name", "api_key_attribute", "expected_class_name"),
+    (
+        ("soniox", "SONIOX_API_KEY", "SonioxSTTService"),
+        ("assemblyai_realtime", "ASSEMBLYAI_API_KEY", "AssemblyAISTTService"),
+        ("elevenlabs", "ELEVENLABS_API_KEY", "ElevenLabsRealtimeSTTService"),
+        ("deepgram", "DEEPGRAM_API_KEY", "ScriberDeepgramSTTService"),
+        ("gladia", "GLADIA_API_KEY", "ScriberGladiaSTTService"),
+        ("groq", "GROQ_API_KEY", "GroqSTTService"),
+        ("openai", "OPENAI_API_KEY", "OpenAIRealtimeSTTService"),
+        ("speechmatics", "SPEECHMATICS_API_KEY", "SpeechmaticsSTTService"),
+    ),
+)
+def test_pipecat_1_5_live_factories_match_runtime_signatures(
+    monkeypatch,
+    service_name,
+    api_key_attribute,
+    expected_class_name,
+):
+    monkeypatch.setattr(Config, api_key_attribute, "key")
+    monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
+
+    service = ScriberPipeline(service_name=service_name)._create_stt_service(object())
+
+    assert type(service).__name__ == expected_class_name
+
+
+def test_google_cloud_factory_uses_pipecat_1_5_settings(monkeypatch):
+    class _Settings:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _GoogleSTTService:
+        Settings = _Settings
+
+        def __init__(self, *, credentials_path, sample_rate, settings):
+            self.credentials_path = credentials_path
+            self.sample_rate = sample_rate
+            self.settings = settings
+
+    module = type("GoogleModule", (), {"GoogleSTTService": _GoogleSTTService})
+    monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+
+    service = ScriberPipeline(service_name="google")._create_stt_service(object())
+
+    assert service.credentials_path == "C:\\keys\\google.json"
+    assert service.sample_rate == Config.SAMPLE_RATE
+    assert service.settings.kwargs == {
+        "languages": [Language.DE],
+        "enable_automatic_punctuation": True,
+        "enable_interim_results": True,
+        "enable_voice_activity_events": False,
+    }
+
+
+def test_google_cloud_factory_omits_languages_for_auto_detection(monkeypatch):
+    class _Settings:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _GoogleSTTService:
+        Settings = _Settings
+
+        def __init__(self, *, credentials_path, sample_rate, settings):
+            self.settings = settings
+
+    module = type("GoogleModule", (), {"GoogleSTTService": _GoogleSTTService})
+    monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
+    monkeypatch.setattr(Config, "LANGUAGE", "auto")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+
+    service = ScriberPipeline(service_name="google")._create_stt_service(object())
+
+    assert "languages" not in service.settings.kwargs
+
+
+def test_assemblyai_realtime_factory_uses_pipecat_1_5_settings_without_live_diarization(monkeypatch):
     class _Settings:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -195,8 +320,9 @@ def test_assemblyai_realtime_factory_uses_new_pipecat_settings(monkeypatch):
     class _AssemblyAISTTService:
         Settings = _Settings
 
-        def __init__(self, *, api_key, settings, vad_force_turn_endpoint):
+        def __init__(self, *, api_key, sample_rate, settings, vad_force_turn_endpoint):
             self.api_key = api_key
+            self.sample_rate = sample_rate
             self.settings = settings
             self.vad_force_turn_endpoint = vad_force_turn_endpoint
 
@@ -218,12 +344,13 @@ def test_assemblyai_realtime_factory_uses_new_pipecat_settings(monkeypatch):
     )._create_stt_service(object())
 
     assert service.api_key == "key"
+    assert service.sample_rate == Config.SAMPLE_RATE
     assert service.vad_force_turn_endpoint is True
     assert service.settings.kwargs == {
         "model": "universal-3-5-pro",
         "language_code": "de",
         "keyterms_prompt": ["Scriber", "Pipecat"],
-        "speaker_labels": True,
+        "speaker_labels": False,
     }
 
 
@@ -239,8 +366,9 @@ def test_assemblyai_realtime_factory_filters_unsupported_settings_keywords(monke
     class _AssemblyAISTTService:
         Settings = _Settings
 
-        def __init__(self, *, api_key, settings, language=None, vad_force_turn_endpoint):
+        def __init__(self, *, api_key, sample_rate, settings, language=None, vad_force_turn_endpoint):
             self.api_key = api_key
+            self.sample_rate = sample_rate
             self.settings = settings
             self.language = language
             self.vad_force_turn_endpoint = vad_force_turn_endpoint
@@ -265,28 +393,20 @@ def test_assemblyai_realtime_factory_filters_unsupported_settings_keywords(monke
     assert service.settings.kwargs == {
         "model": "universal-3-5-pro",
         "keyterms_prompt": ["Scriber", "Pipecat"],
-        "speaker_labels": True,
+        "speaker_labels": False,
     }
     assert service.language.value == "de"
 
 
-def test_assemblyai_realtime_factory_supports_legacy_pipecat_connection_params(monkeypatch):
-    class _AssemblyAIConnectionParams:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
+def test_assemblyai_realtime_factory_rejects_pre_1_5_pipecat(monkeypatch):
     class _AssemblyAISTTService:
-        def __init__(self, *, api_key, connection_params, vad_force_turn_endpoint):
-            self.api_key = api_key
-            self.connection_params = connection_params
-            self.vad_force_turn_endpoint = vad_force_turn_endpoint
+        pass
 
     module = type(
         "AssemblyAIModule",
         (),
         {
             "AssemblyAISTTService": _AssemblyAISTTService,
-            "AssemblyAIConnectionParams": _AssemblyAIConnectionParams,
         },
     )
 
@@ -295,30 +415,23 @@ def test_assemblyai_realtime_factory_supports_legacy_pipecat_connection_params(m
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
 
-    service = ScriberPipeline(service_name="assemblyai_realtime")._create_stt_service(object())
-
-    assert service.api_key == "key"
-    assert service.vad_force_turn_endpoint is True
-    assert service.connection_params.kwargs == {
-        "sample_rate": Config.SAMPLE_RATE,
-        "keyterms_prompt": None,
-        "speech_model": "universal-streaming-multilingual",
-    }
+    with pytest.raises(RuntimeError, match="Pipecat 1.5.0"):
+        ScriberPipeline(service_name="assemblyai_realtime")._create_stt_service(object())
 
 
 def test_elevenlabs_factory_uses_realtime_service(monkeypatch):
-    class _InputParams:
+    class _Settings:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
     class _ElevenLabsRealtimeSTTService:
-        InputParams = _InputParams
+        Settings = _Settings
 
-        def __init__(self, *, api_key, model, sample_rate, params):
+        def __init__(self, *, api_key, sample_rate, commit_strategy, settings):
             self.api_key = api_key
-            self.model = model
             self.sample_rate = sample_rate
-            self.params = params
+            self.commit_strategy = commit_strategy
+            self.settings = settings
 
     class _CommitStrategy:
         MANUAL = "manual"
@@ -334,34 +447,40 @@ def test_elevenlabs_factory_uses_realtime_service(monkeypatch):
 
     monkeypatch.setattr(Config, "ELEVENLABS_API_KEY", "key")
     monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
 
     service = ScriberPipeline(service_name="elevenlabs")._create_stt_service(object())
 
     assert service.api_key == "key"
-    assert service.model == "scribe_v2_realtime"
     assert service.sample_rate == Config.SAMPLE_RATE
-    assert service.params.kwargs == {
-        "language_code": "de",
-        "commit_strategy": "manual",
+    assert service.commit_strategy == "manual"
+    assert service.settings.kwargs == {
+        "model": "scribe_v2_realtime",
+        "language": Language.DE,
+        "keyterms": ["Scriber", "Pipecat"],
     }
 
 
 def test_deepgram_factory_disables_live_diarization_by_default(monkeypatch):
-    class _LiveOptions:
+    class _Settings:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
     class _DeepgramSTTService:
-        def __init__(self, *, api_key, sample_rate=None, live_options=None):
+        Settings = _Settings
+
+        def __init__(self, *, api_key, encoding, channels, sample_rate, settings):
             self.api_key = api_key
+            self.encoding = encoding
+            self.channels = channels
             self.sample_rate = sample_rate
-            self.live_options = live_options
+            self.settings = settings
 
     module = type(
         "DeepgramModule",
         (),
-        {"DeepgramSTTService": _DeepgramSTTService, "LiveOptions": _LiveOptions},
+        {"DeepgramSTTService": _DeepgramSTTService},
     )
 
     monkeypatch.setattr(Config, "DEEPGRAM_API_KEY", "key")
@@ -371,16 +490,15 @@ def test_deepgram_factory_disables_live_diarization_by_default(monkeypatch):
     service = ScriberPipeline(service_name="deepgram")._create_stt_service(object())
 
     assert service.sample_rate == Config.SAMPLE_RATE
-    assert service.live_options.kwargs == {
-        "encoding": "linear16",
-        "sample_rate": Config.SAMPLE_RATE,
-        "channels": Config.CHANNELS,
+    assert service.encoding == "linear16"
+    assert service.channels == Config.CHANNELS
+    assert service.settings.kwargs == {
         "model": "nova-3",
-        "language": "de",
+        "language": Language.DE,
         "interim_results": True,
         "smart_format": True,
         "punctuate": True,
-        "vad_events": False,
+        "diarize": False,
     }
 
     service_with_speakers = ScriberPipeline(
@@ -388,31 +506,28 @@ def test_deepgram_factory_disables_live_diarization_by_default(monkeypatch):
         enable_speaker_diarization=True,
     )._create_stt_service(object())
 
-    assert service_with_speakers.live_options.kwargs == {
-        "encoding": "linear16",
-        "sample_rate": Config.SAMPLE_RATE,
-        "channels": Config.CHANNELS,
+    assert service_with_speakers.settings.kwargs == {
         "model": "nova-3",
-        "language": "de",
+        "language": Language.DE,
         "interim_results": True,
         "smart_format": True,
         "punctuate": True,
-        "vad_events": False,
-        "diarize": True,
+        "diarize": False,
     }
 
 
 def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatch):
-    class _InputParams:
+    class _Settings:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
     class _SpeechmaticsSTTService:
-        InputParams = _InputParams
+        Settings = _Settings
 
-        def __init__(self, *, api_key, params=None):
+        def __init__(self, *, api_key, sample_rate, settings):
             self.api_key = api_key
-            self.params = params
+            self.sample_rate = sample_rate
+            self.settings = settings
 
     module = type(
         "SpeechmaticsModule",
@@ -425,9 +540,9 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
 
     service = ScriberPipeline(service_name="speechmatics")._create_stt_service(object())
 
-    assert service.params.kwargs == {
+    assert service.settings.kwargs == {
         "enable_diarization": False,
-        "language": "de",
+        "language": Language.DE,
         "speaker_active_format": "[Speaker {speaker_id}]: {text}",
         "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
     }
@@ -437,29 +552,33 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
         enable_speaker_diarization=True,
     )._create_stt_service(object())
 
-    assert service_with_speakers.params.kwargs == {
-        "enable_diarization": True,
-        "language": "de",
+    assert service_with_speakers.settings.kwargs == {
+        "enable_diarization": False,
+        "language": Language.DE,
         "speaker_active_format": "[Speaker {speaker_id}]: {text}",
         "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
     }
 
 
-def test_deepgram_factory_enables_batch_diarization(monkeypatch):
-    class _LiveOptions:
+def test_deepgram_live_factory_never_enables_diarization(monkeypatch):
+    class _Settings:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
     class _DeepgramSTTService:
-        def __init__(self, *, api_key, sample_rate=None, live_options=None):
+        Settings = _Settings
+
+        def __init__(self, *, api_key, encoding, channels, sample_rate, settings):
             self.api_key = api_key
+            self.encoding = encoding
+            self.channels = channels
             self.sample_rate = sample_rate
-            self.live_options = live_options
+            self.settings = settings
 
     module = type(
         "DeepgramModule",
         (),
-        {"DeepgramSTTService": _DeepgramSTTService, "LiveOptions": _LiveOptions},
+        {"DeepgramSTTService": _DeepgramSTTService},
     )
 
     monkeypatch.setattr(Config, "DEEPGRAM_API_KEY", "key")
@@ -472,26 +591,29 @@ def test_deepgram_factory_enables_batch_diarization(monkeypatch):
     )._create_stt_service(object())
 
     assert service.sample_rate == Config.SAMPLE_RATE
-    assert service.live_options.kwargs == {
-        "encoding": "linear16",
-        "sample_rate": Config.SAMPLE_RATE,
-        "channels": Config.CHANNELS,
+    assert service.settings.kwargs == {
         "model": "nova-3",
-        "language": "de",
+        "language": Language.DE,
         "interim_results": True,
         "smart_format": True,
         "punctuate": True,
-        "vad_events": False,
-        "diarize": True,
+        "diarize": False,
     }
 
 
 def test_gladia_factory_uses_current_pipecat_signature(monkeypatch):
+    class _Settings:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
     class _GladiaSTTService:
-        def __init__(self, *, api_key, sample_rate=None, model="solaria-1"):
+        Settings = _Settings
+
+        def __init__(self, *, api_key, sample_rate, channels, settings):
             self.api_key = api_key
             self.sample_rate = sample_rate
-            self.model = model
+            self.channels = channels
+            self.settings = settings
 
     module = type(
         "GladiaModule",
@@ -500,26 +622,55 @@ def test_gladia_factory_uses_current_pipecat_signature(monkeypatch):
     )
 
     monkeypatch.setattr(Config, "GLADIA_API_KEY", "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
 
     service = ScriberPipeline(service_name="gladia")._create_stt_service(object())
 
     assert service.api_key == "key"
     assert service.sample_rate == Config.SAMPLE_RATE
-    assert service.model == "solaria-1"
+    assert service.channels == Config.CHANNELS
+    assert service.settings.kwargs == {
+        "model": "solaria-1",
+        "language": Language.DE,
+        "enable_vad": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_gladia_stop_sends_finalization_before_disconnect(monkeypatch):
+    monkeypatch.setattr(Config, "GLADIA_API_KEY", "key")
+    pipeline = ScriberPipeline(service_name="gladia")
+    service = pipeline._create_stt_service(object())
+    pipeline._final_transcription_received.set()
+    events: list[str] = []
+
+    async def _send_stop_recording():
+        events.append("stop_recording")
+
+    async def _disconnect():
+        events.append("disconnect")
+
+    service._send_stop_recording = _send_stop_recording
+    service._disconnect = _disconnect
+
+    await service.stop(EndFrame())
+
+    assert events == ["stop_recording", "disconnect"]
 
 
 def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
-    class _InputParams:
+    class _Settings:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
     class _SpeechmaticsSTTService:
-        InputParams = _InputParams
+        Settings = _Settings
 
-        def __init__(self, *, api_key, params=None):
+        def __init__(self, *, api_key, sample_rate, settings):
             self.api_key = api_key
-            self.params = params
+            self.sample_rate = sample_rate
+            self.settings = settings
 
     module = type(
         "SpeechmaticsModule",
@@ -535,9 +686,9 @@ def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
         enable_speaker_diarization=True,
     )._create_stt_service(object())
 
-    assert service.params.kwargs == {
-        "enable_diarization": True,
-        "language": "de",
+    assert service.settings.kwargs == {
+        "enable_diarization": False,
+        "language": Language.DE,
         "speaker_active_format": "[Speaker {speaker_id}]: {text}",
         "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
     }
@@ -806,7 +957,7 @@ async def test_live_vad_finalization_flushes_when_hotkey_stops_during_speech():
 
     assert flushed is True
     assert runtime_pipeline.pushed == [
-        (UserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM)
+        (VADUserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM)
     ]
 
 
@@ -820,13 +971,13 @@ async def test_segmented_stt_gate_defaults_to_whole_recording_segment():
 
     gate.push_frame = _capture_push
 
-    await gate.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-    await gate.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await gate.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
     await gate.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
 
     assert pushed == [
-        (UserStartedSpeakingFrame, FrameDirection.DOWNSTREAM),
-        (UserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM),
+        (VADUserStartedSpeakingFrame, FrameDirection.DOWNSTREAM),
+        (VADUserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM),
         (EndFrame, FrameDirection.DOWNSTREAM),
     ]
 
@@ -841,15 +992,15 @@ async def test_segmented_stt_gate_can_pass_vad_segments_when_enabled():
 
     gate.push_frame = _capture_push
 
-    await gate.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
     flushed = await gate.flush_segment(direction=FrameDirection.DOWNSTREAM)
     flushed_again = await gate.flush_segment(direction=FrameDirection.DOWNSTREAM)
 
     assert flushed is True
     assert flushed_again is False
     assert pushed == [
-        (UserStartedSpeakingFrame, FrameDirection.DOWNSTREAM),
-        (UserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM),
+        (VADUserStartedSpeakingFrame, FrameDirection.DOWNSTREAM),
+        (VADUserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM),
     ]
 
 

@@ -12,7 +12,6 @@ import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "
 import { useToast } from "@/hooks/use-toast";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState } from "@/lib/backend";
-import { preloadPrimaryTabChunks } from "@/lib/route-preload";
 import { preloadPrimaryTabData } from "@/lib/tab-data-preload";
 import { ToastAction } from "@/components/ui/toast";
 import { Download } from "lucide-react";
@@ -26,11 +25,11 @@ import {
   type DesktopUpdateStatus,
 } from "@/lib/desktop-updates";
 
-// Keep default route eager for fastest first paint, lazy-load heavier routes.
+// Primary tabs are eager so first navigation never blanks while a local chunk loads.
 import LiveMic from "@/pages/LiveMic";
-const Youtube = lazy(() => import("@/pages/Youtube"));
-const FileTranscribe = lazy(() => import("@/pages/FileTranscribe"));
-const Settings = lazy(() => import("@/pages/Settings"));
+import Youtube from "@/pages/Youtube";
+import FileTranscribe from "@/pages/FileTranscribe";
+import Settings from "@/pages/Settings";
 const DebugConsole = lazy(() => import("@/pages/DebugConsole"));
 
 // Lazy load only rarely accessed pages for slightly smaller initial bundle
@@ -437,11 +436,6 @@ function App() {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    if (!backendBaseReady) return;
-    return preloadPrimaryTabChunks();
-  }, [backendBaseReady]);
 
   useDeviceChangeRefresh(backendBaseReady);
 

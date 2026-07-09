@@ -159,7 +159,6 @@ _AUDIO_DIAGNOSTIC_IMPORTS = (
     "pipecat.audio.vad.vad_analyzer",
     "pipecat.audio.vad.silero",
     "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
-    "pipecat.processors.user_idle_processor",
 )
 _AUDIO_DIAGNOSTIC_IMPORT_CACHE: dict[str, dict[str, Any]] | None = None
 _SESSION_TOKEN_HEADER = "X-Scriber-Token"
@@ -357,6 +356,39 @@ def _should_force_process_exit_after_shutdown() -> bool:
         is_frozen()
         and (os.getenv(_RUNTIME_MODE_ENV, "") or "").strip().lower() == "tauri-supervised"
     )
+
+
+def _is_expected_windows_proactor_disconnect(context: dict[str, Any]) -> bool:
+    if os.name != "nt":
+        return False
+    exc = context.get("exception")
+    if not isinstance(exc, ConnectionResetError):
+        return False
+    error_code = getattr(exc, "winerror", None) or getattr(exc, "errno", None)
+    if error_code != 10054:
+        return False
+    callback_context = " ".join(
+        str(context.get(key) or "") for key in ("message", "handle", "callback")
+    )
+    return "_ProactorBasePipeTransport._call_connection_lost" in callback_context
+
+
+def _backend_loop_exception_handler(
+    previous_handler: Callable[[asyncio.AbstractEventLoop, dict[str, Any]], None] | None,
+) -> Callable[[asyncio.AbstractEventLoop, dict[str, Any]], None]:
+    def handle_loop_exception(
+        loop: asyncio.AbstractEventLoop,
+        context: dict[str, Any],
+    ) -> None:
+        if _is_expected_windows_proactor_disconnect(context):
+            logger.debug("Suppressed expected Windows connection reset during transport cleanup")
+            return
+        if previous_handler is not None:
+            previous_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    return handle_loop_exception
 
 
 def _force_process_exit_after_shutdown_timeout_seconds() -> float:
@@ -7115,6 +7147,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
 async def run_server(host: str, port: int) -> None:
     loop = asyncio.get_running_loop()
+    previous_loop_exception_handler = loop.get_exception_handler()
+    loop.set_exception_handler(
+        _backend_loop_exception_handler(previous_loop_exception_handler)
+    )
     controller = ScriberWebController(loop)
     controller.register_hotkeys()
     force_process_exit = _should_force_process_exit_after_shutdown()
@@ -7160,6 +7196,7 @@ async def run_server(host: str, port: int) -> None:
         finally:
             if force_exit_timer is not None:
                 force_exit_timer.cancel()
+            loop.set_exception_handler(previous_loop_exception_handler)
             if force_process_exit:
                 os._exit(0)
 
@@ -7254,7 +7291,9 @@ def _prewarm_stt_service(service_name: str) -> None:
     The actual service instance is created later with proper parameters.
     """
     try:
-        if service_name == "assemblyai":
+        if service_name == "soniox":
+            import_provider_runtime_module("soniox", "pipecat.services.soniox.stt")
+        elif service_name == "assemblyai":
             from src.assemblyai_async_stt import AssemblyAIUniversal3ProAsyncProcessor  # noqa: F401
         elif service_name == "assemblyai_realtime":
             import_provider_runtime_module("assemblyai_realtime", "pipecat.services.assemblyai.stt")
@@ -7280,7 +7319,6 @@ def _prewarm_stt_service(service_name: str) -> None:
             from src.smallest_stt import SmallestRealtimeSTTService, SmallestAsyncProcessor  # noqa: F401
         elif service_name == "azure_mai":
             from src.azure_mai_stt import AzureMaiTranscribeSTTService  # noqa: F401
-        # soniox is already imported at module level
     except ImportError as e:
         logger.debug(f"Could not prewarm STT service {service_name}: {e}")
 

@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-06-29
+Last verified: 2026-07-09
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -91,7 +91,9 @@ tests.
 
 Key modules:
 
-- `Frontend/client/src/App.tsx`: Wouter routes and route-level lazy loading.
+- `Frontend/client/src/App.tsx`: Wouter routes. Live Mic, YouTube, File, and
+  Settings are eager because they are primary desktop tabs; Debug Console,
+  transcript detail, and not-found remain lazy.
 - `Frontend/client/src/pages/LiveMic.tsx`: live recording UI and canvas
   waveform.
 - `Frontend/client/src/pages/YouTube.tsx`: YouTube search, URL workflow, recent
@@ -110,6 +112,10 @@ Key modules:
 The frontend should not own backend lifecycle decisions. In desktop runtime it
 asks Tauri commands for backend access and posts the frontend-ready beacon after
 health is proven.
+`AppLayout` does not create a nested Wouter router or key-remount the routed
+page. It preserves the shell and synchronously swaps primary-tab content, then
+resets only the shared scroll container. This avoids a visible blank/Suspense
+interval on the first tab visit.
 Installed frontend assets are owned by Tauri through `frontendDist` and are
 loaded from the WebView origin (`http://tauri.localhost`), not from the Python
 backend loopback server.
@@ -315,7 +321,7 @@ HTTP-style live STT providers is opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD
 and the Settings toggle; by default Scriber opens one recording-wide segment
 and closes it when the user stops recording. When the user presses the hotkey
 while a live streaming provider is still inside an active VAD speech turn,
-Scriber pushes a final `UserStoppedSpeakingFrame` before pipeline shutdown so
+Scriber pushes a final `VADUserStoppedSpeakingFrame` before pipeline shutdown so
 Deepgram and ElevenLabs can finalize/commit the last transcript. Mistral Live is
 currently a segment-finalized Voxtral transcription path because the bundled
 Pipecat runtime does not expose a Mistral realtime service; if an installed
@@ -327,11 +333,33 @@ AssemblyAI is exposed as both a direct async/batch provider and a realtime
 Pipecat provider. Both default to Universal-3.5-Pro. The async adapter sends
 the configured model through AssemblyAI's `speech_models` field; the realtime
 path uses Pipecat `AssemblyAISTTService.Settings` when available, filters
-settings by the installed Pipecat signature, and falls back to
-`AssemblyAIConnectionParams` for older Pipecat runtimes. In that legacy path,
-Scriber's `universal-3-5-pro` setting is mapped to AssemblyAI's supported
-streaming `speech_model` names so the service can start on bundled runtimes that
-predate the Settings API.
+settings by the Pipecat 1.5 signature, and fails visibly if an older runtime is
+present. Soniox, ElevenLabs, Deepgram, Gladia, OpenAI, and Speechmatics live
+factories use the same Pipecat 1.5 `Settings` contract instead of deprecated
+`InputParams` or `LiveOptions` compatibility paths.
+Custom buffered STT services use Pipecat 1.5 `STTUpdateSettingsFrame.delta`
+objects, initialize complete `STTSettings` (`model` and `language` included),
+and use the explicit `AIService` lifecycle so terminal audio is flushed before
+an `EndFrame` is forwarded. This contract also applies to Scriber's Mistral,
+Azure MAI, and ONNX service implementations; leaving those fields `NOT_GIVEN`
+creates Pipecat 1.5 runtime warnings and ambiguous updates.
+Pipecat's `local-smart-turn` extra is intentionally not installed because its
+Torch/Torchaudio/Transformers dependency chain conflicts with the standard
+ONNX-only local-runtime footprint. The lightweight bundled ONNX
+`LocalSmartTurnAnalyzerV3` import stays available without the removed
+`UserIdleProcessor`; Silero remains the bundled VAD path.
+
+Soniox async/direct live finalization encodes buffered PCM as WebM/Opus by
+default and uploads it once with `audio/webm`. Soniox supports that format.
+When local WebM encoding fails, Scriber may create WAV locally before upload;
+an API error must not trigger a second full-audio upload in another format.
+
+On Windows, the backend event loop suppresses only the known Proactor cleanup
+callback carrying `ConnectionResetError`/WinError 10054 from
+`_ProactorBasePipeTransport._call_connection_lost`. All unrelated loop errors
+still flow to the previous/default exception handler. This prevents harmless
+post-session disconnect noise from growing logs without hiding provider or
+pipeline failures.
 
 The standard sidecar keeps runtime support for the shipped cloud/external
 providers exposed in Settings, but the dependency boundary is explicit. The
@@ -368,8 +396,9 @@ OpenAI live STT uses Pipecat's OpenAI Realtime STT service plus the explicit
 Audio Transcriptions HTTP adapter. Groq STT uses Pipecat's `groq` SDK
 dependency, and Pipecat provider imports require `nltk` at runtime.
 Gladia live transcription still uses Pipecat's Gladia service with a small
-Scriber stop wrapper that sends `stop_recording` and waits briefly for a final
-transcript before websocket cleanup, while `gladia_async`, file, and YouTube
+Scriber stop wrapper that runs the base STT stop hook without disconnecting,
+sends `stop_recording`, waits briefly for a final transcript, and only then
+disconnects the websocket. `gladia_async`, file, and YouTube
 transcription use Gladia's pre-recorded HTTP upload/polling API directly to
 avoid empty live-WebSocket finalization for complete files.
 `deepgram_async`, `openai_async`, `gemini_stt`, and
@@ -378,7 +407,8 @@ avoid empty live-WebSocket finalization for complete files.
 adding the separate `speechmatics-batch` SDK to the standard sidecar. Build-time
 runtime import checks cover the offered standard provider modules, and the
 footprint analyzer rejects unused provider SDKs if PyInstaller pulls them back
-in.
+in. The runtime import gate verifies both provider imports and the exact
+`pipecat-ai==1.5.0` distribution version so stale sidecar caches cannot pass.
 
 ## Media Boundary
 

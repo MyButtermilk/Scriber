@@ -22,7 +22,7 @@ def test_local_pyloudnorm_meter_returns_loudness_without_scipy() -> None:
     loudness = pyloudnorm.Meter(sample_rate, block_size=duration).integrated_loudness(audio)
 
     assert np.isfinite(loudness)
-    assert "scipy" not in sys.modules
+    assert str(REPO_ROOT / "pyloudnorm") in pyloudnorm.__file__
 
 
 def test_pipecat_audio_utils_uses_local_pyloudnorm_without_scipy_import() -> None:

@@ -296,3 +296,65 @@ async def test_microphone_drain_notifies_after_last_audio_chunk(monkeypatch):
 
     assert pushed == [b"audio"]
     assert markers == ["last_chunk_sent"]
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+@pytest.mark.asyncio
+async def test_microphone_drain_keeps_up_with_sustained_callback_flow():
+    pushed: list[bytes] = []
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+    mic._audio_in_queue = object()
+    mic._running = True
+    mic._consumer_loop = asyncio.get_running_loop()
+    mic._queue_wakeup = asyncio.Event()
+
+    async def fake_push_audio_frame(frame):
+        pushed.append(frame.audio)
+
+    mic.push_audio_frame = fake_push_audio_frame
+    consumer = asyncio.create_task(mic._drain_queue())
+    data = np.full((512, 1), 1000, dtype=np.int16)
+
+    for index in range(1024):
+        mic._audio_callback(data, 512, None, None)
+        if index % 8 == 0:
+            await asyncio.sleep(0)
+
+    mic._running = False
+    mic._signal_queue_wakeup()
+    await asyncio.wait_for(consumer, timeout=1.0)
+
+    snapshot = mic.diagnostic_snapshot()
+    assert len(pushed) == 1024
+    assert snapshot["droppedFrameCount"] == 0
+    assert snapshot["drainedFrameCount"] == 1024
+    assert snapshot["audioQueueDepth"] == 0
+    assert snapshot["audioQueueMaxDepth"] < snapshot["audioQueueCapacity"]
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+@pytest.mark.asyncio
+async def test_microphone_consumer_failure_is_visible_in_diagnostics():
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+    mic._audio_in_queue = object()
+    mic._running = True
+    mic._consumer_loop = asyncio.get_running_loop()
+    mic._queue_wakeup = asyncio.Event()
+
+    async def failing_push_audio_frame(_frame):
+        raise RuntimeError("synthetic consumer failure")
+
+    mic.push_audio_frame = failing_push_audio_frame
+    task = asyncio.create_task(mic._drain_queue())
+    mic._consumer_task = task
+    task.add_done_callback(mic._on_consumer_task_done)
+    mic._queue.put_nowait(b"audio")
+    mic._signal_queue_wakeup()
+
+    with pytest.raises(RuntimeError, match="synthetic consumer failure"):
+        await task
+    await asyncio.sleep(0)
+
+    snapshot = mic.diagnostic_snapshot()
+    assert snapshot["consumerTaskState"] == "failed"
+    assert snapshot["consumerError"] == "RuntimeError: synthetic consumer failure"

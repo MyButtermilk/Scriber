@@ -24,6 +24,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.ai_service import AIService
+from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
@@ -273,7 +274,14 @@ class AzureMaiTranscribeSTTService(STTService):
         on_progress: Callable[[str], None] | None = None,
         audio_passthrough: bool = True,
     ) -> None:
-        super().__init__(audio_passthrough=audio_passthrough)
+        language_locales = azure_mai_language_locales(language)
+        super().__init__(
+            audio_passthrough=audio_passthrough,
+            settings=STTSettings(
+                model=azure_mai_model(),
+                language=language_locales[0] if language_locales else None,
+            ),
+        )
         self._speech_key = speech_key
         self._region = validate_azure_mai_region(region)
         self._language = language or "auto"

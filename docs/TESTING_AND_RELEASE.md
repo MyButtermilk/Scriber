@@ -33,8 +33,14 @@ cargo test
 Frontend browser smoke:
 
 ```powershell
-python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
+python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json --fast-tab-switch
 ```
+
+The smoke uses current Settings labels and credential dialogs, exercises real
+hotkey/mode/autostart persistence, and treats critical React console errors as
+failures. Its fast-tab gate also rejects any blank or loading sample while
+switching among primary tabs; keep this enabled when changing routing, lazy
+imports, layout remount behavior, Motion, or virtualized history.
 
 ## Important Test Areas
 
@@ -92,6 +98,10 @@ Performance/packaging:
 - The frozen runtime import gate also covers the AssemblyAI realtime Pipecat
   module and `onnx_asr`. This protects the installed AssemblyAI Universal-3.5
   realtime path and the bundled ONNX local-ASR path.
+- Provider tests for custom Pipecat services must run with deprecation warnings
+  promoted to errors and assert complete Pipecat 1.5 `STTSettings`. Lifecycle
+  coverage also verifies that only the expected Windows Proactor WinError 10054
+  cleanup callback is suppressed and unrelated loop errors are forwarded.
 - Live-mic post-processing coverage should include prompt-template tests,
   Settings payload typing, and Rust global-hotkey dispatch tests. The expected
   behavior is a second shortcut that posts to

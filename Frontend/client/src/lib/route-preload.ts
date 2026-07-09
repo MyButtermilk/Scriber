@@ -1,9 +1,6 @@
-type RoutePreloadPath = "/youtube" | "/file" | "/settings" | "/debug" | "/transcript";
+type RoutePreloadPath = "/debug" | "/transcript";
 
 const routeImporters: Record<RoutePreloadPath, () => Promise<unknown>> = {
-  "/youtube": () => import("@/pages/Youtube"),
-  "/file": () => import("@/pages/FileTranscribe"),
-  "/settings": () => import("@/pages/Settings"),
   "/debug": () => import("@/pages/DebugConsole"),
   "/transcript": () => import("@/pages/TranscriptDetail"),
 };
@@ -25,77 +22,8 @@ export function preloadRouteChunk(href: string): Promise<unknown> | undefined {
   return promise;
 }
 
-export function preloadPrimaryTabChunks(): () => void {
-  if (typeof window === "undefined") {
-    return () => {};
-  }
-
-  let cancelled = false;
-  const cancelFirstPass = scheduleSoon(() => {
-    void preloadRoutesInParallel(["/youtube", "/file", "/settings"], () => cancelled);
-  });
-  const cancelSecondPass = scheduleIdle(() => {
-    void preloadRoutesSerially(["/debug"], () => cancelled);
-  });
-
-  return () => {
-    cancelled = true;
-    cancelFirstPass();
-    cancelSecondPass();
-  };
-}
-
-async function preloadRoutesInParallel(routes: RoutePreloadPath[], isCancelled: () => boolean) {
-  if (isCancelled()) return;
-  await Promise.allSettled(routes.map((route) => preloadRouteChunk(route)));
-}
-
-async function preloadRoutesSerially(routes: RoutePreloadPath[], isCancelled: () => boolean) {
-  for (const route of routes) {
-    if (isCancelled()) return;
-    try {
-      await preloadRouteChunk(route);
-    } catch {
-      // Preload is best-effort; real navigation will surface any import failure.
-    }
-    await nextFrame();
-  }
-}
-
 function routePathForHref(href: string): RoutePreloadPath | null {
-  if (href === "/youtube") return "/youtube";
-  if (href === "/file") return "/file";
-  if (href === "/settings") return "/settings";
   if (href === "/debug") return "/debug";
   if (href.startsWith("/transcript/")) return "/transcript";
   return null;
-}
-
-function scheduleSoon(callback: () => void): () => void {
-  let frame: number | undefined;
-  const timer = window.setTimeout(() => {
-    frame = window.requestAnimationFrame(callback);
-  }, 80);
-  return () => {
-    window.clearTimeout(timer);
-    if (frame !== undefined) {
-      window.cancelAnimationFrame(frame);
-    }
-  };
-}
-
-function scheduleIdle(callback: () => void): () => void {
-  if ("requestIdleCallback" in window && typeof window.requestIdleCallback === "function") {
-    const handle = window.requestIdleCallback(callback, { timeout: 900 });
-    return () => window.cancelIdleCallback(handle);
-  }
-
-  const handle = window.setTimeout(callback, 550);
-  return () => window.clearTimeout(handle);
-}
-
-function nextFrame(): Promise<void> {
-  return new Promise((resolve) => {
-    window.requestAnimationFrame(() => resolve());
-  });
 }

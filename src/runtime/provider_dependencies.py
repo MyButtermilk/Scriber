@@ -76,7 +76,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[ProviderRuntimeDependency, ...]] = {
         ProviderRuntimeDependency(
             "assemblyai_realtime",
             "pipecat.services.assemblyai.stt",
-            "pipecat-ai[silero]>=1.4.0",
+            "pipecat-ai[silero]==1.5.0",
             "AssemblyAI Universal-3.5 Pro realtime transcription",
         ),
     ),

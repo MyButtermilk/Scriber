@@ -94,7 +94,7 @@ const FileCard = memo(function FileCard({
   return (
     <div className="w-full">
       <Card
-        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid h-[220px]" : ""} p-4 rounded-[20px] cursor-pointer group transform-gpu transition-[opacity,transform] duration-150 ease-out ${deletingClasses}`}
+        className={`file-history-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid h-[220px]" : ""} cursor-pointer rounded-[20px] p-4 group transform-gpu ${deletingClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
         role="button"
@@ -111,7 +111,7 @@ const FileCard = memo(function FileCard({
           // List view
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${historyStatus === 'failed' || historyStatus === 'summary_failed'
+              <div className={`file-history-icon flex h-10 w-10 items-center justify-center rounded-[12px] ${historyStatus === 'failed' || historyStatus === 'summary_failed'
                 ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
                 : historyStatus === 'processing'
                   ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600'
@@ -122,7 +122,7 @@ const FileCard = memo(function FileCard({
                 {historyStatus === 'failed' ? <XCircle className="w-5 h-5" /> : historyStatus === 'summary_failed' ? <AlertCircle className="w-5 h-5" /> : historyStatus === 'processing' ? <Loader2 className="w-5 h-5 animate-spin" /> : historyStatus === 'stopped' ? <Square className="w-5 h-5" /> : <FileAudio className="w-5 h-5" />}
               </div>
               <div>
-                <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
+                <h3 className="font-heading text-[14px] font-medium text-foreground transition-colors duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:text-primary">{item.title}</h3>
                 <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
                   {item.channel && <span>{item.channel}</span>}
                   {item.channel && <span>•</span>}
@@ -175,7 +175,7 @@ const FileCard = memo(function FileCard({
           // Grid view
           <div className="flex flex-col h-full">
             <div className="flex items-start justify-between mb-3">
-              <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${historyStatus === 'failed' || historyStatus === 'summary_failed'
+              <div className={`file-history-icon flex h-12 w-12 items-center justify-center rounded-[13px] ${historyStatus === 'failed' || historyStatus === 'summary_failed'
                 ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
                 : historyStatus === 'processing'
                   ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600'
@@ -210,7 +210,7 @@ const FileCard = memo(function FileCard({
                 )}
               </div>
             </div>
-            <h3 className="font-medium text-foreground group-hover:text-primary transition-colors line-clamp-2 mb-2">{item.title}</h3>
+            <h3 className="mb-2 line-clamp-2 font-heading text-[14px] font-medium leading-[1.35] text-foreground transition-colors duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:text-primary">{item.title}</h3>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
               <span>{item.duration}</span>
               <span>•</span>
@@ -503,31 +503,34 @@ export default function FileTranscribe() {
   const completedItems = recentFromBackend.filter((t) => t.status !== "processing");
 
   return (
-    <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
-      <header className="mb-6 space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight text-foreground">Import File</h1>
-        <p className="text-muted-foreground">Upload audio or video files for transcription</p>
+    <div className="transcription-page file-page mx-auto w-full max-w-[1320px] px-4 py-5 md:px-6 md:py-6">
+      <header className="transcription-intro mb-6">
+        <div className="mb-3 flex items-center gap-2.5 text-[9.5px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+          <span className="h-px w-7 bg-primary/60" aria-hidden="true" />
+          Media import · 03
+        </div>
+        <h1 className="font-heading text-[36px] font-semibold leading-[0.96] tracking-[-0.045em] text-foreground md:text-[42px]">File transcription</h1>
+        <p className="mt-3 max-w-[62ch] text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">Bring in audio or video files and let Scriber prepare, transcribe, and organize them.</p>
       </header>
 
-      {/* Dropzone - Debossed neumorphic style */}
+      {/* Import workbench */}
       <div
         {...getRootProps({
           role: "button",
           "aria-label": "Upload file for transcription",
         })}
-        className={`
-          neu-status-well rounded-xl p-10 text-center cursor-pointer transition-all duration-200 mb-6
-          flex flex-col items-center justify-center gap-4 group
-          ${isDragActive ? 'ring-2 ring-primary' : ''}
+        className={`file-upload-shell mb-7 cursor-pointer group
+          ${isDragActive ? 'is-drag-active' : ''}
           ${isUploading ? 'opacity-50 pointer-events-none' : ''}
         `}
       >
+        <div className="file-upload-core flex flex-col items-center justify-center gap-4 p-8 text-center md:p-10">
         <input {...getInputProps()} />
-        <div className={`p-4 rounded-full bg-background shadow-sm transition-transform duration-200 ${isDragActive ? 'scale-110' : 'group-hover:scale-110'}`}>
+        <div className={`file-upload-mark flex h-[72px] w-[72px] items-center justify-center rounded-full transition-transform duration-700 ease-[cubic-bezier(0.32,0.72,0,1)] ${isDragActive ? 'scale-110' : 'group-hover:scale-105'}`}>
           {isUploading ? (
-            <Loader2 className="w-8 h-8 text-primary animate-spin" />
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
           ) : (
-            <UploadCloud className={`w-8 h-8 ${isDragActive ? 'text-primary' : 'text-muted-foreground'}`} />
+            <UploadCloud className={`h-8 w-8 stroke-[1.45px] ${isDragActive ? 'text-primary' : 'text-muted-foreground'}`} />
           )}
         </div>
         <div className="space-y-1">
@@ -543,8 +546,8 @@ export default function FileTranscribe() {
             </>
           ) : (
             <>
-              <p className="text-lg font-medium">Click to upload or drag and drop</p>
-              <p className="text-sm text-muted-foreground">{uploadHint}</p>
+              <p className="font-heading text-[18px] font-medium tracking-[-0.015em]">Drop files here or click to browse</p>
+              <p className="text-[12px] leading-5 text-muted-foreground">{uploadHint}</p>
             </>
           )}
         </div>
@@ -571,6 +574,12 @@ export default function FileTranscribe() {
             ))}
           </div>
         )}
+        {!isUploading && (
+          <div className="file-upload-formats mt-1 flex flex-wrap items-center justify-center gap-2 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <span>Audio</span><span aria-hidden="true">·</span><span>Video</span><span aria-hidden="true">·</span><span>Batch import</span>
+          </div>
+        )}
+        </div>
       </div>
 
       {/* Processing Queue */}
@@ -580,7 +589,7 @@ export default function FileTranscribe() {
             <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Processing Queue</h3>
           </div>
           {processingItems.map((item) => (
-            <Card key={item.id} className="neu-recording-row perf-scroll-item p-4 rounded-[20px]">
+            <Card key={item.id} className="file-processing-card perf-scroll-item rounded-[20px] p-4">
               <div className="flex items-center gap-4">
                 <div className="p-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-lg">
                   <FileAudio className="w-5 h-5" />
@@ -612,44 +621,47 @@ export default function FileTranscribe() {
       )}
 
       {/* History */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between px-1">
-          <h2 className="text-lg font-semibold">Recent Files</h2>
+      <div className="transcription-history space-y-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em]">Recent files</h2>
+            <p className="mt-1 text-[12px] text-muted-foreground">Search, copy, or reopen your imported transcripts.</p>
+          </div>
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            <div className="transcription-search relative min-w-0 flex-1 rounded-[13px] p-1 sm:w-[340px] sm:flex-none lg:w-[400px]">
+              <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                type="text"
+                placeholder="Search files..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="h-10 rounded-[10px] border-0 bg-transparent pl-9 pr-9 shadow-none focus-visible:ring-0"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Clear file search"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
           <ToggleGroup
             type="single"
             value={viewMode}
             onValueChange={(val) => val && setViewMode(val as "list" | "grid")}
-            className="bg-secondary/50 rounded-lg p-1"
+            className="transcription-view-toggle shrink-0 rounded-[13px] p-1"
           >
-            <ToggleGroupItem value="list" aria-label="List view" className="h-8 w-8 p-0">
+            <ToggleGroupItem value="list" aria-label="List view" className="h-10 w-10 rounded-[10px] p-0 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]">
               <LayoutList className="h-4 w-4" />
             </ToggleGroupItem>
-            <ToggleGroupItem value="grid" aria-label="Grid view" className="h-8 w-8 p-0">
+            <ToggleGroupItem value="grid" aria-label="Grid view" className="h-10 w-10 rounded-[10px] p-0 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]">
               <LayoutGrid className="h-4 w-4" />
             </ToggleGroupItem>
           </ToggleGroup>
-        </div>
-
-        {/* Search Bar */}
-        <div className="relative mt-3">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            type="text"
-            placeholder="Search files..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 pr-9 h-9 bg-secondary/50"
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => setSearchQuery("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              aria-label="Clear file search"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
+          </div>
         </div>
         {transcriptsQuery.isLoading ? (
           <SkeletonList count={3} variant={viewMode} />

@@ -21,3 +21,19 @@ tmp/
 !/Frontend/src-tauri/resources/audio-sidecar/.gitkeep
 /deskscribe-parakeet-primeline-onnx/
 /sherpa-onnx-parakeet-primeline-de-int8/
+
+# Local build, browser, design, and performance artifacts
+/Scriber Install/
+/.playwright-mcp/
+/.agents/
+/artifacts/
+/oracle-cache-investigation-*/
+/benchmarks/results/raw/
+/settings-layout-final-balanced.png
+/docs/*.inspect.ndjson
+/GOAL.md
+/WINDOWS_PERFORMANCE_REPORT.md
+/autoresearch.ideas.md
+/autoresearch.jsonl
+/autoresearch.md
+/skills-lock.json

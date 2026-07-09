@@ -38,5 +38,5 @@ def test_provider_user_error_maps_missing_runtime_dependency_to_toast_message():
     assert info.provider == "deepgram"
     assert info.category is ErrorCategory.CONFIG_INVALID
     assert info.code == "missing_provider_runtime"
-    assert "Deepgram runtime is missing" in info.message
+    assert "Deepgram (Streaming) runtime is missing" in info.message
     assert info.retryable is False

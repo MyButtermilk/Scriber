@@ -19,6 +19,8 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
+from pipecat.services.ai_service import AIService
+from pipecat.services.settings import STTSettings, is_given
 from pipecat.services.stt_service import SegmentedSTTService, STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
@@ -50,9 +52,16 @@ class OnnxLocalSTTService(SegmentedSTTService):
                 "onnx-asr library not installed. Install with: pip install onnx-asr[cpu,hub]"
             )
 
-        super().__init__(**kwargs)
+        resolved_language = _language_to_code(language)
+        super().__init__(
+            settings=STTSettings(
+                model=model_name,
+                language=None if resolved_language == "auto" else resolved_language,
+            ),
+            **kwargs,
+        )
         self._model_name = model_name
-        self._language = _language_to_code(language)
+        self._language = resolved_language
         self._quantization = quantization
         self._local_settings = {
             "model": self._model_name,
@@ -110,9 +119,17 @@ class OnnxLocalBufferedSTTService(STTService):
                 "onnx-asr library not installed. Install with: pip install onnx-asr[cpu,hub]"
             )
 
-        super().__init__(sample_rate=sample_rate, **kwargs)
+        resolved_language = _language_to_code(language)
+        super().__init__(
+            sample_rate=sample_rate,
+            settings=STTSettings(
+                model=model_name,
+                language=None if resolved_language == "auto" else resolved_language,
+            ),
+            **kwargs,
+        )
         self._model_name = model_name
-        self._language = _language_to_code(language)
+        self._language = resolved_language
         self._quantization = quantization
         self._local_settings = {
             "model": self._model_name,
@@ -176,7 +193,10 @@ class OnnxLocalBufferedSTTService(STTService):
         await self.process_generator(self.run_stt(audio_bytes))
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super(STTService, self).process_frame(frame, direction)
+        # Keep terminal frames under this service's control so buffered audio is
+        # transcribed before EndFrame reaches downstream processors. AIService
+        # owns the Pipecat 1.5 lifecycle; STTService would also forward frames.
+        await AIService.process_frame(self, frame, direction)
 
         if isinstance(frame, AudioRawFrame):
             await self.process_audio_frame(frame, direction)
@@ -185,7 +205,17 @@ class OnnxLocalBufferedSTTService(STTService):
             return
 
         if isinstance(frame, STTUpdateSettingsFrame):
-            await self._update_settings(frame.settings)
+            if frame.service is not None and frame.service is not self:
+                await self.push_frame(frame, direction)
+                return
+            if frame.delta is not None:
+                await self._update_settings(frame.delta)
+                if is_given(frame.delta.language):
+                    self._language = _language_to_code(frame.delta.language)
+                    self._local_settings["language"] = self._language
+                if is_given(frame.delta.model) and frame.delta.model:
+                    self._model_name = str(frame.delta.model)
+                    self._local_settings["model"] = self._model_name
             return
         if isinstance(frame, STTMuteFrame):
             self._muted = frame.mute

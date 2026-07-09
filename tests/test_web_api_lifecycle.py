@@ -105,6 +105,48 @@ def test_startup_prewarm_flags_still_opt_in_without_mic_always_on(monkeypatch):
     assert web_api._prewarm_stt_on_startup() is True
 
 
+def test_soniox_stt_prewarm_uses_lazy_pipecat_runtime_import(monkeypatch):
+    import_runtime = MagicMock()
+    monkeypatch.setattr(web_api, "import_provider_runtime_module", import_runtime)
+
+    web_api._prewarm_stt_service("soniox")
+
+    import_runtime.assert_called_once_with("soniox", "pipecat.services.soniox.stt")
+
+
+def test_backend_loop_handler_suppresses_only_windows_proactor_disconnects(monkeypatch):
+    monkeypatch.setattr(web_api.os, "name", "nt")
+    previous_handler = MagicMock()
+    loop = MagicMock()
+    handler = web_api._backend_loop_exception_handler(previous_handler)
+
+    handler(
+        loop,
+        {
+            "message": "Exception in callback _ProactorBasePipeTransport._call_connection_lost()",
+            "exception": ConnectionResetError(10054, "connection reset"),
+        },
+    )
+
+    previous_handler.assert_not_called()
+    loop.default_exception_handler.assert_not_called()
+
+
+def test_backend_loop_handler_forwards_unrelated_connection_errors(monkeypatch):
+    monkeypatch.setattr(web_api.os, "name", "nt")
+    previous_handler = MagicMock()
+    loop = MagicMock()
+    handler = web_api._backend_loop_exception_handler(previous_handler)
+    context = {
+        "message": "provider request failed",
+        "exception": ConnectionResetError(10054, "connection reset"),
+    }
+
+    handler(loop, context)
+
+    previous_handler.assert_called_once_with(loop, context)
+
+
 class _RecoveringFakeMicPrewarmManager(_FakeMicPrewarmManager):
     engine = "rust-wasapi"
     instances: list["_RecoveringFakeMicPrewarmManager"] = []

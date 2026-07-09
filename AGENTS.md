@@ -68,7 +68,8 @@ Backend and runtime:
 
 Frontend and shell:
 
-- `Frontend/client/src/App.tsx`: routes and lazy loading.
+- `Frontend/client/src/App.tsx`: routes; the four primary user tabs are eager,
+  while Debug Console, transcript detail, and not-found surfaces remain lazy.
 - `Frontend/client/src/pages/`: Live Mic, YouTube, File, Settings, Debug Console,
   Transcript Detail.
 - `Frontend/client/src/contexts/WebSocketContext.tsx`: shared WebSocket.
@@ -271,9 +272,28 @@ Packaging and scripts:
 
 ### Providers and Media
 
+- Standard backend builds pin `pipecat-ai[silero]==1.5.0`. Provider factories
+  must use the Pipecat 1.5 `Settings` API; do not restore deprecated
+  `InputParams`, `LiveOptions`, or pre-1.5 fallback paths. Synthetic VAD turn
+  boundaries must use `VADUserStartedSpeakingFrame` and
+  `VADUserStoppedSpeakingFrame`, which are the frames consumed by Pipecat 1.5
+  streaming and segmented STT services. The frozen runtime import gate must
+  reject a sidecar containing any other Pipecat version. Custom STT services
+  must initialize complete `STTSettings` with at least `model` and `language`,
+  and must consume `STTUpdateSettingsFrame.delta`; do not restore legacy
+  `frame.settings` dictionaries or constructors that leave Pipecat settings as
+  `NOT_GIVEN`.
+- Do not add Pipecat's `local-smart-turn` extra to the standard sidecar: in
+  Pipecat 1.5 it pulls Torch, Torchaudio, and Transformers. SmartTurn remains
+  optional; import `LocalSmartTurnAnalyzerV3` directly and do not couple it to
+  the removed `pipecat.processors.user_idle_processor` module. The standard
+  recording path uses bundled Silero VAD and ONNX runtimes without those
+  heavyweight dependencies.
 - Soniox Async defaults to `stt-async-v5`. Keep
   `SCRIBER_SONIOX_ASYNC_MODEL` as an override for temporary compatibility, but
-  do not restore `stt-async-v4` as the code default.
+  do not restore `stt-async-v4` as the code default. Direct Soniox async upload
+  prefers WebM/Opus, which the provider accepts; WAV is only a local encoding
+  fallback when bundled ffmpeg cannot produce WebM, not an API-rejection retry.
 - Soniox realtime live transcription defaults to `stt-rt-v5`. Keep
   `SCRIBER_SONIOX_RT_MODEL` as an override for temporary compatibility, but do
   not restore `stt-rt-v4` as the code default.
@@ -386,6 +406,13 @@ Already implemented and should not be regressed:
 - Chunked/offloaded upload writes and export/cleanup work where practical.
 - JobStore and latency metrics store connection reuse.
 - CORS origin decision cache.
+- Primary-tab code for Live Mic, YouTube, File, and Settings is loaded eagerly
+  in the local WebView. Do not restore route-level Suspense blanks for these
+  tabs. `AppLayout` must use the existing Wouter router and must not wrap routed
+  children in a second keyed Router that remounts the page on every tab change.
+- Frontend Motion packages stay on a React-19-compatible release. The real
+  browser smoke treats `element.ref` compatibility warnings and blank samples
+  during primary-tab switching as failures.
 - Sidecar hash cache that avoids PyInstaller when inputs are unchanged.
   The sidecar cache key normalizes `src/version.py`, uses media-tool content
   hashes instead of timestamps, and must be computed before requiring

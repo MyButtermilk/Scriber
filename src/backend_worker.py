@@ -14,9 +14,9 @@ _SIMULATE_STARTUP_TIMEOUT_MARKER_ENV = "SCRIBER_SIMULATE_STARTUP_TIMEOUT_MARKER"
 
 
 def run_runtime_import_check() -> int:
-    from scripts.check_backend_runtime_imports import check_imports
+    from scripts.check_backend_runtime_imports import check_runtime_requirements
 
-    missing = check_imports()
+    missing = check_runtime_requirements()
     print(json.dumps({"ok": not missing, "missing": missing}, separators=(",", ":")))
     return 1 if missing else 0
 

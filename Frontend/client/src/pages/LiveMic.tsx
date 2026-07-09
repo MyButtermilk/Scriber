@@ -83,7 +83,7 @@ const TranscriptCard = memo(function TranscriptCard({
   return (
     <div className="w-full">
       <Card
-        className={`neu-recording-row perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} p-4 rounded-[20px] cursor-pointer group transform-gpu transition-[opacity,transform] duration-150 ease-out ${deletingClasses}`}
+        className={`live-recording-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} cursor-pointer rounded-[20px] p-4 group transform-gpu ${deletingClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
         role="button"
@@ -98,14 +98,14 @@ const TranscriptCard = memo(function TranscriptCard({
       >
           {viewMode === "list" ? (
             // List View
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
-                  <Mic className="w-5 h-5" />
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex min-w-0 items-center gap-4">
+                <div className="live-recording-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] text-primary">
+                  <Mic className="h-[18px] w-[18px] stroke-[1.65px]" />
                 </div>
-                <div>
-                  <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">{item.title}</h3>
-                  <p className="text-sm text-muted-foreground mt-1 truncate">
+                <div className="min-w-0">
+                  <h3 className="truncate font-heading text-[14px] font-medium text-foreground transition-colors duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:text-primary">{item.title}</h3>
+                  <p className="mt-1 truncate text-[12px] text-muted-foreground">
                     {item.date} • {formatDurationLikeYoutube(item.duration)} • {item.language || "—"}
                   </p>
                 </div>
@@ -131,10 +131,10 @@ const TranscriptCard = memo(function TranscriptCard({
             </div>
           ) : (
             // Grid View
-            <div className="flex flex-col h-full">
-              <div className="flex items-start justify-between mb-3">
-                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary">
-                  <Mic className="w-6 h-6" />
+            <div className="flex h-full flex-col">
+              <div className="mb-5 flex items-start justify-between">
+                <div className="live-recording-icon flex h-11 w-11 items-center justify-center rounded-[13px] text-primary">
+                  <Mic className="h-5 w-5 stroke-[1.65px]" />
                 </div>
                 <div className="flex items-center gap-1">
                   <CopyActionButton
@@ -155,14 +155,14 @@ const TranscriptCard = memo(function TranscriptCard({
                   />
                 </div>
               </div>
-              <h3 className="font-medium text-foreground group-hover:text-primary transition-colors line-clamp-2 mb-2">{item.title}</h3>
-              <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground mt-auto">
+              <h3 className="mb-3 line-clamp-2 font-heading text-[14px] font-medium leading-[1.35] text-foreground transition-colors duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:text-primary">{item.title}</h3>
+              <div className="mt-auto flex flex-wrap items-center gap-1 text-[11.5px] text-muted-foreground">
                 <span>{item.date}</span>
                 <span>•</span>
                 <span>{formatDurationLikeYoutube(item.duration)}</span>
               </div>
               <div className="mt-2">
-                <span className="inline-flex items-center gap-1 bg-secondary/50 px-2 py-1 rounded-md text-xs"><Globe className="w-3.5 h-3.5" /> {item.language || "—"}</span>
+                <span className="live-recording-language inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[10.5px] font-medium"><Globe className="h-3 w-3 stroke-[1.65px]" /> {item.language || "—"}</span>
               </div>
             </div>
           )}
@@ -318,7 +318,7 @@ const AudioVisualizer = memo(function AudioVisualizer({
   return (
     <canvas
       ref={canvasRef}
-      className="h-16 w-full max-w-xs"
+      className="h-12 w-full md:h-16"
       aria-label={isRecording ? "Recording audio level" : "Recording idle"}
       role="img"
     />
@@ -853,142 +853,209 @@ export default function LiveMic() {
     queryClient.prefetchQuery({ queryKey: ["/api/transcripts", id] });
   }, [queryClient]);
 
+  const stageStatusLabel = isRecording
+    ? "Listening"
+    : isPreparing
+      ? "Preparing microphone"
+      : isTranscribing
+        ? "Transcribing"
+        : isConnected
+          ? "Ready"
+          : "Offline";
+
+  const stageStatusHint = isRecording
+    ? "Tap the microphone to stop"
+    : isPreparing
+      ? "Connecting to your input device"
+      : isTranscribing
+        ? "Finalizing your transcript"
+        : "Tap the microphone to start";
+
   return (
-    <div className="max-w-screen-md mx-auto px-4 py-6 md:py-8">
-      <header className="mb-8 text-left space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight text-foreground">Live Transcription</h1>
-        <p className="text-muted-foreground">Capture high-fidelity voice notes instantly</p>
+    <div className="live-mic-page mx-auto w-full max-w-[1320px] px-4 py-5 md:px-6 md:py-6">
+      <header className="live-mic-intro mb-6 text-left">
+        <div className="mb-3 flex items-center gap-2.5 text-[9.5px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+          <span className="h-px w-7 bg-primary/60" aria-hidden="true" />
+          Voice capture · 01
+        </div>
+        <h1 className="font-heading text-[36px] font-semibold leading-[0.96] tracking-[-0.045em] text-foreground md:text-[42px]">
+          Live transcription
+        </h1>
+        <p className="mt-3 max-w-[62ch] text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">
+          Record a thought, meeting note, or longer dictation and see the transcript as it arrives.
+        </p>
       </header>
 
-      <div className="space-y-10">
-        <section className="flex flex-col items-center justify-center space-y-6">
+      <div className="space-y-7">
+        <section className="live-mic-stage-shell">
+          <div className="live-mic-stage-core">
+          <div className="live-mic-control-deck relative flex min-h-[270px] flex-col items-center justify-center px-6 py-6 lg:min-h-0 lg:py-7">
+            <div className="absolute left-5 top-5 inline-flex items-center gap-2 rounded-full bg-white/75 px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/70 dark:text-slate-300">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  isRecording
+                    ? "bg-red-500 shadow-[0_0_0_4px_rgba(239,68,68,0.12)]"
+                    : isPreparing || isTranscribing
+                      ? "bg-amber-400"
+                      : isConnected
+                        ? "bg-emerald-500"
+                        : "bg-slate-400"
+                }`}
+                aria-hidden="true"
+              />
+              {stageStatusLabel}
+            </div>
 
-          {/* Live Text Output - Debossed status well for unified design */}
-          <div className="neu-status-well w-full max-w-lg min-h-[120px] text-center flex items-center justify-center p-6">
-            <p className="sr-only" aria-live="assertive" aria-atomic="true">
-              {isRecording
-                ? `Recording started. Elapsed ${formatTime(elapsed)}.`
-                : isPreparing
-                  ? "Preparing microphone."
-                  : isTranscribing
-                    ? "Transcribing recording."
-                    : "Recording stopped."}
-            </p>
-            <div aria-live="polite" aria-atomic="true">
-              {isRecording ? (
-                <p className="text-lg md:text-xl font-medium leading-relaxed relative z-10">
-                  {(finalText || interimText) ? (
-                    <>
-                      "<span className="text-foreground/90">{finalText}</span>
-                      {interimText && (
-                        <span className="text-muted-foreground italic">{finalText ? ' ' : ''}{interimText}</span>
-                      )}"
-                    </>
-                  ) : (
-                    <span className="text-foreground/90">"{status || "Listening"}..."</span>
-                  )}
+            <div className="flex flex-col items-center justify-center gap-3 pt-5">
+              {/* Controls */}
+              <GlossyMicButton
+                isActive={isMicCaptureActive}
+                disabled={isTranscribing}
+                label={
+                  isTranscribing
+                    ? "Transcribing recording"
+                    : hasActiveSession
+                      ? "Stop recording"
+                      : "Start recording"
+                }
+                audioLevelRef={audioLevelRef}
+                onToggle={handleToggle}
+              />
+
+              <div className="flex min-h-11 flex-col items-center justify-center gap-0.5">
+                <p className="text-[12px] font-medium text-foreground/85">{stageStatusHint}</p>
+                <p className={`font-mono text-[13px] font-semibold tabular-nums transition-colors duration-200 ${isMicCaptureActive ? "text-red-500" : "text-muted-foreground"}`}>
+                  {formatTime(elapsed)}
                 </p>
-              ) : isPreparing || isTranscribing ? (
-                <p className="text-muted-foreground relative z-10">{status}</p>
-              ) : (
-                <p className="text-muted-foreground relative z-10">Ready to record. Tap the microphone to start.</p>
-              )}
-            </div>
-          </div>
-          {isRecording && inputWarning && (
-            <div className="w-full max-w-lg rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200 space-y-3">
-              <p>{inputWarning}</p>
-              {inputWarningActions.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {inputWarningActions.map((action) => (
-                    <Button
-                      key={`${action.id}-${action.uri}`}
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="h-8 bg-amber-200/15 text-amber-100 hover:bg-amber-200/25"
-                      onClick={() => handleInputWarningAction(action)}
-                    >
-                      {action.label}
-                    </Button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Waveform Visualization (Mock) */}
-          <AudioVisualizer
-            isRecording={isRecording}
-            audioLevelRef={audioLevelRef}
-            barCount={visualizerBarCount}
-          />
-
-          {/* Controls */}
-          <div className="flex flex-col items-center justify-center gap-3">
-            <GlossyMicButton
-              isActive={isMicCaptureActive}
-              disabled={isTranscribing}
-              label={
-                isTranscribing
-                  ? "Transcribing recording"
-                  : hasActiveSession
-                    ? "Stop recording"
-                    : "Start recording"
-              }
-              audioLevelRef={audioLevelRef}
-              onToggle={handleToggle}
-            />
-
-            <div className="h-5 flex items-center justify-center">
-              <div className={`text-sm font-mono font-medium text-muted-foreground transition-opacity duration-200 ${isMicCaptureActive ? "opacity-100" : "opacity-0"}`}>
-                {formatTime(elapsed)}
               </div>
             </div>
+          </div>
+
+          <div className="live-mic-transcript-deck flex min-w-0 flex-col p-5 md:p-6 lg:p-7">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="font-heading text-[18px] font-semibold tracking-[-0.015em] text-foreground">Live transcript</h2>
+                <p className="mt-1 text-[11.5px] leading-4 text-muted-foreground">Speech appears here while you record.</p>
+              </div>
+              {(isPreparing || isTranscribing) && (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-[10.5px] font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                  {stageStatusLabel}
+                </span>
+              )}
+            </div>
+
+            {/* Live Text Output - Debossed status well for unified design */}
+            <div className="live-mic-transcript-well flex min-h-[140px] flex-1 items-center p-5 text-left md:min-h-[168px] md:p-6">
+              <p className="sr-only" aria-live="assertive" aria-atomic="true">
+                {isRecording
+                  ? `Recording started. Elapsed ${formatTime(elapsed)}.`
+                  : isPreparing
+                    ? "Preparing microphone."
+                    : isTranscribing
+                      ? "Transcribing recording."
+                      : "Recording stopped."}
+              </p>
+              <div className="relative z-10 w-full" aria-live="polite" aria-atomic="true">
+                {isRecording ? (
+                  <p className="max-w-[70ch] text-[17px] font-medium leading-relaxed md:text-[19px]">
+                    {(finalText || interimText) ? (
+                      <>
+                        <span className="text-foreground/90">{finalText}</span>
+                        {interimText && (
+                          <span className="text-muted-foreground italic">{finalText ? ' ' : ''}{interimText}</span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-foreground/90">{status || "Listening"}...</span>
+                    )}
+                  </p>
+                ) : isPreparing || isTranscribing ? (
+                  <p className="text-[14px] text-muted-foreground">{status}</p>
+                ) : (
+                  <div>
+                    <p className="text-[15px] font-medium text-foreground/80">Your live transcript will appear here.</p>
+                    <p className="mt-1.5 text-[12px] leading-5 text-muted-foreground">Start recording with the microphone button or your global hotkey.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {isRecording && inputWarning && (
+              <div className="mt-3 space-y-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-200">
+                <p>{inputWarning}</p>
+                {inputWarningActions.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {inputWarningActions.map((action) => (
+                      <Button
+                        key={`${action.id}-${action.uri}`}
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="h-8 bg-amber-200/15 text-amber-800 hover:bg-amber-200/25 dark:text-amber-100"
+                        onClick={() => handleInputWarningAction(action)}
+                      >
+                        {action.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="live-mic-signal-bed mt-3 overflow-hidden rounded-lg px-1">
+              <AudioVisualizer
+                isRecording={isRecording}
+                audioLevelRef={audioLevelRef}
+                barCount={visualizerBarCount}
+              />
+            </div>
+          </div>
           </div>
         </section>
 
         {/* History Section */}
-        <section className="space-y-4">
-          <div className="flex items-center justify-between px-2">
-            <h2 className="text-lg font-semibold text-foreground">Recent Recordings</h2>
-            <div className="flex items-center gap-2">
+        <section className="live-mic-history space-y-4 pb-2">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em] text-foreground">Recent recordings</h2>
+              <p className="mt-1 text-[12px] leading-4 text-muted-foreground">Search, copy, or reopen your latest dictations.</p>
+            </div>
+            <div className="flex w-full items-center gap-2 sm:w-auto">
+              <div className="live-mic-search relative min-w-0 flex-1 rounded-[13px] p-1 sm:w-[340px] sm:flex-none lg:w-[400px]">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="text"
+                  placeholder="Search recordings..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="h-10 rounded-[10px] border-0 bg-transparent pl-9 pr-9 shadow-none focus-visible:ring-0"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery("")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Clear recording search"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
               <ToggleGroup
                 type="single"
                 value={viewMode}
                 onValueChange={(val) => val && setViewMode(val as "list" | "grid")}
-                className="bg-secondary/50 rounded-lg p-1"
+                className="live-mic-view-toggle shrink-0 rounded-[13px] p-1"
               >
-                <ToggleGroupItem value="list" aria-label="List view" className="h-11 w-11 p-0">
+                <ToggleGroupItem value="list" aria-label="List view" className="h-10 w-10 rounded-[10px] p-0 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]">
                   <LayoutList className="h-4 w-4" />
                 </ToggleGroupItem>
-                <ToggleGroupItem value="grid" aria-label="Grid view" className="h-11 w-11 p-0">
+                <ToggleGroupItem value="grid" aria-label="Grid view" className="h-10 w-10 rounded-[10px] p-0 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]">
                   <LayoutGrid className="h-4 w-4" />
                 </ToggleGroupItem>
               </ToggleGroup>
             </div>
-          </div>
-
-          {/* Search Bar */}
-          <div className="relative mt-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              type="text"
-              placeholder="Search recordings..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 pr-9 h-11 bg-secondary/50"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                aria-label="Clear recording search"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
           </div>
 
           {transcriptsQuery.isLoading ? (

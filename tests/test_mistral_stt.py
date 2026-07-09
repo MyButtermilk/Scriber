@@ -2,9 +2,21 @@ import pytest
 
 from src.mistral_stt import (
     MistralAsyncProcessor,
+    MistralRealtimeSTTService,
     _normalize_context_bias_terms,
     format_mistral_segments_with_speakers,
 )
+
+
+def test_mistral_realtime_initializes_complete_pipecat_1_5_settings():
+    service = MistralRealtimeSTTService(
+        api_key="test-key",
+        model="voxtral-mini-transcribe-2507",
+        language="auto",
+    )
+
+    assert service._settings.model == "voxtral-mini-transcribe-2507"
+    assert service._settings.language is None
 
 
 def test_context_bias_terms_strip_spaces_and_split_phrases():

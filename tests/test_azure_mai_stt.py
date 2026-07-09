@@ -23,6 +23,17 @@ def test_azure_mai_region_defaults_to_northeurope():
     assert azure_mai_region("NorthEurope") == "northeurope"
 
 
+def test_azure_mai_service_initializes_complete_pipecat_1_5_settings():
+    service = AzureMaiTranscribeSTTService(
+        speech_key="key",
+        region="northeurope",
+        language="auto",
+    )
+
+    assert service._settings.model == "mai-transcribe-1.5"
+    assert service._settings.language is None
+
+
 def test_validate_azure_mai_region_rejects_unsupported():
     assert validate_azure_mai_region("northeurope") == "northeurope"
     try:

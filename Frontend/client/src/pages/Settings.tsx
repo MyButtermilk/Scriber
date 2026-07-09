@@ -600,16 +600,22 @@ function SectionPanel({
   id?: string;
 }) {
   return (
-    <section id={id} className={cn("settings-section min-w-0 scroll-mt-4 border-t border-slate-300/70 pb-3 pt-4 dark:border-slate-800", className)}>
-      <div className="mb-3 flex min-w-0 items-start gap-2.5">
+    <section
+      id={id}
+      className={cn(
+        "settings-section min-w-0 scroll-mt-28 rounded-2xl border border-slate-200/80 bg-white/35 p-4 shadow-[0_18px_44px_-40px_rgba(15,23,42,0.45)] dark:border-white/[0.065] dark:bg-white/[0.025]",
+        className,
+      )}
+    >
+      <div className="mb-3.5 flex min-w-0 items-start gap-2.5">
         {Icon ? (
-          <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/70 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] dark:bg-slate-900/70 dark:text-slate-400">
-            <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-blue-50 text-blue-600 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.09)] dark:bg-blue-950/35 dark:text-blue-300">
+            <Icon className="h-4 w-4" aria-hidden="true" />
           </span>
         ) : null}
         <div className="min-w-0 flex-1">
-          <h2 className="text-[16px] !font-extrabold leading-5 text-slate-950 dark:text-slate-100 md:text-[17px]">{title}</h2>
-          <p className="mt-0.5 max-w-full text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">
+          <h2 className="text-[17px] !font-semibold leading-5 tracking-[-0.015em] text-slate-950 dark:text-slate-100 md:text-[18px]">{title}</h2>
+          <p className="mt-1 max-w-[62ch] text-[11.5px] leading-[16px] text-slate-500 dark:text-slate-400">
             {description}
           </p>
         </div>
@@ -631,11 +637,11 @@ function SettingLine({
   className?: string;
 }) {
   return (
-    <div className={cn("grid gap-2 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(150px,220px)] sm:items-center", className)}>
+    <div className={cn("grid gap-2.5 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(150px,220px)] sm:items-center", className)}>
       <div className="min-w-0">
-        <Label className="text-[12px] font-bold leading-4 text-slate-950 dark:text-slate-100">{label}</Label>
+        <Label className="text-[12.5px] font-semibold leading-4 text-slate-950 dark:text-slate-100">{label}</Label>
         {description ? (
-          <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">{description}</p>
+          <p className="mt-1 text-[11.5px] leading-[15px] text-slate-500 dark:text-slate-400">{description}</p>
         ) : null}
       </div>
       <div className="min-w-0 sm:justify-self-end">{children}</div>
@@ -661,11 +667,11 @@ function SettingsSubsection({
   return (
     <div
       className={cn(
-        "rounded-xl bg-slate-50/90 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60",
+        "rounded-xl border border-slate-200/65 bg-white/65 p-3.5 shadow-[0_12px_32px_-30px_rgba(15,23,42,0.5)] dark:border-white/[0.055] dark:bg-slate-950/30",
         className,
       )}
     >
-      <div className="mb-2.5 flex min-w-0 items-start justify-between gap-3">
+      <div className="mb-3 flex min-w-0 items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           {Icon ? (
             <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white/80 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] dark:bg-slate-950/50 dark:text-slate-400">
@@ -673,8 +679,8 @@ function SettingsSubsection({
             </span>
           ) : null}
           <div className="min-w-0 flex-1">
-            <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">{title}</h3>
-            <p className="mt-0.5 max-w-full text-[11px] leading-4 text-slate-500 dark:text-slate-400">{description}</p>
+            <h3 className="text-[13.5px] !font-semibold leading-4 text-slate-950 dark:text-slate-100">{title}</h3>
+            <p className="mt-1 max-w-[62ch] text-[11.5px] leading-4 text-slate-500 dark:text-slate-400">{description}</p>
           </div>
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
@@ -736,7 +742,7 @@ function ProviderChoice({
       onClick={handleClick}
       title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : ""}`}
       className={cn(
-        "group flex min-h-[40px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
+        "group flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left outline-none transition-[background-color,box-shadow,transform] duration-200",
         "active:translate-y-px",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
         disabled
@@ -752,9 +758,9 @@ function ProviderChoice({
         <span className="h-7 w-7 shrink-0" aria-hidden="true" />
       )}
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[11.5px] font-semibold leading-[15px]">{option.label}</span>
+        <span className="block truncate text-[12px] font-semibold leading-4">{option.label}</span>
         <span
-          className="block truncate text-[10px] leading-3 text-slate-500 dark:text-slate-400"
+          className="block truncate text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400"
         >
           {option.detail}
         </span>
@@ -813,7 +819,7 @@ function SummaryModelChoice({
       onClick={handleClick}
       title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : ""}`}
       className={cn(
-        "group flex min-h-[40px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
+        "group flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left outline-none transition-[background-color,box-shadow,transform] duration-200",
         "active:translate-y-px",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
         disabled
@@ -825,9 +831,9 @@ function SummaryModelChoice({
     >
       <ProviderIcon icon={option.icon} label={option.label} />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[11.5px] font-semibold leading-[15px]">{option.label}</span>
+        <span className="block truncate text-[12px] font-semibold leading-4">{option.label}</span>
         <span
-          className="block truncate text-[10px] leading-3 text-slate-500 dark:text-slate-400"
+          className="block truncate text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400"
         >
           {option.detail}
         </span>
@@ -2758,7 +2764,7 @@ export default function Settings() {
 
   return (
     <div className={cn(
-      "settings-page mx-auto w-full max-w-[1400px] px-4 py-5 text-[13px] transition-opacity duration-150 md:px-5 md:py-6",
+      "settings-page mx-auto w-full max-w-[1320px] px-4 pb-6 text-[13px] transition-opacity duration-150 md:px-5",
       settingsLoaded ? "opacity-100" : "opacity-0",
     )}>
       {settingsError && (
@@ -2770,17 +2776,50 @@ export default function Settings() {
         />
       )}
 
-      <header className="mb-4 border-b border-slate-200 pb-3 dark:border-slate-800">
-        <h1 className="text-[34px] !font-bold leading-none tracking-normal text-slate-950 dark:text-slate-100">
-          Settings
-        </h1>
-        <p className="mt-1.5 text-[12px] leading-4 text-slate-500 dark:text-slate-400">
-          Configure transcription, providers, summaries, credentials, updates, and language behavior.
-        </p>
+      <header className="sticky top-0 z-20 -mx-4 mb-4 border-b border-slate-200/80 bg-card/95 px-4 pb-3 pt-5 backdrop-blur-xl dark:border-white/[0.065] md:-mx-5 md:px-5">
+        <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+          <div className="min-w-0 xl:w-[440px] xl:flex-none">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <h1 className="text-[32px] !font-semibold leading-none tracking-[-0.035em] text-slate-950 dark:text-slate-100 md:text-[35px]">
+                Settings
+              </h1>
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[10.5px] font-semibold text-emerald-700 shadow-[inset_0_0_0_1px_rgba(5,150,105,0.12)] dark:bg-emerald-950/35 dark:text-emerald-300">
+                <Check className="h-3 w-3" aria-hidden="true" />
+                Most changes save automatically
+              </span>
+            </div>
+            <p className="mt-2 max-w-[68ch] text-[12px] leading-[17px] text-slate-500 dark:text-slate-400">
+              Configure capture, transcription providers, AI processing, credentials, updates, and language behavior.
+            </p>
+          </div>
+
+          <nav aria-label="Settings sections" className="settings-section-nav min-w-0 overflow-x-auto pb-0.5">
+            <div className="flex w-max items-center gap-1 rounded-xl bg-slate-100/80 p-1 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)] dark:bg-slate-950/45">
+              {[
+                { href: "#settings-transcription", label: "Capture", icon: Mic },
+                { href: "#settings-providers", label: "Providers", icon: Cloud },
+                { href: "#settings-api-keys", label: "API keys", icon: Key },
+                { href: "#settings-summaries", label: "Summary", icon: Sparkles },
+                { href: "#settings-updates", label: "Updates", icon: Shield },
+                { href: "#settings-language", label: "Language", icon: Languages },
+              ].map((item) => (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[10.5px] font-semibold text-slate-500 no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 hover:bg-white hover:text-slate-950 hover:shadow-sm active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                >
+                  <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
+                  {item.label}
+                </a>
+              ))}
+            </div>
+          </nav>
+        </div>
       </header>
 
-      <div className="grid gap-x-7 gap-y-9 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
         <SectionPanel
+          id="settings-transcription"
           title="Transcription"
           description="Control how audio is captured and how the recording hotkey behaves."
           icon={Mic}
@@ -2994,6 +3033,7 @@ export default function Settings() {
         </SectionPanel>
 
         <SectionPanel
+          id="settings-providers"
           title="Speech-to-text provider"
           description="Choose the primary transcription provider."
           icon={Cloud}
@@ -3069,6 +3109,7 @@ export default function Settings() {
         </SectionPanel>
 
         <SectionPanel
+          id="settings-api-keys"
           title="API keys"
           description="Manage provider credentials without expanding the whole page."
           icon={Key}
@@ -3138,6 +3179,7 @@ export default function Settings() {
         </SectionPanel>
 
         <SectionPanel
+          id="settings-summaries"
           title="Summarization"
           description="Choose the model and automatic summary behavior."
           icon={Sparkles}
@@ -3265,6 +3307,7 @@ export default function Settings() {
         </SectionPanel>
 
         <SectionPanel
+          id="settings-language"
           title="Language"
           description="Auto-detect or choose a preferred transcription language."
           icon={Languages}

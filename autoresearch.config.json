@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "sessionName": "Scriber Windows Perceived Performance",
+  "repo": "MyButtermilk/Scriber",
+  "segment": "B5-readiness-inclusive-baseline",
+  "sessionMode": "foreground",
+  "primaryMetric": "local_wux",
+  "direction": "lower",
+  "unit": "ratio",
+  "baseline": {
+    "status": "accepted",
+    "value": 1.0,
+    "accepted": true,
+    "reason": "Segment B5 readiness-inclusive composite-score baseline seeded from FastLocal package benchmarks/results/raw/fastlocal-20260624-083431.json. The baseline metrics are recorded in benchmarks/results/baseline.json; local_wux now weights hotkey_mic_ready_p95_ms and hotkey_first_audio_frame_p95_ms from Always-On Mic Microsoft/Soniox overlay probes."
+  },
+  "benchmarkCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\autoresearch.ps1 -Suite FastLocal",
+  "checksCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\autoresearch.checks.ps1",
+  "budgets": {
+    "packetBudget": 40,
+    "wallClockSeconds": 28800,
+    "maxLivePromotionCandidates": 6,
+    "maxLiveTranscriptionsPerProvider": 80,
+    "laneSwitchAfterValidDiscards": 3,
+    "plateauAfterValidDiscardsWithoutEvidence": 10
+  },
+  "editableScope": [
+    "src/overlay.py",
+    "src/web_api.py",
+    "src/pipeline.py",
+    "src/injector.py",
+    "src/azure_mai_stt.py",
+    "src/core/",
+    "Frontend/client/src/",
+    "Frontend/src-tauri/",
+    "tests/",
+    "scripts/perf/",
+    "benchmarks/windows/"
+  ],
+  "protectedBenchmarkSurface": [
+    "autoresearch.ps1",
+    "autoresearch.checks.ps1",
+    "benchmarks/windows/",
+    "benchmarks/fixtures/",
+    "benchmarks/oracles/",
+    "scripts/perf/evaluator/"
+  ],
+  "blockingSecondaryConstraints": {
+    "text_errors": "<= 0",
+    "focus_errors": "<= 0",
+    "clipboard_errors": "<= 0",
+    "overlay_errors": "<= 0",
+    "ui_long_tasks_gt_200ms": "<= 0",
+    "idle_cpu_pct": "<= baseline + 0.5",
+    "working_set_mb": "<= baseline * 1.05"
+  },
+  "runtime": {
+    "platform": "Windows 11 x64 native",
+    "productionBuildRequired": true,
+    "frontendDevServerAllowed": false,
+    "currentBlocker": "",
+    "blocker": ""
+  },
+  "evidencePolicy": {
+    "firstLocalGainMaxLevel": "pending_repeat",
+    "repeatRequirement": "two independent Full Local confirmations",
+    "liveHoldoutRequiredForProviderClaims": true,
+    "productGradeAllowedWithoutLiveHoldout": false
+  }
+}

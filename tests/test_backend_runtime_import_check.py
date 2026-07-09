@@ -5,7 +5,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.check_backend_runtime_imports import REQUIRED_IMPORTS, check_imports
+from scripts.check_backend_runtime_imports import (
+    REQUIRED_IMPORTS,
+    REQUIRED_PACKAGE_VERSIONS,
+    check_imports,
+    check_package_versions,
+)
 
 
 def test_backend_worker_startup_timeout_simulation_is_once(monkeypatch, tmp_path):
@@ -28,6 +33,8 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "onnx_asr" in required_modules
     assert "sherpa_onnx" not in required_modules
     assert "pipecat.audio.vad.silero" in required_modules
+    assert "pipecat.audio.turn.smart_turn.local_smart_turn_v3" in required_modules
+    assert "pipecat.processors.user_idle_processor" not in required_modules
     assert "src.web_api" in required_modules
     assert "pipecat.services.soniox.stt" in required_modules
     assert "pipecat.services.assemblyai.stt" in required_modules
@@ -35,6 +42,22 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "pipecat.services.google.stt" in required_modules
     assert "pipecat.services.speechmatics.stt" in required_modules
     assert "src.azure_mai_stt" in required_modules
+    assert ("pipecat-ai", "1.5.0") in REQUIRED_PACKAGE_VERSIONS
+
+
+def test_backend_runtime_import_check_rejects_stale_pipecat():
+    mismatches = check_package_versions(
+        requirements=(("pipecat-ai", "1.5.0"),),
+        version_for=lambda _package: "0.0.95",
+    )
+
+    assert mismatches == [
+        {
+            "module": "distribution:pipecat-ai",
+            "reason": "required package version 1.5.0",
+            "error": "VersionMismatch: installed 0.0.95",
+        }
+    ]
 
 
 def test_standard_requirements_include_audio_runtime_dependencies():
@@ -64,6 +87,21 @@ def test_standard_requirements_include_audio_runtime_dependencies():
     assert "pystray" not in requirements
     assert all("aws" not in line for line in requirements)
     assert all("boto" not in line for line in requirements)
+
+    local_requirements = (
+        Path(__file__).resolve().parents[1] / "requirements-local-asr.txt"
+    ).read_text(encoding="utf-8").splitlines()
+    assert "onnx-asr[cpu,hub]>=0.10.2,<0.11" in local_requirements
+    assert all("pipecat-ai" not in line for line in local_requirements)
+
+
+def test_pipeline_uses_pipecat_1_5_smart_turn_import_without_removed_processor():
+    pipeline_source = (
+        Path(__file__).resolve().parents[1] / "src" / "pipeline.py"
+    ).read_text(encoding="utf-8")
+
+    assert "local_smart_turn_v3 import LocalSmartTurnAnalyzerV3" in pipeline_source
+    assert "UserIdleProcessor" not in pipeline_source
 
 
 def test_backend_worker_import_does_not_eagerly_import_web_api():
@@ -186,6 +224,10 @@ def test_local_stt_services_do_not_override_pipecat_settings_object():
 
     assert "self._local_settings" in onnx_service
     assert "self._settings = {" not in onnx_service
+    assert "AIService.process_frame(self, frame, direction)" in onnx_service
+    assert "frame.delta" in onnx_service
+    assert "frame.settings" not in onnx_service
+    assert "super(STTService, self)" not in onnx_service
 
 
 def test_backend_runtime_import_check_reports_missing_modules():

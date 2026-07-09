@@ -27,7 +27,7 @@ def parse_csp(csp: str) -> dict[str, list[str]]:
 def test_tauri_default_capability_is_minimal() -> None:
     capability = read_json(TAURI_DIR / "capabilities" / "default.json")
 
-    assert capability["windows"] == ["main", "recording-overlay"]
+    assert capability["windows"] == ["main", "recording-overlay", "tray-panel"]
     assert capability["permissions"] == [
         "core:app:allow-set-app-theme",
         "core:app:allow-version",

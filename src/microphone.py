@@ -865,6 +865,13 @@ class MicrophoneInput(BaseInputTransport):
         self._running = False
         self._queue = _queue.Queue(maxsize=512)
         self._dropped_chunks = 0
+        self._drained_chunks = 0
+        self._max_queue_depth = 0
+        self._last_drop_log_at = 0.0
+        self._consumer_error = ""
+        self._consumer_last_state = "not_started"
+        self._consumer_loop: asyncio.AbstractEventLoop | None = None
+        self._queue_wakeup: asyncio.Event | None = None
         self._consumer_task = None
         # Serializes _audio_callback against itself. The prewarm path can invoke
         # this callback from the PortAudio thread (live frames) and the event loop
@@ -998,6 +1005,15 @@ class MicrophoneInput(BaseInputTransport):
         """Start audio capture and feed frames into the transport queue."""
         logger.debug(f"MicrophoneInput.start() called, device={self.device}")
         await super().start(frame)
+        self._consumer_loop = asyncio.get_running_loop()
+        self._queue_wakeup = asyncio.Event()
+        self._queue = _queue.Queue(maxsize=512)
+        self._dropped_chunks = 0
+        self._drained_chunks = 0
+        self._max_queue_depth = 0
+        self._last_drop_log_at = 0.0
+        self._consumer_error = ""
+        self._consumer_last_state = "not_started"
         self._running = True
         self._active_capture_channel = None
         self._channel_selection_counter = 0
@@ -1030,6 +1046,8 @@ class MicrophoneInput(BaseInputTransport):
         self._requested_audio_engine = _requested_audio_engine()
         self._create_audio_task()
         self._consumer_task = asyncio.create_task(self._drain_queue(), name="microphone_drain")
+        self._consumer_last_state = "running"
+        self._consumer_task.add_done_callback(self._on_consumer_task_done)
 
         try:
             if self.keep_alive and self.prewarm_manager is not None:
@@ -1156,9 +1174,20 @@ class MicrophoneInput(BaseInputTransport):
         self._last_callback_at = time.monotonic()
         try:
             self._queue.put_nowait(audio_bytes)
+            queue_depth = self._queue.qsize()
+            self._max_queue_depth = max(self._max_queue_depth, queue_depth)
+            self._signal_queue_wakeup()
         except _queue.Full:
             self._dropped_chunks += 1
-            logger.warning(f"Mic queue full, dropped chunk (#{self._dropped_chunks})")
+            now = time.monotonic()
+            if self._dropped_chunks == 1 or now - self._last_drop_log_at >= 1.0:
+                self._last_drop_log_at = now
+                logger.warning(
+                    "Mic queue full; dropped {} audio chunk(s) (depth={}/{})",
+                    self._dropped_chunks,
+                    self._queue.qsize(),
+                    self._queue.maxsize,
+                )
 
         # Visualizer/input-warning calculation is capped to UI frame rate. The
         # raw audio still flows downstream on every callback.
@@ -1249,6 +1278,12 @@ class MicrophoneInput(BaseInputTransport):
             "device": str(self.device),
             "callbackCount": int(self._callback_count),
             "droppedFrameCount": int(self._dropped_chunks),
+            "drainedFrameCount": int(self._drained_chunks),
+            "audioQueueDepth": int(self._queue.qsize()),
+            "audioQueueCapacity": int(self._queue.maxsize),
+            "audioQueueMaxDepth": int(self._max_queue_depth),
+            "consumerTaskState": self._consumer_task_state(),
+            "consumerError": self._consumer_error,
             "lastObservedRms": float(self._last_observed_rms),
             "maxObservedRms": float(self._max_observed_rms),
             "audioLevelSampleCount": int(self._audio_level_sample_count),
@@ -1427,6 +1462,66 @@ class MicrophoneInput(BaseInputTransport):
                     logger.debug(f"Microphone stream stop after pipeline error failed: {exc}")
             self._release_active_stream()
 
+    def _signal_queue_wakeup(self) -> None:
+        loop = self._consumer_loop
+        wakeup = self._queue_wakeup
+        if loop is None or wakeup is None or loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(wakeup.set)
+        except RuntimeError:
+            pass
+
+    def _consumer_task_state(self) -> str:
+        task = self._consumer_task
+        if task is None:
+            return self._consumer_last_state
+        if task.cancelled():
+            return "cancelled"
+        if not task.done():
+            return "running"
+        try:
+            return "failed" if task.exception() is not None else "completed"
+        except asyncio.CancelledError:
+            return "cancelled"
+
+    def _on_consumer_task_done(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            self._consumer_last_state = "cancelled"
+            return
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            self._consumer_last_state = "cancelled"
+            return
+        if error is None:
+            self._consumer_last_state = "completed"
+            return
+        self._consumer_last_state = "failed"
+        self._consumer_error = f"{type(error).__name__}: {error}"
+        logger.error("Microphone audio queue consumer failed: {}", self._consumer_error)
+
+    async def _next_queued_audio(self):
+        while True:
+            try:
+                return self._queue.get_nowait()
+            except _queue.Empty:
+                if not self._running:
+                    return None
+
+                wakeup = self._queue_wakeup
+                if wakeup is None:
+                    await asyncio.sleep(0)
+                    continue
+
+                # Clear first, then check the queue again so a producer cannot
+                # race between the empty check and the wait.
+                wakeup.clear()
+                try:
+                    return self._queue.get_nowait()
+                except _queue.Empty:
+                    await wakeup.wait()
+
     async def _drain_queue(self):
         # Ensure audio queue exists (BaseInputTransport creates it in _create_audio_task)
         if not hasattr(self, "_audio_in_queue") or self._audio_in_queue is None:
@@ -1437,22 +1532,19 @@ class MicrophoneInput(BaseInputTransport):
 
         try:
             while True:
-                if not self._running and self._queue.empty():
-                    break
-                try:
-                    data = await asyncio.get_running_loop().run_in_executor(
-                        None, self._queue.get, True, 0.1
-                    )
-                except _queue.Empty:
-                    continue
+                data = await self._next_queued_audio()
                 if data is None:
                     break
-                frame = InputAudioRawFrame(
-                    audio=data,
-                    sample_rate=self._target_sample_rate,
-                    num_channels=self._target_channels,
-                )
-                await self.push_audio_frame(frame)
+                try:
+                    frame = InputAudioRawFrame(
+                        audio=data,
+                        sample_rate=self._target_sample_rate,
+                        num_channels=self._target_channels,
+                    )
+                    await self.push_audio_frame(frame)
+                    self._drained_chunks += 1
+                finally:
+                    self._queue.task_done()
             self._notify_last_audio_chunk_sent()
         except asyncio.CancelledError:
             # Clean up audio stream on cancellation
@@ -1497,6 +1589,7 @@ class MicrophoneInput(BaseInputTransport):
         termination remains the caller's responsibility.
         """
         self._running = False
+        self._signal_queue_wakeup()
 
         # OPTIMIZED: Always stop stream to prevent CPU usage and buffer overflow
         # With keep_alive: pause stream (fast restart via stream.start())
@@ -1517,14 +1610,6 @@ class MicrophoneInput(BaseInputTransport):
                     pass
             self._release_active_stream()
 
-        # Signal the queue to stop
-        if self._queue:
-            try:
-                if self._queue.empty():
-                    self._queue.put_nowait(None)
-            except Exception:
-                pass
-
         # Wait for consumer task with timeout
         if self._consumer_task:
             task, self._consumer_task = self._consumer_task, None
@@ -1533,5 +1618,9 @@ class MicrophoneInput(BaseInputTransport):
             except asyncio.TimeoutError:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+            except Exception as exc:
+                if not self._consumer_error:
+                    self._consumer_error = f"{type(exc).__name__}: {exc}"
+                logger.debug(f"Microphone queue consumer cleanup warning: {exc}")
 
         self._stopped.set()

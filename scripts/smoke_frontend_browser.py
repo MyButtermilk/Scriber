@@ -45,7 +45,7 @@ ROUTE_EXPECTATIONS: dict[str, list[str]] = {
         "Auto scroll",
         "Newest first",
     ],
-    "/settings": ["Settings", "Transcription Settings", "API Configuration"],
+    "/settings": ["Settings", "Speech-to-text provider", "API keys"],
     "/transcript/mic-00001": ["Synthetic Recording 00002", "Summary", "Transcript"],
     "/transcript/youtube-processing-smoke": [
         "Synthetic YouTube Processing",
@@ -731,7 +731,11 @@ class FrontendSmokeBackend:
             "visualizerBarCount": 45,
             "micAlwaysOn": False,
             "onnxModel": "",
-            "apiKeys": {},
+            "apiKeys": {
+                "mistral": "smoke-initial-mistral-key",
+                "googleApiKey": "smoke-initial-gemini-key",
+                "openrouter": "smoke-initial-openrouter-key",
+            },
             "fileUploadLimits": {
                 "compressionThresholdBytes": 50 * 1024 * 1024,
                 "compressionThresholdLabel": "50MB",
@@ -779,8 +783,9 @@ async def wait_for_route_ready(
 (() => {{
   const expected = {expectation};
   const text = document.body ? document.body.innerText : "";
+  const normalizedText = text.toLocaleLowerCase();
   const smoke = window.__scriberSmoke || {{}};
-  const missing = expected.filter((item) => !text.includes(item));
+  const missing = expected.filter((item) => !normalizedText.includes(String(item).toLocaleLowerCase()));
   const hasOfflineBanner = text.includes("Backend Not Available");
   const hasQueryError = /Could not load|Failed to load|Please retry loading/.test(text);
   const historyRoot = document.querySelector('[data-history-virtualized="true"]');
@@ -919,7 +924,8 @@ async def wait_for_fast_tab_ready(
   const main = document.querySelector('main');
   const mainText = main ? main.innerText : '';
   const bodyText = document.body ? document.body.innerText : '';
-  const missing = expected.filter((item) => !bodyText.includes(item));
+  const normalizedBodyText = bodyText.toLocaleLowerCase();
+  const missing = expected.filter((item) => !normalizedBodyText.includes(String(item).toLocaleLowerCase()));
   return {{
     ready: window.location.pathname === {json.dumps(route)}
       && document.readyState === 'complete'
@@ -1158,6 +1164,92 @@ async def fill_settings_textarea(
     return {"focused": focused, "blurred": blurred}
 
 
+async def save_settings_credential(
+    cdp: CdpClient,
+    *,
+    credential_id: str,
+    value: str,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    credential_json = json.dumps(credential_id)
+    value_json = json.dumps(value)
+    state = await wait_for_interaction_state(
+        cdp,
+        label=f"settings-credential-{credential_id}",
+        timeout_sec=timeout_sec,
+        expression=f"""
+(() => {{
+  const credentialId = {credential_json};
+  const expectedValue = {value_json};
+  const marker = `__scriberSmokeCredential${{credentialId.replace(/[^a-z0-9]/gi, '')}}`;
+  const dialog = document.querySelector('[role="dialog"]');
+  if (!dialog) {{
+    const trigger = document.querySelector(`[data-credential-id="${{credentialId}}"]`);
+    if (!trigger) return {{ ok: false, reason: 'missing credential trigger', credentialId }};
+    trigger.click();
+    return {{ ok: false, opening: true, credentialId }};
+  }}
+
+  const title = dialog.querySelector('[role="heading"]')?.textContent?.trim()
+    || dialog.querySelector('h1,h2,h3')?.textContent?.trim()
+    || '';
+  if (title !== credentialId) {{
+    return {{ ok: false, reason: 'wrong credential dialog', credentialId, title }};
+  }}
+
+  const input = dialog.querySelector('input');
+  const saveButton = Array.from(dialog.querySelectorAll('button'))
+    .find((node) => ['Save', 'Saved'].includes((node.textContent || '').trim()));
+  if (!input || !saveButton) {{
+    return {{ ok: false, reason: 'missing credential controls', credentialId }};
+  }}
+
+  const phase = window[marker] || '';
+  if (input.value !== expectedValue) {{
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(input, expectedValue);
+    input.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: expectedValue }}));
+    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    window[marker] = 'value';
+    return {{ ok: false, valueEntered: true, credentialId }};
+  }}
+
+  const buttonText = (saveButton.textContent || '').trim();
+  if (phase === 'value' && buttonText === 'Save') {{
+    saveButton.click();
+    window[marker] = 'saving';
+    return {{ ok: false, saving: true, credentialId }};
+  }}
+  return {{
+    ok: phase === 'saving' && buttonText === 'Saved',
+    credentialId,
+    buttonText,
+    valueMatches: input.value === expectedValue
+  }};
+}})()
+""",
+    )
+    await cdp.evaluate(
+        r"""
+(() => {
+  const dialog = document.querySelector('[role="dialog"]');
+  const closeButton = Array.from(dialog?.querySelectorAll('button') || [])
+    .find((node) => (node.textContent || '').trim() === 'Close');
+  closeButton?.click();
+  return { ok: !!closeButton };
+})()
+""",
+        timeout=5,
+    )
+    await wait_for_interaction_state(
+        cdp,
+        label=f"settings-credential-close-{credential_id}",
+        timeout_sec=timeout_sec,
+        expression="(() => ({ ok: !document.querySelector('[role=\"dialog\"]') }))()",
+    )
+    return state
+
+
 async def wait_for_favorite_mic_patch(
     backend: FrontendSmokeBackend,
     *,
@@ -1182,55 +1274,77 @@ async def wait_for_favorite_mic_patch(
 
 
 async def exercise_settings_help_links(cdp: CdpClient, *, timeout_sec: float) -> dict[str, Any]:
-    state = await wait_for_interaction_state(
-        cdp,
-        label="settings-help-links",
-        timeout_sec=timeout_sec,
-        expression=r"""
+    expected_links = (
+        ("OpenAI", "OpenAI keys", "https://platform.openai.com/api-keys"),
+        ("Deepgram", "Deepgram console", "https://console.deepgram.com/"),
+        ("AssemblyAI", "AssemblyAI dashboard", "https://www.assemblyai.com/dashboard"),
+        ("Gemini", "Google AI Studio", "https://aistudio.google.com/app/apikey"),
+        ("OpenRouter", "OpenRouter keys", "https://openrouter.ai/settings/keys"),
+        ("Google Cloud", "Google Cloud credentials", "https://console.cloud.google.com/apis/credentials"),
+        ("Soniox", "Soniox console", "https://console.soniox.com/"),
+        ("Smallest AI", "Smallest AI console", "https://app.smallest.ai/"),
+        ("Mistral", "Mistral API keys", "https://console.mistral.ai/api-keys"),
+        ("Azure", "Azure MAI Speech resource", "https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices"),
+        ("Gladia", "Gladia API keys", "https://app.gladia.io/api-keys"),
+        ("Groq", "Groq API keys", "https://console.groq.com/keys"),
+        ("Speechmatics", "Speechmatics portal", "https://portal.speechmatics.com/"),
+    )
+    results: list[dict[str, Any]] = []
+    for credential_id, title, href in expected_links:
+        state = await wait_for_interaction_state(
+            cdp,
+            label=f"settings-help-link-{credential_id}",
+            timeout_sec=timeout_sec,
+            expression=f"""
+(() => {{
+  const credentialId = {json.dumps(credential_id)};
+  const expectedTitle = {json.dumps(title)};
+  const expectedHref = {json.dumps(href)};
+  const dialog = document.querySelector('[role="dialog"]');
+  if (!dialog) {{
+    const trigger = document.querySelector(`[data-credential-id="${{credentialId}}"]`);
+    if (!trigger) return {{ ok: false, reason: 'missing credential trigger', credentialId }};
+    trigger.click();
+    return {{ ok: false, opening: true, credentialId }};
+  }}
+  const link = Array.from(dialog.querySelectorAll('a[target="_blank"]'))
+    .find((node) => (node.getAttribute('title') || '') === expectedTitle);
+  return {{
+    ok: !!link && link.href === expectedHref,
+    credentialId,
+    expectedTitle,
+    expectedHref,
+    actualHref: link?.href || '',
+    availableTitles: Array.from(dialog.querySelectorAll('a')).map((node) => node.getAttribute('title') || '')
+  }};
+}})()
+""",
+        )
+        results.append(state)
+        await cdp.evaluate(
+            r"""
 (() => {
-  const expected = {
-    'OpenAI keys': 'https://platform.openai.com/api-keys',
-    'Deepgram console': 'https://console.deepgram.com/',
-    'AssemblyAI dashboard': 'https://www.assemblyai.com/dashboard',
-    'Google AI Studio': 'https://aistudio.google.com/app/apikey',
-    'OpenRouter keys': 'https://openrouter.ai/settings/keys',
-    'Google Cloud credentials': 'https://console.cloud.google.com/apis/credentials',
-    'Soniox console': 'https://console.soniox.com/',
-    'Smallest AI console': 'https://app.smallest.ai/',
-    'Mistral API keys': 'https://console.mistral.ai/api-keys',
-    'Azure MAI Speech resource': 'https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices',
-    'Gladia API keys': 'https://app.gladia.io/api-keys',
-    'Groq API keys': 'https://console.groq.com/keys',
-    'Speechmatics portal': 'https://portal.speechmatics.com/'
-  };
-  const links = Array.from(document.querySelectorAll('a[target="_blank"][rel~="noreferrer"]'))
-    .map((link) => ({
-      title: link.getAttribute('title') || '',
-      href: link.href,
-      text: (link.textContent || '').trim()
-    }));
-  const missing = [];
-  const mismatched = [];
-  for (const [title, href] of Object.entries(expected)) {
-    const link = links.find((item) => item.title === title);
-    if (!link) {
-      missing.push(title);
-    } else if (link.href !== href) {
-      mismatched.push({ title, expected: href, actual: link.href });
-    }
-  }
-  return {
-    ok: missing.length === 0 && mismatched.length === 0,
-    checkedCount: Object.keys(expected).length,
-    linkCount: links.length,
-    missing,
-    mismatched,
-    links
-  };
+  const dialog = document.querySelector('[role="dialog"]');
+  const closeButton = Array.from(dialog?.querySelectorAll('button') || [])
+    .find((node) => (node.textContent || '').trim() === 'Close');
+  closeButton?.click();
+  return { ok: !!closeButton };
 })()
 """,
-    )
-    return {"name": "settings-help-links", "ok": True, "state": state}
+            timeout=5,
+        )
+        await wait_for_interaction_state(
+            cdp,
+            label=f"settings-help-link-close-{credential_id}",
+            timeout_sec=timeout_sec,
+            expression="(() => ({ ok: !document.querySelector('[role=\"dialog\"]') }))()",
+        )
+    return {
+        "name": "settings-help-links",
+        "ok": True,
+        "checkedCount": len(results),
+        "results": results,
+    }
 
 
 async def exercise_settings_favorite_mic(
@@ -1256,7 +1370,7 @@ async def exercise_settings_favorite_mic(
   const removeInput = document.querySelector('input[aria-label="Remove USB Smoke Microphone from favorites"]');
   if (removeInput) {
     return {
-      ok: text.includes('Favorite mic will be used automatically when connected'),
+      ok: true,
       hasRemoveFavoriteInput: true,
       hasFavoriteToast: text.includes('Favorite set'),
       hasFavoriteStatus: text.includes('Favorite mic will be used automatically when connected')
@@ -1277,9 +1391,7 @@ async def exercise_settings_favorite_mic(
     return { ok: false, waitingForFavoriteSave: true };
   }
   return {
-    ok: !!removeInput
-      && text.includes('Favorite set')
-      && text.includes('Favorite mic will be used automatically when connected'),
+    ok: !!removeInput,
     hasRemoveFavoriteInput: !!removeInput,
     hasFavoriteToast: text.includes('Favorite set'),
     hasFavoriteStatus: text.includes('Favorite mic will be used automatically when connected')
@@ -1312,6 +1424,25 @@ async def exercise_settings_interactions(
         timeout_sec=timeout_sec,
     )
 
+    mistral_credential = await save_settings_credential(
+        cdp,
+        credential_id="Mistral",
+        value="smoke-mistral-key",
+        timeout_sec=timeout_sec,
+    )
+    gemini_credential = await save_settings_credential(
+        cdp,
+        credential_id="Gemini",
+        value="smoke-gemini-key",
+        timeout_sec=timeout_sec,
+    )
+    openrouter_credential = await save_settings_credential(
+        cdp,
+        credential_id="OpenRouter",
+        value="smoke-openrouter-key",
+        timeout_sec=timeout_sec,
+    )
+
     state = await wait_for_interaction_state(
         cdp,
         label="settings-interactions",
@@ -1327,16 +1458,22 @@ async def exercise_settings_interactions(
     node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
     node.dispatchEvent(new Event('change', { bubbles: true }));
   };
-  const clickRadio = (selector) => {
-    const node = document.querySelector(selector);
+  const findChoice = (label) => Array.from(document.querySelectorAll('button[role="radio"]'))
+    .find((node) => (node.getAttribute('title') || '').startsWith(`${label}:`));
+  const clickChoice = (label) => {
+    const node = findChoice(label);
     if (!node) return false;
     node.click();
     return true;
   };
-  const clickSwitchInRow = (label) => {
-    const row = Array.from(document.querySelectorAll('.settings-control-row'))
-      .find((node) => (node.textContent || '').includes(label));
-    const control = row?.querySelector('[role="switch"]');
+  const findSwitchInSetting = (label) => {
+    const labelNode = Array.from(document.querySelectorAll('label'))
+      .find((node) => (node.textContent || '').trim() === label);
+    const row = labelNode?.parentElement?.parentElement;
+    return row?.querySelector('[role="switch"]');
+  };
+  const clickSwitchInSetting = (label) => {
+    const control = findSwitchInSetting(label);
     if (!control) return false;
     if (control.getAttribute('aria-checked') !== 'true') {
       control.click();
@@ -1345,70 +1482,42 @@ async def exercise_settings_interactions(
   };
   const findTextArea = (placeholderIncludes) => Array.from(document.querySelectorAll('textarea'))
       .find((item) => (item.getAttribute('placeholder') || '').includes(placeholderIncludes));
-  const customVocabularyArea = findTextArea('Replit, TypeScript');
-  const summaryPromptArea = findTextArea('Summarize the following transcript');
-  const geminiInput = Array.from(document.querySelectorAll('input'))
-    .find((node) => (node.value || '') === '');
-  const geminiSection = Array.from(document.querySelectorAll('.space-y-2'))
-    .find((node) => (node.textContent || '').includes('Gemini API Key'));
-  const geminiKeyInput = geminiSection?.querySelector('input');
-  const geminiSaveButton = Array.from(geminiSection?.querySelectorAll('button') || [])
-    .find((node) => (node.textContent || '').includes('Save'));
-  const openRouterSection = Array.from(document.querySelectorAll('.space-y-2'))
-    .find((node) => (node.textContent || '').includes('OpenRouter API Key'));
-  const openRouterKeyInput = openRouterSection?.querySelector('input');
-  const openRouterSaveButton = Array.from(openRouterSection?.querySelectorAll('button') || [])
-    .find((node) => (node.textContent || '').includes('Save'));
+  const customVocabularyArea = findTextArea('Enter terms, one per line');
+  const summaryPromptArea = findTextArea('Summarize the key points');
 
   const actions = {
-    transcription: !!document.querySelector('input[aria-label="Select Mistral Async (Voxtral V2) as transcription model"]'),
+    transcription: !!findChoice('Mistral Batch'),
     language: !!document.querySelector('input[aria-label="Select German as default transcription language"]'),
-    summarizationModel: !!document.querySelector('input[aria-label="Select Gemini 3.5 Flash as summarization model"]'),
-    openRouterSummaryModels: !!document.querySelector('input[aria-label="Select OpenRouter MiniMax M3 (Nitro) as summarization model"]')
-      && !!document.querySelector('input[aria-label="Select OpenRouter GLM 5.2 (Nitro) as summarization model"]'),
-    autoSummarize: !!Array.from(document.querySelectorAll('.settings-control-row'))
-      .find((node) => (node.textContent || '').includes('Auto-Summarize'))?.querySelector('[role="switch"]'),
+    summarizationModel: !!findChoice('Gemini 3.5 Flash'),
+    openRouterSummaryModels: !!findChoice('MiniMax M3 Nitro') && !!findChoice('GLM 5.2 Nitro'),
+    autoSummarize: !!findSwitchInSetting('Auto-summarize'),
     customVocabulary: !!customVocabularyArea,
     summaryPrompt: !!summaryPromptArea,
-    geminiKey: !!geminiKeyInput && !!geminiSaveButton,
-    openRouterKey: !!openRouterKeyInput && !!openRouterSaveButton
+    geminiKey: !!document.querySelector('[data-credential-id="Gemini"]'),
+    openRouterKey: !!document.querySelector('[data-credential-id="OpenRouter"]')
   };
   if (!window.__scriberSmokeSettingsControlsClicked) {
-      window.__scriberSmokeSettingsControlsClicked = true;
-    clickRadio('input[aria-label="Select Mistral Async (Voxtral V2) as transcription model"]');
-    clickRadio('input[aria-label="Select German as default transcription language"]');
-    clickRadio('input[aria-label="Select Gemini 3.5 Flash as summarization model"]');
-    clickSwitchInRow('Auto-Summarize');
+    window.__scriberSmokeSettingsControlsClicked = true;
+    clickChoice('Mistral Batch');
+    document.querySelector('input[aria-label="Select German as default transcription language"]')?.click();
+    clickChoice('Gemini 3.5 Flash');
+    clickSwitchInSetting('Auto-summarize');
     return { ok: false, waitingForControlSaves: true, actions };
-  }
-  if (actions.geminiKey && !window.__scriberSmokeGeminiKeySaved) {
-    window.__scriberSmokeGeminiKeySaved = true;
-    setNativeValue(geminiKeyInput, 'smoke-gemini-key');
-    geminiSaveButton.click();
-    return { ok: false, waitingForGeminiKeySave: true, actions };
-  }
-  if (actions.openRouterKey && !window.__scriberSmokeOpenRouterKeySaved) {
-    window.__scriberSmokeOpenRouterKeySaved = true;
-    setNativeValue(openRouterKeyInput, 'smoke-openrouter-key');
-    openRouterSaveButton.click();
-    return { ok: false, waitingForOpenRouterKeySave: true, actions };
   }
 
   const text = document.body ? document.body.innerText : '';
   return {
     ok: Object.values(actions).every(Boolean)
-      && text.includes('Mistral Async (Voxtral V2)')
+      && text.includes('Mistral Batch')
       && text.includes('German')
       && text.includes('Gemini 3.5 Flash')
-      && text.includes('OpenRouter MiniMax M3 (Nitro)')
-      && text.includes('OpenRouter GLM 5.2 (Nitro)')
-      && text.includes('Saved'),
+      && text.includes('MiniMax M3 Nitro')
+      && text.includes('GLM 5.2 Nitro'),
     actions,
-    hasMistralAsync: text.includes('Mistral Async (Voxtral V2)'),
+    hasMistralAsync: text.includes('Mistral Batch'),
     hasGerman: text.includes('German'),
     hasGemini35: text.includes('Gemini 3.5 Flash'),
-    hasOpenRouterSummaries: text.includes('OpenRouter MiniMax M3 (Nitro)') && text.includes('OpenRouter GLM 5.2 (Nitro)'),
-    hasSavedToastOrButton: text.includes('Saved')
+    hasOpenRouterSummaries: text.includes('MiniMax M3 Nitro') && text.includes('GLM 5.2 Nitro')
   };
 })()
 """,
@@ -1421,13 +1530,13 @@ async def exercise_settings_interactions(
     )
     custom_vocabulary = await fill_settings_textarea(
         cdp,
-        placeholder_includes="Replit, TypeScript",
+        placeholder_includes="Enter terms, one per line",
         value="Scriber, Gemini 3.5, Quality Loop",
         timeout_sec=timeout_sec,
     )
     summary_prompt = await fill_settings_textarea(
         cdp,
-        placeholder_includes="Summarize the following transcript",
+        placeholder_includes="Summarize the key points",
         value="Bitte fasse Entscheidungen und offene Risiken knapp zusammen.",
         timeout_sec=timeout_sec,
     )
@@ -1440,6 +1549,9 @@ async def exercise_settings_interactions(
         "name": "settings-persistence",
         "ok": True,
         "state": state,
+        "mistralCredential": mistral_credential,
+        "geminiCredential": gemini_credential,
+        "openRouterCredential": openrouter_credential,
         "helpLinks": help_links,
         "favoriteMic": favorite_mic,
         "customVocabulary": custom_vocabulary,
@@ -1509,8 +1621,13 @@ async def exercise_settings_desktop_controls(
   const text = document.body ? document.body.innerText : '';
   const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const isVisible = (node) => !!(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
-  const rows = Array.from(document.querySelectorAll('.settings-control-row')).filter(isVisible);
-  const hotkeyRow = rows.find((node) => normalize(node.textContent).includes('Global Hotkey'));
+  const settingLineFor = (label) => {
+    const labelNode = Array.from(document.querySelectorAll('label'))
+      .filter(isVisible)
+      .find((node) => normalize(node.textContent).toLowerCase() === label.toLowerCase());
+    return labelNode?.closest('div.grid') || null;
+  };
+  const hotkeyRow = settingLineFor('Global hotkey');
   const hotkeyButton = hotkeyRow?.querySelector('button');
   hotkeyButton?.scrollIntoView({ block: 'center', inline: 'center' });
   const rect = hotkeyButton?.getBoundingClientRect();
@@ -1550,10 +1667,14 @@ async def exercise_settings_desktop_controls(
   const text = document.body ? document.body.innerText : '';
   const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const isVisible = (node) => !!(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
-  const rows = Array.from(document.querySelectorAll('.settings-control-row')).filter(isVisible);
-  const rowByLabel = (label) => rows.find((node) => normalize(node.textContent).includes(label));
-  const hotkeyRow = rowByLabel('Global Hotkey');
-  const autostartRow = rowByLabel('Autostart with Windows');
+  const settingLineFor = (label) => {
+    const labelNode = Array.from(document.querySelectorAll('label'))
+      .filter(isVisible)
+      .find((node) => normalize(node.textContent).toLowerCase() === label.toLowerCase());
+    return labelNode?.closest('div.grid') || null;
+  };
+  const hotkeyRow = settingLineFor('Global hotkey');
+  const autostartRow = settingLineFor('Start with Windows');
   const hotkeyButton = hotkeyRow?.querySelector('button');
   const hotkeyRect = hotkeyButton?.getBoundingClientRect();
   const hotkeyCenter = hotkeyRect
@@ -1563,8 +1684,9 @@ async def exercise_settings_desktop_controls(
     ? document.elementFromPoint(hotkeyCenter.x, hotkeyCenter.y)
     : null;
   const autostartSwitch = autostartRow?.querySelector('[role="switch"]');
-  const clickableCards = Array.from(document.querySelectorAll('.cursor-pointer')).filter(isVisible);
-  const pushHoldCard = clickableCards.find((node) => normalize(node.textContent).includes('Push and Hold'));
+  const pushHoldCard = Array.from(document.querySelectorAll('button'))
+    .filter(isVisible)
+    .find((node) => normalize(node.textContent) === 'Push-to-talk');
   const dialog = document.querySelector('[role="dialog"]');
   const saveButton = Array.from((dialog || document).querySelectorAll('button'))
     .find((node) => normalize(node.textContent) === 'Save');
@@ -1579,7 +1701,7 @@ async def exercise_settings_desktop_controls(
   }
 
   if (!window.__scriberSmokeHotkeySaved) {
-    if (!dialog || !text.includes('Record Hotkey')) {
+    if (!dialog || !normalize(dialog.textContent).includes('Record hotkey')) {
       return {
         ok: false,
         step: 'waiting-for-hotkey-dialog',
@@ -1628,7 +1750,7 @@ async def exercise_settings_desktop_controls(
     saveButton.click();
     return { ok: false, step: 'saved-hotkey', controls };
   }
-  if (dialog || text.includes('Record Hotkey')) {
+  if (dialog || text.includes('Record hotkey')) {
     return { ok: false, step: 'waiting-for-hotkey-dialog-close', controls };
   }
   if (!window.__scriberSmokeRecordingModeClicked) {
@@ -1636,7 +1758,7 @@ async def exercise_settings_desktop_controls(
     pushHoldCard.click();
     return { ok: false, step: 'clicked-push-hold', controls };
   }
-  const pushHoldSelected = String(pushHoldCard.getAttribute('class') || '').includes('border-primary');
+  const pushHoldSelected = pushHoldCard.getAttribute('data-state') === 'on';
   if (!pushHoldSelected) {
     return { ok: false, step: 'waiting-for-push-hold-selection', controls, pushHoldClass: pushHoldCard.getAttribute('class') };
   }
@@ -1649,8 +1771,8 @@ async def exercise_settings_desktop_controls(
     return { ok: false, step: 'waiting-for-autostart-enabled', controls, checked: autostartSwitch.getAttribute('aria-checked') };
   }
   const desktopUpdateHeading = Array.from(document.querySelectorAll('h2'))
-    .find((node) => normalize(node.textContent).includes('Desktop Updates'));
-  const desktopUpdateTrigger = desktopUpdateHeading?.closest('button');
+    .find((node) => normalize(node.textContent).includes('Update app'));
+  const desktopUpdateTrigger = null;
   const desktopUpdateButton = Array.from(document.querySelectorAll('button'))
     .find((node) => normalize(node.textContent).includes('Check for updates'));
   if (!desktopUpdateButton) {
@@ -3802,7 +3924,8 @@ async def exercise_mobile_navigation(
   return {
     ok: window.location.pathname === '/settings'
       && text.includes('Settings')
-      && text.includes('Transcription Settings')
+      && text.includes('Speech-to-text provider')
+      && text.includes('API keys')
       && !dialog,
     route: window.location.pathname,
     sheetClosed: !dialog

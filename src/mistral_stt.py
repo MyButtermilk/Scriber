@@ -24,6 +24,7 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
@@ -244,10 +245,17 @@ class MistralRealtimeSTTService(SegmentedSTTService):
         aiohttp_session: aiohttp.ClientSession | None = None,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        resolved_language = _language_to_code(language)
+        super().__init__(
+            settings=STTSettings(
+                model=model,
+                language=None if resolved_language == "auto" else resolved_language,
+            ),
+            **kwargs,
+        )
         self._api_key = api_key
         self._model = model
-        self._language = _language_to_code(language)
+        self._language = resolved_language
         self._context_bias = _custom_vocab_to_context_bias(custom_vocab)
         self._session = aiohttp_session
 
