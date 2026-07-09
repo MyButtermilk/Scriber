@@ -1,3 +1,2 @@
 pipecat-ai[local-smart-turn-v3]
 onnx-asr[cpu,hub]>=0.5.0
-nemo_toolkit[asr]>=2.0.0

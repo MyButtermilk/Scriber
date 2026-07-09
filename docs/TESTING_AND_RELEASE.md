@@ -91,8 +91,7 @@ Performance/packaging:
   `transformers`/HuggingFace into the standard installer.
 - The frozen runtime import gate also covers the AssemblyAI realtime Pipecat
   module and `onnx_asr`. This protects the installed AssemblyAI Universal-3.5
-  realtime path and the bundled ONNX local-ASR fallback used when full NeMo is
-  unavailable.
+  realtime path and the bundled ONNX local-ASR path.
 - Live-mic post-processing coverage should include prompt-template tests,
   Settings payload typing, and Rust global-hotkey dispatch tests. The expected
   behavior is a second shortcut that posts to

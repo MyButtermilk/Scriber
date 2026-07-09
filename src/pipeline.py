@@ -7,6 +7,7 @@ import tempfile
 import os
 import time
 import inspect
+import re
 from typing import Any, Callable, Optional
 
 from loguru import logger
@@ -115,6 +116,9 @@ def _live_service_uses_async_finalization(service_name: str) -> bool:
     normalized = str(service_name or "")
     return (
         normalized in {
+            "elevenlabs",
+            "groq",
+            "mistral",
             "soniox_async",
             "mistral_async",
             "smallest_async",
@@ -127,6 +131,11 @@ def _live_service_uses_async_finalization(service_name: str) -> bool:
         }
         or (normalized == "soniox" and Config.SONIOX_MODE == "async")
     )
+
+
+def _live_service_needs_local_vad(service_name: str) -> bool:
+    normalized = str(service_name or "")
+    return normalized == "openai" or _live_service_uses_async_finalization(normalized)
 
 
 def _live_service_uses_smart_turn(service_name: str) -> bool:
@@ -152,6 +161,25 @@ def _create_vad_analyzer(*, quiet_mic: bool = False):
         except Exception as exc:
             logger.debug(f"VAD param override failed: {exc}")
     return vad_analyzer
+
+
+def _env_float(name: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
+    try:
+        value = float(os.getenv(name, str(default)) or default)
+    except Exception:
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _redact_provider_error_text(message: str) -> str:
+    text = str(message or "").replace("\x00", "")
+    text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
+    text = re.sub(r"(?i)\bToken\s+[A-Za-z0-9._~+/=-]+", "Token [REDACTED]", text)
+    return text
 
 _SONIOX_IMPORT_ERROR: BaseException | None = None
 try:
@@ -1329,6 +1357,64 @@ class ScriberPipeline:
             except Exception as exc:
                 logger.debug(f"Mic prewarm resume after audio cleanup warning: {exc}")
 
+    async def _stop_audio_capture_for_segmented_finalization(self) -> None:
+        """Stop mic capture without ending the Pipecat pipeline.
+
+        File/HTTP-style segmented STT providers finalize when they receive a
+        UserStoppedSpeakingFrame. If we end the pipeline first, the downstream
+        TextInjector can flush before the provider has emitted a final
+        TranscriptionFrame. This helper stops the physical mic and drains queued
+        audio frames while keeping the downstream pipeline open for finalization.
+        """
+        audio_input = self.audio_input
+        if not audio_input:
+            return
+        stop_capture = getattr(audio_input, "stop_capture_for_finalization", None)
+        if callable(stop_capture):
+            try:
+                await stop_capture(close_stream=True)
+            except Exception as exc:
+                logger.debug(f"Segmented STT capture-stop warning: {exc}")
+        try:
+            audio_queue = getattr(audio_input, "_audio_in_queue", None)
+            if audio_queue is not None and callable(getattr(audio_queue, "join", None)):
+                await asyncio.wait_for(audio_queue.join(), timeout=1.0)
+        except asyncio.TimeoutError:
+            logger.debug("Timed out waiting for segmented STT audio queue to drain")
+        except Exception as exc:
+            logger.debug(f"Segmented STT audio queue drain warning: {exc}")
+
+    def _segmented_stt_stop_final_timeout_seconds(self) -> float:
+        return _env_float(
+            "SCRIBER_SEGMENTED_STT_STOP_FINAL_TIMEOUT_SEC",
+            20.0,
+            minimum=0.5,
+            maximum=120.0,
+        )
+
+    async def _wait_for_segmented_stt_final_or_done(self, *, timeout_seconds: float) -> str:
+        if self._final_transcription_received.is_set():
+            return "final"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout_seconds)
+        while True:
+            if self._terminal_error:
+                return "error"
+            if self.task and self.task.has_finished():
+                return "finished"
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return "timeout"
+            try:
+                await asyncio.wait_for(
+                    self._final_transcription_received.wait(),
+                    timeout=min(0.25, remaining),
+                )
+            except asyncio.TimeoutError:
+                continue
+            if self._final_transcription_received.is_set():
+                return "final"
+
     def audio_diagnostics(self) -> dict[str, Any] | None:
         audio_input = self.audio_input
         vad_snapshot = None
@@ -1645,7 +1731,20 @@ class ScriberPipeline:
                 if self.enable_speaker_diarization and LiveOptions
                 else None
             )
-            return DeepgramSTTService(api_key=_get_api_key("deepgram"), live_options=live_options)
+
+            pipeline_ref = self
+
+            class ScriberDeepgramSTTService(DeepgramSTTService):
+                async def push_error(self, error_msg: str, exception=None, fatal: bool = False):
+                    safe_error = _redact_provider_error_text(error_msg)
+                    pipeline_ref._record_terminal_error(f"Deepgram streaming error: {safe_error}")
+                    await super().push_error(
+                        error_msg=error_msg,
+                        exception=exception,
+                        fatal=fatal,
+                    )
+
+            return ScriberDeepgramSTTService(api_key=_get_api_key("deepgram"), live_options=live_options)
 
         elif self.service_name == "deepgram_async":
             if not _get_api_key("deepgram"):
@@ -1663,13 +1762,20 @@ class ScriberPipeline:
         elif self.service_name == "openai":
             # Lazy import - only loaded when OpenAI is used
             module = import_provider_runtime_module("openai", "pipecat.services.openai.stt")
-            OpenAISTTService = module.OpenAISTTService
+            OpenAIRealtimeSTTService = getattr(module, "OpenAIRealtimeSTTService", None)
             if not _get_api_key("openai"): raise ValueError("OpenAI API Key is missing.")
-            return OpenAISTTService(
+            if OpenAIRealtimeSTTService is None:
+                raise RuntimeError("OpenAI Realtime STT requires pipecat-ai 1.4.0 or newer.")
+            settings_cls = getattr(OpenAIRealtimeSTTService, "Settings", None)
+            settings = (
+                settings_cls(model=Config.OPENAI_REALTIME_STT_MODEL, language=_selected_language())
+                if settings_cls
+                else None
+            )
+            return OpenAIRealtimeSTTService(
                 api_key=_get_api_key("openai"),
-                aiohttp_session=session,
-                language=_selected_language(),
-                model=Config.OPENAI_STT_MODEL,
+                settings=settings,
+                turn_detection=False,
             )
 
         elif self.service_name == "openai_async":
@@ -1773,16 +1879,6 @@ class ScriberPipeline:
                 channels=Config.CHANNELS,
             )
 
-        elif self.service_name == "nemo_local":
-            from src.nemo_local_service import NemoLocalBufferedSTTService
-            return NemoLocalBufferedSTTService(
-                model_name=Config.NEMO_MODEL,
-                language=Config.LANGUAGE,
-                quantization=Config.ONNX_QUANTIZATION,
-                sample_rate=Config.SAMPLE_RATE,
-                channels=Config.CHANNELS,
-            )
-        
         else:
             raise ValueError(f"Unknown service: {self.service_name}")
 
@@ -1824,7 +1920,7 @@ class ScriberPipeline:
                 # Note: For Soniox RT, we use SmartTurn V3 exclusively for turn detection.
                 # Using both VAD and SmartTurn causes double UserStoppedSpeakingFrame events,
                 # which triggers duplicate text injection.
-                needs_vad = isinstance(stt_service, SegmentedSTTService) or _live_service_uses_async_finalization(self.service_name)
+                needs_vad = isinstance(stt_service, SegmentedSTTService) or _live_service_needs_local_vad(self.service_name)
                     
                 if needs_vad:
                     vad_analyzer = _create_vad_analyzer(
@@ -2582,12 +2678,23 @@ class ScriberPipeline:
             # Give audio frames time to propagate before closing the upload segment.
             # This is critical for short recordings where stop is called very quickly.
             await asyncio.sleep(0.15)
+            await self._stop_audio_capture_for_segmented_finalization()
             await self._flush_segmented_stt_buffers()
-
-        # Stop mic capture immediately so LED turns off while transcription finalizes.
-        await self._cleanup_audio_input()
-
-        if not has_segmented_stt_buffers:
+            segmented_wait_result = await self._wait_for_segmented_stt_final_or_done(
+                timeout_seconds=self._segmented_stt_stop_final_timeout_seconds()
+            )
+            if segmented_wait_result == "final":
+                logger.debug("Segmented STT final transcription received before pipeline shutdown")
+            elif segmented_wait_result == "timeout":
+                logger.warning("Timed out waiting for segmented STT final transcription before pipeline shutdown")
+            else:
+                logger.debug(
+                    f"Segmented STT stop wait completed without final transcription ({segmented_wait_result})"
+                )
+            await self._cleanup_audio_input()
+        else:
+            # Stop mic capture immediately so LED turns off while transcription finalizes.
+            await self._cleanup_audio_input()
             # Give non-segmented providers time to consume the final transport frames.
             await asyncio.sleep(0.15)
 

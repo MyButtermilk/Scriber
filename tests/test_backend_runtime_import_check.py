@@ -26,6 +26,7 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "pyloudnorm" in required_modules
     assert "onnxruntime" in required_modules
     assert "onnx_asr" in required_modules
+    assert "sherpa_onnx" not in required_modules
     assert "pipecat.audio.vad.silero" in required_modules
     assert "src.web_api" in required_modules
     assert "pipecat.services.soniox.stt" in required_modules
@@ -44,10 +45,11 @@ def test_standard_requirements_include_audio_runtime_dependencies():
     assert "scipy" not in requirements
     assert "onnxruntime" in requirements
     assert "onnx-asr[cpu,hub]>=0.10.2,<0.11" in requirements
-    assert "pipecat-ai[silero]==1.4.0" in requirements
+    assert "sherpa-onnx==1.13.4" not in requirements
+    assert "pipecat-ai[silero]==1.5.0" in requirements
     assert "deepgram-sdk==7.4.0" in requirements
     assert "google-cloud-speech<3,>=2.33.0" in requirements
-    assert "google-genai<2,>=1.41.0" in requirements
+    assert "google-genai<3,>=1.68.0" in requirements
     assert "groq~=0.23.0" in requirements
     assert "nltk<4,>=3.9.4" in requirements
     assert "openai<3,>=1.74.0" in requirements
@@ -123,6 +125,7 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert "collect_dynamic_libs" in spec
     assert '"onnxruntime"' in spec
     assert '"onnx_asr"' in spec
+    assert '"sherpa_onnx"' not in spec
     assert '"azure.cognitiveservices.speech"' not in spec
     assert "collect_required_dynamic_libs" in spec
     assert "upx=False" in spec
@@ -142,6 +145,7 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert "copy_metadata" in spec
     assert 'copy_metadata("pipecat-ai")' in spec
     assert 'copy_metadata("onnx-asr")' in spec
+    assert 'copy_metadata("sherpa-onnx")' not in spec
     assert 'collect_data_files(\n        "onnx_asr",' in spec
     assert '"preprocessors/*.onnx"' in spec
     assert '"preprocessors/*.py"' in spec
@@ -179,12 +183,9 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
 def test_local_stt_services_do_not_override_pipecat_settings_object():
     repo_root = Path(__file__).resolve().parents[1]
     onnx_service = (repo_root / "src" / "onnx_local_service.py").read_text(encoding="utf-8")
-    nemo_service = (repo_root / "src" / "nemo_local_service.py").read_text(encoding="utf-8")
 
     assert "self._local_settings" in onnx_service
-    assert "self._local_settings" in nemo_service
     assert "self._settings = {" not in onnx_service
-    assert "self._settings = {" not in nemo_service
 
 
 def test_backend_runtime_import_check_reports_missing_modules():

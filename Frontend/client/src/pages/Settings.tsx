@@ -50,8 +50,6 @@ import type {
   LocalModelActionResponse,
   MicrophoneDevice,
   MicrophonesResponse,
-  NemoModelInfo,
-  NemoModelsResponse,
   OnnxModelInfo,
   OnnxModelsResponse,
   SettingsResponse,
@@ -95,9 +93,43 @@ const SETTINGS_SECTION_IDS: Record<string, string> = {
   updates: "settings-updates",
 };
 
+type ScrollSnapshot = {
+  windowX: number;
+  windowY: number;
+  documentLeft: number | null;
+  documentTop: number | null;
+};
+
+function captureScrollSnapshot(): ScrollSnapshot | null {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return null;
+  }
+  const scrollingElement = document.scrollingElement as HTMLElement | null;
+  return {
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    documentLeft: scrollingElement ? scrollingElement.scrollLeft : null,
+    documentTop: scrollingElement ? scrollingElement.scrollTop : null,
+  };
+}
+
+function restoreScrollSnapshot(snapshot: ScrollSnapshot) {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return;
+  }
+  const scrollingElement = document.scrollingElement as HTMLElement | null;
+  if (scrollingElement && snapshot.documentTop !== null && snapshot.documentLeft !== null) {
+    scrollingElement.scrollTo({
+      top: snapshot.documentTop,
+      left: snapshot.documentLeft,
+      behavior: "auto",
+    });
+  }
+  window.scrollTo({ top: snapshot.windowY, left: snapshot.windowX, behavior: "auto" });
+}
+
 const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "onnx_local", label: "Local (ONNX) - No API Key" },
-  { value: "nemo_local", label: "Local (NeMo) - Primeline" },
   { value: "soniox-realtime", label: "Soniox STT Streaming" },
   { value: "soniox-async", label: "Soniox Async" },
   { value: "gemini-stt", label: "Gemini STT" },
@@ -109,7 +141,7 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "assemblyai", label: "AssemblyAI Universal-3.5 Pro Async" },
   { value: "deepgram", label: "Deepgram STT Streaming" },
   { value: "deepgram-async", label: "Deepgram Async" },
-  { value: "openai", label: "OpenAI Live" },
+  { value: "openai", label: "OpenAI Realtime" },
   { value: "openai-async", label: "OpenAI Async" },
   { value: "azure_mai", label: "Microsoft MAI Transcribe" },
   { value: "gladia", label: "Gladia STT Streaming" },
@@ -471,13 +503,13 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "assemblyai-realtime", label: "AssemblyAI", detail: sttBenchmarkDetail(7.50, 4.1), group: "cloud_streaming", icon: "assemblyai" },
   { value: "soniox-realtime", label: "Soniox", detail: sttBenchmarkDetail(2.00, 4.5), group: "cloud_streaming", icon: "soniox" },
   { value: "google", label: "Google Cloud", detail: sttBenchmarkDetail(16.00, 4.8), group: "cloud_streaming", icon: "googlecloud" },
+  { value: "openai", label: "OpenAI Realtime", detail: sttBenchmarkDetail(17.00, 4.9), group: "cloud_streaming", icon: "openai" },
   { value: "smallest-realtime", label: "Smallest AI", detail: sttBenchmarkDetail(8.00, 6.5), group: "cloud_streaming", icon: "smallest" },
   { value: "deepgram", label: "Deepgram", detail: sttBenchmarkDetail(4.80, 6.6), group: "cloud_streaming", icon: "deepgram" },
   { value: "gladia", label: "Gladia", detail: sttBenchmarkDetail(12.50, 7.8), group: "cloud_streaming", icon: "gladia" },
   { value: "speechmatics", label: "Speechmatics", detail: sttBenchmarkDetail(17.50, 8.0), group: "cloud_streaming", icon: "speechmatics" },
   { value: "elevenlabs", label: "ElevenLabs Live", detail: sttBenchmarkDetail(6.50, 3.6), group: "cloud_async", icon: "elevenlabs" },
   { value: "groq", label: "Groq Live", detail: sttBenchmarkDetail(4.00, 3.7), group: "cloud_async", icon: "groq" },
-  { value: "openai", label: "OpenAI Live", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_async", icon: "openai" },
   { value: "mistral-realtime", label: "Mistral Live", detail: sttBenchmarkDetail(6.00, 5.2), group: "cloud_async", icon: "mistral" },
   { value: "azure_mai", label: "Microsoft MAI", detail: sttBenchmarkDetail(6.00, 2.4), group: "cloud_async", icon: "azure" },
   { value: "gemini-stt", label: "Gemini", detail: sttBenchmarkDetail(6.66, 5.1), group: "cloud_async", icon: "gemini" },
@@ -490,8 +522,38 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "openai-async", label: "OpenAI Batch", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_async", icon: "openai" },
   { value: "deepgram-async", label: "Deepgram", detail: sttBenchmarkDetail(4.30, 5.2), group: "cloud_async", icon: "deepgram" },
   { value: "onnx_local", label: "Local ONNX", detail: "0,00€/h with model-dependent Error", group: "local" },
-  { value: "nemo_local", label: "Local NeMo", detail: "0,00€/h with model-dependent Error", group: "local" },
 ];
+
+function parseGermanMetricNumber(value: string | undefined): number {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const parsed = Number.parseFloat(value.replace(/\./g, "").replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
+function providerErrorRate(option: ProviderModelOption): number {
+  return parseGermanMetricNumber(option.detail.match(/with\s+([\d,.]+)\s*%\s+Error/i)?.[1]);
+}
+
+function providerHourlyCost(option: ProviderModelOption): number {
+  return parseGermanMetricNumber(option.detail.match(/^([\d,.]+)\s*€\/h/i)?.[1]);
+}
+
+function compareMetricAscending(a: number, b: number): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+function sortProviderOptionsByErrorRate(options: ProviderModelOption[]): ProviderModelOption[] {
+  return [...options].sort((a, b) => {
+    const errorDelta = compareMetricAscending(providerErrorRate(a), providerErrorRate(b));
+    if (errorDelta !== 0) return errorDelta;
+
+    const costDelta = compareMetricAscending(providerHourlyCost(a), providerHourlyCost(b));
+    if (costDelta !== 0) return costDelta;
+
+    return a.label.localeCompare(b.label, "de");
+  });
+}
 
 function ProviderIcon({
   icon,
@@ -547,7 +609,7 @@ function SectionPanel({
         ) : null}
         <div className="min-w-0 flex-1">
           <h2 className="text-[16px] !font-extrabold leading-5 text-slate-950 dark:text-slate-100 md:text-[17px]">{title}</h2>
-          <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 lg:whitespace-nowrap dark:text-slate-400">
+          <p className="mt-0.5 max-w-full text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">
             {description}
           </p>
         </div>
@@ -603,16 +665,16 @@ function SettingsSubsection({
         className,
       )}
     >
-      <div className="mb-2.5 flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-2">
+      <div className="mb-2.5 flex min-w-0 items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-1 items-start gap-2">
           {Icon ? (
             <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white/80 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] dark:bg-slate-950/50 dark:text-slate-400">
               <Icon className="h-3.5 w-3.5" aria-hidden="true" />
             </span>
           ) : null}
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">{title}</h3>
-            <p className="mt-0.5 text-[11px] leading-4 text-slate-500 xl:whitespace-nowrap dark:text-slate-400">{description}</p>
+            <p className="mt-0.5 max-w-full text-[11px] leading-4 text-slate-500 dark:text-slate-400">{description}</p>
           </div>
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
@@ -824,6 +886,8 @@ function ApiCredentialRow({
   onShowChange,
   open,
   onOpenChange,
+  preserveScrollOnClose,
+  onPreservedCloseAutoFocus,
   helpKey,
   saved,
   onSave,
@@ -841,6 +905,8 @@ function ApiCredentialRow({
   onShowChange?: (value: boolean) => void;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  preserveScrollOnClose?: boolean;
+  onPreservedCloseAutoFocus?: () => void;
   helpKey: ApiKeyHelpKey;
   saved: boolean;
   onSave: () => void;
@@ -856,7 +922,7 @@ function ApiCredentialRow({
         <button
           type="button"
           data-credential-id={credentialId}
-          className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 rounded-lg px-2 py-2.5 text-left outline-none transition-colors hover:bg-slate-100/80 focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:hover:bg-slate-900"
+          className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 rounded-lg px-2 py-1.5 text-left outline-none transition-colors hover:bg-slate-100/80 focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:hover:bg-slate-900"
         >
           <span className="flex min-w-0 items-center gap-2">
             <ProviderIcon icon={icon} label={provider} className="h-5.5 w-5.5 rounded-[7px] p-1" />
@@ -875,7 +941,17 @@ function ApiCredentialRow({
           </span>
         </button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[520px]">
+      <DialogContent
+        className="sm:max-w-[520px]"
+        onCloseAutoFocus={
+          preserveScrollOnClose
+            ? (event) => {
+                event.preventDefault();
+                onPreservedCloseAutoFocus?.();
+              }
+            : undefined
+        }
+      >
         <DialogHeader>
           <DialogTitle>{provider}</DialogTitle>
           <DialogDescription>
@@ -974,6 +1050,7 @@ export default function Settings() {
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
   const [credentialReadyKeys, setCredentialReadyKeys] = useState<Record<string, boolean>>({});
   const [credentialDialogProvider, setCredentialDialogProvider] = useState<string | null>(null);
+  const remoteCredentialDialogScrollRef = useRef<ScrollSnapshot | null>(null);
 
   const [inputDevices, setInputDevices] = useState<MicrophoneDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState("default");
@@ -1005,11 +1082,6 @@ export default function Settings() {
   const [onnxModels, setOnnxModels] = useState<OnnxModelInfo[]>([]);
   const [onnxModel, setOnnxModel] = useState("");
   const [onnxQuantization, setOnnxQuantization] = useState("int8");
-
-  const [nemoAvailable, setNemoAvailable] = useState<boolean | null>(null);
-  const [nemoMessage, setNemoMessage] = useState("");
-  const [nemoModels, setNemoModels] = useState<NemoModelInfo[]>([]);
-  const [nemoModel, setNemoModel] = useState("");
 
   useEffect(() => {
     return subscribeDesktopUpdateStatus(setDesktopUpdate);
@@ -1069,16 +1141,32 @@ export default function Settings() {
   const savedCredentialAvailable = (provider: string, value: string, extraValue?: string) =>
     credentialReadyKeys[provider] === true && hasValue(value) && (extraValue === undefined || hasValue(extraValue));
 
+  const restoreRemoteCredentialDialogScroll = useCallback(() => {
+    const snapshot = remoteCredentialDialogScrollRef.current;
+    remoteCredentialDialogScrollRef.current = null;
+    if (!snapshot || typeof window === "undefined") {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      restoreScrollSnapshot(snapshot);
+      window.requestAnimationFrame(() => restoreScrollSnapshot(snapshot));
+    });
+  }, []);
+
   const openCredentialDialog = useCallback((requirement: CredentialRequirement | null) => {
     if (!requirement) {
       return;
     }
+    remoteCredentialDialogScrollRef.current = captureScrollSnapshot();
     setCredentialDialogProvider(requirement.provider);
   }, []);
 
   const credentialDialogProps = (credentialId: string) => ({
     open: credentialDialogProvider === credentialId,
     onOpenChange: (open: boolean) => {
+      if (open) {
+        remoteCredentialDialogScrollRef.current = null;
+      }
       setCredentialDialogProvider((current) => {
         if (open) {
           return credentialId;
@@ -1086,6 +1174,8 @@ export default function Settings() {
         return current === credentialId ? null : current;
       });
     },
+    preserveScrollOnClose: credentialDialogProvider === credentialId && remoteCredentialDialogScrollRef.current !== null,
+    onPreservedCloseAutoFocus: restoreRemoteCredentialDialogScroll,
   });
 
   const isCredentialReady = (requirement: CredentialRequirement | null) => {
@@ -1253,28 +1343,6 @@ export default function Settings() {
     }
   }, []);
 
-  const loadNemoModels = useCallback(async () => {
-    try {
-      const res = await fetch(apiUrl("/api/nemo/models"), { credentials: "include" });
-      if (!res.ok) {
-        throw new Error(await res.text());
-      }
-      const data = (await res.json()) as NemoModelsResponse;
-      const available = data.available !== false;
-      setNemoAvailable(available);
-      setNemoMessage(data.message || "");
-      const models = data.models || [];
-      setNemoModels(models);
-
-      const current = data.currentModel || "";
-      const selected = models.find((m) => m.id === current) ? current : (models[0]?.id || "");
-      setNemoModel(selected);
-    } catch (e: any) {
-      setNemoAvailable(false);
-      setNemoMessage(String(e?.message || e));
-    }
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
 
@@ -1308,6 +1376,9 @@ export default function Settings() {
       if (service === "speechmatics_async") {
         return "speechmatics-async";
       }
+      if (service === "nemo_local") {
+        return "onnx_local";
+      }
       return service || "soniox-realtime";
     };
 
@@ -1340,7 +1411,6 @@ export default function Settings() {
         setMicAlwaysOn(settings.micAlwaysOn === true);
         setSegmentSpeechWithVad(settings.segmentSpeechWithVad === true);
         setFavoriteMic(settings.favoriteMic || "");
-        setNemoModel(settings.nemoModel || "");
 
         setSonioxKey(keys.soniox || "");
         setMistralKey(keys.mistral || "");
@@ -1410,13 +1480,10 @@ export default function Settings() {
   }, [toast]);
 
   useEffect(() => {
-    if (transcriptionModel === "onnx_local" && onnxAvailable === null) {
+    if (settingsLoaded && onnxAvailable === null) {
       loadOnnxModels();
     }
-    if (transcriptionModel === "nemo_local" && nemoAvailable === null) {
-      loadNemoModels();
-    }
-  }, [transcriptionModel, onnxAvailable, nemoAvailable, loadOnnxModels, loadNemoModels]);
+  }, [settingsLoaded, onnxAvailable, loadOnnxModels]);
 
   const updateSettings = async (patch: SettingsUpdatePayload): Promise<SettingsResponse> => {
     const res = await fetch(apiUrl("/api/settings"), {
@@ -1875,89 +1942,6 @@ export default function Settings() {
     }
   };
 
-  const handleNemoModelChange = async (value: string) => {
-    setNemoModel(value);
-    try {
-      await updateSettings({ nemoModel: value });
-      toast({
-        title: "Saved",
-        description: "NeMo model updated.",
-        duration: 2000,
-      });
-    } catch (e: any) {
-      toast({
-        title: "Save failed",
-        description: String(e?.message || e),
-        duration: 4000,
-      });
-    }
-  };
-
-  const handleNemoDownload = async (modelId: string) => {
-    if (!modelId) return;
-    setNemoModels((prev) =>
-      prev.map((m) =>
-        m.id === modelId
-          ? { ...m, status: "downloading", progress: 0, message: "Starting download..." }
-          : m
-      )
-    );
-    try {
-      const res = await fetch(apiUrl("/api/nemo/download"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modelId }),
-        credentials: "include",
-      });
-      const data = (await res.json().catch(() => ({}))) as LocalModelActionResponse;
-      if (!res.ok || data?.success === false) {
-        throw new Error(data?.message || "Download failed");
-      }
-      toast({
-        title: "Download finished",
-        description: "Model downloaded successfully.",
-        duration: 2000,
-      });
-    } catch (e: any) {
-      toast({
-        title: "Download failed",
-        description: String(e?.message || e),
-        duration: 4000,
-      });
-    } finally {
-      await loadNemoModels();
-    }
-  };
-
-  const handleNemoDelete = async (modelId: string) => {
-    if (!modelId) return;
-    try {
-      const res = await fetch(
-        apiUrl(`/api/nemo/models/${encodeURIComponent(modelId)}`),
-        {
-          method: "DELETE",
-          credentials: "include",
-        }
-      );
-      const data = (await res.json().catch(() => ({}))) as LocalModelActionResponse;
-      if (!res.ok || data?.success === false) {
-        throw new Error(data?.message || "Delete failed");
-      }
-      toast({
-        title: "Deleted",
-        description: "Model removed from cache.",
-        duration: 2000,
-      });
-      await loadNemoModels();
-    } catch (e: any) {
-      toast({
-        title: "Delete failed",
-        description: String(e?.message || e),
-        duration: 4000,
-      });
-    }
-  };
-
   const handleSummarizationModelChange = async (value: string) => {
     const requirement = requiredCredentialForLanguageModel(value);
     if (!isCredentialReady(requirement)) {
@@ -2381,25 +2365,7 @@ export default function Settings() {
     if (msg.type === "onnx_models_updated") {
       loadOnnxModels();
     }
-    if (msg.type === "nemo_download_progress") {
-      setNemoModels((prev) =>
-        prev.map((m) =>
-          m.id === msg.modelId
-            ? {
-              ...m,
-              status: msg.status,
-              progress: typeof msg.progress === "number" ? msg.progress : m.progress,
-              message: msg.message || m.message,
-              downloaded: msg.status === "ready" ? true : m.downloaded,
-            }
-            : m
-        )
-      );
-    }
-    if (msg.type === "nemo_models_updated") {
-      loadNemoModels();
-    }
-  }, [loadOnnxModels, loadNemoModels, selectedDeviceId, toast]);
+  }, [loadOnnxModels, selectedDeviceId, toast]);
 
   useSharedWebSocket(handleWsMessage);
 
@@ -2414,7 +2380,6 @@ export default function Settings() {
   }, [refreshMicrophones]);
 
   const selectedOnnxModel = onnxModels.find((m) => m.id === onnxModel) || onnxModels[0];
-  const selectedNemoModel = nemoModels.find((m) => m.id === nemoModel) || nemoModels[0];
   const selectedMicDevice = inputDevices.find(
     (device, index) => (device.deviceId || `device-${index}`) === selectedDeviceId
   );
@@ -2431,6 +2396,14 @@ export default function Settings() {
     if (sizeMb >= 1024) return `${(sizeMb / 1024).toFixed(1)} GB`;
     return `${sizeMb} MB`;
   };
+  const formatOnnxRuntime = (runtime?: string) => {
+    if (!runtime || runtime === "onnx_asr") return "ONNX Runtime";
+    return runtime.replace(/_/g, " ");
+  };
+  const selectedOnnxSize =
+    selectedOnnxModel?.sizeMbByQuantization?.[onnxQuantization] ?? selectedOnnxModel?.sizeMb;
+  const selectedOnnxRepo =
+    selectedOnnxModel?.hfRepoByQuantization?.[onnxQuantization] || selectedOnnxModel?.hfRepo || "";
   const getStatusLabel = (status?: string) => {
     if (status === "ready") return "Downloaded";
     if (status === "downloading") return "Downloading";
@@ -2480,13 +2453,13 @@ export default function Settings() {
       key: "cloud_streaming",
       label: "Cloud streaming",
       description: "True realtime STT streams.",
-      items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_streaming"),
+      items: sortProviderOptionsByErrorRate(PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_streaming")),
     },
     {
       key: "cloud_async",
       label: "Cloud async / batch",
       description: "Finalizes captured audio after upload or recording stop.",
-      items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_async"),
+      items: sortProviderOptionsByErrorRate(PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_async")),
     },
     {
       key: "local",
@@ -2642,14 +2615,14 @@ export default function Settings() {
               void handlePostProcessingPromptBlur();
             }}
             placeholder={DEFAULT_POST_PROCESSING_PROMPT}
-            className="min-h-[64px] resize-none overflow-hidden bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-slate-950/60 dark:focus:border-blue-700"
+            className="min-h-[64px] resize-none overflow-hidden break-words bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-slate-950/60 dark:focus:border-blue-700"
             disabled={!postProcessingEnabled}
           />
-          <div className="mt-2 flex items-center justify-between gap-3">
-            <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+          <div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-2">
+            <p className="min-w-[220px] flex-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
               Use <span className="font-mono">${"{output}"}</span> where the raw transcript should be inserted.
             </p>
-            <Button size="sm" variant="outline" onClick={handleResetPostProcessingPrompt} disabled={!postProcessingEnabled}>
+            <Button size="sm" variant="outline" className="shrink-0" onClick={handleResetPostProcessingPrompt} disabled={!postProcessingEnabled}>
               Reset prompt
             </Button>
           </div>
@@ -2685,7 +2658,7 @@ export default function Settings() {
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[13px] font-bold text-slate-950 dark:text-slate-100">ONNX model</p>
-          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Whisper / Parakeet ONNX runtime</p>
+          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Whisper / Parakeet local ONNX Runtime</p>
         </div>
         {selectedOnnxModel ? (
           <Badge variant={getStatusVariant(selectedOnnxModel.status)}>{getStatusLabel(selectedOnnxModel.status)}</Badge>
@@ -2702,11 +2675,24 @@ export default function Settings() {
             <FieldShell label="Model">
               <Select value={onnxModel} onValueChange={handleOnnxModelChange}>
                 <SelectTrigger className="h-9">
-                  <SelectValue placeholder="Select local model" />
+                  {selectedOnnxModel ? (
+                    <span className="min-w-0 truncate text-left text-[12px] font-semibold">
+                      {selectedOnnxModel.name}
+                    </span>
+                  ) : (
+                    <SelectValue placeholder="Select local model" />
+                  )}
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="min-w-[320px]">
                   {onnxModels.map((model) => (
-                    <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
+                    <SelectItem key={model.id} value={model.id} className="py-2">
+                      <span className="flex min-w-0 flex-col">
+                        <span className="truncate text-[12px] font-semibold leading-4">{model.name}</span>
+                        <span className="truncate text-[10.5px] leading-3 text-slate-500 dark:text-slate-400">
+                          {formatOnnxRuntime(model.runtime)} · {formatSize(model.sizeMbByQuantization?.[model.supportedQuantizations?.[0] || ""] ?? model.sizeMb)}
+                        </span>
+                      </span>
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -2725,7 +2711,14 @@ export default function Settings() {
             </FieldShell>
           </div>
           {selectedOnnxModel?.description ? (
-            <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedOnnxModel.description}</p>
+            <div className="space-y-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+              <p>{selectedOnnxModel.description}</p>
+              <p>
+                {formatOnnxRuntime(selectedOnnxModel.runtime)}
+                {selectedOnnxSize ? ` · ${formatSize(selectedOnnxSize)}` : ""}
+                {selectedOnnxRepo ? ` · ${selectedOnnxRepo}` : ""}
+              </p>
+            </div>
           ) : null}
           {selectedOnnxModel?.status === "downloading" && (
             <div className="space-y-1.5">
@@ -2761,79 +2754,7 @@ export default function Settings() {
     </div>
   );
 
-  const nemoLocalModelSettings = (
-    <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40">
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-[13px] font-bold text-slate-950 dark:text-slate-100">NeMo model</p>
-          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Local .nemo toolkit</p>
-        </div>
-        {selectedNemoModel ? (
-          <Badge variant={getStatusVariant(selectedNemoModel.status)}>{getStatusLabel(selectedNemoModel.status)}</Badge>
-        ) : null}
-      </div>
-
-      {nemoAvailable === null ? (
-        <p className="text-[12px] text-slate-500">Loading NeMo models...</p>
-      ) : nemoAvailable === false ? (
-        <p className="text-[12px] leading-4 text-slate-500">{nemoMessage || "NeMo toolkit is not installed."}</p>
-      ) : (
-        <div className="space-y-3">
-          <FieldShell label="Model">
-            <Select value={nemoModel} onValueChange={handleNemoModelChange}>
-              <SelectTrigger className="h-9">
-                <SelectValue placeholder="Select NeMo model" />
-              </SelectTrigger>
-              <SelectContent>
-                {nemoModels.map((model) => (
-                  <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldShell>
-          {selectedNemoModel?.description ? (
-            <p className="text-[11px] leading-4 text-slate-500 dark:text-slate-400">{selectedNemoModel.description}</p>
-          ) : null}
-          {selectedNemoModel?.status === "downloading" && (
-            <div className="space-y-1.5">
-              <Progress value={selectedNemoModel.progress || 0} />
-              <p className="flex items-center gap-2 text-[11px] text-slate-500">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                {selectedNemoModel.message || "Downloading..."}
-                <span className="ml-auto">{Math.round(selectedNemoModel.progress || 0)}%</span>
-              </p>
-            </div>
-          )}
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              onClick={() => selectedNemoModel && handleNemoDownload(selectedNemoModel.id)}
-              disabled={!selectedNemoModel || selectedNemoModel.status === "downloading" || selectedNemoModel.downloaded}
-            >
-              <Download className="mr-2 h-4 w-4" />
-              Download
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => selectedNemoModel && handleNemoDelete(selectedNemoModel.id)}
-              disabled={!selectedNemoModel?.downloaded || selectedNemoModel.status === "downloading"}
-            >
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete
-            </Button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
-  const activeLocalModelSettings =
-    transcriptionModel === "onnx_local"
-      ? onnxLocalModelSettings
-      : transcriptionModel === "nemo_local"
-        ? nemoLocalModelSettings
-        : null;
+  const activeLocalModelSettings = onnxLocalModelSettings;
 
   return (
     <div className={cn(
@@ -2853,7 +2774,7 @@ export default function Settings() {
         <h1 className="text-[34px] !font-bold leading-none tracking-normal text-slate-950 dark:text-slate-100">
           Settings
         </h1>
-        <p className="mt-1.5 text-[12px] leading-4 text-slate-500 lg:whitespace-nowrap dark:text-slate-400">
+        <p className="mt-1.5 text-[12px] leading-4 text-slate-500 dark:text-slate-400">
           Configure transcription, providers, summaries, credentials, updates, and language behavior.
         </p>
       </header>
@@ -3186,7 +3107,7 @@ export default function Settings() {
               </div>
             )}
 
-            <div className="grid gap-x-2 gap-y-3 sm:grid-cols-2 sm:gap-y-6 xl:gap-y-7">
+            <div className="grid gap-x-2 gap-y-2.5 sm:grid-cols-2 sm:gap-y-3 xl:gap-y-3.5">
               <ApiCredentialRow provider="OpenAI" icon="openai" value={openAIKey} onValueChange={markCredentialChanged("OpenAI", setOpenAIKey)} show={showOpenAIKey} onShowChange={setShowOpenAIKey} helpKey="openai" saved={savedKeys.OpenAI === true} onSave={() => handleSaveApiKey("OpenAI")} note="Used for OpenAI STT and summarization." {...credentialDialogProps("OpenAI")} />
               <ApiCredentialRow provider="Gemini" icon="gemini" value={geminiKey} onValueChange={markCredentialChanged("Gemini", setGeminiKey)} show={showGeminiKey} onShowChange={setShowGeminiKey} helpKey="gemini" saved={savedKeys.Gemini === true} onSave={() => handleSaveApiKey("Gemini")} note="One key unlocks Gemini STT, summaries, and cleanup." {...credentialDialogProps("Gemini")} />
               <ApiCredentialRow provider="OpenRouter" icon="openrouter" value={openRouterKey} onValueChange={markCredentialChanged("OpenRouter", setOpenRouterKey)} show={showOpenRouterKey} onShowChange={setShowOpenRouterKey} helpKey="openrouter" saved={savedKeys.OpenRouter === true} onSave={() => handleSaveApiKey("OpenRouter")} {...credentialDialogProps("OpenRouter")} />

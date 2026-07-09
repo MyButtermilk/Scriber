@@ -48,7 +48,7 @@ STANDARD_PROVIDER_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pipecat.services.google.stt", "Google Cloud STT provider"),
     ("pipecat.services.elevenlabs.stt", "ElevenLabs STT provider"),
     ("pipecat.services.deepgram.stt", "Deepgram STT provider"),
-    ("pipecat.services.openai.stt", "OpenAI STT provider"),
+    ("pipecat.services.openai.stt", "OpenAI realtime and batch STT provider"),
     ("pipecat.services.gladia.stt", "Gladia STT provider"),
     ("pipecat.services.groq.stt", "Groq STT provider"),
     ("pipecat.services.speechmatics.stt", "Speechmatics STT provider"),
@@ -117,7 +117,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[ProviderRuntimeDependency, ...]] = {
             "openai",
             "pipecat.services.openai.stt",
             "openai",
-            "OpenAI transcription SDK",
+            "OpenAI realtime transcription SDK",
         ),
     ),
     "openai_async": (

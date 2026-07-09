@@ -301,9 +301,9 @@ disables speaker diarization and ignores provider speaker metadata at the
 callback boundary so single-speaker dictation is inserted as plain text. True
 known-speaker name identification is not enabled unless Scriber gains a
 UI/config source for provider-specific known speaker names or enrollment
-identifiers. The Pipecat OpenAI STT bridge remains a segmented-live path; full
-recording/file OpenAI transcription is exposed through the dedicated
-`openai_async` direct adapter.
+identifiers. OpenAI live dictation uses Pipecat's OpenAI Realtime STT service
+with `gpt-realtime-whisper`; full recording/file OpenAI transcription is
+exposed through the dedicated `openai_async` direct adapter.
 
 Pipecat/Silero VAD has two separate live-mic roles. It remains enabled as a
 speech gate where needed so silent recordings can be cancelled locally without
@@ -326,16 +326,21 @@ predate the Settings API.
 
 The standard sidecar keeps runtime support for the shipped cloud/external
 providers exposed in Settings, but the dependency boundary is explicit. The
-standard build bundles the CPU ONNX local-ASR runtime through `onnx-asr`. The
-NeMo Settings surface falls back to that ONNX local model path when full
-NeMo/Torch is unavailable; full NeMo/Torch remains excluded from the standard
-sidecar because it would dominate installer size. The German Primeline Parakeet
-model is offered through the prepared `Buttermilk03/parakeet-primeline-onnx`
-Hugging Face repo instead of exporting `primeline/parakeet-primeline` on user
-machines. Its `int8` ONNX files are self-contained for the normal CPU path; the
-`fp32` export uses ONNX external data, so Scriber must load that model from the
-complete local Hugging Face snapshot rather than relying on `onnx-asr`'s narrow
-default file download list.
+standard build bundles the CPU ONNX local-ASR runtime through `onnx-asr`. ONNX
+is the only local STT provider exposed in Settings; full NeMo/Torch remains
+excluded from the standard sidecar because it would dominate installer size.
+The German Primeline Parakeet model is offered through prepared ONNX artifacts
+instead of exporting `primeline/parakeet-primeline` on user machines. The
+`fp32` option uses the prepared `geier/deskscribe-parakeet-primeline-onnx`
+Hugging Face repo, which publishes a DeskScribe ONNX Runtime package ZIP plus
+manifest and checksum. Scriber downloads that package set, verifies the
+SHA-256, extracts the required ONNX files into the local model cache, and loads
+the extracted directory through the existing `onnx-asr` path. The smaller `int8`
+Primeline option uses the trusted `Buttermilk03/parakeet-primeline-onnx`
+Hugging Face repo, which provides ready `encoder-model-int8.onnx` and
+`decoder_joint-model-int8.onnx` files for the same
+`primeline/parakeet-primeline` source model. Scriber does not quantize this
+model on end-user machines.
 Google Cloud STT is packaged through `google-cloud-speech` plus Pipecat's
 required `google-genai` namespace dependency and still requires Google Cloud
 credentials for a Speech-to-Text project. Gemini STT is a separate direct Gemini
@@ -349,8 +354,10 @@ sent with `:nitro` variants; `openai/gpt-oss-120b` keeps explicit OpenRouter
 provider ordering through `baseten,cerebras` when selected. OpenRouter remains
 the automatic cross-provider summary fallback when an OpenRouter key is
 configured.
-OpenAI STT uses the explicit `openai` SDK dependency, Groq STT uses Pipecat's
-`groq` SDK dependency, and Pipecat provider imports require `nltk` at runtime.
+OpenAI live STT uses Pipecat's OpenAI Realtime STT service plus the explicit
+`openai` SDK and `websockets` dependencies; OpenAI async/batch uses the direct
+Audio Transcriptions HTTP adapter. Groq STT uses Pipecat's `groq` SDK
+dependency, and Pipecat provider imports require `nltk` at runtime.
 Gladia live transcription still uses Pipecat's Gladia service, while
 `gladia_async`, file, and YouTube transcription use Gladia's pre-recorded HTTP
 upload/polling API directly to avoid empty live-WebSocket finalization for

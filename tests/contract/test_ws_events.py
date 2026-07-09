@@ -97,16 +97,6 @@ def test_ws_state_and_auxiliary_events_match_contract():
             }
         ),
         version_event_payload({"type": "onnx_models_updated", "modelId": "nemo-parakeet"}),
-        version_event_payload(
-            {
-                "type": "nemo_download_progress",
-                "modelId": "parakeet",
-                "progress": 100.0,
-                "status": "ready",
-                "message": "Ready",
-            }
-        ),
-        version_event_payload({"type": "nemo_models_updated"}),
     ]
 
     for payload in payloads:

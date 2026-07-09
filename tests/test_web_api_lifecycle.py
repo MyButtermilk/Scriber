@@ -317,6 +317,19 @@ def test_audio_diagnostics_silence_requires_no_pipecat_vad_speech():
     assert web_api._audio_diagnostics_have_pipecat_vad_silence({**quiet, "pipecatVad": None}) is False
 
 
+def test_segmented_live_providers_use_async_finalization_timeout(monkeypatch):
+    monkeypatch.setattr(web_api.Config, "SONIOX_MODE", "realtime")
+
+    for service_name in ("elevenlabs", "groq", "mistral", "openai"):
+        assert web_api._live_pipeline_uses_async_finalization(
+            types.SimpleNamespace(service_name=service_name)
+        ) is True
+
+    assert web_api._live_pipeline_uses_async_finalization(
+        types.SimpleNamespace(service_name="soniox")
+    ) is False
+
+
 @pytest.mark.asyncio
 async def test_stop_listening_when_idle_is_noop(monkeypatch):
     loop = asyncio.get_running_loop()

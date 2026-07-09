@@ -98,7 +98,7 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         injects_immediately_in_live_mode=False,
     ),
     "openai": ProviderCapabilities(
-        supports_live_streaming=False,
+        supports_live_streaming=True,
         supports_direct_file_upload=False,
         injects_immediately_in_live_mode=False,
     ),
@@ -118,11 +118,6 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         injects_immediately_in_live_mode=False,
     ),
     "onnx_local": ProviderCapabilities(
-        supports_live_streaming=False,
-        supports_direct_file_upload=False,
-        injects_immediately_in_live_mode=False,
-    ),
-    "nemo_local": ProviderCapabilities(
         supports_live_streaming=False,
         supports_direct_file_upload=False,
         injects_immediately_in_live_mode=False,

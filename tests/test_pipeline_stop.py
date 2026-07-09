@@ -81,6 +81,27 @@ class _DummyAudioInput:
             self._events.append("audio_stop")
 
 
+class _SegmentedFinalizationAudioInput:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    async def stop_capture_for_finalization(self, *, close_stream=None):
+        self.events.append("capture_stop")
+
+    async def stop(self, frame, *, close_stream=None):
+        self.events.append("audio_cleanup_stop")
+
+
+class _RecordingStopTask(_DummyTask):
+    def __init__(self, done_event: asyncio.Event, events: list[str]):
+        super().__init__(done_event, set_done_on_stop=True)
+        self.events = events
+
+    async def stop_when_done(self):
+        self.events.append("task_stop_when_done")
+        await super().stop_when_done()
+
+
 class _DummyPrewarmManager:
     def __init__(self, events: list[str] | None = None, *, resume_result: bool = True) -> None:
         self.detach_calls = 0
@@ -426,6 +447,40 @@ async def test_stop_times_out_and_cancels():
 
     assert pipeline.task.stop_when_done_called is True
     assert pipeline.task.cancel_called is True
+
+
+@pytest.mark.asyncio
+async def test_segmented_stt_stop_waits_for_final_before_pipeline_shutdown(monkeypatch):
+    monkeypatch.setenv("SCRIBER_SEGMENTED_STT_STOP_FINAL_TIMEOUT_SEC", "1")
+    events: list[str] = []
+    pipeline = ScriberPipeline(service_name="openai", on_status_change=None)
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    pipeline.task = _RecordingStopTask(pipeline._start_done, events)
+    pipeline.audio_input = _SegmentedFinalizationAudioInput(events)
+
+    class _FinalizingGate(SegmentedSTTRecordingGate):
+        async def flush_segment(self, *, direction=FrameDirection.DOWNSTREAM) -> bool:
+            events.append("segment_flush")
+
+            async def _mark_final():
+                await asyncio.sleep(0.03)
+                events.append("provider_final")
+                pipeline._mark_final_transcription_received()
+
+            asyncio.create_task(_mark_final())
+            return True
+
+    pipeline.pipeline = _DummyRuntimePipelineGraph([
+        _FinalizingGate(vad_segmentation_enabled=False)
+    ])
+
+    await pipeline.stop(timeout_secs=1.0)
+
+    assert events.index("capture_stop") < events.index("segment_flush")
+    assert events.index("segment_flush") < events.index("provider_final")
+    assert events.index("provider_final") < events.index("audio_cleanup_stop")
+    assert events.index("provider_final") < events.index("task_stop_when_done")
 
 
 @pytest.mark.asyncio

@@ -523,7 +523,8 @@ No-feature-loss constraints:
   by backend or UI configuration, but provider SDKs are explicit rather than
   broad Pipecat extras.
 - CPU ONNX local-ASR support is part of the standard sidecar. Full NeMo/Torch
-  packaging remains outside the standard cloud-provider sidecar.
+  packaging remains outside the standard sidecar and is not exposed as a local
+  provider.
 
 Current packaging choices:
 
@@ -532,8 +533,7 @@ Current packaging choices:
 - SciPy, Torch, full NeMo, ONNX training/tooling stacks, numba, llvmlite, and
   unused ONNXRuntime tooling are excluded from the standard sidecar. The
   installed local-ASR path keeps `onnx-asr[cpu,hub]` plus ONNXRuntime so the
-  Settings ONNX path works and the NeMo surface can fall back to ONNX when
-  full NeMo/Torch is unavailable.
+  Settings ONNX path works without requiring NeMo/Torch.
 - AWS Transcribe is no longer exposed in frontend or backend settings. The
   standard sidecar excludes `boto3`, `botocore`, `s3transfer`, `aioboto3`,
   `aiobotocore`, and Pipecat AWS service modules.

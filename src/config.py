@@ -140,7 +140,6 @@ class Config:
         "speechmatics": "SPEECHMATICS_API_KEY",
         "speechmatics_async": "SPEECHMATICS_API_KEY",
         "onnx_local": None,  # No API key needed for local models
-        "nemo_local": None,
     }
 
     SERVICE_LABELS = {
@@ -157,8 +156,8 @@ class Config:
         "elevenlabs": "ElevenLabs",
         "deepgram": "Deepgram (Streaming)",
         "deepgram_async": "Deepgram (Async)",
-        "openai": "OpenAI (Segmented Live)",
-        "openai_async": "OpenAI (Async)",
+        "openai": "OpenAI Realtime",
+        "openai_async": "OpenAI Batch",
         "azure_mai": "Microsoft MAI Transcribe",
         "gladia": "Gladia (Streaming)",
         "gladia_async": "Gladia (Async)",
@@ -166,8 +165,11 @@ class Config:
         "speechmatics": "Speechmatics (Realtime)",
         "speechmatics_async": "Speechmatics (Batch)",
         "onnx_local": "Local (ONNX)",
-        "nemo_local": "Local (NeMo)",
     }
+
+    if str(DEFAULT_STT_SERVICE or "").strip().lower() == "nemo_local":
+        DEFAULT_STT_SERVICE = "onnx_local"
+        os.environ["SCRIBER_DEFAULT_STT"] = DEFAULT_STT_SERVICE
 
     # Mode: "toggle" (default) or "push_to_talk"
     MODE = os.getenv("SCRIBER_MODE", "toggle").lower()
@@ -278,16 +280,16 @@ ${output}"""
         or DEFAULT_POST_PROCESSING_MODEL
     )
 
-    # OpenAI Speech-to-Text model
+    # OpenAI Speech-to-Text models. Keep realtime and batch separate so the
+    # low-latency websocket model cannot accidentally be used for file upload.
+    OPENAI_REALTIME_STT_MODEL = os.getenv("SCRIBER_OPENAI_REALTIME_STT_MODEL", "gpt-realtime-whisper")
     OPENAI_STT_MODEL = os.getenv("SCRIBER_OPENAI_STT_MODEL", "gpt-4o-mini-transcribe-2025-12-15")
 
     # ONNX Local STT settings
-    # Supported models: nemo-parakeet-tdt-0.6b-v3 (fast, 25 EU languages), nemo-canary-1b-v2 (best accuracy)
+    # Supported models include Parakeet/Canary ONNX snapshots and the fp32 DeskScribe Primeline package.
     ONNX_MODEL = os.getenv("SCRIBER_ONNX_MODEL", "nemo-parakeet-tdt-0.6b-v3")
     ONNX_QUANTIZATION = os.getenv("SCRIBER_ONNX_QUANTIZATION", "int8")  # int8 | fp16 | fp32
     ONNX_USE_GPU = os.getenv("SCRIBER_ONNX_USE_GPU", "0") in ("1", "true", "True")
-    # NeMo Local STT settings
-    NEMO_MODEL = os.getenv("SCRIBER_NEMO_MODEL", "parakeet-primeline")
 
     # Audio settings
     SAMPLE_RATE = 16000
@@ -330,6 +332,8 @@ ${output}"""
 
     @classmethod
     def set_default_service(cls, service: str) -> None:
+        if str(service or "").strip().lower() == "nemo_local":
+            service = "onnx_local"
         cls.DEFAULT_STT_SERVICE = service
         os.environ["SCRIBER_DEFAULT_STT"] = service
 
@@ -354,6 +358,11 @@ ${output}"""
         os.environ["SCRIBER_OPENAI_STT_MODEL"] = cls.OPENAI_STT_MODEL
 
     @classmethod
+    def set_openai_realtime_stt_model(cls, model: str) -> None:
+        cls.OPENAI_REALTIME_STT_MODEL = model.strip()
+        os.environ["SCRIBER_OPENAI_REALTIME_STT_MODEL"] = cls.OPENAI_REALTIME_STT_MODEL
+
+    @classmethod
     def set_onnx_model(cls, model: str) -> None:
         cls.ONNX_MODEL = model.strip()
         os.environ["SCRIBER_ONNX_MODEL"] = cls.ONNX_MODEL
@@ -367,11 +376,6 @@ ${output}"""
     def set_onnx_use_gpu(cls, enabled: bool) -> None:
         cls.ONNX_USE_GPU = bool(enabled)
         os.environ["SCRIBER_ONNX_USE_GPU"] = "1" if cls.ONNX_USE_GPU else "0"
-
-    @classmethod
-    def set_nemo_model(cls, model: str) -> None:
-        cls.NEMO_MODEL = model.strip()
-        os.environ["SCRIBER_NEMO_MODEL"] = cls.NEMO_MODEL
 
     @classmethod
     def set_mic_device(cls, device: str) -> None:
@@ -495,10 +499,10 @@ ${output}"""
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)
         add("SCRIBER_OPENAI_STT_MODEL", cls.OPENAI_STT_MODEL)
+        add("SCRIBER_OPENAI_REALTIME_STT_MODEL", cls.OPENAI_REALTIME_STT_MODEL)
         add("SCRIBER_ONNX_MODEL", cls.ONNX_MODEL)
         add("SCRIBER_ONNX_QUANTIZATION", cls.ONNX_QUANTIZATION)
         add("SCRIBER_ONNX_USE_GPU", "1" if cls.ONNX_USE_GPU else "0")
-        add("SCRIBER_NEMO_MODEL", cls.NEMO_MODEL)
         # If a favorite mic is set, always revert MIC_DEVICE to "default" in the saved .env
         # This ensures that on the next restart, the favorite mic is automatically selected
         # (via the startup resolution logic) instead of persisting the last used temporary mic.

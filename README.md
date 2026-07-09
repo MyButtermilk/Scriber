@@ -43,7 +43,7 @@ any workflow where spoken content needs to become structured text quickly.
 - **Reuse the result:** search, copy, summarize, export to PDF/DOCX, or open
   transcript detail pages later.
 - **Choose the model for the job:** low-latency streaming, cheaper async/batch,
-  Gemini with one simple API key, or local ONNX/NeMo models.
+  Gemini with one simple API key, or local ONNX models.
 
 ## Screenshots
 
@@ -144,12 +144,12 @@ Scriber exposes provider modes by how they behave in real work:
 
 - **Cloud streaming:** low-latency streams for live speech.
 - **Cloud async/batch:** completed audio upload or finalization after capture.
-- **Local:** ONNX/NeMo paths for users who want local inference and no STT API
+- **Local:** ONNX paths for users who want local inference and no STT API
   key.
 
 Current provider coverage includes Soniox, AssemblyAI, Microsoft Azure MAI,
 OpenAI, OpenRouter, Deepgram, Mistral, Gladia, Groq, Speechmatics, Smallest AI,
-ElevenLabs/fal.ai, Gemini, Google Cloud, ONNX, and NeMo.
+ElevenLabs/fal.ai, Gemini, Google Cloud, and ONNX.
 
 Settings keep cloud model choices locked until the matching credential is
 available, and missing-key prompts open the correct API-key dialog directly.
@@ -162,12 +162,16 @@ separate path for users with Google Cloud Speech credentials.
 - Local ONNX runtime is bundled through `onnx-asr[cpu,hub]`.
 - ONNX models can be downloaded from Hugging Face from inside Settings.
 - NVIDIA Parakeet/Canary style local models are available through the ONNX path.
-- Primeline German Parakeet is available as a prepared ONNX snapshot:
-  `Buttermilk03/parakeet-primeline-onnx`.
-- Primeline supports a compact CPU-valid `int8` export and full `fp32`; users do
-  not need to export the original `.nemo` file locally.
-- The NeMo Settings surface falls back to the ONNX local model path when the
-  full NeMo/Torch runtime is not bundled.
+- Primeline German Parakeet is available as prepared ONNX downloads for the same
+  `primeline/parakeet-primeline` model: `int8` from
+  `Buttermilk03/parakeet-primeline-onnx`, and `fp32` from the DeskScribe package
+  `geier/deskscribe-parakeet-primeline-onnx`.
+- For the DeskScribe `fp32` package, Scriber downloads the package ZIP, verifies
+  its SHA-256 checksum, extracts the required ONNX Runtime files, and loads the
+  model from the local cache. Users do not need to export the original `.nemo`
+  file locally.
+- ONNX is the only local STT provider exposed in Settings. Scriber does not
+  ask users to install or manage NeMo/Torch locally.
 
 ### Settings And Personalization
 
@@ -337,8 +341,8 @@ Recent local release evidence:
   not part of the standard backend sidecar.
 - Supported provider SDKs are bundled explicitly; unused provider SDKs are kept
   out of the standard backend sidecar.
-- ONNX local ASR support is bundled through `onnx-asr[cpu,hub]`; full
-  NeMo/Torch remains outside the standard sidecar.
+- ONNX local ASR support is bundled through `onnx-asr[cpu,hub]`; NeMo/Torch is
+  not exposed as a local provider.
 
 ## Test
 

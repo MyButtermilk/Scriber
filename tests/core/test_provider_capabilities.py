@@ -28,12 +28,12 @@ def test_provider_capabilities_distinguish_streaming_from_segmented_live():
     assert get_capabilities("google").supports_live_streaming is True
     assert get_capabilities("speechmatics").supports_live_streaming is True
     assert get_capabilities("assemblyai_realtime").supports_live_streaming is True
+    assert get_capabilities("openai").supports_live_streaming is True
 
     assert get_capabilities("mistral").supports_live_streaming is False
     assert get_capabilities("assemblyai").supports_live_streaming is False
     assert get_capabilities("deepgram_async").supports_live_streaming is False
     assert get_capabilities("gladia_async").supports_live_streaming is False
-    assert get_capabilities("openai").supports_live_streaming is False
     assert get_capabilities("openai_async").supports_live_streaming is False
     assert get_capabilities("groq").supports_live_streaming is False
     assert get_capabilities("elevenlabs").supports_live_streaming is False

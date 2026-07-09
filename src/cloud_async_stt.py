@@ -81,6 +81,11 @@ def _terms_from_vocab(custom_vocab: str) -> list[str]:
     return terms
 
 
+def _deepgram_custom_vocab_param(model: str) -> str:
+    normalized = str(model or "").strip().lower()
+    return "keyterm" if normalized.startswith("nova-3") else "keywords"
+
+
 def _format_speaker_segments(segments: list[dict[str, Any]]) -> str:
     speaker_map: dict[str, int] = {}
     next_speaker = 1
@@ -166,8 +171,9 @@ async def transcribe_with_deepgram_pre_recorded(
     _report_progress(on_progress, "Uploading audio...")
     _report_progress(on_progress, "Processing transcription...")
 
+    model = os.getenv("SCRIBER_DEEPGRAM_MODEL", "nova-3")
     params: list[tuple[str, str]] = [
-        ("model", os.getenv("SCRIBER_DEEPGRAM_MODEL", "nova-3")),
+        ("model", model),
         ("smart_format", "true"),
         ("punctuate", "true"),
         ("diarize", "true" if diarize else "false"),
@@ -175,8 +181,9 @@ async def transcribe_with_deepgram_pre_recorded(
     language_code = provider_language_code(language)
     if language_code:
         params.append(("language", language_code))
+    vocab_param = _deepgram_custom_vocab_param(model)
     for term in _terms_from_vocab(custom_vocab)[:100]:
-        params.append(("keywords", term))
+        params.append((vocab_param, term))
 
     headers = {
         "Authorization": f"Token {api_key}",

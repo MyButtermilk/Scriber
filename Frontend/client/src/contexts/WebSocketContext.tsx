@@ -91,14 +91,13 @@ export type ScriberWebSocketMessage =
     })
     | (BaseWsMessage & { type: "settings_updated" })
     | (BaseWsMessage & {
-        type: "onnx_download_progress" | "nemo_download_progress";
+        type: "onnx_download_progress";
         modelId: string;
         progress: number;
         status: ModelDownloadStatus;
         message?: string;
     })
-    | (BaseWsMessage & { type: "onnx_models_updated"; modelId: string })
-    | (BaseWsMessage & { type: "nemo_models_updated" });
+    | (BaseWsMessage & { type: "onnx_models_updated"; modelId: string });
 
 type MessageHandler = (data: ScriberWebSocketMessage) => void;
 

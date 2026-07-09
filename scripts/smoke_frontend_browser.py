@@ -146,7 +146,6 @@ class FrontendSmokeBackend:
         app.router.add_get("/api/runtime", self.runtime)
         app.router.add_post("/api/runtime/frontend-ready", self.frontend_ready)
         app.router.add_get("/api/onnx/models", self.local_models)
-        app.router.add_get("/api/nemo/models", self.local_models)
         app.router.add_get("/api/youtube/search", self.youtube_search)
         app.router.add_get("/api/youtube/video", self.youtube_video)
         app.router.add_get("/api/youtube/thumbnail", self.youtube_thumbnail)
@@ -732,7 +731,6 @@ class FrontendSmokeBackend:
             "visualizerBarCount": 45,
             "micAlwaysOn": False,
             "onnxModel": "",
-            "nemoModel": "",
             "apiKeys": {},
             "fileUploadLimits": {
                 "compressionThresholdBytes": 50 * 1024 * 1024,

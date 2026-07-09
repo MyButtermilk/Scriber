@@ -8,11 +8,14 @@ Supported Models:
 - parakeet-primeline: Primeline German Parakeet ONNX export
 """
 import asyncio
+import hashlib
 import io
 import os
+import shutil
 import threading
 import time
 import wave
+import zipfile
 from fnmatch import fnmatch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -78,7 +81,7 @@ ONNX_MODELS = {
         "name": "Parakeet Primeline (DE)",
         "description": "German-focused Primeline Parakeet ONNX export",
         "languages": ["de"],
-        "size_mb": 890,
+        "size_mb": 2432,
         "size_mb_by_quantization": {
             "int8": 890,
             "fp32": 2432,
@@ -86,10 +89,29 @@ ONNX_MODELS = {
         "supported_quantizations": ["int8", "fp32"],
         "supports_timestamps": True,
         "supports_language_param": False,
-        "hf_repo": "Buttermilk03/parakeet-primeline-onnx",
+        "hf_repo": "geier/deskscribe-parakeet-primeline-onnx",
+        "hf_repo_by_quantization": {
+            "int8": "Buttermilk03/parakeet-primeline-onnx",
+        },
         "source_hf_repo": "primeline/parakeet-primeline",
-        "load_from_snapshot": True,
-        "download_full_snapshot_quantizations": ["fp32"],
+        "load_from_archive": True,
+        "archive_quantizations": ["fp32"],
+        "load_from_snapshot_quantizations": ["int8"],
+        "archive": "parakeet-primeline-onnx-v1.zip",
+        "manifest": "parakeet-primeline-onnx-v1.manifest.json",
+        "sha256_file": "parakeet-primeline-onnx-v1.zip.sha256",
+        "sha256": "a75a87c815f8cd6cb66de1d9462db6b719b97070e6e6a5716408bf4b5c1c46aa",
+        "archive_version": "v1",
+        "archive_model_files": [
+            "encoder-model.onnx",
+            "decoder_joint-model.onnx",
+        ],
+        "archive_common_files": [
+            "vocab.txt",
+            "config.json",
+            "MODEL_LICENSE.md",
+            "mel_fbanks_nemo128.bin",
+        ],
     },
 }
 
@@ -142,6 +164,78 @@ def is_onnx_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _directory_has_files(path: Path, filenames: list[str]) -> bool:
+    return bool(path) and path.exists() and all((path / filename).exists() for filename in filenames)
+
+
+def _uses_archive(model_name: str, quantization_label: str) -> bool:
+    info = ONNX_MODELS.get(model_name, {})
+    if not info.get("load_from_archive"):
+        return False
+    quantizations = list(info.get("archive_quantizations") or [])
+    return not quantizations or quantization_label in quantizations
+
+
+def _uses_snapshot_path(model_name: str, quantization_label: str) -> bool:
+    info = ONNX_MODELS.get(model_name, {})
+    return bool(info.get("load_from_snapshot")) or quantization_label in list(
+        info.get("load_from_snapshot_quantizations") or []
+    )
+
+
+def _archive_model_files(model_name: str, quantization_label: str) -> list[str]:
+    info = ONNX_MODELS.get(model_name, {})
+    return list(info.get("archive_model_files") or [])
+
+
+def _archive_common_files(model_name: str) -> list[str]:
+    info = ONNX_MODELS.get(model_name, {})
+    return list(info.get("archive_common_files") or [])
+
+
+def _archive_required_files(model_name: str, quantization_label: str) -> list[str]:
+    return _archive_model_files(model_name, quantization_label) + _archive_common_files(model_name)
+
+
+def _archive_extract_dir(model_name: str, quantization_label: str) -> Path:
+    info = ONNX_MODELS.get(model_name, {})
+    version = str(info.get("archive_version") or "model")
+    return get_model_cache_dir() / "scriber-extracted" / f"{model_name}-{version}-{quantization_label}"
+
+
+def _archive_is_extracted(model_name: str, quantization_label: str) -> bool:
+    return _directory_has_files(
+        _archive_extract_dir(model_name, quantization_label),
+        _archive_required_files(model_name, quantization_label),
+    )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _find_archive_payload_root(root: Path, required_files: list[str]) -> Path:
+    if _directory_has_files(root, required_files):
+        return root
+    for child in root.iterdir():
+        if child.is_dir() and _directory_has_files(child, required_files):
+            return child
+    raise FileNotFoundError(f"Extracted archive is missing required files: {required_files}")
+
+
+def _safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
+    destination_root = destination.resolve()
+    for member in archive.infolist():
+        target = (destination / member.filename).resolve()
+        if destination_root != target and destination_root not in target.parents:
+            raise ValueError(f"Refusing to extract unsafe archive member: {member.filename}")
+    archive.extractall(destination)
 
 
 def _set_download_state(
@@ -212,6 +306,17 @@ def _resolve_repo_id(model_name: str, quantization_label: str) -> Optional[str]:
 def _build_allow_patterns(model_name: str, quantization_label: str) -> list[str]:
     """Build allow_patterns for snapshot_download based on model + quantization."""
     info = ONNX_MODELS.get(model_name, {})
+    if _uses_archive(model_name, quantization_label):
+        return [
+            value
+            for value in (
+                info.get("archive"),
+                info.get("manifest"),
+                info.get("sha256_file"),
+            )
+            if value
+        ]
+
     if quantization_label in (info.get("download_full_snapshot_quantizations") or []):
         return []
 
@@ -263,6 +368,72 @@ def _snapshot_model_path(model_name: str, quantization_label: str) -> Path:
             allow_patterns=allow_patterns or None,
         )
     )
+
+
+def _archive_model_path(
+    model_name: str,
+    quantization_label: str,
+    *,
+    local_files_only: bool = False,
+) -> Path:
+    """Return the extracted DeskScribe ONNX package directory for archive models."""
+    from huggingface_hub import hf_hub_download
+
+    info = ONNX_MODELS.get(model_name, {})
+    archive_name = str(info.get("archive") or "")
+    if not archive_name:
+        raise ValueError(f"Model {model_name} is configured as archive-backed but has no archive file")
+
+    required = _archive_required_files(model_name, quantization_label)
+    extract_dir = _archive_extract_dir(model_name, quantization_label)
+    if _directory_has_files(extract_dir, required):
+        return extract_dir
+
+    repo_id = _resolve_repo_id(model_name, quantization_label)
+    if not repo_id:
+        raise ValueError(f"Missing repo for model: {model_name}")
+
+    archive_path = Path(
+        hf_hub_download(
+            repo_id=repo_id,
+            filename=archive_name,
+            cache_dir=get_model_cache_dir(),
+            local_files_only=local_files_only,
+        )
+    )
+
+    expected_sha = str(info.get("sha256") or "").strip().lower()
+    if expected_sha:
+        actual_sha = _sha256_file(archive_path)
+        if actual_sha.lower() != expected_sha:
+            raise ValueError(
+                f"Checksum mismatch for {archive_name}: expected {expected_sha}, got {actual_sha}"
+            )
+
+    tmp_dir = extract_dir.with_name(f"{extract_dir.name}.tmp-{os.getpid()}")
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            _safe_extract_zip(archive, tmp_dir)
+
+        payload_root = _find_archive_payload_root(tmp_dir, required)
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        extract_dir.parent.mkdir(parents=True, exist_ok=True)
+        if payload_root == tmp_dir:
+            shutil.move(str(tmp_dir), str(extract_dir))
+        else:
+            shutil.move(str(payload_root), str(extract_dir))
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+    if not _directory_has_files(extract_dir, required):
+        raise FileNotFoundError(f"Extracted model is missing required files: {required}")
+    logger.info(f"Archive-backed ONNX model prepared at: {extract_dir}")
+    return extract_dir
 
 
 def _format_bytes(value: int) -> str:
@@ -360,13 +531,16 @@ def is_model_downloaded(model_name: str, quantization: Optional[str] = None) -> 
         return False
     
     try:
-        from huggingface_hub import snapshot_download
-        from huggingface_hub.utils import LocalEntryNotFoundError
-
         _, q_label = _normalize_quantization(quantization)
         supported = _get_supported_quantizations(model_name)
         if q_label not in supported:
             return False
+
+        if _uses_archive(model_name, q_label):
+            return _archive_is_extracted(model_name, q_label)
+
+        from huggingface_hub import snapshot_download
+        from huggingface_hub.utils import LocalEntryNotFoundError
 
         repo_id = _resolve_repo_id(model_name, q_label)
         if not repo_id:
@@ -384,8 +558,6 @@ def is_model_downloaded(model_name: str, quantization: Optional[str] = None) -> 
                 return True
             except LocalEntryNotFoundError:
                 continue
-        return False
-    except LocalEntryNotFoundError:
         return False
     except Exception as e:
         logger.debug(f"Could not check model cache status: {e}")
@@ -407,6 +579,10 @@ def list_available_models(quantization: Optional[str] = None) -> list[dict]:
             "name": info["name"],
             "description": info["description"],
             "languages": info["languages"],
+            "runtime": info.get("runtime", "onnx_asr"),
+            "hfRepo": info.get("hf_repo", ""),
+            "hfRepoByQuantization": info.get("hf_repo_by_quantization", {}),
+            "localDirName": info.get("local_dir_name", ""),
             "sizeMb": info["size_mb"],
             "sizeMbByQuantization": info.get("size_mb_by_quantization", {}),
             "supportedQuantizations": info.get("supported_quantizations", ["int8", "fp32"]),
@@ -439,9 +615,6 @@ async def download_model(
         return False
 
     quantization_onnx, q_label = _normalize_quantization(quantization)
-    supported = _get_supported_quantizations(model_name)
-    if q_label not in supported:
-        raise ValueError(f"Quantization not supported for {model_name}: {q_label}")
     supported = _get_supported_quantizations(model_name)
     if q_label not in supported:
         _set_download_state(model_name, "error", -1.0, f"Quantization not supported: {q_label}")
@@ -509,6 +682,13 @@ async def download_model(
                         allow_patterns=allow_patterns or None,
                         tqdm_class=_make_tqdm(on_progress),
                     )
+
+                    if _uses_archive(model_name, q_label):
+                        prepare_msg = "Preparing local model package..."
+                        _set_download_state(model_name, "downloading", 99.9, prepare_msg)
+                        if on_progress:
+                            on_progress(99.9, prepare_msg)
+                        _archive_model_path(model_name, q_label, local_files_only=True)
 
                     _set_download_state(model_name, "ready", 100.0, "Download complete")
                     if on_progress:
@@ -608,6 +788,13 @@ async def download_model(
                     hf_utils_tqdm.tqdm = prev_tqdm
                     hf_file_download.tqdm = prev_tqdm
 
+                if _uses_archive(model_name, q_label):
+                    prepare_msg = "Preparing local model package..."
+                    _set_download_state(model_name, "downloading", 99.9, prepare_msg)
+                    if on_progress:
+                        on_progress(99.9, prepare_msg)
+                    _archive_model_path(model_name, q_label, local_files_only=True)
+
                 _set_download_state(model_name, "ready", 100.0, "Download complete")
                 if on_progress:
                     on_progress(100.0, "Download complete!")
@@ -650,19 +837,22 @@ def load_model(
         logger.debug(f"Returning cached model: {cache_key}")
         return _model_cache[cache_key]
     
-    # Ensure cache directory is initialized for HuggingFace downloads
-    get_model_cache_dir()
-
-    onnx_asr = _get_onnx_asr()
-    
     quantization_onnx, q_label = _normalize_quantization(quantization)
     supported = _get_supported_quantizations(model_name)
     if q_label not in supported:
         raise ValueError(f"Quantization not supported for {model_name}: {q_label}")
+
+    # Ensure cache directory is initialized for HuggingFace downloads.
+    get_model_cache_dir()
+
+    onnx_asr = _get_onnx_asr()
     model_info = ONNX_MODELS.get(model_name, {})
     model_arg = _resolve_repo_id(model_name, q_label) if q_label == "fp16" else model_name
     model_path = None
-    if model_info.get("load_from_snapshot"):
+    if _uses_archive(model_name, q_label):
+        model_arg = _resolve_repo_id(model_name, q_label) or model_name
+        model_path = _archive_model_path(model_name, q_label)
+    elif _uses_snapshot_path(model_name, q_label):
         model_arg = _resolve_repo_id(model_name, q_label) or model_name
         model_path = _snapshot_model_path(model_name, q_label)
 
@@ -707,6 +897,46 @@ def unload_model(model_name: str = None) -> None:
             del _model_cache[key]
         if keys_to_remove:
             logger.info(f"Unloaded model: {model_name}")
+
+
+def _result_to_text(result: Any) -> str:
+    if isinstance(result, str):
+        return result
+    if hasattr(result, "text"):
+        return str(result.text or "")
+    return str(result or "")
+
+
+def _audio_bytes_to_float32(audio_bytes: bytes, sample_rate: int) -> tuple[Any, int]:
+    import numpy as np
+
+    sr = sample_rate
+    if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+        try:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as wav:
+                sr = wav.getframerate()
+                channels = wav.getnchannels()
+                sampwidth = wav.getsampwidth()
+                frames = wav.readframes(wav.getnframes())
+            if sampwidth == 1:
+                audio = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+            elif sampwidth == 2:
+                audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+            elif sampwidth == 4:
+                audio = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+            else:
+                audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
+            if channels > 1:
+                audio = audio.reshape(-1, channels).mean(axis=1)
+            return audio, sr
+        except Exception as exc:
+            logger.warning(f"Failed to decode WAV bytes ({exc}); falling back to raw PCM parsing")
+
+    try:
+        return np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0, sr
+    except Exception:
+        return np.frombuffer(audio_bytes, dtype=np.float32), sr
 
 
 async def transcribe_audio(
@@ -797,54 +1027,19 @@ async def transcribe_audio_bytes(
     Returns:
         Transcribed text
     """
-    import numpy as np
-
     model = load_model(model_name, quantization, use_vad=use_vad)
     model_info = ONNX_MODELS.get(model_name, {})
     
     def _transcribe():
-        # Convert bytes to numpy array
-        sr = sample_rate
-        if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
-            try:
-                with wave.open(io.BytesIO(audio_bytes), "rb") as wav:
-                    sr = wav.getframerate()
-                    channels = wav.getnchannels()
-                    sampwidth = wav.getsampwidth()
-                    frames = wav.readframes(wav.getnframes())
-                if sampwidth == 1:
-                    audio = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
-                elif sampwidth == 2:
-                    audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-                elif sampwidth == 4:
-                    audio = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
-                else:
-                    audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        audio, sr = _audio_bytes_to_float32(audio_bytes, sample_rate)
 
-                if channels > 1:
-                    audio = audio.reshape(-1, channels).mean(axis=1)
-            except Exception as exc:
-                logger.warning(f"Failed to decode WAV bytes ({exc}); falling back to raw PCM parsing")
-                audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        else:
-            # Assume raw PCM int16 (Scriber inputs are s16le); fallback to float32 if needed
-            try:
-                audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            except Exception:
-                audio = np.frombuffer(audio_bytes, dtype=np.float32)
-        
         # Determine language parameter
         lang_param = None
         if model_info.get("supports_language_param") and language != "auto":
             lang_param = language
         
         result = model.recognize(audio, sample_rate=sr, language=lang_param)
-        
-        if isinstance(result, str):
-            return result
-        elif hasattr(result, 'text'):
-            return result.text
-        return str(result)
+        return _result_to_text(result)
     
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_executor, _transcribe)
@@ -872,18 +1067,29 @@ def delete_model(model_name: str, quantization: Optional[str] = None) -> bool:
         from huggingface_hub import scan_cache_dir, HFCacheInfo, constants
         
         repo_ids: list[str] = []
+        quantizations_to_delete: list[str]
         if quantization:
             _, q_label = _normalize_quantization(quantization)
+            quantizations_to_delete = [q_label]
             repo_id = _resolve_repo_id(model_name, q_label)
             if repo_id:
                 repo_ids.append(repo_id)
         else:
+            quantizations_to_delete = _get_supported_quantizations(model_name)
             repo_ids.append(ONNX_MODELS[model_name]["hf_repo"])
             for repo_id in (ONNX_MODELS[model_name].get("hf_repo_by_quantization") or {}).values():
                 if repo_id not in repo_ids:
                     repo_ids.append(repo_id)
 
         deleted = False
+        if any(_uses_archive(model_name, q_label) for q_label in quantizations_to_delete):
+            for q_label in quantizations_to_delete:
+                if _uses_archive(model_name, q_label):
+                    extract_dir = _archive_extract_dir(model_name, q_label)
+                    if extract_dir.exists():
+                        shutil.rmtree(extract_dir, ignore_errors=False)
+                        deleted = True
+
         for cache_dir in _candidate_cache_dirs():
             try:
                 cache_info = scan_cache_dir(cache_dir=cache_dir)

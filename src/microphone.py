@@ -1484,6 +1484,18 @@ class MicrophoneInput(BaseInputTransport):
             logger.debug(f"Microphone last-chunk callback failed: {exc}")
 
     async def stop(self, frame: EndFrame, *, close_stream: bool | None = None):
+        await self.stop_capture_for_finalization(close_stream=close_stream)
+        await super().stop(frame)
+
+    async def stop_capture_for_finalization(self, *, close_stream: bool | None = None):
+        """Stop the physical capture source while leaving downstream frames alive.
+
+        Segmented STT providers need a clean "no more microphone frames" point
+        before Scriber emits the synthetic UserStoppedSpeakingFrame that triggers
+        upload/transcription. Calling BaseInputTransport.stop() here would cancel
+        Pipecat's audio task and can race the final STT frame, so final pipeline
+        termination remains the caller's responsibility.
+        """
         self._running = False
 
         # OPTIMIZED: Always stop stream to prevent CPU usage and buffer overflow
@@ -1523,4 +1535,3 @@ class MicrophoneInput(BaseInputTransport):
                 await asyncio.gather(task, return_exceptions=True)
 
         self._stopped.set()
-        await super().stop(frame)

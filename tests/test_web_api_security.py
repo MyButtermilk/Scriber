@@ -237,9 +237,7 @@ def _fake_local_model_module(*, kind: str, model_id: str = "local-smoke-model", 
 async def test_local_model_routes_handle_invalid_and_boundary_states(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     onnx_module = _fake_local_model_module(kind="onnx", model_id="onnx-smoke")
-    nemo_module = _fake_local_model_module(kind="nemo", model_id="nemo-smoke")
     monkeypatch.setitem(sys.modules, "src.onnx_stt", onnx_module)
-    monkeypatch.setitem(sys.modules, "src.nemo_stt", nemo_module)
 
     ctl = ScriberWebController(asyncio.get_running_loop())
     app = web_api.create_app(ctl)
@@ -252,23 +250,13 @@ async def test_local_model_routes_handle_invalid_and_boundary_states(monkeypatch
         onnx_module._state["downloading"] = True
         busy_onnx = await client.post("/api/onnx/download", json={"modelId": "onnx-smoke"})
         onnx_module._state["downloading"] = False
-        missing_nemo = await client.post("/api/nemo/download", json={})
-        unknown_nemo = await client.post("/api/nemo/download", json={"modelId": "unknown"})
-        nemo_module._state["downloading"] = True
-        busy_nemo = await client.post("/api/nemo/download", json={"modelId": "nemo-smoke"})
-        nemo_module._state["downloading"] = False
         not_cached_onnx = await client.delete("/api/onnx/models/onnx-smoke?quantization=int8")
-        not_cached_nemo = await client.delete("/api/nemo/models/nemo-smoke")
 
         payloads = {
             "missing_onnx": await missing_onnx.json(),
             "unknown_onnx": await unknown_onnx.json(),
             "busy_onnx": await busy_onnx.json(),
-            "missing_nemo": await missing_nemo.json(),
-            "unknown_nemo": await unknown_nemo.json(),
-            "busy_nemo": await busy_nemo.json(),
             "not_cached_onnx": await not_cached_onnx.json(),
-            "not_cached_nemo": await not_cached_nemo.json(),
         }
     finally:
         await client.close()
@@ -283,46 +271,6 @@ async def test_local_model_routes_handle_invalid_and_boundary_states(monkeypatch
     assert payloads["busy_onnx"]["modelId"] == "onnx-smoke"
     assert not_cached_onnx.status == 404
     assert payloads["not_cached_onnx"]["message"] == "Model not found in cache"
-
-    assert missing_nemo.status == 400
-    assert payloads["missing_nemo"]["message"] == "Missing modelId"
-    assert unknown_nemo.status == 404
-    assert payloads["unknown_nemo"]["message"] == "Unknown model"
-    assert busy_nemo.status == 409
-    assert payloads["busy_nemo"]["message"] == "Download already in progress"
-    assert payloads["busy_nemo"]["modelId"] == "nemo-smoke"
-    assert not_cached_nemo.status == 404
-    assert payloads["not_cached_nemo"]["message"] == "Delete failed"
-
-
-@pytest.mark.asyncio
-async def test_nemo_model_route_uses_onnx_fallback_when_nemo_runtime_is_missing(monkeypatch, tmp_path):
-    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(Config, "NEMO_MODEL", "parakeet-primeline")
-    monkeypatch.setattr(Config, "ONNX_MODEL", "onnx-fallback")
-    nemo_module = _fake_local_model_module(kind="nemo", model_id="nemo-smoke", available=False)
-    onnx_module = _fake_local_model_module(kind="onnx", model_id="onnx-fallback", available=True)
-    monkeypatch.setitem(sys.modules, "src.nemo_stt", nemo_module)
-    monkeypatch.setitem(sys.modules, "src.onnx_stt", onnx_module)
-
-    ctl = ScriberWebController(asyncio.get_running_loop())
-    app = web_api.create_app(ctl)
-    server = TestServer(app)
-    client = TestClient(server)
-    await client.start_server()
-    try:
-        response = await client.get("/api/nemo/models")
-        payload = await response.json()
-    finally:
-        await client.close()
-        ctl.shutdown()
-
-    assert response.status == 200
-    assert payload["available"] is True
-    assert payload["backend"] == "onnx"
-    assert payload["currentModel"] == "onnx-fallback"
-    assert payload["models"][0]["id"] == "onnx-fallback"
-    assert "ONNX" in payload["message"]
 
 
 class _FakeTransport:
@@ -696,9 +644,6 @@ async def test_session_token_middleware_protects_local_model_routes(monkeypatch,
         onnx_models_without_token = await client.get("/api/onnx/models")
         onnx_download_without_token = await client.post("/api/onnx/download", json={"modelId": "base"})
         onnx_delete_without_token = await client.delete("/api/onnx/models/base")
-        nemo_models_without_token = await client.get("/api/nemo/models")
-        nemo_download_without_token = await client.post("/api/nemo/download", json={"modelId": "base"})
-        nemo_delete_without_token = await client.delete("/api/nemo/models/base")
     finally:
         await client.close()
         ctl.shutdown()
@@ -706,9 +651,6 @@ async def test_session_token_middleware_protects_local_model_routes(monkeypatch,
     assert onnx_models_without_token.status == 401
     assert onnx_download_without_token.status == 401
     assert onnx_delete_without_token.status == 401
-    assert nemo_models_without_token.status == 401
-    assert nemo_download_without_token.status == 401
-    assert nemo_delete_without_token.status == 401
 
 
 @pytest.mark.asyncio

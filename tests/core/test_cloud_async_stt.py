@@ -48,4 +48,3 @@ def test_speechmatics_payload_builds_text_from_results():
     }
 
     assert speechmatics_transcript_payload_to_text(payload, prefer_speaker_labels=False) == "Hello world."
-

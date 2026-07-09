@@ -183,7 +183,6 @@ def _normalize_provider(provider: str | None, raw: str) -> str:
         "deepgram": "deepgram",
         "openai": "openai",
         "onnx_local": "onnx_local",
-        "nemo_local": "nemo_local",
     }
     if normalized in aliases:
         return aliases[normalized]
@@ -205,8 +204,6 @@ def _normalize_provider(provider: str | None, raw: str) -> str:
         return "openai"
     if "onnx_local" in text or "onnx local" in text:
         return "onnx_local"
-    if "nemo_local" in text or "nemo local" in text:
-        return "nemo_local"
     return normalized
 
 

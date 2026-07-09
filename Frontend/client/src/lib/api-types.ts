@@ -225,11 +225,13 @@ export interface LocalModelInfo {
 }
 
 export interface OnnxModelInfo extends LocalModelInfo {
+  runtime?: string;
+  hfRepo?: string;
+  hfRepoByQuantization?: Record<string, string>;
+  localDirName?: string;
   sizeMbByQuantization?: Record<string, number>;
   supportedQuantizations?: string[];
 }
-
-export type NemoModelInfo = LocalModelInfo;
 
 export interface OnnxModelsResponse {
   available: boolean;
@@ -237,13 +239,6 @@ export interface OnnxModelsResponse {
   models: OnnxModelInfo[];
   currentModel?: string;
   quantization?: string;
-}
-
-export interface NemoModelsResponse {
-  available: boolean;
-  message?: string;
-  models: NemoModelInfo[];
-  currentModel?: string;
 }
 
 export interface LocalModelActionResponse {
@@ -311,10 +306,10 @@ export interface SettingsResponse {
   postProcessingPrompt?: string;
   postProcessingModel?: string;
   openaiSttModel?: string;
+  openaiRealtimeSttModel?: string;
   onnxModel?: string;
   onnxQuantization?: string;
   onnxUseGpu?: boolean;
-  nemoModel?: string;
   visualizerBarCount?: number;
   fileUploadLimits?: FileUploadLimits;
   apiKeys?: SettingsApiKeys;
@@ -341,10 +336,10 @@ export interface SettingsUpdatePayload {
   postProcessingPrompt?: string;
   postProcessingModel?: string;
   openaiSttModel?: string;
+  openaiRealtimeSttModel?: string;
   onnxModel?: string;
   onnxQuantization?: string;
   onnxUseGpu?: boolean;
-  nemoModel?: string;
   visualizerBarCount?: number;
   apiKeys?: SettingsApiKeys;
 }

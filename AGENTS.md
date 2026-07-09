@@ -323,9 +323,12 @@ Packaging and scripts:
   be routed with OpenRouter provider order `baseten,cerebras` instead of adding
   `:nitro`. Google Cloud STT uses
   `google-cloud-speech` plus Pipecat's required `google-genai` namespace
-  dependency, OpenAI STT uses the explicit `openai`
-  SDK dependency, Groq STT uses Pipecat's `groq` SDK dependency, and Pipecat
-  provider imports require `nltk` at runtime. Gladia live transcription uses
+  dependency, OpenAI live STT uses Pipecat's OpenAI Realtime STT service with
+  `gpt-realtime-whisper`, while `openai_async` uses the direct OpenAI Audio
+  Transcriptions HTTP adapter with `gpt-4o-mini-transcribe-2025-12-15`. Keep
+  the explicit `openai` SDK and `websockets` dependencies for these paths.
+  Groq STT uses Pipecat's `groq` SDK dependency, and Pipecat provider imports
+  require `nltk` at runtime. Gladia live transcription uses
   Pipecat's Gladia service; Gladia file and YouTube transcription use the
   direct pre-recorded HTTP upload/polling API and should not be routed through
   the live WebSocket pipeline. The direct async adapters
@@ -334,13 +337,16 @@ Packaging and scripts:
   HTTP/batch adapters unless a measured provider SDK change justifies adding
   more packaged dependencies. Do not add `speechmatics-batch` to the standard
   sidecar while the direct Speechmatics batch API path is sufficient. Keep
-  `onnx-asr[cpu,hub]` in the standard sidecar for the ONNX local-ASR path and
-  NeMo UI fallback, but keep full NeMo/Torch out of the standard sidecar.
-  Primeline Parakeet support uses the prepared
-  `Buttermilk03/parakeet-primeline-onnx` Hugging Face snapshot. Preserve its
-  validated `int8` and `fp32` quantization metadata; fp32 uses ONNX external
-  data and must be loaded from the complete snapshot, not from onnx-asr's
-  narrow default file list.
+  `onnx-asr[cpu,hub]` in the standard sidecar for the ONNX local-ASR path.
+  NeMo/Torch is not exposed as a local provider in Settings.
+  Primeline Parakeet support uses ready Hugging Face artifacts only; Scriber
+  must not quantize this model on end-user machines. Preserve `fp32` through
+  `geier/deskscribe-parakeet-primeline-onnx` with the manifest/checksum-backed
+  archive flow: download ZIP + manifest + sha256 file, verify the archive
+  SHA-256, extract the required ONNX Runtime files into the local model cache,
+  and load the extracted directory through `onnx-asr`. Preserve `int8` through
+  the trusted `Buttermilk03/parakeet-primeline-onnx` repo and its ready
+  `encoder-model-int8.onnx` / `decoder_joint-model-int8.onnx` files.
 - FFmpeg Profile B is the standard Windows bundled media-tool path. Gyan
   Essentials is explicit fallback only.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`

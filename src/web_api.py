@@ -714,23 +714,6 @@ def _provider_readiness_error(provider: str) -> str | None:
             pass
         return "Local ONNX transcription is unavailable in this Scriber build. Switch provider or install a build with local ONNX support."
 
-    if provider == "nemo_local":
-        try:
-            from src.nemo_stt import is_nemo_available
-
-            if is_nemo_available():
-                return None
-        except Exception:
-            pass
-        try:
-            from src.onnx_stt import is_onnx_available
-
-            if is_onnx_available():
-                return None
-        except Exception:
-            pass
-        return "Local NeMo transcription is unavailable in this Scriber build. Switch provider or install a build with local ONNX/NeMo support."
-
     api_key_attr = Config.SERVICE_API_KEY_MAP.get(provider)
     if api_key_attr and not Config.get_api_key(provider).strip():
         return f"{_service_label(provider)} API Key is missing."
@@ -745,7 +728,7 @@ def _validate_provider_ready(provider: str) -> None:
 
 def _validate_local_provider_ready(provider: str) -> None:
     provider = (provider or "").strip().lower()
-    if provider not in {"onnx_local", "nemo_local"}:
+    if provider != "onnx_local":
         return
     _validate_provider_ready(provider)
 
@@ -1196,7 +1179,19 @@ def _env_float(name: str, default: float, *, minimum: float | None = None, maxim
 def _live_pipeline_uses_async_finalization(pipeline: Any | None) -> bool:
     service_name = str(getattr(pipeline, "service_name", "") or "")
     return (
-        service_name in {"soniox_async", "gemini_stt", "mistral_async", "smallest_async", "azure_mai", "assemblyai"}
+        service_name
+        in {
+            "elevenlabs",
+            "gemini_stt",
+            "groq",
+            "mistral",
+            "mistral_async",
+            "openai",
+            "soniox_async",
+            "smallest_async",
+            "azure_mai",
+            "assemblyai",
+        }
         or (service_name == "soniox" and Config.SONIOX_MODE == "async")
     )
 
@@ -3001,7 +2996,7 @@ class ScriberWebController:
                 "fileTranscription": True,
                 "youtubeTranscription": True,
                 "exports": ["pdf", "docx"],
-                "localStt": bool(Config.ONNX_MODEL or Config.NEMO_MODEL),
+                "localStt": bool(Config.ONNX_MODEL),
             },
             "featureFlags": {
                 **_runtime_feature_flags(),
@@ -5453,10 +5448,10 @@ class ScriberWebController:
             "postProcessingPrompt": Config.POST_PROCESSING_PROMPT or Config._DEFAULT_POST_PROCESSING_PROMPT,
             "postProcessingModel": Config.POST_PROCESSING_MODEL or Config.DEFAULT_POST_PROCESSING_MODEL,
             "openaiSttModel": Config.OPENAI_STT_MODEL,
+            "openaiRealtimeSttModel": Config.OPENAI_REALTIME_STT_MODEL,
             "onnxModel": Config.ONNX_MODEL,
             "onnxQuantization": Config.ONNX_QUANTIZATION,
             "onnxUseGpu": bool(Config.ONNX_USE_GPU),
-            "nemoModel": Config.NEMO_MODEL,
             "visualizerBarCount": Config.VISUALIZER_BAR_COUNT,
             "fileUploadLimits": file_upload_limits,
             "apiKeys": {
@@ -5583,6 +5578,9 @@ class ScriberWebController:
         if "openaiSttModel" in payload and isinstance(payload["openaiSttModel"], str):
             Config.set_openai_stt_model(payload["openaiSttModel"])
 
+        if "openaiRealtimeSttModel" in payload and isinstance(payload["openaiRealtimeSttModel"], str):
+            Config.set_openai_realtime_stt_model(payload["openaiRealtimeSttModel"])
+
         if "onnxModel" in payload and isinstance(payload["onnxModel"], str):
             Config.set_onnx_model(payload["onnxModel"])
 
@@ -5592,9 +5590,6 @@ class ScriberWebController:
         onnx_use_gpu = _payload_bool(payload, "onnxUseGpu")
         if onnx_use_gpu is not None:
             Config.set_onnx_use_gpu(onnx_use_gpu)
-
-        if "nemoModel" in payload and isinstance(payload["nemoModel"], str):
-            Config.set_nemo_model(payload["nemoModel"])
 
         if "visualizerBarCount" in payload:
             try:
@@ -6964,6 +6959,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 "name": info["name"],
                 "description": info["description"],
                 "languages": info["languages"],
+                "runtime": info.get("runtime", "onnx_asr"),
+                "hfRepo": info.get("hf_repo", ""),
+                "hfRepoByQuantization": info.get("hf_repo_by_quantization", {}),
+                "localDirName": info.get("local_dir_name", ""),
                 "sizeMb": info["size_mb"],
                 "sizeMbByQuantization": info.get("size_mb_by_quantization", {}),
                 "supportedQuantizations": info.get("supported_quantizations", ["int8", "fp32"]),
@@ -7103,214 +7102,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
             logger.exception(f"Failed to delete model {model_id}")
             return web.json_response({"message": str(e)}, status=500)
 
-    async def nemo_list_models(request: web.Request):
-        """List available NeMo models and their download status."""
-        try:
-            def _load_nemo_models() -> dict[str, Any]:
-                from src.nemo_stt import list_available_models, is_nemo_available
-
-                if is_nemo_available():
-                    return {
-                        "available": True,
-                        "models": list_available_models(),
-                        "currentModel": Config.NEMO_MODEL,
-                        "backend": "nemo",
-                    }
-
-                from src.onnx_stt import list_available_models as list_onnx_models, is_onnx_available
-
-                if is_onnx_available():
-                    models = list_onnx_models(quantization=Config.ONNX_QUANTIZATION)
-                    model_ids = {str(model.get("id", "")) for model in models}
-                    current_model = Config.NEMO_MODEL if Config.NEMO_MODEL in model_ids else Config.ONNX_MODEL
-                    return {
-                        "available": True,
-                        "models": models,
-                        "currentModel": current_model,
-                        "backend": "onnx",
-                        "quantization": Config.ONNX_QUANTIZATION,
-                        "message": "Using bundled ONNX local models because the full NeMo toolkit is not bundled.",
-                    }
-                return {
-                    "available": False,
-                    "message": "Local NeMo requires nemo_toolkit[asr] or the bundled onnx-asr runtime.",
-                    "models": [],
-                }
-
-            payload = await asyncio.to_thread(_load_nemo_models)
-            return web.json_response(payload)
-        except Exception as e:
-            logger.exception("Failed to list NeMo models")
-            return web.json_response({"message": str(e)}, status=500)
-
-    async def nemo_download_model(request: web.Request):
-        """Download a NeMo model from Hugging Face."""
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-
-        model_id = body.get("modelId", "")
-        if not model_id:
-            return web.json_response({"message": "Missing modelId"}, status=400)
-
-        try:
-            from src.nemo_stt import is_nemo_available
-
-            backend = "nemo"
-            quantization = Config.ONNX_QUANTIZATION
-            if is_nemo_available():
-                from src.nemo_stt import (
-                    download_model,
-                    get_model_info,
-                    get_model_status,
-                    is_model_downloading,
-                )
-            else:
-                backend = "onnx"
-                from src.onnx_stt import (
-                    download_model,
-                    get_model_info,
-                    get_model_status,
-                    is_model_downloading,
-                    is_onnx_available,
-                )
-
-                if not is_onnx_available():
-                    return web.json_response({
-                        "message": "Local NeMo requires nemo_toolkit[asr] or the bundled onnx-asr runtime.",
-                    }, status=503)
-
-            info = get_model_info(model_id)
-            if not info:
-                return web.json_response({"message": "Unknown model"}, status=404)
-
-            status = (
-                get_model_status(model_id, quantization=quantization)
-                if backend == "onnx"
-                else get_model_status(model_id)
-            )
-            if status.get("downloaded"):
-                return web.json_response({
-                    "success": True,
-                    "message": "Model already downloaded",
-                    "modelId": model_id,
-                })
-
-            if is_model_downloading(model_id):
-                return web.json_response({
-                    "success": False,
-                    "message": "Download already in progress",
-                    "modelId": model_id,
-                }, status=409)
-
-            ctl: ScriberWebController = request.app[APP_CONTROLLER]
-            loop = asyncio.get_running_loop()
-
-            def on_progress(progress: float, message: str) -> None:
-                status_value = "downloading"
-                if progress < 0:
-                    status_value = "error"
-                elif progress >= 100:
-                    status_value = "ready"
-
-                payload = {
-                    "type": "nemo_download_progress",
-                    "modelId": model_id,
-                    "progress": progress,
-                    "status": status_value,
-                    "message": message,
-                }
-                loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(ctl.broadcast(payload))
-                )
-
-            logger.info(f"Starting local NeMo model download via {backend}: {model_id}")
-            if backend == "onnx":
-                success = await download_model(model_id, quantization=quantization, on_progress=on_progress)
-            else:
-                success = await download_model(model_id, on_progress=on_progress)
-
-            final_status = (
-                get_model_status(model_id, quantization=quantization)
-                if backend == "onnx"
-                else get_model_status(model_id)
-            )
-            await ctl.broadcast({
-                "type": "nemo_download_progress",
-                "modelId": model_id,
-                "progress": final_status.get("progress", 0.0),
-                "status": final_status.get("status", "error" if not success else "ready"),
-                "message": final_status.get("message", ""),
-            })
-
-            if success:
-                return web.json_response({
-                    "success": True,
-                    "message": "Model downloaded successfully",
-                    "modelId": model_id,
-                })
-            return web.json_response({
-                "success": False,
-                "message": "Download failed",
-                "modelId": model_id,
-            }, status=500)
-
-        except Exception as e:
-            logger.exception(f"Failed to download model {model_id}")
-            return web.json_response({"message": str(e)}, status=500)
-
-    async def nemo_delete_model(request: web.Request):
-        """Delete a downloaded NeMo model from cache."""
-        model_id = request.match_info.get("model_id", "")
-        if not model_id:
-            return web.json_response({"message": "Missing model ID"}, status=400)
-
-        try:
-            from src.nemo_stt import is_nemo_available
-
-            backend = "nemo"
-            quantization = Config.ONNX_QUANTIZATION
-            if is_nemo_available():
-                from src.nemo_stt import delete_model, get_model_info
-            else:
-                backend = "onnx"
-                from src.onnx_stt import delete_model, get_model_info, is_onnx_available
-
-                if not is_onnx_available():
-                    return web.json_response({
-                        "message": "Local NeMo requires nemo_toolkit[asr] or the bundled onnx-asr runtime.",
-                    }, status=503)
-
-            info = get_model_info(model_id)
-            if not info:
-                return web.json_response({"message": "Unknown model"}, status=404)
-
-            success = (
-                delete_model(model_id, quantization=quantization)
-                if backend == "onnx"
-                else delete_model(model_id)
-            )
-
-            if success:
-                ctl: ScriberWebController = request.app[APP_CONTROLLER]
-                await ctl.broadcast({
-                    "type": "nemo_models_updated",
-                })
-                return web.json_response({"success": True})
-
-            return web.json_response({"message": "Delete failed"}, status=404)
-        except Exception as e:
-            logger.exception(f"Failed to delete model {model_id}")
-            return web.json_response({"message": str(e)}, status=500)
-
     app.router.add_get("/api/onnx/models", onnx_list_models)
     app.router.add_get("/api/onnx/models/{model_id}", onnx_model_status)
     app.router.add_post("/api/onnx/download", onnx_download_model)
     app.router.add_delete("/api/onnx/models/{model_id}", onnx_delete_model)
-    app.router.add_get("/api/nemo/models", nemo_list_models)
-    app.router.add_post("/api/nemo/download", nemo_download_model)
-    app.router.add_delete("/api/nemo/models/{model_id}", nemo_delete_model)
 
     app.router.add_get("/{tail:.*}", frontend_static)
 

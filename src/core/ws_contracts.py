@@ -238,7 +238,7 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
         for field in ("transcriptId", "transcriptType", "status", "step", "summaryStatus", "updatedAt", "reason"):
             if field in payload and not isinstance(payload.get(field), str):
                 raise WSContractError(f"history_updated event requires string '{field}' when present")
-    elif event_type in {"settings_updated", "transcribing", "nemo_models_updated"}:
+    elif event_type in {"settings_updated", "transcribing"}:
         pass
     elif event_type in {"session_started", "session_finished"}:
         if not isinstance(payload.get("session"), dict):
@@ -249,7 +249,7 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
             raise WSContractError("microphones_updated event requires list 'devices'")
         if not isinstance(payload.get("favoriteMicRestored"), bool):
             raise WSContractError("microphones_updated event requires bool 'favoriteMicRestored'")
-    elif event_type in {"onnx_download_progress", "nemo_download_progress"}:
+    elif event_type == "onnx_download_progress":
         _validate_model_progress(payload, event_type)
     elif event_type == "onnx_models_updated":
         _require_string(payload, "modelId", event_type)
