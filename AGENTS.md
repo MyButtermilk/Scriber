@@ -401,11 +401,13 @@ Already implemented and should not be regressed:
   `SCRIBER_VERSION`; do not restore per-release Cargo version churn.
 - GitHub release builds set `CARGO_INCREMENTAL=1` and cache
   `Frontend\src-tauri\target\release\incremental` in the v2 Rust release cache.
-- GitHub release builds validate and use the Rust toolchain preinstalled on the
-  Windows runner instead of installing `dtolnay/rust-toolchain@stable` on every
-  run. The prior setup step cost about `21s` in hot-cache runs. Revert only that
-  workflow step if a future runner image stops providing compatible `rustc`,
-  `cargo`, and `rustup`.
+- GitHub release builds intentionally keep `dtolnay/rust-toolchain@stable`.
+  A 2026-07-09 experiment that used the Windows runner's preinstalled Rust
+  saved the setup-action time but invalidated Cargo fingerprints: run
+  `29003544425` spent `413.9s` in `build_windows.ps1`, `397.6s` in the Tauri
+  bundle phase, and emitted `285` Cargo compile lines. Do not switch back to
+  preinstalled Rust unless the Rust release cache is rebuilt for that exact
+  toolchain and a follow-up hot run proves a net win.
 - `Frontend\src-tauri\Cargo.toml` keeps the shell library crate type to
   `["rlib"]` for Windows desktop releases. Do not restore Tauri mobile
   `staticlib`/`cdylib` outputs unless mobile targets are introduced; they create

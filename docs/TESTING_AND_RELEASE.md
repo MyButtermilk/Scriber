@@ -1151,6 +1151,11 @@ Installer speed evidence:
   builds: with `SCRIBER_NSIS_COMPRESSION=bzip2` set for signed tags, the main
   warmup still used `nsisCompression=none`, completed the job in `2m17s`, and
   spent `58.44s` inside `build_windows.ps1`.
+- Main run `29003544425` tested removing `dtolnay/rust-toolchain@stable` in
+  favor of preinstalled runner Rust. It failed as an optimization: the job took
+  `8m9s`, `build_windows.ps1` took `413.9s`, and the Tauri bundle log showed
+  `285` Cargo compile lines. Treat that path as rejected unless the Rust cache
+  is intentionally rebuilt and remeasured.
 
 These are evidence artifacts, not durable docs. Do not copy their full contents
 into permanent Markdown unless a concise current result belongs in

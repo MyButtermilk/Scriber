@@ -221,11 +221,13 @@ Packaging/build:
   optional `SCRIBER_CARGO_LOG` GitHub variable. Use
   `cargo::core::compiler::fingerprint=info` only for investigation runs where
   the main Tauri crate recompiles unexpectedly, because the log is noisy.
-- The release workflow uses the Rust toolchain preinstalled on the GitHub
-  Windows runner and validates `rustc`, `cargo`, and `rustup` before restoring
-  Rust caches. The previous `dtolnay/rust-toolchain@stable` setup cost about
-  `21s` on hot-cache Windows runs. If a future runner image removes or breaks
-  the preinstalled toolchain, revert that one workflow step to the setup action.
+- The release workflow intentionally keeps `dtolnay/rust-toolchain@stable`.
+  Replacing it with the GitHub Windows runner's preinstalled Rust looked like a
+  potential `21s` setup win, but run `29003544425` invalidated Cargo
+  fingerprints despite exact cache restore and spent `397.6s` in the Tauri
+  bundle phase with `285` Cargo compile lines. Only revisit this if the Rust
+  release cache is deliberately rebuilt for the preinstalled toolchain and a
+  second hot run proves a net win.
 
 ## FFmpeg Profile B
 
@@ -460,6 +462,11 @@ Release workflow:
   docs/workflow commit: non-tag builds still used `nsisCompression=none` despite
   the signed-tag repository variable being `bzip2`, finished in `2m17s`
   end-to-end, and spent `58.44s` in `build_windows.ps1`.
+- Main run `29003544425` tested using preinstalled runner Rust instead of
+  `dtolnay/rust-toolchain@stable`; it regressed to `8m9s` end-to-end and
+  `413.9s` inside `build_windows.ps1` because Cargo recompiled `285` crates.
+  Keep the setup action unless a future cache/toolchain migration is measured
+  end-to-end.
 - Version-only app releases must not invalidate durable cache artifacts unless
   their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
   Python backend at launch, so a version-normalized backend sidecar can still
