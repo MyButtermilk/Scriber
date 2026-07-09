@@ -221,6 +221,11 @@ Packaging/build:
   optional `SCRIBER_CARGO_LOG` GitHub variable. Use
   `cargo::core::compiler::fingerprint=info` only for investigation runs where
   the main Tauri crate recompiles unexpectedly, because the log is noisy.
+- The release workflow uses the Rust toolchain preinstalled on the GitHub
+  Windows runner and validates `rustc`, `cargo`, and `rustup` before restoring
+  Rust caches. The previous `dtolnay/rust-toolchain@stable` setup cost about
+  `21s` on hot-cache Windows runs. If a future runner image removes or breaks
+  the preinstalled toolchain, revert that one workflow step to the setup action.
 
 ## FFmpeg Profile B
 
@@ -451,6 +456,10 @@ Release workflow:
   about one minute per signed tag build while keeping installer growth to about
   `15.9 MiB` versus the Tauri default. Non-tag cache/warmup builds keep their
   separate `none` default unless `SCRIBER_NON_TAG_NSIS_COMPRESSION` is set.
+- Main run `29002731350` then proved the split workflow behavior after the
+  docs/workflow commit: non-tag builds still used `nsisCompression=none` despite
+  the signed-tag repository variable being `bzip2`, finished in `2m17s`
+  end-to-end, and spent `58.44s` in `build_windows.ps1`.
 - Version-only app releases must not invalidate durable cache artifacts unless
   their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
   Python backend at launch, so a version-normalized backend sidecar can still

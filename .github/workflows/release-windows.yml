@@ -109,8 +109,18 @@ jobs:
           cache: npm
           cache-dependency-path: build/cache-keys/frontend-dependencies.txt
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Use preinstalled Rust
+        shell: pwsh
+        run: |
+          $rustc = Get-Command rustc -ErrorAction SilentlyContinue
+          $cargo = Get-Command cargo -ErrorAction SilentlyContinue
+          $rustup = Get-Command rustup -ErrorAction SilentlyContinue
+          if (-not $rustc -or -not $cargo -or -not $rustup) {
+            throw "GitHub Windows runner did not provide a preinstalled Rust toolchain."
+          }
+          rustc --version
+          cargo --version
+          rustup show active-toolchain
 
       - name: Restore Rust build cache
         id: rust-build-cache

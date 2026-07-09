@@ -1147,6 +1147,10 @@ Installer speed evidence:
   current release default because it saves about one minute compared with the
   Tauri default while adding about `15.9 MiB`, and it avoids the very large
   `none` installer.
+- Main run `29002731350` confirmed the split compression behavior for non-tag
+  builds: with `SCRIBER_NSIS_COMPRESSION=bzip2` set for signed tags, the main
+  warmup still used `nsisCompression=none`, completed the job in `2m17s`, and
+  spent `58.44s` inside `build_windows.ps1`.
 
 These are evidence artifacts, not durable docs. Do not copy their full contents
 into permanent Markdown unless a concise current result belongs in
