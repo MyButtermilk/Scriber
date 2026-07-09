@@ -429,6 +429,22 @@ Release workflow:
   optimization experiment should profile signed tag `makensis`, updater
   signature, release upload, and publication verification before changing any
   dependency caches.
+- The 2026-07-09 signed hot tag measurement `v0.4.21` / run `28999468872`
+  completed in about `3m57s` end-to-end. `build_windows.ps1` took about
+  `137.5s`: `Tauri sidecar preparation` `6.2s`, frontend type check `8.1s`,
+  and `Tauri Windows bundle` `122.0s`. The cache summary had exact Actions
+  hits for backend sidecar, Rust build, Rust audio sidecar, FFmpeg Profile B,
+  frontend dependencies, and the Tauri bundler cache; Python dependency caches
+  were not needed because the prebuilt backend sidecar was used. The Tauri
+  bundle log showed no crate downloads or index update, one Cargo compile line
+  for `scriber-desktop` taking about `25s`, and about `90.2s` from `makensis`
+  start to updater signature completion. This proves the warmed signed-release
+  bottleneck is NSIS/updater signing plus a small local app-crate compile, not
+  Python, npm, FFmpeg, PyInstaller, backend sidecar, or Rust audio sidecar
+  cache reuse. The next speed experiment should compare signed tag NSIS
+  compression modes, starting with `SCRIBER_NSIS_COMPRESSION=none` or a faster
+  compression setting, and record both build time and installer size before
+  making it the default.
 - Version-only app releases must not invalidate durable cache artifacts unless
   their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
   Python backend at launch, so a version-normalized backend sidecar can still

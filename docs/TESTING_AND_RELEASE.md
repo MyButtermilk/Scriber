@@ -1132,6 +1132,12 @@ Installer speed evidence:
   summary around `makensis`, updater signing, upload, and publication
   verification. A non-tag `NsisCompression=none` run is useful as a cache
   proof, but not as the final signed-release timing baseline.
+- The current signed hot-tag baseline is `v0.4.21` / run `28999468872` from
+  2026-07-09. It completed in about `3m57s` end-to-end; the build script took
+  about `137.5s`, with `Tauri Windows bundle` at `122.0s` and sidecar
+  preparation at `6.2s`. Heavy caches were exact hits. Treat future slowdowns
+  from this shape as Tauri/NSIS/signing/upload regressions first, not
+  dependency-cache regressions.
 
 These are evidence artifacts, not durable docs. Do not copy their full contents
 into permanent Markdown unless a concise current result belongs in

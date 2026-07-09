@@ -418,10 +418,13 @@ Already implemented and should not be regressed:
   cache hits. Once a run shows that shape, do not keep changing Python/npm,
   FFmpeg, PyInstaller, or Rust-audio cache logic without new
   `build-timing.json` and `release-artifact-summary.json` evidence. The next
-  meaningful speed investigation is signed tag packaging: NSIS compression,
-  updater signing, release upload, publication verification, and, only if Cargo
-  still recompiles unexpectedly, a focused Cargo fingerprint run for the local
-  Tauri app crate.
+  signed hot-tag measurement (`v0.4.21`, run `28999468872`) completed in about
+  `3m57s` end-to-end with exact heavy cache hits. `build_windows.ps1` took
+  about `137.5s`, dominated by `Tauri Windows bundle` at `122.0s`; the bundle
+  log showed no crate downloads, one `scriber-desktop` compile at about `25s`,
+  and about `90.2s` from `makensis` start to updater signature completion.
+  Future speed work should compare signed tag NSIS compression/signing timing
+  and installer size before changing dependency caches again.
 - Release workflow Actions caches are backed by internal GitHub release
   artifacts for the Python virtualenv, Python wheelhouse, backend sidecar cache,
   main Rust/Tauri build cache, Rust audio sidecar cache, and FFmpeg Profile B so
