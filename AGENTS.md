@@ -411,6 +411,17 @@ Already implemented and should not be regressed:
 - Non-tag GitHub cache/warmup builds use `-NsisCompression none` when
   `SCRIBER_NSIS_COMPRESSION` is unset to reduce packaging time. Do not apply
   this default to normal signed `v*` updater releases.
+- The 2026-07-09 hot cache measurement (`workflow_dispatch` run `28997179965`)
+  proved the optimized heavy-cache path: `build_windows.ps1` took about
+  `49.2s`, with backend sidecar, Rust build, Rust audio sidecar, FFmpeg Profile
+  B, frontend dependencies, and Tauri bundler all restored as exact Actions
+  cache hits. Once a run shows that shape, do not keep changing Python/npm,
+  FFmpeg, PyInstaller, or Rust-audio cache logic without new
+  `build-timing.json` and `release-artifact-summary.json` evidence. The next
+  meaningful speed investigation is signed tag packaging: NSIS compression,
+  updater signing, release upload, publication verification, and, only if Cargo
+  still recompiles unexpectedly, a focused Cargo fingerprint run for the local
+  Tauri app crate.
 - Release workflow Actions caches are backed by internal GitHub release
   artifacts for the Python virtualenv, Python wheelhouse, backend sidecar cache,
   main Rust/Tauri build cache, Rust audio sidecar cache, and FFmpeg Profile B so

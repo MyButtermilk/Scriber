@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-07-08
+Last verified: 2026-07-09
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -402,6 +402,33 @@ Release workflow:
   while PyInstaller backend sidecar work took about 81 seconds after a backend
   cache miss and Tauri/NSIS bundling took about 203 seconds. Removing those
   small gates would save almost nothing and would reduce release evidence.
+- The 2026-07-09 v0.4.20 cache investigation established the current hot-cache
+  baseline. The cold signed tag run `28995741645` succeeded but spent about
+  `643.9s` inside `build_windows.ps1`: `Tauri sidecar preparation` was about
+  `439.2s`, `Tauri Windows bundle` about `193.7s`, and the frontend type check
+  about `8.4s`. Its cache summary showed true misses for the backend sidecar
+  and main Rust build plus only a restore-key-level Rust audio sidecar restore.
+  The subsequent `main` warmup run `28996292252` published/saved the backend
+  sidecar, Rust build, and Rust audio sidecar caches. The hot
+  `workflow_dispatch` measurement `28997179965` then completed in about
+  `2m35s` end-to-end, with `build_windows.ps1` at about `49.2s`: `Tauri
+  Windows bundle` `32.9s`, frontend type check `8.2s`, and `Tauri sidecar
+  preparation` `6.2s`. The heavy rows were all exact Actions cache hits:
+  backend sidecar, Rust build, Rust audio sidecar, FFmpeg Profile B, frontend
+  dependencies, and the Tauri bundler cache. This result moves future speed
+  work away from Python/npm/FFmpeg/PyInstaller/Rust-audio cache rewrites and
+  toward signed tag packaging measurements.
+- Do not compare that hot `workflow_dispatch` run directly with a signed
+  updater tag release as if they were identical release shapes. Non-tag cache
+  and warmup builds default to `-NsisCompression none` when
+  `SCRIBER_NSIS_COMPRESSION` is unset and skip GitHub release publication and
+  updater-signature verification. A signed tag run with the same hot heavy
+  caches should still be measured separately because default NSIS compression,
+  updater signing, GitHub release publication, and verification can dominate
+  the remaining time. Once the cache summary is exact/hot, the next
+  optimization experiment should profile signed tag `makensis`, updater
+  signature, release upload, and publication verification before changing any
+  dependency caches.
 - Version-only app releases must not invalidate durable cache artifacts unless
   their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
   Python backend at launch, so a version-normalized backend sidecar can still

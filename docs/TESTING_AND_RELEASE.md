@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-07-06
+Last verified: 2026-07-09
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -133,6 +133,15 @@ the `SCRIBER_NSIS_COMPRESSION` repository variable when a measured packaging
 speed/size tradeoff is desired. GitHub non-tag cache/warmup builds use `none`
 when that variable is unset to reduce NSIS packaging time; `v*` tag releases
 keep Tauri's default compression unless the variable is set deliberately.
+Treat non-tag cache/warmup timings as cache-health evidence, not signed-release
+packaging evidence. The 2026-07-09 hot `workflow_dispatch` measurement
+`28997179965` proved the heavy cache path by completing `build_windows.ps1` in
+about `49.2s` with exact hits for backend sidecar, Rust build, Rust audio
+sidecar, FFmpeg Profile B, frontend dependencies, and Tauri bundler cache.
+That run used the non-tag packaging shape. A signed `v*` release still needs
+its own timing review because default NSIS compression, updater signing,
+GitHub release upload, and publication verification can be the dominant
+remaining cost.
 
 Typical output:
 
@@ -1109,6 +1118,20 @@ Common generated evidence:
 - `tmp\hybrid-baseline\tauri-text-injection-matrix.json`
 - `tmp\frontend-browser-smoke.json`
 - `tmp\installer-smoke\`
+
+Installer speed evidence:
+
+- Download `scriber-windows-release` from the relevant GitHub Actions run.
+- Inspect `release-artifact-summary.json` first; it combines
+  `build-timing.json`, `release-cache-summary.json`, and
+  `tauri-bundle-log-summary.json`.
+- If heavy rows are exact cache hits and `Tauri sidecar preparation` is already
+  single-digit seconds, do not spend more time on Python dependencies,
+  PyInstaller, FFmpeg, Rust audio sidecar, or `node_modules` caching.
+- For signed tag releases after heavy caches are hot, inspect the Tauri bundle
+  summary around `makensis`, updater signing, upload, and publication
+  verification. A non-tag `NsisCompression=none` run is useful as a cache
+  proof, but not as the final signed-release timing baseline.
 
 These are evidence artifacts, not durable docs. Do not copy their full contents
 into permanent Markdown unless a concise current result belongs in
