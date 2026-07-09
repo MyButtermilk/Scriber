@@ -210,6 +210,29 @@ Packaging/build:
   `requirements-base.txt` and `requirements-build.txt`; it should not be
   confused with a `.venv` or wheelhouse hit, but it reduces repeated downloads
   when those stronger layers miss.
+- GitHub Actions installer parallelization is useful only for cold or cache
+  refresh builds where independent heavy outputs have to be produced again.
+  A simple job split that only restores the same caches in several jobs is not
+  enough, because the final Tauri/NSIS runner still needs all build products on
+  its own filesystem. The useful split is artifact-based: prepare jobs must
+  upload the exact directories consumed by the final package job, and the
+  package job must download them into the same paths before invoking
+  `scripts\build_windows.ps1`.
+- The safe target graph is:
+  `frontend-webview` builds `Frontend\dist\public` only if the release config
+  also removes Tauri's `beforeBuildCommand`; `backend-sidecar` prepares
+  `Frontend\src-tauri\target\release\backend` plus
+  `build\tauri-sidecar-cache`; `ffmpeg-profile-b` restores or builds
+  `build\ffmpeg-profile-b-msys2`; and `tauri-rust-target` runs the same
+  generated Tauri no-bundle config to warm `Frontend\src-tauri\target\release`
+  before the final `package-installer` job downloads those artifacts and runs
+  signed Tauri/NSIS packaging.
+- Keep this parallel path opt-in or limited to cache-refresh runs until a
+  measurement proves it beats the hot signed tag path. Hot runs with exact
+  backend sidecar, Rust build, Rust audio sidecar, FFmpeg, frontend dependency,
+  and Tauri bundler hits are already dominated by final Tauri/NSIS packaging;
+  forcing artifact upload/download from parallel jobs can make those runs
+  slower.
 - The Rust release cache and internal Rust release artifact include
   `target\release\incremental`; CI builds set `CARGO_INCREMENTAL=1` for the main
   Tauri release binary. This is deliberate because the release workflow also

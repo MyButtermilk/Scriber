@@ -149,7 +149,7 @@ Scriber exposes provider modes by how they behave in real work:
 
 Current provider coverage includes Soniox, AssemblyAI, Microsoft Azure MAI,
 OpenAI, OpenRouter, Deepgram, Mistral, Gladia, Groq, Speechmatics, Smallest AI,
-ElevenLabs/fal.ai, Gemini, Google Cloud, and ONNX.
+ElevenLabs, Gemini, Google Cloud, and ONNX.
 
 Settings keep cloud model choices locked until the matching credential is
 available, and missing-key prompts open the correct API-key dialog directly.

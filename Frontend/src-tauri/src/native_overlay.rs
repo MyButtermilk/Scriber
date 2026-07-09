@@ -4,6 +4,8 @@ use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock};
 #[cfg(not(test))]
 use tauri::{Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+#[cfg(all(not(test), windows))]
+use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
 
 pub const OVERLAY_WINDOW_LABEL: &str = "recording-overlay";
 #[cfg(not(test))]
@@ -154,9 +156,7 @@ fn show_overlay_mode(mode: String) -> Result<Value, String> {
             rms: None,
         }
     });
-    window
-        .show()
-        .map_err(|err| format!("overlay show failed: {err}"))?;
+    show_overlay_window(&window)?;
     app.emit_to(OVERLAY_WINDOW_LABEL, OVERLAY_EVENT, event_payload)
         .map_err(|err| format!("overlay event emit failed: {err}"))?;
     Ok(status_payload())
@@ -262,6 +262,26 @@ fn ensure_overlay_window(
     position_overlay_window(&window).map_err(|err| format!("overlay position failed: {err}"))?;
     mark_overlay_position_initialized();
     Ok(window)
+}
+
+#[cfg(not(test))]
+fn show_overlay_window(window: &WebviewWindow) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let hwnd = window
+            .hwnd()
+            .map_err(|err| format!("overlay window handle lookup failed: {err}"))?;
+        unsafe {
+            ShowWindow(hwnd.0, SW_SHOWNOACTIVATE);
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        window
+            .show()
+            .map_err(|err| format!("overlay show failed: {err}"))
+    }
 }
 
 #[cfg(not(test))]

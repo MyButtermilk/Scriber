@@ -116,7 +116,6 @@ def _live_service_uses_async_finalization(service_name: str) -> bool:
     normalized = str(service_name or "")
     return (
         normalized in {
-            "elevenlabs",
             "groq",
             "mistral",
             "soniox_async",
@@ -135,7 +134,7 @@ def _live_service_uses_async_finalization(service_name: str) -> bool:
 
 def _live_service_needs_local_vad(service_name: str) -> bool:
     normalized = str(service_name or "")
-    return normalized == "openai" or _live_service_uses_async_finalization(normalized)
+    return normalized in {"openai", "deepgram", "gladia", "elevenlabs"} or _live_service_uses_async_finalization(normalized)
 
 
 def _live_service_uses_smart_turn(service_name: str) -> bool:
@@ -759,6 +758,14 @@ def _selected_language():
     return lang if lang else None
 
 
+def _selected_language_code() -> str | None:
+    language = _selected_language()
+    if language is None:
+        return None
+    value = getattr(language, "value", language)
+    return str(value).split("-", 1)[0] or None
+
+
 def _filter_supported_kwargs(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
     try:
         signature = inspect.signature(callable_obj)
@@ -781,6 +788,19 @@ def _assemblyai_realtime_legacy_speech_model(configured_model: str | None, langu
         fallback,
     )
     return fallback
+
+
+def _mistral_segmented_live_model() -> str:
+    model = (Config.MISTRAL_RT_MODEL or "").strip()
+    if "realtime" in model.lower():
+        fallback = (Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602").strip()
+        logger.info(
+            "Mistral segmented live path cannot use realtime-only model '{}'; using '{}' instead",
+            model,
+            fallback,
+        )
+        return fallback
+    return model or (Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602")
 
 
 def _create_assemblyai_realtime_service(
@@ -1508,6 +1528,40 @@ class ScriberPipeline:
             logger.debug(f"Segmented STT fallback flush warning: {exc}")
         return False
 
+    async def _flush_live_vad_finalization_turn(self) -> bool:
+        """Finalize a live streaming turn when the hotkey stops while speech is active."""
+        if not self.pipeline or not _live_service_needs_local_vad(self.service_name):
+            return False
+        if self._has_segmented_stt_buffers():
+            return False
+
+        vad_snapshot = None
+        if self._vad_observer is not None:
+            try:
+                vad_snapshot = self._vad_observer.snapshot()
+            except Exception as exc:
+                logger.debug(f"Live VAD finalization snapshot warning: {exc}")
+
+        if vad_snapshot is not None:
+            if not vad_snapshot.get("speechObserved"):
+                return False
+            if (
+                not vad_snapshot.get("speaking")
+                and int(vad_snapshot.get("speechStoppedCount") or 0) > 0
+            ):
+                return False
+
+        try:
+            logger.debug("Forcing live STT turn finalization on hotkey stop")
+            await self.pipeline.push_frame(
+                UserStoppedSpeakingFrame(),
+                direction=FrameDirection.DOWNSTREAM,
+            )
+            return True
+        except Exception as exc:
+            logger.debug(f"Live STT finalization flush warning: {exc}")
+            return False
+
     def _has_segmented_stt_buffers(self) -> bool:
         return any(
             isinstance(processor, SegmentedSTTService)
@@ -1632,7 +1686,7 @@ class ScriberPipeline:
             logger.info("Using Mistral realtime transcription mode")
             return MistralRealtimeSTTService(
                 api_key=_get_api_key("mistral"),
-                model=Config.MISTRAL_RT_MODEL,
+                model=_mistral_segmented_live_model(),
                 language=_selected_language(),
                 custom_vocab=Config.CUSTOM_VOCAB,
                 aiohttp_session=session,
@@ -1706,18 +1760,33 @@ class ScriberPipeline:
         elif self.service_name == "elevenlabs":
             # Lazy import - only loaded when ElevenLabs is used
             module = import_provider_runtime_module("elevenlabs", "pipecat.services.elevenlabs.stt")
-            ElevenLabsSTTService = module.ElevenLabsSTTService
             if not _get_api_key("elevenlabs"): raise ValueError("ElevenLabs API Key is missing.")
-            
-            # Configure language for ElevenLabs STT
-            lang = _selected_language()
-            params = ElevenLabsSTTService.InputParams(language=lang) if lang else None
-            logger.info(f"ElevenLabs STT: Using language={lang or 'auto-detect'}")
-            
-            return ElevenLabsSTTService(
-                api_key=_get_api_key("elevenlabs"), 
-                aiohttp_session=session,
-                params=params
+
+            realtime_cls = getattr(module, "ElevenLabsRealtimeSTTService", None)
+            if realtime_cls is None:
+                raise RuntimeError("ElevenLabs Live requires a Pipecat build with ElevenLabsRealtimeSTTService.")
+            commit_strategy = getattr(getattr(module, "CommitStrategy", object), "MANUAL", None)
+            params_cls = getattr(realtime_cls, "InputParams", None)
+            params = None
+            lang_code = _selected_language_code()
+            if params_cls is not None:
+                params_candidates = {"language_code": lang_code}
+                if commit_strategy is not None:
+                    params_candidates["commit_strategy"] = commit_strategy
+                params = params_cls(**_filter_supported_kwargs(params_cls, params_candidates))
+
+            logger.info(f"ElevenLabs realtime STT: Using language={lang_code or 'auto-detect'}")
+
+            return realtime_cls(
+                **_filter_supported_kwargs(
+                    realtime_cls,
+                    {
+                        "api_key": _get_api_key("elevenlabs"),
+                        "model": "scribe_v2_realtime",
+                        "sample_rate": Config.SAMPLE_RATE,
+                        "params": params,
+                    },
+                )
             )
         
         elif self.service_name == "deepgram":
@@ -1726,11 +1795,24 @@ class ScriberPipeline:
             DeepgramSTTService = module.DeepgramSTTService
             if not _get_api_key("deepgram"): raise ValueError("Deepgram API Key is missing.")
             LiveOptions = getattr(module, "LiveOptions", None)
-            live_options = (
-                LiveOptions(diarize=True)
-                if self.enable_speaker_diarization and LiveOptions
-                else None
-            )
+            live_options = None
+            if LiveOptions:
+                deepgram_options = {
+                    "encoding": "linear16",
+                    "sample_rate": Config.SAMPLE_RATE,
+                    "channels": Config.CHANNELS,
+                    "model": "nova-3",
+                    "interim_results": True,
+                    "smart_format": True,
+                    "punctuate": True,
+                    "vad_events": False,
+                }
+                lang_code = _selected_language_code()
+                if lang_code:
+                    deepgram_options["language"] = lang_code
+                if self.enable_speaker_diarization:
+                    deepgram_options["diarize"] = True
+                live_options = LiveOptions(**deepgram_options)
 
             pipeline_ref = self
 
@@ -1744,7 +1826,11 @@ class ScriberPipeline:
                         fatal=fatal,
                     )
 
-            return ScriberDeepgramSTTService(api_key=_get_api_key("deepgram"), live_options=live_options)
+            return ScriberDeepgramSTTService(
+                api_key=_get_api_key("deepgram"),
+                sample_rate=Config.SAMPLE_RATE,
+                live_options=live_options,
+            )
 
         elif self.service_name == "deepgram_async":
             if not _get_api_key("deepgram"):
@@ -1810,7 +1896,51 @@ class ScriberPipeline:
             module = import_provider_runtime_module("gladia", "pipecat.services.gladia.stt")
             GladiaSTTService = module.GladiaSTTService
             if not _get_api_key("gladia"): raise ValueError("Gladia API Key is missing.")
-            return GladiaSTTService(api_key=_get_api_key("gladia"), aiohttp_session=session)
+            pipeline_ref = self
+
+            class ScriberGladiaSTTService(GladiaSTTService):
+                async def stop(self, frame: EndFrame):
+                    await super(GladiaSTTService, self).stop(frame)
+                    self._should_reconnect = False
+                    try:
+                        await self._send_stop_recording()
+                    except Exception as exc:
+                        logger.debug(f"Gladia stop_recording warning: {exc}")
+
+                    timeout = _env_float(
+                        "SCRIBER_GLADIA_STOP_FINAL_TIMEOUT_SECONDS",
+                        3.0,
+                        minimum=0.25,
+                        maximum=10.0,
+                    )
+                    if not pipeline_ref._final_transcription_received.is_set():
+                        try:
+                            await asyncio.wait_for(
+                                pipeline_ref._final_transcription_received.wait(),
+                                timeout=timeout,
+                            )
+                            logger.debug("Gladia final transcription received before websocket cleanup")
+                        except asyncio.TimeoutError:
+                            logger.debug(
+                                f"Timed out waiting {timeout:g}s for Gladia final transcription before websocket cleanup"
+                            )
+
+                    if getattr(self, "_connection_task", None):
+                        await self.cancel_task(self._connection_task)
+                        self._connection_task = None
+
+                    await self._cleanup_connection()
+
+            return ScriberGladiaSTTService(
+                **_filter_supported_kwargs(
+                    GladiaSTTService,
+                    {
+                        "api_key": _get_api_key("gladia"),
+                        "sample_rate": Config.SAMPLE_RATE,
+                        "model": "solaria-1",
+                    },
+                )
+            )
 
         elif self.service_name == "gladia_async":
             if not _get_api_key("gladia"):
@@ -2697,6 +2827,8 @@ class ScriberPipeline:
             await self._cleanup_audio_input()
             # Give non-segmented providers time to consume the final transport frames.
             await asyncio.sleep(0.15)
+            if await self._flush_live_vad_finalization_turn():
+                await asyncio.sleep(0.15)
 
         # For Soniox real-time: send stop_recording and wait for final tokens BEFORE pipeline shutdown.
         # This ensures all spoken audio is transcribed and injected before we close.

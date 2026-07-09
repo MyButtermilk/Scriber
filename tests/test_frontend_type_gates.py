@@ -130,7 +130,7 @@ def test_settings_provider_help_links_are_safe_external_links() -> None:
         'soniox: { href: "https://console.soniox.com/"',
         'smallest: { href: "https://app.smallest.ai/"',
         'mistral: { href: "https://console.mistral.ai/api-keys"',
-        'fal: { href: "https://fal.ai/dashboard/keys"',
+        'elevenlabs: { href: "https://elevenlabs.io/app/settings/api-keys"',
         'azure: { href: "https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices"',
         'gladia: { href: "https://app.gladia.io/api-keys"',
         'groq: { href: "https://console.groq.com/keys"',
@@ -726,28 +726,28 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
     assert "Cloud live / segmented" not in settings_source
 
     streaming_order = [
+        '"elevenlabs"',
         '"assemblyai-realtime"',
         '"soniox-realtime"',
         '"google"',
+        '"openai"',
+        '"mistral-realtime"',
         '"smallest-realtime"',
         '"deepgram"',
         '"gladia"',
         '"speechmatics"',
     ]
     async_order = [
-        '"elevenlabs"',
-        '"groq"',
-        '"openai"',
-        '"mistral-realtime"',
         '"azure_mai"',
-        '"gemini-stt"',
         '"assemblyai"',
         '"mistral-async"',
+        '"groq"',
         '"soniox-async"',
         '"speechmatics-async"',
         '"gladia-async"',
         '"smallest-async"',
         '"openai-async"',
+        '"gemini-stt"',
         '"deepgram-async"',
     ]
 

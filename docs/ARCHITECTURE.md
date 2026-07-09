@@ -142,6 +142,9 @@ wired but are expected to report that release updater configuration is missing.
 - Own Windows autostart through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - Own tray/menu shell actions: open/focus, restart backend, quit, and tray
   status/icon updates for recording and available desktop updates.
+- Render the recording overlay as a non-taskbar, non-focusable window; on
+  Windows it is shown without activation so hotkey recordings do not flash the
+  main taskbar icon while the user is working in another app.
 - Initialize the Tauri updater plugin. Release builds provide updater endpoint,
   public key, and signed artifacts through build-time configuration; Windows
   updater installation runs in Tauri's passive mode.
@@ -310,9 +313,15 @@ speech gate where needed so silent recordings can be cancelled locally without
 provider finalization or audio upload. Mid-recording VAD segmentation for
 HTTP-style live STT providers is opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD`
 and the Settings toggle; by default Scriber opens one recording-wide segment
-and closes it when the user stops recording. The Settings UI groups these
-HTTP-style live providers with cloud async/batch models because segmentation is
-a cross-provider recording option, not a separate provider class.
+and closes it when the user stops recording. When the user presses the hotkey
+while a live streaming provider is still inside an active VAD speech turn,
+Scriber pushes a final `UserStoppedSpeakingFrame` before pipeline shutdown so
+Deepgram and ElevenLabs can finalize/commit the last transcript. Mistral Live is
+currently a segment-finalized Voxtral transcription path because the bundled
+Pipecat runtime does not expose a Mistral realtime service; if an installed
+configuration still points `SCRIBER_MISTRAL_RT_MODEL` at Mistral's
+realtime-only model, Scriber maps that segmented live path to the configured
+Voxtral transcribe model instead.
 
 AssemblyAI is exposed as both a direct async/batch provider and a realtime
 Pipecat provider. Both default to Universal-3.5-Pro. The async adapter sends
@@ -358,10 +367,12 @@ OpenAI live STT uses Pipecat's OpenAI Realtime STT service plus the explicit
 `openai` SDK and `websockets` dependencies; OpenAI async/batch uses the direct
 Audio Transcriptions HTTP adapter. Groq STT uses Pipecat's `groq` SDK
 dependency, and Pipecat provider imports require `nltk` at runtime.
-Gladia live transcription still uses Pipecat's Gladia service, while
-`gladia_async`, file, and YouTube transcription use Gladia's pre-recorded HTTP
-upload/polling API directly to avoid empty live-WebSocket finalization for
-complete files. `deepgram_async`, `openai_async`, `gemini_stt`, and
+Gladia live transcription still uses Pipecat's Gladia service with a small
+Scriber stop wrapper that sends `stop_recording` and waits briefly for a final
+transcript before websocket cleanup, while `gladia_async`, file, and YouTube
+transcription use Gladia's pre-recorded HTTP upload/polling API directly to
+avoid empty live-WebSocket finalization for complete files.
+`deepgram_async`, `openai_async`, `gemini_stt`, and
 `speechmatics_async` are implemented as direct HTTP/batch adapters in
 `src/cloud_async_stt.py`; the Speechmatics batch path intentionally avoids
 adding the separate `speechmatics-batch` SDK to the standard sidecar. Build-time

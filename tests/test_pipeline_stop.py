@@ -64,6 +64,15 @@ class _DummyRuntimePipelineGraph:
         self.steps = steps
 
 
+class _PushRecordingPipelineGraph(_DummyRuntimePipelineGraph):
+    def __init__(self, steps=None):
+        super().__init__(steps or [])
+        self.pushed = []
+
+    async def push_frame(self, frame, *, direction):
+        self.pushed.append((type(frame), direction))
+
+
 class _BufferedProvider:
     def __init__(self):
         self._buffer_size = 1024
@@ -166,6 +175,16 @@ def test_buffered_provider_factories_enable_diarization_for_batch_jobs(monkeypat
     assert mistral._diarize is True
     assert smallest._diarize is True
     assert assemblyai._speaker_labels is True
+
+
+def test_mistral_segmented_live_uses_transcribe_model_when_rt_model_is_realtime_only(monkeypatch):
+    monkeypatch.setattr(Config, "MISTRAL_API_KEY", "key")
+    monkeypatch.setattr(Config, "MISTRAL_RT_MODEL", "voxtral-mini-transcribe-realtime-2602")
+    monkeypatch.setattr(Config, "MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")
+
+    service = ScriberPipeline(service_name="mistral")._create_stt_service(object())
+
+    assert service._model == "voxtral-mini-2602"
 
 
 def test_assemblyai_realtime_factory_uses_new_pipecat_settings(monkeypatch):
@@ -287,14 +306,56 @@ def test_assemblyai_realtime_factory_supports_legacy_pipecat_connection_params(m
     }
 
 
+def test_elevenlabs_factory_uses_realtime_service(monkeypatch):
+    class _InputParams:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _ElevenLabsRealtimeSTTService:
+        InputParams = _InputParams
+
+        def __init__(self, *, api_key, model, sample_rate, params):
+            self.api_key = api_key
+            self.model = model
+            self.sample_rate = sample_rate
+            self.params = params
+
+    class _CommitStrategy:
+        MANUAL = "manual"
+
+    module = type(
+        "ElevenLabsModule",
+        (),
+        {
+            "ElevenLabsRealtimeSTTService": _ElevenLabsRealtimeSTTService,
+            "CommitStrategy": _CommitStrategy,
+        },
+    )
+
+    monkeypatch.setattr(Config, "ELEVENLABS_API_KEY", "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+
+    service = ScriberPipeline(service_name="elevenlabs")._create_stt_service(object())
+
+    assert service.api_key == "key"
+    assert service.model == "scribe_v2_realtime"
+    assert service.sample_rate == Config.SAMPLE_RATE
+    assert service.params.kwargs == {
+        "language_code": "de",
+        "commit_strategy": "manual",
+    }
+
+
 def test_deepgram_factory_disables_live_diarization_by_default(monkeypatch):
     class _LiveOptions:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
     class _DeepgramSTTService:
-        def __init__(self, *, api_key, live_options=None):
+        def __init__(self, *, api_key, sample_rate=None, live_options=None):
             self.api_key = api_key
+            self.sample_rate = sample_rate
             self.live_options = live_options
 
     module = type(
@@ -304,18 +365,41 @@ def test_deepgram_factory_disables_live_diarization_by_default(monkeypatch):
     )
 
     monkeypatch.setattr(Config, "DEEPGRAM_API_KEY", "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
 
     service = ScriberPipeline(service_name="deepgram")._create_stt_service(object())
 
-    assert service.live_options is None
+    assert service.sample_rate == Config.SAMPLE_RATE
+    assert service.live_options.kwargs == {
+        "encoding": "linear16",
+        "sample_rate": Config.SAMPLE_RATE,
+        "channels": Config.CHANNELS,
+        "model": "nova-3",
+        "language": "de",
+        "interim_results": True,
+        "smart_format": True,
+        "punctuate": True,
+        "vad_events": False,
+    }
 
     service_with_speakers = ScriberPipeline(
         service_name="deepgram",
         enable_speaker_diarization=True,
     )._create_stt_service(object())
 
-    assert service_with_speakers.live_options.kwargs == {"diarize": True}
+    assert service_with_speakers.live_options.kwargs == {
+        "encoding": "linear16",
+        "sample_rate": Config.SAMPLE_RATE,
+        "channels": Config.CHANNELS,
+        "model": "nova-3",
+        "language": "de",
+        "interim_results": True,
+        "smart_format": True,
+        "punctuate": True,
+        "vad_events": False,
+        "diarize": True,
+    }
 
 
 def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatch):
@@ -367,8 +451,9 @@ def test_deepgram_factory_enables_batch_diarization(monkeypatch):
             self.kwargs = kwargs
 
     class _DeepgramSTTService:
-        def __init__(self, *, api_key, live_options=None):
+        def __init__(self, *, api_key, sample_rate=None, live_options=None):
             self.api_key = api_key
+            self.sample_rate = sample_rate
             self.live_options = live_options
 
     module = type(
@@ -378,6 +463,7 @@ def test_deepgram_factory_enables_batch_diarization(monkeypatch):
     )
 
     monkeypatch.setattr(Config, "DEEPGRAM_API_KEY", "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
 
     service = ScriberPipeline(
@@ -385,7 +471,42 @@ def test_deepgram_factory_enables_batch_diarization(monkeypatch):
         enable_speaker_diarization=True,
     )._create_stt_service(object())
 
-    assert service.live_options.kwargs == {"diarize": True}
+    assert service.sample_rate == Config.SAMPLE_RATE
+    assert service.live_options.kwargs == {
+        "encoding": "linear16",
+        "sample_rate": Config.SAMPLE_RATE,
+        "channels": Config.CHANNELS,
+        "model": "nova-3",
+        "language": "de",
+        "interim_results": True,
+        "smart_format": True,
+        "punctuate": True,
+        "vad_events": False,
+        "diarize": True,
+    }
+
+
+def test_gladia_factory_uses_current_pipecat_signature(monkeypatch):
+    class _GladiaSTTService:
+        def __init__(self, *, api_key, sample_rate=None, model="solaria-1"):
+            self.api_key = api_key
+            self.sample_rate = sample_rate
+            self.model = model
+
+    module = type(
+        "GladiaModule",
+        (),
+        {"GladiaSTTService": _GladiaSTTService},
+    )
+
+    monkeypatch.setattr(Config, "GLADIA_API_KEY", "key")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+
+    service = ScriberPipeline(service_name="gladia")._create_stt_service(object())
+
+    assert service.api_key == "key"
+    assert service.sample_rate == Config.SAMPLE_RATE
+    assert service.model == "solaria-1"
 
 
 def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
@@ -664,6 +785,29 @@ async def test_pipecat_vad_observer_counts_audio_frames():
     assert snapshot["speechStartedCount"] == 0
     assert snapshot["speechObserved"] is False
     assert len(pushed) == 2
+
+
+@pytest.mark.asyncio
+async def test_live_vad_finalization_flushes_when_hotkey_stops_during_speech():
+    class _VadObserver:
+        def snapshot(self):
+            return {
+                "speechObserved": True,
+                "speaking": True,
+                "speechStoppedCount": 0,
+            }
+
+    pipeline = ScriberPipeline(service_name="deepgram", on_status_change=None)
+    runtime_pipeline = _PushRecordingPipelineGraph()
+    pipeline.pipeline = runtime_pipeline
+    pipeline._vad_observer = _VadObserver()
+
+    flushed = await pipeline._flush_live_vad_finalization_turn()
+
+    assert flushed is True
+    assert runtime_pipeline.pushed == [
+        (UserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM)
+    ]
 
 
 @pytest.mark.asyncio

@@ -30,7 +30,7 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
     "mistral": ProviderCapabilities(
         supports_live_streaming=False,
         supports_direct_file_upload=True,
-        injects_immediately_in_live_mode=True,
+        injects_immediately_in_live_mode=False,
     ),
     "mistral_async": ProviderCapabilities(
         supports_live_streaming=False,
@@ -113,7 +113,7 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         injects_immediately_in_live_mode=False,
     ),
     "elevenlabs": ProviderCapabilities(
-        supports_live_streaming=False,
+        supports_live_streaming=True,
         supports_direct_file_upload=False,
         injects_immediately_in_live_mode=False,
     ),

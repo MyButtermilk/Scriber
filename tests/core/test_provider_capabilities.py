@@ -36,12 +36,12 @@ def test_provider_capabilities_distinguish_streaming_from_segmented_live():
     assert get_capabilities("gladia_async").supports_live_streaming is False
     assert get_capabilities("openai_async").supports_live_streaming is False
     assert get_capabilities("groq").supports_live_streaming is False
-    assert get_capabilities("elevenlabs").supports_live_streaming is False
+    assert get_capabilities("elevenlabs").supports_live_streaming is True
     assert get_capabilities("speechmatics_async").supports_live_streaming is False
 
 
 def test_provider_capabilities_injection_flags():
-    assert injects_immediately_in_live_mode("mistral") is True
+    assert injects_immediately_in_live_mode("mistral") is False
     assert injects_immediately_in_live_mode("mistral_async") is False
     assert injects_immediately_in_live_mode("smallest") is True
     assert injects_immediately_in_live_mode("smallest_async") is False
