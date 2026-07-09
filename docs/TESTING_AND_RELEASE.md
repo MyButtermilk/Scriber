@@ -79,9 +79,10 @@ Performance/packaging:
   audio sidecar is bundled once as Tauri's install-root
   `scriber-audio-sidecar.exe` and is the standard live-mic capture/prewarm
   engine. `scripts\build_windows.ps1` prepares the Python backend sidecar before
-  calling `tauri build`, then temporarily removes Tauri's `beforeBundleCommand`
-  from the build config. This keeps fresh CI runners compatible with Tauri's
-  early resource-path validation while preserving the checked-in
+  calling `tauri build`, then writes a generated minimal Tauri config overlay
+  under `build\tauri-release-config\` with only the concrete app version and
+  release-only overrides such as `beforeBundleCommand = null`. This keeps fresh
+  CI runners compatible with Tauri's early resource-path validation while preserving the checked-in
   `beforeBundleCommand` for direct developer `npm run tauri:build` workflows.
 - `requirements-base.txt` pins the Pipecat/provider SDK combination used by the
   frozen backend runtime import gate. Pipecat, Deepgram, Speechmatics RT, and
@@ -103,10 +104,16 @@ Performance/packaging:
 ## Installer Builds
 
 `src/version.py` is the leading release version. `scripts\sync_version.py`
-copies that value into Tauri, Cargo, and frontend package metadata before
-building. In GitHub Actions tag releases, the sync step must match the `v*`
-tag; if `src/version.py` still contains an older version, the signed release
-build fails instead of silently publishing an installer with the wrong version.
+copies that value into the frontend package metadata before building and keeps
+`Frontend\src-tauri\tauri.conf.json` pointing at `..\package.json` for direct
+developer builds. Cargo package metadata intentionally stays on a stable
+internal version so patch-only app releases do not invalidate the main Rust
+release cache. `scripts\build_windows.ps1` passes the concrete app version to
+Tauri through a generated release config, and the Rust shell passes that same
+version to the Python backend through `SCRIBER_VERSION`. In GitHub Actions tag
+releases, the sync step must match the `v*` tag; if `src/version.py` still
+contains an older version, the signed release build fails instead of silently
+publishing an installer with the wrong version.
 
 Fast local Profile B installer:
 
@@ -120,8 +127,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
 `-FastLocalInstaller` enables Profile B media tools, sidecar cache reuse,
 runtime dependency footprint checks, and local `lzma` NSIS compression by
 default. Build metadata records the effective compression and marks these
-artifacts as `devOnly=true`; explicit `-NsisCompression zlib` remains available
-for a faster but larger local-only package.
+artifacts as `devOnly=true`. Explicit `-NsisCompression zlib`, `bzip2`, `lzma`,
+or `none` remains available for installer builds; GitHub release builds may set
+the `SCRIBER_NSIS_COMPRESSION` repository variable when a measured packaging
+speed/size tradeoff is desired. GitHub non-tag cache/warmup builds use `none`
+when that variable is unset to reduce NSIS packaging time; `v*` tag releases
+keep Tauri's default compression unless the variable is set deliberately.
 
 Typical output:
 
@@ -539,32 +550,117 @@ It:
 - runs on `main` pushes as a cache-warming build and on `v*` tags as the signed
   updater release path,
 - computes normalized release cache key files before dependency setup so
-  version-only changes in `package-lock.json`, `Cargo.toml`, `Cargo.lock`, and
-  `src/version.py` do not invalidate dependency caches that do not actually
-  depend on the app version,
+  version-only changes in `package-lock.json` and `src/version.py` do not
+  invalidate dependency caches that do not actually depend on the app version.
+  Cargo metadata is kept stable, and the release-only Tauri version is injected
+  through a generated config overlay,
+- reports entry counts and short SHA-256 fingerprints for each normalized cache
+  key file in the GitHub Step Summary. Compare these fingerprints between runs
+  before assuming a cache miss means unnecessary dependency rebuilding,
 - restores heavyweight caches with `actions/cache/restore` and saves them only
   on `main` or an explicit cache-refresh dispatch. Signed `v*` tag releases are
   restore-only for those large caches, so they do not spend post-job time
   uploading tag-scoped cache payloads that sibling tags cannot reliably reuse,
 - restores release caches for Python `.venv`, Python wheels, frontend
-  `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools,
+  `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools. The
+  Node setup step also restores the npm package store from the normalized
+  `build\cache-keys\frontend-dependencies.txt` input, so a cold `node_modules`
+  cache can still install from a warmer download cache without version-only
+  lockfile churn changing that fallback key. On an exact `node_modules` cache
+  hit, the workflow checks npm install metadata only; `npm run check` remains
+  the real frontend correctness gate inside `scripts\build_windows.ps1`,
 - restores the backend sidecar cache before Python `.venv` and wheelhouse
   restore. When a prebuilt backend sidecar is available, the workflow skips the
   Python dependency environment entirely and lets the sidecar builder perform
-  only the frozen-sidecar validation/copy path,
+  only the frozen-sidecar validation/copy path. The workflow-level backend
+  sidecar cache key includes the resolved Python version and mirrors the
+  builder's relevant source/build inputs closely enough that a restored cache
+  root should contain the expected internal sidecar key,
 - restores Python `.venv` from the internal `release-cache-python-venv-v1`
   artifact when the ref-scoped Actions cache is cold, so unchanged Python
   requirements can skip pip installation entirely after `pip check`,
+- restores setup-python's pip download/build cache from
+  `requirements-base.txt` and `requirements-build.txt` as a final fallback when
+  both the prebuilt backend sidecar and wheelhouse/venv layers miss,
 - can import the newest internal Rust/Tauri cache artifact as a prefix fallback
   when the exact Rust cache key is absent,
+- reports exact Actions hits, ambiguous Actions `restore-key-or-miss` outputs,
+  release-artifact fallbacks, and cheap path evidence separately. In GitHub
+  cache terminology, `cache-hit=false` can mean a restore-key hit or a true
+  miss. The same evidence is uploaded as `release-cache-summary.json`; use it
+  with the effective source and path evidence in the summary before concluding
+  that unchanged packages were downloaded or rebuilt,
+- downloads from a finished GH run can be reduced to an Oracle/AutoResearch
+  input with
+  `python scripts\summarize_release_artifacts.py tmp\installer-speed-runs\<run-id> --output tmp\installer-speed-runs\<run-id>\release-artifact-summary.json`.
+  Current release workflow runs already generate `release-artifact-summary.json`
+  before uploading `scriber-windows-release`, so this command is mainly for
+  regenerating the summary after local artifact inspection.
+  The summary combines `release-metadata\build-timing.json` and
+  `release-cache-summary.json` so speed reviews start from measured phases and
+  cache evidence instead of raw-log screenshots. It also reads backend sidecar
+  metadata from `build-timing.json`, including the internal PyInstaller sidecar
+  cache hit, Rust audio sidecar cache hit, and nested sidecar phases. Rust cache
+  evidence includes a combined `Rust build` row for automated correlation plus
+  split Cargo/target rows for manual diagnosis. The summary emits diagnostic
+  codes for common timing causes, including `pyinstaller-rebuilt`,
+  `rust-audio-rebuilt`, `backend-sidecar-cache-not-hot`,
+  `effective-cache-miss`, `ambiguous-actions-restore`, and
+  `tauri-bundle-dominant`. It also emits recommendation codes such as
+  `inspect-backend-sidecar-cache`, `inspect-rust-audio-cache`,
+  `inspect-effective-cache-misses`, `inspect-path-evidence`, and
+  `profile-tauri-bundle`,
+- captures the Tauri bundle console output as
+  `release-metadata\tauri-windows-bundle.log` and writes
+  `tauri-bundle-log-summary.json` with counts for Cargo index updates, crate
+  downloads, Cargo compile lines, NSIS, updater/signing lines, and the first
+  compile lines. ANSI color sequences are stripped before matching so colored
+  Cargo output from GitHub logs is counted reliably. Each captured line is
+  timestamped, so the same summary also reports first-output-to-`makensis`,
+  `makensis`-to-updater-signature, and first-output-to-last-output durations.
+  The capture path runs `npm run tauri:build` through
+  `cmd.exe /d /s /c "... 2>&1"` because Tauri/Node can write normal
+  informational lines to stderr. Those lines are not release failures unless
+  the native exit code is non-zero, and PowerShell must not surface them as
+  `NativeCommandError`.
+  The release artifact summary reads
+  this file and can emit `tauri-crate-downloads-detected`,
+  `tauri-cargo-compile-detected`, `tauri-bundle-no-cargo-rebuild-detected`, or
+  `tauri-nsis-signing-heavy`, plus recommendations such as
+  `inspect-tauri-cargo-fingerprints`, `measure-nsis-signing`, or
+  `profile-nsis-compression-signing`,
+- includes the version-stable `tauri.conf.json`, Tauri capabilities, and app
+  icons in the main Rust release cache key so those real shell inputs still
+  invalidate the cache while patch-version-only churn does not,
+- keeps the backend sidecar version-neutral only because the Rust supervisor
+  injects `SCRIBER_VERSION` and `src.version.app_version()` prefers that runtime
+  value. The `tests/test_version_contract.py` regression tests protect this
+  contract; if they fail, stop normalizing `src/version.py` out of the backend
+  sidecar cache key until version reporting is fixed,
+- enables `CARGO_INCREMENTAL=1` for the main Tauri release binary and caches
+  `Frontend\src-tauri\target\release\incremental` in both the Actions cache and
+  the internal Rust release artifact. This gives version-bump and small
+  Rust-shell edits a warmer rebuild path while preserving normal release
+  validation,
+- builds the Tauri shell library as `rlib` only for the Windows desktop
+  release path. The `staticlib` and `cdylib` crate types are kept out of this
+  Windows-first package because Tauri documents them for mobile targets and
+  they produced extra library artifacts that do not participate in the NSIS
+  updater installer,
+- accepts optional `SCRIBER_CARGO_LOG` as a GitHub repository variable. Set it
+  to `cargo::core::compiler::fingerprint=info` for a diagnostic run when Cargo
+  recompiles unexpectedly, then unset it after the fingerprint reason is known,
 - restores Profile B from a reusable GitHub release artifact when the
   per-ref Actions cache is cold, validates restored Profile B media tools before
   reuse, and builds FFmpeg Profile B only when neither restored source passes
   validation,
-- reports cache reuse as effective sources (`actions-cache`,
-  `release-artifact`, or `miss`) so a ref-scoped Actions cache miss is not
-  confused with a required rebuild when the internal release-artifact fallback
-  was restored,
+- appends the `Build Windows installer` phase timings from
+  `release-metadata\build-timing.json` to the GitHub Step Summary, so residual
+  build time can be attributed before changing dependency caches,
+- collects only release artifacts listed in `release-metadata\latest.json`. If
+  a listed artifact has a non-empty updater signature in `latest.json`, the
+  sibling `<artifact>.sig` file is required and the workflow fails before upload
+  if it is missing,
 - passes the produced media tools to `scripts/build_windows.ps1`,
 - skips the full Python unit suite in the packaging step; run it before release
   or through PR/readiness gates. The release workflow therefore installs
@@ -592,12 +688,16 @@ The Python backend sidecar cache is allowed to be version-neutral for
 through `SCRIBER_VERSION` at runtime and `src.version.app_version()` reads that
 environment override. Keep that runtime contract intact when changing version
 reporting; otherwise a cached sidecar could report the wrong installed version.
+The Rust shell uses Tauri package metadata for that value, not
+`CARGO_PKG_VERSION`, because Cargo package metadata is deliberately stable for
+cache reuse.
 
-For build-time triage, use `build-timing.json` before removing checks. The
-v0.4.15 GitHub release build showed that media-preparation smoke and runtime
-dependency footprint were about 1.4 seconds and 0.25 seconds respectively,
-while backend PyInstaller and Tauri/NSIS dominated the build. Keep the cheap
-release evidence gates unless they become a measured bottleneck.
+For build-time triage, use the GitHub Step Summary and
+`release-metadata\build-timing.json` before removing checks. The v0.4.15 GitHub
+release build showed that media-preparation smoke and runtime dependency
+footprint were about 1.4 seconds and 0.25 seconds respectively, while backend
+PyInstaller and Tauri/NSIS dominated the build. Keep the cheap release evidence
+gates unless they become a measured bottleneck.
 
 `scripts\ci\write_release_cache_keys.ps1` writes the normalized key inputs used
 by the release workflow. Keep this normalization in place when changing release
@@ -638,11 +738,19 @@ these repository secrets/variables:
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 - `SCRIBER_TAURI_UPDATER_ENDPOINT`
 
-`scripts\prepare_tauri_updater_config.py` enables updater artifacts, writes the
-public key/endpoints into `tauri.conf.json`, and sets Windows updater
-installation to Tauri's passive mode. For local signed builds,
-`scripts\build_windows.ps1` also accepts `TAURI_SIGNING_PRIVATE_KEY_PATH` and
-normalizes it to `TAURI_SIGNING_PRIVATE_KEY` before invoking the Tauri CLI.
+`scripts\prepare_tauri_updater_config.py` prepares the generated release Tauri
+config overlay: it writes only the concrete app version, release-only
+`beforeBundleCommand = null`, optional NSIS compression, updater artifacts, the
+public key/endpoints, and Windows updater passive install mode. It should write
+to `build\tauri-release-config\...` for release builds instead of mutating or
+copying the checked-in `tauri.conf.json`. An empty
+`SCRIBER_TAURI_UPDATER_ENDPOINT` falls back to the standard GitHub
+`latest.json` endpoint. For local signed builds, `scripts\build_windows.ps1` also accepts
+`TAURI_SIGNING_PRIVATE_KEY_PATH` and normalizes it to
+`TAURI_SIGNING_PRIVATE_KEY` before invoking the Tauri CLI.
+`v*` tag release jobs fail when updater signing is missing unless
+`SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE=1` is set deliberately for a one-off
+unsigned tag test build.
 `scripts\create_release_metadata.py` prefers artifacts whose filename contains
 the current app version when auto-discovering release files, and
 `scripts\build_windows.ps1` applies the same current-version filter before

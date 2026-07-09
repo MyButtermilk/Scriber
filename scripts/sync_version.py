@@ -9,9 +9,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = REPO_ROOT / "src" / "version.py"
 TAURI_CONF = REPO_ROOT / "Frontend" / "src-tauri" / "tauri.conf.json"
-CARGO_TOML = REPO_ROOT / "Frontend" / "src-tauri" / "Cargo.toml"
 PACKAGE_JSON = REPO_ROOT / "Frontend" / "package.json"
 PACKAGE_LOCK = REPO_ROOT / "Frontend" / "package-lock.json"
+TAURI_VERSION_PACKAGE_PATH = "../package.json"
 
 
 def read_version() -> str:
@@ -43,8 +43,8 @@ def write_json(path: Path, data: dict) -> None:
 
 def update_tauri_conf(version: str) -> bool:
     data = json.loads(TAURI_CONF.read_text(encoding="utf-8"))
-    changed = data.get("version") != version
-    data["version"] = version
+    changed = data.get("version") != TAURI_VERSION_PACKAGE_PATH
+    data["version"] = TAURI_VERSION_PACKAGE_PATH
     if changed:
         write_json(TAURI_CONF, data)
     return changed
@@ -72,20 +72,6 @@ def update_package_lock(version: str) -> bool:
     return changed
 
 
-def update_cargo_toml(version: str) -> bool:
-    text = CARGO_TOML.read_text(encoding="utf-8")
-    updated = re.sub(
-        r'(?m)^(version\s*=\s*)"[^"]+"',
-        rf'\g<1>"{version}"',
-        text,
-        count=1,
-    )
-    changed = updated != text
-    if changed:
-        CARGO_TOML.write_text(updated, encoding="utf-8")
-    return changed
-
-
 def main() -> int:
     version = read_version()
     expected_tag_version = expected_ci_tag_version()
@@ -97,7 +83,7 @@ def main() -> int:
         )
     changed = {
         "tauriConf": update_tauri_conf(version),
-        "cargoToml": update_cargo_toml(version),
+        "cargoToml": False,
         "packageJson": update_package_json(version),
         "packageLock": update_package_lock(version),
     }

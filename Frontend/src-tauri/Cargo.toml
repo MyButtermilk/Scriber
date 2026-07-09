@@ -1,13 +1,13 @@
 [package]
 name = "scriber-desktop"
-version = "0.4.19"
+version = "0.1.0"
 description = "Scriber desktop shell"
 authors = ["Scriber"]
 edition = "2021"
 
 [lib]
 name = "scriber_desktop_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [[bin]]
 name = "scriber-desktop"

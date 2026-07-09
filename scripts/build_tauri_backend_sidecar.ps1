@@ -140,7 +140,7 @@ function Normalize-CargoLockForCache {
     return [regex]::Replace(
         $Text,
         '(?ms)(\[\[package\]\]\s+name = "scriber-desktop"\s+version = )"[^"]+"',
-        '$1"__app_version__"'
+        '${1}"__app_version__"'
     )
 }
 
@@ -327,6 +327,7 @@ function Get-SidecarInputManifest {
         "src",
         "packaging\scriber-backend.spec",
         "requirements-base.txt",
+        "requirements-build.txt",
         "pyloudnorm",
         "scripts\build_tauri_backend_sidecar.ps1",
         "scripts\check_backend_runtime_imports.py"

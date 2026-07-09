@@ -59,7 +59,7 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
-const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const FALLBACK_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
 const BACKEND_START_TIMEOUT_ENV: &str = "SCRIBER_BACKEND_START_TIMEOUT_MS";
 const BACKEND_SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
@@ -265,6 +265,7 @@ struct BackendState {
     message: String,
     launch_kind: String,
     resource_dir: Option<PathBuf>,
+    app_version: String,
     session_token: String,
     shell_ipc_config: Option<shell_ipc::ShellIpcConfig>,
 }
@@ -430,8 +431,9 @@ impl DesktopHotkeyState {
         message: String,
     ) {
         if let Ok(mut state) = self.inner.lock() {
-            let post_processing_enabled =
-                post_processing_enabled && !post_processing_hotkey.is_empty() && post_processing_hotkey != hotkey;
+            let post_processing_enabled = post_processing_enabled
+                && !post_processing_hotkey.is_empty()
+                && post_processing_hotkey != hotkey;
             state.registered_hotkey_id = shortcut_id_for_hotkey(&hotkey);
             state.registered_hotkey = Some(hotkey);
             state.post_processing_hotkey_id = if post_processing_enabled {
@@ -439,12 +441,11 @@ impl DesktopHotkeyState {
             } else {
                 None
             };
-            state.post_processing_hotkey =
-                if post_processing_enabled {
-                    Some(post_processing_hotkey)
-                } else {
-                    None
-                };
+            state.post_processing_hotkey = if post_processing_enabled {
+                Some(post_processing_hotkey)
+            } else {
+                None
+            };
             state.post_processing_enabled = post_processing_enabled;
             state.mode = mode;
             state.available = true;
@@ -639,9 +640,16 @@ impl BackendManager {
                 message: "Backend not started".to_string(),
                 launch_kind: "none".to_string(),
                 resource_dir: None,
+                app_version: FALLBACK_APP_VERSION.to_string(),
                 session_token: resolve_session_token(),
                 shell_ipc_config,
             }),
+        }
+    }
+
+    fn set_app_version(&self, app_version: String) {
+        if let Ok(mut state) = self.state.lock() {
+            state.app_version = app_version;
         }
     }
 
@@ -1089,6 +1097,7 @@ pub fn run() {
             }
             apply_default_desktop_autostart(app.handle());
             let manager = app.state::<BackendManager>();
+            manager.set_app_version(app.package_info().version.to_string());
             manager.set_resource_dir(app.path().resource_dir().ok());
             start_backend_supervisor(app.handle().clone());
             write_shell_log(
@@ -2497,6 +2506,7 @@ fn start_managed_backend(state: &mut BackendState, port: u16, message: &str) -> 
     match spawn_backend(
         port,
         state.resource_dir.as_deref(),
+        &state.app_version,
         &state.session_token,
         state.shell_ipc_config.as_ref(),
     ) {
@@ -3203,6 +3213,7 @@ struct BackendCommandSpec {
 fn spawn_backend(
     port: u16,
     resource_dir: Option<&Path>,
+    app_version: &str,
     session_token: &str,
     shell_ipc_config: Option<&shell_ipc::ShellIpcConfig>,
 ) -> Result<(Child, String), String> {
@@ -3240,7 +3251,7 @@ fn spawn_backend(
         .current_dir(&spec.working_dir)
         .env("SCRIBER_WEB_HOST", DEFAULT_HOST)
         .env("SCRIBER_WEB_PORT", port.to_string())
-        .env("SCRIBER_VERSION", APP_VERSION)
+        .env("SCRIBER_VERSION", app_version)
         .env("SCRIBER_RUNTIME_MODE", "tauri-supervised")
         .env("SCRIBER_BACKEND_LAUNCH_KIND", &spec.launch_kind)
         .env(SESSION_TOKEN_ENV, session_token)

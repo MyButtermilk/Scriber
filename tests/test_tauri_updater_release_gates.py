@@ -169,11 +169,19 @@ def test_build_script_validates_release_metadata_against_local_artifacts() -> No
 def test_build_script_prepares_sidecar_before_tauri_bundle() -> None:
     build_script = (REPO_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
 
+    config_index = build_script.index('Invoke-Checked -Label "Prepare Tauri build config"')
     sidecar_index = build_script.index('Invoke-Checked -Label "Tauri sidecar preparation"')
     bundle_index = build_script.index('Invoke-Checked -Label "Tauri Windows bundle"')
-    assert sidecar_index < bundle_index
-    assert "Remove-TauriBeforeBundleCommand" in build_script
-    assert '$config.build.PSObject.Properties.Remove("beforeBundleCommand")' in build_script
+    assert config_index < sidecar_index < bundle_index
+    assert "scripts\\prepare_tauri_updater_config.py" in build_script
+    assert "$tauriBuildConfigPath" in build_script
+    assert '"--output"' in build_script
+    assert '"--version"' in build_script
+    assert '"--remove-before-bundle-command"' in build_script
+    assert '"--skip-updater-config"' in build_script
+    assert "Remove-TauriBeforeBundleCommand" not in build_script
+    assert '$config.build.PSObject.Properties.Remove("beforeBundleCommand")' not in build_script
+    assert "Set-Utf8NoBomContent" not in build_script
     assert "resources" in build_script
 
 
@@ -210,6 +218,122 @@ def test_prepare_tauri_updater_config_writes_signed_release_config(tmp_path: Pat
     assert updated["plugins"]["updater"]["endpoints"] == [
         "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
     ]
+
+
+def test_prepare_tauri_updater_config_writes_release_overlay_without_mutating_source(tmp_path: Path) -> None:
+    config = tmp_path / "tauri.conf.json"
+    output = tmp_path / "tauri.generated.conf.json"
+    source_payload = {
+        "productName": "Scriber",
+        "version": "../package.json",
+        "identifier": "app.scriber.desktop",
+        "build": {"beforeBundleCommand": "powershell -File scripts/build_tauri_backend_sidecar.ps1"},
+        "bundle": {"active": True, "windows": {"nsis": {}}},
+        "plugins": {"updater": {"pubkey": "", "endpoints": []}},
+    }
+    config.write_text(json.dumps(source_payload), encoding="utf-8")
+
+    result = run_script(
+        PREPARE_SCRIPT,
+        "--config",
+        str(config),
+        "--output",
+        str(output),
+        "--version",
+        "0.4.20",
+        "--remove-before-bundle-command",
+        "--skip-updater-config",
+        "--nsis-compression",
+        "zlib",
+        env={"TAURI_SIGNING_PRIVATE_KEY": "", "TAURI_SIGNING_PRIVATE_KEY_PATH": ""},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(config.read_text(encoding="utf-8")) == source_payload
+    generated = json.loads(output.read_text(encoding="utf-8"))
+    assert generated == {
+        "version": "0.4.20",
+        "bundle": {"windows": {"nsis": {"compression": "zlib"}}},
+        "build": {"beforeBundleCommand": None},
+    }
+
+
+def test_prepare_tauri_updater_config_empty_env_endpoint_uses_default(tmp_path: Path) -> None:
+    config = tmp_path / "tauri.conf.json"
+    output = tmp_path / "tauri.generated.conf.json"
+    config.write_text(
+        json.dumps(
+            {
+                "productName": "Scriber",
+                "version": "../package.json",
+                "identifier": "app.scriber.desktop",
+                "bundle": {"active": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        PREPARE_SCRIPT,
+        "--config",
+        str(config),
+        "--output",
+        str(output),
+        "--version",
+        "0.4.20",
+        "--public-key",
+        "PUBLIC_KEY",
+        env={
+            "TAURI_SIGNING_PRIVATE_KEY": "PRIVATE_KEY",
+            "SCRIBER_TAURI_UPDATER_ENDPOINT": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    generated = json.loads(output.read_text(encoding="utf-8"))
+    assert generated["plugins"]["updater"]["endpoints"] == [
+        "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
+    ]
+    assert generated["bundle"]["createUpdaterArtifacts"] is True
+
+
+def test_prepare_tauri_updater_config_reads_public_key_from_env(tmp_path: Path) -> None:
+    config = tmp_path / "tauri.conf.json"
+    output = tmp_path / "tauri.generated.conf.json"
+    config.write_text(
+        json.dumps(
+            {
+                "productName": "Scriber",
+                "version": "../package.json",
+                "identifier": "app.scriber.desktop",
+                "bundle": {"active": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        PREPARE_SCRIPT,
+        "--config",
+        str(config),
+        "--output",
+        str(output),
+        "--version",
+        "0.4.20",
+        env={
+            "TAURI_SIGNING_PRIVATE_KEY": "PRIVATE_KEY",
+            "SCRIBER_TAURI_UPDATER_PUBLIC_KEY": "ENV_PUBLIC_KEY",
+            "SCRIBER_TAURI_UPDATER_ENDPOINT": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    generated = json.loads(output.read_text(encoding="utf-8"))
+    assert generated["plugins"]["updater"]["pubkey"] == "ENV_PUBLIC_KEY"
+    assert generated["plugins"]["updater"]["endpoints"] == [
+        "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
+    ]
+    assert generated["bundle"]["createUpdaterArtifacts"] is True
 
 
 def test_prepare_tauri_updater_config_requires_signing_key(tmp_path: Path) -> None:
@@ -250,3 +374,21 @@ def test_release_workflow_verifies_published_updater_metadata_after_release() ->
     assert "SCRIBER_TAURI_UPDATER_ENDPOINT" in workflow
     assert "latest/download/latest.json" in workflow
     assert "hashFiles('release-artifacts/updater-publication.json')" in workflow
+    assert "SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE" in workflow
+    assert "Signed tag releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY" in workflow
+
+
+def test_release_workflow_requires_signature_file_for_signed_updater_artifacts() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    collect_index = workflow.index("Collect release artifacts")
+    summary_index = workflow.index("Summarize release artifact timing")
+    upload_index = workflow.index("Upload build artifacts")
+    assert collect_index < summary_index < upload_index
+    assert "$artifactEntries = @($metadata.artifacts)" in workflow
+    assert "latest.json contains a release artifact without a name" in workflow
+    assert '$signaturePath = "$($matches[0].FullName).sig"' in workflow
+    assert "Copy-Item -LiteralPath $signaturePath -Destination release-artifacts\\" in workflow
+    assert "Signed updater artifact '$artifactName' is missing sibling signature file" in workflow
+    assert "-not [string]::IsNullOrWhiteSpace([string]$artifact.signature)" in workflow
+    assert "release-artifact-summary.json" in workflow

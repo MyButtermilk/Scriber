@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
+import uuid
 from pathlib import Path
 
 
@@ -209,8 +213,8 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "Stale audio sidecar resource" in sidecar
     assert "Stale packaged audio sidecar resource" in sidecar
     assert "function Get-Sha256Hex" in sidecar
-    assert '$entry["sha256"] = Get-Sha256Hex -Path $item.FullName' in sidecar
-    assert '$entry["lastWriteTimeUtc"] = $item.LastWriteTimeUtc.ToString("o")' in sidecar
+    assert "sha256 = Get-Sha256Hex -Path $item.FullName" in sidecar
+    assert "lastWriteTimeUtc" not in sidecar
 
 
 def test_sidecar_cache_key_excludes_frontend_dist() -> None:
@@ -256,21 +260,38 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "[switch]$FastLocalInstaller" in build
     assert "[switch]$SkipPythonTests" in build
     assert "[switch]$SkipFrontendTypeCheck" in build
-    assert "function Add-TauriBeforeBundleCommandSwitch" in build
-    assert "function Add-TauriBeforeBundleCommandValueSwitch" in build
     assert "function Write-BuildTimingReport" in build
-    assert 'SwitchName "-SkipBundledFfprobe"' in build
-    assert 'SwitchName "-ValidateSlimMediaTools"' in build
-    assert 'SwitchName "-UseProfileBFfmpeg"' in build
-    assert 'SwitchName "-MediaToolsDir"' in build
-    assert '$commandArgument = if ($Value -match' in build
-    assert 'SwitchName "-ReuseSidecarIfUnchanged"' in build
-    assert '$ConfigText.Replace($copySwitch, " $SwitchName$copySwitch")' in build
+    assert "function New-TauriBundleLogSummary" in build
+    assert "function Get-TauriLogRecords" in build
+    assert "function Remove-AnsiEscapeSequences" in build
+    assert '"\\x1B\\[[0-?]*[ -/]*[@-~]"' in build
+    assert '"\\^\\[\\[[0-?]*[ -/]*[@-~]"' in build
+    assert "cleanMessage = Remove-AnsiEscapeSequences -Value $message" in build
+    assert "tauri-windows-bundle.log" in build
+    assert "tauri-bundle-log-summary.json" in build
+    assert '[System.IO.StreamWriter]::new($tauriBundleLogPath' in build
+    assert "cmd.exe /d /s /c $tauriCommand" in build
+    assert "2>&1' -f $quotedBundleArg, $quotedConfigPath" in build
+    assert '$tauriLogWriter.WriteLine(("{0}`t{1}"' in build
+    assert "Write-Host $line" in build
+    assert "$failureBuildMode" in build
+    assert "failed = $true" in build
+    assert "cargoCompiling" in build
+    assert 'cargoFinished = Get-LogMatchCount -Lines $messageLines -Pattern "(?i)^\\s*Finished\\s+.*profile.*target\\(s\\)"' in build
+    assert "firstLineToMakensisSeconds" in build
+    assert "makensisToUpdaterSignatureSeconds" in build
+    assert "firstCargoCompileLines" in build
     assert "build-timing.json" in build
-    assert "finally {" in build
-    assert "function Set-Utf8NoBomContent" in build
-    assert "Set-Utf8NoBomContent -Path $tauriConfigPath -Value $currentTauriConfig" in build
-    assert "Set-Utf8NoBomContent -Path $tauriConfigPath -Value $tauriConfigOriginal" in build
+    assert "Prepare Tauri build config" in build
+    assert "scripts\\prepare_tauri_updater_config.py" in build
+    assert "--remove-before-bundle-command" in build
+    assert "--skip-updater-config" in build
+    assert "--nsis-compression" in build
+    assert "npm run tauri:build -- --bundles \"{0}\" --config \"{1}\" 2>&1" in build
+    assert "function Add-TauriBeforeBundleCommandSwitch" not in build
+    assert "function Add-TauriBeforeBundleCommandValueSwitch" not in build
+    assert "function Set-Utf8NoBomContent" not in build
+    assert "Set-Utf8NoBomContent -Path $tauriConfigPath" not in build
     assert "if ($FastLocalInstaller)" in build
     assert "$ReuseSidecarIfUnchanged = $true" in build
     assert "$SkipPythonTests = $true" in build
@@ -293,6 +314,13 @@ def test_tauri_before_bundle_uses_profile_b_standard_media_tools() -> None:
     assert "-ReuseSidecarIfUnchanged" in config
     assert "-BundleRustAudioSidecar" in config
     assert "-UseGyanFfmpegEssentials" not in config
+
+
+def test_tauri_desktop_build_only_emits_rlib_for_shell_library() -> None:
+    cargo = read_script("Frontend/src-tauri/Cargo.toml")
+
+    assert 'crate-type = ["rlib"]' in cargo
+    assert 'crate-type = ["staticlib", "cdylib", "rlib"]' not in cargo
 
 
 def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> None:
@@ -319,36 +347,100 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     workflow = read_script(".github/workflows/release-windows.yml")
 
     assert "branches:\n      - main" in workflow
+    assert 'CARGO_INCREMENTAL: "1"' in workflow
+    assert "CARGO_LOG: ${{ vars.SCRIBER_CARGO_LOG }}" in workflow
+    assert "cache: pip" in workflow
+    assert "cache-dependency-path: |\n            requirements-base.txt\n            requirements-build.txt" in workflow
+    assert "cache: npm" in workflow
+    assert "cache-dependency-path: build/cache-keys/frontend-dependencies.txt" in workflow
+    assert "Using NSIS compression 'none' for non-tag cache/warmup build" in workflow
+    assert "Using Tauri default NSIS compression for tag release" in workflow
+    assert '$effectiveNsisCompression = "none"' in workflow
     assert "Compute release cache keys" in workflow
     assert "scripts\\ci\\write_release_cache_keys.ps1" in workflow
+    assert "Report release cache key fingerprints" in workflow
+    assert "Release cache key fingerprints" in workflow
+    assert "If a cache misses, compare these fingerprints with the previous run" in workflow
     assert "build/cache-keys/frontend-dependencies.txt" in workflow
     assert "build/cache-keys/rust-release.txt" in workflow
     assert "build/cache-keys/rust-audio-sidecar.txt" in workflow
     assert "build/cache-keys/backend-sidecar.txt" in workflow
     assert "Restore Python wheelhouse cache" in workflow
     assert "scriber-python-wheelhouse-" in workflow
-    assert "pip download --dest $wheelhouse --prefer-binary" in workflow
+    assert 'Name = "Python pip download store"' in workflow
+    assert "pip wheel --wheel-dir $wheelhouse --prefer-binary" in workflow
     assert "requirements-dev.txt" not in workflow
     assert "npm ci --prefer-offline --no-audit --fund=false" in workflow
-    assert "cache-dependency-path: build/cache-keys/frontend-dependencies.txt" in workflow
+    assert "npm ls --depth=0 --silent" not in workflow
+    assert "node_modules\\.package-lock.json" in workflow
+    assert "Cached Frontend/node_modules is missing npm install metadata" in workflow
+    assert "Restore frontend dependency cache" in workflow
+    assert "path: Frontend/node_modules" in workflow
+    assert 'Name = "npm package store"' in workflow
+    assert "not-needed-node_modules" in workflow
+    assert "hashFiles('build/cache-keys/frontend-dependencies.txt')" in workflow
+    assert "key: scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}" in workflow
+    assert "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" in workflow
     assert "Resolve cached FFmpeg Profile B media tools" in workflow
     assert "Restore FFmpeg Profile B release artifact" in workflow
     assert "Publish FFmpeg Profile B release artifact" in workflow
     assert "Restore Rust audio sidecar cache" in workflow
+    assert "Frontend/src-tauri/target/release/incremental" in workflow
+    assert "scriber-rust-release-v2-${{ runner.os }}" in workflow
     assert "scriber-rust-audio-sidecar-" in workflow
-    assert "Rust audio sidecar cache hit" in workflow
+    assert 'Name = "Rust audio sidecar"' in workflow
+    assert "Cache layer summary:" in workflow
+    assert "function Get-ActionsCacheLayer" in workflow
+    assert 'if ($ActionsCacheHit -eq "false")' in workflow
+    assert 'return "restore-key-or-miss"' in workflow
+    assert 'return "empty"' in workflow
+    assert 'return "actions-cache-restore-key-or-miss"' in workflow
+    assert "Actions cache layer `restore-key-or-miss` means GitHub returned `cache-hit=false`" in workflow
+    assert "Inspect path evidence and release-artifact rows before treating it as a rebuild" in workflow
+    assert "Cache path evidence:" in workflow
+    assert "build\\release-cache-summary.json" in workflow
+    assert "Wrote machine-readable cache summary" in workflow
+    assert "ConvertTo-Json -Depth 6" in workflow
+    assert 'Get-PathEvidence "Rust build" @(".cargo\\registry\\index", ".cargo\\registry\\cache", ".cargo\\git\\db", "Frontend\\src-tauri\\target\\release\\.fingerprint", "Frontend\\src-tauri\\target\\release\\deps", "Frontend\\src-tauri\\target\\release\\incremental")' in workflow
+    assert 'Get-PathEvidence "Rust build target cache"' in workflow
+    assert "| Cache path | Exists | Non-empty | Existing paths |" in workflow
+    assert "Copy-Item -LiteralPath build\\release-cache-summary.json -Destination release-artifacts\\" in workflow
+    assert "Copy-Item Frontend\\src-tauri\\target\\release\\release-metadata\\*.log release-artifacts\\ -ErrorAction SilentlyContinue" in workflow
     assert "path: build/tauri-sidecar-cache" in workflow
     assert "build/rust-audio-sidecar-cache\n          key: scriber-backend-sidecar" not in workflow
+    assert "Report Windows installer timing" in workflow
+    assert "continue-on-error: true" in workflow
+    assert "build-timing.json" in workflow
+    assert "Windows installer timing" in workflow
+    assert "$summary = [System.Collections.Generic.List[string]]::new()" in workflow
+    assert '[void]$summary.Add("Phase timings:")' in workflow
+    assert '[void]$summary.Add(("- {0}: {1}s ({2})" -f $phase.label, $seconds, $status))' in workflow
+    assert "$summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8" in workflow
+    assert "Failed to append Windows installer timing summary" in workflow
+    assert "Use this timing summary with the cache summary above before changing dependency caches" in workflow
+    assert "Collect failure diagnostics" in workflow
+    assert "scriber-windows-failure-diagnostics" in workflow
+    assert "Summarize release artifact timing" in workflow
+    assert "scripts\\summarize_release_artifacts.py release-artifacts --output release-artifacts\\release-artifact-summary.json" in workflow
+    assert "Release artifact timing brief" in workflow
+    assert "release-artifacts\\release-artifact-summary.json" in workflow
     assert "restore_profile_b_release_artifact.ps1" in workflow
     assert "publish_profile_b_release_artifact.ps1" in workflow
     assert "ffmpeg-profile-b-n7.0-v2" in workflow
-    assert "FFmpeg Profile B release artifact restored" in workflow
+    assert 'Name = "FFmpeg Profile B"' in workflow
+    assert "$ffmpegProfileBArtifactRestored" in workflow
     assert "mode = \"release-artifact\"" in workflow
     assert "ffmpeg-profile-b-resolve.outputs.usable != 'true'" in workflow
     assert "Restored Profile B media tools were not usable" in workflow
     assert "scriber-ffmpeg-profile-b-msys2-n7.0-v2-" in workflow
     assert "Restore backend sidecar cache" in workflow
     assert "Report release cache hits" in workflow
+    assert "Export Rust build release artifact" in workflow
+    assert (
+        "env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && "
+        "steps.rust-build-cache.outputs.cache-hit != 'true' && "
+        "steps.rust-build-artifact.outputs.exact != 'true'"
+    ) in workflow
 
 
 def test_release_cache_key_script_normalizes_version_only_churn() -> None:
@@ -363,6 +455,110 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert "Normalize-CargoToml" in script
     assert "Normalize-CargoLock" in script
     assert "Normalize-PythonVersionFile" in script
+    assert 'Add-RawFileEntry -Entries $rustEntries -Path "Frontend/src-tauri/tauri.conf.json"' in script
+    assert 'Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/capabilities" -Filter "*.json"' in script
+    assert 'Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/icons" -Filter "*"' in script
+    assert '"scripts/check_backend_runtime_imports.py"' in script
+    assert 'Add-FileGlobEntries -Entries $backendEntries -Root "pyloudnorm" -Filter "*.py"' in script
+    assert 'constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v2' in script
+    assert 'constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim;BundleRustAudio' in script
+
+
+def test_release_cache_key_outputs_are_stable_for_version_only_churn() -> None:
+    tracked_paths = [
+        REPO_ROOT / "src" / "version.py",
+        REPO_ROOT / "Frontend" / "package.json",
+        REPO_ROOT / "Frontend" / "package-lock.json",
+        REPO_ROOT / "Frontend" / "src-tauri" / "Cargo.toml",
+        REPO_ROOT / "Frontend" / "src-tauri" / "Cargo.lock",
+    ]
+    original_bytes = {path: path.read_bytes() for path in tracked_paths}
+    originals = {path: original_bytes[path].decode("utf-8") for path in tracked_paths}
+    output_root = REPO_ROOT / "tmp" / f"cache-key-normalization-{uuid.uuid4().hex}"
+
+    def run_cache_key_script(name: str) -> dict[str, str]:
+        relative_output = str((Path("tmp") / output_root.name / name)).replace("/", "\\")
+        result = subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "scripts\\ci\\write_release_cache_keys.ps1",
+                "-OutputDir",
+                relative_output,
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        resolved = REPO_ROOT / relative_output
+        return {
+            path.name: path.read_text(encoding="utf-8")
+            for path in sorted(resolved.glob("*.txt"))
+        }
+
+    try:
+        before = run_cache_key_script("before")
+
+        version_file = REPO_ROOT / "src" / "version.py"
+        version_file.write_bytes(
+            re.sub(
+                r'(?m)^__version__\s*=\s*"[^"]+"',
+                '__version__ = "9.9.9"',
+                originals[version_file],
+            ).encode("utf-8"),
+        )
+
+        package_json = REPO_ROOT / "Frontend" / "package.json"
+        package_json.write_bytes(
+            re.sub(
+                r'(?m)^(\s*"version"\s*:\s*)"[^"]+"',
+                r'\g<1>"9.9.9"',
+                originals[package_json],
+                count=1,
+            ).encode("utf-8")
+        )
+
+        package_lock = REPO_ROOT / "Frontend" / "package-lock.json"
+        package_lock.write_bytes(
+            re.sub(
+                r'(?m)^(\s*"version"\s*:\s*)"[^"]+"',
+                r'\g<1>"9.9.9"',
+                originals[package_lock],
+                count=2,
+            ).encode("utf-8")
+        )
+
+        cargo_toml = REPO_ROOT / "Frontend" / "src-tauri" / "Cargo.toml"
+        cargo_toml.write_bytes(
+            re.sub(
+                r'(?m)^(version\s*=\s*)"[^"]+"',
+                r'\g<1>"9.9.9"',
+                originals[cargo_toml],
+                count=1,
+            ).encode("utf-8"),
+        )
+
+        cargo_lock = REPO_ROOT / "Frontend" / "src-tauri" / "Cargo.lock"
+        cargo_lock.write_bytes(
+            re.sub(
+                r'(?ms)(\[\[package\]\]\s+name = "scriber-desktop"\s+version = )"[^"]+"',
+                r'\g<1>"9.9.9"',
+                originals[cargo_lock],
+            ).encode("utf-8"),
+        )
+
+        after = run_cache_key_script("after")
+
+        assert before == after
+    finally:
+        for path, content in original_bytes.items():
+            path.write_bytes(content)
+        shutil.rmtree(output_root, ignore_errors=True)
 
 
 def test_rust_audio_sidecar_cache_key_ignores_app_version_only_churn() -> None:

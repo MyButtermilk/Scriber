@@ -137,7 +137,9 @@ Packaging and scripts:
   HTTPS `latest.json`, and publication verification. `scripts/build_windows.ps1`
   may accept a local `TAURI_SIGNING_PRIVATE_KEY_PATH`, but it must normalize it
   to `TAURI_SIGNING_PRIVATE_KEY` before invoking Tauri; do not commit updater
-  private keys.
+  private keys. If `latest.json` lists a signed updater artifact, the matching
+  sibling `.sig` file is required in collected release assets; do not silently
+  upload a signed metadata file without the corresponding signature asset.
 - Rust also exposes a private shell IPC channel for opt-in native text
   injection. `SCRIBER_INJECT_METHOD=tauri` is strict; `auto` must stay on the
   existing Python paste path until installed target-app evidence justifies a
@@ -381,7 +383,34 @@ Already implemented and should not be regressed:
   executable rebuild.
 - Release workflow cache keys normalize app-version-only files before hashing
   dependency/build caches, so patch version bumps do not invalidate frontend,
-  Rust, or backend scratch caches without real input changes.
+  Rust, or backend scratch caches without real input changes. The main Rust
+  release key still includes real Tauri shell inputs such as `tauri.conf.json`,
+  capabilities, and icons.
+- Frontend dependency reuse in GitHub release builds is two-layered: restore
+  `Frontend\node_modules` first, and keep the npm package store warm through
+  `actions/setup-node` keyed by the normalized
+  `build\cache-keys\frontend-dependencies.txt` input.
+- Python dependency reuse in GitHub release builds is layered: prebuilt backend
+  sidecar first, `.venv`/wheelhouse next, and setup-python's pip cache only as
+  a final download/build-store fallback keyed by the release requirements.
+- `src/version.py` remains the leading app release version, but
+  `Frontend\src-tauri\Cargo.toml` intentionally keeps a stable internal package
+  version. `scripts\build_windows.ps1` writes a generated minimal Tauri release
+  config overlay with the concrete app version and release-only overrides, and
+  the Rust shell passes that value to the Python backend through
+  `SCRIBER_VERSION`; do not restore per-release Cargo version churn.
+- GitHub release builds set `CARGO_INCREMENTAL=1` and cache
+  `Frontend\src-tauri\target\release\incremental` in the v2 Rust release cache.
+- `Frontend\src-tauri\Cargo.toml` keeps the shell library crate type to
+  `["rlib"]` for Windows desktop releases. Do not restore Tauri mobile
+  `staticlib`/`cdylib` outputs unless mobile targets are introduced; they create
+  extra release library artifacts that do not help the NSIS updater build.
+- `v*` tag releases require Tauri updater signing by default. Use
+  `SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE=1` only for an intentional unsigned tag
+  test build.
+- Non-tag GitHub cache/warmup builds use `-NsisCompression none` when
+  `SCRIBER_NSIS_COMPRESSION` is unset to reduce packaging time. Do not apply
+  this default to normal signed `v*` updater releases.
 - Release workflow Actions caches are backed by internal GitHub release
   artifacts for the Python virtualenv, Python wheelhouse, backend sidecar cache,
   main Rust/Tauri build cache, Rust audio sidecar cache, and FFmpeg Profile B so
@@ -393,10 +422,30 @@ Already implemented and should not be regressed:
   `release-windows.yml` `refresh_release_cache_artifacts=true` maintenance
   path. Heavy Actions caches are restore-only on tag releases; explicit
   `actions/cache/save` steps are allowed only on that refresh path.
-- The release workflow's cache summary distinguishes `actions-cache`,
-  `release-artifact`, and `miss`. Treat only effective `miss` as evidence that
-  a component may rebuild. Tag-scoped Actions cache misses can still be healthy
-  when the internal release-artifact fallback restored the payload.
+- The release workflow's cache summary distinguishes exact Actions cache hits,
+  ambiguous `restore-key-or-miss` Actions outputs, internal `release-artifact`
+  fallbacks, and effective `miss` rows. GitHub reports both restore-key hits
+  and true misses as `cache-hit=false`, so the workflow also reports short
+  fingerprints for normalized files under `build\cache-keys` plus cheap path
+  evidence. The same data is uploaded as `release-cache-summary.json` with the
+  build artifacts. Combine it with `build-timing.json` sidecar metadata before
+  concluding that equivalent input sets rebuilt across tag and main runs; the
+  restore report is not by itself proof that PyInstaller or Rust audio sidecar
+  work was skipped. The release workflow also uploads
+  `release-artifact-summary.json`, which combines those inputs and includes an
+  Oracle-ready timing brief plus diagnostic codes for common causes such as
+  PyInstaller rebuilds, Rust audio rebuilds, effective cache misses, ambiguous
+  Actions restore-key rows, and Tauri bundle dominance. It also captures
+  `tauri-windows-bundle.log` plus `tauri-bundle-log-summary.json` so the
+  residual Tauri bundle phase can be attributed to Cargo compile/download work
+  or NSIS/updater/signing overhead before another cache change is proposed.
+  The captured Tauri log is timestamped per line, and the summary reports
+  milestone durations around `makensis` and updater signature completion. It
+  emits recommendation codes that point to the next investigation path. While
+  capturing that log, run `npm run tauri:build` through
+  `cmd.exe /d /s /c "... 2>&1"` so Tauri/Node informational stderr is merged
+  before PowerShell sees it. The release should fail from the native exit code
+  rather than stderr presence.
 - GitHub release artifact upload uses `compression-level: 0`; NSIS installers
   and updater metadata are already compressed or small, so recompressing them in
   `actions/upload-artifact` wastes runner CPU.

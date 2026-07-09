@@ -19,7 +19,6 @@ def test_sync_version_accepts_matching_tag_version(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("GITHUB_REF_NAME", "v1.2.3")
     monkeypatch.setattr(sync_version, "read_version", lambda: "1.2.3")
     monkeypatch.setattr(sync_version, "update_tauri_conf", lambda version: False)
-    monkeypatch.setattr(sync_version, "update_cargo_toml", lambda version: False)
     monkeypatch.setattr(sync_version, "update_package_json", lambda version: False)
     monkeypatch.setattr(sync_version, "update_package_lock", lambda version: False)
 

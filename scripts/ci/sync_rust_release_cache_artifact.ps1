@@ -76,7 +76,8 @@ if ($Mode -eq "Export") {
     foreach ($relative in @(
         "release\.fingerprint",
         "release\build",
-        "release\deps"
+        "release\deps",
+        "release\incremental"
     )) {
         Copy-DirectoryIfPresent `
             -Source (Join-Path $resolvedTargetDir $relative) `
@@ -128,7 +129,8 @@ Copy-DirectoryIfPresent `
 foreach ($relative in @(
     "release\.fingerprint",
     "release\build",
-    "release\deps"
+    "release\deps",
+    "release\incremental"
 )) {
     Copy-DirectoryIfPresent `
         -Source (Join-Path $resolvedCacheRoot ("target\" + $relative)) `

@@ -30,11 +30,12 @@ jobs:
       SCRIBER_PYTHON_VENV_ARTIFACT_TAG: release-cache-python-venv-v1
       SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG: release-cache-python-wheelhouse-v2
       SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG: release-cache-backend-sidecar-v1
-      SCRIBER_RUST_BUILD_ARTIFACT_TAG: release-cache-rust-build-v1
+      SCRIBER_RUST_BUILD_ARTIFACT_TAG: release-cache-rust-build-v2
       SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG: release-cache-rust-audio-sidecar-v1
       SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}
       CARGO_HOME: ${{ github.workspace }}/.cargo
-      CARGO_INCREMENTAL: "0"
+      CARGO_INCREMENTAL: "1"
+      CARGO_LOG: ${{ vars.SCRIBER_CARGO_LOG }}
 
     steps:
       - name: Checkout
@@ -45,16 +46,68 @@ jobs:
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\write_release_cache_keys.ps1
 
+      - name: Report release cache key fingerprints
+        shell: pwsh
+        run: |
+          $keyFiles = @(
+            "frontend-dependencies.txt",
+            "rust-release.txt",
+            "rust-audio-sidecar.txt",
+            "backend-sidecar.txt"
+          )
+          $rows = @()
+          foreach ($name in $keyFiles) {
+            $path = Join-Path "build\cache-keys" $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Expected release cache key file was not found: $path"
+            }
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            $entryCount = @(Get-Content -LiteralPath $path).Count
+            $rows += [ordered]@{
+              Name = $name
+              Entries = $entryCount
+              Sha256 = $hash
+              Short = $hash.Substring(0, 12)
+            }
+          }
+
+          Write-Host "Release cache key fingerprints:"
+          foreach ($row in $rows) {
+            Write-Host ("  {0}: entries={1}; sha256={2}" -f $row.Name, $row.Entries, $row.Short)
+          }
+
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $summary = @(
+              "### Release cache key fingerprints",
+              "",
+              "| Key file | Inputs | SHA-256 prefix |",
+              "| --- | ---: | --- |"
+            )
+            foreach ($row in $rows) {
+              $summary += ("| {0} | {1} | `{2}` |" -f $row.Name, $row.Entries, $row.Short)
+            }
+            $summary += ""
+            $summary += "If a cache misses, compare these fingerprints with the previous run before assuming dependencies were rebuilt unnecessarily."
+            $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
       - name: Set up Python
         id: setup-python
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements-base.txt
+            requirements-build.txt
 
       - name: Set up Node
+        id: setup-node
         uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: build/cache-keys/frontend-dependencies.txt
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -70,8 +123,10 @@ jobs:
             Frontend/src-tauri/target/release/.fingerprint
             Frontend/src-tauri/target/release/build
             Frontend/src-tauri/target/release/deps
-          key: scriber-rust-release-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-release.txt') }}
+            Frontend/src-tauri/target/release/incremental
+          key: scriber-rust-release-v2-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-release.txt') }}
           restore-keys: |
+            scriber-rust-release-v2-${{ runner.os }}-
             scriber-rust-release-${{ runner.os }}-
 
       - name: Restore Rust build release artifact
@@ -122,9 +177,9 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: build/tauri-sidecar-cache
-          key: scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}
+          key: scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}
           restore-keys: |
-            scriber-backend-sidecar-${{ runner.os }}-
+            scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-
 
       - name: Restore backend sidecar release artifact
         id: backend-sidecar-artifact
@@ -136,7 +191,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG `
-            -AssetName "scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" `
+            -AssetName "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" `
             -DestinationPath build\tauri-sidecar-cache
 
       - name: Restore Python dependency cache
@@ -241,9 +296,20 @@ jobs:
           function Normalize-CacheOutput {
             param([string]$Value)
             if ([string]::IsNullOrWhiteSpace($Value)) {
-              return "false"
+              return "empty"
             }
             return $Value
+          }
+
+          function Get-ActionsCacheLayer {
+            param([string]$ActionsCacheHit)
+            if ($ActionsCacheHit -eq "true") {
+              return "exact"
+            }
+            if ($ActionsCacheHit -eq "false") {
+              return "restore-key-or-miss"
+            }
+            return "miss"
           }
 
           function Get-EffectiveCacheSource {
@@ -252,19 +318,50 @@ jobs:
               [string]$ReleaseArtifactRestored
             )
             if ($ActionsCacheHit -eq "true") {
-              return "actions-cache"
+              return "actions-cache-exact"
             }
             if ($ReleaseArtifactRestored -eq "true") {
               return "release-artifact"
             }
+            if ($ActionsCacheHit -eq "false") {
+              return "actions-cache-restore-key-or-miss"
+            }
             return "miss"
+          }
+
+          function Get-PathEvidence {
+            param(
+              [string]$Name,
+              [string[]]$Paths
+            )
+            $existing = @()
+            $nonEmpty = @()
+            foreach ($candidate in $Paths) {
+              $expanded = [Environment]::ExpandEnvironmentVariables($candidate)
+              if (Test-Path -LiteralPath $expanded) {
+                $existing += $candidate
+                if (Test-Path -LiteralPath $expanded -PathType Leaf) {
+                  $nonEmpty += $candidate
+                } elseif (Get-ChildItem -LiteralPath $expanded -Force -ErrorAction SilentlyContinue | Select-Object -First 1) {
+                  $nonEmpty += $candidate
+                }
+              }
+            }
+            return [ordered]@{
+              Name = $Name
+              Exists = if ($existing.Count -gt 0) { "true" } else { "false" }
+              NonEmpty = if ($nonEmpty.Count -gt 0) { "true" } else { "false" }
+              ExistingPaths = if ($existing.Count -gt 0) { ($existing -join "; ") } else { "none" }
+            }
           }
 
           $pythonVenvCacheHit = Normalize-CacheOutput "${{ steps.python-venv-cache.outputs.cache-hit }}"
           $pythonVenvArtifactRestored = Normalize-CacheOutput "${{ steps.python-venv-artifact.outputs.restored }}"
           $pythonWheelhouseCacheHit = Normalize-CacheOutput "${{ steps.python-wheelhouse-cache.outputs.cache-hit }}"
           $pythonWheelhouseArtifactRestored = Normalize-CacheOutput "${{ steps.python-wheelhouse-artifact.outputs.restored }}"
+          $pythonPipStoreCacheHit = Normalize-CacheOutput "${{ steps.setup-python.outputs.cache-hit }}"
           $frontendNodeModulesCacheHit = Normalize-CacheOutput "${{ steps.frontend-node-modules-cache.outputs.cache-hit }}"
+          $npmPackageStoreCacheHit = Normalize-CacheOutput "${{ steps.setup-node.outputs.cache-hit }}"
           $backendSidecarCacheHit = Normalize-CacheOutput "${{ steps.backend-sidecar-cache.outputs.cache-hit }}"
           $backendSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.backend-sidecar-artifact.outputs.restored }}"
           $backendSidecarPrebuilt = ($backendSidecarCacheHit -eq "true") -or ($backendSidecarArtifactRestored -eq "true")
@@ -283,36 +380,76 @@ jobs:
           $tauriBundlerCacheHit = Normalize-CacheOutput "${{ steps.tauri-bundler-cache.outputs.cache-hit }}"
 
           if ($rustBuildCacheHit -eq "true") {
-            $rustBuildEffective = "actions-cache"
+            $rustBuildEffective = "actions-cache-exact"
           } elseif ($rustBuildArtifactImported -eq "true") {
             $rustBuildEffective = "release-artifact"
           } elseif ($rustBuildArtifactRestored -eq "true") {
             $rustBuildEffective = "release-artifact-restored-not-imported"
+          } elseif ($rustBuildCacheHit -eq "false") {
+            $rustBuildEffective = "actions-cache-restore-key-or-miss"
           } else {
             $rustBuildEffective = "miss"
           }
 
           $pythonVenvEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } else { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored }
           $pythonWheelhouseEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } else { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored }
+          $pythonPipStoreEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($pythonPipStoreCacheHit -eq "true") { "actions-cache-exact" } elseif ($pythonPipStoreCacheHit -eq "false") { "actions-cache-restore-key-or-miss" } else { "miss" }
+          $npmPackageStoreEffective = if ($frontendNodeModulesCacheHit -eq "true") { "not-needed-node_modules" } elseif ($npmPackageStoreCacheHit -eq "true") { "actions-cache-exact" } elseif ($npmPackageStoreCacheHit -eq "false") { "actions-cache-restore-key-or-miss" } else { "miss" }
 
           $rows = @(
-            [ordered]@{ Name = "Python venv"; Actions = $pythonVenvCacheHit; ReleaseArtifact = $pythonVenvArtifactRestored; Effective = $pythonVenvEffective }
-            [ordered]@{ Name = "Python wheelhouse"; Actions = $pythonWheelhouseCacheHit; ReleaseArtifact = $pythonWheelhouseArtifactRestored; Effective = $pythonWheelhouseEffective }
-            [ordered]@{ Name = "Frontend node_modules"; Actions = $frontendNodeModulesCacheHit; ReleaseArtifact = "n/a"; Effective = $(if ($frontendNodeModulesCacheHit -eq "true") { "actions-cache" } else { "miss" }) }
-            [ordered]@{ Name = "Backend sidecar"; Actions = $backendSidecarCacheHit; ReleaseArtifact = $backendSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $backendSidecarCacheHit $backendSidecarArtifactRestored) }
-            [ordered]@{ Name = "Rust build"; Actions = $rustBuildCacheHit; ReleaseArtifact = $rustBuildArtifactRestored; Effective = $rustBuildEffective }
-            [ordered]@{ Name = "Rust audio sidecar"; Actions = $rustAudioSidecarCacheHit; ReleaseArtifact = $rustAudioSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $rustAudioSidecarCacheHit $rustAudioSidecarArtifactRestored) }
-            [ordered]@{ Name = "FFmpeg Profile B"; Actions = $ffmpegProfileBCacheHit; ReleaseArtifact = $ffmpegProfileBArtifactRestored; Effective = (Get-EffectiveCacheSource $ffmpegProfileBCacheHit $ffmpegProfileBArtifactRestored) }
-            [ordered]@{ Name = "Tauri bundler"; Actions = $tauriBundlerCacheHit; ReleaseArtifact = "n/a"; Effective = $(if ($tauriBundlerCacheHit -eq "true") { "actions-cache" } else { "miss" }) }
+            [ordered]@{ Name = "Python venv"; Actions = (Get-ActionsCacheLayer $pythonVenvCacheHit); ReleaseArtifact = $pythonVenvArtifactRestored; Effective = $pythonVenvEffective }
+            [ordered]@{ Name = "Python wheelhouse"; Actions = (Get-ActionsCacheLayer $pythonWheelhouseCacheHit); ReleaseArtifact = $pythonWheelhouseArtifactRestored; Effective = $pythonWheelhouseEffective }
+            [ordered]@{ Name = "Python pip download store"; Actions = (Get-ActionsCacheLayer $pythonPipStoreCacheHit); ReleaseArtifact = "n/a"; Effective = $pythonPipStoreEffective }
+            [ordered]@{ Name = "Frontend node_modules"; Actions = (Get-ActionsCacheLayer $frontendNodeModulesCacheHit); ReleaseArtifact = "n/a"; Effective = (Get-EffectiveCacheSource $frontendNodeModulesCacheHit "empty") }
+            [ordered]@{ Name = "npm package store"; Actions = (Get-ActionsCacheLayer $npmPackageStoreCacheHit); ReleaseArtifact = "n/a"; Effective = $npmPackageStoreEffective }
+            [ordered]@{ Name = "Backend sidecar"; Actions = (Get-ActionsCacheLayer $backendSidecarCacheHit); ReleaseArtifact = $backendSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $backendSidecarCacheHit $backendSidecarArtifactRestored) }
+            [ordered]@{ Name = "Rust build"; Actions = (Get-ActionsCacheLayer $rustBuildCacheHit); ReleaseArtifact = $rustBuildArtifactRestored; Effective = $rustBuildEffective }
+            [ordered]@{ Name = "Rust audio sidecar"; Actions = (Get-ActionsCacheLayer $rustAudioSidecarCacheHit); ReleaseArtifact = $rustAudioSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $rustAudioSidecarCacheHit $rustAudioSidecarArtifactRestored) }
+            [ordered]@{ Name = "FFmpeg Profile B"; Actions = (Get-ActionsCacheLayer $ffmpegProfileBCacheHit); ReleaseArtifact = $ffmpegProfileBArtifactRestored; Effective = (Get-EffectiveCacheSource $ffmpegProfileBCacheHit $ffmpegProfileBArtifactRestored) }
+            [ordered]@{ Name = "Tauri bundler"; Actions = (Get-ActionsCacheLayer $tauriBundlerCacheHit); ReleaseArtifact = "n/a"; Effective = (Get-EffectiveCacheSource $tauriBundlerCacheHit "empty") }
+          )
+
+          $pathRows = @(
+            Get-PathEvidence "Python venv" @(".venv")
+            Get-PathEvidence "Python wheelhouse" @("build\python-wheelhouse")
+            Get-PathEvidence "Frontend node_modules" @("Frontend\node_modules")
+            Get-PathEvidence "Backend sidecar" @("build\tauri-sidecar-cache")
+            Get-PathEvidence "Rust build" @(".cargo\registry\index", ".cargo\registry\cache", ".cargo\git\db", "Frontend\src-tauri\target\release\.fingerprint", "Frontend\src-tauri\target\release\deps", "Frontend\src-tauri\target\release\incremental")
+            Get-PathEvidence "Rust build Cargo cache" @(".cargo\registry\index", ".cargo\registry\cache", ".cargo\git\db")
+            Get-PathEvidence "Rust build target cache" @("Frontend\src-tauri\target\release\.fingerprint", "Frontend\src-tauri\target\release\deps", "Frontend\src-tauri\target\release\incremental")
+            Get-PathEvidence "Rust audio sidecar" @("build\rust-audio-sidecar-cache")
+            Get-PathEvidence "FFmpeg Profile B" @("build\ffmpeg-profile-b-msys2\dist\scriber-ffmpeg-profile-b", "build\ffmpeg-profile-b-msys2\ffmpeg-profile-b-manifest.json")
+            Get-PathEvidence "Tauri bundler" @("%USERPROFILE%\.cache\tauri", "%LOCALAPPDATA%\tauri")
           )
 
           Write-Host "Cache layer summary:"
           foreach ($row in $rows) {
             Write-Host ("  {0}: actions={1}; releaseArtifact={2}; effective={3}" -f $row.Name, $row.Actions, $row.ReleaseArtifact, $row.Effective)
           }
+          Write-Host "Cache path evidence:"
+          foreach ($row in $pathRows) {
+            Write-Host ("  {0}: exists={1}; nonEmpty={2}; paths={3}" -f $row.Name, $row.Exists, $row.NonEmpty, $row.ExistingPaths)
+          }
+          $cacheSummaryPath = "build\release-cache-summary.json"
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cacheSummaryPath) | Out-Null
+          [ordered]@{
+            generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+            refreshReleaseCacheArtifacts = $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS
+            note = "Actions cache layer restore-key-or-miss means GitHub returned cache-hit=false; inspect pathEvidence and releaseArtifact fields before treating it as a rebuild."
+            rows = $rows
+            pathEvidence = $pathRows
+            rustBuildReleaseArtifact = [ordered]@{
+              exact = $rustBuildArtifactExact
+              restored = $rustBuildArtifactRestored
+              imported = $rustBuildArtifactImported
+              asset = $rustBuildArtifactAsset
+            }
+            backendSidecarPrebuilt = $backendSidecarPrebuilt
+          } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $cacheSummaryPath -Encoding utf8
+          Write-Host "Wrote machine-readable cache summary: $cacheSummaryPath"
           Write-Host "Rust build release artifact exact: $rustBuildArtifactExact"
           Write-Host "Rust build release artifact asset: $rustBuildArtifactAsset"
-          Write-Host "Note: an Actions cache miss can still be an effective cache hit when the internal release-artifact fallback restored the output."
+          Write-Host "Note: Actions cache layer 'restore-key-or-miss' means cache-hit=false. Inspect path evidence and release-artifact rows before treating it as a rebuild."
           Write-Host "Prebuilt backend sidecar restored before Python dependency restore: $backendSidecarPrebuilt"
           Write-Host "Refresh release cache artifacts: $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS"
 
@@ -328,6 +465,14 @@ jobs:
             }
             $summary += ""
             $summary += "Internal release-cache artifacts are the durable fallback for sibling tag refs; plain Actions caches are still the fastest first layer."
+            $summary += ""
+            $summary += "Actions cache layer `restore-key-or-miss` means GitHub returned `cache-hit=false`; this can be a restore-key hit or a real miss. Inspect path evidence and release-artifact rows before treating it as a rebuild."
+            $summary += ""
+            $summary += "| Cache path | Exists | Non-empty | Existing paths |"
+            $summary += "| --- | --- | --- | --- |"
+            foreach ($row in $pathRows) {
+              $summary += ("| {0} | {1} | {2} | {3} |" -f $row.Name, $row.Exists, $row.NonEmpty, $row.ExistingPaths)
+            }
             $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           }
 
@@ -430,7 +575,13 @@ jobs:
       - name: Use cached frontend dependencies
         if: steps.frontend-node-modules-cache.outputs.cache-hit == 'true'
         working-directory: Frontend
-        run: npm ls --depth=0 --silent
+        shell: pwsh
+        run: |
+          $installMetadata = "node_modules\.package-lock.json"
+          if (-not (Test-Path -LiteralPath $installMetadata -PathType Leaf)) {
+            throw "Cached Frontend/node_modules is missing npm install metadata: $installMetadata"
+          }
+          Write-Host "Using cached Frontend/node_modules with npm install metadata."
 
       - name: Save frontend dependency cache
         if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
@@ -580,6 +731,8 @@ jobs:
           SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE: ${{ vars.SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE }}
           SCRIBER_AUTHENTICODE_PUBLISHER: ${{ vars.SCRIBER_AUTHENTICODE_PUBLISHER }}
           SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP: ${{ vars.SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP }}
+          SCRIBER_NSIS_COMPRESSION: ${{ vars.SCRIBER_NSIS_COMPRESSION }}
+          SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE: ${{ vars.SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE }}
         run: |
           $buildArgs = @(
             "-NoProfile",
@@ -617,8 +770,22 @@ jobs:
           } else {
             Write-Host "Skipping source media preparation smoke because this cached sidecar fast path did not install Python dependencies."
           }
-          $hasUpdaterSigning = $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY -and ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)
           $isTagRelease = $env:GITHUB_REF_TYPE -eq "tag"
+          $effectiveNsisCompression = $env:SCRIBER_NSIS_COMPRESSION
+          if (-not $effectiveNsisCompression -and -not $isTagRelease) {
+            $effectiveNsisCompression = "none"
+            Write-Host "Using NSIS compression 'none' for non-tag cache/warmup build. Set SCRIBER_NSIS_COMPRESSION to override."
+          } elseif (-not $effectiveNsisCompression) {
+            Write-Host "Using Tauri default NSIS compression for tag release."
+          }
+          if ($effectiveNsisCompression) {
+            $buildArgs += @("-NsisCompression", $effectiveNsisCompression)
+          }
+          $hasUpdaterSigning = $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY -and ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)
+          $allowUnsignedTagRelease = $env:SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE -eq "1"
+          if ($isTagRelease -and -not $hasUpdaterSigning -and -not $allowUnsignedTagRelease) {
+            throw "Signed tag releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH. Set SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE=1 only for an intentional unsigned tag test build."
+          }
           if ($hasUpdaterSigning -and $isTagRelease) {
             $buildArgs += "-EnableTauriUpdater"
             if ($env:SCRIBER_TAURI_UPDATER_ENDPOINT) {
@@ -638,9 +805,84 @@ jobs:
           }
           powershell @buildArgs
 
+      - name: Report Windows installer timing
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $timingPath = "Frontend\src-tauri\target\release\release-metadata\build-timing.json"
+          if (-not (Test-Path -LiteralPath $timingPath -PathType Leaf)) {
+            Write-Host "No build-timing.json found; Build Windows installer may have failed before writing timing metadata."
+            exit 0
+          }
+
+          $timing = Get-Content -LiteralPath $timingPath -Raw | ConvertFrom-Json
+          $totalSec = [Math]::Round(([double]$timing.totalDurationMs / 1000.0), 1)
+          $phases = @($timing.phases | Sort-Object durationMs -Descending)
+          $buildMode = $timing.buildMode
+
+          Write-Host "Windows installer timing total: ${totalSec}s"
+          Write-Host ("Build mode: artifactKind={0}; nsisCompression={1}; devOnly={2}; installerBuilt={3}" -f $buildMode.artifactKind, $buildMode.nsisCompression, $buildMode.devOnly, $buildMode.installerBuilt)
+          foreach ($phase in $phases) {
+            $seconds = [Math]::Round(([double]$phase.durationMs / 1000.0), 1)
+            Write-Host ("  {0}: {1}s; ok={2}" -f $phase.label, $seconds, $phase.ok)
+          }
+
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $summary = [System.Collections.Generic.List[string]]::new()
+            [void]$summary.Add("### Windows installer timing")
+            [void]$summary.Add("")
+            [void]$summary.Add(("Total build_windows.ps1 time: **{0}s**" -f $totalSec))
+            [void]$summary.Add("")
+            [void]$summary.Add(("Build mode: {0}; NSIS compression: {1}; devOnly: {2}; installerBuilt: {3}" -f $buildMode.artifactKind, $buildMode.nsisCompression, $buildMode.devOnly, $buildMode.installerBuilt))
+            [void]$summary.Add("")
+            [void]$summary.Add("Phase timings:")
+            foreach ($phase in $phases) {
+              $seconds = [Math]::Round(([double]$phase.durationMs / 1000.0), 1)
+              $status = if ($phase.ok) { "ok" } else { "failed" }
+              [void]$summary.Add(("- {0}: {1}s ({2})" -f $phase.label, $seconds, $status))
+            }
+            [void]$summary.Add("")
+            [void]$summary.Add("Use this timing summary with the cache summary above before changing dependency caches; a hot version-only run should spend most remaining time in Tauri/Rust/NSIS phases.")
+            try {
+              $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            } catch {
+              Write-Warning "Failed to append Windows installer timing summary: $($_.Exception.Message)"
+            }
+          }
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-diagnostics | Out-Null
+          $metadataDir = "Frontend\src-tauri\target\release\release-metadata"
+          if (Test-Path -LiteralPath $metadataDir -PathType Container) {
+            Copy-Item -LiteralPath "$metadataDir\*.json" -Destination release-diagnostics\ -ErrorAction SilentlyContinue
+            Copy-Item -LiteralPath "$metadataDir\*.log" -Destination release-diagnostics\ -ErrorAction SilentlyContinue
+          }
+          if (Test-Path -LiteralPath build\release-cache-summary.json -PathType Leaf) {
+            Copy-Item -LiteralPath build\release-cache-summary.json -Destination release-diagnostics\
+          }
+          if (Test-Path -LiteralPath build\tauri-release-config\tauri-windows-bundle.log -PathType Leaf) {
+            Copy-Item -LiteralPath build\tauri-release-config\tauri-windows-bundle.log -Destination release-diagnostics\
+          }
+          if (-not (Get-ChildItem -LiteralPath release-diagnostics -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+            "No release diagnostics were produced before failure." | Set-Content -LiteralPath release-diagnostics\README.txt -Encoding utf8
+          }
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scriber-windows-failure-diagnostics
+          path: release-diagnostics/*
+          if-no-files-found: warn
+          compression-level: 0
+
       - name: Export Rust build release artifact
         id: rust-build-artifact-export
-        if: steps.rust-build-cache.outputs.cache-hit != 'true' && steps.rust-build-artifact.outputs.exact != 'true'
+        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true' && steps.rust-build-artifact.outputs.exact != 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\sync_rust_release_cache_artifact.ps1 `
@@ -660,7 +902,7 @@ jobs:
             -Tag $env:SCRIBER_RUST_BUILD_ARTIFACT_TAG `
             -AssetName "scriber-rust-build-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-release.txt') }}.zip" `
             -SourcePath build\rust-release-cache `
-            -Title "Scriber Rust Build Cache v1"
+            -Title "Scriber Rust Build Cache v2"
 
       - name: Save Rust build cache
         if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
@@ -673,7 +915,8 @@ jobs:
             Frontend/src-tauri/target/release/.fingerprint
             Frontend/src-tauri/target/release/build
             Frontend/src-tauri/target/release/deps
-          key: scriber-rust-release-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-release.txt') }}
+            Frontend/src-tauri/target/release/incremental
+          key: scriber-rust-release-v2-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-release.txt') }}
 
       - name: Publish Rust audio sidecar release artifact
         if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-audio-sidecar-artifact.outputs.restored != 'true'
@@ -704,7 +947,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG `
-            -AssetName "scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" `
+            -AssetName "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" `
             -SourcePath build\tauri-sidecar-cache `
             -Title "Scriber Backend Sidecar Cache v1"
 
@@ -713,7 +956,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: build/tauri-sidecar-cache
-          key: scriber-backend-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}
+          key: scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}
 
       - name: Save Tauri bundler cache
         if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.tauri-bundler-cache.outputs.cache-hit != 'true'
@@ -729,11 +972,15 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
           $metadata = Get-Content -Raw Frontend\src-tauri\target\release\release-metadata\latest.json | ConvertFrom-Json
-          $artifactNames = @($metadata.artifacts | ForEach-Object { $_.name })
-          if ($artifactNames.Count -eq 0) {
+          $artifactEntries = @($metadata.artifacts)
+          if ($artifactEntries.Count -eq 0) {
             throw "latest.json does not list release artifacts."
           }
-          foreach ($artifactName in $artifactNames) {
+          foreach ($artifact in $artifactEntries) {
+            $artifactName = [string]$artifact.name
+            if ([string]::IsNullOrWhiteSpace($artifactName)) {
+              throw "latest.json contains a release artifact without a name."
+            }
             $matches = @(Get-ChildItem Frontend\src-tauri\target\release\bundle -Recurse -File -Filter $artifactName)
             if ($matches.Count -ne 1) {
               throw "Expected exactly one release artifact named '$artifactName', found $($matches.Count)."
@@ -742,10 +989,36 @@ jobs:
             $signaturePath = "$($matches[0].FullName).sig"
             if (Test-Path -LiteralPath $signaturePath -PathType Leaf) {
               Copy-Item -LiteralPath $signaturePath -Destination release-artifacts\
+            } elseif (-not [string]::IsNullOrWhiteSpace([string]$artifact.signature)) {
+              throw "Signed updater artifact '$artifactName' is missing sibling signature file: $signaturePath"
             }
           }
           Copy-Item Frontend\src-tauri\target\release\release-metadata\*.json release-artifacts\
+          Copy-Item Frontend\src-tauri\target\release\release-metadata\*.log release-artifacts\ -ErrorAction SilentlyContinue
           Copy-Item Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt release-artifacts\
+          if (Test-Path -LiteralPath build\release-cache-summary.json -PathType Leaf) {
+            Copy-Item -LiteralPath build\release-cache-summary.json -Destination release-artifacts\
+          }
+
+      - name: Summarize release artifact timing
+        shell: pwsh
+        run: |
+          python scripts\summarize_release_artifacts.py release-artifacts --output release-artifacts\release-artifact-summary.json
+          $summary = Get-Content -LiteralPath release-artifacts\release-artifact-summary.json -Raw | ConvertFrom-Json
+          Write-Host "Release artifact timing brief:"
+          foreach ($line in @($summary.oracleBrief)) {
+            Write-Host "  $line"
+          }
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $summaryLines = @(
+              "### Release artifact timing brief",
+              ""
+            )
+            foreach ($line in @($summary.oracleBrief)) {
+              $summaryLines += "- $line"
+            }
+            $summaryLines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7

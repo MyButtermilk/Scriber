@@ -129,97 +129,6 @@ function Invoke-Checked {
     }
 }
 
-function Set-Utf8NoBomContent {
-    param(
-        [string]$Path,
-        [string]$Value
-    )
-
-    $encoding = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($Path, $Value, $encoding)
-}
-
-function Add-TauriBeforeBundleCommandSwitch {
-    param(
-        [string]$ConfigText,
-        [string]$SwitchName
-    )
-
-    if ($ConfigText.Contains($SwitchName)) {
-        return $ConfigText
-    }
-
-    $copySwitch = " -CopyToTauriRelease"
-    if (-not $ConfigText.Contains($copySwitch)) {
-        throw "Cannot enable $SwitchName because beforeBundleCommand does not contain '$copySwitch'."
-    }
-
-    return $ConfigText.Replace($copySwitch, " $SwitchName$copySwitch")
-}
-
-function Convert-ToJsonStringContent {
-    param([string]$Value)
-
-    $json = $Value | ConvertTo-Json -Compress
-    return $json.Substring(1, $json.Length - 2)
-}
-
-function Add-TauriBeforeBundleCommandValueSwitch {
-    param(
-        [string]$ConfigText,
-        [string]$SwitchName,
-        [string]$Value
-    )
-
-    if ($ConfigText.Contains($SwitchName)) {
-        return $ConfigText
-    }
-
-    $copySwitch = " -CopyToTauriRelease"
-    if (-not $ConfigText.Contains($copySwitch)) {
-        throw "Cannot enable $SwitchName because beforeBundleCommand does not contain '$copySwitch'."
-    }
-
-    $commandArgument = if ($Value -match '\s') { '"' + $Value + '"' } else { $Value }
-    $escapedCommandArgument = Convert-ToJsonStringContent -Value $commandArgument
-    return $ConfigText.Replace($copySwitch, " $SwitchName $escapedCommandArgument$copySwitch")
-}
-
-function Set-TauriNsisCompression {
-    param(
-        [string]$ConfigText,
-        [string]$Compression
-    )
-
-    if (-not $Compression) {
-        return $ConfigText
-    }
-
-    $config = $ConfigText | ConvertFrom-Json
-    if (-not $config.bundle) {
-        $config | Add-Member -NotePropertyName "bundle" -NotePropertyValue ([pscustomobject]@{}) -Force
-    }
-    if (-not $config.bundle.windows) {
-        $config.bundle | Add-Member -NotePropertyName "windows" -NotePropertyValue ([pscustomobject]@{}) -Force
-    }
-    if (-not $config.bundle.windows.nsis) {
-        $config.bundle.windows | Add-Member -NotePropertyName "nsis" -NotePropertyValue ([pscustomobject]@{}) -Force
-    }
-
-    $config.bundle.windows.nsis | Add-Member -NotePropertyName "compression" -NotePropertyValue $Compression -Force
-    return ($config | ConvertTo-Json -Depth 100)
-}
-
-function Remove-TauriBeforeBundleCommand {
-    param([string]$ConfigText)
-
-    $config = $ConfigText | ConvertFrom-Json
-    if ($config.build -and ($config.build.PSObject.Properties.Name -contains "beforeBundleCommand")) {
-        $config.build.PSObject.Properties.Remove("beforeBundleCommand")
-    }
-    return ($config | ConvertTo-Json -Depth 100)
-}
-
 function New-SidecarBuildScriptArguments {
     $sidecarArgs = @(
         "-NoProfile",
@@ -283,11 +192,163 @@ function Write-BuildTimingReport {
     return $path
 }
 
+function Get-LogMatchCount {
+    param(
+        [string[]]$Lines,
+        [string]$Pattern
+    )
+
+    return @($Lines | Select-String -Pattern $Pattern).Count
+}
+
+function Remove-AnsiEscapeSequences {
+    param([string]$Value)
+
+    if ($null -eq $Value) {
+        return ""
+    }
+    $withoutEsc = [regex]::Replace($Value, "\x1B\[[0-?]*[ -/]*[@-~]", "")
+    return [regex]::Replace($withoutEsc, "\^\[\[[0-?]*[ -/]*[@-~]", "")
+}
+
+function Get-TauriLogRecords {
+    param([string[]]$Lines)
+
+    $records = [System.Collections.Generic.List[object]]::new()
+    foreach ($line in $Lines) {
+        $timestamp = $null
+        $message = $line
+        if ($line -match '^(?<timestamp>\d{4}-\d{2}-\d{2}T[^\t]+)\t(?<message>.*)$') {
+            $timestamp = [DateTimeOffset]::Parse($Matches.timestamp)
+            $message = $Matches.message
+        }
+        $records.Add([pscustomobject]@{
+            timestamp = $timestamp
+            message = $message
+            cleanMessage = Remove-AnsiEscapeSequences -Value $message
+        }) | Out-Null
+    }
+    return @($records)
+}
+
+function Get-FirstTauriLogRecord {
+    param(
+        [object[]]$Records,
+        [string]$Pattern
+    )
+
+    foreach ($record in $Records) {
+        if ($record.cleanMessage -match $Pattern) {
+            return $record
+        }
+    }
+    return $null
+}
+
+function Format-TauriLogTimestamp {
+    param([object]$Record)
+
+    if ($null -eq $Record -or $null -eq $Record.timestamp) {
+        return $null
+    }
+    return $Record.timestamp.ToUniversalTime().ToString("o")
+}
+
+function Get-TauriLogDurationSeconds {
+    param(
+        [object]$Start,
+        [object]$End
+    )
+
+    if ($null -eq $Start -or $null -eq $End -or $null -eq $Start.timestamp -or $null -eq $End.timestamp) {
+        return $null
+    }
+    return [Math]::Round(($End.timestamp - $Start.timestamp).TotalSeconds, 3)
+}
+
+function New-TauriBundleLogSummary {
+    param(
+        [string]$Path
+    )
+
+    $payload = [ordered]@{
+        apiVersion = "1"
+        generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+        path = $Path
+        exists = $false
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $payload
+    }
+
+    $item = Get-Item -LiteralPath $Path
+    $lines = @(Get-Content -LiteralPath $Path)
+    $records = @(Get-TauriLogRecords -Lines $lines)
+    $messageLines = @($records | ForEach-Object { $_.cleanMessage })
+    $counts = [ordered]@{
+        cargoUpdatingIndex = Get-LogMatchCount -Lines $messageLines -Pattern "Updating crates.io index"
+        cargoDownloaded = Get-LogMatchCount -Lines $messageLines -Pattern "^\s*Downloaded\s+"
+        cargoDownloading = Get-LogMatchCount -Lines $messageLines -Pattern "^\s*Downloading\s+"
+        cargoCompiling = Get-LogMatchCount -Lines $messageLines -Pattern "^\s*Compiling\s+"
+        cargoFinished = Get-LogMatchCount -Lines $messageLines -Pattern "(?i)^\s*Finished\s+.*profile.*target\(s\)"
+        tauriBundling = Get-LogMatchCount -Lines $messageLines -Pattern "(?i)\bbundl(?:e|ing)\b"
+        nsis = Get-LogMatchCount -Lines $messageLines -Pattern "(?i)\bnsis\b|makensis"
+        signing = Get-LogMatchCount -Lines $messageLines -Pattern "(?i)\bsign(?:ing|ed|ature)?\b"
+        updater = Get-LogMatchCount -Lines $messageLines -Pattern "(?i)\bupdater\b|latest\.json|\.sig"
+        warnings = Get-LogMatchCount -Lines $messageLines -Pattern "(?i)\bwarning:"
+        errors = Get-LogMatchCount -Lines $messageLines -Pattern "(?i)\berror:"
+    }
+    $firstCargoCompileLines = @(
+        $messageLines |
+            Select-String -Pattern "^\s*Compiling\s+" |
+            Select-Object -First 12 |
+            ForEach-Object { $_.Line.Trim() }
+    )
+    $firstRecord = $records | Where-Object { $null -ne $_.timestamp } | Select-Object -First 1
+    $lastRecord = $records | Where-Object { $null -ne $_.timestamp } | Select-Object -Last 1
+    $cargoIndexRecord = Get-FirstTauriLogRecord -Records $records -Pattern "Updating crates.io index"
+    $firstCompileRecord = Get-FirstTauriLogRecord -Records $records -Pattern "^\s*Compiling\s+"
+    $cargoFinishedRecord = Get-FirstTauriLogRecord -Records $records -Pattern "(?i)^\s*Finished\s+.*profile.*target\(s\)"
+    $makensisRecord = Get-FirstTauriLogRecord -Records $records -Pattern "(?i)makensis"
+    $updaterSignatureRecord = Get-FirstTauriLogRecord -Records $records -Pattern "(?i)Finished\s+\d+\s+updater signature"
+
+    $payload["exists"] = $true
+    $payload["sizeBytes"] = [int64]$item.Length
+    $payload["lineCount"] = [int64]$lines.Count
+    $payload["counts"] = $counts
+    $payload["signals"] = [ordered]@{
+        crateIndexUpdateDetected = [bool]($counts.cargoUpdatingIndex -gt 0)
+        crateDownloadsDetected = [bool](($counts.cargoDownloaded + $counts.cargoDownloading) -gt 0)
+        cargoCompileDetected = [bool]($counts.cargoCompiling -gt 0)
+        nsisDetected = [bool]($counts.nsis -gt 0)
+        signingDetected = [bool]($counts.signing -gt 0)
+        updaterArtifactDetected = [bool]($counts.updater -gt 0)
+    }
+    $payload["milestones"] = [ordered]@{
+        firstLineAt = Format-TauriLogTimestamp -Record $firstRecord
+        cargoIndexAt = Format-TauriLogTimestamp -Record $cargoIndexRecord
+        firstCargoCompileAt = Format-TauriLogTimestamp -Record $firstCompileRecord
+        cargoFinishedAt = Format-TauriLogTimestamp -Record $cargoFinishedRecord
+        makensisAt = Format-TauriLogTimestamp -Record $makensisRecord
+        updaterSignatureAt = Format-TauriLogTimestamp -Record $updaterSignatureRecord
+        lastLineAt = Format-TauriLogTimestamp -Record $lastRecord
+    }
+    $payload["durations"] = [ordered]@{
+        firstLineToMakensisSeconds = Get-TauriLogDurationSeconds -Start $firstRecord -End $makensisRecord
+        makensisToUpdaterSignatureSeconds = Get-TauriLogDurationSeconds -Start $makensisRecord -End $updaterSignatureRecord
+        firstLineToUpdaterSignatureSeconds = Get-TauriLogDurationSeconds -Start $firstRecord -End $updaterSignatureRecord
+        firstLineToLastLineSeconds = Get-TauriLogDurationSeconds -Start $firstRecord -End $lastRecord
+    }
+    $payload["firstCargoCompileLines"] = $firstCargoCompileLines
+    $payload["tail"] = @($messageLines | Select-Object -Last 20)
+    return $payload
+}
+
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 $frontendRoot = Join-Path $RepoRoot "Frontend"
 $bundleArg = ($Bundles -join ",")
 $tauriConfigPath = Join-Path $RepoRoot "Frontend\src-tauri\tauri.conf.json"
-$tauriConfigOriginal = $null
+$tauriBundleLogPath = Join-Path $RepoRoot "build\tauri-release-config\tauri-windows-bundle.log"
 if ($MediaToolsDir) {
     $MediaToolsDir = (Resolve-Path $MediaToolsDir).Path
 }
@@ -297,9 +358,6 @@ if ($UseProfileBFfmpeg) {
 
 if ($FastLocalInstaller -and $FastLocalStagedApp) {
     throw "Use either -FastLocalInstaller or -FastLocalStagedApp, not both."
-}
-if ($NsisCompression -and -not $FastLocalInstaller) {
-    throw "-NsisCompression is a dev-only FastLocalInstaller option."
 }
 if ($FastLocalStagedApp -and $NsisCompression) {
     throw "-NsisCompression only applies to installer builds, not -FastLocalStagedApp."
@@ -397,6 +455,8 @@ Invoke-Checked -Label "Version sync" -Command {
     }
 }
 
+$currentVersion = (python -c "from scripts.create_release_metadata import read_version; print(read_version())").Trim()
+
 if (-not $SkipChecks -and -not $SkipPythonTests) {
     Invoke-Checked -Label "Python tests" -Command {
         Push-Location $RepoRoot
@@ -427,61 +487,41 @@ try {
             }
             $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -LiteralPath $env:TAURI_SIGNING_PRIVATE_KEY_PATH -Raw
         }
-        $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
-        Invoke-Checked -Label "Prepare Tauri updater config" -Command {
-            Push-Location $RepoRoot
-            try {
-                $updaterArgs = @(
-                    "scripts\prepare_tauri_updater_config.py",
-                    "--write"
-                )
-                if ($UpdaterEndpoint) {
-                    $updaterArgs += @("--endpoint", $UpdaterEndpoint)
-                }
-                if ($UpdaterPublicKey) {
-                    $updaterArgs += @("--public-key", $UpdaterPublicKey)
-                }
-                python @updaterArgs
-            } finally {
-                Pop-Location
-            }
-        }
         $RequireUpdaterSignatures = $true
     }
 
-    if ((-not $FastLocalStagedApp) -and ($SkipBundledFfprobe -or $ValidateSlimMediaTools -or $MediaToolsDir -or $UseProfileBFfmpeg -or $ReuseSidecarIfUnchanged -or $LocalPyInstallerNoClean -or $RustAudioIsolatedTarget -or $NsisCompression)) {
-        if ($null -eq $tauriConfigOriginal) {
-            $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
-        }
-        $currentTauriConfig = Get-Content -Raw $tauriConfigPath
-        $updatedTauriConfig = $currentTauriConfig
-        if ($SkipBundledFfprobe) {
-            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-SkipBundledFfprobe"
-        }
-        if ($ValidateSlimMediaTools) {
-            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-ValidateSlimMediaTools"
-        }
-        if ($UseProfileBFfmpeg) {
-            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-UseProfileBFfmpeg"
-        }
-        if ($MediaToolsDir) {
-            $updatedTauriConfig = Add-TauriBeforeBundleCommandValueSwitch -ConfigText $updatedTauriConfig -SwitchName "-MediaToolsDir" -Value $MediaToolsDir
-        }
-        if ($ReuseSidecarIfUnchanged) {
-            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-ReuseSidecarIfUnchanged"
-        }
-        if ($LocalPyInstallerNoClean) {
-            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-LocalPyInstallerNoClean"
-        }
-        if ($RustAudioIsolatedTarget) {
-            $updatedTauriConfig = Add-TauriBeforeBundleCommandSwitch -ConfigText $updatedTauriConfig -SwitchName "-RustAudioIsolatedTarget"
-        }
-        if ($NsisCompression) {
-            $updatedTauriConfig = Set-TauriNsisCompression -ConfigText $updatedTauriConfig -Compression $NsisCompression
-        }
-        if ($updatedTauriConfig -ne $currentTauriConfig) {
-            $currentTauriConfig = $updatedTauriConfig
-            Set-Utf8NoBomContent -Path $tauriConfigPath -Value $currentTauriConfig
+    $tauriBuildConfigPath = Join-Path $RepoRoot "build\tauri-release-config\tauri.generated.conf.json"
+    if (-not $FastLocalStagedApp) {
+        Invoke-Checked -Label "Prepare Tauri build config" -Command {
+            Push-Location $RepoRoot
+            try {
+                $configArgs = @(
+                    "scripts\prepare_tauri_updater_config.py",
+                    "--config",
+                    $tauriConfigPath,
+                    "--output",
+                    $tauriBuildConfigPath,
+                    "--version",
+                    $currentVersion,
+                    "--remove-before-bundle-command"
+                )
+                if ($NsisCompression) {
+                    $configArgs += @("--nsis-compression", $NsisCompression)
+                }
+                if ($EnableTauriUpdater) {
+                    if ($UpdaterEndpoint) {
+                        $configArgs += @("--endpoint", $UpdaterEndpoint)
+                    }
+                    if ($UpdaterPublicKey) {
+                        $configArgs += @("--public-key", $UpdaterPublicKey)
+                    }
+                } else {
+                    $configArgs += "--skip-updater-config"
+                }
+                python @configArgs
+            } finally {
+                Pop-Location
+            }
         }
     }
 
@@ -515,19 +555,32 @@ try {
             }
         }
 
-        if ($null -eq $tauriConfigOriginal) {
-            $tauriConfigOriginal = Get-Content -Raw $tauriConfigPath
-        }
-        $currentTauriConfig = Get-Content -Raw $tauriConfigPath
-        $updatedTauriConfig = Remove-TauriBeforeBundleCommand -ConfigText $currentTauriConfig
-        if ($updatedTauriConfig -ne $currentTauriConfig) {
-            Set-Utf8NoBomContent -Path $tauriConfigPath -Value $updatedTauriConfig
-        }
-
         Invoke-Checked -Label "Tauri Windows bundle" -Command {
             Push-Location $frontendRoot
             try {
-                npm run tauri:build -- --bundles $bundleArg
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $tauriBundleLogPath) | Out-Null
+                if (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf) {
+                    Remove-Item -LiteralPath $tauriBundleLogPath -Force
+                }
+                $tauriLogEncoding = New-Object System.Text.UTF8Encoding($false)
+                $tauriLogWriter = [System.IO.StreamWriter]::new($tauriBundleLogPath, $false, $tauriLogEncoding)
+                $quotedConfigPath = $tauriBuildConfigPath.Replace('"', '\"')
+                $quotedBundleArg = $bundleArg.Replace('"', '\"')
+                $tauriCommand = 'npm run tauri:build -- --bundles "{0}" --config "{1}" 2>&1' -f $quotedBundleArg, $quotedConfigPath
+                try {
+                    cmd.exe /d /s /c $tauriCommand |
+                        ForEach-Object {
+                            $line = $_.ToString()
+                            $tauriLogWriter.WriteLine(("{0}`t{1}" -f (Get-Date).ToUniversalTime().ToString("o"), $line))
+                            Write-Host $line
+                        }
+                } finally {
+                    $tauriLogWriter.Dispose()
+                }
+                $tauriExitCode = $LASTEXITCODE
+                if ($tauriExitCode -ne 0) {
+                    throw "Tauri Windows bundle failed with exit code $tauriExitCode."
+                }
             } finally {
                 Pop-Location
             }
@@ -552,9 +605,11 @@ try {
     $mediaPreparationSmokePath = Join-Path $metadataDir "media-preparation-smoke.json"
     $runtimeDependencyFootprintPath = Join-Path $metadataDir "runtime-dependency-footprint.json"
     $installedPackageSmokePath = Join-Path $metadataDir "installed-package-smoke.json"
+    $tauriBundleLogMetadataPath = Join-Path $metadataDir "tauri-windows-bundle.log"
+    $tauriBundleLogSummaryPath = Join-Path $metadataDir "tauri-bundle-log-summary.json"
     $installedPackageSmokeTempPath = Join-Path $RepoRoot "tmp\installer-smoke\installed-package-smoke.json"
     $buildTimingPath = Join-Path $metadataDir "build-timing.json"
-    foreach ($staleReport in @($mediaPreparationSmokePath, $runtimeDependencyFootprintPath, $installedPackageSmokePath, $installedPackageSmokeTempPath)) {
+    foreach ($staleReport in @($mediaPreparationSmokePath, $runtimeDependencyFootprintPath, $installedPackageSmokePath, $tauriBundleLogSummaryPath, $tauriBundleLogMetadataPath, $installedPackageSmokeTempPath)) {
         if (Test-Path -LiteralPath $staleReport -PathType Leaf) {
             Remove-Item -LiteralPath $staleReport -Force
         }
@@ -574,7 +629,13 @@ try {
         path = $null
         generatedAt = $null
     }
-    $currentVersion = (python -c "from scripts.create_release_metadata import read_version; print(read_version())").Trim()
+    if (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf) {
+        New-Item -ItemType Directory -Force -Path $metadataDir | Out-Null
+        Copy-Item -LiteralPath $tauriBundleLogPath -Destination $tauriBundleLogMetadataPath -Force
+        New-TauriBundleLogSummary -Path $tauriBundleLogMetadataPath |
+            ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath $tauriBundleLogSummaryPath -Encoding utf8
+    }
     $artifacts = @()
     if ((-not $FastLocalStagedApp) -and (Test-Path $bundleRoot)) {
         $allArtifacts = @(
@@ -948,7 +1009,7 @@ try {
 
     $buildMode = [ordered]@{
         artifactKind = if ($FastLocalStagedApp) { "staged-app" } else { "installer" }
-        devOnly = [bool]($FastLocalInstaller -or $FastLocalStagedApp -or ($NsisCompression -and $NsisCompression -ne "lzma") -or $LocalPyInstallerNoClean)
+        devOnly = [bool]($FastLocalInstaller -or $FastLocalStagedApp -or $LocalPyInstallerNoClean)
         fastLocalInstaller = [bool]$FastLocalInstaller
         fastLocalStagedApp = [bool]$FastLocalStagedApp
         installerBuilt = [bool]($artifacts.Count -gt 0)
@@ -974,8 +1035,32 @@ try {
         runtimeDependencyFootprint = $runtimeDependencyFootprint
         installedPackageSmoke = $installedPackageSmoke
     } | ConvertTo-Json -Compress
-} finally {
-    if ($null -ne $tauriConfigOriginal) {
-        Set-Utf8NoBomContent -Path $tauriConfigPath -Value $tauriConfigOriginal
+} catch {
+    $targetRelease = Join-Path $RepoRoot "Frontend\src-tauri\target\release"
+    $metadataDir = Join-Path $targetRelease "release-metadata"
+    $tauriBundleLogMetadataPath = Join-Path $metadataDir "tauri-windows-bundle.log"
+    $tauriBundleLogSummaryPath = Join-Path $metadataDir "tauri-bundle-log-summary.json"
+    New-Item -ItemType Directory -Force -Path $metadataDir | Out-Null
+    if (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf) {
+        Copy-Item -LiteralPath $tauriBundleLogPath -Destination $tauriBundleLogMetadataPath -Force
+        New-TauriBundleLogSummary -Path $tauriBundleLogMetadataPath |
+            ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath $tauriBundleLogSummaryPath -Encoding utf8
     }
+    $failureBuildMode = [ordered]@{
+        artifactKind = if ($FastLocalStagedApp) { "staged-app" } else { "installer" }
+        devOnly = [bool]($FastLocalInstaller -or $FastLocalStagedApp -or $LocalPyInstallerNoClean)
+        fastLocalInstaller = [bool]$FastLocalInstaller
+        fastLocalStagedApp = [bool]$FastLocalStagedApp
+        installerBuilt = $false
+        installerSmokeValidated = $false
+        nsisCompression = if ($NsisCompression) { $NsisCompression } else { "tauri-default" }
+        localPyInstallerNoClean = [bool]$LocalPyInstallerNoClean
+        rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
+        failed = $true
+    }
+    $sidecarMetadataPath = Join-Path $targetRelease "backend\sidecar-build-metadata.json"
+    Write-BuildTimingReport -MetadataDir $metadataDir -SidecarMetadataPath $sidecarMetadataPath -BuildMode $failureBuildMode | Out-Null
+    throw
+} finally {
 }

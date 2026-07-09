@@ -57,7 +57,7 @@ function Normalize-CargoLock {
     return [regex]::Replace(
         $Text,
         '(?ms)(\[\[package\]\]\s+name = "scriber-desktop"\s+version = )"[^"]+"',
-        '$1"__app_version__"'
+        '${1}"__app_version__"'
     )
 }
 
@@ -165,6 +165,9 @@ $rustEntries = New-EntryList
 Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
 Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
 Add-RawFileEntry -Entries $rustEntries -Path "Frontend/src-tauri/build.rs"
+Add-RawFileEntry -Entries $rustEntries -Path "Frontend/src-tauri/tauri.conf.json"
+Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/capabilities" -Filter "*.json"
+Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/icons" -Filter "*"
 Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/src" -Filter "*.rs"
 Write-KeyFile -Name "rust-release.txt" -Entries $rustEntries
 
@@ -187,6 +190,7 @@ foreach ($path in @(
     "requirements-build.txt",
     "packaging/scriber-backend.spec",
     "scripts/build_tauri_backend_sidecar.ps1",
+    "scripts/check_backend_runtime_imports.py",
     "Frontend/src-tauri/build.rs",
     "Frontend/src-tauri/src/audio_sidecar.rs",
     "Frontend/src-tauri/src/audio_sidecar_client.rs",
@@ -195,6 +199,7 @@ foreach ($path in @(
 )) {
     Add-RawFileEntry -Entries $backendEntries -Path $path
 }
+Add-FileGlobEntries -Entries $backendEntries -Root "pyloudnorm" -Filter "*.py"
 Add-ContentEntry -Entries $backendEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
 Add-ContentEntry -Entries $backendEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
 Add-FileGlobEntries -Entries $backendEntries -Root "src" -Filter "*.py" -ContentNormalizer {
@@ -204,4 +209,6 @@ Add-FileGlobEntries -Entries $backendEntries -Root "src" -Filter "*.py" -Content
     }
     return $Content
 }
+$backendEntries.Add("constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v2")
+$backendEntries.Add("constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim;BundleRustAudio")
 Write-KeyFile -Name "backend-sidecar.txt" -Entries $backendEntries
