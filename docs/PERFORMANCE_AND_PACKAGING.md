@@ -192,6 +192,13 @@ Packaging/build:
   compressed and updater signatures/JSON reports are small. This avoids
   spending runner CPU trying to recompress release outputs that cannot shrink
   meaningfully.
+- Non-tag cache/warmup builds still build and validate the installer, but their
+  Actions artifact is metadata-only by default: timing/cache summaries,
+  `latest.json`, `SHA256SUMS.txt`, and logs are uploaded, while the large
+  `none`-compressed `.exe` is skipped. Set
+  `SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER=1` only when a full non-tag installer
+  artifact is explicitly needed. Signed `v*` tag releases always upload the
+  installer and sibling `.sig` artifacts.
 - The release Python wheelhouse cache is built with `pip wheel`, not
   `pip download`, so packages that only publish sdists are built once into
   reusable wheels. Release installs use `--no-index --find-links` against that

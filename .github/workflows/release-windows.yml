@@ -33,6 +33,7 @@ jobs:
       SCRIBER_RUST_BUILD_ARTIFACT_TAG: release-cache-rust-build-v2
       SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG: release-cache-rust-audio-sidecar-v1
       SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}
+      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}
       CARGO_HOME: ${{ github.workspace }}/.cargo
       CARGO_INCREMENTAL: "1"
       CARGO_LOG: ${{ vars.SCRIBER_CARGO_LOG }}
@@ -979,6 +980,13 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
+          $isTagRelease = $env:GITHUB_REF_TYPE -eq "tag"
+          $uploadFullInstaller = $isTagRelease -or ($env:SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER -eq "1")
+          if ($uploadFullInstaller) {
+            Write-Host "Collecting full installer artifacts."
+          } else {
+            Write-Host "Collecting metadata-only non-tag artifacts; set SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER=1 to upload the installer executable."
+          }
           $metadata = Get-Content -Raw Frontend\src-tauri\target\release\release-metadata\latest.json | ConvertFrom-Json
           $artifactEntries = @($metadata.artifacts)
           if ($artifactEntries.Count -eq 0) {
@@ -993,14 +1001,24 @@ jobs:
             if ($matches.Count -ne 1) {
               throw "Expected exactly one release artifact named '$artifactName', found $($matches.Count)."
             }
-            Copy-Item -LiteralPath $matches[0].FullName -Destination release-artifacts\
             $signaturePath = "$($matches[0].FullName).sig"
+            if ($uploadFullInstaller) {
+              Copy-Item -LiteralPath $matches[0].FullName -Destination release-artifacts\
+            }
             if (Test-Path -LiteralPath $signaturePath -PathType Leaf) {
-              Copy-Item -LiteralPath $signaturePath -Destination release-artifacts\
+              if ($uploadFullInstaller) {
+                Copy-Item -LiteralPath $signaturePath -Destination release-artifacts\
+              }
             } elseif (-not [string]::IsNullOrWhiteSpace([string]$artifact.signature)) {
               throw "Signed updater artifact '$artifactName' is missing sibling signature file: $signaturePath"
             }
           }
+          [ordered]@{
+            isTagRelease = $isTagRelease
+            uploadFullInstaller = $uploadFullInstaller
+            uploadFullNonTagRequested = $env:SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER -eq "1"
+            artifactCount = $artifactEntries.Count
+          } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath release-artifacts\artifact-upload-mode.json -Encoding utf8
           Copy-Item Frontend\src-tauri\target\release\release-metadata\*.json release-artifacts\
           Copy-Item Frontend\src-tauri\target\release\release-metadata\*.log release-artifacts\ -ErrorAction SilentlyContinue
           Copy-Item Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt release-artifacts\

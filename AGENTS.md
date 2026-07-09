@@ -476,6 +476,11 @@ Already implemented and should not be regressed:
 - GitHub release artifact upload uses `compression-level: 0`; NSIS installers
   and updater metadata are already compressed or small, so recompressing them in
   `actions/upload-artifact` wastes runner CPU.
+- Non-tag release workflow runs are cache/warmup evidence by default. They still
+  build and validate the installer, but `scriber-windows-release` uploads only
+  metadata, logs, timing, checksums, and cache summaries unless
+  `SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER=1` is explicitly set. Signed `v*`
+  releases must always upload the installer executable and sibling `.sig`.
 - FFmpeg Profile B release builds restore from Actions cache first, then from
   the internal reusable GitHub release artifact `ffmpeg-profile-b-n7.0-v2`, and
   rebuild through MSYS2 only when restored Profile B tools are absent or fail

@@ -671,6 +671,11 @@ It:
   a listed artifact has a non-empty updater signature in `latest.json`, the
   sibling `<artifact>.sig` file is required and the workflow fails before upload
   if it is missing,
+- keeps non-tag cache/warmup artifact uploads metadata-only by default. The
+  installer is still built and validated, but the large `.exe` and `.sig` are
+  copied to `release-artifacts` only for signed `v*` tags or when
+  `SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER=1` is set for a deliberate non-tag
+  installer download,
 - passes the produced media tools to `scripts/build_windows.ps1`,
 - skips the full Python unit suite in the packaging step; run it before release
   or through PR/readiness gates. The release workflow therefore installs
@@ -1159,6 +1164,11 @@ Installer speed evidence:
 - Main run `29004179335` verified the rollback to `dtolnay`: the job returned
   to `2m34s`, `build_windows.ps1` took `55.1s`, and the Tauri bundle log showed
   only the expected single `scriber-desktop` compile line.
+- Non-tag runs after the metadata-only artifact change should no longer upload
+  the full uncompressed `none` installer by default. Inspect
+  `artifact-upload-mode.json` in `scriber-windows-release`; it should report
+  `isTagRelease=false` and `uploadFullInstaller=false`. Signed `v*` runs must
+  still report `uploadFullInstaller=true` and publish the installer plus `.sig`.
 
 These are evidence artifacts, not durable docs. Do not copy their full contents
 into permanent Markdown unless a concise current result belongs in
