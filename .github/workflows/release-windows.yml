@@ -732,6 +732,7 @@ jobs:
           SCRIBER_AUTHENTICODE_PUBLISHER: ${{ vars.SCRIBER_AUTHENTICODE_PUBLISHER }}
           SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP: ${{ vars.SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP }}
           SCRIBER_NSIS_COMPRESSION: ${{ vars.SCRIBER_NSIS_COMPRESSION }}
+          SCRIBER_NON_TAG_NSIS_COMPRESSION: ${{ vars.SCRIBER_NON_TAG_NSIS_COMPRESSION }}
           SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE: ${{ vars.SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE }}
         run: |
           $buildArgs = @(
@@ -771,12 +772,19 @@ jobs:
             Write-Host "Skipping source media preparation smoke because this cached sidecar fast path did not install Python dependencies."
           }
           $isTagRelease = $env:GITHUB_REF_TYPE -eq "tag"
-          $effectiveNsisCompression = $env:SCRIBER_NSIS_COMPRESSION
-          if (-not $effectiveNsisCompression -and -not $isTagRelease) {
-            $effectiveNsisCompression = "none"
-            Write-Host "Using NSIS compression 'none' for non-tag cache/warmup build. Set SCRIBER_NSIS_COMPRESSION to override."
-          } elseif (-not $effectiveNsisCompression) {
-            Write-Host "Using Tauri default NSIS compression for tag release."
+          if ($isTagRelease) {
+            $effectiveNsisCompression = $env:SCRIBER_NSIS_COMPRESSION
+            if (-not $effectiveNsisCompression) {
+              Write-Host "Using Tauri default NSIS compression for tag release."
+            }
+          } else {
+            $effectiveNsisCompression = $env:SCRIBER_NON_TAG_NSIS_COMPRESSION
+            if (-not $effectiveNsisCompression) {
+              $effectiveNsisCompression = "none"
+              Write-Host "Using NSIS compression 'none' for non-tag cache/warmup build. Set SCRIBER_NON_TAG_NSIS_COMPRESSION to override."
+            } else {
+              Write-Host "Using explicit non-tag NSIS compression '$effectiveNsisCompression' from SCRIBER_NON_TAG_NSIS_COMPRESSION."
+            }
           }
           if ($effectiveNsisCompression) {
             $buildArgs += @("-NsisCompression", $effectiveNsisCompression)

@@ -408,9 +408,11 @@ Already implemented and should not be regressed:
 - `v*` tag releases require Tauri updater signing by default. Use
   `SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE=1` only for an intentional unsigned tag
   test build.
-- Non-tag GitHub cache/warmup builds use `-NsisCompression none` when
-  `SCRIBER_NSIS_COMPRESSION` is unset to reduce packaging time. Do not apply
-  this default to normal signed `v*` updater releases.
+- Non-tag GitHub cache/warmup builds use `-NsisCompression none` by default to
+  reduce packaging time and intentionally ignore `SCRIBER_NSIS_COMPRESSION`.
+  Use `SCRIBER_NON_TAG_NSIS_COMPRESSION` only for explicit non-tag packaging
+  experiments. Signed `v*` updater releases may use
+  `SCRIBER_NSIS_COMPRESSION` after a measured size/time tradeoff.
 - The 2026-07-09 hot cache measurement (`workflow_dispatch` run `28997179965`)
   proved the optimized heavy-cache path: `build_windows.ps1` took about
   `49.2s`, with backend sidecar, Rust build, Rust audio sidecar, FFmpeg Profile
@@ -423,8 +425,12 @@ Already implemented and should not be regressed:
   about `137.5s`, dominated by `Tauri Windows bundle` at `122.0s`; the bundle
   log showed no crate downloads, one `scriber-desktop` compile at about `25s`,
   and about `90.2s` from `makensis` start to updater signature completion.
-  Future speed work should compare signed tag NSIS compression/signing timing
-  and installer size before changing dependency caches again.
+  The follow-up signed tag compression sweep measured `none` at `58.2s` /
+  `189.3 MiB`, `zlib` at `72.4s` / `92.4 MiB`, and `bzip2` at `76.9s` /
+  `90.3 MiB` versus Tauri default at `137.5s` / `74.4 MiB`. The current
+  release default is `SCRIBER_NSIS_COMPRESSION=bzip2`, because it saves about
+  one minute while adding about `15.9 MiB`; do not change dependency caches
+  again unless a fresh artifact summary shows they regressed.
 - Release workflow Actions caches are backed by internal GitHub release
   artifacts for the Python virtualenv, Python wheelhouse, backend sidecar cache,
   main Rust/Tauri build cache, Rust audio sidecar cache, and FFmpeg Profile B so

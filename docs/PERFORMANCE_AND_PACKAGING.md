@@ -290,12 +290,12 @@ What it does:
 - Builds Tauri/NSIS. `-FastLocalInstaller` defaults NSIS compression to `lzma`
   so local installer sizes match GitHub release builds; it records
   `buildMode.devOnly=true` plus `buildMode.nsisCompression` in
-  `build-timing.json`. Release builds can also set `-NsisCompression` through
-  the `SCRIBER_NSIS_COMPRESSION` GitHub variable; use this only after measuring
-  the packaging-time and installer-size tradeoff. Non-tag GitHub cache/warmup
-  builds default to `none` when the variable is unset, because those artifacts
-  are not the signed updater release path and faster NSIS packaging is more
-  useful than maximum compression there.
+  `build-timing.json`. Signed tag release builds can also set
+  `-NsisCompression` through the `SCRIBER_NSIS_COMPRESSION` GitHub variable;
+  use this only after measuring the packaging-time and installer-size tradeoff.
+  Non-tag GitHub cache/warmup builds default to `none` and intentionally ignore
+  `SCRIBER_NSIS_COMPRESSION`; use `SCRIBER_NON_TAG_NSIS_COMPRESSION` only for a
+  deliberate non-tag packaging experiment.
 - Builds signed updater tag releases only when updater signing is configured.
   Unsigned `v*` tag builds require the explicit
   `SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE=1` escape hatch and are not the normal
@@ -425,10 +425,8 @@ Release workflow:
   updater-signature verification. A signed tag run with the same hot heavy
   caches should still be measured separately because default NSIS compression,
   updater signing, GitHub release publication, and verification can dominate
-  the remaining time. Once the cache summary is exact/hot, the next
-  optimization experiment should profile signed tag `makensis`, updater
-  signature, release upload, and publication verification before changing any
-  dependency caches.
+  the remaining time. Once the cache summary is exact/hot, the residual
+  optimization target is signed tag packaging, not dependency setup.
 - The 2026-07-09 signed hot tag measurement `v0.4.21` / run `28999468872`
   completed in about `3m57s` end-to-end. `build_windows.ps1` took about
   `137.5s`: `Tauri sidecar preparation` `6.2s`, frontend type check `8.1s`,
@@ -441,10 +439,18 @@ Release workflow:
   start to updater signature completion. This proves the warmed signed-release
   bottleneck is NSIS/updater signing plus a small local app-crate compile, not
   Python, npm, FFmpeg, PyInstaller, backend sidecar, or Rust audio sidecar
-  cache reuse. The next speed experiment should compare signed tag NSIS
-  compression modes, starting with `SCRIBER_NSIS_COMPRESSION=none` or a faster
-  compression setting, and record both build time and installer size before
-  making it the default.
+  cache reuse. The signed tag compression sweep below is the current measured
+  decision point for that residual packaging phase.
+- The follow-up signed tag compression sweep measured the same hot-cache shape
+  across `v0.4.22` (`none`), `v0.4.23` (`zlib`), and `v0.4.24` (`bzip2`):
+  `tauri-default` took `137.5s` inside `build_windows.ps1` with a `74.4 MiB`
+  installer; `none` took `58.2s` but produced a `189.3 MiB` installer; `zlib`
+  took `72.4s` with a `92.4 MiB` installer; `bzip2` took `76.9s` with a
+  `90.3 MiB` installer. All runs had exact heavy cache hits. The current
+  production release variable is `SCRIBER_NSIS_COMPRESSION=bzip2`: it saves
+  about one minute per signed tag build while keeping installer growth to about
+  `15.9 MiB` versus the Tauri default. Non-tag cache/warmup builds keep their
+  separate `none` default unless `SCRIBER_NON_TAG_NSIS_COMPRESSION` is set.
 - Version-only app releases must not invalidate durable cache artifacts unless
   their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
   Python backend at launch, so a version-normalized backend sidecar can still

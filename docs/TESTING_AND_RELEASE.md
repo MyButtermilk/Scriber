@@ -128,11 +128,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
 runtime dependency footprint checks, and local `lzma` NSIS compression by
 default. Build metadata records the effective compression and marks these
 artifacts as `devOnly=true`. Explicit `-NsisCompression zlib`, `bzip2`, `lzma`,
-or `none` remains available for installer builds; GitHub release builds may set
-the `SCRIBER_NSIS_COMPRESSION` repository variable when a measured packaging
-speed/size tradeoff is desired. GitHub non-tag cache/warmup builds use `none`
-when that variable is unset to reduce NSIS packaging time; `v*` tag releases
-keep Tauri's default compression unless the variable is set deliberately.
+or `none` remains available for installer builds; GitHub signed tag releases
+may set the `SCRIBER_NSIS_COMPRESSION` repository variable when a measured
+packaging speed/size tradeoff is desired. GitHub non-tag cache/warmup builds
+use `none` by default to reduce NSIS packaging time and are not affected by
+`SCRIBER_NSIS_COMPRESSION`; use `SCRIBER_NON_TAG_NSIS_COMPRESSION` only for an
+intentional non-tag packaging experiment.
 Treat non-tag cache/warmup timings as cache-health evidence, not signed-release
 packaging evidence. The 2026-07-09 hot `workflow_dispatch` measurement
 `28997179965` proved the heavy cache path by completing `build_windows.ps1` in
@@ -1138,6 +1139,14 @@ Installer speed evidence:
   preparation at `6.2s`. Heavy caches were exact hits. Treat future slowdowns
   from this shape as Tauri/NSIS/signing/upload regressions first, not
   dependency-cache regressions.
+- The 2026-07-09 compression sweep kept the same exact heavy-cache shape and
+  measured signed tag installer tradeoffs:
+  `tauri-default` `137.5s` / `74.4 MiB`, `none` `58.2s` / `189.3 MiB`,
+  `zlib` `72.4s` / `92.4 MiB`, and `bzip2` `76.9s` / `90.3 MiB`.
+  The repository variable `SCRIBER_NSIS_COMPRESSION` is set to `bzip2` as the
+  current release default because it saves about one minute compared with the
+  Tauri default while adding about `15.9 MiB`, and it avoids the very large
+  `none` installer.
 
 These are evidence artifacts, not durable docs. Do not copy their full contents
 into permanent Markdown unless a concise current result belongs in
