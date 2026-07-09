@@ -1,117 +1,213 @@
 # Scriber
 
-Scriber is a Windows desktop app that turns speech, videos, and recordings into
-usable text.
+**Scriber turns speech, YouTube videos, meetings, calls, and recordings into
+usable text without forcing you into one transcription provider or one workflow.**
 
-Press one hotkey to dictate into any app. Paste a YouTube link and get notes
-without watching the full video again. Drop in a meeting recording and turn it
-into a searchable transcript, summary, and export.
-
-Scriber is for people who collect a lot of spoken information and want one
-calm place to capture it, understand it, and reuse it.
+Use one global hotkey to dictate into any Windows app. Paste a YouTube link and
+turn it into a transcript and summary. Drop in audio or video files, including
+multiple files at once, and keep everything in one searchable local history.
 
 [Download for Windows](https://github.com/MyButtermilk/Scriber/releases) |
-[What it can do](#what-it-can-do) | [Developer setup](#for-developers)
+[See Screenshots](#screenshots) |
+[Features](#features) |
+[Developer Setup](#for-developers)
 
 ![Scriber live microphone transcription](docs/screenshots/live_mic.png)
 
-## Why Use Scriber?
+## Why Scriber
 
-| What you need | What Scriber does |
+Most transcription tools are either a recorder, a YouTube helper, a file
+transcriber, or a cloud-provider wrapper. Scriber is built as a desktop
+workflow tool around the way spoken information is actually used.
+
+| Common limitation | What Scriber does differently |
 | --- | --- |
-| Fast dictation | Press the global hotkey, speak, stop, and Scriber pastes the result where you were working. |
-| Long-form video notes | Paste or search a YouTube URL, then get a transcript and summary in one place. |
-| File transcription | Drop in audio or video files and let Scriber prepare the media, transcribe it, and save the result. |
-| Searchable memory | Keep microphone, YouTube, and file transcripts in one local history with search and detail views. |
-| Better handoff | Export transcripts and summaries to PDF or DOCX. |
-| Practical troubleshooting | Use the built-in console and support bundle when something needs diagnosing. |
+| Dictation is trapped inside a web page | Press a Windows hotkey, speak, stop, and Scriber pastes into the app you were already using. |
+| You must trust one STT provider | Choose between streaming, async/batch, and local providers. Settings show practical price/error estimates where available. |
+| File, YouTube, and microphone transcripts live in separate places | Scriber stores live recordings, YouTube transcripts, and uploaded files in one searchable local transcript history. |
+| Summaries and cleanup are bolted on | Scriber has automatic summaries, manual summaries, and a separate live post-processing hotkey for cleaned dictation. |
+| Desktop behavior is an afterthought | Tauri owns tray actions, global hotkeys, autostart, update checks, single-instance behavior, and the recording overlay. |
+| Debugging is opaque | The Console view exposes logs, redacted support bundles, post-processing diagnostics, and runtime state. |
+| Privacy choices are vague | Runtime data stays local. Audio/text is sent only to the provider you select, and local ONNX models need no API key. |
 
-## What It Can Do
+## Built For People Who Work From Spoken Information
 
-- Live microphone dictation with a global Windows hotkey.
-- Live microphone post-processing with a separate hotkey that can clean
-  filler words, punctuation, formatting, and grammar before paste.
-- Optional mic pre-warming for faster recording starts.
-- Native recording overlay with waveform visualization.
-- YouTube search, URL lookup, download, transcription, and summarization.
-- Audio and video file transcription with bundled ffmpeg/ffprobe.
-- Transcript history with search, filters, detail pages, delete, cancel,
-  summarize, and export actions.
-- Provider configuration from the Settings UI, including direct "Get key" links
-  for supported cloud services.
-- Windows autostart, tray integration, single-instance behavior, and backend
-  recovery through the Tauri desktop shell.
-- Debug console with filters, log clearing, visible-log copy, and redacted
-  support bundle download.
+Scriber is useful when you regularly handle calls, research videos, legal or
+tax discussions, product notes, meeting recordings, voice notes, interviews, or
+any workflow where spoken content needs to become structured text quickly.
 
-Cloud and local provider paths currently cover Soniox, Microsoft Azure MAI,
-OpenAI, OpenRouter for summaries/fallback, Deepgram, AssemblyAI, Mistral,
-Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs/fal.ai, Google, ONNX, and
-NeMo.
-
-Settings separates STT choices by how results are produced:
-
-- Cloud streaming providers keep a live realtime stream open, for example
-  Soniox Realtime, AssemblyAI Realtime, Smallest AI Realtime, Deepgram,
-  Gladia, Google Cloud, and Speechmatics Realtime.
-- Cloud live / segmented providers work from the live microphone but finalize
-  speech segments through provider transcription APIs, for example OpenAI,
-  Groq, Mistral live, and ElevenLabs.
-- Cloud async / batch providers upload completed audio or finalize after
-  recording stops. Scriber exposes direct async paths for Soniox, Mistral,
-  Smallest AI, Deepgram, Gladia, OpenAI, Speechmatics, AssemblyAI, and
-  Microsoft Azure MAI.
-- AssemblyAI defaults to Universal-3.5-Pro for both the direct async path and
-  the realtime Pipecat path. The async path sends the model through
-  `speech_models` and keeps the provider's current language constraints.
-- The standard installer includes the ONNX local-ASR runtime. The NeMo Settings
-  surface falls back to the ONNX local model path when the full NeMo/Torch
-  runtime is not bundled.
-- Live microphone post-processing is intentionally separate from normal
-  dictation. The normal shortcut pastes plain STT output; the post-processing
-  shortcut runs the completed live transcript through the configured LLM prompt
-  before paste. The prompt supports the `${output}` placeholder for the raw live
-  transcript. By default this uses direct Cerebras `gemma-4-31b` for low-latency
-  cleanup. File and YouTube transcription are not post-processed.
+- **Dictate anywhere:** use the normal hotkey for raw STT, or a second hotkey
+  for polished live post-processing.
+- **Capture long-form content:** transcribe YouTube videos and imported audio or
+  video files without leaving the app.
+- **Reuse the result:** search, copy, summarize, export to PDF/DOCX, or open
+  transcript detail pages later.
+- **Choose the model for the job:** low-latency streaming, cheaper async/batch,
+  Gemini with one simple API key, or local ONNX/NeMo models.
 
 ## Screenshots
 
-### Speak Once, Use It Anywhere
+### Live Dictation
 
-Scriber is designed around a simple live microphone flow: start recording,
-watch the input, stop, then use the transcript immediately.
+Scriber keeps live recording simple: one button or hotkey, waveform feedback,
+recent recordings, search, and fast reuse.
 
 ![Live microphone view](docs/screenshots/live_mic.png)
 
-### Turn YouTube Into Notes
+### YouTube To Transcript
 
-Search YouTube or paste a URL, transcribe the video, and keep the output in the
-same history as your live recordings.
+Search YouTube or paste a URL, then turn a video into a transcript and summary
+that lives beside your other recordings.
 
 ![YouTube transcription view](docs/screenshots/youtube.png)
 
-### Import Meetings, Calls, and Recordings
+### File Transcription
 
-Drop an audio or video file into Scriber. The app handles media preparation and
-stores the transcript with your other work.
+Drag in audio or video files. Scriber prepares media with bundled ffmpeg/ffprobe,
+tracks progress, and saves the finished transcript.
 
 ![File transcription view](docs/screenshots/file_upload.png)
 
-### Read, Summarize, Export
+### Summary, Transcript, Export
 
-Transcript detail pages keep the source, transcript, summary, and export
-actions together.
+Transcript detail pages keep summaries, full transcript text, copy actions, and
+PDF/DOCX export in one place.
 
 ![Transcript detail view](docs/screenshots/transcript_detail.png)
 
-### Configure Once
+### Settings
 
-Choose your microphone, model, language, hotkeys, live post-processing prompt,
-autostart behavior, and API keys from one Settings screen.
-Cloud model choices stay locked until the matching provider API key has been
-saved in the API keys section. Local models remain selectable without a key.
+Configure microphone behavior, providers, API keys, custom vocabulary,
+summaries, live post-processing, local models, updates, and language from one
+screen.
 
 ![Settings view](docs/screenshots/settings.png)
+
+## Features
+
+### Live Microphone
+
+- Global Windows hotkey for start/stop dictation.
+- Optional push-to-talk or toggle mode.
+- Separate live post-processing hotkey for cleaned dictation.
+- Prompt-based post-processing for punctuation, paragraphs, filler-word removal,
+  numbers, dates, currency, units, and professional formatting.
+- Rust/WASAPI audio capture sidecar for Windows-first microphone handling.
+- Optional mic pre-warming for lower recording-start latency.
+- Speech gate with Silero VAD so silent starts can be skipped locally.
+- Optional pause-based speech segmentation for providers that benefit from it.
+- Native overlay with waveform visualization.
+- Clipboard-aware text injection with bounded clipboard restore behavior.
+- Recent recording cards with search, copy, delete, and detail navigation.
+
+### YouTube
+
+- Search YouTube from inside Scriber.
+- Paste a direct URL when you already have the video.
+- Download and prepare audio through bundled media tools.
+- Progress, retry, cancel, and durable job state for longer jobs.
+- Transcript and summary saved to the same history as live recordings.
+- Provider diarization support for batch jobs where the adapter supports stable
+  speaker output.
+
+### File Upload
+
+- Drag and drop audio or video files.
+- Select multiple files for batch transcription.
+- Automatic audio extraction from video.
+- Compression/preparation path for large inputs.
+- Recent file transcripts with grid/list views, search, copy, delete, status,
+  cancellation, and transcript detail navigation.
+- PDF and DOCX export from completed transcripts.
+
+### Transcript History
+
+- One local history for microphone, YouTube, and file transcripts.
+- Searchable, paginated, virtualized history lists for larger libraries.
+- Detail pages with transcript, summary, metadata, copy actions, and export.
+- Status tracking for processing, failed, stopped, summary failed, and ready
+  items.
+- Speaker-label rendering for diarized batch transcripts.
+
+### Summaries
+
+- Automatic summarization for new transcripts.
+- Manual summary actions from transcript detail.
+- Configurable summary prompt.
+- Separate summary model selection from live post-processing model selection.
+- Gemini, OpenRouter, OpenAI, and Cerebras summary/post-processing paths.
+- OpenRouter Nitro options for throughput-oriented routes.
+
+### Provider Choice
+
+Scriber exposes provider modes by how they behave in real work:
+
+- **Cloud streaming:** low-latency streams for live speech.
+- **Cloud async/batch:** completed audio upload or finalization after capture.
+- **Local:** ONNX/NeMo paths for users who want local inference and no STT API
+  key.
+
+Current provider coverage includes Soniox, AssemblyAI, Microsoft Azure MAI,
+OpenAI, OpenRouter, Deepgram, Mistral, Gladia, Groq, Speechmatics, Smallest AI,
+ElevenLabs/fal.ai, Gemini, Google Cloud, ONNX, and NeMo.
+
+Settings keep cloud model choices locked until the matching credential is
+available, and missing-key prompts open the correct API-key dialog directly.
+Gemini STT uses the same stored Gemini API key as Gemini summaries, so many
+Google users can configure one key and be done. Google Cloud STT remains a
+separate path for users with Google Cloud Speech credentials.
+
+### Local Models
+
+- Local ONNX runtime is bundled through `onnx-asr[cpu,hub]`.
+- ONNX models can be downloaded from Hugging Face from inside Settings.
+- NVIDIA Parakeet/Canary style local models are available through the ONNX path.
+- Primeline German Parakeet is available as a prepared ONNX snapshot:
+  `Buttermilk03/parakeet-primeline-onnx`.
+- Primeline supports a compact CPU-valid `int8` export and full `fp32`; users do
+  not need to export the original `.nemo` file locally.
+- The NeMo Settings surface falls back to the ONNX local model path when the
+  full NeMo/Torch runtime is not bundled.
+
+### Settings And Personalization
+
+- Provider API-key dialogs with saved/not-set status.
+- Direct key links for supported providers.
+- Credential-gated model selection so unavailable cloud models cannot be chosen
+  accidentally.
+- Custom vocabulary for names, brands, and domain-specific terms.
+- Separate prompts for summaries and live post-processing.
+- Separate model choices for STT, summaries, and post-processing.
+- STT model rows with practical cost/error estimates where benchmark data is
+  available.
+- Post-processing model rows with practical cost/speed estimates where model
+  data is available.
+- Interface language and automatic language behavior.
+- Recording mode, hotkey, post-processing hotkey, visualizer size, microphone,
+  favorite microphone, and mic pre-warming controls.
+- Light/dark/system theme support through the app shell.
+
+### Desktop App
+
+- Windows-first Tauri 2 desktop shell.
+- Tray panel with start recording, YouTube, file transcription, recent
+  transcripts that can be copied directly, settings, update checks, restart,
+  and quit.
+- Tray icon changes for active recording and available updates.
+- One-click install-and-restart when a signed update is available.
+- Autostart with Windows.
+- Single-instance behavior.
+- Backend supervision and recovery.
+- Fast route/data preloading for primary tabs.
+
+### Diagnostics And Support
+
+- Debug Console with runtime logs and filters.
+- Log clearing from the app.
+- Redacted support bundle generation.
+- Post-processing diagnostics without raw transcript leakage.
+- Runtime health and backend availability state.
+- Provider-specific error toasts.
 
 ## Install
 
@@ -121,52 +217,48 @@ Scriber is Windows-first.
    [GitHub Releases](https://github.com/MyButtermilk/Scriber/releases).
 2. Run the installer.
 3. Open Scriber from the Start Menu or tray.
-4. Go to Settings and add the API key for the provider you want to use.
+4. Open Settings and add the API key for the provider you want to use.
 
-The installed app includes the desktop shell, Python backend sidecar, Rust audio
-sidecar, and bundled media tools. No optional installer components are required
-for the current feature set.
+For the simplest first setup, add a Gemini API key and use Gemini for both STT
+and summaries. Local ONNX models remain selectable without an API key.
+
+The installed app includes the Tauri shell, React frontend, Python backend
+sidecar, Rust audio sidecar, and bundled media tools. No optional installer
+components are required for the normal feature set.
 
 ## First Run Checklist
 
-1. Open Settings.
-2. Pick your transcription model.
-3. Use the built-in "Get key" link next to the provider field if you still need
-   an API key.
-4. Select your preferred microphone.
-5. Decide whether mic pre-warming should stay enabled.
-6. Try a short live recording before using Scriber in a meeting or workflow.
-
-If no cloud STT credentials are saved yet, Settings shows a clear warning for
-the selected provider. Local model paths can be used where configured, but most
-users should start with a cloud provider for the simplest setup.
-
-## How Scriber Works
-
-Scriber is a desktop app with three cooperating parts:
-
-- A Tauri 2 Windows shell owns the tray, global hotkey, autostart, single
-  instance behavior, backend supervision, and native shell integration.
-- A React frontend provides the Live Mic, YouTube, File, Console, Settings, and
-  Transcript views.
-- A Python backend sidecar handles recording state, providers, media
-  preparation, transcript storage, logs, support bundles, and API routes.
-
-Live microphone capture uses a Rust/WASAPI audio sidecar. The Python backend
-receives the captured frames and routes transcription work to the selected STT
-provider or local model path.
-
-Runtime data is stored in the user data directory, not in the install folder.
-That includes settings, transcripts, downloads, logs, and support bundles.
+1. Select a transcription provider in Settings.
+2. Add the matching API key, or choose a local ONNX model.
+3. Select your microphone and decide whether mic pre-warming should stay on.
+4. Choose normal dictation or configure the optional post-processing hotkey.
+5. Try a short live recording before using Scriber in a meeting or workflow.
 
 ## Privacy And Data
 
-Scriber runs its UI and backend locally on loopback. Your transcript database
-and runtime files stay on your machine unless a selected cloud provider needs
-audio or text to perform transcription or summarization.
+Scriber runs its UI and backend locally on loopback. Transcript history,
+settings, logs, downloads, and runtime data stay in the user data directory.
 
-Support bundles redact known secret patterns such as API keys, bearer tokens,
-session tokens, and similar credentials.
+Cloud providers receive audio or text only when you select a cloud provider for
+transcription, summarization, or post-processing. Local ONNX models do not need
+an STT API key. Support bundles redact known secret patterns such as API keys,
+bearer tokens, session tokens, and similar credentials.
+
+## Architecture
+
+Scriber has three main parts:
+
+- **Tauri 2 shell:** tray, global hotkeys, autostart, single instance, update
+  checks, backend supervision, native overlay, and desktop integration.
+- **React frontend:** Live Mic, YouTube, File, Settings, Console, and Transcript
+  views.
+- **Python backend sidecar:** recording state, provider routing, media
+  preparation, transcript storage, logs, support bundles, and REST/WebSocket
+  APIs.
+
+Live microphone capture uses a Rust/WASAPI audio sidecar. Python receives the
+captured frames and routes transcription work to the selected STT provider or
+local model path.
 
 ## For Developers
 
@@ -243,13 +335,10 @@ Recent local release evidence:
 - AWS Transcribe support and AWS SDK packages are not part of the standard app.
 - The recording overlay is rendered by Tauri; PySide6/Tk overlay runtimes are
   not part of the standard backend sidecar.
-- Supported provider SDKs are bundled explicitly; unused Google
-  Generative-AI/TTS SDKs are kept out of the standard backend sidecar.
+- Supported provider SDKs are bundled explicitly; unused provider SDKs are kept
+  out of the standard backend sidecar.
 - ONNX local ASR support is bundled through `onnx-asr[cpu,hub]`; full
-  NeMo/Torch remains outside the standard sidecar and uses the ONNX fallback in
-  the installed app.
-- Installed frontend and media-preparation smokes pass in the standard local
-  build flow.
+  NeMo/Torch remains outside the standard sidecar.
 
 ## Test
 
@@ -278,7 +367,7 @@ python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.jso
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
-  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.2_x64-setup.exe `
+  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_<version>_x64-setup.exe `
   -VerifyFrontend `
   -VerifyMediaPreparation `
   -VerifySupportBundle `
@@ -295,14 +384,13 @@ come up, open the Console tab or create a support bundle.
 
 ### Missing API Keys
 
-Open Settings and check the API Configuration section. Scriber warns when the
-selected provider does not have credentials yet and links to the relevant
-provider key page.
+Open Settings and check the API keys section. Scriber warns when the selected
+provider does not have credentials yet and opens the relevant key dialog.
 
 ### YouTube Or File Transcription Fails
 
-The Windows installer bundles ffmpeg and ffprobe. In development mode, make
-sure the bundled media tools were built or set `SCRIBER_MEDIA_TOOLS_DIR`,
+The Windows installer bundles ffmpeg and ffprobe. In development mode, make sure
+the bundled media tools were built or set `SCRIBER_MEDIA_TOOLS_DIR`,
 `SCRIBER_FFMPEG_PATH`, or `SCRIBER_FFPROBE_PATH`.
 
 ### Microphone Changes
@@ -313,9 +401,9 @@ should refresh without constant aggressive polling.
 
 ### Slow Stop-To-Text
 
-For cloud STT providers, the final delay after stopping is often the provider
-finalization and network roundtrip. Use the debug console and hot-path metrics
-before assuming the local app is the bottleneck.
+For cloud STT providers, the final delay after stopping is often provider
+finalization and network roundtrip. Use the Console and hot-path metrics before
+assuming the local app is the bottleneck.
 
 ## Documentation
 
@@ -324,8 +412,8 @@ The active documentation set is intentionally small:
 - `AGENTS.md`: editing guide for future agents.
 - `docs/ARCHITECTURE.md`: current runtime architecture and ownership
   boundaries.
-- `docs/PERFORMANCE_AND_PACKAGING.md`: implemented performance work,
-  packaging decisions, installer size, and remaining optimization ideas.
+- `docs/PERFORMANCE_AND_PACKAGING.md`: implemented performance work, packaging
+  decisions, installer size, and remaining optimization ideas.
 - `docs/TESTING_AND_RELEASE.md`: test commands, smoke gates, installer builds,
   signing, and updater status.
 - `docs/ROADMAP_AND_KNOWN_ISSUES.md`: current open issues and prioritized next

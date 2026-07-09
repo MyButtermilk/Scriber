@@ -621,7 +621,8 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "GPT-OSS 120B Cerebras" in settings_source
     assert 'value: "cerebras/gemma-4-31b"' in settings_source
     assert "Gemma 4 31B Cerebras" in settings_source
-    assert "0,79€/M with AA Score n/a" in settings_source
+    assert "return `${priceText}€/M blended, ~${tokensPerSecond} Token/s`;" in settings_source
+    assert "languageModelBenchmarkDetail(0.00000035, 0.00000075, 768)" in settings_source
     assert 'baseten: "/provider-icons/baseten.svg"' in settings_source
     assert 'cerebras: "/provider-icons/cerebras.svg"' in settings_source
     assert 'value: "google/gemini-2.5-flash-lite:nitro"' in settings_source
@@ -646,7 +647,9 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "POST_PROCESSING_MODEL_OPTIONS.map((option)" in settings_source
     assert "selectedPostProcessingModelOption" in settings_source
     assert "<ProviderIcon icon={option.icon} label={option.label}" in settings_source
-    assert "<SelectItem key={option.value} value={option.value} disabled={Boolean(disabledReason)}>" in settings_source
+    assert "const requirement = requiredCredentialForLanguageModel(value);" in settings_source
+    assert "if (!isCredentialReady(requirement))" in settings_source
+    assert "openCredentialDialog(requirement);" in settings_source
     assert "{option.detail}" in settings_source
     assert "Use a low-cost, low-latency model for simple dictation cleanup." in settings_source
     assert "Beantworte keine Fragen im Transkript." in settings_source
@@ -669,19 +672,24 @@ def test_settings_model_choices_require_saved_api_keys() -> None:
     ).read_text(encoding="utf-8")
 
     assert "type CredentialRequirement" in settings_source
-    assert "savedKeys[provider] === true" in settings_source
+    assert "const isCredentialReady = (requirement: CredentialRequirement | null) => {" in settings_source
+    assert "savedCredentialAvailable(requirement.provider" not in settings_source
     assert "const requiredCredentialForTranscriptionModel = (model: string)" in settings_source
     assert "const requiredCredentialForLanguageModel = (model: string)" in settings_source
     assert "const missingCredentialReason = (requirement: CredentialRequirement | null)" in settings_source
-    assert 'title: "API key required"' in settings_source
-    assert "must be saved below before this model can be selected." in settings_source
+    assert "onCredentialAction={() => openCredentialDialog(requirement)}" in settings_source
+    assert "openCredentialDialog(requirement);" in settings_source
     assert "disabled={Boolean(disabledReason)}" in settings_source
-    assert "<SelectItem key={option.value} value={option.value} disabled={Boolean(disabledReason)}>" in settings_source
+    assert "aria-disabled={disabled || undefined}" in settings_source
     assert "{option.detail}" in settings_source
     assert "{disabledReason ? (" in settings_source
-    assert "Save the {missingPostProcessingCredentialRequirement.label} below before using the selected cleanup model." in settings_source
-    assert "API key required before model selection." in settings_source
-    assert "setSavedKeys({" in settings_source
+    assert 'const MISSING_CREDENTIAL_CTA = "Add API Key";' in settings_source
+    assert "openCredentialDialog(missingPostProcessingCredentialRequirement)" in settings_source
+    assert "{MISSING_CREDENTIAL_CTA}" in settings_source
+    assert "Credential required before model selection." in settings_source
+    assert "below, or choose a model that already has credentials." in settings_source
+    assert "setSavedKeys((prev) => ({ ...prev, [provider]: credentialReady }));" in settings_source
+    assert "setCredentialReadyKeys((prev) => ({ ...prev, [provider]: credentialReady }));" in settings_source
     assert 'OpenRouter: hasValue(keys.openrouter)' in settings_source
 
 
@@ -709,11 +717,13 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
     assert " % Error" not in settings_source
     assert "{disabledReason || option.detail}" not in settings_source
     assert "title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : \"\"}`}" in settings_source
-    assert "Save the {missingPostProcessingCredentialRequirement.label} below before using the selected cleanup model." in settings_source
+    assert 'const MISSING_CREDENTIAL_CTA = "Add API Key";' in settings_source
     provider_options_source = settings_source[
         settings_source.index("const PROVIDER_MODEL_OPTIONS: ProviderModelOption[]")
         : settings_source.index("function ProviderIcon")
     ]
+    assert "cloud_segmented" not in provider_options_source
+    assert "Cloud live / segmented" not in settings_source
 
     streaming_order = [
         '"assemblyai-realtime"',
@@ -724,9 +734,13 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
         '"gladia"',
         '"speechmatics"',
     ]
-    segmented_order = ['"elevenlabs"', '"groq"', '"openai"', '"mistral-realtime"']
     async_order = [
+        '"elevenlabs"',
+        '"groq"',
+        '"openai"',
+        '"mistral-realtime"',
         '"azure_mai"',
+        '"gemini-stt"',
         '"assemblyai"',
         '"mistral-async"',
         '"soniox-async"',
@@ -737,7 +751,7 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
         '"deepgram-async"',
     ]
 
-    for ordered_values in (streaming_order, segmented_order, async_order):
+    for ordered_values in (streaming_order, async_order):
         positions = [provider_options_source.index(f"value: {value}") for value in ordered_values]
         assert positions == sorted(positions)
 

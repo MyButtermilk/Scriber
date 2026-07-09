@@ -204,6 +204,9 @@ _PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, dict[str, Any]] = {
     # Soniox REST files API documents 524288000 bytes max on POST /v1/files.
     "soniox": {"max_bytes": 524_288_000, "label": "500MB"},
     "soniox_async": {"max_bytes": 524_288_000, "label": "500MB"},
+    # Gemini File API supports larger uploads, but Scriber reads the upload once
+    # for the direct STT request. Keep the app-side limit conservative.
+    "gemini_stt": {"max_bytes": 100 * 1024 * 1024, "label": "100MB"},
     # Mistral documents 512 MB max on POST /v1/files; its audio transcription
     # endpoint accepts the same File object and file_id from /v1/files.
     "mistral": {"max_bytes": 512 * 1024 * 1024, "label": "512MB"},
@@ -1193,7 +1196,7 @@ def _env_float(name: str, default: float, *, minimum: float | None = None, maxim
 def _live_pipeline_uses_async_finalization(pipeline: Any | None) -> bool:
     service_name = str(getattr(pipeline, "service_name", "") or "")
     return (
-        service_name in {"soniox_async", "mistral_async", "smallest_async", "azure_mai", "assemblyai"}
+        service_name in {"soniox_async", "gemini_stt", "mistral_async", "smallest_async", "azure_mai", "assemblyai"}
         or (service_name == "soniox" and Config.SONIOX_MODE == "async")
     )
 
@@ -4925,7 +4928,6 @@ class ScriberWebController:
         current_has_text = bool(current and current.content_text().strip())
         silent_early_exit = bool(
             pipeline
-            and async_finalization
             and _audio_diagnostics_have_pipecat_vad_silence(pipeline_audio_diagnostics)
             and not audible_audio_observed
             and not is_realtime_service
@@ -5439,6 +5441,7 @@ class ScriberWebController:
             "favoriteMic": _resolved_favorite or (Config.FAVORITE_MIC or ""),
             "favoriteMicAvailable": _favorite_mic_available,
             "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
+            "segmentSpeechWithVad": bool(getattr(Config, "SEGMENT_SPEECH_WITH_VAD", False)),
             "debug": bool(Config.DEBUG),
             "customVocab": Config.CUSTOM_VOCAB or "",
             "summarizationPrompt": Config.SUMMARIZATION_PROMPT or "",
@@ -5542,6 +5545,10 @@ class ScriberWebController:
         if mic_always_on is not None:
             Config.set_mic_always_on(mic_always_on)
             mic_runtime_changed = True
+
+        segment_speech_with_vad = _payload_bool(payload, "segmentSpeechWithVad")
+        if segment_speech_with_vad is not None:
+            Config.set_segment_speech_with_vad(segment_speech_with_vad)
 
         debug_enabled = _payload_bool(payload, "debug")
         if debug_enabled is not None:
@@ -7462,7 +7469,7 @@ def _prewarm_stt_service(service_name: str) -> None:
             import_provider_runtime_module("elevenlabs", "pipecat.services.elevenlabs.stt")
         elif service_name == "deepgram":
             import_provider_runtime_module("deepgram", "pipecat.services.deepgram.stt")
-        elif service_name in {"deepgram_async", "gladia_async", "openai_async", "speechmatics_async"}:
+        elif service_name in {"deepgram_async", "gemini_stt", "gladia_async", "openai_async", "speechmatics_async"}:
             import_provider_runtime_module(service_name, "src.cloud_async_stt")
         elif service_name == "openai":
             import_provider_runtime_module("openai", "pipecat.services.openai.stt")

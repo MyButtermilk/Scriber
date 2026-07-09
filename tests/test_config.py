@@ -161,3 +161,12 @@ def test_persist_to_env_file_includes_post_processing_settings(monkeypatch, tmp_
     assert "SCRIBER_POST_PROCESSING_ENABLED=1" in contents
     assert "SCRIBER_POST_PROCESSING_HOTKEY=ctrl+shift+p" in contents
     assert "SCRIBER_POST_PROCESSING_MODEL=gemini-flash-latest" in contents
+
+
+def test_persist_to_env_file_includes_vad_segmentation_setting(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", True)
+
+    Config.persist_to_env_file(str(target))
+
+    assert "SCRIBER_SEGMENT_SPEECH_WITH_VAD=1" in target.read_text(encoding="utf-8")

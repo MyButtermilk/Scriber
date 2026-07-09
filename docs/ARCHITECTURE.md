@@ -114,8 +114,9 @@ Installed frontend assets are owned by Tauri through `frontendDist` and are
 loaded from the WebView origin (`http://tauri.localhost`), not from the Python
 backend loopback server.
 Settings model selectors are credential-gated in the UI: cloud STT,
-summarization, and live post-processing choices are disabled until the matching
-provider API key or credential path has been saved in the API keys section.
+summarization, and live post-processing choices require the matching provider
+API key or credential path before selection. Missing-credential prompts open the
+matching API-key dialog directly instead of forcing users to scroll.
 Local transcription models remain selectable without credentials.
 Desktop update checks are frontend/Tauri-owned rather than Python-backend
 work. Installed builds check the configured Tauri updater endpoint in the
@@ -304,21 +305,44 @@ identifiers. The Pipecat OpenAI STT bridge remains a segmented-live path; full
 recording/file OpenAI transcription is exposed through the dedicated
 `openai_async` direct adapter.
 
+Pipecat/Silero VAD has two separate live-mic roles. It remains enabled as a
+speech gate where needed so silent recordings can be cancelled locally without
+provider finalization or audio upload. Mid-recording VAD segmentation for
+HTTP-style live STT providers is opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD`
+and the Settings toggle; by default Scriber opens one recording-wide segment
+and closes it when the user stops recording. The Settings UI groups these
+HTTP-style live providers with cloud async/batch models because segmentation is
+a cross-provider recording option, not a separate provider class.
+
 AssemblyAI is exposed as both a direct async/batch provider and a realtime
 Pipecat provider. Both default to Universal-3.5-Pro. The async adapter sends
 the configured model through AssemblyAI's `speech_models` field; the realtime
-path uses Pipecat `AssemblyAISTTService.Settings` when available and keeps a
-legacy connection-params fallback only for older Pipecat runtimes.
+path uses Pipecat `AssemblyAISTTService.Settings` when available, filters
+settings by the installed Pipecat signature, and falls back to
+`AssemblyAIConnectionParams` for older Pipecat runtimes. In that legacy path,
+Scriber's `universal-3-5-pro` setting is mapped to AssemblyAI's supported
+streaming `speech_model` names so the service can start on bundled runtimes that
+predate the Settings API.
 
 The standard sidecar keeps runtime support for the shipped cloud/external
 providers exposed in Settings, but the dependency boundary is explicit. The
 standard build bundles the CPU ONNX local-ASR runtime through `onnx-asr`. The
 NeMo Settings surface falls back to that ONNX local model path when full
 NeMo/Torch is unavailable; full NeMo/Torch remains excluded from the standard
-sidecar because it would dominate installer size.
+sidecar because it would dominate installer size. The German Primeline Parakeet
+model is offered through the prepared `Buttermilk03/parakeet-primeline-onnx`
+Hugging Face repo instead of exporting `primeline/parakeet-primeline` on user
+machines. Its `int8` ONNX files are self-contained for the normal CPU path; the
+`fp32` export uses ONNX external data, so Scriber must load that model from the
+complete local Hugging Face snapshot rather than relying on `onnx-asr`'s narrow
+default file download list.
 Google Cloud STT is packaged through `google-cloud-speech` plus Pipecat's
-required `google-genai` namespace dependency; Gemini, Cerebras, and OpenRouter
-summarization/post-processing use direct HTTP and do not require
+required `google-genai` namespace dependency and still requires Google Cloud
+credentials for a Speech-to-Text project. Gemini STT is a separate direct Gemini
+API audio-transcription adapter in `src/cloud_async_stt.py`; it reuses the
+stored `GOOGLE_API_KEY` used by Gemini summaries and post-processing so users
+can configure the simple Google path with one Gemini API key. Gemini, Cerebras,
+and OpenRouter summarization/post-processing use direct HTTP and do not require
 `google-generativeai`. Direct Cerebras calls use `cerebras/gemma-4-31b`, which
 is the live post-processing default. Most OpenRouter summary fallback models are
 sent with `:nitro` variants; `openai/gpt-oss-120b` keeps explicit OpenRouter
@@ -330,12 +354,13 @@ OpenAI STT uses the explicit `openai` SDK dependency, Groq STT uses Pipecat's
 Gladia live transcription still uses Pipecat's Gladia service, while
 `gladia_async`, file, and YouTube transcription use Gladia's pre-recorded HTTP
 upload/polling API directly to avoid empty live-WebSocket finalization for
-complete files. `deepgram_async`, `openai_async`, and `speechmatics_async` are
-implemented as direct HTTP/batch adapters in `src/cloud_async_stt.py`; the
-Speechmatics batch path intentionally avoids adding the separate
-`speechmatics-batch` SDK to the standard sidecar. Build-time runtime import
-checks cover the offered standard provider modules, and the footprint analyzer
-rejects unused provider SDKs if PyInstaller pulls them back in.
+complete files. `deepgram_async`, `openai_async`, `gemini_stt`, and
+`speechmatics_async` are implemented as direct HTTP/batch adapters in
+`src/cloud_async_stt.py`; the Speechmatics batch path intentionally avoids
+adding the separate `speechmatics-batch` SDK to the standard sidecar. Build-time
+runtime import checks cover the offered standard provider modules, and the
+footprint analyzer rejects unused provider SDKs if PyInstaller pulls them back
+in.
 
 ## Media Boundary
 

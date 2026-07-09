@@ -90,12 +90,18 @@ const LANGUAGE_OPTIONS = [
   { value: "it", label: "Italian" },
 ] as const;
 
+const SETTINGS_SECTION_REQUEST_KEY = "scriber:open-settings-section";
+const SETTINGS_SECTION_IDS: Record<string, string> = {
+  updates: "settings-updates",
+};
+
 const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "onnx_local", label: "Local (ONNX) - No API Key" },
   { value: "nemo_local", label: "Local (NeMo) - Primeline" },
   { value: "soniox-realtime", label: "Soniox STT Streaming" },
   { value: "soniox-async", label: "Soniox Async" },
-  { value: "mistral-realtime", label: "Mistral Live Segmented (Voxtral)" },
+  { value: "gemini-stt", label: "Gemini STT" },
+  { value: "mistral-realtime", label: "Mistral Live (Voxtral)" },
   { value: "mistral-async", label: "Mistral Async (Voxtral V2)" },
   { value: "smallest-realtime", label: "Smallest AI STT Streaming (Pulse)" },
   { value: "smallest-async", label: "Smallest AI Async (Pulse)" },
@@ -103,15 +109,15 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "assemblyai", label: "AssemblyAI Universal-3.5 Pro Async" },
   { value: "deepgram", label: "Deepgram STT Streaming" },
   { value: "deepgram-async", label: "Deepgram Async" },
-  { value: "openai", label: "OpenAI Live Segmented" },
+  { value: "openai", label: "OpenAI Live" },
   { value: "openai-async", label: "OpenAI Async" },
   { value: "azure_mai", label: "Microsoft MAI Transcribe" },
   { value: "gladia", label: "Gladia STT Streaming" },
   { value: "gladia-async", label: "Gladia Async" },
-  { value: "groq", label: "Groq Live Segmented" },
+  { value: "groq", label: "Groq Live" },
   { value: "speechmatics", label: "Speechmatics STT Streaming" },
   { value: "speechmatics-async", label: "Speechmatics Batch" },
-  { value: "elevenlabs", label: "ElevenLabs Live Segmented" },
+  { value: "elevenlabs", label: "ElevenLabs Live" },
   { value: "google", label: "Google Cloud STT Streaming" },
 ] as const;
 
@@ -289,6 +295,8 @@ type CredentialRequirement = {
   helpKey: ApiKeyHelpKey;
 };
 
+const MISSING_CREDENTIAL_CTA = "Add API Key";
+
 async function openExternalHelpUrl(url: string): Promise<void> {
   if (isTauriRuntime()) {
     try {
@@ -442,7 +450,7 @@ interface ProviderModelOption {
   value: string;
   label: string;
   detail: string;
-  group: "cloud_streaming" | "cloud_segmented" | "cloud_async" | "local";
+  group: "cloud_streaming" | "cloud_async" | "local";
   icon?: ProviderIconKey;
 }
 
@@ -467,18 +475,19 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "deepgram", label: "Deepgram", detail: sttBenchmarkDetail(4.80, 6.6), group: "cloud_streaming", icon: "deepgram" },
   { value: "gladia", label: "Gladia", detail: sttBenchmarkDetail(12.50, 7.8), group: "cloud_streaming", icon: "gladia" },
   { value: "speechmatics", label: "Speechmatics", detail: sttBenchmarkDetail(17.50, 8.0), group: "cloud_streaming", icon: "speechmatics" },
-  { value: "elevenlabs", label: "ElevenLabs", detail: sttBenchmarkDetail(6.50, 3.6), group: "cloud_segmented", icon: "elevenlabs" },
-  { value: "groq", label: "Groq", detail: sttBenchmarkDetail(4.00, 3.7), group: "cloud_segmented", icon: "groq" },
-  { value: "openai", label: "OpenAI", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_segmented", icon: "openai" },
-  { value: "mistral-realtime", label: "Mistral", detail: sttBenchmarkDetail(6.00, 5.2), group: "cloud_segmented", icon: "mistral" },
+  { value: "elevenlabs", label: "ElevenLabs Live", detail: sttBenchmarkDetail(6.50, 3.6), group: "cloud_async", icon: "elevenlabs" },
+  { value: "groq", label: "Groq Live", detail: sttBenchmarkDetail(4.00, 3.7), group: "cloud_async", icon: "groq" },
+  { value: "openai", label: "OpenAI Live", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_async", icon: "openai" },
+  { value: "mistral-realtime", label: "Mistral Live", detail: sttBenchmarkDetail(6.00, 5.2), group: "cloud_async", icon: "mistral" },
   { value: "azure_mai", label: "Microsoft MAI", detail: sttBenchmarkDetail(6.00, 2.4), group: "cloud_async", icon: "azure" },
+  { value: "gemini-stt", label: "Gemini", detail: sttBenchmarkDetail(6.66, 5.1), group: "cloud_async", icon: "gemini" },
   { value: "assemblyai", label: "AssemblyAI", detail: sttBenchmarkDetail(3.50, 3.1), group: "cloud_async", icon: "assemblyai" },
-  { value: "mistral-async", label: "Mistral", detail: sttBenchmarkDetail(3.00, 3.6), group: "cloud_async", icon: "mistral" },
+  { value: "mistral-async", label: "Mistral Batch", detail: sttBenchmarkDetail(3.00, 3.6), group: "cloud_async", icon: "mistral" },
   { value: "soniox-async", label: "Soniox", detail: sttBenchmarkDetail(1.66, 3.8), group: "cloud_async", icon: "soniox" },
   { value: "speechmatics-async", label: "Speechmatics", detail: sttBenchmarkDetail(6.70, 4.0), group: "cloud_async", icon: "speechmatics" },
   { value: "gladia-async", label: "Gladia", detail: sttBenchmarkDetail(4.07, 4.1), group: "cloud_async", icon: "gladia" },
   { value: "smallest-async", label: "Smallest AI", detail: sttBenchmarkDetail(5.00, 4.4), group: "cloud_async", icon: "smallest" },
-  { value: "openai-async", label: "OpenAI", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_async", icon: "openai" },
+  { value: "openai-async", label: "OpenAI Batch", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_async", icon: "openai" },
   { value: "deepgram-async", label: "Deepgram", detail: sttBenchmarkDetail(4.30, 5.2), group: "cloud_async", icon: "deepgram" },
   { value: "onnx_local", label: "Local ONNX", detail: "0,00€/h with model-dependent Error", group: "local" },
   { value: "nemo_local", label: "Local NeMo", detail: "0,00€/h with model-dependent Error", group: "local" },
@@ -519,15 +528,17 @@ function SectionPanel({
   icon: Icon,
   children,
   className,
+  id,
 }: {
   title: string;
   description: string;
   icon?: LucideIcon;
   children: ReactNode;
   className?: string;
+  id?: string;
 }) {
   return (
-    <section className={cn("settings-section min-w-0 border-t border-slate-300/70 pb-3 pt-4 dark:border-slate-800", className)}>
+    <section id={id} className={cn("settings-section min-w-0 scroll-mt-4 border-t border-slate-300/70 pb-3 pt-4 dark:border-slate-800", className)}>
       <div className="mb-3 flex min-w-0 items-start gap-2.5">
         {Icon ? (
           <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/70 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] dark:bg-slate-900/70 dark:text-slate-400">
@@ -611,34 +622,63 @@ function SettingsSubsection({
   );
 }
 
+function revealRequestedSettingsSection(section: string) {
+  const targetId = SETTINGS_SECTION_IDS[section];
+  if (!targetId || typeof window === "undefined") {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    const target = document.getElementById(targetId);
+    if (!target) {
+      return;
+    }
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    target.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
+    target.classList.add("settings-section-attention");
+    window.setTimeout(() => {
+      target.classList.remove("settings-section-attention");
+    }, 1400);
+  });
+}
+
 function ProviderChoice({
   option,
   selected,
   onSelect,
   disabled,
   disabledReason,
+  onCredentialAction,
 }: {
   option: ProviderModelOption;
   selected: boolean;
   onSelect: () => void;
   disabled?: boolean;
   disabledReason?: string;
+  onCredentialAction?: () => void;
 }) {
+  const handleClick = () => {
+    if (disabled) {
+      onCredentialAction?.();
+      return;
+    }
+    onSelect();
+  };
+
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
       aria-disabled={disabled || undefined}
-      disabled={disabled}
-      onClick={onSelect}
+      onClick={handleClick}
       title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : ""}`}
       className={cn(
         "group flex min-h-[40px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
-        !disabled && "active:translate-y-px",
+        "active:translate-y-px",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
         disabled
-          ? "cursor-not-allowed text-slate-700 dark:text-slate-300"
+          ? "cursor-pointer text-slate-700 hover:bg-amber-50/75 dark:text-slate-300 dark:hover:bg-amber-950/20"
           : selected
           ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
           : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-slate-900",
@@ -657,7 +697,7 @@ function ProviderChoice({
           {option.detail}
         </span>
         {disabledReason ? (
-          <span className="block truncate text-[10px] font-medium leading-3 text-amber-600 dark:text-amber-400">
+          <span className="mt-0.5 inline-flex w-fit rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold leading-3 text-amber-700 transition-colors group-hover:bg-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:group-hover:bg-amber-900/70">
             {disabledReason}
           </span>
         ) : null}
@@ -685,28 +725,37 @@ function SummaryModelChoice({
   onSelect,
   disabled,
   disabledReason,
+  onCredentialAction,
 }: {
   option: SummarizationModelOption;
   selected: boolean;
   onSelect: () => void;
   disabled?: boolean;
   disabledReason?: string;
+  onCredentialAction?: () => void;
 }) {
+  const handleClick = () => {
+    if (disabled) {
+      onCredentialAction?.();
+      return;
+    }
+    onSelect();
+  };
+
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
       aria-disabled={disabled || undefined}
-      disabled={disabled}
-      onClick={onSelect}
+      onClick={handleClick}
       title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : ""}`}
       className={cn(
         "group flex min-h-[40px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors",
-        !disabled && "active:translate-y-px",
+        "active:translate-y-px",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
         disabled
-          ? "cursor-not-allowed text-slate-700 dark:text-slate-300"
+          ? "cursor-pointer text-slate-700 hover:bg-amber-50/75 dark:text-slate-300 dark:hover:bg-amber-950/20"
           : selected
           ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
           : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-slate-900",
@@ -721,7 +770,7 @@ function SummaryModelChoice({
           {option.detail}
         </span>
         {disabledReason ? (
-          <span className="block truncate text-[10px] font-medium leading-3 text-amber-600 dark:text-amber-400">
+          <span className="mt-0.5 inline-flex w-fit rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold leading-3 text-amber-700 transition-colors group-hover:bg-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:group-hover:bg-amber-900/70">
             {disabledReason}
           </span>
         ) : null}
@@ -767,11 +816,14 @@ function maskedSecret(value: string): string {
 
 function ApiCredentialRow({
   provider,
+  credentialId = provider,
   icon,
   value,
   onValueChange,
   show,
   onShowChange,
+  open,
+  onOpenChange,
   helpKey,
   saved,
   onSave,
@@ -781,11 +833,14 @@ function ApiCredentialRow({
   children,
 }: {
   provider: string;
+  credentialId?: string;
   icon?: ProviderIconKey;
   value: string;
   onValueChange: (value: string) => void;
   show?: boolean;
   onShowChange?: (value: boolean) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   helpKey: ApiKeyHelpKey;
   saved: boolean;
   onSave: () => void;
@@ -796,10 +851,11 @@ function ApiCredentialRow({
 }) {
   const hasCredential = hasValue(value);
   return (
-    <Dialog>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
         <button
           type="button"
+          data-credential-id={credentialId}
           className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 rounded-lg px-2 py-2.5 text-left outline-none transition-colors hover:bg-slate-100/80 focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:hover:bg-slate-900"
         >
           <span className="flex min-w-0 items-center gap-2">
@@ -917,6 +973,7 @@ export default function Settings() {
   const { toast } = useToast();
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
   const [credentialReadyKeys, setCredentialReadyKeys] = useState<Record<string, boolean>>({});
+  const [credentialDialogProvider, setCredentialDialogProvider] = useState<string | null>(null);
 
   const [inputDevices, setInputDevices] = useState<MicrophoneDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState("default");
@@ -937,6 +994,7 @@ export default function Settings() {
   const [isCheckingDesktopUpdate, setIsCheckingDesktopUpdate] = useState(false);
   const [isInstallingDesktopUpdate, setIsInstallingDesktopUpdate] = useState(false);
   const [micAlwaysOn, setMicAlwaysOn] = useState(false);
+  const [segmentSpeechWithVad, setSegmentSpeechWithVad] = useState(false);
   const [favoriteMic, setFavoriteMic] = useState("");
   const [isMicDropdownOpen, setIsMicDropdownOpen] = useState(false);
   const [isLanguageDropdownOpen, setIsLanguageDropdownOpen] = useState(false);
@@ -976,8 +1034,59 @@ export default function Settings() {
     };
   }, []);
 
+  useEffect(() => {
+    const consumeRequestedSection = () => {
+      let section = "";
+      try {
+        section = window.sessionStorage.getItem(SETTINGS_SECTION_REQUEST_KEY) || "";
+        if (section) {
+          window.sessionStorage.removeItem(SETTINGS_SECTION_REQUEST_KEY);
+        }
+      } catch {
+        section = "";
+      }
+      if (section) {
+        revealRequestedSettingsSection(section);
+      }
+    };
+
+    const handleSectionRequest = (event: Event) => {
+      const section = String((event as CustomEvent<{ section?: string }>).detail?.section || "");
+      if (section) {
+        revealRequestedSettingsSection(section);
+      }
+    };
+
+    consumeRequestedSection();
+    const retryTimer = window.setTimeout(consumeRequestedSection, 120);
+    window.addEventListener("scriber-open-settings-section", handleSectionRequest);
+    return () => {
+      window.clearTimeout(retryTimer);
+      window.removeEventListener("scriber-open-settings-section", handleSectionRequest);
+    };
+  }, []);
+
   const savedCredentialAvailable = (provider: string, value: string, extraValue?: string) =>
     credentialReadyKeys[provider] === true && hasValue(value) && (extraValue === undefined || hasValue(extraValue));
+
+  const openCredentialDialog = useCallback((requirement: CredentialRequirement | null) => {
+    if (!requirement) {
+      return;
+    }
+    setCredentialDialogProvider(requirement.provider);
+  }, []);
+
+  const credentialDialogProps = (credentialId: string) => ({
+    open: credentialDialogProvider === credentialId,
+    onOpenChange: (open: boolean) => {
+      setCredentialDialogProvider((current) => {
+        if (open) {
+          return credentialId;
+        }
+        return current === credentialId ? null : current;
+      });
+    },
+  });
 
   const isCredentialReady = (requirement: CredentialRequirement | null) => {
     if (!requirement) {
@@ -1020,13 +1129,15 @@ export default function Settings() {
   };
 
   const missingCredentialReason = (requirement: CredentialRequirement | null) =>
-    requirement && !isCredentialReady(requirement) ? `${requirement.label} required` : undefined;
+    requirement && !isCredentialReady(requirement) ? MISSING_CREDENTIAL_CTA : undefined;
 
   const requiredCredentialForTranscriptionModel = (model: string): CredentialRequirement | null => {
     switch (model) {
       case "soniox-realtime":
       case "soniox-async":
         return { provider: "Soniox", label: "Soniox API key", helpKey: "soniox" };
+      case "gemini-stt":
+        return { provider: "Gemini", label: "Gemini API key", helpKey: "gemini" };
       case "mistral-realtime":
       case "mistral-async":
         return { provider: "Mistral", label: "Mistral API key", helpKey: "mistral" };
@@ -1055,7 +1166,7 @@ export default function Settings() {
       case "elevenlabs":
         return { provider: "ElevenLabs", label: "fal.ai API key for ElevenLabs", helpKey: "fal" };
       case "google":
-        return { provider: "Google Cloud", label: "Google Cloud credentials JSON path", helpKey: "googleCloud" };
+        return { provider: "Google Cloud", label: "Google Cloud credentials", helpKey: "googleCloud" };
       default:
         return null;
     }
@@ -1109,6 +1220,7 @@ export default function Settings() {
     groqKey,
     speechmaticsKey,
     elevenLabsKey,
+    geminiKey,
     googleApplicationCredentials,
   ].some(hasValue);
 
@@ -1181,6 +1293,9 @@ export default function Settings() {
       if (service === "assemblyai_realtime") {
         return "assemblyai-realtime";
       }
+      if (service === "gemini_stt") {
+        return "gemini-stt";
+      }
       if (service === "deepgram_async") {
         return "deepgram-async";
       }
@@ -1223,6 +1338,7 @@ export default function Settings() {
         setVisualizerBarCount(loadedVisualizerBarCount);
         setSavedVisualizerBarCount(loadedVisualizerBarCount);
         setMicAlwaysOn(settings.micAlwaysOn === true);
+        setSegmentSpeechWithVad(settings.segmentSpeechWithVad === true);
         setFavoriteMic(settings.favoriteMic || "");
         setNemoModel(settings.nemoModel || "");
 
@@ -1579,11 +1695,7 @@ export default function Settings() {
   const handleTranscriptionModelChange = async (value: string) => {
     const requirement = requiredCredentialForTranscriptionModel(value);
     if (!isCredentialReady(requirement)) {
-      toast({
-        title: "API key required",
-        description: `${requirement?.label || "API key"} must be saved below before this model can be selected.`,
-        duration: 4000,
-      });
+      openCredentialDialog(requirement);
       return;
     }
     const previousValue = transcriptionModel;
@@ -1593,6 +1705,8 @@ export default function Settings() {
         await updateSettings({ defaultSttService: "soniox", sonioxMode: "async" });
       } else if (value === "soniox-realtime") {
         await updateSettings({ defaultSttService: "soniox", sonioxMode: "realtime" });
+      } else if (value === "gemini-stt") {
+        await updateSettings({ defaultSttService: "gemini_stt" });
       } else if (value === "mistral-async") {
         await updateSettings({ defaultSttService: "mistral_async" });
       } else if (value === "mistral-realtime") {
@@ -1847,11 +1961,7 @@ export default function Settings() {
   const handleSummarizationModelChange = async (value: string) => {
     const requirement = requiredCredentialForLanguageModel(value);
     if (!isCredentialReady(requirement)) {
-      toast({
-        title: "API key required",
-        description: `${requirement?.label || "API key"} must be saved below before this model can be selected.`,
-        duration: 4000,
-      });
+      openCredentialDialog(requirement);
       return;
     }
     const previousValue = summarizationModel;
@@ -1876,11 +1986,7 @@ export default function Settings() {
   const handlePostProcessingModelChange = async (value: string) => {
     const requirement = requiredCredentialForLanguageModel(value);
     if (!isCredentialReady(requirement)) {
-      toast({
-        title: "API key required",
-        description: `${requirement?.label || "API key"} must be saved below before this model can be selected.`,
-        duration: 4000,
-      });
+      openCredentialDialog(requirement);
       return;
     }
     const previousValue = postProcessingModel;
@@ -2207,6 +2313,25 @@ export default function Settings() {
     }
   };
 
+  const handleSegmentSpeechWithVadChange = async (enabled: boolean) => {
+    setSegmentSpeechWithVad(enabled);
+    try {
+      await updateSettings({ segmentSpeechWithVad: enabled });
+      toast({
+        title: "Saved",
+        description: enabled ? "VAD speech segmentation enabled." : "VAD speech segmentation disabled.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      setSegmentSpeechWithVad(!enabled);
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
   const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     if (!msg) return;
     if (msg.type === "microphones_updated") {
@@ -2358,15 +2483,9 @@ export default function Settings() {
       items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_streaming"),
     },
     {
-      key: "cloud_segmented",
-      label: "Cloud live / segmented",
-      description: "Live microphone mode with per-segment finalization.",
-      items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_segmented"),
-    },
-    {
       key: "cloud_async",
       label: "Cloud async / batch",
-      description: "Final transcript after upload or recording stop.",
+      description: "Finalizes captured audio after upload or recording stop.",
       items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_async"),
     },
     {
@@ -2476,9 +2595,10 @@ export default function Settings() {
             </SelectTrigger>
             <SelectContent className="min-w-[320px]">
               {POST_PROCESSING_MODEL_OPTIONS.map((option) => {
-                const disabledReason = missingCredentialReason(requiredCredentialForLanguageModel(option.value));
+                const requirement = requiredCredentialForLanguageModel(option.value);
+                const disabledReason = missingCredentialReason(requirement);
                 return (
-                  <SelectItem key={option.value} value={option.value} disabled={Boolean(disabledReason)}>
+                  <SelectItem key={option.value} value={option.value}>
                     <span className="flex min-w-0 items-center gap-2 py-0.5">
                       <ProviderIcon icon={option.icon} label={option.label} className="h-5 w-5 rounded" />
                       <span className="min-w-0">
@@ -2487,7 +2607,7 @@ export default function Settings() {
                           {option.detail}
                         </span>
                         {disabledReason ? (
-                          <span className="block truncate text-[10.5px] font-medium leading-3 text-amber-600 dark:text-amber-400">
+                          <span className="mt-0.5 inline-flex w-fit rounded-full bg-amber-100 px-1.5 py-0.5 text-[10.5px] font-semibold leading-3 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
                             {disabledReason}
                           </span>
                         ) : null}
@@ -2499,9 +2619,13 @@ export default function Settings() {
             </SelectContent>
           </Select>
           {missingPostProcessingCredentialRequirement ? (
-            <p className="text-[10.5px] leading-4 text-amber-600 dark:text-amber-400">
-              Save the {missingPostProcessingCredentialRequirement.label} below before using the selected cleanup model.
-            </p>
+            <button
+              type="button"
+              onClick={() => openCredentialDialog(missingPostProcessingCredentialRequirement)}
+              className="inline-flex w-fit rounded-full bg-amber-100 px-2 py-1 text-[10.5px] font-semibold leading-4 text-amber-700 transition-colors hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:bg-amber-950/50 dark:text-amber-300 dark:hover:bg-amber-900/70"
+            >
+              {MISSING_CREDENTIAL_CTA}
+            </button>
           ) : null}
         </FieldShell>
 
@@ -2880,6 +3004,13 @@ export default function Settings() {
                   </ToggleGroup>
                 </SettingLine>
 
+                <SettingLine
+                  label="Segment speech pauses"
+                  description="Use Silero VAD to split long live recordings at pauses."
+                >
+                  <Switch checked={segmentSpeechWithVad} onCheckedChange={handleSegmentSpeechWithVadChange} />
+                </SettingLine>
+
                 <SettingLine label="Global hotkey" description="Shortcut to start or stop recording.">
                 <Dialog open={isRecordingHotkey} onOpenChange={setIsRecordingHotkey}>
                 <DialogTrigger asChild>
@@ -2999,6 +3130,7 @@ export default function Settings() {
                           selected={transcriptionModel === option.value}
                           disabled={Boolean(disabledReason)}
                           disabledReason={disabledReason}
+                          onCredentialAction={() => openCredentialDialog(requirement)}
                           onSelect={() => void handleTranscriptionModelChange(option.value)}
                         />
                       );
@@ -3020,19 +3152,25 @@ export default function Settings() {
           description="Manage provider credentials without expanding the whole page."
           icon={Key}
         >
-          <div className="space-y-2">
+          <div className="space-y-3.5">
             {missingActiveCredentialRequirements.length > 0 && (
               <div className="rounded-xl border border-amber-500/35 bg-amber-50 p-2.5 text-[11px] leading-[15px] text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
                 <div className="flex gap-2">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
                   <div>
-                    <p className="font-semibold">API key required before model selection.</p>
+                    <p className="font-semibold">Credential required before model selection.</p>
                     <p className="mt-1">
                       Save{" "}
                       {missingActiveCredentialRequirements.map((requirement, index) => (
                         <span key={requirement.provider}>
                           {index > 0 ? ", " : ""}
-                          <ApiKeyLink helpKey={requirement.helpKey}>{requirement.label}</ApiKeyLink>
+                          <button
+                            type="button"
+                            onClick={() => openCredentialDialog(requirement)}
+                            className="rounded-md px-1.5 py-0.5 font-semibold text-amber-950 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:text-amber-100"
+                          >
+                            {requirement.label}
+                          </button>
                         </span>
                       ))}{" "}
                       below, or choose a model that already has credentials.
@@ -3048,23 +3186,23 @@ export default function Settings() {
               </div>
             )}
 
-            <div className="grid gap-x-2 gap-y-2 sm:grid-cols-2">
-              <ApiCredentialRow provider="OpenAI" icon="openai" value={openAIKey} onValueChange={markCredentialChanged("OpenAI", setOpenAIKey)} show={showOpenAIKey} onShowChange={setShowOpenAIKey} helpKey="openai" saved={savedKeys.OpenAI === true} onSave={() => handleSaveApiKey("OpenAI")} note="Used for OpenAI STT and summarization." />
-              <ApiCredentialRow provider="Gemini" icon="gemini" value={geminiKey} onValueChange={markCredentialChanged("Gemini", setGeminiKey)} show={showGeminiKey} onShowChange={setShowGeminiKey} helpKey="gemini" saved={savedKeys.Gemini === true} onSave={() => handleSaveApiKey("Gemini")} />
-              <ApiCredentialRow provider="OpenRouter" icon="openrouter" value={openRouterKey} onValueChange={markCredentialChanged("OpenRouter", setOpenRouterKey)} show={showOpenRouterKey} onShowChange={setShowOpenRouterKey} helpKey="openrouter" saved={savedKeys.OpenRouter === true} onSave={() => handleSaveApiKey("OpenRouter")} />
-              <ApiCredentialRow provider="Cerebras" icon="cerebras" value={cerebrasKey} onValueChange={markCredentialChanged("Cerebras", setCerebrasKey)} show={showCerebrasKey} onShowChange={setShowCerebrasKey} helpKey="cerebras" saved={savedKeys.Cerebras === true} onSave={() => handleSaveApiKey("Cerebras")} note="Used for direct Cerebras summary and cleanup models." />
-              <ApiCredentialRow provider="YouTube" icon="youtube" value={youtubeKey} onValueChange={markCredentialChanged("YouTube", setYoutubeKey)} show={showYoutubeKey} onShowChange={setShowYoutubeKey} helpKey="youtube" saved={savedKeys.YouTube === true} onSave={() => handleSaveApiKey("YouTube")} note="Used for search and metadata in the YouTube tab." />
-              <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={markCredentialChanged("Soniox", setSonioxKey)} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} />
-              <ApiCredentialRow provider="Mistral" icon="mistral" value={mistralKey} onValueChange={markCredentialChanged("Mistral", setMistralKey)} show={showMistralKey} onShowChange={setShowMistralKey} helpKey="mistral" saved={savedKeys.Mistral === true} onSave={() => handleSaveApiKey("Mistral")} />
-              <ApiCredentialRow provider="Smallest AI" icon="smallest" value={smallestKey} onValueChange={markCredentialChanged("Smallest AI", setSmallestKey)} show={showSmallestKey} onShowChange={setShowSmallestKey} helpKey="smallest" saved={savedKeys["Smallest AI"] === true} onSave={() => handleSaveApiKey("Smallest AI")} />
-              <ApiCredentialRow provider="AssemblyAI" icon="assemblyai" value={assemblyAIKey} onValueChange={markCredentialChanged("AssemblyAI", setAssemblyAIKey)} show={showAssemblyAIKey} onShowChange={setShowAssemblyAIKey} helpKey="assemblyai" saved={savedKeys.AssemblyAI === true} onSave={() => handleSaveApiKey("AssemblyAI")} />
-              <ApiCredentialRow provider="Deepgram" icon="deepgram" value={deepgramKey} onValueChange={markCredentialChanged("Deepgram", setDeepgramKey)} show={showDeepgramKey} onShowChange={setShowDeepgramKey} helpKey="deepgram" saved={savedKeys.Deepgram === true} onSave={() => handleSaveApiKey("Deepgram")} />
-              <ApiCredentialRow provider="Gladia" icon="gladia" value={gladiaKey} onValueChange={markCredentialChanged("Gladia", setGladiaKey)} show={showGladiaKey} onShowChange={setShowGladiaKey} helpKey="gladia" saved={savedKeys.Gladia === true} onSave={() => handleSaveApiKey("Gladia")} />
-              <ApiCredentialRow provider="Groq" icon="groq" value={groqKey} onValueChange={markCredentialChanged("Groq", setGroqKey)} show={showGroqKey} onShowChange={setShowGroqKey} helpKey="groq" saved={savedKeys.Groq === true} onSave={() => handleSaveApiKey("Groq")} />
-              <ApiCredentialRow provider="Speechmatics" icon="speechmatics" value={speechmaticsKey} onValueChange={markCredentialChanged("Speechmatics", setSpeechmaticsKey)} show={showSpeechmaticsKey} onShowChange={setShowSpeechmaticsKey} helpKey="speechmatics" saved={savedKeys.Speechmatics === true} onSave={() => handleSaveApiKey("Speechmatics")} />
-              <ApiCredentialRow provider="ElevenLabs" icon="elevenlabs" value={elevenLabsKey} onValueChange={markCredentialChanged("ElevenLabs", setElevenLabsKey)} show={showElevenLabsKey} onShowChange={setShowElevenLabsKey} helpKey="fal" saved={savedKeys.ElevenLabs === true} onSave={() => handleSaveApiKey("ElevenLabs")} note="Scriber stores the fal.ai key for this provider." />
-              <ApiCredentialRow provider="Google Cloud" icon="googlecloud" value={googleApplicationCredentials} onValueChange={markCredentialChanged("Google Cloud", setGoogleApplicationCredentials)} helpKey="googleCloud" saved={savedKeys["Google Cloud"] === true} onSave={() => handleSaveApiKey("Google Cloud")} inputType="text" placeholder="C:\\path\\to\\service-account.json" note="Path to the service account JSON used by Google Cloud STT." />
-              <ApiCredentialRow provider="Azure MAI" icon="azure" value={azureMaiKey} onValueChange={markCredentialChanged("Azure", setAzureMaiKey)} show={showAzureMaiKey} onShowChange={setShowAzureMaiKey} helpKey="azure" saved={savedKeys.Azure === true} onSave={() => handleSaveApiKey("Azure")} note="The key must belong to a region that supports the configured model.">
+            <div className="grid gap-x-2 gap-y-3 sm:grid-cols-2 sm:gap-y-6 xl:gap-y-7">
+              <ApiCredentialRow provider="OpenAI" icon="openai" value={openAIKey} onValueChange={markCredentialChanged("OpenAI", setOpenAIKey)} show={showOpenAIKey} onShowChange={setShowOpenAIKey} helpKey="openai" saved={savedKeys.OpenAI === true} onSave={() => handleSaveApiKey("OpenAI")} note="Used for OpenAI STT and summarization." {...credentialDialogProps("OpenAI")} />
+              <ApiCredentialRow provider="Gemini" icon="gemini" value={geminiKey} onValueChange={markCredentialChanged("Gemini", setGeminiKey)} show={showGeminiKey} onShowChange={setShowGeminiKey} helpKey="gemini" saved={savedKeys.Gemini === true} onSave={() => handleSaveApiKey("Gemini")} note="One key unlocks Gemini STT, summaries, and cleanup." {...credentialDialogProps("Gemini")} />
+              <ApiCredentialRow provider="OpenRouter" icon="openrouter" value={openRouterKey} onValueChange={markCredentialChanged("OpenRouter", setOpenRouterKey)} show={showOpenRouterKey} onShowChange={setShowOpenRouterKey} helpKey="openrouter" saved={savedKeys.OpenRouter === true} onSave={() => handleSaveApiKey("OpenRouter")} {...credentialDialogProps("OpenRouter")} />
+              <ApiCredentialRow provider="Cerebras" icon="cerebras" value={cerebrasKey} onValueChange={markCredentialChanged("Cerebras", setCerebrasKey)} show={showCerebrasKey} onShowChange={setShowCerebrasKey} helpKey="cerebras" saved={savedKeys.Cerebras === true} onSave={() => handleSaveApiKey("Cerebras")} note="Used for direct Cerebras summary and cleanup models." {...credentialDialogProps("Cerebras")} />
+              <ApiCredentialRow provider="YouTube" icon="youtube" value={youtubeKey} onValueChange={markCredentialChanged("YouTube", setYoutubeKey)} show={showYoutubeKey} onShowChange={setShowYoutubeKey} helpKey="youtube" saved={savedKeys.YouTube === true} onSave={() => handleSaveApiKey("YouTube")} note="Used for search and metadata in the YouTube tab." {...credentialDialogProps("YouTube")} />
+              <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={markCredentialChanged("Soniox", setSonioxKey)} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} {...credentialDialogProps("Soniox")} />
+              <ApiCredentialRow provider="Mistral" icon="mistral" value={mistralKey} onValueChange={markCredentialChanged("Mistral", setMistralKey)} show={showMistralKey} onShowChange={setShowMistralKey} helpKey="mistral" saved={savedKeys.Mistral === true} onSave={() => handleSaveApiKey("Mistral")} {...credentialDialogProps("Mistral")} />
+              <ApiCredentialRow provider="Smallest AI" icon="smallest" value={smallestKey} onValueChange={markCredentialChanged("Smallest AI", setSmallestKey)} show={showSmallestKey} onShowChange={setShowSmallestKey} helpKey="smallest" saved={savedKeys["Smallest AI"] === true} onSave={() => handleSaveApiKey("Smallest AI")} {...credentialDialogProps("Smallest AI")} />
+              <ApiCredentialRow provider="AssemblyAI" icon="assemblyai" value={assemblyAIKey} onValueChange={markCredentialChanged("AssemblyAI", setAssemblyAIKey)} show={showAssemblyAIKey} onShowChange={setShowAssemblyAIKey} helpKey="assemblyai" saved={savedKeys.AssemblyAI === true} onSave={() => handleSaveApiKey("AssemblyAI")} {...credentialDialogProps("AssemblyAI")} />
+              <ApiCredentialRow provider="Deepgram" icon="deepgram" value={deepgramKey} onValueChange={markCredentialChanged("Deepgram", setDeepgramKey)} show={showDeepgramKey} onShowChange={setShowDeepgramKey} helpKey="deepgram" saved={savedKeys.Deepgram === true} onSave={() => handleSaveApiKey("Deepgram")} {...credentialDialogProps("Deepgram")} />
+              <ApiCredentialRow provider="Gladia" icon="gladia" value={gladiaKey} onValueChange={markCredentialChanged("Gladia", setGladiaKey)} show={showGladiaKey} onShowChange={setShowGladiaKey} helpKey="gladia" saved={savedKeys.Gladia === true} onSave={() => handleSaveApiKey("Gladia")} {...credentialDialogProps("Gladia")} />
+              <ApiCredentialRow provider="Groq" icon="groq" value={groqKey} onValueChange={markCredentialChanged("Groq", setGroqKey)} show={showGroqKey} onShowChange={setShowGroqKey} helpKey="groq" saved={savedKeys.Groq === true} onSave={() => handleSaveApiKey("Groq")} {...credentialDialogProps("Groq")} />
+              <ApiCredentialRow provider="Speechmatics" icon="speechmatics" value={speechmaticsKey} onValueChange={markCredentialChanged("Speechmatics", setSpeechmaticsKey)} show={showSpeechmaticsKey} onShowChange={setShowSpeechmaticsKey} helpKey="speechmatics" saved={savedKeys.Speechmatics === true} onSave={() => handleSaveApiKey("Speechmatics")} {...credentialDialogProps("Speechmatics")} />
+              <ApiCredentialRow provider="ElevenLabs" icon="elevenlabs" value={elevenLabsKey} onValueChange={markCredentialChanged("ElevenLabs", setElevenLabsKey)} show={showElevenLabsKey} onShowChange={setShowElevenLabsKey} helpKey="fal" saved={savedKeys.ElevenLabs === true} onSave={() => handleSaveApiKey("ElevenLabs")} note="Scriber stores the fal.ai key for this provider." {...credentialDialogProps("ElevenLabs")} />
+              <ApiCredentialRow provider="Google Cloud" icon="googlecloud" value={googleApplicationCredentials} onValueChange={markCredentialChanged("Google Cloud", setGoogleApplicationCredentials)} helpKey="googleCloud" saved={savedKeys["Google Cloud"] === true} onSave={() => handleSaveApiKey("Google Cloud")} inputType="text" placeholder="C:\\path\\to\\service-account.json" note="Google Cloud STT uses Cloud credentials, not the Gemini API key. Enter the service account JSON path for the speech.googleapis.com project." {...credentialDialogProps("Google Cloud")} />
+              <ApiCredentialRow provider="Azure MAI" credentialId="Azure" icon="azure" value={azureMaiKey} onValueChange={markCredentialChanged("Azure", setAzureMaiKey)} show={showAzureMaiKey} onShowChange={setShowAzureMaiKey} helpKey="azure" saved={savedKeys.Azure === true} onSave={() => handleSaveApiKey("Azure")} note="The key must belong to a region that supports the configured model." {...credentialDialogProps("Azure")}>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <FieldShell label="Region">
                     <Input value={azureMaiRegion} onChange={(event) => markCredentialChanged("Azure", setAzureMaiRegion)(event.target.value)} placeholder="northeurope" className="font-mono text-sm" />
@@ -3110,6 +3248,7 @@ export default function Settings() {
                           selected={summarizationModel === option.value}
                           disabled={Boolean(disabledReason)}
                           disabledReason={disabledReason}
+                          onCredentialAction={() => openCredentialDialog(requirement)}
                           onSelect={() => void handleSummarizationModelChange(option.value)}
                         />
                       );
@@ -3126,6 +3265,7 @@ export default function Settings() {
         </SectionPanel>
 
         <SectionPanel
+          id="settings-updates"
           title="Update app"
           description="Keep Scriber current without interrupting recordings."
           icon={Shield}

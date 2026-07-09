@@ -91,6 +91,12 @@ class Config:
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
     FAVORITE_MIC = os.getenv("SCRIBER_FAVORITE_MIC", "")  # Preferred mic - used when available
     MIC_ALWAYS_ON = os.getenv("SCRIBER_MIC_ALWAYS_ON", "0") in ("1", "true", "True")
+    SEGMENT_SPEECH_WITH_VAD = (
+        str(_json_settings.get("segmentSpeechWithVad", os.getenv("SCRIBER_SEGMENT_SPEECH_WITH_VAD", "0")))
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+    )
     MIC_POST_RECORDING_PREWARM_SECONDS = max(
         0.0,
         min(600.0, float(os.getenv("SCRIBER_MIC_POST_RECORDING_PREWARM_SECONDS", "120") or 120)),
@@ -113,6 +119,7 @@ class Config:
     SERVICE_API_KEY_MAP = {
         "soniox": "SONIOX_API_KEY",
         "soniox_async": "SONIOX_API_KEY",
+        "gemini_stt": "GOOGLE_API_KEY",
         "mistral": "MISTRAL_API_KEY",
         "mistral_async": "MISTRAL_API_KEY",
         "smallest": "SMALLEST_API_KEY",
@@ -139,6 +146,7 @@ class Config:
     SERVICE_LABELS = {
         "soniox": "Soniox",
         "soniox_async": "Soniox (Async)",
+        "gemini_stt": "Gemini STT",
         "mistral": "Mistral (Realtime)",
         "mistral_async": "Mistral (Async)",
         "smallest": "Smallest AI (Realtime)",
@@ -382,6 +390,14 @@ ${output}"""
         os.environ["SCRIBER_MIC_ALWAYS_ON"] = "1" if enabled else "0"
 
     @classmethod
+    def set_segment_speech_with_vad(cls, enabled: bool) -> None:
+        cls.SEGMENT_SPEECH_WITH_VAD = bool(enabled)
+        os.environ["SCRIBER_SEGMENT_SPEECH_WITH_VAD"] = "1" if cls.SEGMENT_SPEECH_WITH_VAD else "0"
+        global _json_settings
+        _json_settings["segmentSpeechWithVad"] = cls.SEGMENT_SPEECH_WITH_VAD
+        _save_json_settings(_json_settings)
+
+    @classmethod
     def set_mic_post_recording_prewarm_seconds(cls, seconds: float) -> None:
         value = max(0.0, min(600.0, float(seconds)))
         cls.MIC_POST_RECORDING_PREWARM_SECONDS = value
@@ -493,6 +509,7 @@ ${output}"""
         
         add("SCRIBER_FAVORITE_MIC", cls.FAVORITE_MIC or "")
         add("SCRIBER_MIC_ALWAYS_ON", "1" if cls.MIC_ALWAYS_ON else "0")
+        add("SCRIBER_SEGMENT_SPEECH_WITH_VAD", "1" if cls.SEGMENT_SPEECH_WITH_VAD else "0")
         add(
             "SCRIBER_MIC_POST_RECORDING_PREWARM_SECONDS",
             f"{cls.MIC_POST_RECORDING_PREWARM_SECONDS:g}",

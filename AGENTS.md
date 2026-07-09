@@ -281,6 +281,13 @@ Packaging and scripts:
   diarization. Keep `enable_speaker_diarization=False` for live pipelines so
   single-speaker dictation inserts plain text. File and YouTube jobs may enable
   diarization where the provider adapter has stable anonymous speaker output.
+- Keep Silero/Pipecat VAD speech gating separate from mid-recording speech
+  segmentation. VAD may be used by default to skip silent live recordings before
+  provider finalization/upload. Pause-based segmentation for HTTP-style
+  segmented live STT providers is opt-in via `SCRIBER_SEGMENT_SPEECH_WITH_VAD`
+  and the Settings toggle; the default live behavior is one recording-wide
+  segment flushed on stop. In Settings, keep those HTTP-style live providers in
+  the cloud async/batch group rather than a separate segmented provider group.
 - Live microphone post-processing is opt-in per session through the second
   hotkey. When active, suppress pipeline raw-text injection, wait for final STT
   text after stop, run the configured LLM prompt with the `${output}` raw text
@@ -305,9 +312,11 @@ Packaging and scripts:
 - Standard provider packaging uses explicit SDK dependencies instead of broad
   Pipecat provider extras. Keep `google-generativeai` and Google Cloud
   Text-to-Speech out of the standard sidecar unless a product path is
-  reintroduced that actually imports them. Gemini summarization uses direct
-  HTTP. Direct Cerebras summarization/post-processing uses the OpenAI-compatible
-  Cerebras chat completions endpoint and `cerebras/gemma-4-31b` is the live
+  reintroduced that actually imports them. Gemini summarization and Gemini STT
+  use direct HTTP with `GOOGLE_API_KEY`; this is the simple Google path and
+  should stay separate from Google Cloud Speech credentials. Direct Cerebras
+  summarization/post-processing uses the OpenAI-compatible Cerebras chat
+  completions endpoint and `cerebras/gemma-4-31b` is the live
   post-processing default. OpenRouter summarization and post-processing use
   direct HTTP chat completions. Most OpenRouter fallback models use `:nitro`
   variants for throughput-sorted provider routing; `openai/gpt-oss-120b` must
@@ -320,13 +329,18 @@ Packaging and scripts:
   Pipecat's Gladia service; Gladia file and YouTube transcription use the
   direct pre-recorded HTTP upload/polling API and should not be routed through
   the live WebSocket pipeline. The direct async adapters
-  `deepgram_async`, `gladia_async`, `openai_async`, and `speechmatics_async`
-  live in `src/cloud_async_stt.py`; keep them as direct HTTP/batch adapters
-  unless a measured provider SDK change justifies adding more packaged
-  dependencies. Do not add `speechmatics-batch` to the standard sidecar while
-  the direct Speechmatics batch API path is sufficient. Keep `onnx-asr[cpu,hub]`
-  in the standard sidecar for the ONNX local-ASR path and NeMo UI fallback, but
-  keep full NeMo/Torch out of the standard sidecar.
+  `deepgram_async`, `gladia_async`, `openai_async`, `gemini_stt`, and
+  `speechmatics_async` live in `src/cloud_async_stt.py`; keep them as direct
+  HTTP/batch adapters unless a measured provider SDK change justifies adding
+  more packaged dependencies. Do not add `speechmatics-batch` to the standard
+  sidecar while the direct Speechmatics batch API path is sufficient. Keep
+  `onnx-asr[cpu,hub]` in the standard sidecar for the ONNX local-ASR path and
+  NeMo UI fallback, but keep full NeMo/Torch out of the standard sidecar.
+  Primeline Parakeet support uses the prepared
+  `Buttermilk03/parakeet-primeline-onnx` Hugging Face snapshot. Preserve its
+  validated `int8` and `fp32` quantization metadata; fp32 uses ONNX external
+  data and must be loaded from the complete snapshot, not from onnx-asr's
+  narrow default file list.
 - FFmpeg Profile B is the standard Windows bundled media-tool path. Gyan
   Essentials is explicit fallback only.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`

@@ -5,6 +5,7 @@ Supports automatic model download from Hugging Face.
 Supported Models:
 - nemo-canary-1b-v2: NVIDIA Canary 1B v2 (multilingual: en, de, fr, es)
 - nemo-parakeet-tdt-0.6b-v3: NVIDIA Parakeet TDT v3 (25 European languages)
+- parakeet-primeline: Primeline German Parakeet ONNX export
 """
 import asyncio
 import io
@@ -72,6 +73,23 @@ ONNX_MODELS = {
         "hf_repo_by_quantization": {
             "fp16": "grikdotnet/parakeet-tdt-0.6b-fp16",
         },
+    },
+    "parakeet-primeline": {
+        "name": "Parakeet Primeline (DE)",
+        "description": "German-focused Primeline Parakeet ONNX export",
+        "languages": ["de"],
+        "size_mb": 890,
+        "size_mb_by_quantization": {
+            "int8": 890,
+            "fp32": 2432,
+        },
+        "supported_quantizations": ["int8", "fp32"],
+        "supports_timestamps": True,
+        "supports_language_param": False,
+        "hf_repo": "Buttermilk03/parakeet-primeline-onnx",
+        "source_hf_repo": "primeline/parakeet-primeline",
+        "load_from_snapshot": True,
+        "download_full_snapshot_quantizations": ["fp32"],
     },
 }
 
@@ -193,6 +211,10 @@ def _resolve_repo_id(model_name: str, quantization_label: str) -> Optional[str]:
 
 def _build_allow_patterns(model_name: str, quantization_label: str) -> list[str]:
     """Build allow_patterns for snapshot_download based on model + quantization."""
+    info = ONNX_MODELS.get(model_name, {})
+    if quantization_label in (info.get("download_full_snapshot_quantizations") or []):
+        return []
+
     patterns: list[str] = ["config.json", "vocab.txt"]
 
     if quantization_label == "fp32":
@@ -200,6 +222,8 @@ def _build_allow_patterns(model_name: str, quantization_label: str) -> list[str]
             patterns += ["encoder-model.onnx", "decoder-model.onnx", "encoder-model.onnx.data"]
         elif model_name == "nemo-parakeet-tdt-0.6b-v3":
             patterns += ["encoder-model.onnx", "decoder_joint-model.onnx", "encoder-model.onnx.data"]
+        elif model_name == "parakeet-primeline":
+            patterns += ["encoder-model.onnx", "decoder_joint-model.onnx"]
         return patterns
 
     if model_name == "nemo-canary-1b-v2":
@@ -212,11 +236,33 @@ def _build_allow_patterns(model_name: str, quantization_label: str) -> list[str]
             f"encoder-model*{quantization_label}*.onnx",
             f"decoder_joint-model*{quantization_label}*.onnx",
         ]
+    elif model_name == "parakeet-primeline":
+        patterns += [
+            f"encoder-model*{quantization_label}*.onnx",
+            f"decoder_joint-model*{quantization_label}*.onnx",
+        ]
     else:
         # Fallback: allow full repo if model is unknown
         patterns = []
 
     return patterns
+
+
+def _snapshot_model_path(model_name: str, quantization_label: str) -> Path:
+    """Ensure a model snapshot exists and return its local path."""
+    from huggingface_hub import snapshot_download
+
+    repo_id = _resolve_repo_id(model_name, quantization_label)
+    if not repo_id:
+        raise ValueError(f"Missing repo for model: {model_name}")
+    allow_patterns = _build_allow_patterns(model_name, quantization_label)
+    return Path(
+        snapshot_download(
+            repo_id=repo_id,
+            cache_dir=get_model_cache_dir(),
+            allow_patterns=allow_patterns or None,
+        )
+    )
 
 
 def _format_bytes(value: int) -> str:
@@ -610,12 +656,20 @@ def load_model(
     onnx_asr = _get_onnx_asr()
     
     quantization_onnx, q_label = _normalize_quantization(quantization)
+    supported = _get_supported_quantizations(model_name)
+    if q_label not in supported:
+        raise ValueError(f"Quantization not supported for {model_name}: {q_label}")
+    model_info = ONNX_MODELS.get(model_name, {})
     model_arg = _resolve_repo_id(model_name, q_label) if q_label == "fp16" else model_name
+    model_path = None
+    if model_info.get("load_from_snapshot"):
+        model_arg = _resolve_repo_id(model_name, q_label) or model_name
+        model_path = _snapshot_model_path(model_name, q_label)
 
     logger.info(f"Loading ONNX model: {model_name} (quantization={q_label})")
     
     try:
-        model = onnx_asr.load_model(model_arg, quantization=quantization_onnx)
+        model = onnx_asr.load_model(model_arg, path=model_path, quantization=quantization_onnx)
         
         if use_vad:
             # Load Silero VAD for handling long audio files

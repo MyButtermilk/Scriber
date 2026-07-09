@@ -10,14 +10,16 @@ import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
 import { useSharedWebSocket, WebSocketProvider, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
 import { useToast } from "@/hooks/use-toast";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState } from "@/lib/backend";
 import { preloadPrimaryTabChunks } from "@/lib/route-preload";
 import { preloadPrimaryTabData } from "@/lib/tab-data-preload";
 import { ToastAction } from "@/components/ui/toast";
+import { Download } from "lucide-react";
 import {
   checkDesktopUpdateIfDue,
   getCachedDesktopUpdateStatus,
+  installDesktopUpdate,
   publishDesktopUpdateStatusToTray,
   shouldNotifyDesktopUpdate,
   subscribeDesktopUpdateStatus,
@@ -38,8 +40,16 @@ const NotFound = lazy(() => import("@/pages/not-found"));
 // Loading fallback component - only needed for lazy-loaded pages
 function PageLoader() {
   return (
-    <div className="flex items-center justify-center min-h-[300px]">
-      <div className="animate-pulse text-muted-foreground">Loading...</div>
+    <div className="flex min-h-[300px] items-start justify-center px-6 py-8" aria-label="Loading section">
+      <div className="w-full max-w-5xl space-y-4">
+        <div className="h-8 w-44 animate-pulse rounded-lg bg-slate-200/80 dark:bg-slate-800/80" />
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="h-24 animate-pulse rounded-xl bg-slate-200/70 dark:bg-slate-800/70" />
+          <div className="h-24 animate-pulse rounded-xl bg-slate-200/60 dark:bg-slate-800/60" />
+          <div className="h-24 animate-pulse rounded-xl bg-slate-200/50 dark:bg-slate-800/50" />
+        </div>
+        <div className="h-40 animate-pulse rounded-xl bg-slate-200/60 dark:bg-slate-800/60" />
+      </div>
     </div>
   );
 }
@@ -141,6 +151,7 @@ function TranscriptHistoryInvalidationBridge() {
 
 const DESKTOP_UPDATE_STARTUP_DELAY_MS = 12_000;
 const DESKTOP_UPDATE_BACKGROUND_POLL_MS = 6 * 60 * 60 * 1000;
+const SETTINGS_SECTION_REQUEST_KEY = "scriber:open-settings-section";
 
 function isBusyForUpdatePrompt(msg: ScriberWebSocketMessage): boolean | null {
   if (msg.type === "transcribing" || msg.type === "session_started") {
@@ -262,10 +273,55 @@ function TauriNavigationBridge() {
 }
 
 function DesktopUpdateAutoCheckBridge() {
-  const { toast } = useToast();
+  const { toast, dismiss } = useToast();
   const [, setLocation] = useLocation();
   const busyRef = useRef(false);
+  const installingFromToastRef = useRef(false);
   const notifiedVersionRef = useRef<string | null>(null);
+
+  const openUpdateSettings = useCallback(() => {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(SETTINGS_SECTION_REQUEST_KEY, "updates");
+    }
+    setLocation("/settings");
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("scriber-open-settings-section", { detail: { section: "updates" } }));
+    }, 80);
+    dismiss();
+  }, [dismiss, setLocation]);
+
+  const handleUpdateToastClick = useCallback((event: ReactMouseEvent) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button,a,[role='button']")) {
+      return;
+    }
+    openUpdateSettings();
+  }, [openUpdateSettings]);
+
+  const installUpdateFromToast = useCallback(async (event?: ReactMouseEvent) => {
+    event?.stopPropagation();
+    if (installingFromToastRef.current) {
+      return;
+    }
+    installingFromToastRef.current = true;
+    toast({
+      variant: "update",
+      title: "Installing update",
+      description: "Scriber is downloading the update and will restart when it is ready.",
+      duration: 30000,
+    });
+    try {
+      await installDesktopUpdate();
+    } catch (error) {
+      installingFromToastRef.current = false;
+      toast({
+        variant: "destructive",
+        title: "Update failed",
+        description: error instanceof Error ? error.message : String(error || "Update installation failed."),
+        duration: 7000,
+      });
+    }
+  }, [toast]);
 
   const maybeNotify = useCallback((status: DesktopUpdateStatus) => {
     if (busyRef.current || !shouldNotifyDesktopUpdate(status) || !status.version) {
@@ -276,16 +332,30 @@ function DesktopUpdateAutoCheckBridge() {
     }
     notifiedVersionRef.current = status.version;
     toast({
-      title: "Update available",
-      description: `Scriber ${status.version} is ready to install.`,
-      duration: 9000,
+      variant: "update",
+      title: (
+        <span className="flex items-center gap-2">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white shadow-[0_10px_22px_rgba(37,99,235,0.22)]">
+            <Download className="h-4 w-4" aria-hidden="true" />
+          </span>
+          <span>Update ready</span>
+        </span>
+      ),
+      description: (
+        <span>
+          Scriber {status.version} is available. Click this notice to open update settings.
+        </span>
+      ),
+      duration: 12000,
+      className: "select-none",
+      onClick: handleUpdateToastClick,
       action: (
-        <ToastAction altText="Open update settings" onClick={() => setLocation("/settings")}>
-          View
+        <ToastAction altText="Install update now" onClick={(event) => void installUpdateFromToast(event)}>
+          Install now
         </ToastAction>
       ),
     });
-  }, [setLocation, toast]);
+  }, [handleUpdateToastClick, installUpdateFromToast, toast]);
 
   const checkIfDue = useCallback(() => {
     if (!isTauriRuntime()) {

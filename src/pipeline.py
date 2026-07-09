@@ -6,6 +6,7 @@ import contextlib
 import tempfile
 import os
 import time
+import inspect
 from typing import Any, Callable, Optional
 
 from loguru import logger
@@ -699,13 +700,16 @@ from src.gladia_stt import (
 )
 from src.cloud_async_stt import (
     DeepgramAsyncProcessor,
+    GeminiAsyncProcessor,
     GladiaAsyncProcessor,
     OpenAIAsyncProcessor,
     SpeechmaticsAsyncProcessor,
     deepgram_transcript_payload_to_text,
+    gemini_transcript_payload_to_text,
     openai_transcript_payload_to_text,
     speechmatics_transcript_payload_to_text,
     transcribe_with_deepgram_pre_recorded,
+    transcribe_with_gemini_audio,
     transcribe_with_openai_audio_transcription,
     transcribe_with_speechmatics_batch,
 )
@@ -722,8 +726,33 @@ LANGUAGE_MAP = {
 }
 
 def _selected_language():
-    lang = LANGUAGE_MAP.get(Config.LANGUAGE)
+    config_lang = (Config.LANGUAGE or "").strip().lower().replace("_", "-")
+    lang = LANGUAGE_MAP.get(config_lang) or LANGUAGE_MAP.get(config_lang.split("-", 1)[0])
     return lang if lang else None
+
+
+def _filter_supported_kwargs(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return dict(kwargs)
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
+        return dict(kwargs)
+    return {key: value for key, value in kwargs.items() if key in signature.parameters}
+
+
+def _assemblyai_realtime_legacy_speech_model(configured_model: str | None, language_code: str | None) -> str:
+    model = (configured_model or "").strip()
+    if model in {"universal-streaming-english", "universal-streaming-multilingual"}:
+        return model
+
+    fallback = "universal-streaming-english" if (language_code or "").lower() == "en" else "universal-streaming-multilingual"
+    logger.info(
+        "Mapping AssemblyAI realtime model '{}' to Pipecat legacy speech_model '{}'",
+        model or "<empty>",
+        fallback,
+    )
+    return fallback
 
 
 def _create_assemblyai_realtime_service(
@@ -741,18 +770,34 @@ def _create_assemblyai_realtime_service(
     keyterms = build_keyterms_from_vocab(Config.CUSTOM_VOCAB)
 
     if settings_cls is not None:
-        settings_kwargs = {"model": Config.ASSEMBLYAI_RT_MODEL}
+        settings_candidates = {"model": Config.ASSEMBLYAI_RT_MODEL}
         if language_code:
-            settings_kwargs["language_code"] = language_code
+            settings_candidates["language_code"] = language_code
         if keyterms:
-            settings_kwargs["keyterms_prompt"] = keyterms[:100]
+            settings_candidates["keyterms_prompt"] = keyterms[:100]
         if enable_speaker_diarization:
-            settings_kwargs["speaker_labels"] = True
-        return service_cls(
-            api_key=api_key,
-            settings=settings_cls(**settings_kwargs),
-            vad_force_turn_endpoint=True,
-        )
+            settings_candidates["speaker_labels"] = True
+        settings_kwargs = _filter_supported_kwargs(settings_cls, settings_candidates)
+        if keyterms and "keyterms_prompt" not in settings_kwargs:
+            settings_kwargs.update(
+                _filter_supported_kwargs(
+                    settings_cls,
+                    {"prompt": "Likely vocabulary: " + ", ".join(keyterms[:100])},
+                )
+            )
+        try:
+            settings = settings_cls(**settings_kwargs)
+        except TypeError as exc:
+            logger.warning("AssemblyAI Settings rejected available arguments ({}); trying legacy connection_params", exc)
+        else:
+            service_candidates: dict[str, Any] = {
+                "api_key": api_key,
+                "settings": settings,
+                "vad_force_turn_endpoint": True,
+            }
+            if language_code and "language_code" not in settings_kwargs:
+                service_candidates["language"] = _selected_language()
+            return service_cls(**_filter_supported_kwargs(service_cls, service_candidates))
 
     params_cls = getattr(module, "AssemblyAIConnectionParams", None)
     if params_cls is None:
@@ -763,9 +808,17 @@ def _create_assemblyai_realtime_service(
 
     try:
         params = params_cls(
-            sample_rate=Config.SAMPLE_RATE,
-            keyterms_prompt=keyterms[:100] or None,
-            speech_model=Config.ASSEMBLYAI_RT_MODEL,
+            **_filter_supported_kwargs(
+                params_cls,
+                {
+                    "sample_rate": Config.SAMPLE_RATE,
+                    "keyterms_prompt": keyterms[:100] or None,
+                    "speech_model": _assemblyai_realtime_legacy_speech_model(
+                        Config.ASSEMBLYAI_RT_MODEL,
+                        language_code,
+                    ),
+                },
+            )
         )
     except Exception as exc:
         raise RuntimeError(
@@ -773,11 +826,15 @@ def _create_assemblyai_realtime_service(
             "AssemblyAI STT service. Update the bundled Pipecat runtime."
         ) from exc
 
-    return service_cls(
-        api_key=api_key,
-        connection_params=params,
-        vad_force_turn_endpoint=True,
-    )
+    service_candidates = {
+        "api_key": api_key,
+        "connection_params": params,
+        "vad_force_turn_endpoint": True,
+    }
+    selected_language = _selected_language()
+    if selected_language is not None:
+        service_candidates["language"] = selected_language
+    return service_cls(**_filter_supported_kwargs(service_cls, service_candidates))
 
 
 def _load_soniox_realtime_classes():
@@ -1000,6 +1057,81 @@ class PipecatVadSpeechObserver(FrameProcessor):
                 else None
             ),
         }
+
+
+class SegmentedSTTRecordingGate(FrameProcessor):
+    """Controls whether Pipecat VAD cuts STT audio into multiple live segments.
+
+    HTTP-style Pipecat STT services such as Groq/OpenAI/ElevenLabs/Mistral use
+    UserStarted/UserStopped frames to decide when to upload buffered audio. By
+    default Scriber keeps one recording-wide segment so the stop hotkey
+    transcribes the whole dictation. VAD frames are still observed before this
+    gate for silent-session skips.
+    """
+
+    def __init__(self, *, vad_segmentation_enabled: bool):
+        super().__init__()
+        self.vad_segmentation_enabled = bool(vad_segmentation_enabled)
+        self._whole_recording_open = False
+        self._whole_recording_closed = False
+        self._vad_user_speaking = False
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+
+        if direction != FrameDirection.DOWNSTREAM:
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, StartFrame):
+            self._whole_recording_open = False
+            self._whole_recording_closed = False
+            self._vad_user_speaking = False
+            await self.push_frame(frame, direction)
+            if not self.vad_segmentation_enabled:
+                self._whole_recording_open = True
+                logger.debug("Opening recording-wide segment for segmented STT service")
+                await self.push_frame(UserStartedSpeakingFrame(), direction)
+            return
+
+        if self.vad_segmentation_enabled:
+            if isinstance(frame, UserStartedSpeakingFrame):
+                self._vad_user_speaking = True
+            elif isinstance(frame, UserStoppedSpeakingFrame):
+                self._vad_user_speaking = False
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame)):
+            # VAD is still used upstream for silence detection, but it must not
+            # split HTTP upload-based STT providers unless the user opted in.
+            return
+
+        if isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
+            await self.flush_segment(direction=direction)
+            await self.push_frame(frame, direction)
+            return
+
+        await self.push_frame(frame, direction)
+
+    async def flush_segment(self, *, direction=FrameDirection.DOWNSTREAM) -> bool:
+        if self.vad_segmentation_enabled:
+            if not self._vad_user_speaking:
+                return False
+            self._vad_user_speaking = False
+            logger.debug("Flushing active VAD segment for segmented STT service")
+            await self.push_frame(UserStoppedSpeakingFrame(), direction)
+            return True
+
+        if self._whole_recording_closed:
+            return False
+        if not self._whole_recording_open:
+            self._whole_recording_open = True
+            await self.push_frame(UserStartedSpeakingFrame(), direction)
+        self._whole_recording_closed = True
+        logger.debug("Closing recording-wide segment for segmented STT service")
+        await self.push_frame(UserStoppedSpeakingFrame(), direction)
+        return True
 
 
 class TranscriptionCallbackProcessor(FrameProcessor):
@@ -1264,6 +1396,39 @@ class ScriberPipeline:
                     processors.append(processor)
         return processors
 
+    async def _flush_segmented_stt_buffers(self) -> bool:
+        flushed = False
+        for processor in self._iter_pipeline_processors():
+            flush = getattr(processor, "flush_segment", None)
+            if callable(flush):
+                try:
+                    flushed = bool(await flush(direction=FrameDirection.DOWNSTREAM)) or flushed
+                except Exception as exc:
+                    logger.debug(f"Segmented STT gate flush warning: {exc}")
+        if flushed:
+            return True
+
+        if not self.pipeline:
+            return False
+        try:
+            if any(isinstance(step, SegmentedSTTService) for step in self._iter_pipeline_processors()):
+                logger.debug("Forcing segmented STT flush on stop")
+                await self.pipeline.push_frame(
+                    UserStoppedSpeakingFrame(),
+                    direction=FrameDirection.DOWNSTREAM,
+                )
+                return True
+        except Exception as exc:
+            logger.debug(f"Segmented STT fallback flush warning: {exc}")
+        return False
+
+    def _has_segmented_stt_buffers(self) -> bool:
+        return any(
+            isinstance(processor, SegmentedSTTService)
+            or isinstance(processor, SegmentedSTTRecordingGate)
+            for processor in self._iter_pipeline_processors()
+        )
+
     def _mark_provider_terminal_transcription_skip(self) -> None:
         for processor in self._iter_pipeline_processors():
             if hasattr(processor, "_buffer_size") or callable(getattr(processor, "_reset_buffer", None)):
@@ -1437,6 +1602,20 @@ class ScriberPipeline:
             # Lazy import - only loaded when Google is used
             module = import_provider_runtime_module("google", "pipecat.services.google.stt")
             return module.GoogleSTTService()
+
+        elif self.service_name == "gemini_stt":
+            api_key = Config.get_api_key("gemini_stt")
+            if not api_key:
+                raise ValueError("Gemini API key is missing.")
+            logger.info("Using Gemini API audio transcription mode")
+            return GeminiAsyncProcessor(
+                api_key=api_key,
+                language=Config.LANGUAGE,
+                custom_vocab=Config.CUSTOM_VOCAB,
+                session=session,
+                on_progress=self.on_progress,
+                diarize=self.enable_speaker_diarization,
+            )
         
         elif self.service_name == "elevenlabs":
             # Lazy import - only loaded when ElevenLabs is used
@@ -1640,7 +1819,7 @@ class ScriberPipeline:
 
                 vad_analyzer = None
                 # VAD is needed for:
-                # 1. SegmentedSTTService (requires VAD for audio segmentation)
+                # 1. SegmentedSTTService silence-gating and optional mid-recording segmentation.
                 # 2. Async live providers so silent recordings can be ended locally.
                 # Note: For Soniox RT, we use SmartTurn V3 exclusively for turn detection.
                 # Using both VAD and SmartTurn causes double UserStoppedSpeakingFrame events,
@@ -1724,10 +1903,20 @@ class ScriberPipeline:
                     on_provider_error=self._record_terminal_error,
                 )
 
+                segmented_gate = (
+                    SegmentedSTTRecordingGate(
+                        vad_segmentation_enabled=bool(Config.SEGMENT_SPEECH_WITH_VAD)
+                    )
+                    if isinstance(stt_service, SegmentedSTTService)
+                    else None
+                )
+
                 steps = [self.audio_input]
                 if vad_analyzer is not None:
                     self._vad_observer = PipecatVadSpeechObserver(enabled=True)
                     steps.append(self._vad_observer)
+                if segmented_gate is not None:
+                    steps.append(segmented_gate)
                 steps.extend([stt_service, error_handler])
                 if transcript_cb:
                     steps.append(transcript_cb)
@@ -2080,6 +2269,35 @@ class ScriberPipeline:
                     self.on_progress("Completed")
                 return
 
+            if self.service_name == "gemini_stt":
+                api_key = Config.get_api_key("gemini_stt")
+                if not api_key:
+                    raise ValueError("Gemini API key is missing")
+
+                async with aiohttp.ClientSession() as session:
+                    with open(path, "rb") as f:
+                        payload = await transcribe_with_gemini_audio(
+                            session=session,
+                            api_key=api_key,
+                            audio_source=f,
+                            filename=path.name,
+                            content_type=content_type,
+                            language=Config.LANGUAGE,
+                            custom_vocab=Config.CUSTOM_VOCAB or "",
+                            diarize=True,
+                            on_progress=self.on_progress,
+                            timeout_secs=900.0,
+                        )
+
+                text = gemini_transcript_payload_to_text(payload)
+                if text and self.on_transcription:
+                    logger.info(f"Gemini direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
             if self.service_name == "azure_mai":
                 api_key = Config.get_api_key("azure_mai")
                 if not api_key:
@@ -2358,21 +2576,20 @@ class ScriberPipeline:
         is_async_finalization = _live_service_uses_async_finalization(self.service_name)
         if self.on_status_change:
             self.on_status_change("Transcribing..." if is_async_finalization else "Stopping...")
-        # Force flush of segmented STT buffers before stopping audio input (EndFrame closes pipeline).
-        if self.pipeline:
-            try:
-                if any(isinstance(step, SegmentedSTTService) for step in self.pipeline.processors):
-                    logger.debug("Forcing segmented STT flush on stop")
-                    await self.pipeline.push_frame(UserStoppedSpeakingFrame(), direction=FrameDirection.DOWNSTREAM)
-                    await asyncio.sleep(0)
-            except Exception as e:
-                logger.debug(f"Segmented STT flush warning: {e}")
+
+        has_segmented_stt_buffers = self._has_segmented_stt_buffers()
+        if has_segmented_stt_buffers:
+            # Give audio frames time to propagate before closing the upload segment.
+            # This is critical for short recordings where stop is called very quickly.
+            await asyncio.sleep(0.15)
+            await self._flush_segmented_stt_buffers()
+
         # Stop mic capture immediately so LED turns off while transcription finalizes.
         await self._cleanup_audio_input()
 
-        # Give audio frames time to propagate through the pipeline to the STT service.
-        # This is critical for short recordings where stop is called very quickly.
-        await asyncio.sleep(0.15)
+        if not has_segmented_stt_buffers:
+            # Give non-segmented providers time to consume the final transport frames.
+            await asyncio.sleep(0.15)
 
         # For Soniox real-time: send stop_recording and wait for final tokens BEFORE pipeline shutdown.
         # This ensures all spoken audio is transcribed and injected before we close.

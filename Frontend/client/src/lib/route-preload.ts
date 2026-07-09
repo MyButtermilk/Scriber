@@ -31,14 +31,23 @@ export function preloadPrimaryTabChunks(): () => void {
   }
 
   let cancelled = false;
-  const cancelIdle = scheduleIdle(() => {
-    void preloadRoutesSerially(["/youtube", "/file", "/settings"], () => cancelled);
+  const cancelFirstPass = scheduleSoon(() => {
+    void preloadRoutesInParallel(["/youtube", "/file", "/settings"], () => cancelled);
+  });
+  const cancelSecondPass = scheduleIdle(() => {
+    void preloadRoutesSerially(["/debug"], () => cancelled);
   });
 
   return () => {
     cancelled = true;
-    cancelIdle();
+    cancelFirstPass();
+    cancelSecondPass();
   };
+}
+
+async function preloadRoutesInParallel(routes: RoutePreloadPath[], isCancelled: () => boolean) {
+  if (isCancelled()) return;
+  await Promise.allSettled(routes.map((route) => preloadRouteChunk(route)));
 }
 
 async function preloadRoutesSerially(routes: RoutePreloadPath[], isCancelled: () => boolean) {
@@ -62,13 +71,26 @@ function routePathForHref(href: string): RoutePreloadPath | null {
   return null;
 }
 
+function scheduleSoon(callback: () => void): () => void {
+  let frame: number | undefined;
+  const timer = window.setTimeout(() => {
+    frame = window.requestAnimationFrame(callback);
+  }, 80);
+  return () => {
+    window.clearTimeout(timer);
+    if (frame !== undefined) {
+      window.cancelAnimationFrame(frame);
+    }
+  };
+}
+
 function scheduleIdle(callback: () => void): () => void {
   if ("requestIdleCallback" in window && typeof window.requestIdleCallback === "function") {
-    const handle = window.requestIdleCallback(callback, { timeout: 2500 });
+    const handle = window.requestIdleCallback(callback, { timeout: 900 });
     return () => window.cancelIdleCallback(handle);
   }
 
-  const handle = window.setTimeout(callback, 350);
+  const handle = window.setTimeout(callback, 550);
   return () => window.clearTimeout(handle);
 }
 

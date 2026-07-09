@@ -299,6 +299,7 @@ export interface SettingsResponse {
   favoriteMic?: string;
   favoriteMicAvailable?: boolean;
   micAlwaysOn?: boolean;
+  segmentSpeechWithVad?: boolean;
   debug?: boolean;
   customVocab?: string;
   summarizationPrompt?: string;
@@ -329,6 +330,7 @@ export interface SettingsUpdatePayload {
   micDevice?: string;
   favoriteMic?: string;
   micAlwaysOn?: boolean;
+  segmentSpeechWithVad?: boolean;
   debug?: boolean;
   customVocab?: string;
   summarizationPrompt?: string;

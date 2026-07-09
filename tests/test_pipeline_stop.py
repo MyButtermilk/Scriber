@@ -1,12 +1,23 @@
 import asyncio
 
 import pytest
-from pipecat.frames.frames import InputAudioRawFrame, TranscriptionFrame
+from pipecat.frames.frames import (
+    EndFrame,
+    InputAudioRawFrame,
+    TranscriptionFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection
 from websockets.protocol import State
 
 from src.config import Config
-from src.pipeline import PipecatVadSpeechObserver, ScriberPipeline, TranscriptionCallbackProcessor
+from src.pipeline import (
+    PipecatVadSpeechObserver,
+    ScriberPipeline,
+    SegmentedSTTRecordingGate,
+    TranscriptionCallbackProcessor,
+)
 
 
 class _DummyTask:
@@ -176,6 +187,49 @@ def test_assemblyai_realtime_factory_uses_new_pipecat_settings(monkeypatch):
     }
 
 
+def test_assemblyai_realtime_factory_filters_unsupported_settings_keywords(monkeypatch):
+    class _Settings:
+        def __init__(self, *, model, keyterms_prompt=None, speaker_labels=None):
+            self.kwargs = {
+                "model": model,
+                "keyterms_prompt": keyterms_prompt,
+                "speaker_labels": speaker_labels,
+            }
+
+    class _AssemblyAISTTService:
+        Settings = _Settings
+
+        def __init__(self, *, api_key, settings, language=None, vad_force_turn_endpoint):
+            self.api_key = api_key
+            self.settings = settings
+            self.language = language
+            self.vad_force_turn_endpoint = vad_force_turn_endpoint
+
+    module = type(
+        "AssemblyAIModule",
+        (),
+        {"AssemblyAISTTService": _AssemblyAISTTService},
+    )
+
+    monkeypatch.setattr(Config, "ASSEMBLYAI_API_KEY", "key")
+    monkeypatch.setattr(Config, "ASSEMBLYAI_RT_MODEL", "universal-3-5-pro")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+
+    service = ScriberPipeline(
+        service_name="assemblyai_realtime",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object())
+
+    assert service.settings.kwargs == {
+        "model": "universal-3-5-pro",
+        "keyterms_prompt": ["Scriber", "Pipecat"],
+        "speaker_labels": True,
+    }
+    assert service.language.value == "de"
+
+
 def test_assemblyai_realtime_factory_supports_legacy_pipecat_connection_params(monkeypatch):
     class _AssemblyAIConnectionParams:
         def __init__(self, **kwargs):
@@ -208,7 +262,7 @@ def test_assemblyai_realtime_factory_supports_legacy_pipecat_connection_params(m
     assert service.connection_params.kwargs == {
         "sample_rate": Config.SAMPLE_RATE,
         "keyterms_prompt": None,
-        "speech_model": "universal-3-5-pro",
+        "speech_model": "universal-streaming-multilingual",
     }
 
 
@@ -555,6 +609,49 @@ async def test_pipecat_vad_observer_counts_audio_frames():
     assert snapshot["speechStartedCount"] == 0
     assert snapshot["speechObserved"] is False
     assert len(pushed) == 2
+
+
+@pytest.mark.asyncio
+async def test_segmented_stt_gate_defaults_to_whole_recording_segment():
+    gate = SegmentedSTTRecordingGate(vad_segmentation_enabled=False)
+    pushed = []
+
+    async def _capture_push(frame, direction):
+        pushed.append((type(frame), direction))
+
+    gate.push_frame = _capture_push
+
+    await gate.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await gate.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await gate.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+
+    assert pushed == [
+        (UserStartedSpeakingFrame, FrameDirection.DOWNSTREAM),
+        (UserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM),
+        (EndFrame, FrameDirection.DOWNSTREAM),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_segmented_stt_gate_can_pass_vad_segments_when_enabled():
+    gate = SegmentedSTTRecordingGate(vad_segmentation_enabled=True)
+    pushed = []
+
+    async def _capture_push(frame, direction):
+        pushed.append((type(frame), direction))
+
+    gate.push_frame = _capture_push
+
+    await gate.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    flushed = await gate.flush_segment(direction=FrameDirection.DOWNSTREAM)
+    flushed_again = await gate.flush_segment(direction=FrameDirection.DOWNSTREAM)
+
+    assert flushed is True
+    assert flushed_again is False
+    assert pushed == [
+        (UserStartedSpeakingFrame, FrameDirection.DOWNSTREAM),
+        (UserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM),
+    ]
 
 
 @pytest.mark.asyncio

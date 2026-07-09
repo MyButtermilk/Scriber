@@ -7,6 +7,7 @@ upload paths when Pipecat only provides the provider's realtime service.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import io
 import json
@@ -210,6 +211,181 @@ def openai_transcript_payload_to_text(
             if formatted:
                 return formatted
     return str(payload.get("text") or "").strip()
+
+
+def gemini_transcript_payload_to_text(payload: dict[str, Any]) -> str:
+    candidates = payload.get("candidates") if isinstance(payload.get("candidates"), list) else []
+    if not candidates:
+        return ""
+    first = candidates[0] if isinstance(candidates[0], dict) else {}
+    content = first.get("content") if isinstance(first.get("content"), dict) else {}
+    parts = content.get("parts") if isinstance(content.get("parts"), list) else []
+    return "".join(
+        str(part.get("text") or "")
+        for part in parts
+        if isinstance(part, dict) and isinstance(part.get("text"), str)
+    ).strip()
+
+
+async def _delete_gemini_file(
+    *,
+    session: aiohttp.ClientSession,
+    api_key: str,
+    file_name: str,
+) -> None:
+    if not file_name:
+        return
+    try:
+        async with session.delete(
+            f"https://generativelanguage.googleapis.com/v1beta/{file_name}",
+            params={"key": api_key},
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as response:
+            if response.status >= 400:
+                logger.debug("Gemini file cleanup returned status {}", response.status)
+    except Exception as exc:
+        logger.debug("Gemini file cleanup failed: {}", exc)
+
+
+async def _upload_gemini_file(
+    *,
+    session: aiohttp.ClientSession,
+    api_key: str,
+    audio_bytes: bytes,
+    filename: str,
+    content_type: str,
+) -> dict[str, Any]:
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Upload-Protocol": "resumable",
+        "X-Goog-Upload-Command": "start",
+        "X-Goog-Upload-Header-Content-Length": str(len(audio_bytes)),
+        "X-Goog-Upload-Header-Content-Type": content_type,
+    }
+    start_payload = {"file": {"displayName": filename or "scriber-audio"}}
+    async with session.post(
+        "https://generativelanguage.googleapis.com/upload/v1beta/files",
+        params={"key": api_key},
+        json=start_payload,
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=60),
+    ) as response:
+        raw = await response.text()
+        if response.status >= 400:
+            raise RuntimeError(f"Gemini file upload start failed ({response.status}): {raw[:500]}")
+        upload_url = response.headers.get("X-Goog-Upload-URL", "")
+        if not upload_url:
+            raise RuntimeError("Gemini file upload did not return an upload URL.")
+
+    async with session.post(
+        upload_url,
+        data=audio_bytes,
+        headers={
+            "Content-Length": str(len(audio_bytes)),
+            "X-Goog-Upload-Offset": "0",
+            "X-Goog-Upload-Command": "upload, finalize",
+        },
+        timeout=aiohttp.ClientTimeout(total=900),
+    ) as response:
+        raw = await response.text()
+        if response.status >= 400:
+            raise RuntimeError(f"Gemini file upload failed ({response.status}): {raw[:500]}")
+        payload = json.loads(raw) if raw else {}
+
+    file_info = payload.get("file") if isinstance(payload.get("file"), dict) else {}
+    if not file_info.get("uri"):
+        raise RuntimeError(f"Gemini file upload response did not include a file URI: {payload}")
+    return file_info
+
+
+async def transcribe_with_gemini_audio(
+    *,
+    session: aiohttp.ClientSession,
+    api_key: str,
+    audio_source: bytes | BinaryIO,
+    filename: str,
+    content_type: str,
+    language: Language | str | None,
+    custom_vocab: str = "",
+    diarize: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+    timeout_secs: float = 900.0,
+) -> dict[str, Any]:
+    audio_bytes = audio_source if isinstance(audio_source, bytes) else audio_source.read()
+    if not audio_bytes:
+        return {}
+
+    model = os.getenv("SCRIBER_GEMINI_STT_MODEL", "gemini-2.5-flash")
+    inline_limit_mb = float(os.getenv("SCRIBER_GEMINI_STT_INLINE_LIMIT_MB", "18") or 18)
+    inline_limit_bytes = max(1, int(inline_limit_mb * 1024 * 1024))
+    mime_type = content_type or "audio/wav"
+    terms = _terms_from_vocab(custom_vocab)[:100]
+    language_code = provider_language_code(language)
+    language_hint = f" The expected spoken language is {language_code}." if language_code else ""
+    vocab_hint = f" Prefer these domain terms when audible: {', '.join(terms)}." if terms else ""
+    speaker_hint = (
+        " If multiple speakers are clearly present, keep the order and label turns as [Speaker 1]:, [Speaker 2]:."
+        if diarize
+        else " Do not add speaker labels for single-speaker dictation."
+    )
+    prompt = (
+        "Transcribe the attached audio exactly and output only the transcript. "
+        "Preserve meaning, names, numbers, punctuation, and paragraph breaks. "
+        "Do not summarize, translate, explain, or add commentary."
+        f"{language_hint}{vocab_hint}{speaker_hint}"
+    )
+    generation_config = {
+        "temperature": 0,
+        "maxOutputTokens": int(os.getenv("SCRIBER_GEMINI_STT_MAX_OUTPUT_TOKENS", "16384") or 16384),
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    params = {"key": api_key}
+
+    file_name = ""
+    try:
+        _report_progress(on_progress, "Uploading audio...")
+        if len(audio_bytes) <= inline_limit_bytes:
+            audio_part = {
+                "inlineData": {
+                    "mimeType": mime_type,
+                    "data": base64.b64encode(audio_bytes).decode("ascii"),
+                }
+            }
+        else:
+            file_info = await _upload_gemini_file(
+                session=session,
+                api_key=api_key,
+                audio_bytes=audio_bytes,
+                filename=filename,
+                content_type=mime_type,
+            )
+            file_name = str(file_info.get("name") or "")
+            audio_part = {
+                "fileData": {
+                    "mimeType": str(file_info.get("mimeType") or mime_type),
+                    "fileUri": str(file_info.get("uri") or ""),
+                }
+            }
+
+        _report_progress(on_progress, "Processing transcription...")
+        payload = {
+            "contents": [{"parts": [{"text": prompt}, audio_part]}],
+            "generationConfig": generation_config,
+        }
+        async with session.post(
+            url,
+            params=params,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=timeout_secs),
+        ) as response:
+            raw = await response.text()
+            if response.status >= 400:
+                raise RuntimeError(f"Gemini transcription failed ({response.status}): {raw[:500]}")
+            parsed = json.loads(raw) if raw else {}
+            return parsed if isinstance(parsed, dict) else {}
+    finally:
+        if file_name:
+            await _delete_gemini_file(session=session, api_key=api_key, file_name=file_name)
 
 
 async def transcribe_with_openai_audio_transcription(
@@ -556,6 +732,47 @@ class OpenAIAsyncProcessor(_BufferedAsyncProcessor):
             async with aiohttp.ClientSession() as session:
                 payload = await _call(session)
         return openai_transcript_payload_to_text(payload, prefer_speaker_labels=self._diarize)
+
+
+class GeminiAsyncProcessor(_BufferedAsyncProcessor):
+    provider_name = "Gemini"
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        language: Language | str | None,
+        custom_vocab: str = "",
+        session: aiohttp.ClientSession | None = None,
+        on_progress: Callable[[str], None] | None = None,
+        diarize: bool = False,
+    ) -> None:
+        super().__init__(session=session, on_progress=on_progress, diarize=diarize)
+        self._api_key = api_key
+        self._language = language
+        self._custom_vocab = custom_vocab
+
+    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
+        wav_bytes = _pcm_to_wav(audio_bytes, self._sample_rate, self._channels)
+
+        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+            return await transcribe_with_gemini_audio(
+                session=session,
+                api_key=self._api_key,
+                audio_source=wav_bytes,
+                filename="audio.wav",
+                content_type="audio/wav",
+                language=self._language,
+                custom_vocab=self._custom_vocab,
+                diarize=self._diarize,
+                on_progress=self._on_progress,
+            )
+
+        payload = await _call(self._session) if self._session else None
+        if payload is None:
+            async with aiohttp.ClientSession() as session:
+                payload = await _call(session)
+        return gemini_transcript_payload_to_text(payload)
 
 
 class GladiaAsyncProcessor(_BufferedAsyncProcessor):
