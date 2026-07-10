@@ -141,7 +141,6 @@ def transcript_item(transcript_type: str, index: int) -> dict[str, Any]:
     item: dict[str, Any] = {
         "id": f"{transcript_type}-{index:05d}",
         "title": title,
-        "preview": f"{title} preview",
         "date": "2026-06-01",
         "duration": duration,
         "status": "completed",
@@ -151,6 +150,8 @@ def transcript_item(transcript_type: str, index: int) -> dict[str, Any]:
         "fileSize": "1 MB",
         "step": "Done",
     }
+    if index > 0:
+        item["preview"] = f"{title} preview"
     if transcript_type == "youtube":
         item.update(
             {

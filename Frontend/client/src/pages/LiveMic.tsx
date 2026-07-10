@@ -88,7 +88,7 @@ const TranscriptCard = memo(function TranscriptCard({
     ? snippet
     : item.status === "processing" || item.status === "recording"
       ? item.step || "Transcription in progress"
-      : "No transcript preview available";
+      : item.title.trim() || "No transcript preview available";
 
   return (
     <div className="h-full w-full">

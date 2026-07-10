@@ -249,7 +249,8 @@ def test_frontend_browser_smoke_exercises_history_interactions() -> None:
     assert "unrelatedControlDeleted" in script
     assert "/transcript/mic-00001" in script
     assert "\"history-search-copy-navigation\"" in script
-    assert '"preview": f"{title} preview"' in benchmark_script
+    assert "if index > 0:" in benchmark_script
+    assert 'item["preview"] = f"{title} preview"' in benchmark_script
 
 
 def test_frontend_browser_smoke_exercises_transcript_detail_actions() -> None:

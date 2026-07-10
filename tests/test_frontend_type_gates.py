@@ -615,6 +615,14 @@ def test_live_mic_interim_and_final_transcript_render_distinctly() -> None:
     assert "(finalText || interimText)" in source
 
 
+def test_live_mic_history_uses_title_when_legacy_preview_is_missing() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'item.title.trim() || "No transcript preview available"' in source
+
+
 def test_live_mic_reconciles_active_state_and_websocket_reconnects() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(
         encoding="utf-8"
