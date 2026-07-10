@@ -10,6 +10,7 @@ Supported Models:
 import asyncio
 import hashlib
 import io
+import json
 import os
 import shutil
 import threading
@@ -167,7 +168,10 @@ def is_onnx_available() -> bool:
 
 
 def _directory_has_files(path: Path, filenames: list[str]) -> bool:
-    return bool(path) and path.exists() and all((path / filename).exists() for filename in filenames)
+    return bool(path) and path.exists() and all(
+        (path / filename).is_file() and (path / filename).stat().st_size > 0
+        for filename in filenames
+    )
 
 
 def _uses_archive(model_name: str, quantization_label: str) -> bool:
@@ -254,6 +258,19 @@ def _set_download_state(
             "message": message,
             "quantization": quantization_label,
         }
+
+
+def _notify_download_progress(
+    on_progress: Optional[Callable[[float, str], None]],
+    progress: float,
+    message: str,
+) -> None:
+    if not on_progress:
+        return
+    try:
+        on_progress(progress, message)
+    except Exception as exc:
+        logger.debug(f"ONNX download progress callback failed: {exc}")
 
 
 def _normalize_quantization(quantization: Optional[str]) -> tuple[Optional[str], str]:
@@ -365,12 +382,31 @@ def _snapshot_model_path(model_name: str, quantization_label: str) -> Path:
     if not repo_id:
         raise ValueError(f"Missing repo for model: {model_name}")
     allow_patterns = _build_allow_patterns(model_name, quantization_label)
-    return Path(
+    snapshot_path = Path(
         snapshot_download(
             repo_id=repo_id,
             cache_dir=get_model_cache_dir(),
             allow_patterns=allow_patterns or None,
         )
+    )
+    if allow_patterns and not _snapshot_has_required_files(snapshot_path, allow_patterns):
+        raise FileNotFoundError(
+            f"Downloaded snapshot is incomplete for {model_name} ({quantization_label})"
+        )
+    return snapshot_path
+
+
+def _snapshot_has_required_files(snapshot_path: Path, allow_patterns: list[str]) -> bool:
+    if not snapshot_path.is_dir():
+        return False
+    relative_files = [
+        path.relative_to(snapshot_path).as_posix()
+        for path in snapshot_path.rglob("*")
+        if path.is_file() and path.stat().st_size > 0
+    ]
+    return all(
+        any(fnmatch(relative_path, pattern) for relative_path in relative_files)
+        for pattern in allow_patterns
     )
 
 
@@ -406,12 +442,79 @@ def _archive_model_path(
         )
     )
 
+    manifest_name = str(info.get("manifest") or "")
+    sha256_name = str(info.get("sha256_file") or "")
+    if not manifest_name or not sha256_name:
+        raise ValueError(f"Archive metadata is incomplete for model: {model_name}")
+    manifest_path = Path(
+        hf_hub_download(
+            repo_id=repo_id,
+            filename=manifest_name,
+            cache_dir=get_model_cache_dir(),
+            local_files_only=local_files_only,
+        )
+    )
+    sha256_path = Path(
+        hf_hub_download(
+            repo_id=repo_id,
+            filename=sha256_name,
+            cache_dir=get_model_cache_dir(),
+            local_files_only=local_files_only,
+        )
+    )
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Invalid archive manifest {manifest_name}: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError(f"Invalid archive manifest {manifest_name}: expected a JSON object")
+    if str(manifest.get("archive") or "") != archive_name:
+        raise ValueError(f"Archive manifest does not describe {archive_name}")
+    manifest_required_values = manifest.get("required_files")
+    if not isinstance(manifest_required_values, list):
+        raise ValueError(f"Invalid archive manifest {manifest_name}: required_files must be a list")
+    manifest_required = {
+        str(filename)
+        for filename in manifest_required_values
+        if isinstance(filename, str) and filename
+    }
+    missing_manifest_files = sorted(set(required) - manifest_required)
+    if missing_manifest_files:
+        raise ValueError(
+            f"Archive manifest is missing required files: {missing_manifest_files}"
+        )
+
+    sidecar_tokens = sha256_path.read_text(encoding="utf-8").strip().split()
+    sidecar_sha = sidecar_tokens[0].lower() if sidecar_tokens else ""
+    try:
+        valid_sidecar_sha = len(sidecar_sha) == 64 and int(sidecar_sha, 16) >= 0
+    except ValueError:
+        valid_sidecar_sha = False
+    if not valid_sidecar_sha:
+        raise ValueError(f"Invalid SHA-256 sidecar: {sha256_name}")
+    if len(sidecar_tokens) > 1 and Path(sidecar_tokens[-1]).name != archive_name:
+        raise ValueError(f"SHA-256 sidecar does not describe {archive_name}")
+
     expected_sha = str(info.get("sha256") or "").strip().lower()
-    if expected_sha:
-        actual_sha = _sha256_file(archive_path)
-        if actual_sha.lower() != expected_sha:
+    manifest_sha = str(manifest.get("sha256") or "").strip().lower()
+    expected_hashes = {value for value in (expected_sha, manifest_sha, sidecar_sha) if value}
+    if len(expected_hashes) != 1:
+        raise ValueError(
+            f"Conflicting SHA-256 metadata for {archive_name}: {sorted(expected_hashes)}"
+        )
+    verified_sha = next(iter(expected_hashes))
+    actual_sha = _sha256_file(archive_path)
+    if actual_sha.lower() != verified_sha:
+        raise ValueError(
+            f"Checksum mismatch for {archive_name}: expected {verified_sha}, got {actual_sha}"
+        )
+    manifest_size = manifest.get("size")
+    if isinstance(manifest_size, int) and manifest_size > 0:
+        actual_size = archive_path.stat().st_size
+        if actual_size != manifest_size:
             raise ValueError(
-                f"Checksum mismatch for {archive_name}: expected {expected_sha}, got {actual_sha}"
+                f"Size mismatch for {archive_name}: expected {manifest_size}, got {actual_size}"
             )
 
     tmp_dir = extract_dir.with_name(f"{extract_dir.name}.tmp-{os.getpid()}")
@@ -572,13 +675,14 @@ def is_model_downloaded(model_name: str, quantization: Optional[str] = None) -> 
 
         for cache_dir in _candidate_cache_dirs():
             try:
-                snapshot_download(
+                snapshot_path = Path(snapshot_download(
                     repo_id=repo_id,
                     cache_dir=cache_dir,
                     local_files_only=True,
                     allow_patterns=allow_patterns or None,
-                )
-                return True
+                ))
+                if not allow_patterns or _snapshot_has_required_files(snapshot_path, allow_patterns):
+                    return True
             except LocalEntryNotFoundError:
                 continue
         return False
@@ -649,21 +753,36 @@ async def download_model(
         )
         raise ValueError(f"Quantization not supported: {q_label}")
 
-    if is_model_downloaded(model_name, quantization=q_label):
+    loop = asyncio.get_running_loop()
+    downloaded = await loop.run_in_executor(
+        _executor,
+        lambda: is_model_downloaded(model_name, quantization=q_label),
+    )
+    if downloaded:
         _set_download_state(model_name, "ready", 100.0, "Already downloaded", quantization=q_label)
-        if on_progress:
-            on_progress(100.0, "Already downloaded")
+        _notify_download_progress(on_progress, 100.0, "Already downloaded")
         return True
-
-    if is_model_downloading(model_name):
-        logger.info(f"Download already in progress for {model_name}")
-        return False
 
     repo_id = _resolve_repo_id(model_name, q_label)
     if not repo_id:
         _set_download_state(model_name, "error", -1.0, "Missing repo for model", quantization=q_label)
         return False
     allow_patterns = _build_allow_patterns(model_name, q_label)
+    start_msg = f"Downloading model files ({q_label}). This can take a while..."
+    with _download_state_lock:
+        if any(
+            candidate == model_name and state.get("status") == "downloading"
+            for (candidate, _label), state in _download_state.items()
+        ):
+            logger.info(f"Download already in progress for {model_name}")
+            return False
+        _download_state[(model_name, q_label)] = {
+            "status": "downloading",
+            "progress": 0.0,
+            "message": start_msg,
+            "quantization": q_label,
+        }
+    _notify_download_progress(on_progress, 0.0, start_msg)
 
     def _download():
         with _download_lock:
@@ -672,8 +791,7 @@ async def download_model(
                 # another worker owned the lock. Re-check after serialization.
                 if is_model_downloaded(model_name, quantization=q_label):
                     _set_download_state(model_name, "ready", 100.0, "Already downloaded", quantization=q_label)
-                    if on_progress:
-                        on_progress(100.0, "Already downloaded")
+                    _notify_download_progress(on_progress, 100.0, "Already downloaded")
                     return True
 
                 import importlib
@@ -682,11 +800,7 @@ async def download_model(
                 from tqdm import tqdm
 
                 cache_dir = get_model_cache_dir()
-                start_msg = f"Downloading model files ({q_label}). This can take a while..."
                 _set_download_state(model_name, "downloading", 0.0, start_msg, quantization=q_label)
-
-                if on_progress:
-                    on_progress(0.0, start_msg)
 
                 logger.info(f"Downloading ONNX model: {model_name} from {repo_id}")
 
@@ -735,13 +849,11 @@ async def download_model(
                             prepare_msg,
                             quantization=q_label,
                         )
-                        if on_progress:
-                            on_progress(99.9, prepare_msg)
+                        _notify_download_progress(on_progress, 99.9, prepare_msg)
                         _archive_model_path(model_name, q_label, local_files_only=True)
 
                     _set_download_state(model_name, "ready", 100.0, "Download complete", quantization=q_label)
-                    if on_progress:
-                        on_progress(100.0, "Download complete!")
+                    _notify_download_progress(on_progress, 100.0, "Download complete!")
 
                     logger.info(f"Model downloaded to: {local_dir}")
                     return True
@@ -772,8 +884,7 @@ async def download_model(
                         message,
                         quantization=q_label,
                     )
-                    if on_progress:
-                        on_progress(percent, message)
+                    _notify_download_progress(on_progress, percent, message)
 
                 def _add_bytes(delta: int) -> None:
                     nonlocal downloaded_bytes
@@ -852,13 +963,11 @@ async def download_model(
                         prepare_msg,
                         quantization=q_label,
                     )
-                    if on_progress:
-                        on_progress(99.9, prepare_msg)
+                    _notify_download_progress(on_progress, 99.9, prepare_msg)
                     _archive_model_path(model_name, q_label, local_files_only=True)
 
                 _set_download_state(model_name, "ready", 100.0, "Download complete", quantization=q_label)
-                if on_progress:
-                    on_progress(100.0, "Download complete!")
+                _notify_download_progress(on_progress, 100.0, "Download complete!")
 
                 logger.info(f"Model downloaded to cache: {cache_dir}")
                 return True
@@ -866,13 +975,16 @@ async def download_model(
             except Exception as e:
                 logger.error(f"Failed to download model {model_name}: {e}")
                 _set_download_state(model_name, "error", -1.0, str(e), quantization=q_label)
-                if on_progress:
-                    on_progress(-1.0, f"Download failed: {e}")
+                _notify_download_progress(on_progress, -1.0, f"Download failed: {e}")
                 return False
 
     # Run download in thread pool to not block event loop
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_executor, _download)
+    try:
+        worker = loop.run_in_executor(_executor, _download)
+    except Exception as exc:
+        _set_download_state(model_name, "error", -1.0, str(exc), quantization=q_label)
+        raise
+    return await asyncio.shield(worker)
 
 
 def load_model(

@@ -1112,6 +1112,7 @@ export default function Settings() {
   const [onnxModels, setOnnxModels] = useState<OnnxModelInfo[]>([]);
   const [onnxModel, setOnnxModel] = useState("");
   const [onnxQuantization, setOnnxQuantization] = useState("int8");
+  const onnxModelActionInFlightRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     return subscribeDesktopUpdateStatus(setDesktopUpdate);
@@ -1952,7 +1953,8 @@ export default function Settings() {
   };
 
   const handleOnnxDownload = async (modelId: string) => {
-    if (!modelId) return;
+    if (!modelId || onnxModelActionInFlightRef.current.has(modelId)) return;
+    onnxModelActionInFlightRef.current.add(modelId);
     setOnnxModels((prev) =>
       prev.map((m) =>
         m.id === modelId
@@ -1983,12 +1985,14 @@ export default function Settings() {
         duration: 4000,
       });
     } finally {
+      onnxModelActionInFlightRef.current.delete(modelId);
       await loadOnnxModels();
     }
   };
 
   const handleOnnxDelete = async (modelId: string) => {
-    if (!modelId) return;
+    if (!modelId || onnxModelActionInFlightRef.current.has(modelId)) return;
+    onnxModelActionInFlightRef.current.add(modelId);
     try {
       const res = await fetchWithTimeout(
         apiUrl(`/api/onnx/models/${encodeURIComponent(modelId)}?quantization=${encodeURIComponent(onnxQuantization)}`),
@@ -2014,6 +2018,8 @@ export default function Settings() {
         description: String(e?.message || e),
         duration: 4000,
       });
+    } finally {
+      onnxModelActionInFlightRef.current.delete(modelId);
     }
   };
 

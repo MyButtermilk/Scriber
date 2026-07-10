@@ -430,6 +430,17 @@ def test_api_key_saved_feedback_replaces_stale_reset_timers() -> None:
     assert "savedKeyResetTimersRef.current.forEach" in source
 
 
+def test_onnx_model_actions_reject_same_render_double_clicks() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const onnxModelActionInFlightRef = useRef<Set<string>>(new Set());" in source
+    assert source.count("onnxModelActionInFlightRef.current.has(modelId)") == 2
+    assert source.count("onnxModelActionInFlightRef.current.add(modelId);") == 2
+    assert source.count("onnxModelActionInFlightRef.current.delete(modelId);") == 2
+
+
 def test_onnx_progress_only_updates_the_selected_quantization() -> None:
     settings_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
