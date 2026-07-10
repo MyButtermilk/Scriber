@@ -100,13 +100,29 @@ def validate_metadata(
     if not isinstance(artifacts, list):
         raise ValueError("latest.json artifacts must be a list when present.")
 
+    seen_names: set[str] = set()
+    seen_urls: set[str] = set()
     for index, artifact in enumerate(artifacts):
         if not isinstance(artifact, dict):
             raise ValueError(f"artifacts[{index}] must be an object.")
+        artifact_name = artifact.get("name")
+        if (
+            not isinstance(artifact_name, str)
+            or not artifact_name.strip()
+            or Path(artifact_name).name != artifact_name
+        ):
+            raise ValueError(f"artifacts[{index}].name must be a filename without path separators.")
+        if artifact_name in seen_names:
+            raise ValueError(f"latest.json contains duplicate artifact name: {artifact_name}")
+        seen_names.add(artifact_name)
+
         artifact_url = artifact.get("url")
         if not isinstance(artifact_url, str) or not artifact_url.strip():
             raise ValueError(f"artifacts[{index}].url is required.")
         validate_https_url(artifact_url, allow_local_urls=allow_local_urls)
+        if artifact_url in seen_urls:
+            raise ValueError(f"latest.json contains duplicate artifact URL: {artifact_url}")
+        seen_urls.add(artifact_url)
 
         checksum = artifact.get("sha256")
         if not isinstance(checksum, str) or not SHA256_RE.match(checksum):
@@ -121,6 +137,17 @@ def validate_metadata(
             raise ValueError(f"artifacts[{index}].signature must be a string.")
         if require_signatures and not artifact_signature.strip():
             raise ValueError(f"artifacts[{index}].signature is required for updater releases.")
+
+    if artifacts:
+        platform_matches = [artifact for artifact in artifacts if artifact.get("url") == url]
+        if len(platform_matches) != 1:
+            raise ValueError(
+                f"platforms.{platform}.url must match exactly one artifacts[].url entry."
+            )
+        if platform_matches[0].get("signature", "") != signature:
+            raise ValueError(
+                f"platforms.{platform}.signature must match the selected artifact signature."
+            )
 
 
 def validate_local_artifacts(

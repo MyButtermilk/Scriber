@@ -96,6 +96,34 @@ def test_validate_tauri_updater_metadata_rejects_missing_signature(tmp_path: Pat
     assert "signature is required" in result.stderr
 
 
+def test_validate_tauri_updater_metadata_links_platform_to_artifact(tmp_path: Path) -> None:
+    manifest = tmp_path / "latest.json"
+    write_manifest(manifest)
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["platforms"]["windows-x86_64"]["url"] = (
+        "https://github.com/MyButtermilk/Scriber/releases/download/v0.1.0/other.exe"
+    )
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+
+    result = run_script(VALIDATE_SCRIPT, "--metadata", str(manifest), "--require-signatures")
+
+    assert result.returncode == 1
+    assert "must match exactly one" in result.stderr
+
+
+def test_validate_tauri_updater_metadata_links_platform_signature_to_artifact(tmp_path: Path) -> None:
+    manifest = tmp_path / "latest.json"
+    write_manifest(manifest)
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["platforms"]["windows-x86_64"]["signature"] = "different-signature"
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+
+    result = run_script(VALIDATE_SCRIPT, "--metadata", str(manifest), "--require-signatures")
+
+    assert result.returncode == 1
+    assert "must match the selected artifact signature" in result.stderr
+
+
 def test_validate_tauri_updater_metadata_allows_local_urls_only_when_not_required(tmp_path: Path) -> None:
     manifest = tmp_path / "latest.json"
     write_manifest(manifest, signature="")
