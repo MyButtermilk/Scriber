@@ -3920,7 +3920,13 @@ class ScriberWebController:
         if self._shutting_down or self._loop.is_closed():
             return
         event_type = str(payload.get("type") or "state")
+        # Reinsert an updated type so dict order reflects the payload's latest
+        # generation relative to other state-like event types.
+        self._pending_control_payloads.pop(event_type, None)
         self._pending_control_payloads[event_type] = payload
+        self._ensure_control_broadcast_task()
+
+    def _ensure_control_broadcast_task(self) -> None:
         if self._control_broadcast_task is not None and not self._control_broadcast_task.done():
             return
         task = self._loop.create_task(
@@ -3932,7 +3938,8 @@ class ScriberWebController:
 
     async def _drain_control_broadcasts(self) -> None:
         while self._pending_control_payloads and not self._shutting_down:
-            _, payload = self._pending_control_payloads.popitem()
+            event_type = next(iter(self._pending_control_payloads))
+            payload = self._pending_control_payloads.pop(event_type)
             await self.broadcast(payload)
 
     def _on_control_broadcast_done(self, task: asyncio.Task) -> None:
@@ -3945,7 +3952,7 @@ class ScriberWebController:
         except Exception as exc:
             logger.debug(f"Control broadcast warning: {exc}")
         if self._pending_control_payloads and not self._shutting_down:
-            self._enqueue_control_broadcast(next(iter(self._pending_control_payloads.values())))
+            self._ensure_control_broadcast_task()
 
     def _set_status(self, status: str, *, session_id: str | None = None) -> None:
         if session_id is not None and session_id != self._session_id:

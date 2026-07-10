@@ -2199,8 +2199,8 @@ async def test_control_broadcast_coalesces_latest_payload_per_event_type():
 
     assert delivered == [
         ("status", "one"),
-        ("input_warning", "new"),
         ("status", "three"),
+        ("input_warning", "new"),
     ]
 
 
