@@ -390,6 +390,38 @@ def test_live_mic_history_uses_snippets_period_sections_and_stable_virtual_rows(
     assert "AnimatePresence" not in virtual_source
 
 
+def test_history_card_actions_reject_same_render_double_clicks() -> None:
+    page_sources = {
+        page: (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(encoding="utf-8")
+        for page in ("LiveMic.tsx", "Youtube.tsx", "FileTranscribe.tsx")
+    }
+
+    for source in page_sources.values():
+        assert "const copyingRef = useRef<string | null>(null);" in source
+        assert "if (copyingRef.current) return;" in source
+        assert "copyingRef.current = id;" in source
+        assert "const copyResetTimerRef = useRef<number | null>(null);" in source
+        assert "window.clearTimeout(copyResetTimerRef.current);" in source
+
+    live_source = page_sources["LiveMic.tsx"]
+    assert "const deletingRef = useRef<string | null>(null);" in live_source
+    assert "if (deletingRef.current) return;" in live_source
+    assert "const toggleRequestInFlightRef = useRef(false);" in live_source
+    assert "if (toggleRequestInFlightRef.current) return;" in live_source
+
+
+def test_api_key_saved_feedback_replaces_stale_reset_timers() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const savedKeyResetTimersRef = useRef<Map<string, number>>(new Map());" in source
+    assert "savedKeyResetTimersRef.current.get(provider)" in source
+    assert "window.clearTimeout(previousResetTimer);" in source
+    assert "savedKeyResetTimersRef.current.set(provider, resetTimer);" in source
+    assert "savedKeyResetTimersRef.current.forEach" in source
+
+
 def test_primary_page_intros_share_responsive_full_width_layout() -> None:
     component_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "page-intro.tsx"

@@ -301,6 +301,8 @@ export default function Youtube() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const deletingRef = useRef<string | null>(null);
+  const copyingRef = useRef<string | null>(null);
+  const copyResetTimerRef = useRef<number | null>(null);
   const [sortBy, setSortBy] = useUrlQueryState<SortOption>("sort", "date", {
     parse: (raw) => (raw === "likes" || raw === "views" ? raw : "date"),
   });
@@ -337,6 +339,12 @@ export default function Youtube() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
   }, [viewMode]);
+
+  useEffect(() => () => {
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+  }, []);
 
   const transcriptsQueryKey = useMemo(
     () => transcriptHistoryQueryKey("youtube", debouncedHistorySearch),
@@ -535,8 +543,9 @@ export default function Youtube() {
 
   const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (copyingId) return;
+    if (copyingRef.current) return;
 
+    copyingRef.current = id;
     setCopyingId(id);
     try {
       // Fetch the full transcript content
@@ -558,16 +567,21 @@ export default function Youtube() {
         duration: 2000,
       });
       // Show check mark briefly
-      setTimeout(() => setCopyingId(null), 1500);
+      copyResetTimerRef.current = window.setTimeout(() => {
+        copyingRef.current = null;
+        copyResetTimerRef.current = null;
+        setCopyingId(null);
+      }, 1500);
     } catch (e: any) {
       toast({
         title: "Copy failed",
         description: String(e?.message || e),
         duration: 4000,
       });
+      copyingRef.current = null;
       setCopyingId(null);
     }
-  }, [copyingId, toast]);
+  }, [toast]);
 
   const navigateToTranscript = useCallback((id: string) => {
     setLocation(`/transcript/${id}`);

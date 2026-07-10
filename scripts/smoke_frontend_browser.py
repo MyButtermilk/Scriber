@@ -1971,6 +1971,7 @@ async def exercise_youtube_history_interactions(cdp: CdpClient, *, timeout_sec: 
   if (!window.__scriberSmokeYoutubeCopyClicked) {
     window.__scriberSmokeYoutubeCopyClicked = true;
     button.click();
+    button.click();
     return {
       ok: false,
       waitingForCopy: true,
@@ -1979,7 +1980,8 @@ async def exercise_youtube_history_interactions(cdp: CdpClient, *, timeout_sec: 
   }
   const writes = window.__scriberSmokeYoutubeClipboardWrites || [];
   return {
-    ok: writes.some((value) => value.includes('synthetic transcript used by the frontend browser smoke test')),
+    ok: writes.length === 1
+      && writes[0].includes('synthetic transcript used by the frontend browser smoke test'),
     writes,
     stubbed: !!window.__scriberSmokeYoutubeClipboardStubbed,
     toastVisible: (document.body?.innerText || '').includes('Transcript copied to clipboard.')
@@ -2477,6 +2479,7 @@ async def exercise_file_history_interactions(cdp: CdpClient, *, timeout_sec: flo
   if (!window.__scriberSmokeFileCopyClicked) {
     window.__scriberSmokeFileCopyClicked = true;
     button.click();
+    button.click();
     return {
       ok: false,
       waitingForCopy: true,
@@ -2485,7 +2488,8 @@ async def exercise_file_history_interactions(cdp: CdpClient, *, timeout_sec: flo
   }
   const writes = window.__scriberSmokeFileClipboardWrites || [];
   return {
-    ok: writes.some((value) => value.includes('synthetic transcript used by the frontend browser smoke test')),
+    ok: writes.length === 1
+      && writes[0].includes('synthetic transcript used by the frontend browser smoke test'),
     writes,
     stubbed: !!window.__scriberSmokeFileClipboardStubbed,
     toastVisible: (document.body?.innerText || '').includes('Transcript copied to clipboard.')
@@ -3790,6 +3794,7 @@ async def exercise_history_interactions(
   if (!window.__scriberSmokeCopyClicked) {
     window.__scriberSmokeCopyClicked = true;
     button.click();
+    button.click();
     return {
       ok: false,
       waitingForCopy: true,
@@ -3798,7 +3803,8 @@ async def exercise_history_interactions(
   }
   const writes = window.__scriberSmokeClipboardWrites || [];
   return {
-    ok: writes.some((value) => value.includes('synthetic transcript used by the frontend browser smoke test')),
+    ok: writes.length === 1
+      && writes[0].includes('synthetic transcript used by the frontend browser smoke test'),
     writes,
     stubbed: !!window.__scriberSmokeClipboardStubbed,
     toastVisible: (document.body?.innerText || '').includes('Transcript copied to clipboard.')

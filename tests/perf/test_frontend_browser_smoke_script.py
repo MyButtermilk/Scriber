@@ -247,6 +247,8 @@ def test_frontend_browser_smoke_exercises_history_interactions() -> None:
     assert "Copy transcript Synthetic Recording 00002" in script
     assert "Delete transcript Synthetic Recording 00002" in script
     assert "unrelatedControlDeleted" in script
+    assert script.count("button.click();\n    button.click();") >= 3
+    assert script.count("writes.length === 1") >= 3
     assert "/transcript/mic-00001" in script
     assert "\"history-search-copy-navigation\"" in script
     assert "if index > 0:" in benchmark_script

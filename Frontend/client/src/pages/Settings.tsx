@@ -1076,6 +1076,7 @@ export default function Settings() {
   const postProcessingHotkeyCaptureRef = useRef<HTMLDivElement | null>(null);
   const { toast } = useToast();
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
+  const savedKeyResetTimersRef = useRef<Map<string, number>>(new Map());
   const [credentialReadyKeys, setCredentialReadyKeys] = useState<Record<string, boolean>>({});
   const [credentialDialogProvider, setCredentialDialogProvider] = useState<string | null>(null);
   const remoteCredentialDialogScrollRef = useRef<ScrollSnapshot | null>(null);
@@ -1114,6 +1115,13 @@ export default function Settings() {
 
   useEffect(() => {
     return subscribeDesktopUpdateStatus(setDesktopUpdate);
+  }, []);
+
+  useEffect(() => () => {
+    savedKeyResetTimersRef.current.forEach((timer) => {
+      window.clearTimeout(timer);
+    });
+    savedKeyResetTimersRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -1684,9 +1692,15 @@ export default function Settings() {
         description: `${provider} settings updated.`,
         duration: 2000,
       });
-      setTimeout(() => {
+      const previousResetTimer = savedKeyResetTimersRef.current.get(provider);
+      if (previousResetTimer !== undefined) {
+        window.clearTimeout(previousResetTimer);
+      }
+      const resetTimer = window.setTimeout(() => {
         setSavedKeys((prev) => ({ ...prev, [provider]: false }));
+        savedKeyResetTimersRef.current.delete(provider);
       }, 2000);
+      savedKeyResetTimersRef.current.set(provider, resetTimer);
     } catch (e: any) {
       toast({
         title: "Save failed",

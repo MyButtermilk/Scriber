@@ -470,6 +470,10 @@ export default function LiveMic() {
   const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
+  const deletingRef = useRef<string | null>(null);
+  const copyingRef = useRef<string | null>(null);
+  const copyResetTimerRef = useRef<number | null>(null);
+  const toggleRequestInFlightRef = useRef(false);
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
   const getInitialViewMode = () => {
@@ -512,6 +516,12 @@ export default function LiveMic() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
   }, [viewMode]);
+
+  useEffect(() => () => {
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+  }, []);
 
   const transcriptsQuery = useTranscriptHistoryQuery<Transcript>({ type: "mic", q: debouncedSearch });
   const transcripts = transcriptsQuery.items;
@@ -770,6 +780,8 @@ export default function LiveMic() {
   };
 
   const handleToggle = async () => {
+    if (toggleRequestInFlightRef.current) return;
+    toggleRequestInFlightRef.current = true;
     try {
       const endpoint = hasActiveSession ? "/api/live-mic/stop" : "/api/live-mic/start";
       const res = await fetchWithTimeout(
@@ -798,13 +810,16 @@ export default function LiveMic() {
         description: String(e?.message || e),
         duration: 4000,
       });
+    } finally {
+      toggleRequestInFlightRef.current = false;
     }
   };
 
   const deleteTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (deletingId) return;
+    if (deletingRef.current) return;
 
+    deletingRef.current = id;
     setDeletingId(id);
     try {
       const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${id}`), {
@@ -827,14 +842,16 @@ export default function LiveMic() {
         duration: 4000,
       });
     } finally {
+      deletingRef.current = null;
       setDeletingId(null);
     }
-  }, [deletingId, queryClient, toast]);
+  }, [queryClient, toast]);
 
   const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (copyingId) return;
+    if (copyingRef.current) return;
 
+    copyingRef.current = id;
     setCopyingId(id);
     try {
       // Fetch the full transcript content
@@ -856,16 +873,21 @@ export default function LiveMic() {
         duration: 2000,
       });
       // Show check mark briefly
-      setTimeout(() => setCopyingId(null), 1500);
+      copyResetTimerRef.current = window.setTimeout(() => {
+        copyingRef.current = null;
+        copyResetTimerRef.current = null;
+        setCopyingId(null);
+      }, 1500);
     } catch (e: any) {
       toast({
         title: "Copy failed",
         description: String(e?.message || e),
         duration: 4000,
       });
+      copyingRef.current = null;
       setCopyingId(null);
     }
-  }, [copyingId, toast]);
+  }, [toast]);
 
   const navigateToTranscript = useCallback((id: string) => {
     setLocation(`/transcript/${id}`);
