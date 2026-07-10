@@ -240,9 +240,6 @@ def _copy_tree_missing(src_dir: Path, dst_dir: Path) -> list[str]:
             continue
         relative = src.relative_to(src_dir)
         dst = dst_dir / relative
-        if dst.exists():
-            continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-        copied.append(str(relative).replace("\\", "/"))
+        if _copy_file_if_missing(src, dst):
+            copied.append(str(relative).replace("\\", "/"))
     return copied
