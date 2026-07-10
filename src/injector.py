@@ -396,7 +396,8 @@ def _windows_clipboard_sequence_number() -> int | None:
     try:
         user32 = ctypes.windll.user32
         user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
-        return int(user32.GetClipboardSequenceNumber())
+        sequence = int(user32.GetClipboardSequenceNumber())
+        return sequence if sequence > 0 else None
     except Exception:
         return None
 
@@ -642,9 +643,9 @@ def _paste_text(
                 try:
                     current_sequence = _windows_clipboard_sequence_number()
                     if (
-                        clipboard_sequence_after_set is not None
-                        and current_sequence is not None
-                        and current_sequence != clipboard_sequence_after_set
+                        clipboard_sequence_after_set is None
+                        or current_sequence is None
+                        or current_sequence != clipboard_sequence_after_set
                     ):
                         return
                     _windows_clipboard_restore_snapshot(previous_clipboard)

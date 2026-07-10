@@ -108,6 +108,25 @@ def test_paste_text_does_not_restore_when_clipboard_sequence_changes(monkeypatch
     restore_clip.assert_not_called()
 
 
+def test_paste_text_does_not_restore_when_clipboard_sequence_is_unavailable(monkeypatch):
+    monkeypatch.setattr(Config, "PASTE_RESTORE_DELAY_MS", 0)
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector.sys.platform", "win32"),
+        patch("src.injector._windows_clipboard_snapshot", return_value=_snapshot()),
+        patch("src.injector._windows_clipboard_set_text", return_value=True),
+        patch("src.injector._windows_clipboard_sequence_number", side_effect=[None, None]),
+        patch("src.injector._windows_clipboard_restore_snapshot", return_value=True) as restore_clip,
+        patch("src.injector.keyboard") as mock_kb,
+        patch("src.injector.time.sleep", return_value=None),
+    ):
+        mock_kb.press_and_release.return_value = None
+        assert _paste_text("new text") is True
+
+    restore_clip.assert_not_called()
+
+
 def test_paste_text_rechecks_target_title_before_ctrl_v(monkeypatch):
     monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "Scriber Hot Path Text Target")
     monkeypatch.setattr(Config, "PASTE_RESTORE_DELAY_MS", 0)

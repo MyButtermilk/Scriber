@@ -1756,6 +1756,13 @@ fn clipboard_sequence_number() -> u32 {
     unsafe { GetClipboardSequenceNumber() }
 }
 
+#[cfg(any(windows, test))]
+fn clipboard_sequence_is_unchanged(expected_sequence: u32, current_sequence: u32) -> bool {
+    expected_sequence != 0
+        && current_sequence != 0
+        && current_sequence == expected_sequence
+}
+
 #[cfg(windows)]
 fn dispatch_ctrl_v() -> Result<(), ShellCommandError> {
     use std::mem;
@@ -1841,12 +1848,17 @@ fn restore_clipboard_now(
     };
 
     let current_sequence = clipboard_sequence_number();
-    if current_sequence != expected_sequence {
+    if !clipboard_sequence_is_unchanged(expected_sequence, current_sequence) {
+        let skipped_reason = if expected_sequence == 0 || current_sequence == 0 {
+            "clipboardSequenceUnavailable"
+        } else {
+            "clipboardSequenceChanged"
+        };
         let mut status = json!({
             "scheduled": false,
             "attempted": false,
             "succeeded": Value::Null,
-            "skippedReason": "clipboardSequenceChanged",
+            "skippedReason": skipped_reason,
             "errorCode": Value::Null,
         });
         if let Some(object) = status.as_object_mut() {
@@ -2387,6 +2399,14 @@ mod tests {
     #[test]
     fn clipboard_owner_class_is_named_for_diagnostics() {
         assert_eq!(super::CLIPBOARD_OWNER_CLASS, "ScriberClipboardOwner");
+    }
+
+    #[test]
+    fn clipboard_restore_requires_a_nonzero_unchanged_sequence() {
+        assert!(super::clipboard_sequence_is_unchanged(42, 42));
+        assert!(!super::clipboard_sequence_is_unchanged(42, 43));
+        assert!(!super::clipboard_sequence_is_unchanged(0, 0));
+        assert!(!super::clipboard_sequence_is_unchanged(42, 0));
     }
 
     #[test]
