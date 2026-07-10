@@ -7,7 +7,7 @@ use std::{
     process::{Child, ChildStdin, Command, ExitStatus, Stdio},
     sync::{
         mpsc::{self, Receiver, RecvTimeoutError},
-        Mutex, OnceLock,
+        Mutex, MutexGuard, OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -105,10 +105,10 @@ pub fn call_audio_sidecar_command(command: &str, payload: Value) -> AudioSidecar
 }
 
 pub fn shutdown_all_audio_sidecars(reason: &str) -> usize {
-    let mut sessions = active_audio_sidecars().lock().unwrap();
+    let mut sessions = lock_active_audio_sidecars();
     let entries: Vec<(String, ActiveAudioSidecar)> = sessions.drain().collect();
     drop(sessions);
-    let mut prewarm_sessions = active_audio_prewarm_sidecars().lock().unwrap();
+    let mut prewarm_sessions = lock_active_audio_prewarm_sidecars();
     let prewarm_entries: Vec<(String, ActiveAudioSidecar)> = prewarm_sessions.drain().collect();
     drop(prewarm_sessions);
 
@@ -140,6 +140,19 @@ fn active_audio_prewarm_sidecars() -> &'static Mutex<HashMap<String, ActiveAudio
     ACTIVE_AUDIO_PREWARM_SIDECARS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn lock_active_audio_sidecars() -> MutexGuard<'static, HashMap<String, ActiveAudioSidecar>> {
+    active_audio_sidecars()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_active_audio_prewarm_sidecars() -> MutexGuard<'static, HashMap<String, ActiveAudioSidecar>>
+{
+    active_audio_prewarm_sidecars()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn payload_prewarm_id(payload: &Value) -> String {
     payload
         .get("prewarmId")
@@ -154,7 +167,7 @@ fn payload_prewarm_id(payload: &Value) -> String {
 fn start_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
     let prewarm_id = payload_prewarm_id(&payload);
     if !prewarm_id.is_empty() {
-        let mut prewarm_sessions = active_audio_prewarm_sidecars().lock().unwrap();
+        let mut prewarm_sessions = lock_active_audio_prewarm_sidecars();
         if let Some(sidecar) = prewarm_sessions.remove(&prewarm_id) {
             drop(prewarm_sessions);
             return start_audio_sidecar_capture_with_sidecar(sidecar, payload);
@@ -256,7 +269,7 @@ fn start_audio_sidecar_capture_with_sidecar(
     }
 
     let replaced = {
-        let mut sessions = active_audio_sidecars().lock().unwrap();
+        let mut sessions = lock_active_audio_sidecars();
         let replaced: Vec<(String, ActiveAudioSidecar)> = sessions.drain().collect();
         sessions.insert(stream_id.clone(), sidecar);
         replaced
@@ -347,7 +360,7 @@ fn start_audio_sidecar_prewarm_at(program: &Path, payload: Value) -> AudioSideca
     }
 
     let replaced = {
-        let mut sessions = active_audio_prewarm_sidecars().lock().unwrap();
+        let mut sessions = lock_active_audio_prewarm_sidecars();
         let replaced: Vec<(String, ActiveAudioSidecar)> = sessions.drain().collect();
         sessions.insert(prewarm_id.clone(), sidecar);
         replaced
@@ -389,7 +402,7 @@ fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
         };
     }
 
-    let mut sessions = active_audio_sidecars().lock().unwrap();
+    let mut sessions = lock_active_audio_sidecars();
     let Some(mut sidecar) = sessions.remove(&stream_id) else {
         let executable_available = audio_sidecar_executable_available();
         let reason = if executable_available {
@@ -493,7 +506,7 @@ fn stop_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
         };
     }
 
-    let mut sessions = active_audio_prewarm_sidecars().lock().unwrap();
+    let mut sessions = lock_active_audio_prewarm_sidecars();
     let Some(mut sidecar) = sessions.remove(&prewarm_id) else {
         let executable_available = audio_sidecar_executable_available();
         let reason = if executable_available {
@@ -590,7 +603,7 @@ fn status_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
         };
     }
 
-    let mut sessions = active_audio_prewarm_sidecars().lock().unwrap();
+    let mut sessions = lock_active_audio_prewarm_sidecars();
     if !sessions.contains_key(&prewarm_id) {
         let executable_available = audio_sidecar_executable_available();
         let reason = if executable_available {

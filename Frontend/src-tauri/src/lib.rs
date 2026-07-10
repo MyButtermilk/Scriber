@@ -1980,7 +1980,10 @@ fn tray_status_for_app<R: Runtime>(app: &AppHandle<R>) -> TrayStatus {
     let Some(state) = app.try_state::<TrayState>() else {
         return TrayStatus::from(&TrayStatusInner::default());
     };
-    let state = state.inner.lock().unwrap();
+    let state = state
+        .inner
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     TrayStatus::from(&*state)
 }
 
@@ -1990,7 +1993,10 @@ fn update_tray_status_for_app<R: Runtime>(
 ) -> TrayStatus {
     let status = {
         let state = app.state::<TrayState>();
-        let mut inner = state.inner.lock().unwrap();
+        let mut inner = state
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         update(&mut inner);
         TrayStatus::from(&*inner)
     };

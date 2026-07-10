@@ -363,12 +363,17 @@ fn state_lock() -> &'static Mutex<OverlayState> {
 }
 
 fn update_state<T>(update: impl FnOnce(&mut OverlayState) -> T) -> T {
-    let mut state = state_lock().lock().unwrap();
+    let mut state = state_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     update(&mut state)
 }
 
 fn status_payload() -> Value {
-    let state = state_lock().lock().unwrap().clone();
+    let state = state_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     json!({
         "renderer": "tauri-webview",
         "windowLabel": OVERLAY_WINDOW_LABEL,

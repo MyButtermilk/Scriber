@@ -1758,9 +1758,7 @@ fn clipboard_sequence_number() -> u32 {
 
 #[cfg(any(windows, test))]
 fn clipboard_sequence_is_unchanged(expected_sequence: u32, current_sequence: u32) -> bool {
-    expected_sequence != 0
-        && current_sequence != 0
-        && current_sequence == expected_sequence
+    expected_sequence != 0 && current_sequence != 0 && current_sequence == expected_sequence
 }
 
 #[cfg(windows)]
