@@ -52,3 +52,40 @@ async def test_read_stream_limited_drains_beyond_retained_prefix() -> None:
 
     assert retained == b"abcde"
     assert stream.read_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_communicate_kills_and_reaps_child_after_stream_error() -> None:
+    class FailingStream:
+        async def read(self, _size: int) -> bytes:
+            raise OSError("pipe failed")
+
+    class EmptyStream:
+        async def read(self, _size: int) -> bytes:
+            return b""
+
+    class Process:
+        def __init__(self) -> None:
+            self.stdout = FailingStream()
+            self.stderr = EmptyStream()
+            self.killed = False
+            self.wait_calls = 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+        async def wait(self) -> int:
+            self.wait_calls += 1
+            return -9 if self.killed else 0
+
+    process = Process()
+
+    with pytest.raises(OSError, match="pipe failed"):
+        await subprocess_utils.communicate_or_kill_on_cancel(
+            process,  # type: ignore[arg-type]
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+
+    assert process.killed is True
+    assert process.wait_calls >= 1

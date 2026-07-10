@@ -64,16 +64,7 @@ async def communicate_or_kill_on_cancel(
         )
         return stdout_data, stderr_data
     except asyncio.CancelledError:
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-        except Exception:
-            pass
-        try:
-            await process.wait()
-        except Exception:
-            pass
+        await _terminate_and_reap(process)
         for task in drain_tasks:
             if not task.done():
                 task.cancel()
@@ -81,12 +72,27 @@ async def communicate_or_kill_on_cancel(
             await asyncio.gather(*drain_tasks, return_exceptions=True)
         raise
     except Exception:
+        await _terminate_and_reap(process)
         for task in drain_tasks:
             if not task.done():
                 task.cancel()
         if drain_tasks:
             await asyncio.gather(*drain_tasks, return_exceptions=True)
         raise
+
+
+async def _terminate_and_reap(process: asyncio.subprocess.Process) -> None:
+    """Best-effort child cleanup that never hides the caller's original error."""
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+    except Exception:
+        pass
+    try:
+        await process.wait()
+    except Exception:
+        pass
 
 
 async def read_stream_limited(
