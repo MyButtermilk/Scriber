@@ -198,6 +198,13 @@ class FrontendSmokeBackend:
         for ws in stale:
             self.websockets.discard(ws)
 
+    async def disconnect_websockets(self) -> set[web.WebSocketResponse]:
+        disconnected = set(self.websockets)
+        for ws in disconnected:
+            with suppress(Exception):
+                await ws.close(code=1012, message=b"frontend smoke reconnect")
+        return disconnected
+
     async def health(self, request: web.Request) -> web.Response:
         return web.json_response(
             {
@@ -2814,10 +2821,10 @@ async def exercise_debug_console_interaction(
   }
   const text = document.body ? document.body.innerText : '';
   return {
-    ok: /VISIBLE\s+1\s+of 3/.test(text)
+    ok: /1\s+VISIBLE\s+of 3 logs/i.test(text)
       && text.includes('Debug console sample warning')
       && !text.includes('Debug console sample error'),
-    hasOneEntry: /VISIBLE\s+1\s+of 3/.test(text),
+    hasOneEntry: /1\s+VISIBLE\s+of 3 logs/i.test(text),
     hasWarningLog: text.includes('Debug console sample warning'),
     errorHidden: !text.includes('Debug console sample error')
   };
@@ -3635,18 +3642,52 @@ async def exercise_history_interactions(
         expression=r"""
 (() => {
   const root = document.querySelector('[data-history-virtualized="true"]');
+  const scroll = root?.closest('[data-app-scroll-container]');
   const text = document.body ? document.body.innerText : '';
+  const visibleTitles = Array.from(document.querySelectorAll('.perf-scroll-item'))
+    .slice(0, 5)
+    .map((node) => (node.textContent || '').trim().slice(0, 120));
   return {
     ok: !!root
       && document.querySelectorAll('.perf-scroll-item').length > 0
       && text.includes('Synthetic Recording 00001'),
     view: root?.getAttribute('data-history-view') || '',
     visibleCards: document.querySelectorAll('.perf-scroll-item').length,
-    hasFirstRecording: text.includes('Synthetic Recording 00001')
+    hasFirstRecording: text.includes('Synthetic Recording 00001'),
+    scrollTop: scroll?.scrollTop || 0,
+    visibleTitles
   };
 })()
 """,
     )
+
+    history_requests_before_reconnect = sum(
+        1
+        for entry in backend.request_log
+        if entry.get("path") == "/api/transcripts" and entry.get("type") == "mic"
+    )
+    disconnected_sockets = await backend.disconnect_websockets()
+    reconnect_deadline = time.monotonic() + timeout_sec
+    reconnect_state: dict[str, Any] = {}
+    while time.monotonic() < reconnect_deadline:
+        history_requests_after_reconnect = sum(
+            1
+            for entry in backend.request_log
+            if entry.get("path") == "/api/transcripts" and entry.get("type") == "mic"
+        )
+        has_reconnected_socket = any(ws not in disconnected_sockets for ws in backend.websockets)
+        reconnect_state = {
+            "ok": has_reconnected_socket and history_requests_after_reconnect > history_requests_before_reconnect,
+            "disconnectedSockets": len(disconnected_sockets),
+            "hasReconnectedSocket": has_reconnected_socket,
+            "historyRequestsBefore": history_requests_before_reconnect,
+            "historyRequestsAfter": history_requests_after_reconnect,
+        }
+        if reconnect_state["ok"]:
+            break
+        await asyncio.sleep(0.1)
+    if not reconnect_state.get("ok"):
+        raise RuntimeError(f"Transcript history did not refresh after WebSocket reconnect: {reconnect_state}")
 
     list_clicked = await cdp.evaluate(
         r"""
@@ -3858,6 +3899,7 @@ async def exercise_history_interactions(
         "name": "history-search-copy-navigation",
         "ok": True,
         "initial": initial_state,
+        "reconnect": reconnect_state,
         "listView": list_state,
         "search": search_state,
         "copy": clipboard_state,

@@ -137,9 +137,11 @@ def transcript_item(transcript_type: str, index: int) -> dict[str, Any]:
         "youtube": "Synthetic Video",
     }.get(transcript_type, "Synthetic Transcript")
     duration = f"{1 + (index % 58):02d}:{(index * 7) % 60:02d}"
+    title = f"{title_prefix} {index + 1:05d}"
     item: dict[str, Any] = {
         "id": f"{transcript_type}-{index:05d}",
-        "title": f"{title_prefix} {index + 1:05d}",
+        "title": title,
+        "preview": f"{title} preview",
         "date": "2026-06-01",
         "duration": duration,
         "status": "completed",

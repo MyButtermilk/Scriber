@@ -116,6 +116,8 @@ function RecordingErrorToastBridge() {
 
 function TranscriptHistoryInvalidationBridge() {
   const queryClient = useQueryClient();
+  const hasConnectedRef = useRef(false);
+  const wasConnectedRef = useRef(false);
   const pendingTranscriptIdsRef = useRef<Set<string>>(new Set());
   const pendingTranscriptTypesRef = useRef<Set<string>>(new Set());
   const invalidateAllDetailsRef = useRef(false);
@@ -184,7 +186,22 @@ function TranscriptHistoryInvalidationBridge() {
     }
   }, []);
 
-  useSharedWebSocket(handleWsMessage);
+  const { isConnected } = useSharedWebSocket(handleWsMessage);
+
+  useEffect(() => {
+    if (isConnected && hasConnectedRef.current && !wasConnectedRef.current) {
+      invalidateAllDetailsRef.current = true;
+      invalidateAllHistoryRef.current = true;
+      if (invalidationTimerRef.current !== null) {
+        window.clearTimeout(invalidationTimerRef.current);
+      }
+      flushInvalidations();
+    }
+    if (isConnected) {
+      hasConnectedRef.current = true;
+    }
+    wasConnectedRef.current = isConnected;
+  }, [flushInvalidations, isConnected]);
   return null;
 }
 

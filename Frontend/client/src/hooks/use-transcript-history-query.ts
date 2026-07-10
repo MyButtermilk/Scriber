@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useInfiniteQuery, type InfiniteData } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
@@ -13,7 +14,7 @@ export interface TranscriptHistoryPage<TItem> {
   hasMore: boolean;
 }
 
-export const TRANSCRIPT_HISTORY_PAGE_SIZE = 50;
+export const TRANSCRIPT_HISTORY_PAGE_SIZE = 100;
 
 export function transcriptHistoryQueryKey(type: TranscriptHistoryType, q: string) {
   return ["/api/transcripts", { q, type, infinite: true }] as const;
@@ -80,8 +81,10 @@ export function useTranscriptHistoryQuery<TItem>({
     placeholderData: (previous) => previous,
   });
 
-  const items = query.data?.pages.flatMap((page) => page.items) ?? [];
-  const total = query.data?.pages[0]?.total ?? 0;
+  const { items, total } = useMemo(() => ({
+    items: query.data?.pages.flatMap((page) => page.items) ?? [],
+    total: query.data?.pages[0]?.total ?? 0,
+  }), [query.data]);
 
   return {
     ...query,

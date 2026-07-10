@@ -188,6 +188,7 @@ def test_frontend_browser_smoke_exercises_debug_console_actions() -> None:
     assert "Refresh logs" in script
     assert "Toggle auto refresh" in script
     assert "Toggle auto scroll" in script
+    assert "/1\\s+VISIBLE\\s+of 3 logs/i" in script
     assert "textContent || '').trim() === 'Reset'" in script
     assert "Debug console sample warning" in script
     assert "Copy visible logs" in script
@@ -237,14 +238,18 @@ def test_frontend_browser_smoke_exercises_file_actions() -> None:
 
 def test_frontend_browser_smoke_exercises_history_interactions() -> None:
     script = (REPO_ROOT / "scripts" / "smoke_frontend_browser.py").read_text(encoding="utf-8")
+    benchmark_script = (REPO_ROOT / "scripts" / "measure_history_scroll_baseline.py").read_text(encoding="utf-8")
 
     assert "exercise_history_interactions" in script
+    assert "disconnect_websockets" in script
+    assert "historyRequestsAfter" in script
     assert "Search recordings" in script
     assert "Copy transcript Synthetic Recording 00002" in script
     assert "Delete transcript Synthetic Recording 00002" in script
     assert "unrelatedControlDeleted" in script
     assert "/transcript/mic-00001" in script
     assert "\"history-search-copy-navigation\"" in script
+    assert '"preview": f"{title} preview"' in benchmark_script
 
 
 def test_frontend_browser_smoke_exercises_transcript_detail_actions() -> None:

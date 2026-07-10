@@ -576,10 +576,27 @@ def test_virtual_history_releases_load_guard_for_void_and_failed_loaders() -> No
     source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx"
     ).read_text(encoding="utf-8")
+    query_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-transcript-history-query.ts"
+    ).read_text(encoding="utf-8")
 
     assert '"then" in result' in source
     assert ".catch((error) =>" in source
     assert "else {\n        loadInFlightRef.current = false;" in source
+    assert "TRANSCRIPT_HISTORY_PAGE_SIZE = 100" in query_source
+    assert "const { items, total } = useMemo(" in query_source
+    assert "}), [query.data]);" in query_source
+    assert "[gridColumns, items.length, rows.length, viewMode, virtualizer]" in source
+
+
+def test_transcript_history_refreshes_after_websocket_reconnect() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+    assert "const hasConnectedRef = useRef(false);" in source
+    assert "const wasConnectedRef = useRef(false);" in source
+    assert "if (isConnected && hasConnectedRef.current && !wasConnectedRef.current)" in source
+    assert "invalidateAllDetailsRef.current = true;" in source
+    assert "invalidateAllHistoryRef.current = true;" in source
 
 
 def test_live_mic_interim_and_final_transcript_render_distinctly() -> None:
