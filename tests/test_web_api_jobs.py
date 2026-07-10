@@ -50,6 +50,90 @@ async def test_background_job_enqueue_runs_off_event_loop(monkeypatch, tmp_path)
     assert ctl._job_ids_by_transcript[rec.id] == "job-off-loop"
 
 
+@pytest.mark.asyncio
+async def test_background_job_enqueue_failure_is_not_silently_ignored(monkeypatch, tmp_path):
+    ctl = ScriberWebController(
+        asyncio.get_running_loop(),
+        job_store=JobStore(db_path=tmp_path / "jobs.db"),
+    )
+    rec = TranscriptRecord(
+        id="queue-failure",
+        title="Queue failure",
+        date="Today",
+        duration="00:01",
+        status="processing",
+        type="file",
+        language="auto",
+    )
+    monkeypatch.setattr(
+        ctl._job_store,
+        "enqueue",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(web_api.TranscriptPersistenceError, match="Failed to queue"):
+        await ctl._enqueue_background_job_async(
+            rec,
+            job_type=web_api.JobType.FILE,
+            payload={"path": "sample.wav"},
+        )
+
+    assert rec.id not in ctl._job_ids_by_transcript
+
+
+@pytest.mark.asyncio
+async def test_file_start_does_not_publish_or_schedule_an_unpersisted_job(monkeypatch, tmp_path):
+    ctl = ScriberWebController(
+        asyncio.get_running_loop(),
+        job_store=JobStore(db_path=tmp_path / "jobs.db"),
+    )
+    sample_file = tmp_path / "sample.wav"
+    sample_file.write_bytes(b"RIFF....WAVEfmt ")
+    monkeypatch.setattr(
+        ctl._job_store,
+        "enqueue",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with (
+        patch("src.web_api._probe_media_duration_seconds", return_value=1.0),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as broadcast_mock,
+        patch.object(ctl, "_schedule_file_job") as schedule_mock,
+        pytest.raises(web_api.TranscriptPersistenceError, match="Failed to queue"),
+    ):
+        await ctl.start_file_transcription(sample_file, "sample.wav")
+
+    assert ctl._history == []
+    broadcast_mock.assert_not_awaited()
+    schedule_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_youtube_start_does_not_publish_or_schedule_an_unpersisted_job(monkeypatch, tmp_path):
+    ctl = ScriberWebController(
+        asyncio.get_running_loop(),
+        job_store=JobStore(db_path=tmp_path / "jobs.db"),
+    )
+    monkeypatch.setattr(
+        ctl._job_store,
+        "enqueue",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with (
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as broadcast_mock,
+        patch.object(ctl, "_schedule_youtube_job") as schedule_mock,
+        pytest.raises(web_api.TranscriptPersistenceError, match="Failed to queue"),
+    ):
+        await ctl.start_youtube_transcription(
+            {"url": "https://www.youtube.com/watch?v=J_RxOz_ddgs"}
+        )
+
+    assert ctl._history == []
+    broadcast_mock.assert_not_awaited()
+    schedule_mock.assert_not_called()
+
+
 def test_background_task_registry_consumes_and_logs_unexpected_failure():
     loop = asyncio.new_event_loop()
     try:

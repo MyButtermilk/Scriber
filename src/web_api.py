@@ -2685,7 +2685,7 @@ class ScriberWebController:
         *,
         job_type: JobType,
         payload: dict[str, Any],
-    ) -> str | None:
+    ) -> str:
         try:
             job = self._job_store.enqueue(
                 transcript_id=rec.id,
@@ -2693,9 +2693,9 @@ class ScriberWebController:
                 payload=payload,
             )
             return job.id
-        except Exception as exc:  # pragma: no cover - best effort persistence
-            logger.warning(f"Failed to persist queued job for transcript {rec.id}: {exc}")
-            return None
+        except Exception as exc:
+            logger.error(f"Failed to persist queued job for transcript {rec.id}: {exc}")
+            raise TranscriptPersistenceError("Failed to queue transcription job") from exc
 
     async def _enqueue_background_job_async(
         self,
@@ -2703,15 +2703,15 @@ class ScriberWebController:
         *,
         job_type: JobType,
         payload: dict[str, Any],
-    ) -> None:
+    ) -> str:
         job_id = await asyncio.to_thread(
             self._enqueue_background_job,
             rec,
             job_type=job_type,
             payload=payload,
         )
-        if job_id:
-            self._remember_job_id(rec.id, job_id)
+        self._remember_job_id(rec.id, job_id)
+        return job_id
 
     def _set_job_running(self, transcript_id: str) -> None:
         job_id = self._job_ids_by_transcript.get(transcript_id)
@@ -4617,17 +4617,6 @@ class ScriberWebController:
             processing_started_at=started_at.isoformat(),
             _youtube_prefer_captions=prefer_captions,
         )
-        self._emit_workflow_event(
-            message=f"YouTube job queued: {rec.title}",
-            event="api.job.created",
-            workflow="youtube",
-            stage="job_created",
-            record=rec,
-            milestone=True,
-            outcome="queued",
-        )
-        self._add_to_history(rec)
-        await self._broadcast_history_updated(record=rec, reason="job_created")
         await self._enqueue_background_job_async(
             rec,
             job_type=JobType.YOUTUBE,
@@ -4641,6 +4630,17 @@ class ScriberWebController:
                 "preferCaptions": prefer_captions,
             },
         )
+        self._emit_workflow_event(
+            message=f"YouTube job queued: {rec.title}",
+            event="api.job.created",
+            workflow="youtube",
+            stage="job_created",
+            record=rec,
+            milestone=True,
+            outcome="queued",
+        )
+        self._add_to_history(rec)
+        await self._broadcast_history_updated(record=rec, reason="job_created")
         self._schedule_youtube_job(rec)
         return rec
 
@@ -5127,20 +5127,9 @@ class ScriberWebController:
             source_url=str(file_path),
             processing_started_at=started_at.isoformat(),
         )
-        self._emit_workflow_event(
-            message=f"File job queued: {rec.title}",
-            event="api.job.created",
-            workflow="file",
-            stage="job_created",
-            record=rec,
-            milestone=True,
-            outcome="queued",
-        )
         # Store file size in content temporarily for display
         if file_size:
             rec.channel = file_size  # Reuse channel field for file size display
-        self._add_to_history(rec)
-        await self._broadcast_history_updated(record=rec, reason="job_created")
         await self._enqueue_background_job_async(
             rec,
             job_type=JobType.FILE,
@@ -5151,6 +5140,17 @@ class ScriberWebController:
                 "originalFilename": original_filename,
             },
         )
+        self._emit_workflow_event(
+            message=f"File job queued: {rec.title}",
+            event="api.job.created",
+            workflow="file",
+            stage="job_created",
+            record=rec,
+            milestone=True,
+            outcome="queued",
+        )
+        self._add_to_history(rec)
+        await self._broadcast_history_updated(record=rec, reason="job_created")
         self._schedule_file_job(rec, file_path)
         return rec
 
