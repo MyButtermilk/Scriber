@@ -14,7 +14,7 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{Mutex, MutexGuard},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
@@ -88,6 +88,16 @@ const SHELL_MENU_SMOKE_TRIGGER_TIMEOUT_MS_ENV: &str =
     "SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_TIMEOUT_MS";
 const SHELL_MENU_SMOKE_ACTION_DELAY_MS_ENV: &str = "SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTION_DELAY_MS";
 const HOTKEY_DISPATCH_DEBOUNCE: Duration = Duration::from_millis(250);
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            mutex.clear_poison();
+            poisoned.into_inner()
+        }
+    }
+}
 const NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS: u64 = 1000;
 const NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL: Duration = Duration::from_secs(900);
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -342,9 +352,7 @@ impl NativeDeviceEventsState {
     }
 
     fn set_handle(&self, handle: Option<audio_devices::NativeDeviceEventMonitorHandle>) {
-        if let Ok(mut state) = self.handle.lock() {
-            *state = handle;
-        }
+        *lock_unpoisoned(&self.handle) = handle;
     }
 }
 
@@ -369,10 +377,7 @@ impl ShellIpcState {
     }
 
     fn is_running(&self) -> bool {
-        self.handle
-            .lock()
-            .map(|handle| handle.is_some())
-            .unwrap_or(false)
+        lock_unpoisoned(&self.handle).is_some()
     }
 }
 
@@ -408,26 +413,16 @@ impl DesktopHotkeyState {
     }
 
     fn status(&self) -> DesktopHotkeyStatus {
-        self.inner
-            .lock()
-            .map(|state| DesktopHotkeyStatus {
-                registered: state.registered_hotkey.is_some(),
-                available: state.available,
-                hotkey: state.registered_hotkey.clone().unwrap_or_default(),
-                post_processing_hotkey: state.post_processing_hotkey.clone().unwrap_or_default(),
-                mode: state.mode.clone(),
-                message: state.message.clone(),
-                capture_suspended: state.capture_suspended,
-            })
-            .unwrap_or_else(|_| DesktopHotkeyStatus {
-                registered: false,
-                available: false,
-                hotkey: String::new(),
-                post_processing_hotkey: String::new(),
-                mode: "toggle".to_string(),
-                message: "Global hotkey state lock is poisoned".to_string(),
-                capture_suspended: false,
-            })
+        let state = lock_unpoisoned(&self.inner);
+        DesktopHotkeyStatus {
+            registered: state.registered_hotkey.is_some(),
+            available: state.available,
+            hotkey: state.registered_hotkey.clone().unwrap_or_default(),
+            post_processing_hotkey: state.post_processing_hotkey.clone().unwrap_or_default(),
+            mode: state.mode.clone(),
+            message: state.message.clone(),
+            capture_suspended: state.capture_suspended,
+        }
     }
 
     fn set_registered(
@@ -438,29 +433,28 @@ impl DesktopHotkeyState {
         mode: String,
         message: String,
     ) {
-        if let Ok(mut state) = self.inner.lock() {
-            let post_processing_enabled = post_processing_enabled
-                && !post_processing_hotkey.is_empty()
-                && post_processing_hotkey != hotkey;
-            state.registered_hotkey_id = shortcut_id_for_hotkey(&hotkey);
-            state.registered_hotkey = Some(hotkey);
-            state.post_processing_hotkey_id = if post_processing_enabled {
-                shortcut_id_for_hotkey(&post_processing_hotkey)
-            } else {
-                None
-            };
-            state.post_processing_hotkey = if post_processing_enabled {
-                Some(post_processing_hotkey)
-            } else {
-                None
-            };
-            state.post_processing_enabled = post_processing_enabled;
-            state.mode = mode;
-            state.available = true;
-            state.message = message;
-            state.capture_suspended = false;
-            state.last_dispatched_at = None;
-        }
+        let mut state = lock_unpoisoned(&self.inner);
+        let post_processing_enabled = post_processing_enabled
+            && !post_processing_hotkey.is_empty()
+            && post_processing_hotkey != hotkey;
+        state.registered_hotkey_id = shortcut_id_for_hotkey(&hotkey);
+        state.registered_hotkey = Some(hotkey);
+        state.post_processing_hotkey_id = if post_processing_enabled {
+            shortcut_id_for_hotkey(&post_processing_hotkey)
+        } else {
+            None
+        };
+        state.post_processing_hotkey = if post_processing_enabled {
+            Some(post_processing_hotkey)
+        } else {
+            None
+        };
+        state.post_processing_enabled = post_processing_enabled;
+        state.mode = mode;
+        state.available = true;
+        state.message = message;
+        state.capture_suspended = false;
+        state.last_dispatched_at = None;
     }
 
     fn is_registered_config(
@@ -470,60 +464,51 @@ impl DesktopHotkeyState {
         post_processing_enabled: bool,
         mode: &str,
     ) -> bool {
-        self.inner
-            .lock()
-            .map(|state| {
-                state.available
-                    && !state.capture_suspended
-                    && state.registered_hotkey.as_deref() == Some(hotkey)
-                    && state.post_processing_hotkey.as_deref()
-                        == if post_processing_enabled
-                            && !post_processing_hotkey.is_empty()
-                            && post_processing_hotkey != hotkey
-                        {
-                            Some(post_processing_hotkey)
-                        } else {
-                            None
-                        }
-                    && state.mode == mode
-            })
-            .unwrap_or(false)
+        let state = lock_unpoisoned(&self.inner);
+        state.available
+            && !state.capture_suspended
+            && state.registered_hotkey.as_deref() == Some(hotkey)
+            && state.post_processing_hotkey.as_deref()
+                == if post_processing_enabled
+                    && !post_processing_hotkey.is_empty()
+                    && post_processing_hotkey != hotkey
+                {
+                    Some(post_processing_hotkey)
+                } else {
+                    None
+                }
+            && state.mode == mode
     }
 
     fn set_unregistered(&self, mode: String, available: bool, message: String) {
-        if let Ok(mut state) = self.inner.lock() {
+        let mut state = lock_unpoisoned(&self.inner);
+        state.registered_hotkey = None;
+        state.registered_hotkey_id = None;
+        state.post_processing_hotkey = None;
+        state.post_processing_hotkey_id = None;
+        state.post_processing_enabled = false;
+        state.mode = mode;
+        state.available = available;
+        state.message = message;
+        state.last_dispatched_at = None;
+    }
+
+    fn is_capture_suspended(&self) -> bool {
+        lock_unpoisoned(&self.inner).capture_suspended
+    }
+
+    fn set_capture_suspended(&self, suspended: bool, message: String) {
+        let mut state = lock_unpoisoned(&self.inner);
+        state.capture_suspended = suspended;
+        state.available = true;
+        state.message = message;
+        if suspended {
             state.registered_hotkey = None;
             state.registered_hotkey_id = None;
             state.post_processing_hotkey = None;
             state.post_processing_hotkey_id = None;
             state.post_processing_enabled = false;
-            state.mode = mode;
-            state.available = available;
-            state.message = message;
             state.last_dispatched_at = None;
-        }
-    }
-
-    fn is_capture_suspended(&self) -> bool {
-        self.inner
-            .lock()
-            .map(|state| state.capture_suspended)
-            .unwrap_or(false)
-    }
-
-    fn set_capture_suspended(&self, suspended: bool, message: String) {
-        if let Ok(mut state) = self.inner.lock() {
-            state.capture_suspended = suspended;
-            state.available = true;
-            state.message = message;
-            if suspended {
-                state.registered_hotkey = None;
-                state.registered_hotkey_id = None;
-                state.post_processing_hotkey = None;
-                state.post_processing_hotkey_id = None;
-                state.post_processing_enabled = false;
-                state.last_dispatched_at = None;
-            }
         }
     }
 
@@ -533,7 +518,7 @@ impl DesktopHotkeyState {
         event_state: ShortcutState,
         now: Instant,
     ) -> Option<&'static str> {
-        let mut state = self.inner.lock().ok()?;
+        let mut state = lock_unpoisoned(&self.inner);
         if state.capture_suspended {
             return None;
         }
@@ -625,19 +610,6 @@ pub struct BackendManager {
     state: Mutex<BackendState>,
 }
 
-fn poisoned_backend_status() -> BackendStatus {
-    BackendStatus {
-        base_url: base_url(DEFAULT_PORT),
-        running: false,
-        ready: false,
-        managed: false,
-        pid: None,
-        message: "Backend state lock is poisoned".to_string(),
-        runtime_mode: "tauri-supervised".to_string(),
-        launch_kind: "unknown".to_string(),
-    }
-}
-
 impl BackendManager {
     fn new(shell_ipc_config: Option<shell_ipc::ShellIpcConfig>) -> Self {
         Self {
@@ -659,52 +631,39 @@ impl BackendManager {
     }
 
     fn set_app_version(&self, app_version: String) {
-        if let Ok(mut state) = self.state.lock() {
-            state.app_version = app_version;
-        }
+        lock_unpoisoned(&self.state).app_version = app_version;
     }
 
     fn set_resource_dir(&self, resource_dir: Option<PathBuf>) {
-        if let Ok(mut state) = self.state.lock() {
-            state.resource_dir = resource_dir;
-        }
+        lock_unpoisoned(&self.state).resource_dir = resource_dir;
     }
 
     fn base_url(&self) -> String {
-        self.state
-            .lock()
-            .map(|state| state.base_url.clone())
-            .unwrap_or_else(|_| base_url(DEFAULT_PORT))
+        lock_unpoisoned(&self.state).base_url.clone()
     }
 
     fn access(&self) -> BackendAccess {
-        self.state
-            .lock()
-            .map(|state| BackendAccess {
-                base_url: state.base_url.clone(),
-                session_token: state.session_token.clone(),
-            })
-            .unwrap_or_else(|_| BackendAccess {
-                base_url: base_url(DEFAULT_PORT),
-                session_token: String::new(),
-            })
+        let state = lock_unpoisoned(&self.state);
+        BackendAccess {
+            base_url: state.base_url.clone(),
+            session_token: state.session_token.clone(),
+        }
     }
 
     fn ensure_started(&self) -> BackendStatus {
         // Phase 1: snapshot under lock, then release before the blocking health check.
-        let (port, force_managed) = match self.state.lock() {
-            Ok(mut state) => {
-                refresh_child_state(&mut state);
-                (state.port, force_managed_backend())
-            }
-            Err(_) => return poisoned_backend_status(),
+        let (port, force_managed) = {
+            let mut state = lock_unpoisoned(&self.state);
+            refresh_child_state(&mut state);
+            (state.port, force_managed_backend())
         };
 
         // Phase 2: blocking TCP health check outside the lock (up to ~1 s).
         let ready = health_ready(port);
 
         // Phase 3: relock and decide, guarding against port changes while unlocked.
-        if let Ok(mut state) = self.state.lock() {
+        {
+            let mut state = lock_unpoisoned(&self.state);
             refresh_child_state(&mut state);
             if ready && state.port == port && (!force_managed || state.child.is_some()) {
                 state.started_at = None;
@@ -742,26 +701,24 @@ impl BackendManager {
             }
 
             let new_port = select_backend_port(state.port);
-            return start_managed_backend(&mut state, new_port, "Managed backend process started");
+            start_managed_backend(&mut state, new_port, "Managed backend process started")
         }
-        poisoned_backend_status()
     }
 
     fn status(&self) -> BackendStatus {
         // Phase 1: snapshot under lock.
-        let (port, force_managed) = match self.state.lock() {
-            Ok(mut state) => {
-                refresh_child_state(&mut state);
-                (state.port, force_managed_backend())
-            }
-            Err(_) => return poisoned_backend_status(),
+        let (port, force_managed) = {
+            let mut state = lock_unpoisoned(&self.state);
+            refresh_child_state(&mut state);
+            (state.port, force_managed_backend())
         };
 
         // Phase 2: blocking TCP health check outside the lock (up to ~1 s).
         let health = health_ready(port);
 
         // Phase 3: relock and compute status.
-        if let Ok(mut state) = self.state.lock() {
+        {
+            let mut state = lock_unpoisoned(&self.state);
             refresh_child_state(&mut state);
             let ready = health && state.port == port && (!force_managed || state.child.is_some());
             if ready {
@@ -780,29 +737,23 @@ impl BackendManager {
                 state.unhealthy_since.get_or_insert_with(Instant::now);
                 state.message = "Managed backend is not responding; recovery pending".to_string();
             }
-            return status_from_state(&state, ready);
+            status_from_state(&state, ready)
         }
-        poisoned_backend_status()
     }
 
     fn restart(&self) -> Result<BackendStatus, String> {
         // Phase 1: snapshot under lock.
-        let port = match self.state.lock() {
-            Ok(mut state) => {
-                refresh_child_state(&mut state);
-                state.port
-            }
-            Err(_) => return Err("Backend state lock is poisoned".to_string()),
+        let port = {
+            let mut state = lock_unpoisoned(&self.state);
+            refresh_child_state(&mut state);
+            state.port
         };
 
         // Phase 2: blocking TCP health check outside the lock (up to ~1 s).
         let appears_external = !force_managed_backend() && health_ready(port);
 
         // Phase 3: relock and act.
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "Backend state lock is poisoned".to_string())?;
+        let mut state = lock_unpoisoned(&self.state);
         refresh_child_state(&mut state);
         // Guard: only reject if the port hasn't changed and we still have no managed child.
         if state.child.is_none() && appears_external && state.port == port {
@@ -825,9 +776,8 @@ impl BackendManager {
 
 impl Drop for BackendManager {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.state.lock() {
-            terminate_managed_child(&mut state);
-        }
+        let mut state = lock_unpoisoned(&self.state);
+        terminate_managed_child(&mut state);
     }
 }
 
@@ -4337,6 +4287,30 @@ mod tests {
 
         state.set_capture_suspended(true, "suspended".to_string());
         assert!(!state.is_registered_config("ctrl+alt+s", "ctrl+shift+p", true, "toggle"));
+    }
+
+    #[test]
+    fn desktop_hotkey_state_recovers_after_lock_poisoning() {
+        let state = DesktopHotkeyState::new();
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.inner.lock().expect("hotkey lock");
+            panic!("synthetic hotkey state failure");
+        }));
+        assert!(poisoned.is_err());
+
+        state.set_registered(
+            "Ctrl+Alt+Space".to_string(),
+            String::new(),
+            false,
+            "toggle".to_string(),
+            "ready".to_string(),
+        );
+
+        let status = state.status();
+        assert!(status.registered);
+        assert!(status.available);
+        assert_eq!(status.hotkey, "Ctrl+Alt+Space");
+        assert_eq!(status.message, "ready");
     }
 
     #[test]

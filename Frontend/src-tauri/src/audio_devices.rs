@@ -267,8 +267,8 @@ pub fn native_device_event_status_payload() -> Value {
     let now = now_ms();
     let status = native_device_event_status()
         .lock()
-        .map(|state| state.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     json!({
         "source": "tauri",
         "monitorKind": "wasapi-imm-notification",
@@ -342,9 +342,10 @@ fn update_native_device_event_status<F>(update: F)
 where
     F: FnOnce(&mut NativeDeviceEventStatus),
 {
-    if let Ok(mut status) = native_device_event_status().lock() {
-        update(&mut status);
-    }
+    let mut status = native_device_event_status()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    update(&mut status);
 }
 
 fn record_native_device_monitor_start(
