@@ -186,13 +186,28 @@ export function WebSocketProvider({
 
         if (isBackendSessionTokenRequired() && !backendSessionToken) {
             setIsConnected(false);
-            wsRef.current = null;
+            closeCurrentSocket();
             clearReconnectTimeout();
             return;
         }
 
         // Clean up existing connection
         closeCurrentSocket();
+
+        const scheduleReconnect = () => {
+            if (!shouldReconnectRef.current || reconnectCountRef.current >= maxReconnectAttempts) {
+                return;
+            }
+            const delay = Math.min(
+                reconnectDelay * Math.pow(1.5, reconnectCountRef.current),
+                30000,
+            );
+            reconnectCountRef.current++;
+            setReconnectCount(reconnectCountRef.current);
+            reconnectTimeoutRef.current = setTimeout(() => {
+                connect();
+            }, delay);
+        };
 
         try {
             const ws = new WebSocket(wsUrl(path));
@@ -239,19 +254,7 @@ export function WebSocketProvider({
                 setIsConnected(false);
                 wsRef.current = null;
 
-                // Auto-reconnect with exponential backoff
-                if (shouldReconnectRef.current && reconnectCountRef.current < maxReconnectAttempts) {
-                    const delay = Math.min(
-                        reconnectDelay * Math.pow(1.5, reconnectCountRef.current),
-                        30000 // Max 30 seconds
-                    );
-                    reconnectCountRef.current++;
-                    setReconnectCount(reconnectCountRef.current);
-
-                    reconnectTimeoutRef.current = setTimeout(() => {
-                        connect();
-                    }, delay);
-                }
+                scheduleReconnect();
             };
 
             ws.onerror = (error) => {
@@ -261,6 +264,8 @@ export function WebSocketProvider({
             wsRef.current = ws;
         } catch (error) {
             console.error("WebSocket connection error:", error);
+            setIsConnected(false);
+            scheduleReconnect();
         }
     }, [path, enabled, reconnectDelay, maxReconnectAttempts, clearReconnectTimeout, closeCurrentSocket]);
 
