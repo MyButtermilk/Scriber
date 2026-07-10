@@ -62,6 +62,8 @@ const DEFAULT_PORT: u16 = 8765;
 const FALLBACK_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
 const BACKEND_START_TIMEOUT_ENV: &str = "SCRIBER_BACKEND_START_TIMEOUT_MS";
+const BACKEND_UNHEALTHY_TIMEOUT: Duration = Duration::from_secs(30);
+const BACKEND_UNHEALTHY_TIMEOUT_ENV: &str = "SCRIBER_BACKEND_UNHEALTHY_TIMEOUT_MS";
 const BACKEND_SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
 const BACKEND_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(6);
 const BACKEND_TERMINATE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -267,6 +269,7 @@ struct BackendState {
     child: Option<Child>,
     job: Option<BackendJob>,
     started_at: Option<Instant>,
+    unhealthy_since: Option<Instant>,
     message: String,
     launch_kind: String,
     resource_dir: Option<PathBuf>,
@@ -644,6 +647,7 @@ impl BackendManager {
                 child: None,
                 job: None,
                 started_at: None,
+                unhealthy_since: None,
                 message: "Backend not started".to_string(),
                 launch_kind: "none".to_string(),
                 resource_dir: None,
@@ -704,6 +708,7 @@ impl BackendManager {
             refresh_child_state(&mut state);
             if ready && state.port == port && (!force_managed || state.child.is_some()) {
                 state.started_at = None;
+                state.unhealthy_since = None;
                 state.message = if state.child.is_some() {
                     "Managed backend is ready".to_string()
                 } else {
@@ -712,18 +717,27 @@ impl BackendManager {
                 return status_from_state(&state, true);
             }
             if state.child.is_some() {
-                if state.started_at.is_some()
-                    && managed_backend_start_timed_out(state.started_at, Instant::now())
-                {
-                    terminate_managed_child(&mut state);
-                    state.message = "Managed backend startup timed out; restarting".to_string();
-                } else {
-                    state.message = if state.started_at.is_some() {
-                        "Managed backend is starting".to_string()
+                let now = Instant::now();
+                if state.started_at.is_some() {
+                    if managed_backend_start_timed_out(state.started_at, now) {
+                        terminate_managed_child(&mut state);
+                        state.message = "Managed backend startup timed out; restarting".to_string();
                     } else {
-                        "Managed backend is not responding".to_string()
-                    };
-                    return status_from_state(&state, false);
+                        state.message = "Managed backend is starting".to_string();
+                        return status_from_state(&state, false);
+                    }
+                } else {
+                    let unhealthy_since = *state.unhealthy_since.get_or_insert(now);
+                    if managed_backend_unhealthy_timed_out(Some(unhealthy_since), now) {
+                        write_shell_log("managed backend remained unhealthy; restarting");
+                        terminate_managed_child(&mut state);
+                        state.message =
+                            "Managed backend remained unresponsive; restarting".to_string();
+                    } else {
+                        state.message =
+                            "Managed backend is not responding; recovery pending".to_string();
+                        return status_from_state(&state, false);
+                    }
                 }
             }
 
@@ -752,6 +766,7 @@ impl BackendManager {
             let ready = health && state.port == port && (!force_managed || state.child.is_some());
             if ready {
                 state.started_at = None;
+                state.unhealthy_since = None;
                 if state.child.is_none() {
                     state.message = "Attached to existing backend".to_string();
                 }
@@ -762,7 +777,8 @@ impl BackendManager {
             {
                 state.message = "Managed backend startup timed out".to_string();
             } else if !ready && state.child.is_some() && state.started_at.is_none() {
-                state.message = "Managed backend is not responding".to_string();
+                state.unhealthy_since.get_or_insert_with(Instant::now);
+                state.message = "Managed backend is not responding; recovery pending".to_string();
             }
             return status_from_state(&state, ready);
         }
@@ -2478,6 +2494,7 @@ fn refresh_child_state(state: &mut BackendState) {
                 state.child = None;
                 state.job = None;
                 state.started_at = None;
+                state.unhealthy_since = None;
                 state.launch_kind = "none".to_string();
             }
             Ok(None) => {}
@@ -2489,6 +2506,7 @@ fn refresh_child_state(state: &mut BackendState) {
                 state.child = None;
                 state.job = None;
                 state.started_at = None;
+                state.unhealthy_since = None;
                 state.launch_kind = "none".to_string();
             }
         }
@@ -2521,6 +2539,7 @@ fn terminate_managed_child(state: &mut BackendState) {
             write_shell_log(&format!("managed backend exited gracefully pid={pid}"));
             state.job = None;
             state.started_at = None;
+            state.unhealthy_since = None;
             state.launch_kind = "none".to_string();
             return;
         }
@@ -2545,6 +2564,7 @@ fn terminate_managed_child(state: &mut BackendState) {
     }
     state.job = None;
     state.started_at = None;
+    state.unhealthy_since = None;
     state.launch_kind = "none".to_string();
 }
 
@@ -2574,6 +2594,7 @@ fn select_backend_port(current_port: u16) -> u16 {
 fn start_managed_backend(state: &mut BackendState, port: u16, message: &str) -> BackendStatus {
     state.port = port;
     state.base_url = base_url(port);
+    state.unhealthy_since = None;
     match spawn_backend(
         port,
         state.resource_dir.as_deref(),
@@ -2611,6 +2632,12 @@ fn managed_backend_start_timed_out(started_at: Option<Instant>, now: Instant) ->
         .unwrap_or(false)
 }
 
+fn managed_backend_unhealthy_timed_out(unhealthy_since: Option<Instant>, now: Instant) -> bool {
+    unhealthy_since
+        .map(|started_at| now.duration_since(started_at) >= backend_unhealthy_timeout())
+        .unwrap_or(false)
+}
+
 fn backend_start_timeout() -> Duration {
     env::var(BACKEND_START_TIMEOUT_ENV)
         .ok()
@@ -2618,6 +2645,15 @@ fn backend_start_timeout() -> Duration {
         .filter(|value| *value > 0)
         .map(Duration::from_millis)
         .unwrap_or(BACKEND_START_TIMEOUT)
+}
+
+fn backend_unhealthy_timeout() -> Duration {
+    env_duration_ms(
+        BACKEND_UNHEALTHY_TIMEOUT_ENV,
+        BACKEND_UNHEALTHY_TIMEOUT,
+        Duration::from_secs(2),
+        Duration::from_secs(300),
+    )
 }
 
 fn env_duration_ms(
@@ -3960,6 +3996,21 @@ mod tests {
             Some(value) => std::env::set_var(BACKEND_START_TIMEOUT_ENV, value),
             None => std::env::remove_var(BACKEND_START_TIMEOUT_ENV),
         }
+    }
+
+    #[test]
+    fn managed_backend_unhealthy_timeout_triggers_recovery() {
+        let started = Instant::now();
+        let timeout = super::backend_unhealthy_timeout();
+
+        assert!(!super::managed_backend_unhealthy_timed_out(
+            Some(started),
+            started + timeout.saturating_sub(Duration::from_millis(1)),
+        ));
+        assert!(super::managed_backend_unhealthy_timed_out(
+            Some(started),
+            started + timeout,
+        ));
     }
 
     #[test]

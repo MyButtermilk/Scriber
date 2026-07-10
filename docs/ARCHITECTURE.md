@@ -162,7 +162,10 @@ wired but are expected to report that release updater configuration is missing.
 - Initialize the Tauri updater plugin. Release builds provide updater endpoint,
   public key, and signed artifacts through build-time configuration; Windows
   updater installation runs in Tauri's passive mode.
-- Run worker crash recovery and write crash metadata.
+- Run worker crash recovery and write crash metadata. A managed worker that
+  remains alive but fails `/api/health` is given a bounded 30-second recovery
+  window, then is gracefully stopped (hard-killed only as fallback) and
+  restarted; `SCRIBER_BACKEND_UNHEALTHY_TIMEOUT_MS` can tune that window.
 - Request authenticated graceful worker shutdown before restart or shell exit,
   wait through the backend's bounded persistence/cleanup window, and use hard
   process termination only as fallback.

@@ -127,7 +127,11 @@ Packaging and scripts:
 - `POST /api/runtime/frontend-ready` is the proof that the actual WebView reached
   the runtime backend.
 - Rust owns Windows autostart, global hotkey registration, single-instance
-  startup, tray/menu shell actions, and worker crash recovery.
+  startup, tray/menu shell actions, and worker crash recovery. The supervisor
+  must also recover a managed process that stays alive but fails `/api/health`:
+  allow the bounded unhealthy window (`SCRIBER_BACKEND_UNHEALTHY_TIMEOUT_MS`,
+  30 seconds by default), then use the authenticated graceful shutdown path
+  before the existing hard-termination fallback and restart it.
 - Rust registers both live-mic shortcuts. The normal hotkey must keep plain
   live dictation output. The post-processing hotkey must dispatch only to the
   dedicated live-mic post-processing endpoint and must not affect File or
