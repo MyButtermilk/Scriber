@@ -8,11 +8,13 @@ Supported Models:
 - parakeet-primeline: Primeline German Parakeet ONNX export
 """
 import asyncio
+import contextlib
 import hashlib
 import io
 import json
 import os
 import shutil
+import tempfile
 import threading
 import time
 import wave
@@ -22,6 +24,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Optional
 from loguru import logger
+
+from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, wav_pcm_transcode_args
+from src.runtime.media_tools import require_media_tool
+from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
 
 # Lazy imports to avoid startup delay if onnx-asr not installed
 _onnx_asr = None
@@ -1138,6 +1144,54 @@ def _audio_bytes_to_float32(audio_bytes: bytes, sample_rate: int) -> tuple[Any, 
         return np.frombuffer(audio_bytes, dtype=np.float32), sr
 
 
+def _is_riff_wave_file(path: Path) -> bool:
+    try:
+        with path.open("rb") as source:
+            header = source.read(12)
+    except OSError:
+        return False
+    return len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WAVE"
+
+
+async def _prepare_onnx_audio_path(audio_path: str | Path) -> tuple[Path, Path | None]:
+    """Return a WAV-compatible path and an optional temporary path to remove."""
+    source_path = Path(audio_path).expanduser().resolve()
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Audio file not found: {source_path}")
+    if await asyncio.to_thread(_is_riff_wave_file, source_path):
+        return source_path, None
+
+    ffmpeg = require_media_tool("ffmpeg")
+    handle = tempfile.NamedTemporaryFile(prefix="scriber-onnx-", suffix=".wav", delete=False)
+    prepared_path = Path(handle.name)
+    handle.close()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *wav_pcm_transcode_args(ffmpeg, source_path, prepared_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **hidden_subprocess_kwargs(),
+        )
+        _stdout, stderr = await communicate_or_kill_on_cancel(
+            proc,
+            max_stdout_bytes=64 * 1024,
+            max_stderr_bytes=1024 * 1024,
+        )
+        if proc.returncode != 0:
+            detail = (stderr or b"").decode("utf-8", errors="replace").strip()
+            friendly = classify_ffmpeg_stderr(detail)
+            raise RuntimeError(
+                f"FFmpeg ONNX audio preparation failed: {friendly or f'exit code {proc.returncode}'}"
+            )
+        if not prepared_path.is_file() or prepared_path.stat().st_size <= 44:
+            raise RuntimeError("FFmpeg ONNX audio preparation produced an empty WAV file.")
+        return prepared_path, prepared_path
+    except BaseException:
+        with contextlib.suppress(OSError):
+            prepared_path.unlink(missing_ok=True)
+        raise
+
+
 async def transcribe_audio(
     audio_path: str,
     model_name: str = DEFAULT_MODEL,
@@ -1162,48 +1216,66 @@ async def transcribe_audio(
     """
     if on_progress:
         try:
+            on_progress("Preparing audio...")
+        except Exception:
+            pass
+
+    prepared_path, cleanup_path = await _prepare_onnx_audio_path(audio_path)
+    cleanup_owned_by_worker = False
+
+    if on_progress:
+        try:
             on_progress("Loading model...")
         except Exception:
             pass
 
     loop = asyncio.get_running_loop()
-    model = await asyncio.shield(
-        loop.run_in_executor(
-            _executor,
-            load_model,
-            model_name,
-            quantization,
-            use_vad,
+    try:
+        model = await asyncio.shield(
+            loop.run_in_executor(
+                _executor,
+                load_model,
+                model_name,
+                quantization,
+                use_vad,
+            )
         )
-    )
-    model_info = ONNX_MODELS.get(model_name, {})
-    
-    if on_progress:
-        try:
-            on_progress("Transcribing...")
-        except Exception:
-            pass
-    
-    def _transcribe():
-        # Determine language parameter
-        lang_param = None
-        if model_info.get("supports_language_param") and language != "auto":
-            lang_param = language
-        
-        result = model.recognize(audio_path, language=lang_param)
-        return _recognition_result_to_text(result)
-    
-    # Run transcription in thread pool
-    text = await asyncio.shield(loop.run_in_executor(_executor, _transcribe))
-    
-    if on_progress:
-        try:
-            on_progress("Complete")
-        except Exception:
-            pass
-    
-    logger.info(f"Transcription complete: {len(text)} characters")
-    return text
+        model_info = ONNX_MODELS.get(model_name, {})
+
+        if on_progress:
+            try:
+                on_progress("Transcribing...")
+            except Exception:
+                pass
+
+        def _transcribe():
+            try:
+                lang_param = None
+                if model_info.get("supports_language_param") and language != "auto":
+                    lang_param = language
+                result = model.recognize(str(prepared_path), language=lang_param)
+                return _recognition_result_to_text(result)
+            finally:
+                if cleanup_path is not None:
+                    with contextlib.suppress(OSError):
+                        cleanup_path.unlink(missing_ok=True)
+
+        recognition_future = loop.run_in_executor(_executor, _transcribe)
+        cleanup_owned_by_worker = True
+        text = await asyncio.shield(recognition_future)
+
+        if on_progress:
+            try:
+                on_progress("Complete")
+            except Exception:
+                pass
+
+        logger.info(f"Transcription complete: {len(text)} characters")
+        return text
+    finally:
+        if cleanup_path is not None and not cleanup_owned_by_worker:
+            with contextlib.suppress(OSError):
+                cleanup_path.unlink(missing_ok=True)
 
 
 async def transcribe_audio_bytes(

@@ -151,6 +151,39 @@ def pcm_pipe_decode_args(
     ]
 
 
+def wav_pcm_transcode_args(
+    ffmpeg: str,
+    source_path: str | Path,
+    target_path: str | Path,
+    *,
+    sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE,
+    channels: int = DEFAULT_AUDIO_CHANNELS,
+) -> list[str]:
+    """Normalize local media to a standard PCM WAV accepted by local ASR."""
+    return [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        _path_arg(source_path),
+        "-vn",
+        "-map",
+        "0:a:0",
+        "-c:a",
+        "pcm_s16le",
+        "-ar",
+        str(int(sample_rate)),
+        "-ac",
+        str(int(channels)),
+        "-f",
+        "wav",
+        _path_arg(target_path),
+    ]
+
+
 def ffprobe_duration_args(ffprobe: str, file_path: str | Path) -> list[str]:
     return [
         ffprobe,

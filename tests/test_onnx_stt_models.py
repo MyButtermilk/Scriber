@@ -221,13 +221,51 @@ async def test_transcribe_audio_does_not_split_string_vad_result(monkeypatch, tm
 
     monkeypatch.setattr(onnx_stt, "load_model", lambda *_args, **_kwargs: FakeModel())
 
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
+
     text = await onnx_stt.transcribe_audio(
-        str(tmp_path / "audio.wav"),
+        str(audio_path),
         model_name="nemo-canary-1b-v2",
         use_vad=True,
     )
 
     assert text == "whole result"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_normalizes_non_wav_and_removes_temporary_file(
+    monkeypatch,
+    tmp_path,
+):
+    source_path = tmp_path / "audio.mp3"
+    source_path.write_bytes(b"ID3 synthetic")
+    prepared_path = tmp_path / "prepared.wav"
+    prepared_path.write_bytes(b"RIFF\x00\x00\x00\x00WAVE" + b"\x00" * 64)
+    recognized_paths = []
+
+    class FakeModel:
+        @staticmethod
+        def recognize(path, **_kwargs):
+            recognized_paths.append(path)
+            assert prepared_path.exists()
+            return "normalized result"
+
+    async def _prepare(_path):
+        return prepared_path, prepared_path
+
+    monkeypatch.setattr(onnx_stt, "_prepare_onnx_audio_path", _prepare)
+    monkeypatch.setattr(onnx_stt, "load_model", lambda *_args, **_kwargs: FakeModel())
+
+    text = await onnx_stt.transcribe_audio(
+        str(source_path),
+        model_name="nemo-canary-1b-v2",
+        use_vad=True,
+    )
+
+    assert text == "normalized result"
+    assert recognized_paths == [str(prepared_path)]
+    assert prepared_path.exists() is False
 
 
 def test_primeline_archive_download_status_requires_extracted_files(monkeypatch, tmp_path):

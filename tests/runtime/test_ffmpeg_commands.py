@@ -9,6 +9,7 @@ from src.runtime.ffmpeg_commands import (
     mp3_encode_pcm_pipe_args,
     mp3_transcode_args,
     pcm_pipe_decode_args,
+    wav_pcm_transcode_args,
     webm_opus_transcode_args,
 )
 
@@ -89,6 +90,19 @@ def test_pcm_pipe_decode_args_write_raw_stdout_only(tmp_path: Path) -> None:
     assert "-f" in args
     assert args[args.index("-f") + 1] == "s16le"
     assert "pcm_s16le" in args
+
+
+def test_wav_pcm_transcode_args_create_standard_local_wav(tmp_path: Path) -> None:
+    source = tmp_path / "input.mp3"
+    target = tmp_path / "prepared.wav"
+
+    args = wav_pcm_transcode_args("ffmpeg", source, target)
+
+    assert args[args.index("-c:a") + 1] == "pcm_s16le"
+    assert args[args.index("-ar") + 1] == "16000"
+    assert args[args.index("-ac") + 1] == "1"
+    assert args[args.index("-f") + 1] == "wav"
+    assert args[-1] == str(target)
 
 
 def test_classify_ffmpeg_stderr_maps_common_user_failures() -> None:
