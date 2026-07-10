@@ -262,6 +262,19 @@ async def test_summarize_text_empty_input_returns_empty():
 
 
 @pytest.mark.asyncio
+async def test_summarize_with_model_rejects_empty_provider_result(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _empty_openai(_prompt: str, _model: str, _max_output_tokens: int) -> str:
+        return "  "
+
+    monkeypatch.setattr(summarization, "_summarize_openai", _empty_openai)
+
+    with pytest.raises(RuntimeError, match="empty text response"):
+        await summarization._summarize_with_model("prompt", "gpt-5-mini", 1024)
+
+
+@pytest.mark.asyncio
 async def test_summarize_text_uses_duration_based_boost(monkeypatch: pytest.MonkeyPatch):
     captured_tokens: list[int] = []
 

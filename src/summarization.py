@@ -407,14 +407,20 @@ def _gemini_next_output_budget(current_tokens: int, retry_cap: int) -> int:
 
 async def _summarize_with_model(prompt: str, model: str, max_output_tokens: int) -> str:
     if model.startswith("gpt-"):
-        return await _summarize_openai(prompt, model, max_output_tokens)
-    if model.startswith("gemini-"):
-        return await _summarize_gemini(prompt, model, max_output_tokens)
-    if _is_cerebras_model(model):
-        return await _summarize_cerebras(prompt, model, max_output_tokens)
-    if _is_openrouter_model(model):
-        return await _summarize_openrouter(prompt, model, max_output_tokens)
-    raise ValueError(f"Unknown summarization model: {model}")
+        result = await _summarize_openai(prompt, model, max_output_tokens)
+    elif model.startswith("gemini-"):
+        result = await _summarize_gemini(prompt, model, max_output_tokens)
+    elif _is_cerebras_model(model):
+        result = await _summarize_cerebras(prompt, model, max_output_tokens)
+    elif _is_openrouter_model(model):
+        result = await _summarize_openrouter(prompt, model, max_output_tokens)
+    else:
+        raise ValueError(f"Unknown summarization model: {model}")
+
+    normalized = str(result or "").strip()
+    if not normalized:
+        raise RuntimeError(f"{model} returned an empty text response.")
+    return normalized
 
 
 async def _try_openrouter_summary_fallback(
