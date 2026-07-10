@@ -1048,6 +1048,7 @@ export default function Settings() {
   const savedCustomVocabularyRef = useRef("");
   const pendingCustomVocabularyRef = useRef<string | null>(null);
   const customVocabularySaveInFlightRef = useRef<Promise<void> | null>(null);
+  const settingsUpdateQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [summarizationPrompt, setSummarizationPrompt] = useState("");
   const [postProcessingPrompt, setPostProcessingPrompt] = useState(DEFAULT_POST_PROCESSING_PROMPT);
 
@@ -1534,18 +1535,25 @@ export default function Settings() {
   }, [settingsLoaded, onnxAvailable, loadOnnxModels]);
 
   const updateSettings = async (patch: SettingsUpdatePayload): Promise<SettingsResponse> => {
-    const res = await fetchWithTimeout(apiUrl("/api/settings"), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-      credentials: "include",
-    }, 15_000);
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || res.statusText);
-    }
-    invalidateSettingsBootstrap();
-    return (await res.json()) as SettingsResponse;
+    const request = settingsUpdateQueueRef.current.then(async () => {
+      const res = await fetchWithTimeout(apiUrl("/api/settings"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+        credentials: "include",
+      }, 15_000);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || res.statusText);
+      }
+      invalidateSettingsBootstrap();
+      return (await res.json()) as SettingsResponse;
+    });
+    settingsUpdateQueueRef.current = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    return request;
   };
 
   const saveCustomVocabulary = useCallback((nextValue: string): Promise<void> => {
@@ -1881,10 +1889,12 @@ export default function Settings() {
   };
 
   const handleLanguageChange = async (value: string) => {
+    const previousValue = language;
     setLanguage(value);
     try {
       await updateSettings({ language: value });
     } catch (e: any) {
+      setLanguage(previousValue);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
@@ -1908,6 +1918,8 @@ export default function Settings() {
   };
 
   const handleOnnxModelChange = async (value: string) => {
+    const previousModel = onnxModel;
+    const previousQuantization = onnxQuantization;
     setOnnxModel(value);
     try {
       const selected = onnxModels.find((m) => m.id === value);
@@ -1925,6 +1937,8 @@ export default function Settings() {
         duration: 2000,
       });
     } catch (e: any) {
+      setOnnxModel(previousModel);
+      setOnnxQuantization(previousQuantization);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
@@ -1934,6 +1948,7 @@ export default function Settings() {
   };
 
   const handleOnnxQuantizationChange = async (value: string) => {
+    const previousValue = onnxQuantization;
     setOnnxQuantization(value);
     try {
       await updateSettings({ onnxQuantization: value });
@@ -1944,6 +1959,7 @@ export default function Settings() {
         duration: 2000,
       });
     } catch (e: any) {
+      setOnnxQuantization(previousValue);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
@@ -2074,6 +2090,7 @@ export default function Settings() {
   };
 
   const handleAutoSummarizeChange = async (enabled: boolean) => {
+    const previousValue = autoSummarize;
     setAutoSummarize(enabled);
     try {
       await updateSettings({ autoSummarize: enabled });
@@ -2083,6 +2100,7 @@ export default function Settings() {
         duration: 2000,
       });
     } catch (e: any) {
+      setAutoSummarize(previousValue);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
@@ -2114,21 +2132,31 @@ export default function Settings() {
   };
 
   const handlePostProcessingEnabledChange = async (enabled: boolean) => {
+    const previousValue = postProcessingEnabled;
     setPostProcessingEnabled(enabled);
     try {
       await updateSettings({ postProcessingEnabled: enabled });
-      await refreshGlobalHotkey();
       toast({
         title: "Saved",
         description: enabled ? "Live post-processing enabled." : "Live post-processing disabled.",
         duration: 2000,
       });
     } catch (e: any) {
-      setPostProcessingEnabled(!enabled);
+      setPostProcessingEnabled(previousValue);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
         duration: 4000,
+      });
+      return;
+    }
+    try {
+      await refreshGlobalHotkey();
+    } catch (e: any) {
+      toast({
+        title: "Saved, hotkey refresh failed",
+        description: String(e?.message || e),
+        duration: 5000,
       });
     }
   };
@@ -2137,8 +2165,6 @@ export default function Settings() {
     try {
       const updated = await updateSettings({ hotkey });
       setHotkey(updated.hotkey || hotkey);
-      await setGlobalHotkeyCaptureActive(false);
-      await refreshGlobalHotkey();
       toast({
         title: "Saved",
         description: "Hotkey updated.",
@@ -2150,6 +2176,18 @@ export default function Settings() {
         description: String(e?.message || e),
         duration: 4000,
       });
+      setIsRecordingHotkey(false);
+      return;
+    }
+    try {
+      await setGlobalHotkeyCaptureActive(false);
+      await refreshGlobalHotkey();
+    } catch (e: any) {
+      toast({
+        title: "Saved, hotkey refresh failed",
+        description: String(e?.message || e),
+        duration: 5000,
+      });
     } finally {
       setIsRecordingHotkey(false);
     }
@@ -2159,8 +2197,6 @@ export default function Settings() {
     try {
       const updated = await updateSettings({ postProcessingHotkey });
       setPostProcessingHotkey(updated.postProcessingHotkey || postProcessingHotkey);
-      await setGlobalHotkeyCaptureActive(false);
-      await refreshGlobalHotkey();
       toast({
         title: "Saved",
         description: "Post-processing hotkey updated.",
@@ -2172,21 +2208,44 @@ export default function Settings() {
         description: String(e?.message || e),
         duration: 4000,
       });
+      setIsRecordingPostProcessingHotkey(false);
+      return;
+    }
+    try {
+      await setGlobalHotkeyCaptureActive(false);
+      await refreshGlobalHotkey();
+    } catch (e: any) {
+      toast({
+        title: "Saved, hotkey refresh failed",
+        description: String(e?.message || e),
+        duration: 5000,
+      });
     } finally {
       setIsRecordingPostProcessingHotkey(false);
     }
   };
 
   const handleRecordingModeChange = async (mode: string) => {
+    const previousMode = recordingMode;
     setRecordingMode(mode);
     try {
       await updateSettings({ mode: mode === "press_hold" ? "push_to_talk" : "toggle" });
-      await refreshGlobalHotkey();
     } catch (e: any) {
+      setRecordingMode(previousMode);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
         duration: 4000,
+      });
+      return;
+    }
+    try {
+      await refreshGlobalHotkey();
+    } catch (e: any) {
+      toast({
+        title: "Saved, hotkey refresh failed",
+        description: String(e?.message || e),
+        duration: 5000,
       });
     }
   };
@@ -2306,6 +2365,7 @@ export default function Settings() {
   };
 
   const handleResetPostProcessingPrompt = async () => {
+    const previousPrompt = postProcessingPrompt;
     setPostProcessingPrompt(DEFAULT_POST_PROCESSING_PROMPT);
     try {
       await updateSettings({ postProcessingPrompt: DEFAULT_POST_PROCESSING_PROMPT });
@@ -2315,6 +2375,7 @@ export default function Settings() {
         duration: 2000,
       });
     } catch (e: any) {
+      setPostProcessingPrompt(previousPrompt);
       toast({
         title: "Save failed",
         description: String(e?.message || e),
