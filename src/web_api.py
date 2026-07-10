@@ -1498,6 +1498,7 @@ class TranscriptRecord:
     _summary_loaded: bool = True
     _youtube_prefer_captions: bool | None = None
     _youtube_stt_provider_used: str = ""
+    _persistence_failed: bool = False
 
     def content_text(self) -> str:
         if self._pending_content_segments:
@@ -1641,6 +1642,11 @@ class TranscriptRecord:
         self.summary_error = ""
         self.summary_updated_at = ""
         self._youtube_stt_provider_used = ""
+        self._persistence_failed = False
+
+
+class TranscriptPersistenceError(RuntimeError):
+    """Raised when a critical transcript save cannot be confirmed."""
 
 
 class ScriberWebController:
@@ -2753,6 +2759,7 @@ class ScriberWebController:
         self._schedule_retry_scan(delay)
 
     async def _schedule_retry_if_allowed(self, rec: TranscriptRecord, error: Exception | str) -> bool:
+        persistence_retry = isinstance(error, TranscriptPersistenceError)
         job_id = self._job_ids_by_transcript.get(rec.id)
         if not job_id:
             return False
@@ -2760,7 +2767,7 @@ class ScriberWebController:
         if not job:
             return False
         category = classify_error_message(str(error))
-        if not is_retryable(category):
+        if not persistence_retry and not is_retryable(category):
             return False
         attempts = max(1, int(job.attempts))
         if attempts >= self._job_max_attempts:
@@ -2783,6 +2790,7 @@ class ScriberWebController:
             logger.warning(f"Failed to persist retry state for transcript {rec.id}: {exc}")
             return False
         rec.reset_transcription_attempt()
+        rec._persistence_failed = persistence_retry
         self._schedule_retry_scan(delay_seconds)
         logger.warning(
             f"Scheduled retry for transcript {rec.id} in {delay_seconds:.1f}s "
@@ -2878,7 +2886,7 @@ class ScriberWebController:
             except Exception as exc:
                 logger.exception("YouTube background job failed outside the transcription runner")
                 used_provider = rec._youtube_stt_provider_used or provider or ""
-                if used_provider:
+                if used_provider and not isinstance(exc, TranscriptPersistenceError):
                     self._record_provider_failure(used_provider, exc)
                 if not await self._schedule_retry_if_allowed(rec, exc):
                     rec.status = "failed"
@@ -3398,17 +3406,42 @@ class ScriberWebController:
             self._transcript_persistence_locks[transcript_id] = lock
         return lock
 
-    async def _save_transcript_to_db_async(self, record: TranscriptRecord) -> None:
-        """Persist a transcript without blocking the aiohttp event loop."""
-        try:
-            async with self._transcript_persistence_lock(record.id):
-                if record.id in self._deleted_transcript_ids:
-                    logger.debug(f"Skipping persistence for deleted transcript: {record.id}")
-                    return
-                snapshot = record.to_public(include_content=True)
-                await asyncio.to_thread(db.save_transcript, snapshot)
-        except Exception as e:
-            logger.error(f"Failed to save transcript to database: {e}")
+    async def _save_transcript_to_db_async(
+        self,
+        record: TranscriptRecord,
+        *,
+        require_success: bool = False,
+    ) -> bool:
+        """Persist a transcript off-loop, retrying brief SQLite write failures."""
+        last_error: Exception | None = None
+        async with self._transcript_persistence_lock(record.id):
+            if record.id in self._deleted_transcript_ids:
+                logger.debug(f"Skipping persistence for deleted transcript: {record.id}")
+                return False
+            for attempt, delay in enumerate((0.0, 0.05, 0.2), start=1):
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    snapshot = record.to_public(include_content=True)
+                    await asyncio.to_thread(db.save_transcript, snapshot)
+                    record._persistence_failed = False
+                    return True
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < 3:
+                        logger.warning(
+                            "Transcript save attempt {} failed for {}: {}",
+                            attempt,
+                            record.id,
+                            exc,
+                        )
+
+        record._persistence_failed = True
+        message = f"Failed to save transcript to database: {last_error}"
+        logger.error(message)
+        if require_success:
+            raise TranscriptPersistenceError(message) from last_error
+        return False
 
     async def _save_transcript_summary_state_async(
         self,
@@ -4587,7 +4620,7 @@ class ScriberWebController:
         auto_summary_task = self._claim_auto_summary_task(rec, content)
         # Save the transcript before summary generation so slow LLM work never
         # leaves completed content only in memory.
-        await self._save_transcript_to_db_async(rec)
+        await self._save_transcript_to_db_async(rec, require_success=True)
         await self._broadcast_history_updated(record=rec, reason="transcript_completed")
         self._emit_workflow_event(
             message=(
@@ -4949,6 +4982,24 @@ class ScriberWebController:
                 error_category=classify_error_message(str(exc)).value,
                 meta={"error": str(exc)},
             )
+        except TranscriptPersistenceError as exc:
+            if await self._schedule_retry_if_allowed(rec, exc):
+                return
+            rec.status = "failed"
+            rec.step = "Failed to save transcript"
+            rec.append_final_text(f"[Storage error] {exc}")
+            self._emit_workflow_event(
+                message="YouTube transcript persistence failed",
+                event="api.job.failed",
+                workflow="youtube",
+                stage="job_failed",
+                level="ERROR",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                outcome="failure",
+                error_category=ErrorCategory.INTERNAL_BUG.value,
+            )
         except Exception as exc:
             logger.exception("YouTube transcription failed")
             self._record_provider_failure(provider, exc)
@@ -4984,7 +5035,7 @@ class ScriberWebController:
                     outcome="success",
             )
             rec.updated_at = datetime.now().isoformat()
-            if rec.status != "completed":
+            if rec.status != "completed" and not rec._persistence_failed:
                 await self._save_transcript_to_db_async(rec)
             await self._broadcast_history_updated(record=rec, reason="job_done")
             # Cleanup: delete the downloaded audio file and directory
@@ -5130,7 +5181,7 @@ class ScriberWebController:
             auto_summary_task = self._claim_auto_summary_task(rec, content)
             # Persist transcript immediately so a stuck/slow summarization
             # cannot keep the transcript in memory-only state.
-            await self._save_transcript_to_db_async(rec)
+            await self._save_transcript_to_db_async(rec, require_success=True)
             await self._broadcast_history_updated(record=rec, reason="transcript_completed")
             self._emit_workflow_event(
                 message="File transcription completed",
@@ -5256,6 +5307,24 @@ class ScriberWebController:
                 error_category=classify_error_message(str(exc)).value,
                 meta={"error": str(exc)},
             )
+        except TranscriptPersistenceError as exc:
+            if await self._schedule_retry_if_allowed(rec, exc):
+                return
+            rec.status = "failed"
+            rec.step = "Failed to save transcript"
+            rec.append_final_text(f"[Storage error] {exc}")
+            self._emit_workflow_event(
+                message="File transcript persistence failed",
+                event="api.job.failed",
+                workflow="file",
+                stage="job_failed",
+                level="ERROR",
+                record=rec,
+                provider=provider,
+                milestone=True,
+                outcome="failure",
+                error_category=ErrorCategory.INTERNAL_BUG.value,
+            )
         except Exception as exc:
             logger.exception("File transcription failed")
             self._record_provider_failure(provider, exc)
@@ -5293,10 +5362,10 @@ class ScriberWebController:
                     outcome="success",
             )
             rec.updated_at = datetime.now().isoformat()
-            if rec.status != "completed":
+            if rec.status != "completed" and not rec._persistence_failed:
                 await self._save_transcript_to_db_async(rec)
             await self._broadcast_history_updated(record=rec, reason="job_done")
-            if rec.status != "processing":
+            if rec.status != "processing" and not rec._persistence_failed:
                 await self._cleanup_owned_file_source(file_path, reason=rec.status)
 
     async def start_listening(self, *, post_process: bool = False) -> ProviderUserError | None:

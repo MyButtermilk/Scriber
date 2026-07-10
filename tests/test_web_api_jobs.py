@@ -473,6 +473,46 @@ async def test_delete_waits_for_inflight_save_and_blocks_later_resurrection(monk
 
 
 @pytest.mark.asyncio
+async def test_critical_transcript_save_retries_and_reports_permanent_failure(monkeypatch):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    rec = TranscriptRecord(
+        id="critical-save",
+        title="Critical save",
+        date="Today",
+        duration="00:01",
+        status="completed",
+        type="file",
+        language="auto",
+        content="Persist me",
+    )
+    attempts = 0
+
+    def _eventually_save(_snapshot):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OSError("database temporarily locked")
+
+    monkeypatch.setattr(web_api.db, "save_transcript", _eventually_save)
+    assert await ctl._save_transcript_to_db_async(rec, require_success=True) is True
+    assert attempts == 3
+    assert rec._persistence_failed is False
+
+    attempts = 0
+
+    def _never_save(_snapshot):
+        nonlocal attempts
+        attempts += 1
+        raise OSError("disk full")
+
+    monkeypatch.setattr(web_api.db, "save_transcript", _never_save)
+    with pytest.raises(web_api.TranscriptPersistenceError, match="disk full"):
+        await ctl._save_transcript_to_db_async(rec, require_success=True)
+    assert attempts == 3
+    assert rec._persistence_failed is True
+
+
+@pytest.mark.asyncio
 async def test_transcript_search_does_not_scan_completed_history(monkeypatch):
     ctl = ScriberWebController(asyncio.get_running_loop())
     active = TranscriptRecord(
@@ -785,6 +825,43 @@ async def test_retry_discards_partial_output_from_failed_attempt(tmp_path):
     assert scheduled is True
     assert rec.content_text() == ""
     assert rec.to_public(include_content=False)["preview"] == rec.title
+    persisted_job = store.get(job.id)
+    assert persisted_job is not None
+    assert persisted_job.status == JobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_transcript_persistence_failure_is_retryable_without_penalizing_provider(tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    rec = TranscriptRecord(
+        id="retry-storage-failure",
+        title="Retry storage failure",
+        date="Today",
+        duration="00:01",
+        status="completed",
+        type="file",
+        language="auto",
+        content="Already transcribed",
+        _persistence_failed=True,
+    )
+    job = store.enqueue(
+        transcript_id=rec.id,
+        job_type=web_api.JobType.FILE,
+        payload={"path": str(tmp_path / "sample.wav")},
+    )
+    assert store.mark_running(job.id)
+    ctl._remember_job_id(rec.id, job.id)
+
+    scheduled = await ctl._schedule_retry_if_allowed(
+        rec,
+        web_api.TranscriptPersistenceError("Failed to save transcript to database"),
+    )
+
+    assert scheduled is True
+    assert rec.status == "processing"
+    assert rec._persistence_failed is True
+    assert rec.content_text() == ""
     persisted_job = store.get(job.id)
     assert persisted_job is not None
     assert persisted_job.status == JobStatus.QUEUED
@@ -1173,6 +1250,50 @@ async def test_file_transcription_empty_provider_result_fails_job(monkeypatch, t
     assert save_mock.await_count >= 1
     assert broadcast_mock.await_count >= 1
     assert file_path.exists(), "source files outside Scriber's upload workspace must never be deleted"
+
+
+@pytest.mark.asyncio
+async def test_file_persistence_failure_retries_job_and_preserves_owned_upload(monkeypatch, tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    ctl._downloads_dir = tmp_path / "downloads"
+    file_path = ctl._downloads_dir / "files" / "upload-id" / "upload.wav"
+    file_path.parent.mkdir(parents=True)
+    file_path.write_bytes(b"RIFF....WAVEfmt ")
+    rec = _completed_record(transcript_type="file", tmp_path=tmp_path)
+    rec.id = "storage-retry-file"
+    rec.source_url = str(file_path)
+    job = store.enqueue(
+        transcript_id=rec.id,
+        job_type=web_api.JobType.FILE,
+        payload={"path": str(file_path)},
+    )
+    assert store.mark_running(job.id)
+    ctl._remember_job_id(rec.id, job.id)
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+    monkeypatch.setattr(web_api.db, "save_transcript", lambda _snapshot: (_ for _ in ()).throw(OSError("disk full")))
+
+    with (
+        patch("src.web_api.supports_direct_file_upload", return_value=True),
+        patch(
+            "src.web_api._create_scriber_pipeline",
+            side_effect=lambda *_args, **kwargs: _SyntheticPipeline(
+                on_transcription=kwargs["on_transcription"]
+            ),
+        ),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_record_provider_failure") as provider_failure,
+    ):
+        await ctl._run_file_transcription(rec, file_path, provider="soniox")
+
+    persisted_job = store.get(job.id)
+    assert persisted_job is not None
+    assert persisted_job.status == JobStatus.QUEUED
+    assert rec.status == "processing"
+    assert rec.content_text() == ""
+    assert rec._persistence_failed is True
+    assert file_path.exists()
+    provider_failure.assert_not_called()
 
 
 @pytest.mark.asyncio
