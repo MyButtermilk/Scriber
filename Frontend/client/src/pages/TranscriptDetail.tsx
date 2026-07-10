@@ -176,17 +176,30 @@ function FitText({ children, minFontSize = 12, maxFontSize = 24, className = "" 
   );
 }
 
-function DurationText({
+function formatElapsedDuration(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hours > 0) {
+    return `${hours.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  }
+  return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+}
+
+function useTranscriptDuration({
   status,
   duration,
   startedAt,
+  resetKey,
 }: {
   status?: string;
   duration?: string;
   startedAt?: string;
-}) {
+  resetKey?: string;
+}): string {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const fallbackStartedAtRef = useRef<number | null>(null);
+  const activeKeyRef = useRef("");
 
   const parsedStartMs = useMemo(() => {
     const raw = (startedAt || "").trim();
@@ -196,23 +209,18 @@ function DurationText({
     return Number.isFinite(millis) ? millis : null;
   }, [startedAt]);
 
-  const formatElapsed = useCallback((seconds: number) => {
-    const hours = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-    if (hours > 0) {
-      return `${hours.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-    }
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-  }, []);
-
   useEffect(() => {
     if (status !== "processing") {
       fallbackStartedAtRef.current = null;
+      activeKeyRef.current = "";
       setElapsedSeconds(0);
       return;
     }
 
+    if (activeKeyRef.current !== (resetKey || "")) {
+      activeKeyRef.current = resetKey || "";
+      fallbackStartedAtRef.current = null;
+    }
     if (parsedStartMs === null && fallbackStartedAtRef.current === null) {
       fallbackStartedAtRef.current = Date.now();
     }
@@ -224,16 +232,15 @@ function DurationText({
         return;
       }
       const elapsed = Math.max(0, Math.floor((Date.now() - base) / 1000));
-      setElapsedSeconds(elapsed);
+      setElapsedSeconds((current) => current === elapsed ? current : elapsed);
     };
 
     updateElapsed();
-    const interval = setInterval(updateElapsed, 1000);
-    return () => clearInterval(interval);
-  }, [parsedStartMs, status]);
+    const interval = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(interval);
+  }, [parsedStartMs, resetKey, status]);
 
-  const display = status === "processing" ? formatElapsed(elapsedSeconds) : (duration || "");
-  return <span>{display}</span>;
+  return status === "processing" ? formatElapsedDuration(elapsedSeconds) : (duration || "");
 }
 
 function StopButton({ transcriptId, onStop }: { transcriptId: string; onStop: () => void }) {
@@ -297,7 +304,6 @@ function SummarizeButton({
         description: "The transcript has been summarized.",
         duration: 3000,
       });
-      onComplete();
     } catch (e: any) {
       toast({
         title: "Summarization failed",
@@ -323,6 +329,9 @@ export default function TranscriptDetail() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
+  const [copiedSummary, setCopiedSummary] = useState(false);
+  const copyResetTimerRef = useRef<number | null>(null);
+  const summaryCopyResetTimerRef = useRef<number | null>(null);
   const [isRetryingYoutube, setIsRetryingYoutube] = useState(false);
   const queryClient = useQueryClient();
   const { isWsConnected } = useTranscriptAutoRefresh({
@@ -337,19 +346,6 @@ export default function TranscriptDetail() {
     },
   });
 
-  // Fetch settings to check if auto-summarize is enabled
-  const settingsQuery = useQuery<SettingsResponse>({
-    queryKey: ["/api/settings"],
-    queryFn: async ({ signal }) => {
-      const res = await fetchWithTimeout(apiUrl("/api/settings"), {
-        credentials: "include",
-        cache: "no-store",
-        signal,
-      }, 10_000);
-      if (!res.ok) return {};
-      return (await res.json()) as SettingsResponse;
-    },
-  });
   const transcriptQuery = useQuery<TranscriptDetailResponse>({
     queryKey: ["/api/transcripts", id],
     enabled: !!id,
@@ -372,7 +368,8 @@ export default function TranscriptDetail() {
       const isRecentlyUpdated = Number.isFinite(updatedAtMs)
         ? Date.now() - updatedAtMs < 5 * 60 * 1000
         : true;
-      const mayAutoSummarize = type !== "mic" && settingsQuery.data?.autoSummarize !== false;
+      const settings = queryClient.getQueryData<SettingsResponse>(["/api/settings"]);
+      const mayAutoSummarize = type !== "mic" && settings?.autoSummarize !== false;
       const isSummaryPending =
         status === "completed" &&
         !summary &&
@@ -391,6 +388,30 @@ export default function TranscriptDetail() {
       return false;
     },
   });
+  const transcriptData = transcriptQuery.data;
+  const needsAutoSummarySetting = Boolean(
+    transcriptData
+      && transcriptData.type !== "mic"
+      && transcriptData.status === "completed"
+      && !String(transcriptData.summary || "").trim()
+      && String(transcriptData.summaryStatus || "").toLowerCase() !== "failed",
+  );
+  // Auto-summary settings only affect completed file/YouTube jobs without a
+  // summary. Mic details and active jobs no longer pay for an unrelated fetch.
+  useQuery<SettingsResponse>({
+    queryKey: ["/api/settings"],
+    enabled: needsAutoSummarySetting,
+    staleTime: 5 * 60_000,
+    queryFn: async ({ signal }) => {
+      const res = await fetchWithTimeout(apiUrl("/api/settings"), {
+        credentials: "include",
+        cache: "no-store",
+        signal,
+      }, 10_000);
+      if (!res.ok) return {};
+      return (await res.json()) as SettingsResponse;
+    },
+  });
   const transcript: TranscriptDetailResponse = transcriptQuery.data || {
     id: id || "",
     title: "Transcript",
@@ -400,6 +421,12 @@ export default function TranscriptDetail() {
     content: "",
     type: "mic",
   };
+  const durationDisplay = useTranscriptDuration({
+    status: transcript.status,
+    duration: transcript.duration,
+    startedAt: transcript.processingStartedAt,
+    resetKey: transcript.id,
+  });
   const summaryMarkdown = useMemo(
     () => normalizeSummaryMarkdown(String(transcript?.summary || "")),
     [transcript?.summary],
@@ -494,28 +521,66 @@ export default function TranscriptDetail() {
     }
   }, [id, isRetryingYoutube, queryClient, setLocation, toast, transcript?.sourceUrl, transcript?.title, transcript?.channel, transcript?.thumbnailUrl, transcript?.duration]);
 
-  const handleCopyTranscript = () => {
-    navigator.clipboard.writeText(transcript?.content || "");
-    setCopied(true);
-    toast({
-      title: "Copied to Clipboard",
-      description: "Transcript content has been copied.",
-      duration: 2000,
-    });
-    setTimeout(() => setCopied(false), 2000);
-  };
+  useEffect(() => () => {
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+    if (summaryCopyResetTimerRef.current !== null) {
+      window.clearTimeout(summaryCopyResetTimerRef.current);
+    }
+  }, []);
 
-  const [copiedSummary, setCopiedSummary] = useState(false);
-  const handleCopySummary = () => {
-    navigator.clipboard.writeText(summaryMarkdown || "");
-    setCopiedSummary(true);
-    toast({
-      title: "Copied to Clipboard",
-      description: "Summary has been copied.",
-      duration: 2000,
-    });
-    setTimeout(() => setCopiedSummary(false), 2000);
-  };
+  const handleCopyTranscript = useCallback(async () => {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard API unavailable");
+      }
+      await navigator.clipboard.writeText(transcript?.content || "");
+      setCopied(true);
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+      copyResetTimerRef.current = window.setTimeout(() => setCopied(false), 2000);
+      toast({
+        title: "Copied to Clipboard",
+        description: "Transcript content has been copied.",
+        duration: 2000,
+      });
+    } catch {
+      setCopied(false);
+      toast({
+        title: "Copy failed",
+        description: "Scriber could not access the clipboard.",
+        variant: "destructive",
+      });
+    }
+  }, [toast, transcript?.content]);
+
+  const handleCopySummary = useCallback(async () => {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard API unavailable");
+      }
+      await navigator.clipboard.writeText(summaryMarkdown || "");
+      setCopiedSummary(true);
+      if (summaryCopyResetTimerRef.current !== null) {
+        window.clearTimeout(summaryCopyResetTimerRef.current);
+      }
+      summaryCopyResetTimerRef.current = window.setTimeout(() => setCopiedSummary(false), 2000);
+      toast({
+        title: "Copied to Clipboard",
+        description: "Summary has been copied.",
+        duration: 2000,
+      });
+    } catch {
+      setCopiedSummary(false);
+      toast({
+        title: "Copy failed",
+        description: "Scriber could not access the clipboard.",
+        variant: "destructive",
+      });
+    }
+  }, [summaryMarkdown, toast]);
 
   const getBackLink = () => {
     switch (transcript?.type) {
@@ -556,7 +621,7 @@ export default function TranscriptDetail() {
               {transcript?.title || "Transcript"}
             </FitText>
             <p className="text-xs text-muted-foreground truncate">
-              {transcript.date} • <DurationText status={transcript.status} duration={transcript.duration} startedAt={transcript.createdAt} />
+              {transcript.date} • <span>{durationDisplay}</span>
             </p>
           </div>
         </div>
@@ -699,7 +764,7 @@ export default function TranscriptDetail() {
                   {transcript.step || "Processing..."}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Elapsed: <DurationText status={transcript.status} duration={transcript.duration} startedAt={transcript.createdAt} />
+                  Elapsed: <span>{durationDisplay}</span>
                 </p>
               </div>
             </div>

@@ -119,6 +119,25 @@ def test_processing_timer_formats_long_jobs_with_hours() -> None:
     assert "if (hours > 0)" in source
 
 
+def test_transcript_detail_uses_current_attempt_clock_and_truthful_clipboard_feedback() -> None:
+    page_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx"
+    ).read_text(encoding="utf-8")
+    types_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "processingStartedAt?: string;" in types_source
+    assert "startedAt: transcript.processingStartedAt" in page_source
+    assert "startedAt={transcript.createdAt}" not in page_source
+    assert page_source.count("window.setInterval(updateElapsed, 1000)") == 1
+    assert page_source.count("await navigator.clipboard.writeText") == 2
+    assert 'title: "Copy failed"' in page_source
+    assert page_source.count("onComplete();") == 1
+    assert "enabled: needsAutoSummarySetting" in page_source
+    assert "staleTime: 5 * 60_000" in page_source
+
+
 def test_startup_screen_handles_managed_backend_starting_state() -> None:
     hook_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-backend-status.tsx"
@@ -536,6 +555,8 @@ def test_history_updates_are_invalidated_globally_for_background_jobs() -> None:
     assert 'msg.type !== "history_updated"' in source
     assert 'queryClient.invalidateQueries({ queryKey: ["/api/transcripts", transcriptId], exact: true });' in source
     assert "pendingTranscriptTypesRef.current.add" in source
+    assert "invalidateAllDetailsRef.current = true" in source
+    assert 'typeof query.queryKey[1] === "string"' in source
     assert "window.setTimeout(flushInvalidations, 250)" in source
     assert "msg.transcriptType" in source
     assert "<TranscriptHistoryInvalidationBridge />" in source
@@ -804,6 +825,9 @@ def test_theme_reveal_controls_desktop_chrome_and_card_repaints() -> None:
     assert "localStorage.getItem(storageKey) as Theme" not in provider_source
     assert "localStorage.setItem(storageKey, nextTheme)" not in provider_source
     assert "deferredDesktopThemeRef" in provider_source
+    assert "const revealGeneration = revealGenerationRef.current + 1;" in provider_source
+    assert "if (revealGenerationRef.current !== revealGeneration) return;" in provider_source
+    assert "deferredDesktopThemeRef.current = null;\n            setThemeRevealActive(false);" in provider_source
     assert "setThemeRevealActive(true)" in provider_source
     assert "setThemeRevealActive(false)" in provider_source
     assert "void transition.finished.then(finishReveal, finishReveal)" in provider_source

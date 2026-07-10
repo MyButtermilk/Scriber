@@ -147,7 +147,10 @@ may set the `SCRIBER_NSIS_COMPRESSION` repository variable when a measured
 packaging speed/size tradeoff is desired. GitHub non-tag cache/warmup builds
 use `none` by default to reduce NSIS packaging time and are not affected by
 `SCRIBER_NSIS_COMPRESSION`; use `SCRIBER_NON_TAG_NSIS_COMPRESSION` only for an
-intentional non-tag packaging experiment.
+intentional non-tag packaging experiment. Because that artifact is deliberately
+uncompressed and is not distributed, the workflow records its size but disables
+the compressed-installer budget for `none` non-tag runs. Signed tag releases
+continue to enforce the normal installer-size gate.
 Treat non-tag cache/warmup timings as cache-health evidence, not signed-release
 packaging evidence. The 2026-07-09 hot `workflow_dispatch` measurement
 `28997179965` proved the heavy cache path by completing `build_windows.ps1` in

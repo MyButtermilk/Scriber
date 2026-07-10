@@ -1465,6 +1465,7 @@ class TranscriptRecord:
     content: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    processing_started_at: str = ""
     summary: str = ""
     summary_status: SummaryStatus = "idle"
     summary_error: str = ""
@@ -1518,6 +1519,7 @@ class TranscriptRecord:
             "thumbnailUrl": self.thumbnail_url,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
+            "processingStartedAt": self.processing_started_at,
             "summaryStatus": self.summary_status,
             "summaryError": self.summary_error,
             "summaryUpdatedAt": self.summary_updated_at,
@@ -1566,6 +1568,7 @@ class TranscriptRecord:
 
     def start(self) -> None:
         self._started_at_monotonic = time.monotonic()
+        self.processing_started_at = datetime.now().isoformat()
 
     def finish(self, status: TranscriptStatus) -> None:
         self.content_text()
@@ -1657,6 +1660,7 @@ class ScriberWebController:
         )
         self._latency_metrics_store = latency_metrics_store or LatencyMetricsStore()
         self._metrics_persist_tasks: set[asyncio.Task] = set()
+        self._transcript_persist_tasks: set[asyncio.Task] = set()
         self._job_max_attempts = _env_int("SCRIBER_JOB_MAX_ATTEMPTS", 3, minimum=1, maximum=20)
         self._job_retry_base_seconds = _env_float(
             "SCRIBER_JOB_RETRY_BASE_SEC", 5.0, minimum=0.1, maximum=3600.0
@@ -2797,6 +2801,7 @@ class ScriberWebController:
     def _build_processing_record_from_job(self, job: JobRecord) -> TranscriptRecord:
         payload = job.payload or {}
         created_at = job.created_at or datetime.now().isoformat()
+        resumed_at = datetime.now().isoformat()
         created_dt = datetime.now()
         if created_at:
             try:
@@ -2821,7 +2826,8 @@ class ScriberWebController:
             channel=str(payload.get("channel", "") or ""),
             thumbnail_url=str(payload.get("thumbnailUrl", "") or ""),
             created_at=created_at,
-            updated_at=datetime.now().isoformat(),
+            updated_at=resumed_at,
+            processing_started_at=resumed_at,
             content="",
             summary="",
             _content_loaded=True,
@@ -2913,6 +2919,9 @@ class ScriberWebController:
                 self._add_to_history(rec)
 
             self._remember_job_id(rec.id, job.id)
+            # A resumed attempt starts now. Do not make the UI count time while
+            # Scriber was not running as active processing time.
+            rec.processing_started_at = datetime.now().isoformat()
 
             if job.job_type == JobType.YOUTUBE:
                 if not rec.source_url:
@@ -3223,6 +3232,7 @@ class ScriberWebController:
             content=str(data.get("content", "") or ""),
             created_at=str(data.get("createdAt", "") or ""),
             updated_at=str(data.get("updatedAt", "") or ""),
+            processing_started_at=str(data.get("processingStartedAt", "") or ""),
             summary=str(data.get("summary", "") or ""),
             summary_status=data.get("summaryStatus", "idle"),
             summary_error=str(data.get("summaryError", "") or ""),
@@ -3290,12 +3300,34 @@ class ScriberWebController:
         if self._loop.is_closed():
             self._save_transcript_to_db(record)
             return
-        try:
-            self._loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self._save_transcript_to_db_async(record))
+
+        def start() -> None:
+            if self._loop.is_closed():
+                self._save_transcript_to_db(record)
+                return
+            task = self._loop.create_task(
+                self._save_transcript_to_db_async(record),
+                name=f"transcript_save_{record.id[:8]}",
             )
+            self._transcript_persist_tasks.add(task)
+            task.add_done_callback(self._transcript_persist_tasks.discard)
+
+        try:
+            self._loop.call_soon_threadsafe(start)
         except RuntimeError:
             self._save_transcript_to_db(record)
+
+    async def _wait_for_pending_transcript_writes(self, timeout_seconds: float = 2.0) -> int:
+        tasks = {task for task in self._transcript_persist_tasks if not task.done()}
+        if not tasks:
+            return 0
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=max(0.0, float(timeout_seconds)),
+        )
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
+        return len(pending)
 
     def _add_to_history(self, record: TranscriptRecord) -> None:
         """Insert a transcript into the bounded runtime cache and index it by ID."""
@@ -4268,6 +4300,25 @@ class ScriberWebController:
             payload["reason"] = reason
         return {key: value for key, value in payload.items() if value}
 
+    @staticmethod
+    def _merge_pending_history_update(
+        existing: dict[str, str] | None,
+        incoming: dict[str, str],
+    ) -> dict[str, str]:
+        if not existing:
+            return incoming
+        existing_id = existing.get("transcriptId", "")
+        incoming_id = incoming.get("transcriptId", "")
+        if not existing_id:
+            return existing
+        if not incoming_id:
+            return incoming
+        if existing_id == incoming_id:
+            return incoming
+        # One versioned event cannot identify multiple transcript IDs. Emit a
+        # generic event so clients invalidate all active detail/list queries.
+        return {"reason": "coalesced_multiple_transcripts"}
+
     async def _broadcast_history_updated(
         self,
         *,
@@ -4280,7 +4331,10 @@ class ScriberWebController:
         payload = self._history_update_payload_for_record(record, reason=reason)
         if not force and now - self._history_broadcast_last < self._history_broadcast_interval:
             if payload:
-                self._history_broadcast_pending_payload = payload
+                self._history_broadcast_pending_payload = self._merge_pending_history_update(
+                    self._history_broadcast_pending_payload,
+                    payload,
+                )
             if self._history_broadcast_handle is None:
                 delay = self._history_broadcast_interval - (now - self._history_broadcast_last)
                 self._history_broadcast_handle = self._loop.call_later(
@@ -4346,6 +4400,7 @@ class ScriberWebController:
             source_url=url,
             channel=channel,
             thumbnail_url=thumbnail,
+            processing_started_at=started_at.isoformat(),
             _youtube_prefer_captions=prefer_captions,
         )
         self._emit_workflow_event(
@@ -4831,6 +4886,7 @@ class ScriberWebController:
             language=Config.LANGUAGE or "auto",
             step="Queued",
             source_url=str(file_path),
+            processing_started_at=started_at.isoformat(),
         )
         self._emit_workflow_event(
             message=f"File job queued: {rec.title}",
@@ -5980,6 +6036,14 @@ class ScriberWebController:
                 logger.warning("Timed out waiting for settings persistence during shutdown")
             except Exception as exc:
                 logger.warning(f"Settings persistence failed during shutdown: {exc}")
+        transcript_write_pending = await self._wait_for_pending_transcript_writes(
+            max(0.0, min(2.0, float(timeout_seconds)))
+        )
+        if transcript_write_pending:
+            logger.warning(
+                "Timed out waiting for {} transcript write(s) during shutdown",
+                transcript_write_pending,
+            )
         metric_pending = await self._wait_for_pending_metric_writes(
             max(0.0, min(2.0, float(timeout_seconds)))
         )
@@ -5988,7 +6052,7 @@ class ScriberWebController:
                 "Timed out waiting for {} metric write(s) during shutdown",
                 metric_pending,
             )
-        return len(pending)
+        return len(pending) + transcript_write_pending + metric_pending
 
     def shutdown(self) -> None:
         self.begin_shutdown()

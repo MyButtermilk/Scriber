@@ -118,6 +118,7 @@ function TranscriptHistoryInvalidationBridge() {
   const queryClient = useQueryClient();
   const pendingTranscriptIdsRef = useRef<Set<string>>(new Set());
   const pendingTranscriptTypesRef = useRef<Set<string>>(new Set());
+  const invalidateAllDetailsRef = useRef(false);
   const invalidateAllHistoryRef = useRef(false);
   const invalidationTimerRef = useRef<number | null>(null);
 
@@ -125,13 +126,21 @@ function TranscriptHistoryInvalidationBridge() {
     invalidationTimerRef.current = null;
     const transcriptIds = Array.from(pendingTranscriptIdsRef.current);
     const transcriptTypes = new Set(pendingTranscriptTypesRef.current);
+    const invalidateAllDetails = invalidateAllDetailsRef.current;
     const invalidateAllHistory = invalidateAllHistoryRef.current;
     pendingTranscriptIdsRef.current.clear();
     pendingTranscriptTypesRef.current.clear();
+    invalidateAllDetailsRef.current = false;
     invalidateAllHistoryRef.current = false;
 
     for (const transcriptId of transcriptIds) {
       queryClient.invalidateQueries({ queryKey: ["/api/transcripts", transcriptId], exact: true });
+    }
+    if (invalidateAllDetails) {
+      queryClient.invalidateQueries({
+        predicate: (query) => query.queryKey[0] === "/api/transcripts"
+          && typeof query.queryKey[1] === "string",
+      });
     }
 
     queryClient.invalidateQueries({
@@ -155,6 +164,8 @@ function TranscriptHistoryInvalidationBridge() {
 
     if (msg.transcriptId) {
       pendingTranscriptIdsRef.current.add(msg.transcriptId);
+    } else {
+      invalidateAllDetailsRef.current = true;
     }
     if (msg.transcriptType) {
       pendingTranscriptTypesRef.current.add(msg.transcriptType);

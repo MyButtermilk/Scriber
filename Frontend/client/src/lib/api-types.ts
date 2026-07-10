@@ -168,6 +168,7 @@ export interface TranscriptHistoryItem {
   thumbnailUrl?: string;
   createdAt?: string;
   updatedAt?: string;
+  processingStartedAt?: string;
   preview?: string;
   summary?: string;
   summaryStatus?: SummaryStatus;

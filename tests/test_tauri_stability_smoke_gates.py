@@ -356,6 +356,8 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "Using NSIS compression 'none' for non-tag cache/warmup build" in workflow
     assert "Using Tauri default NSIS compression for tag release" in workflow
     assert '$effectiveNsisCompression = "none"' in workflow
+    assert '$buildArgs += @("-MaxInstallerSizeMB", "0")' in workflow
+    assert "Recording uncompressed non-tag installer size without applying the compressed release budget" in workflow
     assert "Compute release cache keys" in workflow
     assert "scripts\\ci\\write_release_cache_keys.ps1" in workflow
     assert "Report release cache key fingerprints" in workflow

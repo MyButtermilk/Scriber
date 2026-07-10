@@ -254,6 +254,8 @@ export function ThemeProvider({
     const updateTheme = useCallback((nextTheme: Theme, options?: ThemeTransitionOptions) => {
         const normalizedNextTheme = normalizeTheme(nextTheme);
         writeStoredTheme(storageKey, normalizedNextTheme);
+        const revealGeneration = revealGenerationRef.current + 1;
+        revealGenerationRef.current = revealGeneration;
 
         const nextResolvedTheme = resolveEffectiveTheme(normalizedNextTheme);
         const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -262,19 +264,20 @@ export function ThemeProvider({
         const transitionOrigin = options?.origin ?? getVisibleThemeToggleOrigin();
 
         if (!transitionOrigin || prefersReducedMotion) {
+            deferredDesktopThemeRef.current = null;
+            setThemeRevealActive(false);
             setTheme(normalizedNextTheme);
             return;
         }
 
         const commitTheme = () => {
+            if (revealGenerationRef.current !== revealGeneration) return;
             applyThemeClass(nextResolvedTheme);
             setResolvedTheme(nextResolvedTheme);
             setTheme(normalizedNextTheme);
         };
 
         const beginReveal = () => {
-            const revealGeneration = revealGenerationRef.current + 1;
-            revealGenerationRef.current = revealGeneration;
             deferredDesktopThemeRef.current = nextResolvedTheme;
             setThemeRevealActive(true);
 

@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import time
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -73,8 +74,11 @@ async def test_resume_pending_youtube_job_restarts_and_completes(tmp_path):
     )
 
     ctl = ScriberWebController(loop, job_store=store)
+    resume_started_at = datetime.now()
+    release_run = asyncio.Event()
 
     async def _fake_run(rec, *, provider):
+        await release_run.wait()
         rec.status = "completed"
         rec.step = "Completed"
 
@@ -85,11 +89,13 @@ async def test_resume_pending_youtube_job_restarts_and_completes(tmp_path):
         resumed = await ctl.resume_pending_jobs(limit=10)
         assert resumed == 1
         task = ctl._running_tasks["tx-resume-youtube"]
+        release_run.set()
         await asyncio.gather(task, return_exceptions=True)
 
     rec = ctl._get_history_record("tx-resume-youtube")
     assert rec is not None
     assert rec.status == "completed"
+    assert datetime.fromisoformat(rec.processing_started_at) >= resume_started_at
     job = store.get_by_transcript_id("tx-resume-youtube")
     assert job is not None
     assert job.status == JobStatus.COMPLETED

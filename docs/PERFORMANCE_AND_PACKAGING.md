@@ -42,7 +42,9 @@ support intentionally adds Deno (about `99 MiB` installed before compression)
 because yt-dlp now requires an external JavaScript runtime plus EJS for full
 YouTube extraction. Profile B media-tool footprint gates allow `115 MiB`; the
 installer-size gate remains unchanged and must catch an excessive compressed
-size increase.
+size increase. Intentionally uncompressed non-tag cache/warmup builds still emit
+`size-report.json`, but do not compare that diagnostic artifact with the
+compressed release budget.
 
 ## Implemented Performance Work
 

@@ -36,6 +36,20 @@ def test_release_size_report_fails_when_artifact_exceeds_budget(tmp_path: Path) 
     assert report["budgets"]["installer"]["withinBudget"] is False
 
 
+def test_release_size_report_can_record_uncompressed_artifact_without_release_budget(tmp_path: Path) -> None:
+    artifact = tmp_path / "Scriber_0.1.0_x64-setup.exe"
+    write_bytes(artifact, 3 * 1024 * 1024)
+
+    report = build_report([artifact], max_installer_mb=0)
+
+    assert report["ok"] is True
+    assert report["largestArtifactMb"] == 3.0
+    assert report["budgets"]["installer"] == {
+        "maxMb": None,
+        "withinBudget": None,
+    }
+
+
 def test_release_size_report_includes_installed_app_top_files(tmp_path: Path) -> None:
     artifact = tmp_path / "bundle" / "Scriber_0.1.0_x64-setup.exe"
     install_dir = tmp_path / "installed"

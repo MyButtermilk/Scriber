@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -107,6 +108,8 @@ async def test_start_youtube_transcription_persists_job_lifecycle(monkeypatch, t
     assert job.status == JobStatus.COMPLETED
     assert job.job_type.value == "youtube"
     assert job.payload["preferCaptions"] is True
+    assert rec.processing_started_at
+    assert rec.to_public(include_content=False)["processingStartedAt"] == rec.processing_started_at
 
 
 @pytest.mark.asyncio
@@ -185,6 +188,64 @@ async def test_cancel_transcript_marks_background_job_canceled(tmp_path):
     assert rec.step == "Stopped by user"
     save_mock.assert_awaited_once_with(rec)
     assert any(call.kwargs.get("reason") == "canceled" for call in broadcast_mock.await_args_list)
+
+
+def test_live_record_start_exposes_wall_clock_attempt_start() -> None:
+    rec = TranscriptRecord(
+        id="live-attempt-start",
+        title="Live",
+        date="Today",
+        duration="00:00",
+        status="recording",
+        type="mic",
+        language="de",
+    )
+
+    rec.start()
+
+    assert rec.processing_started_at
+    assert datetime.fromisoformat(rec.processing_started_at)
+    assert rec.to_public(include_content=False)["processingStartedAt"] == rec.processing_started_at
+
+
+@pytest.mark.asyncio
+async def test_history_update_throttle_preserves_multiple_transcript_changes() -> None:
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._history_broadcast_interval = 10.0
+    ctl._history_broadcast_last = time.monotonic()
+    first = TranscriptRecord(
+        id="first-update",
+        title="First",
+        date="Today",
+        duration="00:01",
+        status="completed",
+        type="file",
+        language="de",
+    )
+    second = TranscriptRecord(
+        id="second-update",
+        title="Second",
+        date="Today",
+        duration="00:01",
+        status="completed",
+        type="youtube",
+        language="de",
+    )
+
+    with patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock:
+        await ctl._broadcast_history_updated(record=first, reason="completed")
+        await ctl._broadcast_history_updated(record=second, reason="completed")
+
+        assert ctl._history_broadcast_pending_payload == {
+            "reason": "coalesced_multiple_transcripts"
+        }
+        await ctl._broadcast_history_updated(force=True)
+
+    payload = broadcast_mock.await_args.args[0]
+    assert payload["type"] == "history_updated"
+    assert payload["reason"] == "coalesced_multiple_transcripts"
+    assert "transcriptId" not in payload
+    assert "transcriptType" not in payload
 
 
 @pytest.mark.asyncio
@@ -482,6 +543,44 @@ async def test_shutdown_drain_keeps_background_job_resumable(monkeypatch, tmp_pa
     assert persisted is not None
     assert persisted.status == JobStatus.RUNNING
     assert rec.id not in ctl._running_tasks
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drain_waits_for_scheduled_transcript_write(monkeypatch):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    rec = TranscriptRecord(
+        id="shutdown-persist",
+        title="Persist before exit",
+        date="Today",
+        duration="00:01",
+        status="completed",
+        type="mic",
+        language="de",
+        content="Last transcript",
+    )
+    write_started = threading.Event()
+    release_write = threading.Event()
+    saved_ids: list[str] = []
+
+    def _save(snapshot):
+        write_started.set()
+        assert release_write.wait(timeout=2.0)
+        saved_ids.append(snapshot["id"])
+
+    monkeypatch.setattr(web_api.db, "save_transcript", _save)
+    ctl._schedule_transcript_save(rec)
+    assert await asyncio.to_thread(write_started.wait, 1.0)
+
+    drain_task = asyncio.create_task(
+        ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
+    )
+    await asyncio.sleep(0)
+    assert drain_task.done() is False
+    release_write.set()
+
+    assert await drain_task == 0
+    assert saved_ids == [rec.id]
+    assert not ctl._transcript_persist_tasks
 
 
 def test_deleted_transcript_tombstones_are_bounded():

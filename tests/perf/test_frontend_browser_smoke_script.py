@@ -31,7 +31,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert payload["ok"] is True
     assert payload["summary"]["routeCount"] == 9
     assert payload["summary"]["criticalConsoleErrorCount"] == 0
-    assert payload["summary"]["interactionCheckCount"] == 17
+    assert payload["summary"]["interactionCheckCount"] == 18
     assert set(payload["summary"]["interactionChecks"]) == {
         "history-search-copy-navigation",
         "youtube-history-actions",
@@ -47,6 +47,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
         "command-palette",
         "transcript-detail-actions",
         "transcript-cancel-action",
+        "rapid-theme-change",
         "mobile-navigation",
         "mobile-route-layouts",
         "token-required-browser-state",
@@ -83,6 +84,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert payload["commandPaletteCheck"]["name"] == "command-palette"
     assert payload["transcriptDetailActionsCheck"]["name"] == "transcript-detail-actions"
     assert payload["transcriptCancelCheck"]["name"] == "transcript-cancel-action"
+    assert payload["rapidThemeChangeCheck"]["name"] == "rapid-theme-change"
     assert payload["mobileNavigationCheck"]["name"] == "mobile-navigation"
     assert payload["mobileRouteLayoutsCheck"]["name"] == "mobile-route-layouts"
     assert payload["mobileRouteLayoutsCheck"]["routeCount"] == 9
@@ -110,7 +112,7 @@ def test_frontend_browser_smoke_validate_only_can_include_fast_tab_switch(tmp_pa
     assert result.returncode == 0, result.stderr
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["ok"] is True
-    assert payload["summary"]["interactionCheckCount"] == 18
+    assert payload["summary"]["interactionCheckCount"] == 19
     assert "fast-tab-switch" in payload["summary"]["interactionChecks"]
     assert payload["fastTabSwitchCheck"]["name"] == "fast-tab-switch"
     assert payload["fastTabSwitchCheck"]["ok"] is True

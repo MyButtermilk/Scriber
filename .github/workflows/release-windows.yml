@@ -790,6 +790,13 @@ jobs:
           if ($effectiveNsisCompression) {
             $buildArgs += @("-NsisCompression", $effectiveNsisCompression)
           }
+          if (-not $isTagRelease -and $effectiveNsisCompression -eq "none") {
+            # The 220 MiB release budget measures distributable compressed
+            # installers. An intentionally uncompressed cache/warmup artifact
+            # tracks its size in size-report.json but must not fail that gate.
+            $buildArgs += @("-MaxInstallerSizeMB", "0")
+            Write-Host "Recording uncompressed non-tag installer size without applying the compressed release budget."
+          }
           $hasUpdaterSigning = $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY -and ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)
           $allowUnsignedTagRelease = $env:SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE -eq "1"
           if ($isTagRelease -and -not $hasUpdaterSigning -and -not $allowUnsignedTagRelease) {

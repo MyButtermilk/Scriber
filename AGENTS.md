@@ -482,8 +482,10 @@ Already implemented and should not be regressed:
 - Non-tag GitHub cache/warmup builds use `-NsisCompression none` by default to
   reduce packaging time and intentionally ignore `SCRIBER_NSIS_COMPRESSION`.
   Use `SCRIBER_NON_TAG_NSIS_COMPRESSION` only for explicit non-tag packaging
-  experiments. Signed `v*` updater releases may use
-  `SCRIBER_NSIS_COMPRESSION` after a measured size/time tradeoff.
+  experiments. The workflow records uncompressed artifact size but disables the
+  compressed-installer size gate for `none` non-tag runs; signed `v*` releases
+  must continue to enforce the normal size budget. Signed `v*` updater releases
+  may use `SCRIBER_NSIS_COMPRESSION` after a measured size/time tradeoff.
 - The 2026-07-09 hot cache measurement (`workflow_dispatch` run `28997179965`)
   proved the optimized heavy-cache path: `build_windows.ps1` took about
   `49.2s`, with backend sidecar, Rust build, Rust audio sidecar, FFmpeg Profile

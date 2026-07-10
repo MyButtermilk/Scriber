@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +101,7 @@ class FrontendSmokeBackend:
         self.canceled_transcripts: set[str] = set()
         self.cancel_counts: dict[str, int] = {}
         self.settings_patches: list[dict[str, Any]] = []
+        self.settings_get_count = 0
         self.runtime_logs_deleted = False
         self.support_bundle_count = 0
         self.file_uploads: list[dict[str, Any]] = []
@@ -109,6 +111,7 @@ class FrontendSmokeBackend:
         self.autostart_available = True
         self.autostart_requests: list[dict[str, Any]] = []
         self.deleted_transcript_ids: set[str] = set()
+        self.processing_started_at = datetime.now(timezone.utc).isoformat()
 
     @property
     def base_url(self) -> str:
@@ -221,6 +224,7 @@ class FrontendSmokeBackend:
         return web.json_response({"apiVersion": "1", "ready": True})
 
     async def get_settings(self, request: web.Request) -> web.Response:
+        self.settings_get_count += 1
         return web.json_response(self.settings)
 
     async def put_settings(self, request: web.Request) -> web.Response:
@@ -480,9 +484,9 @@ class FrontendSmokeBackend:
 
     async def transcript_detail(self, request: web.Request) -> web.Response:
         transcript_id = request.match_info["transcript_id"]
+        count = self.transcript_detail_counts.get(transcript_id, 0) + 1
+        self.transcript_detail_counts[transcript_id] = count
         if transcript_id == "youtube-processing-smoke":
-            count = self.transcript_detail_counts.get(transcript_id, 0) + 1
-            self.transcript_detail_counts[transcript_id] = count
             created_at = "2026-06-01T12:00:00Z"
             if count == 1:
                 asyncio.get_running_loop().call_later(
@@ -509,6 +513,7 @@ class FrontendSmokeBackend:
                         "summaryUpdatedAt": "",
                         "createdAt": created_at,
                         "updatedAt": "2026-06-01T12:00:10Z",
+                        "processingStartedAt": self.processing_started_at,
                     }
                 )
             return web.json_response(
@@ -597,6 +602,7 @@ class FrontendSmokeBackend:
                     "summaryUpdatedAt": "",
                     "createdAt": "2026-06-01T12:30:00Z",
                     "updatedAt": "2026-06-01T12:31:00Z" if canceled else "2026-06-01T12:30:10Z",
+                    "processingStartedAt": self.processing_started_at,
                 }
             )
         if transcript_id == "youtube-queued-smoke":
@@ -620,6 +626,7 @@ class FrontendSmokeBackend:
                     "summaryUpdatedAt": "",
                     "createdAt": "2026-06-01T12:40:00Z",
                     "updatedAt": "2026-06-01T12:40:10Z",
+                    "processingStartedAt": self.processing_started_at,
                 }
             )
         if transcript_id == "file-processing-smoke":
@@ -641,6 +648,7 @@ class FrontendSmokeBackend:
                     "summaryUpdatedAt": "",
                     "createdAt": "2026-06-01T12:50:00Z",
                     "updatedAt": "2026-06-01T12:50:10Z",
+                    "processingStartedAt": self.processing_started_at,
                 }
             )
         kind = transcript_id.split("-", maxsplit=1)[0] if "-" in transcript_id else "mic"
@@ -2226,17 +2234,20 @@ async def exercise_youtube_start_transcription(
         expression=r"""
 (() => {
   const text = document.body ? document.body.innerText : '';
+  const elapsed = (/Elapsed:\s*([0-9:]+)/.exec(text) || [])[1] || '';
   return {
     ok: window.location.pathname === '/transcript/youtube-queued-smoke'
       && text.includes('Synthetic Queued YouTube Transcription')
       && text.includes('Queued')
       && text.includes('Elapsed:')
+      && elapsed.split(':').length === 2
       && text.includes('Stop'),
     route: window.location.pathname,
     hasTitle: text.includes('Synthetic Queued YouTube Transcription'),
     hasQueuedStep: text.includes('Queued'),
     hasElapsed: text.includes('Elapsed:'),
-    hasStop: text.includes('Stop')
+    hasStop: text.includes('Stop'),
+    elapsed
   };
 })()
 """,
@@ -2320,17 +2331,20 @@ async def exercise_file_history_interactions(cdp: CdpClient, *, timeout_sec: flo
         expression=r"""
 (() => {
   const text = document.body ? document.body.innerText : '';
+  const elapsed = (/Elapsed:\s*([0-9:]+)/.exec(text) || [])[1] || '';
   return {
     ok: window.location.pathname === '/transcript/file-processing-smoke'
       && text.includes('Synthetic File Processing')
       && text.includes('Preparing audio')
       && text.includes('Elapsed:')
+      && elapsed.split(':').length === 2
       && text.includes('Stop'),
     route: window.location.pathname,
     hasTitle: text.includes('Synthetic File Processing'),
     hasStep: text.includes('Preparing audio'),
     hasElapsed: text.includes('Elapsed:'),
-    hasStop: text.includes('Stop')
+    hasStop: text.includes('Stop'),
+    elapsed
   };
 })()
 """,
@@ -3076,6 +3090,22 @@ async def exercise_transcript_cancel_action(
         expect_history_virtualized=False,
         timeout_sec=timeout_sec,
     )
+    elapsed_state = await wait_for_interaction_state(
+        cdp,
+        label="transcript-current-attempt-elapsed",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  const elapsed = (/Elapsed:\s*([0-9:]+)/.exec(text) || [])[1] || '';
+  return {
+    ok: elapsed.split(':').length === 2,
+    elapsed,
+    hasLegacyCreatedAtOverflow: elapsed.split(':').length > 2
+  };
+})()
+""",
+    )
 
     stop_started = await cdp.evaluate(
         r"""
@@ -3127,6 +3157,7 @@ async def exercise_transcript_cancel_action(
         "name": "transcript-cancel-action",
         "ok": True,
         "initial": initial_state,
+        "elapsed": elapsed_state,
         "stopped": stopped_state,
     }
 
@@ -3135,8 +3166,10 @@ async def exercise_transcript_detail_actions(
     cdp: CdpClient,
     *,
     frontend_base_url: str,
+    backend: FrontendSmokeBackend,
     timeout_sec: float,
 ) -> dict[str, Any]:
+    backend.settings_get_count = 0
     await cdp.call("Page.navigate", {"url": f"{frontend_base_url}/transcript/mic-00001"}, timeout=10)
     await wait_for_route_ready(
         cdp,
@@ -3145,6 +3178,38 @@ async def exercise_transcript_detail_actions(
         expect_history_virtualized=False,
         timeout_sec=timeout_sec,
     )
+    await asyncio.sleep(0.1)
+    settings_request_state = {
+        # One request is the app-wide bootstrap. The transcript detail must not
+        # add a second request for a mic transcript.
+        "ok": backend.settings_get_count == 1,
+        "settingsGetCount": backend.settings_get_count,
+        "bootstrapOnly": backend.settings_get_count == 1,
+    }
+    if not settings_request_state["ok"]:
+        raise RuntimeError(
+            "Mic transcript detail added settings traffic beyond bootstrap: "
+            f"{backend.settings_get_count} total request(s)"
+        )
+    detail_requests_before_generic_update = backend.transcript_detail_counts.get("mic-00001", 0)
+    await backend.broadcast_history_updated()
+    deadline = time.monotonic() + timeout_sec
+    while (
+        time.monotonic() < deadline
+        and backend.transcript_detail_counts.get("mic-00001", 0)
+        <= detail_requests_before_generic_update
+    ):
+        await asyncio.sleep(0.05)
+    detail_requests_after_generic_update = backend.transcript_detail_counts.get("mic-00001", 0)
+    generic_refresh_state = {
+        "ok": detail_requests_after_generic_update > detail_requests_before_generic_update,
+        "before": detail_requests_before_generic_update,
+        "after": detail_requests_after_generic_update,
+    }
+    if not generic_refresh_state["ok"]:
+        raise RuntimeError(
+            "Generic history_updated event did not refresh the active transcript detail"
+        )
 
     setup_state = await cdp.evaluate(
         r"""
@@ -3217,6 +3282,45 @@ async def exercise_transcript_detail_actions(
     writes,
     clipboardStubbed: !!window.__scriberSmokeDetailClipboardStubbed,
     toastVisible: (document.body?.innerText || '').includes('Copied to Clipboard')
+  };
+})()
+""",
+    )
+
+    copy_failure_state = await wait_for_interaction_state(
+        cdp,
+        label="transcript-detail-copy-failure",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  if (!window.__scriberSmokeDetailCopyFailureStarted) {
+    const failingClipboard = { writeText: async () => { throw new Error('synthetic clipboard denial'); } };
+    try {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: failingClipboard
+      });
+    } catch (_error) {
+      Object.defineProperty(Navigator.prototype, 'clipboard', {
+        configurable: true,
+        get: () => failingClipboard
+      });
+    }
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((node) => {
+        const label = node.textContent || '';
+        return label.includes('Copy Transcript') || label.includes('Copied!');
+      });
+    if (!button) return { ok: false, reason: 'missing transcript copy button' };
+    window.__scriberSmokeDetailCopyFailureStarted = true;
+    button.click();
+    return { ok: false, waitingForFailureToast: true };
+  }
+  const text = document.body ? document.body.innerText : '';
+  return {
+    ok: text.includes('Copy failed') && text.includes('could not access the clipboard'),
+    hasFailureToast: text.includes('Copy failed'),
+    hasFailureDescription: text.includes('could not access the clipboard')
   };
 })()
 """,
@@ -3383,12 +3487,137 @@ async def exercise_transcript_detail_actions(
     return {
         "name": "transcript-detail-actions",
         "ok": True,
+        "micSettingsRequests": settings_request_state,
+        "genericHistoryRefresh": generic_refresh_state,
         "spySetup": setup_state,
         "copy": copy_state,
+        "copyFailure": copy_failure_state,
         "exportPdf": export_pdf_state,
         "exportDocx": export_docx_state,
         "summarize": summarize_state,
         "retrySummary": retry_state,
+    }
+
+
+async def exercise_rapid_theme_change(
+    cdp: CdpClient,
+    *,
+    frontend_base_url: str,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    await cdp.call("Page.navigate", {"url": f"{frontend_base_url}/"}, timeout=10)
+    await wait_for_route_ready(
+        cdp,
+        route="/",
+        expected_text=ROUTE_EXPECTATIONS["/"],
+        expect_history_virtualized=True,
+        timeout_sec=timeout_sec,
+    )
+    await cdp.call(
+        "Emulation.setEmulatedMedia",
+        {"features": [{"name": "prefers-reduced-motion", "value": "no-preference"}]},
+        timeout=5,
+    )
+    initial = await cdp.evaluate(
+        r"""
+(() => {
+  const toggle = document.querySelector('button[role="switch"][aria-label^="Switch to"]');
+  if (!toggle) return { ok: false, reason: 'missing theme toggle' };
+  window.__scriberSmokeOriginalStartViewTransition = document.startViewTransition;
+  Object.defineProperty(document, 'startViewTransition', {
+    configurable: true,
+    value: undefined
+  });
+  const startedDark = document.documentElement.classList.contains('dark');
+  window.__scriberSmokeThemeStartedDark = startedDark;
+  toggle.click();
+  return { ok: true, startedDark };
+})()
+""",
+        timeout=5,
+    )
+    if not initial or not initial.get("ok"):
+        raise RuntimeError(f"Could not start rapid theme-change smoke: {initial}")
+
+    await cdp.call(
+        "Emulation.setEmulatedMedia",
+        {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
+        timeout=5,
+    )
+    selection = await wait_for_interaction_state(
+        cdp,
+        label="rapid-theme-change-selection",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const activate = (node) => {
+    node.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0 }));
+    node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+    node.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0 }));
+    node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
+    node.click();
+  };
+  const trigger = document.querySelector('button[aria-label="Theme mode options"]');
+  if (!trigger) return { ok: false, reason: 'missing theme options trigger' };
+  if (!window.__scriberSmokeThemeMenuOpened) {
+    window.__scriberSmokeThemeMenuOpened = true;
+    activate(trigger);
+    return { ok: false, waitingForMenu: true };
+  }
+  const target = window.__scriberSmokeThemeStartedDark ? 'Dark' : 'Light';
+  const item = Array.from(document.querySelectorAll('[role="menuitem"]'))
+    .find((node) => (node.textContent || '').includes(target));
+  if (!item) return { ok: false, waitingForItem: target };
+  activate(item);
+  return { ok: true, target };
+})()
+""",
+    )
+
+    await asyncio.sleep(0.8)
+    final_state = await cdp.evaluate(
+        r"""
+(() => {
+  const startedDark = !!window.__scriberSmokeThemeStartedDark;
+  const finalDark = document.documentElement.classList.contains('dark');
+  const storedTheme = window.localStorage.getItem('scriber-theme') || '';
+  const expectedStoredTheme = startedDark ? 'dark' : 'light';
+  const revealActive = document.documentElement.dataset.themeRevealActive === 'true';
+  const overlays = document.querySelectorAll('.theme-reveal-overlay').length;
+  const original = window.__scriberSmokeOriginalStartViewTransition;
+  if (original) {
+    Object.defineProperty(document, 'startViewTransition', {
+      configurable: true,
+      value: original
+    });
+  } else {
+    delete document.startViewTransition;
+  }
+  return {
+    ok: finalDark === startedDark
+      && storedTheme === expectedStoredTheme
+      && !revealActive
+      && overlays === 0,
+    startedDark,
+    finalDark,
+    storedTheme,
+    expectedStoredTheme,
+    revealActive,
+    overlays
+  };
+})()
+""",
+        timeout=5,
+    )
+    await cdp.call("Emulation.setEmulatedMedia", {"features": []}, timeout=5)
+    if not final_state or not final_state.get("ok"):
+        raise RuntimeError(f"Rapid theme change resolved to stale state: {final_state}")
+    return {
+        "name": "rapid-theme-change",
+        "ok": True,
+        "initial": initial,
+        "selection": selection,
+        "final": final_state,
     }
 
 
@@ -4174,6 +4403,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
             command_palette_check: dict[str, Any] | None = None
             transcript_detail_actions_check: dict[str, Any] | None = None
             transcript_cancel_check: dict[str, Any] | None = None
+            rapid_theme_change_check: dict[str, Any] | None = None
             fast_tab_switch_check: dict[str, Any] | None = None
             mobile_navigation_check: dict[str, Any] | None = None
             mobile_route_layouts_check: dict[str, Any] | None = None
@@ -4263,6 +4493,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
             transcript_detail_actions_check = await exercise_transcript_detail_actions(
                 cdp,
                 frontend_base_url=frontend_base_url,
+                backend=backend,
                 timeout_sec=args.page_timeout_sec,
             )
 
@@ -4270,6 +4501,12 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 cdp,
                 frontend_base_url=frontend_base_url,
                 backend=backend,
+                timeout_sec=args.page_timeout_sec,
+            )
+
+            rapid_theme_change_check = await exercise_rapid_theme_change(
+                cdp,
+                frontend_base_url=frontend_base_url,
                 timeout_sec=args.page_timeout_sec,
             )
 
@@ -4326,6 +4563,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
         and bool(command_palette_check and command_palette_check.get("ok"))
         and bool(transcript_detail_actions_check and transcript_detail_actions_check.get("ok"))
         and bool(transcript_cancel_check and transcript_cancel_check.get("ok"))
+        and bool(rapid_theme_change_check and rapid_theme_change_check.get("ok"))
         and (fast_tab_switch_check is None or bool(fast_tab_switch_check.get("ok")))
         and bool(mobile_navigation_check and mobile_navigation_check.get("ok"))
         and bool(mobile_route_layouts_check and mobile_route_layouts_check.get("ok"))
@@ -4349,6 +4587,8 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
         interaction_checks.append(transcript_detail_actions_check)
     if transcript_cancel_check:
         interaction_checks.append(transcript_cancel_check)
+    if rapid_theme_change_check:
+        interaction_checks.append(rapid_theme_change_check)
     if fast_tab_switch_check:
         interaction_checks.append(fast_tab_switch_check)
     if mobile_navigation_check:
@@ -4373,6 +4613,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
         "commandPaletteCheck": command_palette_check,
         "transcriptDetailActionsCheck": transcript_detail_actions_check,
         "transcriptCancelCheck": transcript_cancel_check,
+        "rapidThemeChangeCheck": rapid_theme_change_check,
         "fastTabSwitchCheck": fast_tab_switch_check,
         "mobileNavigationCheck": mobile_navigation_check,
         "mobileRouteLayoutsCheck": mobile_route_layouts_check,
@@ -4532,7 +4773,7 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             "unhandledRejectionCount": 0,
             "interactionCheckCount": (
                 sum(len(item.get("interactionChecks", [])) for item in scenarios)
-                + 6
+                + 7
                 + (1 if fast_tab_switch_check else 0)
             ),
             "interactionChecks": [
@@ -4543,6 +4784,7 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
                 "command-palette",
                 "transcript-detail-actions",
                 "transcript-cancel-action",
+                "rapid-theme-change",
                 *(["fast-tab-switch"] if fast_tab_switch_check else []),
                 "mobile-navigation",
                 "mobile-route-layouts",
@@ -4563,6 +4805,11 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
         },
         "transcriptCancelCheck": {
             "name": "transcript-cancel-action",
+            "ok": True,
+            "validateOnly": True,
+        },
+        "rapidThemeChangeCheck": {
+            "name": "rapid-theme-change",
             "ok": True,
             "validateOnly": True,
         },
