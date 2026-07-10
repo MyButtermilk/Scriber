@@ -1,4 +1,5 @@
 import types
+import warnings
 
 from src.audio_devices import (
     build_input_endpoint_mappings,
@@ -136,3 +137,29 @@ def test_collect_native_capture_endpoint_inventory_is_redacted_and_filters_rende
     ]
     assert capture_id not in str(inventory)
     assert render_id not in str(inventory)
+
+
+def test_collect_native_capture_endpoint_inventory_suppresses_pycaw_property_noise():
+    class _Device:
+        DeviceID = "capture-id"
+        FriendlyName = "Dock Mic"
+        flow = "capture"
+
+    def get_all_devices():
+        warnings.warn(
+            "COMError attempting to get property 26 from device",
+            UserWarning,
+        )
+        return [_Device()]
+
+    audio_utilities = types.SimpleNamespace(
+        GetAllDevices=get_all_devices,
+        GetMicrophone=lambda: _Device(),
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        inventory = collect_native_capture_endpoint_inventory(audio_utilities)
+
+    assert inventory[0]["friendlyName"] == "Dock Mic"
+    assert caught == []

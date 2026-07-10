@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import hashlib
 import sys
+import warnings
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -593,18 +594,34 @@ def collect_native_capture_endpoint_inventory(audio_utilities: Any | None = None
     if not callable(get_all_devices):
         return []
 
-    try:
-        raw_devices = list(get_all_devices())
-    except Exception:
-        return []
+    # PyCAW enumerates all property-store keys and emits one UserWarning for
+    # every vendor-specific property that returns COMError. Those properties
+    # are irrelevant to this best-effort inventory and can otherwise flood the
+    # supervised backend log on every diagnostics refresh.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"COMError attempting to get property .*",
+            category=UserWarning,
+        )
+        try:
+            raw_devices = list(get_all_devices())
+        except Exception:
+            return []
 
     default_hash = ""
     get_microphone = getattr(audio_utilities, "GetMicrophone", None)
     if callable(get_microphone):
-        try:
-            default_hash = hash_native_endpoint_id(_native_device_id(get_microphone()))
-        except Exception:
-            default_hash = ""
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"COMError attempting to get property .*",
+                category=UserWarning,
+            )
+            try:
+                default_hash = hash_native_endpoint_id(_native_device_id(get_microphone()))
+            except Exception:
+                default_hash = ""
 
     inventory: list[dict[str, Any]] = []
     for device in raw_devices:
