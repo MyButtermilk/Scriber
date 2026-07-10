@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,13 +13,14 @@ from src.runtime.paths import logs_dir
 
 CLEAR_STATE_FILENAME = "debug-log-clear-state.json"
 _MAX_CLEAR_STATE_BYTES = 1024 * 1024
+_CLEAR_FINGERPRINT_BYTES = 256
 
 
 def clear_state_path() -> Path:
     return logs_dir() / CLEAR_STATE_FILENAME
 
 
-def load_clear_offsets() -> dict[str, int]:
+def load_clear_offsets() -> dict[str, dict[str, Any]]:
     path = clear_state_path()
     try:
         if path.stat().st_size > _MAX_CLEAR_STATE_BYTES:
@@ -31,18 +33,29 @@ def load_clear_offsets() -> dict[str, int]:
     if not isinstance(files, dict):
         return {}
 
-    offsets: dict[str, int] = {}
+    offsets: dict[str, dict[str, Any]] = {}
     for key, value in files.items():
         if not isinstance(value, dict):
             continue
         size = _safe_non_negative_int(value.get("sizeBytes"))
         if size is not None:
-            offsets[str(key)] = size
+            offsets[str(key)] = {
+                "sizeBytes": size,
+                "tailSha256": str(value.get("tailSha256") or ""),
+            }
     return offsets
 
 
-def clear_offset_for_path(path: Path, offsets: dict[str, int]) -> int:
-    offset = offsets.get(_path_key(path), 0)
+def clear_offset_for_path(path: Path, offsets: dict[str, Any]) -> int:
+    entry = offsets.get(_path_key(path), 0)
+    if isinstance(entry, dict):
+        offset = _safe_non_negative_int(entry.get("sizeBytes")) or 0
+        expected_fingerprint = str(entry.get("tailSha256") or "")
+    else:
+        # Backward-compatible support for in-memory callers using the original
+        # path-to-integer mapping.
+        offset = _safe_non_negative_int(entry) or 0
+        expected_fingerprint = ""
     if offset <= 0:
         return 0
     try:
@@ -51,6 +64,13 @@ def clear_offset_for_path(path: Path, offsets: dict[str, int]) -> int:
         return 0
     if current_size < offset:
         return 0
+    if expected_fingerprint:
+        try:
+            current_fingerprint = _tail_fingerprint(path, end_offset=offset)
+        except OSError:
+            return 0
+        if not current_fingerprint or current_fingerprint != expected_fingerprint:
+            return 0
     return offset
 
 
@@ -68,6 +88,7 @@ def record_clear_state(paths: Iterable[Path]) -> tuple[list[str], list[dict[str,
             files[_path_key(path)] = {
                 "source": source,
                 "sizeBytes": stat.st_size,
+                "tailSha256": _tail_fingerprint(path, end_offset=stat.st_size),
                 "modifiedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc)
                 .replace(microsecond=0)
                 .isoformat()
@@ -110,3 +131,12 @@ def _safe_non_negative_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed >= 0 else None
+
+
+def _tail_fingerprint(path: Path, *, end_offset: int) -> str:
+    end = max(0, int(end_offset))
+    start = max(0, end - _CLEAR_FINGERPRINT_BYTES)
+    with path.open("rb") as handle:
+        handle.seek(start)
+        payload = handle.read(end - start)
+    return hashlib.sha256(payload).hexdigest()

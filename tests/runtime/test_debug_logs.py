@@ -104,3 +104,32 @@ def test_collect_debug_logs_applies_global_limit_by_time_not_source_name(monkeyp
 
     assert payload["truncated"] is True
     assert [item["message"] for item in payload["items"]] == ["newest failure"]
+
+
+def test_clear_marker_resets_when_log_file_is_replaced(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    logs_dir = data_dir / "logs"
+    repo_dir = tmp_path / "repo"
+    logs_dir.mkdir(parents=True)
+    repo_dir.mkdir()
+    monkeypatch.setattr(debug_logs, "data_dir", lambda: data_dir)
+    monkeypatch.setattr(debug_logs, "logs_dir", lambda: logs_dir)
+    monkeypatch.setattr(debug_logs, "repo_root", lambda: repo_dir)
+    monkeypatch.setattr(log_clear_state, "logs_dir", lambda: logs_dir)
+
+    log_path = logs_dir / "latest.log"
+    log_path.write_text("... 12:00:00.000 INFO old entry\n", encoding="utf-8")
+    assert debug_logs.clear_debug_logs()["ok"] is True
+
+    # Simulate rotation with a replacement that is at least as large as the
+    # cleared file. A size-only marker would incorrectly hide its first bytes.
+    log_path.write_text(
+        "... 12:00:01.000 ERROR replacement entry that is intentionally longer\n",
+        encoding="utf-8",
+    )
+
+    payload = debug_logs.collect_debug_logs(limit=20)
+
+    assert [item["message"] for item in payload["items"]] == [
+        "replacement entry that is intentionally longer"
+    ]
