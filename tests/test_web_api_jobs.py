@@ -1365,6 +1365,52 @@ async def test_file_persistence_failure_retries_job_and_preserves_owned_upload(m
 
 
 @pytest.mark.asyncio
+async def test_final_file_persistence_failure_releases_owned_upload(monkeypatch, tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    ctl._job_max_attempts = 1
+    ctl._downloads_dir = tmp_path / "downloads"
+    upload_dir = ctl._downloads_dir / "files" / "upload-id"
+    upload_dir.mkdir(parents=True)
+    file_path = upload_dir / "upload.wav"
+    file_path.write_bytes(b"RIFF....WAVEfmt ")
+    rec = _completed_record(transcript_type="file", tmp_path=tmp_path)
+    rec.id = "storage-final-failure-file"
+    rec.source_url = str(file_path)
+    job = store.enqueue(
+        transcript_id=rec.id,
+        job_type=web_api.JobType.FILE,
+        payload={"path": str(file_path)},
+    )
+    assert store.mark_running(job.id)
+    ctl._remember_job_id(rec.id, job.id)
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+    monkeypatch.setattr(
+        web_api.db,
+        "save_transcript",
+        lambda _snapshot: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with (
+        patch("src.web_api.supports_direct_file_upload", return_value=True),
+        patch(
+            "src.web_api._create_scriber_pipeline",
+            side_effect=lambda *_args, **kwargs: _SyntheticPipeline(
+                on_transcription=kwargs["on_transcription"]
+            ),
+        ),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_record_provider_failure") as provider_failure,
+    ):
+        await ctl._run_file_transcription(rec, file_path, provider="soniox")
+
+    assert rec.status == "failed"
+    assert rec._persistence_failed is True
+    assert not upload_dir.exists()
+    provider_failure.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_file_job_cleans_only_its_owned_upload_directory(monkeypatch, tmp_path):
     ctl = ScriberWebController(asyncio.get_running_loop())
     ctl._downloads_dir = tmp_path / "downloads"

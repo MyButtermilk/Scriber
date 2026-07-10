@@ -4140,7 +4140,14 @@ class ScriberWebController:
         else:
             self._pending_transcript_partial = payload
 
+        self._ensure_transcript_broadcast_task()
+
+    def _ensure_transcript_broadcast_task(self) -> None:
+        if self._shutting_down or self._loop.is_closed():
+            return
         if self._transcript_broadcast_task is not None and not self._transcript_broadcast_task.done():
+            return
+        if not self._pending_transcript_finals and self._pending_transcript_partial is None:
             return
         task = self._loop.create_task(
             self._drain_transcript_broadcasts(),
@@ -4169,6 +4176,7 @@ class ScriberWebController:
             return
         except Exception as exc:
             logger.debug(f"Transcript broadcast failed: {exc}")
+        self._ensure_transcript_broadcast_task()
 
     def _provider_user_error(self, error: Exception | str, *, provider: str | None = None) -> ProviderUserError:
         return provider_user_error(provider or self._active_provider, error)
@@ -5407,7 +5415,7 @@ class ScriberWebController:
             if rec.status != "completed" and not rec._persistence_failed:
                 await self._save_transcript_to_db_async(rec)
             await self._broadcast_history_updated(record=rec, reason="job_done")
-            if rec.status != "processing" and not rec._persistence_failed:
+            if rec.status != "processing":
                 await self._cleanup_owned_file_source(file_path, reason=rec.status)
 
     async def start_listening(self, *, post_process: bool = False) -> ProviderUserError | None:

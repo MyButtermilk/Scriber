@@ -2173,6 +2173,30 @@ async def test_transcript_broadcast_coalesces_interim_but_preserves_finals():
 
 
 @pytest.mark.asyncio
+async def test_transcript_broadcast_recovers_pending_events_after_task_failure():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    delivered = asyncio.Event()
+    attempts: list[str] = []
+
+    async def flaky_broadcast(payload):
+        text = str(payload["text"])
+        attempts.append(text)
+        if text == "first":
+            raise RuntimeError("transient broadcast failure")
+        delivered.set()
+
+    with patch.object(ctl, "broadcast", side_effect=flaky_broadcast):
+        ctl._queue_transcript_broadcast({"text": "first", "isFinal": True}, True)
+        ctl._queue_transcript_broadcast({"text": "second", "isFinal": True}, True)
+        await asyncio.wait_for(delivered.wait(), timeout=1.0)
+        task = ctl._transcript_broadcast_task
+        if task is not None:
+            await task
+
+    assert attempts == ["first", "second"]
+
+
+@pytest.mark.asyncio
 async def test_control_broadcast_coalesces_latest_payload_per_event_type():
     ctl = ScriberWebController(asyncio.get_running_loop())
     first_started = asyncio.Event()
