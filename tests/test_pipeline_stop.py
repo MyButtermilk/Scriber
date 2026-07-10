@@ -1,5 +1,7 @@
 import asyncio
 import io
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pipecat.frames.frames import (
@@ -153,6 +155,64 @@ async def test_soniox_async_terminal_frame_streams_spooled_audio():
         for frame, _direction in captured
     )
     assert processor._buffer_size == 0
+
+
+@pytest.mark.asyncio
+async def test_soniox_async_cancellation_cleans_remote_resources(monkeypatch):
+    poll_started = asyncio.Event()
+
+    class _ResponseContext:
+        def __init__(self, status):
+            self.response = SimpleNamespace(status=status, raise_for_status=lambda: None)
+
+        async def __aenter__(self):
+            return self.response
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _BlockingResponseContext:
+        async def __aenter__(self):
+            poll_started.set()
+            await asyncio.Event().wait()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _Session:
+        def __init__(self):
+            self.post_count = 0
+
+        def post(self, *_args, **_kwargs):
+            self.post_count += 1
+            return _ResponseContext(201 if self.post_count == 1 else 200)
+
+        def get(self, *_args, **_kwargs):
+            return _BlockingResponseContext()
+
+    processor = SonioxAsyncProcessor(api_key="test-key", session=_Session())
+    processor._sample_rate = 16000
+    processor._channels = 1
+    processor._encode_audio = AsyncMock(return_value=(b"webm", "audio/webm", "audio.webm"))
+    processor._cleanup_soniox_resources = AsyncMock()
+    response_payloads = iter(({"id": "file-id"}, {"id": "transcription-id"}))
+
+    async def _read_json(*_args, **_kwargs):
+        return next(response_payloads)
+
+    monkeypatch.setattr("src.pipeline.read_response_json_limited", _read_json)
+
+    task = asyncio.create_task(processor._transcribe_async(b"\0\0" * 320))
+    await asyncio.wait_for(poll_started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    processor._cleanup_soniox_resources.assert_awaited_once_with(
+        "file-id",
+        "transcription-id",
+        {"Authorization": "Bearer test-key"},
+    )
 
 
 @pytest.mark.asyncio

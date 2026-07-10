@@ -557,25 +557,20 @@ class SonioxAsyncProcessor(FrameProcessor):
                     logger.info(f"Soniox async transcription completed ({len(text)} chars)")
                 self._report_progress("Completed")
                 
-                # Clean up: delete file and transcription from Soniox to avoid hitting file limits
-                await self._cleanup_soniox_resources(file_id, transcription_id, headers)
-                
                 return text
 
         except Exception as e:
             logger.error(f"Soniox async transcription failed: {e}")
-            # Try to clean up even on failure
-            try:
-                if file_id:
-                    await self._cleanup_soniox_resources(
-                        file_id,
-                        transcription_id,
-                        headers,
-                    )
-            except Exception:
-                pass
             raise
         finally:
+            # Cancellation is a BaseException on current Python versions, so
+            # remote cleanup must live in finally rather than except Exception.
+            if file_id:
+                await self._cleanup_soniox_resources(
+                    file_id,
+                    transcription_id,
+                    headers,
+                )
             if encoded_stream is not None:
                 try:
                     encoded_stream.close()

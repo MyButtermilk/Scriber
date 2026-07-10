@@ -2631,6 +2631,8 @@ class ScriberWebController:
     def _register_summary_task(self, transcript_id: str, task: asyncio.Task) -> bool:
         """Register one in-flight summary request per transcript."""
         existing = self._summary_tasks.get(transcript_id)
+        if existing is task:
+            return True
         if existing is not None and not existing.done():
             return False
         self._summary_tasks[transcript_id] = task
@@ -2642,6 +2644,23 @@ class ScriberWebController:
     def _unregister_summary_task(self, transcript_id: str, task: asyncio.Task) -> None:
         if self._summary_tasks.get(transcript_id) is task:
             self._summary_tasks.pop(transcript_id, None)
+
+    def _claim_auto_summary_task(
+        self,
+        rec: TranscriptRecord,
+        content: str,
+    ) -> asyncio.Task | None:
+        """Reserve summary ownership before completed content is broadcast."""
+        if not Config.AUTO_SUMMARIZE or not content.strip():
+            return None
+        task = asyncio.current_task()
+        if task is None:
+            logger.warning("Skipping auto-summary without an owning asyncio task: {}", rec.id)
+            return None
+        if not self._register_summary_task(rec.id, task):
+            logger.info("Skipping duplicate auto-summary for transcript {}", rec.id)
+            return None
+        return task
 
     def _mark_transcript_deleted(self, transcript_id: str) -> None:
         self._deleted_transcript_ids.pop(transcript_id, None)
@@ -4565,6 +4584,7 @@ class ScriberWebController:
         rec.status = "completed"
         rec.step = "Completed"
         rec.updated_at = datetime.now().isoformat()
+        auto_summary_task = self._claim_auto_summary_task(rec, content)
         # Save the transcript before summary generation so slow LLM work never
         # leaves completed content only in memory.
         await self._save_transcript_to_db_async(rec)
@@ -4591,7 +4611,7 @@ class ScriberWebController:
             meta={"chars": len(content), "source": source},
         )
 
-        if Config.AUTO_SUMMARIZE and content:
+        if auto_summary_task is not None:
             try:
                 from src.summarization import summarize_text
 
@@ -4659,6 +4679,8 @@ class ScriberWebController:
                     error_category=classify_error_message(str(sum_err)).value,
                     meta={"error": str(sum_err)},
                 )
+            finally:
+                self._unregister_summary_task(rec.id, auto_summary_task)
 
     async def _run_youtube_transcription(self, rec: TranscriptRecord, *, provider: str | None) -> None:
         workflow_started = time.monotonic()
@@ -5105,6 +5127,7 @@ class ScriberWebController:
             rec.status = "completed"
             rec.step = "Completed"
             rec.updated_at = datetime.now().isoformat()
+            auto_summary_task = self._claim_auto_summary_task(rec, content)
             # Persist transcript immediately so a stuck/slow summarization
             # cannot keep the transcript in memory-only state.
             await self._save_transcript_to_db_async(rec)
@@ -5124,7 +5147,7 @@ class ScriberWebController:
             )
 
             # Auto-summarize if enabled
-            if Config.AUTO_SUMMARIZE and content:
+            if auto_summary_task is not None:
                 try:
                     from src.summarization import summarize_text
                     rec.mark_summary_pending()
@@ -5191,6 +5214,8 @@ class ScriberWebController:
                         error_category=classify_error_message(str(sum_err)).value,
                         meta={"error": str(sum_err)},
                     )
+                finally:
+                    self._unregister_summary_task(rec.id, auto_summary_task)
         except (ValueError, ImportError) as exc:
             self._record_provider_failure(provider, exc)
             if await self._schedule_retry_if_allowed(rec, exc):

@@ -512,6 +512,7 @@ async def test_summary_task_registry_rejects_duplicate_provider_work():
     second = asyncio.create_task(asyncio.sleep(10))
     try:
         assert ctl._register_summary_task("same-transcript", first) is True
+        assert ctl._register_summary_task("same-transcript", first) is True
         assert ctl._register_summary_task("same-transcript", second) is False
 
         first.cancel()
@@ -1110,7 +1111,11 @@ async def test_youtube_auto_summary_failure_is_exposed_as_summary_state(monkeypa
     async def _download_youtube_audio(*_args, **_kwargs):
         return audio_path
 
+    summary_owner_observed = False
+
     async def _fail_summary(*_args, **_kwargs):
+        nonlocal summary_owner_observed
+        summary_owner_observed = ctl._summary_tasks.get(rec.id) is asyncio.current_task()
         raise RuntimeError("summary provider failed")
 
     def _create_pipeline(*_args, **kwargs):
@@ -1137,6 +1142,8 @@ async def test_youtube_auto_summary_failure_is_exposed_as_summary_state(monkeypa
     assert rec.to_public(include_content=True)["summaryStatus"] == "failed"
     assert save_mock.await_count == 1
     assert summary_save_mock.await_count == 2
+    assert summary_owner_observed is True
+    assert rec.id not in ctl._summary_tasks
     broadcast_reasons = [call.kwargs.get("reason") for call in broadcast_mock.await_args_list]
     assert "summary_pending" in broadcast_reasons
     assert "summary_failed" in broadcast_reasons
@@ -1310,7 +1317,11 @@ async def test_file_auto_summary_failure_is_exposed_as_summary_state(monkeypatch
     file_path.write_bytes(b"RIFF....WAVEfmt ")
     rec = _completed_record(transcript_type="file", tmp_path=tmp_path)
 
+    summary_owner_observed = False
+
     async def _fail_summary(*_args, **_kwargs):
+        nonlocal summary_owner_observed
+        summary_owner_observed = ctl._summary_tasks.get(rec.id) is asyncio.current_task()
         raise RuntimeError("summary provider failed")
 
     def _create_pipeline(*_args, **kwargs):
@@ -1336,6 +1347,8 @@ async def test_file_auto_summary_failure_is_exposed_as_summary_state(monkeypatch
     assert rec.to_public(include_content=True)["summaryStatus"] == "failed"
     assert save_mock.await_count == 1
     assert summary_save_mock.await_count == 2
+    assert summary_owner_observed is True
+    assert rec.id not in ctl._summary_tasks
 
 
 @pytest.mark.asyncio
